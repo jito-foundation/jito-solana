@@ -19,7 +19,7 @@ solana-gossip = { path = "../gossip" }
 solana-perf = { path = "../perf" }
 solana-sdk = { path = "../sdk" }
 tokio = { version = "1", features = ["full"] }
-tonic = "0.5.2"
+tonic = "0.6.2"
 
 [build-dependencies]
 tonic-build = "0.5.2"

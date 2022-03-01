@@ -1377,7 +1377,7 @@ dependencies = [
  "prost 0.9.0",
  "tokio",
  "tokio-stream",
- "tonic 0.6.2",
+ "tonic",
  "tonic-build 0.6.2",
  "tower-service",
 ]
@@ -5568,7 +5568,7 @@ dependencies = [
  "solana-perf",
  "solana-sdk",
  "tokio",
- "tonic 0.5.2",
+ "tonic",
  "tonic-build 0.5.2",
 ]
 
@@ -5843,7 +5843,7 @@ dependencies = [
  "solana-runtime",
  "solana-sdk",
  "tokio",
- "tonic 0.6.2",
+ "tonic",
  "tonic-build 0.6.2",
 ]
 
@@ -6161,7 +6161,7 @@ dependencies = [
  "solana-storage-proto",
  "solana-transaction-status",
  "thiserror",
- "tonic 0.6.2",
+ "tonic",
  "zstd",
 ]
 
@@ -7219,37 +7219,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31142970826733df8241ef35dc040ef98c679ab14d7c3e54d827099b3acecaa"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "tonic"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "796c5e1cd49905e65dd8e700d4cb1dffcbfdb4fc9d017de08c1a537afd83627c"
-dependencies = [
- "async-stream",
- "async-trait",
- "base64 0.13.0",
- "bytes 1.1.0",
- "futures-core",
- "futures-util",
- "h2",
- "http",
- "http-body",
- "hyper 0.14.14",
- "hyper-timeout",
- "percent-encoding 2.1.0",
- "pin-project",
- "prost 0.8.0",
- "prost-derive 0.8.0",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tower",
- "tower-layer",
- "tower-service",
- "tracing",
- "tracing-futures",
 ]
 
 [[package]]
