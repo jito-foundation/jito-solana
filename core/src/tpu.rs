@@ -1,6 +1,7 @@
 //! The `tpu` module implements the Transaction Processing Unit, a
 //! multi-stage transaction processing pipeline in software.
 
+use crate::bundle_stage::BundleStage;
 use {
     crate::{
         banking_stage::BankingStage,
@@ -68,6 +69,7 @@ pub struct Tpu {
     find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     vote_find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     staked_nodes_updater_service: StakedNodesUpdaterService,
+    bundle_stage: BundleStage,
 }
 
 impl Tpu {
@@ -180,11 +182,12 @@ impl Tpu {
             )
         };
 
-        // MEV TPU proxy packet injection
+        let (bundle_sender, bundle_rx) = unbounded();
         let mev_stage = MevStage::new(
             cluster_info,
             validator_interface_address,
             verified_sender,
+            bundle_sender,
             packet_intercept_receiver,
             packet_sender,
         );
@@ -213,9 +216,17 @@ impl Tpu {
             verified_receiver,
             verified_tpu_vote_packets_receiver,
             verified_gossip_vote_packets_receiver,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
+            cost_model.clone(),
+        );
+
+        let bundle_stage = BundleStage::new(
+            poh_recorder,
             transaction_status_sender,
             replay_vote_sender,
             cost_model.clone(),
+            bundle_rx,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
@@ -241,6 +252,7 @@ impl Tpu {
             find_packet_sender_stake_stage,
             vote_find_packet_sender_stake_stage,
             staked_nodes_updater_service,
+            bundle_stage,
         }
     }
 
@@ -271,6 +283,7 @@ impl Tpu {
             self.vote_find_packet_sender_stake_stage.join(),
             self.staked_nodes_updater_service.join(),
             self.mev_stage.join(),
+            self.bundle_stage.join(),
         ];
         self.tpu_quic_t.join()?;
         let broadcast_result = self.broadcast_stage.join();

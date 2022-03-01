@@ -345,7 +345,7 @@ pub type Result<T> = std::result::Result<T, BlockstoreError>;
 
 impl std::fmt::Display for BlockstoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "blockstore error")
+        write!(f, "{}", format!("{:?}", self))
     }
 }
 

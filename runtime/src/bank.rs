@@ -3802,8 +3802,24 @@ impl Bank {
         transactions: &'b [SanitizedTransaction],
         transaction_results: impl Iterator<Item = &'b Result<()>>,
     ) -> TransactionBatch<'a, 'b> {
-        // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
+        // this lock_results could be: Ok, AccountInUse, AccountLoadedTwice or TooManyAccountLocks
         let lock_results = self.rc.accounts.lock_accounts_with_results(
+            transactions.iter(),
+            transaction_results,
+            &self.feature_set,
+        );
+        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+    }
+
+    /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
+    /// limited packing status, where transactions will be locked sequentially until the first failure
+    pub fn prepare_sequential_sanitized_batch_with_results<'a, 'b>(
+        &'a self,
+        transactions: &'b [SanitizedTransaction],
+        transaction_results: impl Iterator<Item = Result<()>>,
+    ) -> TransactionBatch<'a, 'b> {
+        // this lock_results could be: Ok, AccountInUse, BundleNotContinuous, AccountLoadedTwice, or TooManyAccountLocks
+        let lock_results = self.rc.accounts.lock_accounts_sequential_with_results(
             transactions.iter(),
             transaction_results,
             &self.feature_set,
@@ -3860,6 +3876,7 @@ impl Bank {
             true,
             &mut timings,
             Some(&account_overrides),
+            None,
         );
 
         let post_simulation_accounts = loaded_transactions
@@ -4274,6 +4291,7 @@ impl Bank {
         enable_return_data_recording: bool,
         timings: &mut ExecuteTimings,
         account_overrides: Option<&AccountOverrides>,
+        cached_accounts: Option<&HashMap<Pubkey, AccountSharedData>>,
     ) -> LoadAndExecuteTransactionsOutput {
         let sanitized_txs = batch.sanitized_transactions();
         debug!("processing transactions: {}", sanitized_txs.len());
@@ -4318,8 +4336,10 @@ impl Bank {
             &self.feature_set,
             &self.fee_structure,
             account_overrides,
+            cached_accounts,
         );
         load_time.stop();
+        // debug!("loaded txs: {:?}", loaded_transactions);
 
         let mut execution_time = Measure::start("execution_time");
         let mut signature_count: u64 = 0;
@@ -4758,6 +4778,24 @@ impl Bank {
             execution_results,
             rent_debits,
         }
+    }
+
+    pub fn collect_accounts_to_store<'a>(
+        &self,
+        txs: &'a [SanitizedTransaction],
+        res: &'a [TransactionExecutionResult],
+        loaded: &'a mut [TransactionLoadResult],
+    ) -> Vec<(&'a Pubkey, &'a AccountSharedData)> {
+        let (blockhash, lamports_per_signature) = self.last_blockhash_and_lamports_per_signature();
+        Accounts::collect_accounts_to_store(
+            txs,
+            res,
+            loaded,
+            &self.rent_collector,
+            &blockhash,
+            lamports_per_signature,
+            self.leave_nonce_on_success(),
+        )
     }
 
     // Distribute collected rent fees for this slot to staked validators (excluding stakers)
@@ -5633,6 +5671,7 @@ impl Bank {
             enable_log_recording,
             enable_return_data_recording,
             timings,
+            None,
             None,
         );
 

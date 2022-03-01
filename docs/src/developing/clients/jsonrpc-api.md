@@ -3607,7 +3607,7 @@ Result:
 with the `--rpc-pubsub-enable-block-subscription` flag. The format of this
 subscription may change in the future**
 
-Subscribe to receive notification anytime a new block is Confirmed or Finalized.
+Subscribe to receive notification anytime a new block is processed under a given commitment level.
 
 #### Parameters:
 

@@ -68,7 +68,7 @@ use {
         signature::{Keypair, Signer},
     },
     solana_send_transaction_service::send_transaction_service::{
-        self, MAX_BATCH_SEND_RATE_MS, MAX_TRANSACTION_BATCH_SIZE,
+        self, DEFAULT_TPU_USE_QUIC, MAX_BATCH_SEND_RATE_MS, MAX_TRANSACTION_BATCH_SIZE,
     },
     solana_streamer::socket::SocketAddrSpace,
     solana_validator::{

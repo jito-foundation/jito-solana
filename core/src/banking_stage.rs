@@ -26,7 +26,9 @@ use {
         packet::{Packet, PacketBatch, PACKETS_PER_BATCH},
         perf_libs,
     },
-    solana_poh::poh_recorder::{BankStart, PohRecorder, PohRecorderError, TransactionRecorder},
+    solana_poh::poh_recorder::{
+        BankStart, PohRecorder, PohRecorderError, Record, TransactionRecorder,
+    },
     solana_program_runtime::timings::ExecuteTimings,
     solana_runtime::{
         bank::{
@@ -1085,7 +1087,12 @@ impl BankingStage {
             record_transactions_timings.hash_us = hash_time.as_us();
 
             let (res, poh_record_time) = Measure::this(
-                |_| recorder.record(bank_slot, hash, transactions),
+                |_| {
+                    recorder.record(Record {
+                        mixins_txs: vec![(hash, transactions)],
+                        slot: bank_slot,
+                    })
+                },
                 (),
                 "hash",
             );
@@ -1137,7 +1144,7 @@ impl BankingStage {
                 };
 
                 let pre_token_balances = if transaction_status_sender.is_some() {
-                    collect_token_balances(bank, batch, &mut mint_decimals)
+                    collect_token_balances(bank, batch, &mut mint_decimals, None)
                 } else {
                     vec![]
                 };
@@ -1159,6 +1166,7 @@ impl BankingStage {
                     transaction_status_sender.is_some(),
                     &mut execute_and_commit_timings.execute_timings,
                     None, // account_overrides
+                    None,
                 )
             },
             (),
@@ -1287,7 +1295,7 @@ impl BankingStage {
                         let txs = batch.sanitized_transactions().to_vec();
                         let post_balances = bank.collect_balances(batch);
                         let post_token_balances =
-                            collect_token_balances(bank, batch, &mut mint_decimals);
+                            collect_token_balances(bank, batch, &mut mint_decimals, None);
                         transaction_status_sender.send_transaction_status_batch(
                             bank.clone(),
                             txs,
