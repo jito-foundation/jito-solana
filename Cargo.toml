@@ -28,6 +28,7 @@ members = [
     "genesis-utils",
     "gossip",
     "install",
+    "mev",
     "keygen",
     "ledger",
     "ledger-tool",

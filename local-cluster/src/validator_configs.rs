@@ -62,6 +62,9 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         accounts_shrink_ratio: config.accounts_shrink_ratio,
         accounts_db_config: config.accounts_db_config.clone(),
         wait_to_vote_slot: config.wait_to_vote_slot,
+        tpu_proxy_address: config.tpu_proxy_address,
+        tpu_proxy_forward_address: config.tpu_proxy_forward_address,
+        validator_interface_address: config.validator_interface_address,
     }
 }
 
