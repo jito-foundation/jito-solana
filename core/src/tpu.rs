@@ -83,8 +83,6 @@ impl Tpu {
         cluster_confirmed_slot_sender: GossipDuplicateConfirmedSlotsSender,
         cost_model: &Arc<RwLock<CostModel>>,
         keypair: &Keypair,
-        tpu_proxy_address: Option<SocketAddr>,
-        tpu_proxy_forward_address: Option<SocketAddr>,
         validator_interface_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
@@ -135,37 +133,21 @@ impl Tpu {
             )
         };
 
+        // MEV TPU proxy packet injection
         let mut recv_verify_stage = None;
         let mut tpu_proxy_advertiser = None;
-
-        // Jito TPU proxy packet injection
-        match (
-            tpu_proxy_address,
-            tpu_proxy_forward_address,
-            validator_interface_address,
-        ) {
-            (
-                Some(tpu_proxy_address),
-                Some(tpu_proxy_forward_address),
-                Some(validator_interface_address),
-            ) => {
-                let (tpu_notify_sender, tpu_notify_receiver) = unbounded_channel();
-                recv_verify_stage = Some(RecvVerifyStage::new(
-                    cluster_info.keypair(),
-                    validator_interface_address,
-                    recv_verified_sender,
-                    tpu_notify_sender,
-                ));
-                tpu_proxy_advertiser = Some(TpuProxyAdvertiser::new(
-                    tpu_proxy_address,
-                    tpu_proxy_forward_address,
-                    cluster_info,
-                    tpu_notify_receiver,
-                ));
-            }
-            _ => {
-                info!("[Jito] Missing TPU or validator addresses, running without TPU proxy");
-            }
+        if let Some(validator_interface_address) = validator_interface_address {
+            let (tpu_notify_sender, tpu_notify_receiver) =
+                unbounded_channel::<(Option<SocketAddr>, Option<SocketAddr>)>();
+            recv_verify_stage = Some(RecvVerifyStage::new(
+                cluster_info.keypair(),
+                validator_interface_address,
+                recv_verified_sender,
+                tpu_notify_sender,
+            ));
+            tpu_proxy_advertiser = Some(TpuProxyAdvertiser::new(cluster_info, tpu_notify_receiver));
+        } else {
+            info!("[MEV] Missing TPU or validator addresses, running without TPU proxy");
         }
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
@@ -229,12 +211,11 @@ impl Tpu {
             self.cluster_info_vote_listener.join(),
             self.banking_stage.join(),
         ];
-        match (self.recv_verify_stage, self.tpu_proxy_advertiser) {
-            (Some(recv_verify_stage), Some(tpu_proxy_advertiser)) => {
-                results.push(recv_verify_stage.join());
-                results.push(tpu_proxy_advertiser.join());
-            }
-            _ => {}
+        if let (Some(recv_verify_stage), Some(tpu_proxy_advertiser)) =
+            (self.recv_verify_stage, self.tpu_proxy_advertiser)
+        {
+            results.push(recv_verify_stage.join());
+            results.push(tpu_proxy_advertiser.join());
         }
         self.tpu_quic_t.join()?;
         let broadcast_result = self.broadcast_stage.join();

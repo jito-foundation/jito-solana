@@ -4,7 +4,7 @@
 
 use {
     log::*,
-    solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
+    solana_gossip::cluster_info::ClusterInfo,
     std::{
         net::SocketAddr,
         sync::Arc,
@@ -19,51 +19,65 @@ pub struct TpuProxyAdvertiser {
 
 impl TpuProxyAdvertiser {
     pub fn new(
-        tpu_addr: SocketAddr,
-        tpu_forwards_addr: SocketAddr,
         cluster_info: &Arc<ClusterInfo>,
-        tpu_notify_reciver: UnboundedReceiver<bool>,
+        tpu_notify_receiver: UnboundedReceiver<(Option<SocketAddr>, Option<SocketAddr>)>,
     ) -> TpuProxyAdvertiser {
         let cluster_info = cluster_info.clone();
         let thread_hdl = thread::spawn(move || {
-            info!("[Jito] Started TPU proxy advertiser");
+            info!("[MEV] Started TPU proxy advertiser");
+            let saved_contact_info = cluster_info.my_contact_info();
             Self::advertise(
-                tpu_addr,
-                tpu_forwards_addr,
                 &cluster_info,
-                cluster_info.my_contact_info(),
-                tpu_notify_reciver,
+                saved_contact_info.tpu,
+                saved_contact_info.tpu_forwards,
+                tpu_notify_receiver,
             )
         });
         Self { thread_hdl }
     }
 
     fn advertise(
-        tpu_addr: SocketAddr,
-        tpu_forwards_addr: SocketAddr,
         cluster_info: &Arc<ClusterInfo>,
-        saved_contact_info: ContactInfo,
-        mut tpu_notify_receiver: UnboundedReceiver<bool>,
+        saved_tpu: SocketAddr,
+        saved_tpu_forwards: SocketAddr,
+        mut tpu_notify_receiver: UnboundedReceiver<(Option<SocketAddr>, Option<SocketAddr>)>,
     ) {
         let mut last_advertise = false;
         loop {
-            if let Some(should_advertise) = tpu_notify_receiver.blocking_recv() {
-                if should_advertise {
-                    if !last_advertise {
-                        info!("[Jito] TPU proxy connect, advertising remote TPU ports");
-                        let mut new_contact_info = saved_contact_info.clone();
-                        new_contact_info.tpu = tpu_addr;
-                        new_contact_info.tpu_forwards = tpu_forwards_addr;
-                        cluster_info.set_my_contact_info(new_contact_info);
-                        last_advertise = true;
-                    }
-                } else if last_advertise {
-                    info!("[Jito] TPU proxy disconnected, advertising local TPU ports");
-                    cluster_info.set_my_contact_info(saved_contact_info.clone());
-                    last_advertise = false;
+            match tpu_notify_receiver.blocking_recv() {
+                Some((Some(tpu_address), Some(tpu_forward_address))) => {
+                    info!("[MEV] TPU proxy connect, advertising remote TPU ports");
+                    Self::set_tpu_addresses(cluster_info, tpu_address, tpu_forward_address);
+                    last_advertise = true;
                 }
+                Some((None, None)) => {
+                    if last_advertise {
+                        info!("[MEV] TPU proxy disconnected, advertising local TPU ports");
+                        Self::set_tpu_addresses(cluster_info, saved_tpu, saved_tpu_forwards);
+                        last_advertise = false;
+                    }
+                }
+                None => {
+                    warn!("[MEV] Advertising local TPU ports and shutting down.");
+                    Self::set_tpu_addresses(cluster_info, saved_tpu, saved_tpu_forwards);
+                    return;
+                }
+                _ => {
+                    unreachable!()
+                } // Channel only receives internal messages
             }
         }
+    }
+
+    fn set_tpu_addresses(
+        cluster_info: &Arc<ClusterInfo>,
+        tpu_address: SocketAddr,
+        tpu_forward_address: SocketAddr,
+    ) {
+        let mut new_contact_info = cluster_info.my_contact_info();
+        new_contact_info.tpu = tpu_address;
+        new_contact_info.tpu_forwards = tpu_forward_address;
+        cluster_info.set_my_contact_info(new_contact_info);
     }
 
     pub fn join(self) -> thread::Result<()> {

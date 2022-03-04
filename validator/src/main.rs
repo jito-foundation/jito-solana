@@ -1581,22 +1581,6 @@ pub fn main() {
                 .hidden(true),
         )
         .arg(
-            Arg::with_name("tpu_proxy_address")
-                .long("tpu_proxy_address")
-                .value_name("TPU_PROXY_ADDRESS")
-                .required(true)
-                .takes_value(true)
-                .help("TPU proxy listening address")
-        )
-        .arg(
-            Arg::with_name("tpu_proxy_forward_address")
-                .long("tpu_proxy_forward_address")
-                .value_name("TPU_PROXY_FORWARD_ADDRESS")
-                .required(true)
-                .takes_value(true)
-                .help("TPU forward proxy listening address")
-        )
-        .arg(
             Arg::with_name("validator_interface_address")
                 .long("validator_interface_address")
                 .value_name("VALIDATOR_INTERFACE_ADDRESS")
@@ -2352,14 +2336,6 @@ pub fn main() {
         tpu_coalesce_ms,
         no_wait_for_vote_to_start_leader: matches.is_present("no_wait_for_vote_to_start_leader"),
         accounts_shrink_ratio,
-        tpu_proxy_address: solana_net_utils::parse_host_port(
-            matches.value_of("tpu_proxy_address").unwrap_or(""),
-        )
-        .ok(),
-        tpu_proxy_forward_address: solana_net_utils::parse_host_port(
-            matches.value_of("tpu_proxy_forward_address").unwrap_or(""),
-        )
-        .ok(),
         validator_interface_address: solana_net_utils::parse_host_port(
             matches
                 .value_of("validator_interface_address")
