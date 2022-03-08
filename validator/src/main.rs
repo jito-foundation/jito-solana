@@ -1584,7 +1584,7 @@ pub fn main() {
             Arg::with_name("validator_interface_address")
                 .long("validator_interface_address")
                 .value_name("VALIDATOR_INTERFACE_ADDRESS")
-                .required(true)
+                .required(false)
                 .takes_value(true)
                 .help("Validator interface listening address")
         )
