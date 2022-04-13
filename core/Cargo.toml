@@ -44,6 +44,7 @@ solana-gossip = { path = "../gossip", version = "=1.11.0" }
 solana-ledger = { path = "../ledger", version = "=1.11.0" }
 solana-measure = { path = "../measure", version = "=1.11.0" }
 solana-metrics = { path = "../metrics", version = "=1.11.0" }
+solana-mev = { path = "../mev" }
 solana-net-utils = { path = "../net-utils", version = "=1.11.0" }
 solana-perf = { path = "../perf", version = "=1.11.0" }
 solana-poh = { path = "../poh", version = "=1.11.0" }

@@ -30,6 +30,7 @@ members = [
     "geyser-plugin-manager",
     "gossip",
     "install",
+    "mev",
     "keygen",
     "ledger",
     "ledger-tool",

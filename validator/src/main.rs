@@ -1713,6 +1713,14 @@ pub fn main() {
                 .help("Allow contacting private ip addresses")
                 .hidden(true),
         )
+        .arg(
+            Arg::with_name("validator_interface_address")
+                .long("validator_interface_address")
+                .value_name("VALIDATOR_INTERFACE_ADDRESS")
+                .required(true)
+                .takes_value(true)
+                .help("Validator interface listening address")
+        )
         .after_help("The default subcommand is run")
         .subcommand(
             SubCommand::with_name("exit")
@@ -2511,6 +2519,12 @@ pub fn main() {
             bpf_jit: !matches.is_present("no_bpf_jit"),
             ..RuntimeConfig::default()
         },
+        validator_interface_address: solana_net_utils::parse_host_port(
+            matches
+                .value_of("validator_interface_address")
+                .unwrap_or(""),
+        )
+        .ok(),
         ..ValidatorConfig::default()
     };
 

@@ -18,6 +18,7 @@ use {
     crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
+    solana_mev::mev_stage::MevStage,
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
         optimistically_confirmed_bank_tracker::BankNotificationSender,
@@ -32,7 +33,7 @@ use {
     solana_streamer::quic::{spawn_server, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
     std::{
         collections::HashMap,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread,
         time::Duration,
@@ -59,6 +60,7 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
+    mev_stage: MevStage,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -93,6 +95,7 @@ impl Tpu {
         cluster_confirmed_slot_sender: GossipDuplicateConfirmedSlotsSender,
         cost_model: &Arc<RwLock<CostModel>>,
         keypair: &Keypair,
+        validator_interface_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -102,6 +105,7 @@ impl Tpu {
             transactions_quic: transactions_quic_sockets,
         } = sockets;
 
+        let (packet_intercept_sender, packet_intercept_receiver) = unbounded();
         let (packet_sender, packet_receiver) = unbounded();
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let fetch_stage = FetchStage::new_with_sender(
@@ -109,7 +113,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit,
-            &packet_sender,
+            &packet_intercept_sender,
             &vote_packet_sender,
             poh_recorder,
             tpu_coalesce_ms,
@@ -147,7 +151,7 @@ impl Tpu {
             transactions_quic_sockets,
             keypair,
             cluster_info.my_contact_info().tpu.ip(),
-            packet_sender,
+            packet_intercept_sender,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_IP,
             staked_nodes,
@@ -158,7 +162,11 @@ impl Tpu {
 
         let sigverify_stage = {
             let verifier = TransactionSigVerifier::default();
-            SigVerifyStage::new(find_packet_sender_stake_receiver, verified_sender, verifier)
+            SigVerifyStage::new(
+                find_packet_sender_stake_receiver,
+                verified_sender.clone(),
+                verifier,
+            )
         };
 
         let (verified_tpu_vote_packets_sender, verified_tpu_vote_packets_receiver) = unbounded();
@@ -171,6 +179,15 @@ impl Tpu {
                 verifier,
             )
         };
+
+        // MEV TPU proxy packet injection
+        let mev_stage = MevStage::new(
+            cluster_info,
+            validator_interface_address,
+            verified_sender,
+            packet_intercept_receiver,
+            packet_sender,
+        );
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
             unbounded();
@@ -216,6 +233,7 @@ impl Tpu {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
+            mev_stage,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -252,6 +270,7 @@ impl Tpu {
             self.find_packet_sender_stake_stage.join(),
             self.vote_find_packet_sender_stake_stage.join(),
             self.staked_nodes_updater_service.join(),
+            self.mev_stage.join(),
         ];
         self.tpu_quic_t.join()?;
         let broadcast_result = self.broadcast_stage.join();
