@@ -64,6 +64,7 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         runtime_config: config.runtime_config.clone(),
         validator_interface_address: config.validator_interface_address.clone(),
         tip_program_pubkey: config.tip_program_pubkey.clone(),
+        shred_receiver_address: config.shred_receiver_address,
     }
 }
 
