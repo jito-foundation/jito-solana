@@ -192,7 +192,7 @@ impl MevStage {
                             }
                         }
                         recv(heartbeat_tick) -> _ => {
-                            if !heartbeat_received {
+                            if !heartbeat_received && (!fetch_connected || pending_disconnect) {
                                 warn!("heartbeat late, reconnecting fetch stage");
                                 fetch_connected = true;
                                 pending_disconnect = false;
@@ -204,6 +204,7 @@ impl MevStage {
                         recv(heartbeat_receiver) -> tpu_info => {
                             if let Ok((tpu_addr, tpu_forward_addr)) = tpu_info {
                                 heartbeats_received += 1;
+                                heartbeat_received = true;
                                 if fetch_connected && !pending_disconnect {
                                     info!("received heartbeat while fetch stage connected, pending disconnect after delay");
                                     pending_disconnect_ts = Instant::now();
@@ -214,9 +215,6 @@ impl MevStage {
                                     fetch_connected = false;
                                     pending_disconnect = false;
                                     Self::set_tpu_addresses(&cluster_info, tpu_addr, tpu_forward_addr);
-                                }
-                                if !fetch_connected {
-                                    heartbeat_received = true;
                                 }
                             } else {
                                 // see comment on heartbeat_sender clone in new()
@@ -314,12 +312,11 @@ impl MevStage {
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut backoff::BackoffStrategy,
     ) -> Result<()> {
-        let mut heartbeat_sent = false;
-
         let packet_receiver = client.subscribe_packets()?;
 
-        let mut first_heartbeat = true;
-        let heartbeat_receiver = tick(HEARTBEAT_TIMEOUT_MS);
+        let mut heartbeat_received = false;
+        let mut received_first_heartbeat = false;
+        let heartbeat_tick = tick(HEARTBEAT_TIMEOUT_MS);
 
         let metrics_tick = tick(METRICS_CADENCE_SEC);
         let mut total_msg_received = 0;
@@ -328,11 +325,14 @@ impl MevStage {
 
         loop {
             select! {
-                recv(heartbeat_receiver) -> _ => {
-                    if first_heartbeat {
+                recv(heartbeat_tick) -> _ => {
+                    if received_first_heartbeat {
                         backoff.reset();
+                    } else {
+                        warn!("waiting for first heartbeat");
                     }
-                    if !heartbeat_sent && !first_heartbeat {
+                    // Only disconnect if previously received heartbeat and then missed
+                    if !heartbeat_received && received_first_heartbeat {
                         warn!("heartbeat late, disconnecting");
                         datapoint_info!(
                             METRICS_NAME,
@@ -340,13 +340,15 @@ impl MevStage {
                         );
                         return Err(MevStageError::HeartbeatError);
                     }
-                    first_heartbeat = false;
-                    heartbeat_sent = false;
+                    heartbeat_received = false;
                 }
                 recv(packet_receiver) -> msg => {
                     let (batches_received, packets_received, is_heartbeat) =
                         Self::handle_packet(msg, verified_packet_sender, heartbeat_sender, &tpu, &tpu_fwd)?;
-                    heartbeat_sent |= is_heartbeat;
+                    heartbeat_received |= is_heartbeat;
+                    if is_heartbeat && !received_first_heartbeat {
+                        received_first_heartbeat = true;
+                    }
                     total_msg_received += 1;
                     total_batches_received += batches_received;
                     total_packets_received += packets_received;
