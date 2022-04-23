@@ -6912,6 +6912,7 @@ dependencies = [
  "prost 0.8.0",
  "prost-derive 0.8.0",
  "tokio",
+ "tokio-rustls 0.22.0",
  "tokio-stream",
  "tokio-util 0.6.9",
  "tower",
