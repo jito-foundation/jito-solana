@@ -33,7 +33,7 @@ use {
     solana_streamer::quic::{spawn_server, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
     std::{
         collections::HashMap,
-        net::{SocketAddr, UdpSocket},
+        net::UdpSocket,
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread,
         time::Duration,
@@ -95,7 +95,7 @@ impl Tpu {
         cluster_confirmed_slot_sender: GossipDuplicateConfirmedSlotsSender,
         cost_model: &Arc<RwLock<CostModel>>,
         keypair: &Keypair,
-        validator_interface_address: Option<SocketAddr>,
+        validator_interface_address: String,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,

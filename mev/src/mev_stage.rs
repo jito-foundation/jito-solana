@@ -64,7 +64,7 @@ const METRICS_NAME: &str = "mev_stage";
 impl MevStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
-        validator_interface_address: Option<SocketAddr>,
+        validator_interface_address: String,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
@@ -106,7 +106,7 @@ impl MevStage {
     }
 
     fn spawn_proxy_thread(
-        validator_interface_address: Option<SocketAddr>,
+        validator_interface_address: String,
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
         heartbeat_sender: Sender<HeartbeatEvent>,
@@ -114,18 +114,17 @@ impl MevStage {
         thread::Builder::new()
             .name("proxy_thread".into())
             .spawn(move || {
-                if validator_interface_address.is_none() {
-                    info!("no mev proxy address provided, exiting mev loop");
-                    datapoint_info!(METRICS_NAME, ("missing_proxy_addr", 1, i64));
+                if !validator_interface_address.contains("http") {
+                    info!("malformed or missing mev proxy address provided, exiting mev loop");
+                    datapoint_info!(METRICS_NAME, ("bad_proxy_addr", 1, i64));
                     return;
                 }
 
-                let addr = format!("http://{}", validator_interface_address.unwrap());
                 let mut backoff = BackoffStrategy::new();
 
                 loop {
                     if let Err(e) = Self::connect_and_stream(
-                        &addr,
+                        validator_interface_address.clone(),
                         &interceptor,
                         &heartbeat_sender,
                         &verified_packet_sender,
@@ -366,7 +365,7 @@ impl MevStage {
     }
 
     fn connect_and_stream(
-        validator_interface_address: &str,
+        validator_interface_address: String,
         auth_interceptor: &AuthenticationInjector,
         heartbeat_sender: &Sender<HeartbeatEvent>,
         verified_packet_sender: &Sender<Vec<PacketBatch>>,

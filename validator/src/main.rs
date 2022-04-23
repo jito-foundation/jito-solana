@@ -2519,12 +2519,8 @@ pub fn main() {
             bpf_jit: !matches.is_present("no_bpf_jit"),
             ..RuntimeConfig::default()
         },
-        validator_interface_address: solana_net_utils::parse_host_port(
-            matches
-                .value_of("validator_interface_address")
-                .unwrap_or(""),
-        )
-        .ok(),
+        validator_interface_address: value_of(&matches, "validator_interface_address")
+            .unwrap_or_default(),
         ..ValidatorConfig::default()
     };
 

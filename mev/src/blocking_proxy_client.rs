@@ -5,14 +5,18 @@ use {
     },
     crossbeam_channel::{unbounded, Receiver},
     solana_sdk::{pubkey::Pubkey, signature::Signature},
-    std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
+    std::{
+        fs::File,
+        io::{self, Read},
+        net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
+    },
     thiserror::Error,
     tokio::runtime::{Builder, Runtime},
     tonic::{
         codegen::{http::uri::InvalidUri, InterceptedService},
         metadata::MetadataValue,
         service::Interceptor,
-        transport::{Channel, Endpoint, Error},
+        transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Error},
         Status,
     },
 };
@@ -40,6 +44,8 @@ pub enum ProxyError {
     MissingTpuSocket(String),
     #[error("invalid tpu socket: {0}")]
     BadTpuSocket(#[from] AddrParseError),
+    #[error("missing tls cert: {0}")]
+    MissingTlsCert(#[from] io::Error),
 }
 
 pub type ProxyResult<T> = std::result::Result<T, ProxyError>;
@@ -47,12 +53,22 @@ pub type ProxyResult<T> = std::result::Result<T, ProxyError>;
 /// Blocking interface to the validator interface server
 impl BlockingProxyClient {
     pub fn new(
-        validator_interface_address: &str,
+        validator_interface_address: String,
         auth_interceptor: &AuthenticationInjector,
     ) -> ProxyResult<Self> {
         let rt = Builder::new_multi_thread().enable_all().build().unwrap();
-        let channel =
-            rt.block_on(Endpoint::from_shared(validator_interface_address.to_string())?.connect())?;
+        let mut validator_interface_endpoint =
+            Endpoint::from_shared(validator_interface_address.clone())?;
+        if validator_interface_address.as_str().contains("https") {
+            let mut buf = Vec::new();
+            File::open("/etc/ssl/certs/jito_ca.pem")?.read_to_end(&mut buf)?;
+            validator_interface_endpoint = validator_interface_endpoint.tls_config(
+                ClientTlsConfig::new()
+                    .domain_name("jito.wtf")
+                    .ca_certificate(Certificate::from_pem(buf)),
+            )?;
+        }
+        let channel = rt.block_on(validator_interface_endpoint.connect())?;
         let client = ValidatorInterfaceClient::with_interceptor(channel, auth_interceptor.clone());
         Ok(Self { rt, client })
     }
