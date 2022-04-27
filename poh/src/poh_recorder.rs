@@ -1176,7 +1176,7 @@ mod tests {
             }
 
             // All the cached ticks, plus the new tick above should have been flushed
-            assert_eq!(num_entries, num_new_ticks + 1);
+            assert_eq!(num_entries as u64, num_new_ticks + 1);
         }
         Blockstore::destroy(&ledger_path).unwrap();
     }
