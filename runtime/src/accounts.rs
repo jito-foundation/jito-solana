@@ -3888,6 +3888,4 @@ mod tests {
             ));
         }
     }
-
-    // TODO (LB): add tests for cached accounts
 }

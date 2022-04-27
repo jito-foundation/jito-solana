@@ -46,7 +46,7 @@ pub struct PacketLocator {
 /// Currently each banking_stage thread has a `UnprocessedPacketBatches` buffer to store
 /// PacketBatch's received from sigverify. Banking thread continuously scans the buffer
 /// to pick proper packets to add to the block.
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct UnprocessedPacketBatches(VecDeque<DeserializedPacketBatch>);
 
 impl std::ops::Deref for UnprocessedPacketBatches {

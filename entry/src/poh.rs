@@ -15,7 +15,7 @@ pub struct Poh {
     slot_start_time: Instant,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PohEntry {
     pub num_hashes: u64,
     pub hash: Hash,

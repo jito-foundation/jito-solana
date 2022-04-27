@@ -11,7 +11,6 @@ impl BundleScheduler {
         }
     }
 
-    // This and pop must be called from separate ends
     pub fn schedule_bundles(&mut self, bundles: Vec<Bundle>) {
         for bundle in bundles {
             self.bundles.push(bundle);
