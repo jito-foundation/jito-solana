@@ -191,6 +191,7 @@ impl Tpu {
             bundle_scheduler.clone(),
             packet_intercept_receiver,
             packet_sender,
+            exit.clone(),
         );
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
@@ -228,6 +229,7 @@ impl Tpu {
             replay_vote_sender,
             cost_model.clone(),
             bundle_scheduler,
+            exit.clone(),
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(

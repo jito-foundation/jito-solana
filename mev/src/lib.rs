@@ -36,7 +36,6 @@ pub mod mev_stage;
 
 const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
-// TODO (LB): need to have some error handling here to make sure packet size is what we expect
 // NOTE: last profiled at around 180ns
 pub fn proto_packet_to_packet(p: proto::packet::Packet) -> Packet {
     let mut data = [0; PACKET_DATA_SIZE];

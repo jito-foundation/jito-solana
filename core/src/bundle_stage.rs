@@ -1,6 +1,7 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
+use std::sync::atomic::{AtomicBool, Ordering};
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
@@ -95,6 +96,7 @@ impl BundleStage {
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
         bundle_scheduler: Arc<Mutex<BundleScheduler>>,
+        exit: Arc<AtomicBool>,
     ) -> Self {
         Self::start_bundle_thread(
             poh_recorder,
@@ -102,6 +104,7 @@ impl BundleStage {
             gossip_vote_sender,
             cost_model,
             bundle_scheduler,
+            exit,
         )
     }
 
@@ -112,6 +115,7 @@ impl BundleStage {
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
         bundle_scheduler: Arc<Mutex<BundleScheduler>>,
+        exit: Arc<AtomicBool>,
     ) -> Self {
         let poh_recorder = poh_recorder.clone();
 
@@ -126,6 +130,7 @@ impl BundleStage {
                     gossip_vote_sender,
                     0,
                     cost_model,
+                    exit,
                 );
             })
             .unwrap();
@@ -583,12 +588,16 @@ impl BundleStage {
         gossip_vote_sender: ReplayVoteSender,
         id: u32,
         cost_model: Arc<RwLock<CostModel>>,
+        exit: Arc<AtomicBool>,
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let slot_metrics_tracker = LeaderSlotMetricsTracker::new(id);
         let qos_service = QosService::new(cost_model, id);
 
         loop {
+            if exit.load(Ordering::Relaxed) {
+                break;
+            }
             let bundle = {
                 if let Some(bundle) = bundle_scheduler.lock().unwrap().pop() {
                     bundle

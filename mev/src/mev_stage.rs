@@ -2,6 +2,7 @@
 //! interface and streams packets from TPU proxy to the banking stage.
 //! It notifies the tpu_proxy_advertiser on connect/disconnect.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use {
     crate::{
         backoff::{self, BackoffStrategy},
@@ -73,6 +74,7 @@ impl MevStage {
         bundle_scheduler: Arc<Mutex<BundleScheduler>>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
+        exit: Arc<AtomicBool>,
     ) -> Self {
         let msg = b"Let's get this money!".to_vec();
         let keypair = cluster_info.keypair();
@@ -91,6 +93,7 @@ impl MevStage {
             // reference on self, prevents it from being dropped
             heartbeat_sender.clone(),
             bundle_scheduler,
+            exit.clone(),
         );
 
         // This thread is responsible for connecting and disconnecting the fetch stage to prevent
@@ -100,6 +103,7 @@ impl MevStage {
             packet_sender,
             heartbeat_receiver,
             cluster_info,
+            exit.clone(),
         );
 
         info!("started mev stage");
@@ -117,6 +121,7 @@ impl MevStage {
         verified_packet_sender: Sender<Vec<PacketBatch>>,
         heartbeat_sender: Sender<HeartbeatEvent>,
         bundle_scheduler: Arc<Mutex<BundleScheduler>>,
+        exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::Builder::new()
             .name("proxy_thread".into())
@@ -130,6 +135,9 @@ impl MevStage {
                 let mut backoff = BackoffStrategy::new();
 
                 loop {
+                    if exit.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if let Err(e) = Self::connect_and_stream(
                         validator_interface_address.clone(),
                         &interceptor,
@@ -137,6 +145,7 @@ impl MevStage {
                         &verified_packet_sender,
                         &mut backoff,
                         &bundle_scheduler,
+                        &exit,
                     ) {
                         error!("spawn_proxy_thread error [error: {:?}]", e);
                         datapoint_info!(METRICS_NAME, ("proxy_connection_error", 1, i64));
@@ -164,6 +173,7 @@ impl MevStage {
         packet_sender: Sender<PacketBatch>,
         heartbeat_receiver: Receiver<HeartbeatEvent>,
         cluster_info: &Arc<ClusterInfo>,
+        exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         let cluster_info = cluster_info.clone();
         thread::Builder::new()
@@ -199,6 +209,9 @@ impl MevStage {
                             }
                         }
                         recv(heartbeat_tick) -> _ => {
+                            if exit.load(Ordering::Relaxed) {
+                                break;
+                            }
                             if !heartbeat_received && (!fetch_connected || pending_disconnect) {
                                 warn!("heartbeat late, reconnecting fetch stage");
                                 fetch_connected = true;
@@ -346,6 +359,7 @@ impl MevStage {
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut backoff::BackoffStrategy,
         bundle_scheduler: &Arc<Mutex<BundleScheduler>>,
+        exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let packet_receiver = client.subscribe_packets()?;
         let bundle_receiver = client.subscribe_bundles()?;
@@ -362,6 +376,10 @@ impl MevStage {
         loop {
             select! {
                 recv(heartbeat_tick) -> _ => {
+                    if exit.load(Ordering::Relaxed) {
+                        return Err(MevStageError::HeartbeatError);
+                    }
+
                     if received_first_heartbeat {
                         backoff.reset();
                     } else {
@@ -422,6 +440,7 @@ impl MevStage {
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut BackoffStrategy,
         bundle_scheduler: &Arc<Mutex<BundleScheduler>>,
+        exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let mut client = BlockingProxyClient::new(validator_interface_address, auth_interceptor)?;
         let (tpu, tpu_fwd) = client.fetch_tpu_config()?;
@@ -434,6 +453,7 @@ impl MevStage {
             verified_packet_sender,
             backoff,
             bundle_scheduler,
+            exit,
         )
     }
 
