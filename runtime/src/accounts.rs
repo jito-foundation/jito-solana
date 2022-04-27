@@ -1,3 +1,4 @@
+use crate::account_overrides::AccountWithRentInfo;
 use {
     crate::{
         account_overrides::AccountOverrides,
@@ -243,7 +244,6 @@ impl Accounts {
         rent_collector: &RentCollector,
         feature_set: &FeatureSet,
         account_overrides: Option<&AccountOverrides>,
-        cached_accounts: Option<&HashMap<Pubkey, AccountSharedData>>,
     ) -> Result<LoadedTransaction> {
         // Copy all the accounts
         let message = tx.message();
@@ -278,26 +278,25 @@ impl Accounts {
                         let (account, rent) = if let Some(account_override) =
                             account_overrides.and_then(|overrides| overrides.get(key))
                         {
-                            (account_override.clone(), 0)
-                        }
-                        // else if let Some(mut cached_account) =
-                        //     cached_accounts.and_then(|cache| cache.get(key))
-                        // {
-                        //     let rent_due = if message.is_writable(i) {
-                        //         let rent_due = rent_collector
-                        //             .collect_from_existing_account(
-                        //                 key,
-                        //                 &mut cached_account,
-                        //                 self.accounts_db.filler_account_suffix.as_ref(),
-                        //             )
-                        //             .rent_amount;
-                        //         rent_due
-                        //     } else {
-                        //         0
-                        //     };
-                        //     (cached_account.clone(), rent_due)
-                        // }
-                        else {
+                            match account_override {
+                                AccountWithRentInfo::Zero(data) => (data.clone(), 0),
+                                AccountWithRentInfo::SubtractRent(mut data) => {
+                                    let rent_due = if message.is_writable(i) {
+                                        let rent_due = rent_collector
+                                            .collect_from_existing_account(
+                                                key,
+                                                &mut data,
+                                                self.accounts_db.filler_account_suffix.as_ref(),
+                                            )
+                                            .rent_amount;
+                                        rent_due
+                                    } else {
+                                        0
+                                    };
+                                    (data.clone(), rent_due)
+                                }
+                            }
+                        } else {
                             self.accounts_db
                                 .load_with_fixed_root(ancestors, key)
                                 .map(|(mut account, _)| {
@@ -315,33 +314,6 @@ impl Accounts {
                                     }
                                 })
                                 .unwrap_or_default()
-                            // =======
-                            //                         let cached_account =
-                            //                             cached_accounts.unwrap_or(&HashMap::new()).get(key).cloned();
-                            //                         let (account, rent) = {
-                            //                             let account = match cached_account {
-                            //                                 None => self
-                            //                                     .accounts_db
-                            //                                     .load_with_fixed_root(ancestors, key)
-                            //                                     .map(|(account, _)| account),
-                            //                                 Some(acc) => Some(acc),
-                            //                             };
-                            //
-                            //                             account
-                            //                                 .map(|mut acc| {
-                            //                                     return if message.is_writable(i) {
-                            //                                         let rent = rent_collector
-                            //                                             .collect_from_existing_account(
-                            //                                                 key,
-                            //                                                 &mut acc,
-                            //                                                 self.accounts_db.filler_account_suffix.as_ref(),
-                            //                                             )
-                            //                                             .rent_amount;
-                            //                                         (acc, rent)
-                            //                                     } else {
-                            //                                         (acc, 0)
-                            //                                     };
-                            // >>>>>>> c39c1f6f4 (TPU Proxy and Bundles)
                         };
 
                         if bpf_loader_upgradeable::check_id(account.owner()) {
@@ -554,7 +526,6 @@ impl Accounts {
         feature_set: &FeatureSet,
         fee_structure: &FeeStructure,
         account_overrides: Option<&AccountOverrides>,
-        cached_accounts: Option<&HashMap<Pubkey, AccountSharedData>>,
     ) -> Vec<TransactionLoadResult> {
         txs.iter()
             .zip(lock_results)
@@ -585,7 +556,6 @@ impl Accounts {
                         rent_collector,
                         feature_set,
                         account_overrides,
-                        cached_accounts,
                     ) {
                         Ok(loaded_transaction) => loaded_transaction,
                         Err(e) => return (Err(e), None),

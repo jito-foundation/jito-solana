@@ -1,6 +1,7 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
+use solana_runtime::account_overrides::AccountOverrides;
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
@@ -317,7 +318,10 @@ impl BundleStage {
         let mut chunk_start = 0;
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
-        let mut cached_accounts = HashMap::with_capacity(20);
+        let mut cached_accounts = AccountOverrides {
+            slot_history: None,
+            cached_accounts_with_rent: HashMap::with_capacity(20),
+        };
 
         let mut execution_results = Vec::new();
         let mut mint_decimals: HashMap<Pubkey, u8> = HashMap::new();
@@ -368,7 +372,7 @@ impl BundleStage {
                     // TODO: Banking stage threads should be prioritized to complete faster then this queue
                     // expires.
                     let pre_balances = if transaction_status_sender.is_some() {
-                        collect_balances_with_cache(&batch, bank, &cached_accounts)
+                        collect_balances_with_cache(&batch, bank, Some(&cached_accounts))
                     } else {
                         vec![]
                     };
@@ -399,7 +403,6 @@ impl BundleStage {
                         transaction_status_sender.is_some(),
                         transaction_status_sender.is_some(),
                         &mut execute_and_commit_timings.execute_timings,
-                        None, // TODO (LB): fix
                         Some(&cached_accounts),
                     )
                 },
@@ -431,7 +434,7 @@ impl BundleStage {
             let ((post_balances, post_token_balances), _) = Measure::this(
                 |_| {
                     let pre_balances = if transaction_status_sender.is_some() {
-                        collect_balances_with_cache(&batch, bank, &cached_accounts)
+                        collect_balances_with_cache(&batch, bank, Some(&cached_accounts))
                     } else {
                         vec![]
                     };
@@ -529,12 +532,12 @@ impl BundleStage {
         txs: &[SanitizedTransaction],
         res: &[TransactionExecutionResult],
         loaded: &mut [TransactionLoadResult],
-        cached_accounts: &mut HashMap<Pubkey, AccountSharedData>,
+        cached_accounts: &mut AccountOverrides,
     ) {
         let accounts = bank.collect_accounts_to_store(txs, res, loaded);
         // info!("caching accounts {:?}", accounts);
         for (pubkey, data) in accounts {
-            cached_accounts.insert(*pubkey, data.clone());
+            cached_accounts.put(*pubkey, data.clone());
         }
     }
 

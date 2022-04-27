@@ -3876,7 +3876,6 @@ impl Bank {
             true,
             &mut timings,
             Some(&account_overrides),
-            None,
         );
 
         let post_simulation_accounts = loaded_transactions
@@ -4291,7 +4290,6 @@ impl Bank {
         enable_return_data_recording: bool,
         timings: &mut ExecuteTimings,
         account_overrides: Option<&AccountOverrides>,
-        cached_accounts: Option<&HashMap<Pubkey, AccountSharedData>>,
     ) -> LoadAndExecuteTransactionsOutput {
         let sanitized_txs = batch.sanitized_transactions();
         debug!("processing transactions: {}", sanitized_txs.len());
@@ -4336,7 +4334,6 @@ impl Bank {
             &self.feature_set,
             &self.fee_structure,
             account_overrides,
-            cached_accounts,
         );
         load_time.stop();
         // debug!("loaded txs: {:?}", loaded_transactions);
@@ -5671,7 +5668,6 @@ impl Bank {
             enable_log_recording,
             enable_return_data_recording,
             timings,
-            None,
             None,
         );
 

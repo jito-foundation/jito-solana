@@ -1,3 +1,4 @@
+use solana_runtime::account_overrides::AccountOverrides;
 use {
     crate::TransactionTokenBalance,
     solana_account_decoder::parse_token::{
@@ -62,16 +63,25 @@ fn get_mint_decimals(bank: &Bank, mint: &Pubkey) -> Option<u8> {
 pub fn collect_balances_with_cache(
     batch: &TransactionBatch,
     bank: &Arc<Bank>,
-    cached_accounts: &HashMap<Pubkey, AccountSharedData>,
+    account_overrides: Option<&AccountOverrides>,
 ) -> TransactionBalances {
     let mut balances: TransactionBalances = vec![];
     for transaction in batch.sanitized_transactions() {
         let mut transaction_balances: Vec<u64> = vec![];
         for account_key in transaction.message().account_keys().iter() {
-            let balance = match cached_accounts.get(account_key) {
-                Some(data) => Bank::read_balance(data),
-                None => bank.get_balance(account_key),
+            let balance = {
+                if let Some(account_override) = account_overrides
+                    .and_then(|overrides| overrides.get_ignore_rent_type(account_key))
+                {
+                    Bank::read_balance(account_override)
+                } else {
+                    bank.get_account(account_key)
+                        .map(|a| a.lamports())
+                        .or_else(|| Some(0))
+                        .unwrap()
+                }
             };
+
             transaction_balances.push(balance);
         }
         balances.push(transaction_balances);
@@ -83,7 +93,7 @@ pub fn collect_token_balances(
     bank: &Bank,
     batch: &TransactionBatch,
     mint_decimals: &mut HashMap<Pubkey, u8>,
-    cached_accounts: Option<&HashMap<Pubkey, AccountSharedData>>,
+    cached_accounts: Option<&AccountOverrides>,
 ) -> TransactionTokenBalances {
     let mut balances: TransactionTokenBalances = vec![];
     let mut collect_time = Measure::start("collect_token_balances");
@@ -142,14 +152,16 @@ fn collect_token_balance_from_account(
     bank: &Bank,
     account_id: &Pubkey,
     mint_decimals: &mut HashMap<Pubkey, u8>,
-    cached_accounts: Option<&HashMap<Pubkey, AccountSharedData>>,
+    account_overrides: Option<&AccountOverrides>,
 ) -> Option<TokenBalanceData> {
-    let account = match cached_accounts
-        .unwrap_or(&HashMap::default())
-        .get(account_id)
-    {
-        None => bank.get_account(account_id),
-        Some(account) => Some(account.clone()),
+    let account = {
+        if let Some(account_override) =
+            account_overrides.and_then(|overrides| overrides.get_ignore_rent_type(account_id))
+        {
+            Some(account_override.clone())
+        } else {
+            bank.get_account(account_id)
+        }
     }?;
 
     if !is_known_spl_token_id(account.owner()) {
