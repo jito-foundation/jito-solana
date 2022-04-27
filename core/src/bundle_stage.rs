@@ -545,7 +545,7 @@ impl BundleStage {
         }
     }
 
-    /// Return an Error if a transaction was executed
+    /// Return an Error if a transaction wasn't executed
     fn check_all_executed_ok(
         execution_results: &[TransactionExecutionResult],
     ) -> BundleExecutionResult<()> {
