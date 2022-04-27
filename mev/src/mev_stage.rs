@@ -7,6 +7,7 @@ use {
         backoff::{self, BackoffStrategy},
         blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
         bundle::Bundle,
+        bundle_scheduler::BundleScheduler,
         proto::validator_interface::{
             subscribe_packets_response::Msg, SubscribeBundlesResponse, SubscribePacketsResponse,
         },
@@ -20,7 +21,7 @@ use {
     solana_sdk::{signature::Signature, signer::Signer},
     std::{
         net::SocketAddr,
-        sync::Arc,
+        sync::{Arc, Mutex},
         thread::{self, JoinHandle},
         time::Duration,
     },
@@ -69,7 +70,7 @@ impl MevStage {
         cluster_info: &Arc<ClusterInfo>,
         validator_interface_address: String,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
-        bundle_sender: Sender<Vec<Bundle>>,
+        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
     ) -> Self {
@@ -89,7 +90,7 @@ impl MevStage {
             // in heartbeat thread and causes packet forwarding to error. this clone, along with the
             // reference on self, prevents it from being dropped
             heartbeat_sender.clone(),
-            bundle_sender,
+            bundle_scheduler,
         );
 
         // This thread is responsible for connecting and disconnecting the fetch stage to prevent
@@ -115,7 +116,7 @@ impl MevStage {
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
         heartbeat_sender: Sender<HeartbeatEvent>,
-        bundle_sender: Sender<Vec<Bundle>>,
+        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
     ) -> JoinHandle<()> {
         thread::Builder::new()
             .name("proxy_thread".into())
@@ -135,7 +136,7 @@ impl MevStage {
                         &heartbeat_sender,
                         &verified_packet_sender,
                         &mut backoff,
-                        &bundle_sender,
+                        &bundle_scheduler,
                     ) {
                         error!("spawn_proxy_thread error [error: {:?}]", e);
                         datapoint_info!(METRICS_NAME, ("proxy_connection_error", 1, i64));
@@ -315,7 +316,7 @@ impl MevStage {
             std::result::Result<Option<SubscribeBundlesResponse>, Status>,
             RecvError,
         >,
-        bundle_sender: &Sender<Vec<Bundle>>,
+        bundle_scheduler: &Arc<Mutex<BundleScheduler>>,
     ) -> Result<()> {
         match msg {
             Ok(msg) => {
@@ -330,9 +331,7 @@ impl MevStage {
                         Bundle { batch }
                     })
                     .collect();
-                bundle_sender
-                    .send(bundles)
-                    .map_err(|_| MevStageError::ChannelError)?;
+                bundle_scheduler.lock().unwrap().schedule_bundles(bundles);
             }
             Err(_) => return Err(MevStageError::ChannelError),
         }
@@ -346,7 +345,7 @@ impl MevStage {
         tpu_fwd: SocketAddr,
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut backoff::BackoffStrategy,
-        bundle_sender: &Sender<Vec<Bundle>>,
+        bundle_scheduler: &Arc<Mutex<BundleScheduler>>,
     ) -> Result<()> {
         let packet_receiver = client.subscribe_packets()?;
         let bundle_receiver = client.subscribe_bundles()?;
@@ -391,7 +390,7 @@ impl MevStage {
                     total_packets_received += packets_received;
                 }
                 recv(bundle_receiver) -> msg => {
-                    let _ = Self::handle_bundle(msg, bundle_sender)?;
+                    let _ = Self::handle_bundle(msg, bundle_scheduler)?;
                 }
                 recv(packet_receiver) -> msg => {
                     let (batches_received, packets_received, is_heartbeat) =
@@ -422,7 +421,7 @@ impl MevStage {
         heartbeat_sender: &Sender<HeartbeatEvent>,
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut BackoffStrategy,
-        bundle_sender: &Sender<Vec<Bundle>>,
+        bundle_scheduler: &Arc<Mutex<BundleScheduler>>,
     ) -> Result<()> {
         let mut client = BlockingProxyClient::new(validator_interface_address, auth_interceptor)?;
         let (tpu, tpu_fwd) = client.fetch_tpu_config()?;
@@ -434,7 +433,7 @@ impl MevStage {
             tpu_fwd,
             verified_packet_sender,
             backoff,
-            bundle_sender,
+            bundle_scheduler,
         )
     }
 

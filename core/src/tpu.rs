@@ -1,11 +1,11 @@
 //! The `tpu` module implements the Transaction Processing Unit, a
 //! multi-stage transaction processing pipeline in software.
 
-use crate::bundle_stage::BundleStage;
 use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
+        bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
             GossipVerifiedVoteHashSender, VerifiedVoteSender, VoteTracker,
@@ -19,7 +19,7 @@ use {
     crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
-    solana_mev::mev_stage::MevStage,
+    solana_mev::{bundle_scheduler::BundleScheduler, mev_stage::MevStage},
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
         optimistically_confirmed_bank_tracker::BankNotificationSender,
@@ -182,12 +182,13 @@ impl Tpu {
             )
         };
 
-        let (bundle_sender, bundle_rx) = unbounded();
+        let bundle_scheduler = Arc::new(Mutex::new(BundleScheduler::new()));
+
         let mev_stage = MevStage::new(
             cluster_info,
             validator_interface_address,
             verified_sender,
-            bundle_sender,
+            bundle_scheduler.clone(),
             packet_intercept_receiver,
             packet_sender,
         );
@@ -226,7 +227,7 @@ impl Tpu {
             transaction_status_sender,
             replay_vote_sender,
             cost_model.clone(),
-            bundle_rx,
+            bundle_scheduler,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(

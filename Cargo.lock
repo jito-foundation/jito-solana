@@ -5278,6 +5278,7 @@ dependencies = [
  "crossbeam-channel",
  "futures 0.3.21",
  "futures-util",
+ "indexmap",
  "log",
  "prost 0.8.0",
  "prost-types 0.8.0",
@@ -5290,6 +5291,7 @@ dependencies = [
  "tokio-stream",
  "tonic 0.5.2",
  "tonic-build 0.5.2",
+ "uuid",
 ]
 
 [[package]]
@@ -7225,6 +7227,15 @@ name = "utf8-width"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5190c9442dcdaf0ddd50f37420417d219ae5261bbf5db120d0f9bab996c9cba1"
+
+[[package]]
+name = "uuid"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cfcd319456c4d6ea10087ed423473267e1a071f3bc0aa89f80d60997843c6f0"
+dependencies = [
+ "getrandom 0.2.6",
+]
 
 [[package]]
 name = "valuable"

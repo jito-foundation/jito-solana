@@ -8,11 +8,10 @@ use {
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService, unprocessed_packet_batches::*,
     },
-    crossbeam_channel::Receiver,
     solana_entry::entry::hash_transactions,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
-    solana_mev::bundle::Bundle,
+    solana_mev::{bundle::Bundle, bundle_scheduler::BundleScheduler},
     solana_perf::{
         cuda_runtime::PinnedVec,
         packet::{limited_deserialize, Packet, PacketBatch},
@@ -51,8 +50,8 @@ use {
     std::{
         collections::HashMap,
         sync::{Arc, Mutex, RwLock},
-        thread::{self, Builder, JoinHandle},
-        time::Instant,
+        thread::{self, sleep, Builder, JoinHandle},
+        time::{Duration, Instant},
     },
     thiserror::Error,
 };
@@ -95,14 +94,14 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_receiver: Receiver<Vec<Bundle>>,
+        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
     ) -> Self {
         Self::start_bundle_thread(
             poh_recorder,
             transaction_status_sender,
             gossip_vote_sender,
             cost_model,
-            bundle_receiver,
+            bundle_scheduler,
         )
     }
 
@@ -112,7 +111,7 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_receiver: Receiver<Vec<Bundle>>,
+        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
     ) -> Self {
         let poh_recorder = poh_recorder.clone();
 
@@ -123,7 +122,7 @@ impl BundleStage {
                 Self::bundle_stage(
                     &poh_recorder,
                     transaction_status_sender,
-                    bundle_receiver,
+                    bundle_scheduler,
                     gossip_vote_sender,
                     0,
                     cost_model,
@@ -578,7 +577,7 @@ impl BundleStage {
     fn bundle_stage(
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
-        bundle_receiver: Receiver<Vec<Bundle>>,
+        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
         gossip_vote_sender: ReplayVoteSender,
         id: u32,
         cost_model: Arc<RwLock<CostModel>>,
@@ -588,12 +587,15 @@ impl BundleStage {
         let qos_service = QosService::new(cost_model, id);
 
         loop {
-            let bundles = bundle_receiver.recv();
-            if let Err(_) = bundles {
-                debug!("channel disconnected, exiting");
-                break;
-            }
-            let bundles = bundles.unwrap();
+            let bundle = {
+                if let Some(bundle) = bundle_scheduler.lock().unwrap().pop() {
+                    bundle
+                } else {
+                    sleep(Duration::from_millis(1));
+                    continue;
+                }
+            };
+            let bundles = vec![bundle];
 
             // Skip execution of bundles if not leader yet
             let poh_recorder_bank = poh_recorder.lock().unwrap().get_poh_recorder_bank();
