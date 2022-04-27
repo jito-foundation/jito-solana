@@ -1,7 +1,6 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use solana_runtime::account_overrides::AccountOverrides;
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
@@ -23,6 +22,7 @@ use {
         Record, TransactionRecorder,
     },
     solana_runtime::{
+        account_overrides::AccountOverrides,
         accounts::TransactionLoadResult,
         bank::{
             Bank, LoadAndExecuteTransactionsOutput, TransactionBalances, TransactionBalancesSet,
@@ -34,7 +34,6 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
-        account::AccountSharedData,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         message::Message,

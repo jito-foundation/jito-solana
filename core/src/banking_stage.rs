@@ -2119,7 +2119,7 @@ mod tests {
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
         solana_address_lookup_table_program::state::{AddressLookupTable, LookupTableMeta},
-        solana_entry::entry::{next_entry, next_versioned_entry, Entry, EntrySlice},
+        solana_entry::entry::{next_entry, next_versioned_entry, EntrySlice},
         solana_gossip::{cluster_info::Node, contact_info::ContactInfo},
         solana_ledger::{
             blockstore::{entries_to_test_shreds, Blockstore},
@@ -2129,7 +2129,7 @@ mod tests {
         },
         solana_perf::packet::{limited_deserialize, to_packet_batches, PacketFlags},
         solana_poh::{
-            poh_recorder::{create_test_recorder, Record, WorkingBankEntry},
+            poh_recorder::{create_test_recorder, RecordReceiver, WorkingBankEntry},
             poh_service::PohService,
         },
         solana_program_runtime::timings::ProgramTiming,
@@ -2259,7 +2259,13 @@ mod tests {
             trace!("getting entries");
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .map(|(_bank, (entry, _tick_height))| entry)
+                .map(
+                    |WorkingBankEntry {
+                         bank: _,
+                         entries_ticks,
+                     }| entries_ticks.into_iter().map(|e| e.0),
+                )
+                .flatten()
                 .collect();
             trace!("done");
             assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
@@ -2373,9 +2379,15 @@ mod tests {
             bank.process_transaction(&fund_tx).unwrap();
             //receive entries + ticks
             loop {
-                let entries: Vec<Entry> = entry_receiver
+                let entries: Vec<_> = entry_receiver
                     .iter()
-                    .map(|(_bank, (entry, _tick_height))| entry)
+                    .map(
+                        |WorkingBankEntry {
+                             bank: _,
+                             entries_ticks,
+                         }| entries_ticks.into_iter().map(|e| e.0),
+                    )
+                    .flatten()
                     .collect();
 
                 assert!(entries.verify(&blockhash));
@@ -2491,7 +2503,13 @@ mod tests {
             // check that the balance is what we expect.
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .map(|(_bank, (entry, _tick_height))| entry)
+                .map(
+                    |WorkingBankEntry {
+                         bank: _,
+                         entries_ticks,
+                     }| entries_ticks.into_iter().map(|e| e.0),
+                )
+                .flatten()
                 .collect();
 
             let bank = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
@@ -2559,7 +2577,12 @@ mod tests {
             ];
 
             let _ = BankingStage::record_transactions(bank.slot(), txs.clone(), &recorder);
-            let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
+            let WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            } = entry_receiver.recv().unwrap();
+            assert_eq!(entries_ticks.len(), 1);
+            let entry = entries_ticks.get(0).unwrap().0.clone();
             assert_eq!(entry.transactions, txs);
 
             // Once bank is set to a new bank (setting bank.slot() + 1 in record_transactions),
@@ -2802,7 +2825,13 @@ mod tests {
 
             let mut done = false;
             // read entries until I find mine, might be ticks...
-            while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
+            while let Ok(WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            }) = entry_receiver.recv()
+            {
+                assert_eq!(entries_ticks.len(), 1);
+                let entry = entries_ticks.get(0).unwrap().0.clone();
                 if !entry.is_tick() {
                     trace!("got entry");
                     assert_eq!(entry.transactions.len(), transactions.len());
@@ -3071,7 +3100,7 @@ mod tests {
     }
 
     fn simulate_poh(
-        record_receiver: CrossbeamReceiver<Record>,
+        record_receiver: RecordReceiver,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
     ) -> JoinHandle<()> {
         let poh_recorder = poh_recorder.clone();

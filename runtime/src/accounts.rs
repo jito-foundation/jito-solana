@@ -1,7 +1,6 @@
-use crate::account_overrides::AccountWithRentInfo;
 use {
     crate::{
-        account_overrides::AccountOverrides,
+        account_overrides::{AccountOverrides, AccountWithRentInfo},
         account_rent_state::{check_rent_state_with_account, RentState},
         accounts_db::{
             AccountShrinkThreshold, AccountsAddRootTiming, AccountsDb, AccountsDbConfig,
