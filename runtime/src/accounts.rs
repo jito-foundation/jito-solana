@@ -3121,7 +3121,6 @@ mod tests {
             &FeatureSet::all_enabled(),
             &FeeStructure::default(),
             account_overrides,
-            None,
         )
     }
 
