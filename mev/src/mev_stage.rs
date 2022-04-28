@@ -415,17 +415,6 @@ impl MevStage {
                 recv(bundle_receiver) -> msg => {
                     let _ = Self::handle_bundle(msg, bundle_sender)?;
                 }
-                recv(packet_receiver) -> msg => {
-                    let (batches_received, packets_received, is_heartbeat) =
-                        Self::handle_packet(msg, verified_packet_sender, heartbeat_sender, &tpu, &tpu_fwd)?;
-                    heartbeat_received |= is_heartbeat;
-                    if is_heartbeat && !received_first_heartbeat {
-                        received_first_heartbeat = true;
-                    }
-                    total_msg_received += 1;
-                    total_batches_received += batches_received;
-                    total_packets_received += packets_received;
-                }
                 recv(metrics_tick) -> _ => {
                     datapoint_info!(
                         METRICS_NAME,
