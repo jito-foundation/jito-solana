@@ -1,14 +1,13 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use crate::qos_service::CommitTransactionDetails;
 use {
     crate::{
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
         leader_slot_banking_stage_timing_metrics::{
             LeaderExecuteAndCommitTimings, RecordTransactionsTimings,
         },
-        qos_service::QosService,
+        qos_service::{CommitTransactionDetails, QosService},
         unprocessed_packet_batches::*,
     },
     crossbeam_channel::{Receiver as CrossbeamReceiver, RecvTimeoutError},

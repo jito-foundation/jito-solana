@@ -1,13 +1,12 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use crate::qos_service::CommitTransactionDetails;
-use solana_program_runtime::timings::ExecuteTimings;
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
-        qos_service::QosService, unprocessed_packet_batches::*,
+        qos_service::{CommitTransactionDetails, QosService},
+        unprocessed_packet_batches::*,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_entry::entry::hash_transactions,
@@ -23,6 +22,7 @@ use {
         PohRecorderError::{self},
         Record, TransactionRecorder,
     },
+    solana_program_runtime::timings::ExecuteTimings,
     solana_runtime::{
         account_overrides::AccountOverrides,
         accounts::TransactionLoadResult,
