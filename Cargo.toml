@@ -28,6 +28,7 @@ members = [
     "genesis-utils",
     "geyser-plugin-interface",
     "geyser-plugin-manager",
+    "bench-get-confirmed-blocks-with-data",
     "gossip",
     "install",
     "mev",

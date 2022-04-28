@@ -137,6 +137,10 @@ pub enum TransactionError {
     /// Transaction would exceed total account data limit
     #[error("Transaction would exceed total account data limit")]
     WouldExceedAccountDataTotalLimit,
+
+    /// Bundle is not continuous
+    #[error("Bundle is not continuous")]
+    BundleNotContinuous,
 }
 
 impl From<SanitizeError> for TransactionError {

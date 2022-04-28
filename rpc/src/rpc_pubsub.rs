@@ -1,5 +1,4 @@
 //! The `pubsub` module implements a threaded subscription service on client RPC request
-
 use {
     crate::{
         rpc::check_is_at_least_confirmed,
@@ -522,8 +521,8 @@ impl RpcSolPubSubInternal for RpcSolPubSubImpl {
             return Err(Error::new(jsonrpc_core::ErrorCode::MethodNotFound));
         }
         let config = config.unwrap_or_default();
-        let commitment = config.commitment.unwrap_or_default();
-        check_is_at_least_confirmed(commitment)?;
+        check_is_at_least_confirmed(config.commitment.unwrap_or_default())?;
+
         let params = BlockSubscriptionParams {
             commitment: config.commitment.unwrap_or_default(),
             encoding: config.encoding.unwrap_or(UiTransactionEncoding::Base64),
