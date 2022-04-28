@@ -279,6 +279,8 @@ impl BundleStage {
         Ok(batch)
     }
 
+    // fn execute_chunk() {}
+
     /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
     ///
     /// Notes:
@@ -341,6 +343,7 @@ impl BundleStage {
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
 
+            // TODO (LB): need to double check QoS works the same as banking stage
             let (
                 (transactions_qos_results, cost_model_throttled_transactions_count),
                 _cost_model_time,
@@ -371,28 +374,13 @@ impl BundleStage {
 
             let ((pre_balances, pre_token_balances), _) = Measure::this(
                 |_| {
-                    // Use a shorter maximum age when adding transactions into the pipeline.  This will reduce
-                    // the likelihood of any single thread getting starved and processing old ids.
-                    // TODO: Banking stage threads should be prioritized to complete faster then this queue
-                    // expires.
-                    let pre_balances = if transaction_status_sender.is_some() {
-                        collect_balances_with_cache(&batch, bank, Some(&cached_accounts))
-                    } else {
-                        vec![]
-                    };
-
-                    let pre_token_balances = if transaction_status_sender.is_some() {
-                        collect_token_balances(
-                            bank,
-                            &batch,
-                            &mut mint_decimals,
-                            Some(&cached_accounts),
-                        )
-                    } else {
-                        vec![]
-                    };
-
-                    (pre_balances, pre_token_balances)
+                    Self::collect_balances(
+                        bank,
+                        &batch,
+                        &cached_accounts,
+                        transaction_status_sender,
+                        &mut mint_decimals,
+                    )
                 },
                 (),
                 "collect_balances",
@@ -437,24 +425,13 @@ impl BundleStage {
 
             let ((post_balances, post_token_balances), _) = Measure::this(
                 |_| {
-                    let pre_balances = if transaction_status_sender.is_some() {
-                        collect_balances_with_cache(&batch, bank, Some(&cached_accounts))
-                    } else {
-                        vec![]
-                    };
-
-                    let pre_token_balances = if transaction_status_sender.is_some() {
-                        collect_token_balances(
-                            bank,
-                            &batch,
-                            &mut mint_decimals,
-                            Some(&cached_accounts),
-                        )
-                    } else {
-                        vec![]
-                    };
-
-                    (pre_balances, pre_token_balances)
+                    Self::collect_balances(
+                        bank,
+                        &batch,
+                        &cached_accounts,
+                        transaction_status_sender,
+                        &mut mint_decimals,
+                    )
                 },
                 (),
                 "collect_balances",
@@ -545,6 +522,23 @@ impl BundleStage {
         }
     }
 
+    fn collect_balances(
+        bank: &Arc<Bank>,
+        batch: &TransactionBatch,
+        cached_accounts: &AccountOverrides,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        mint_decimals: &mut HashMap<Pubkey, u8>,
+    ) -> (TransactionBalances, TransactionTokenBalances) {
+        if transaction_status_sender.is_some() {
+            let balances = collect_balances_with_cache(&batch, bank, Some(&cached_accounts));
+            let token_balances =
+                collect_token_balances(bank, &batch, mint_decimals, Some(&cached_accounts));
+            (balances, token_balances)
+        } else {
+            (vec![], vec![])
+        }
+    }
+
     /// Return an Error if a transaction wasn't executed
     fn check_all_executed_ok(
         execution_results: &[TransactionExecutionResult],
@@ -591,6 +585,7 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
+        let slot_metrics_tracker = LeaderSlotMetricsTracker::new(id);
         let qos_service = QosService::new(cost_model, id);
 
         loop {
@@ -623,6 +618,9 @@ impl BundleStage {
             } = &*working_bank_start.unwrap();
 
             let bundle_txs = Self::get_bundle_txs(&bundle, working_bank);
+
+            // TODO (LB): lock QoS here
+
             match Self::execute_bundle(
                 bundle_txs,
                 working_bank,
@@ -636,6 +634,7 @@ impl BundleStage {
                     info!("bundle processed ok");
                 }
                 Err(e) => {
+                    // TODO (LB): undo executed QoS here?
                     error!("error recording bundle {:?}", e);
                 }
             }
