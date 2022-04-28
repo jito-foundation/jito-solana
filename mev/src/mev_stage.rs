@@ -442,7 +442,9 @@ impl MevStage {
         bundle_scheduler: &Arc<Mutex<BundleScheduler>>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
-        let mut client = BlockingProxyClient::new(validator_interface_address, auth_interceptor)?;
+        let mut client =
+            BlockingProxyClient::new(validator_interface_address.clone(), auth_interceptor)?;
+        info!("connected to mev_proxy at {}", validator_interface_address);
         let (tpu, tpu_fwd) = client.fetch_tpu_config()?;
 
         Self::stream_from_proxy(
