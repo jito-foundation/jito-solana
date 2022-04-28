@@ -6,7 +6,10 @@ use {
     crate::{
         backoff::{self, BackoffStrategy},
         blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
-        proto::validator_interface::{subscribe_packets_response::Msg, SubscribePacketsResponse},
+        bundle::Bundle,
+        proto::validator_interface::{
+            subscribe_packets_response::Msg, SubscribeBundlesResponse, SubscribePacketsResponse,
+        },
         proto_packet_to_packet,
     },
     crossbeam_channel::{select, tick, unbounded, Receiver, RecvError, Sender},
@@ -17,7 +20,10 @@ use {
     solana_sdk::{signature::Signature, signer::Signer},
     std::{
         net::SocketAddr,
-        sync::Arc,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
         thread::{self, JoinHandle},
         time::Duration,
     },
@@ -66,8 +72,10 @@ impl MevStage {
         cluster_info: &Arc<ClusterInfo>,
         validator_interface_address: String,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
+        bundle_sender: Sender<Bundle>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
+        exit: Arc<AtomicBool>,
     ) -> Self {
         let msg = b"Let's get this money!".to_vec();
         let keypair = cluster_info.keypair();
@@ -85,6 +93,8 @@ impl MevStage {
             // in heartbeat thread and causes packet forwarding to error. this clone, along with the
             // reference on self, prevents it from being dropped
             heartbeat_sender.clone(),
+            bundle_sender,
+            exit.clone(),
         );
 
         // This thread is responsible for connecting and disconnecting the fetch stage to prevent
@@ -94,6 +104,7 @@ impl MevStage {
             packet_sender,
             heartbeat_receiver,
             cluster_info,
+            exit.clone(),
         );
 
         info!("started mev stage");
@@ -110,6 +121,8 @@ impl MevStage {
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
         heartbeat_sender: Sender<HeartbeatEvent>,
+        bundle_sender: Sender<Bundle>,
+        exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::Builder::new()
             .name("proxy_thread".into())
@@ -123,12 +136,17 @@ impl MevStage {
                 let mut backoff = BackoffStrategy::new();
 
                 loop {
+                    if exit.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if let Err(e) = Self::connect_and_stream(
                         validator_interface_address.clone(),
                         &interceptor,
                         &heartbeat_sender,
                         &verified_packet_sender,
                         &mut backoff,
+                        &bundle_sender,
+                        &exit,
                     ) {
                         error!("spawn_proxy_thread error [error: {:?}]", e);
                         datapoint_info!(METRICS_NAME, ("proxy_connection_error", 1, i64));
@@ -156,6 +174,7 @@ impl MevStage {
         packet_sender: Sender<PacketBatch>,
         heartbeat_receiver: Receiver<HeartbeatEvent>,
         cluster_info: &Arc<ClusterInfo>,
+        exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         let cluster_info = cluster_info.clone();
         thread::Builder::new()
@@ -191,6 +210,9 @@ impl MevStage {
                             }
                         }
                         recv(heartbeat_tick) -> _ => {
+                            if exit.load(Ordering::Relaxed) {
+                                break;
+                            }
                             if !heartbeat_received && (!fetch_connected || pending_disconnect) {
                                 warn!("heartbeat late, reconnecting fetch stage");
                                 fetch_connected = true;
@@ -303,6 +325,37 @@ impl MevStage {
         Ok((batches_received, packets_received, is_heartbeat))
     }
 
+    fn handle_bundle(
+        msg: std::result::Result<
+            std::result::Result<Option<SubscribeBundlesResponse>, Status>,
+            RecvError,
+        >,
+        bundle_sender: &Sender<Bundle>,
+    ) -> Result<()> {
+        match msg {
+            Ok(msg) => {
+                let response = msg?.ok_or(MevStageError::GrpcStreamDisconnected)?;
+                let bundles: Vec<_> = response
+                    .bundles
+                    .into_iter()
+                    .map(|b| {
+                        let batch = PacketBatch::new(
+                            b.packets.into_iter().map(proto_packet_to_packet).collect(),
+                        );
+                        Bundle { batch }
+                    })
+                    .collect();
+                bundles.into_iter().for_each(|b| {
+                    if let Err(e) = bundle_sender.send(b) {
+                        error!("error forwarding bundle: {:?}", e);
+                    }
+                });
+            }
+            Err(_) => return Err(MevStageError::ChannelError),
+        }
+        Ok(())
+    }
+
     fn stream_from_proxy(
         mut client: BlockingProxyClient,
         heartbeat_sender: &Sender<HeartbeatEvent>,
@@ -310,8 +363,11 @@ impl MevStage {
         tpu_fwd: SocketAddr,
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut backoff::BackoffStrategy,
+        bundle_sender: &Sender<Bundle>,
+        exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let packet_receiver = client.subscribe_packets()?;
+        let bundle_receiver = client.subscribe_bundles()?;
 
         let mut heartbeat_received = false;
         let mut received_first_heartbeat = false;
@@ -325,6 +381,10 @@ impl MevStage {
         loop {
             select! {
                 recv(heartbeat_tick) -> _ => {
+                    if exit.load(Ordering::Relaxed) {
+                        return Err(MevStageError::HeartbeatError);
+                    }
+
                     if received_first_heartbeat {
                         backoff.reset();
                     } else {
@@ -352,6 +412,9 @@ impl MevStage {
                     total_batches_received += batches_received;
                     total_packets_received += packets_received;
                 }
+                recv(bundle_receiver) -> msg => {
+                    let _ = Self::handle_bundle(msg, bundle_sender)?;
+                }
                 recv(metrics_tick) -> _ => {
                     datapoint_info!(
                         METRICS_NAME,
@@ -370,8 +433,12 @@ impl MevStage {
         heartbeat_sender: &Sender<HeartbeatEvent>,
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut BackoffStrategy,
+        bundle_sender: &Sender<Bundle>,
+        exit: &Arc<AtomicBool>,
     ) -> Result<()> {
-        let mut client = BlockingProxyClient::new(validator_interface_address, auth_interceptor)?;
+        let mut client =
+            BlockingProxyClient::new(validator_interface_address.clone(), auth_interceptor)?;
+        info!("connected to mev_proxy at {}", validator_interface_address);
         let (tpu, tpu_fwd) = client.fetch_tpu_config()?;
 
         Self::stream_from_proxy(
@@ -381,6 +448,8 @@ impl MevStage {
             tpu_fwd,
             verified_packet_sender,
             backoff,
+            bundle_sender,
+            exit,
         )
     }
 

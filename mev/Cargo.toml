@@ -1,6 +1,6 @@
 [package]
 name = "solana-mev"
-version = "1.10.4"
+version = "1.11.0"
 description = "Solana MEV"
 authors = ["Jito Labs <team@jito.wtf>"]
 repository = "https://github.com/jito-labs/solana"
@@ -10,9 +10,10 @@ edition = "2021"
 
 [dependencies]
 bytes = "1.1.0"
-crossbeam-channel = "0.5.2"
+crossbeam-channel = "0.5.4"
 futures = "0.3.21"
 futures-util = "0.3.21"
+indexmap = "1.8.1"
 log = "0.4.14"
 prost = "0.8.0"
 prost-types = "0.8.0"
@@ -24,6 +25,7 @@ thiserror = "1.0.30"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1.8"
 tonic = { version="0.5.2", features = ["tls"] }
+uuid = { version="1.0.0" , features = ["v4"]}
 
 [build-dependencies]
 tonic-build = "0.5.2"

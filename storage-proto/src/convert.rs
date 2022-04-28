@@ -843,6 +843,9 @@ impl From<TransactionError> for tx_by_addr::TransactionError {
                 TransactionError::WouldExceedAccountDataTotalLimit => {
                     tx_by_addr::TransactionErrorType::WouldExceedAccountDataTotalLimit
                 }
+                TransactionError::BundleNotContinuous => {
+                    tx_by_addr::TransactionErrorType::BundleNotContinuous
+                }
             } as i32,
             instruction_error: match transaction_error {
                 TransactionError::InstructionError(index, ref instruction_error) => {
