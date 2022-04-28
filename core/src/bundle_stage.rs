@@ -1,6 +1,7 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
+use crossbeam_channel::{Receiver, RecvTimeoutError};
 use std::sync::atomic::{AtomicBool, Ordering};
 use {
     crate::{
@@ -12,7 +13,7 @@ use {
     solana_entry::entry::hash_transactions,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
-    solana_mev::{bundle::Bundle, bundle_scheduler::BundleScheduler},
+    solana_mev::bundle::Bundle,
     solana_perf::{
         cuda_runtime::PinnedVec,
         packet::{limited_deserialize, Packet, PacketBatch},
@@ -51,7 +52,7 @@ use {
     std::{
         collections::HashMap,
         sync::{Arc, Mutex, RwLock},
-        thread::{self, sleep, Builder, JoinHandle},
+        thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -95,7 +96,7 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
+        bundle_receiver: Receiver<Bundle>,
         exit: Arc<AtomicBool>,
     ) -> Self {
         Self::start_bundle_thread(
@@ -103,7 +104,7 @@ impl BundleStage {
             transaction_status_sender,
             gossip_vote_sender,
             cost_model,
-            bundle_scheduler,
+            bundle_receiver,
             exit,
         )
     }
@@ -114,7 +115,7 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
+        bundle_receiver: Receiver<Bundle>,
         exit: Arc<AtomicBool>,
     ) -> Self {
         let poh_recorder = poh_recorder.clone();
@@ -126,7 +127,7 @@ impl BundleStage {
                 Self::bundle_stage(
                     &poh_recorder,
                     transaction_status_sender,
-                    bundle_scheduler,
+                    bundle_receiver,
                     gossip_vote_sender,
                     0,
                     cost_model,
@@ -584,7 +585,7 @@ impl BundleStage {
     fn bundle_stage(
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
-        bundle_scheduler: Arc<Mutex<BundleScheduler>>,
+        bundle_receiver: Receiver<Bundle>,
         gossip_vote_sender: ReplayVoteSender,
         id: u32,
         cost_model: Arc<RwLock<CostModel>>,
@@ -599,23 +600,22 @@ impl BundleStage {
                 break;
             }
             let bundle = {
-                if let Some(bundle) = bundle_scheduler.lock().unwrap().pop() {
-                    bundle
-                } else {
-                    sleep(Duration::from_millis(1));
-                    continue;
+                match bundle_receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok(bundle) => bundle,
+                    Err(RecvTimeoutError::Timeout) => {
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        continue;
+                    }
                 }
             };
-            let bundles = vec![bundle];
 
             // Skip execution of bundles if not leader yet
             let poh_recorder_bank = poh_recorder.lock().unwrap().get_poh_recorder_bank();
             let working_bank_start = poh_recorder_bank.working_bank_start();
             if PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_none() {
-                error!(
-                    "dropping bundle, not leader yet [num_bundles={}]",
-                    bundles.len()
-                );
+                error!("dropping bundle, not leader yet");
                 continue;
             }
 
@@ -624,49 +624,45 @@ impl BundleStage {
                 bank_creation_time,
             } = &*working_bank_start.unwrap();
 
-            // Process + send one bundle at a time
-            // TODO (LB): probably want to lock all the other tx procesing pipelines (except votes) until this is done
-            for bundle in bundles {
-                let bundle_txs = Self::get_bundle_txs(bundle.clone(), working_bank);
-                match Self::execute_bundle(
-                    bundle_txs,
-                    working_bank,
-                    bank_creation_time,
-                    &recorder,
-                    &transaction_status_sender,
-                    &gossip_vote_sender,
-                    &qos_service,
-                    &slot_metrics_tracker,
-                ) {
-                    Ok(_) => {
-                        info!("bundle processed ok");
+            let bundle_txs = Self::get_bundle_txs(&bundle, working_bank);
+            match Self::execute_bundle(
+                bundle_txs,
+                working_bank,
+                bank_creation_time,
+                &recorder,
+                &transaction_status_sender,
+                &gossip_vote_sender,
+                &qos_service,
+                &slot_metrics_tracker,
+            ) {
+                Ok(_) => {
+                    info!("bundle processed ok");
+                }
+                Err(BundleExecutionError::BankNotProcessingTransactions) => {
+                    error!("bank not processing txs");
+                }
+                Err(BundleExecutionError::PohError(err)) => {
+                    error!("poh err: {:?}", err);
+                    // TODO (LB): might need bundles to be re-staged? TBD
+                    if matches!(err, PohRecorderError::MaxHeightReached) {
+                        error!("dropping the rest of the bundles");
+                        break;
                     }
-                    Err(BundleExecutionError::BankNotProcessingTransactions) => {
-                        error!("bank not processing txs");
-                    }
-                    Err(BundleExecutionError::PohError(err)) => {
-                        error!("poh err: {:?}", err);
-                        // TODO (LB): might need bundles to be re-staged? TBD
-                        if matches!(err, PohRecorderError::MaxHeightReached) {
-                            error!("dropping the rest of the bundles");
-                            break;
-                        }
-                    }
-                    Err(BundleExecutionError::NoRecordsToRecord) => {
-                        error!("no records to record");
-                    }
-                    Err(BundleExecutionError::TransactionFailure(e)) => {
-                        error!("transaction in bundle failed to execute: {}", e);
-                    }
-                    Err(BundleExecutionError::ExceedsCostModel) => {
-                        error!("bundle exceeded cost model");
-                    }
+                }
+                Err(BundleExecutionError::NoRecordsToRecord) => {
+                    error!("no records to record");
+                }
+                Err(BundleExecutionError::TransactionFailure(e)) => {
+                    error!("transaction in bundle failed to execute: {}", e);
+                }
+                Err(BundleExecutionError::ExceedsCostModel) => {
+                    error!("bundle exceeded cost model");
                 }
             }
         }
     }
 
-    fn get_bundle_txs(bundle: Bundle, bank: &Arc<Bank>) -> Vec<SanitizedTransaction> {
+    fn get_bundle_txs(bundle: &Bundle, bank: &Arc<Bank>) -> Vec<SanitizedTransaction> {
         let packet_indexes = Self::generate_packet_indexes(&bundle.batch.packets);
         let (transactions, _) = Self::transactions_from_packets(
             &bundle.batch,

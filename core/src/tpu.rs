@@ -19,7 +19,7 @@ use {
     crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
-    solana_mev::{bundle_scheduler::BundleScheduler, mev_stage::MevStage},
+    solana_mev::mev_stage::MevStage,
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
         optimistically_confirmed_bank_tracker::BankNotificationSender,
@@ -182,13 +182,13 @@ impl Tpu {
             )
         };
 
-        let bundle_scheduler = Arc::new(Mutex::new(BundleScheduler::new()));
+        let (bundle_sender, bundle_receiver) = unbounded();
 
         let mev_stage = MevStage::new(
             cluster_info,
             validator_interface_address,
             verified_sender,
-            bundle_scheduler.clone(),
+            bundle_sender,
             packet_intercept_receiver,
             packet_sender,
             exit.clone(),
@@ -228,7 +228,7 @@ impl Tpu {
             transaction_status_sender,
             replay_vote_sender,
             cost_model.clone(),
-            bundle_scheduler,
+            bundle_receiver,
             exit.clone(),
         );
 
