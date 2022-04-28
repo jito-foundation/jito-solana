@@ -318,7 +318,6 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
-        _slot_metrics_tracker: &LeaderSlotMetricsTracker,
     ) -> BundleExecutionResult<()> {
         let mut chunk_start = 0;
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
@@ -592,7 +591,6 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
-        let slot_metrics_tracker = LeaderSlotMetricsTracker::new(id);
         let qos_service = QosService::new(cost_model, id);
 
         loop {
@@ -606,7 +604,7 @@ impl BundleStage {
                         continue;
                     }
                     Err(RecvTimeoutError::Disconnected) => {
-                        continue;
+                        break;
                     }
                 }
             };
@@ -633,30 +631,12 @@ impl BundleStage {
                 &transaction_status_sender,
                 &gossip_vote_sender,
                 &qos_service,
-                &slot_metrics_tracker,
             ) {
                 Ok(_) => {
                     info!("bundle processed ok");
                 }
-                Err(BundleExecutionError::BankNotProcessingTransactions) => {
-                    error!("bank not processing txs");
-                }
-                Err(BundleExecutionError::PohError(err)) => {
-                    error!("poh err: {:?}", err);
-                    // TODO (LB): might need bundles to be re-staged? TBD
-                    if matches!(err, PohRecorderError::MaxHeightReached) {
-                        error!("dropping the rest of the bundles");
-                        break;
-                    }
-                }
-                Err(BundleExecutionError::NoRecordsToRecord) => {
-                    error!("no records to record");
-                }
-                Err(BundleExecutionError::TransactionFailure(e)) => {
-                    error!("transaction in bundle failed to execute: {}", e);
-                }
-                Err(BundleExecutionError::ExceedsCostModel) => {
-                    error!("bundle exceeded cost model");
+                Err(e) => {
+                    error!("error recording bundle {:?}", e);
                 }
             }
         }
