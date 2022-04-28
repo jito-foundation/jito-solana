@@ -305,6 +305,7 @@ impl BundleStage {
         let (transactions_qos_results, num_included) =
             qos_service.select_transactions_per_cost(transactions.iter(), tx_costs.iter(), bank);
 
+        // qos rate-limited a tx in here, drop the bundle
         if transactions.len().saturating_sub(num_included) > 0 {
             return Err(BundleExecutionError::ExceedsCostModel);
         }
@@ -333,16 +334,13 @@ impl BundleStage {
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
-            match Self::check_bundle_batch_ok(&batch) {
-                Ok(_) => {}
-                Err(e) => {
-                    QosService::remove_transaction_costs(
-                        tx_costs.iter(),
-                        transactions_qos_results.iter(),
-                        bank,
-                    );
-                    return Err(e);
-                }
+            if let Err(e) = Self::check_bundle_batch_ok(&batch) {
+                QosService::remove_transaction_costs(
+                    tx_costs.iter(),
+                    transactions_qos_results.iter(),
+                    bank,
+                );
+                return Err(e);
             }
 
             let ((pre_balances, pre_token_balances), _) = Measure::this(
@@ -376,20 +374,17 @@ impl BundleStage {
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
-            match Self::check_all_executed_ok(
+            if let Err(e) = Self::check_all_executed_ok(
                 &load_and_execute_transactions_output
                     .execution_results
                     .as_slice(),
             ) {
-                Ok(_) => {}
-                Err(e) => {
-                    QosService::remove_transaction_costs(
-                        tx_costs.iter(),
-                        transactions_qos_results.iter(),
-                        bank,
-                    );
-                    return Err(e);
-                }
+                QosService::remove_transaction_costs(
+                    tx_costs.iter(),
+                    transactions_qos_results.iter(),
+                    bank,
+                );
+                return Err(e);
             }
 
             // *********************************************************************************
@@ -449,7 +444,14 @@ impl BundleStage {
             Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        recorder.record(record)?; // TODO (LB): probably want to rollback QoS here?
+        if let Err(e) = recorder.record(record) {
+            QosService::remove_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+                bank,
+            );
+            return Err(e.into());
+        }
 
         for r in execution_results {
             let mut output = r.load_and_execute_tx_output;
