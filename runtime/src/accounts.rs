@@ -1107,16 +1107,10 @@ impl Accounts {
     pub fn lock_accounts_sequential_with_results<'a>(
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
-        results: impl Iterator<Item = Result<()>>,
         feature_set: &FeatureSet,
     ) -> Vec<Result<()>> {
-        let tx_account_locks_results: Vec<Result<_>> = txs
-            .zip(results)
-            .map(|(tx, result)| match result {
-                Ok(()) => tx.get_account_locks(feature_set),
-                Err(err) => Err(err),
-            })
-            .collect();
+        let tx_account_locks_results: Vec<Result<_>> =
+            txs.map(|tx| tx.get_account_locks(feature_set)).collect();
         self.lock_accounts_sequential_inner(tx_account_locks_results)
     }
 

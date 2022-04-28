@@ -1,6 +1,7 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
+use crate::qos_service::CommitTransactionDetails;
 use {
     crate::{
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
@@ -99,12 +100,6 @@ struct RecordTransactionsSummary {
     record_transactions_timings: RecordTransactionsTimings,
     // Result of trying to record the transactions into the PoH stream
     result: Result<(), PohRecorderError>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum CommitTransactionDetails {
-    Committed { compute_units: u64 },
-    NotCommitted,
 }
 
 pub struct ExecuteAndCommitTransactionsOutput {

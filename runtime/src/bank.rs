@@ -3816,14 +3816,12 @@ impl Bank {
     pub fn prepare_sequential_sanitized_batch_with_results<'a, 'b>(
         &'a self,
         transactions: &'b [SanitizedTransaction],
-        transaction_results: impl Iterator<Item = Result<()>>,
     ) -> TransactionBatch<'a, 'b> {
         // this lock_results could be: Ok, AccountInUse, BundleNotContinuous, AccountLoadedTwice, or TooManyAccountLocks
-        let lock_results = self.rc.accounts.lock_accounts_sequential_with_results(
-            transactions.iter(),
-            transaction_results,
-            &self.feature_set,
-        );
+        let lock_results = self
+            .rc
+            .accounts
+            .lock_accounts_sequential_with_results(transactions.iter(), &self.feature_set);
         TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
     }
 

@@ -3,7 +3,7 @@
 //! how transactions are included in blocks, and optimize those blocks.
 //!
 use {
-    crate::banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
+    crate::banking_stage::BatchedTransactionDetails,
     crossbeam_channel::{unbounded, Receiver, Sender},
     solana_measure::measure::Measure,
     solana_runtime::{
@@ -24,6 +24,12 @@ use {
         time::Duration,
     },
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommitTransactionDetails {
+    Committed { compute_units: u64 },
+    NotCommitted,
+}
 
 pub enum QosMetrics {
     BlockBatchUpdate { bank: Arc<Bank> },
@@ -219,7 +225,7 @@ impl QosService {
             );
     }
 
-    fn remove_transaction_costs<'a>(
+    pub fn remove_transaction_costs<'a>(
         transaction_costs: impl Iterator<Item = &'a TransactionCost>,
         transaction_qos_results: impl Iterator<Item = &'a transaction::Result<()>>,
         bank: &Arc<Bank>,

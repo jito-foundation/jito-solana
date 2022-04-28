@@ -2,7 +2,6 @@
 //! interface and streams packets from TPU proxy to the banking stage.
 //! It notifies the tpu_proxy_advertiser on connect/disconnect.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use {
     crate::{
         backoff::{self, BackoffStrategy},
@@ -21,7 +20,10 @@ use {
     solana_sdk::{signature::Signature, signer::Signer},
     std::{
         net::SocketAddr,
-        sync::Arc,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
         thread::{self, JoinHandle},
         time::Duration,
     },

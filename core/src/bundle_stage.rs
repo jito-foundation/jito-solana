@@ -1,15 +1,15 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use crossbeam_channel::{Receiver, RecvTimeoutError};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::qos_service::CommitTransactionDetails;
+use solana_program_runtime::timings::ExecuteTimings;
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
-        leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService, unprocessed_packet_batches::*,
     },
+    crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_entry::entry::hash_transactions,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
@@ -51,9 +51,12 @@ use {
     },
     std::{
         collections::HashMap,
-        sync::{Arc, Mutex, RwLock},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex, RwLock,
+        },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant},
+        time::Duration,
     },
     thiserror::Error,
 };
@@ -62,6 +65,9 @@ use {
 pub enum BundleExecutionError {
     #[error("Bank is not processing transactions.")]
     BankNotProcessingTransactions,
+
+    #[error("Bundle is invalid")]
+    InvalidBundle,
 
     #[error("PoH max height reached in the middle of a bundle.")]
     PohError(#[from] PohRecorderError),
@@ -74,6 +80,9 @@ pub enum BundleExecutionError {
 
     #[error("The bundle exceeds the cost model")]
     ExceedsCostModel,
+
+    #[error("The validator is not a leader yet, dropping")]
+    NotLeaderYet,
 }
 
 type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
@@ -137,30 +146,6 @@ impl BundleStage {
             .unwrap();
 
         Self { bundle_thread }
-    }
-
-    fn get_transaction_qos_results(
-        qos_service: &QosService,
-        txs: &[SanitizedTransaction],
-        bank: &Arc<Bank>,
-    ) -> (Vec<Result<(), TransactionError>>, usize) {
-        let tx_costs = qos_service.compute_transaction_costs(txs.iter());
-
-        let (transactions_qos_results, num_included) =
-            qos_service.select_transactions_per_cost(txs.iter(), tx_costs.iter(), bank);
-
-        let cost_model_throttled_transactions_count = txs.len().saturating_sub(num_included);
-
-        qos_service.accumulate_estimated_transaction_costs(
-            &Self::accumulate_batched_transaction_costs(
-                tx_costs.iter(),
-                transactions_qos_results.iter(),
-            ),
-        );
-        (
-            transactions_qos_results,
-            cost_model_throttled_transactions_count,
-        )
     }
 
     // rollup transaction cost details, eg signature_cost, write_lock_cost, data_bytes_cost and
@@ -244,43 +229,6 @@ impl BundleStage {
         batched_transaction_details
     }
 
-    /// Returns the bundle batch, where a batch must be a list of transactions locked sequentially
-    /// and contiguously. If there are any irrecoverable errors that would result in a piece of the
-    /// bundle being dropped, drop the entire thing.
-    ///
-    /// Assumptions:
-    /// - transactions_qos_results is all Ok(()) since anything that exceeds block limit in a bundle
-    ///   will cause the entire bundle to be dropped.
-    /// - AccountLoadedTwice or TooManyAccountLocks are irrecoverable errors and the entire bundle
-    ///   should be dropped. Ideally this is caught upstream of here too.
-    fn get_bundle_batch<'a>(
-        bank: &'a Arc<Bank>,
-        chunk: &'a [SanitizedTransaction],
-        transactions_qos_results: Vec<Result<(), TransactionError>>,
-    ) -> BundleExecutionResult<TransactionBatch<'a, 'a>> {
-        // lock results can be: Ok, AccountInUse, BundleNotContinuous, AccountLoadedTwice, or TooManyAccountLocks
-        // AccountLoadedTwice and TooManyAccountLocks are irrecoverable errors
-        // AccountInUse and BundleNotContinuous are acceptable
-        let batch = bank.prepare_sequential_sanitized_batch_with_results(
-            chunk,
-            transactions_qos_results.into_iter(),
-        );
-
-        for r in batch.lock_results() {
-            match r {
-                Ok(())
-                | Err(TransactionError::AccountInUse)
-                | Err(TransactionError::BundleNotContinuous) => {}
-                Err(e) => {
-                    return Err(e.clone().into());
-                }
-            }
-        }
-        Ok(batch)
-    }
-
-    // fn execute_chunk() {}
-
     /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
     ///
     /// Notes:
@@ -313,17 +261,16 @@ impl BundleStage {
     ///   bundle execution stage, it'll bias towards loading from the cache to have the most recent
     ///   state.
     fn execute_bundle(
-        transactions: Vec<SanitizedTransaction>,
-        bank: &Arc<Bank>,
-        bank_creation_time: &Arc<Instant>,
+        bundle: Bundle,
+        poh_recorder: &Arc<Mutex<PohRecorder>>,
         recorder: &TransactionRecorder,
         transaction_status_sender: &Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
     ) -> BundleExecutionResult<()> {
         let mut chunk_start = 0;
-        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
+        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let mut cached_accounts = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
@@ -332,45 +279,71 @@ impl BundleStage {
         let mut execution_results = Vec::new();
         let mut mint_decimals: HashMap<Pubkey, u8> = HashMap::new();
 
+        // ************************************************************************
+        // Ensure validator is leader according to PoH
+        // ************************************************************************
+        let poh_recorder_bank = poh_recorder.lock().unwrap().get_poh_recorder_bank();
+        let working_bank_start = poh_recorder_bank.working_bank_start();
+        if PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_none() {
+            return Err(BundleExecutionError::NotLeaderYet);
+        }
+
+        let BankStart {
+            working_bank: bank,
+            bank_creation_time,
+        } = &*working_bank_start.unwrap();
+
+        let transactions = Self::get_bundle_txs(&bundle, bank);
+        if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
+            return Err(BundleExecutionError::InvalidBundle);
+        }
+
+        // ************************************************************************
+        // Quality-of-service and block size check
+        // ************************************************************************
+        let tx_costs = qos_service.compute_transaction_costs(transactions.iter());
+        let (transactions_qos_results, num_included) =
+            qos_service.select_transactions_per_cost(transactions.iter(), tx_costs.iter(), bank);
+
+        if transactions.len().saturating_sub(num_included) > 0 {
+            return Err(BundleExecutionError::ExceedsCostModel);
+        }
+
+        qos_service.accumulate_estimated_transaction_costs(
+            &Self::accumulate_batched_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+            ),
+        );
+
         while chunk_start != transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
+                QosService::remove_transaction_costs(
+                    tx_costs.iter(),
+                    transactions_qos_results.iter(),
+                    bank,
+                );
                 return Err(PohRecorderError::MaxHeightReached.into());
             }
 
-            // *********************************************************************************
-            // Prepare batch for execution
-            // *********************************************************************************
+            // ************************************************************************
+            // Build a TransactionBatch that ensures transactions in the bundle
+            // are executed sequentially.
+            // ************************************************************************
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
-
-            // TODO (LB): need to double check QoS works the same as banking stage
-            let (
-                (transactions_qos_results, cost_model_throttled_transactions_count),
-                _cost_model_time,
-            ) = Measure::this(
-                |_| Self::get_transaction_qos_results(qos_service, chunk, bank),
-                (),
-                "cost_model",
-            );
-
-            if cost_model_throttled_transactions_count > 0 {
-                return Err(BundleExecutionError::ExceedsCostModel);
+            let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
+            match Self::check_bundle_batch_ok(&batch) {
+                Ok(_) => {}
+                Err(e) => {
+                    QosService::remove_transaction_costs(
+                        tx_costs.iter(),
+                        transactions_qos_results.iter(),
+                        bank,
+                    );
+                    return Err(e);
+                }
             }
-
-            // NOTE: accounts are unlocked when batch is dropped (if method exits out early)
-            let batch = Self::get_bundle_batch(bank, chunk, transactions_qos_results)?;
-            Self::check_bundle_batch_ok(&batch)?;
-
-            let processing_end = batch.lock_results().iter().position(|lr| lr.is_err());
-            if let Some(end) = processing_end {
-                chunk_start += end;
-            } else {
-                chunk_start = chunk_end;
-            }
-
-            // *********************************************************************************
-            // Execute batch
-            // *********************************************************************************
 
             let ((pre_balances, pre_token_balances), _) = Measure::this(
                 |_| {
@@ -403,13 +376,21 @@ impl BundleStage {
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
-            // TODO (LB): rollback QoS for non-executed transactions
-
-            Self::check_all_executed_ok(
+            match Self::check_all_executed_ok(
                 &load_and_execute_transactions_output
                     .execution_results
                     .as_slice(),
-            )?;
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    QosService::remove_transaction_costs(
+                        tx_costs.iter(),
+                        transactions_qos_results.iter(),
+                        bank,
+                    );
+                    return Err(e);
+                }
+            }
 
             // *********************************************************************************
             // Cache results so next iterations of bundle execution can load cached state
@@ -443,12 +424,19 @@ impl BundleStage {
                 pre_balances: (pre_balances, pre_token_balances),
                 post_balances: (post_balances, post_token_balances),
             });
+
+            // start at the next available transaction in the batch that threw an error
+            let processing_end = batch.lock_results().iter().position(|lr| lr.is_err());
+            if let Some(end) = processing_end {
+                chunk_start += end;
+            } else {
+                chunk_start = chunk_end;
+            }
+
             drop(batch);
         }
 
-        if execution_results.is_empty() {
-            return Err(BundleExecutionError::NoRecordsToRecord);
-        }
+        assert!(!execution_results.is_empty());
 
         // *********************************************************************************
         // All transactions are executed in the bundle.
@@ -461,13 +449,13 @@ impl BundleStage {
             Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        recorder.record(record)?;
+        recorder.record(record)?; // TODO (LB): probably want to rollback QoS here?
 
         for r in execution_results {
             let mut output = r.load_and_execute_tx_output;
             let sanitized_txs = r.sanitized_txs;
 
-            let commit_result = bank.commit_transactions(
+            let transaction_results = bank.commit_transactions(
                 &sanitized_txs,
                 &mut output.loaded_transactions,
                 output.execution_results.clone(),
@@ -484,7 +472,7 @@ impl BundleStage {
                 |_| {
                     bank_utils::find_and_send_votes(
                         &sanitized_txs,
-                        &commit_result,
+                        &transaction_results,
                         Some(gossip_vote_sender),
                     );
                     if let Some(transaction_status_sender) = transaction_status_sender {
@@ -494,18 +482,59 @@ impl BundleStage {
                             output.execution_results,
                             TransactionBalancesSet::new(r.pre_balances.0, r.post_balances.0),
                             TransactionTokenBalancesSet::new(r.pre_balances.1, r.post_balances.1),
-                            commit_result.rent_debits,
+                            transaction_results.rent_debits.clone(),
                         );
                     }
                 },
                 (),
                 "find_and_send_votes",
             );
+
+            let commit_transaction_statuses = transaction_results
+                .execution_results
+                .iter()
+                .map(|tx_results| match tx_results.details() {
+                    Some(details) => CommitTransactionDetails::Committed {
+                        compute_units: details.executed_units,
+                    },
+                    None => CommitTransactionDetails::NotCommitted,
+                })
+                .collect();
+
+            QosService::update_or_remove_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+                Some(&commit_transaction_statuses),
+                bank,
+            );
+            let (cu, us) = Self::accumulate_execute_units_and_time(
+                &execute_and_commit_timings.execute_timings,
+            );
+            qos_service.accumulate_actual_execute_cu(cu);
+            qos_service.accumulate_actual_execute_time(us);
         }
+
+        // reports qos service stats for this batch
+        qos_service.report_metrics(bank.clone());
 
         drop(freeze_lock);
 
         Ok(())
+    }
+
+    fn accumulate_execute_units_and_time(execute_timings: &ExecuteTimings) -> (u64, u64) {
+        let (units, times): (Vec<_>, Vec<_>) = execute_timings
+            .details
+            .per_program_timings
+            .iter()
+            .map(|(_program_id, program_timings)| {
+                (
+                    program_timings.accumulated_units,
+                    program_timings.accumulated_us,
+                )
+            })
+            .unzip();
+        (units.iter().sum(), times.iter().sum())
     }
 
     fn cache_accounts(
@@ -559,20 +588,17 @@ impl BundleStage {
 
     /// Checks that preparing a bundle gives an acceptable batch back
     fn check_bundle_batch_ok(batch: &TransactionBatch) -> BundleExecutionResult<()> {
-        // Ok, AccountInUse, BundleNotContinuous, AccountLoadedTwice, or TooManyAccountLocks
-        let maybe_err = batch.lock_results().iter().find(|lr| {
-            !matches!(
-                lr,
+        for r in batch.lock_results() {
+            match r {
                 Ok(())
-                    | Err(TransactionError::AccountInUse)
-                    | Err(TransactionError::BundleNotContinuous)
-            )
-        });
-        if let Some(Err(e)) = maybe_err {
-            Err(e.clone().into())
-        } else {
-            Ok(())
+                | Err(TransactionError::AccountInUse)
+                | Err(TransactionError::BundleNotContinuous) => {}
+                Err(e) => {
+                    return Err(e.clone().into());
+                }
+            }
         }
+        Ok(())
     }
 
     fn bundle_stage(
@@ -585,7 +611,6 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
-        let slot_metrics_tracker = LeaderSlotMetricsTracker::new(id);
         let qos_service = QosService::new(cost_model, id);
 
         loop {
@@ -604,27 +629,9 @@ impl BundleStage {
                 }
             };
 
-            // Skip execution of bundles if not leader yet
-            let poh_recorder_bank = poh_recorder.lock().unwrap().get_poh_recorder_bank();
-            let working_bank_start = poh_recorder_bank.working_bank_start();
-            if PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_none() {
-                error!("dropping bundle, not leader yet");
-                continue;
-            }
-
-            let BankStart {
-                working_bank,
-                bank_creation_time,
-            } = &*working_bank_start.unwrap();
-
-            let bundle_txs = Self::get_bundle_txs(&bundle, working_bank);
-
-            // TODO (LB): lock QoS here
-
             match Self::execute_bundle(
-                bundle_txs,
-                working_bank,
-                bank_creation_time,
+                bundle,
+                poh_recorder,
                 &recorder,
                 &transaction_status_sender,
                 &gossip_vote_sender,
@@ -634,7 +641,6 @@ impl BundleStage {
                     info!("bundle processed ok");
                 }
                 Err(e) => {
-                    // TODO (LB): undo executed QoS here?
                     error!("error recording bundle {:?}", e);
                 }
             }
