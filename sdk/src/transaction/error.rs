@@ -141,6 +141,10 @@ pub enum TransactionError {
     /// Transaction contains a duplicate instruction that is not allowed
     #[error("Transaction contains a duplicate instruction ({0}) that is not allowed")]
     DuplicateInstruction(u8),
+
+    /// Bundle is not continuous
+    #[error("Bundle is not continuous")]
+    BundleNotContinuous,
 }
 
 impl From<SanitizeError> for TransactionError {

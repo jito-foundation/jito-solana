@@ -1747,6 +1747,14 @@ pub fn main() {
                 .takes_value(true)
                 .help("Validator interface listening address")
         )
+        .arg(
+            Arg::with_name("tip_program_pubkey")
+                .long("tip-program-pubkey")
+                .value_name("PUBKEY")
+                .required(true)
+                .takes_value(true)
+                .help("The public key of the tip program")
+        )
         .after_help("The default subcommand is run")
         .subcommand(
             SubCommand::with_name("exit")
@@ -2548,6 +2556,7 @@ pub fn main() {
         },
         validator_interface_address: value_of(&matches, "validator_interface_address")
             .unwrap_or_default(),
+        tip_program_pubkey: value_t!(matches.value_of("tip_program_pubkey"), Pubkey).unwrap(),
         ..ValidatorConfig::default()
     };
 
