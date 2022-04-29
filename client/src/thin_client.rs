@@ -612,6 +612,10 @@ impl AsyncClient for ThinClient {
     }
 }
 
+// TODO: Passing static tpu address to this function will
+// cause problems for tpu proxy on connect/disconnect.
+// It seems this function is only used in bench_tps and local_cluster
+// so leaving as a TODO for now.
 pub fn create_client(rpc: SocketAddr, tpu: SocketAddr) -> ThinClient {
     ThinClient::new(rpc, tpu)
 }

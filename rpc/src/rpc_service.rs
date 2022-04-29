@@ -356,8 +356,6 @@ impl JsonRpcService {
             LARGEST_ACCOUNTS_CACHE_DURATION,
         )));
 
-        let tpu_address = cluster_info.my_contact_info().tpu;
-
         // sadly, some parts of our current rpc implemention block the jsonrpc's
         // _socket-listening_ event loop for too long, due to (blocking) long IO or intesive CPU,
         // causing no further processing of incoming requests and ultimatily innocent clients timing-out.
@@ -445,7 +443,7 @@ impl JsonRpcService {
         let leader_info =
             poh_recorder.map(|recorder| ClusterTpuInfo::new(cluster_info.clone(), recorder));
         let _send_transaction_service = Arc::new(SendTransactionService::new_with_config(
-            tpu_address,
+            cluster_info,
             &bank_forks,
             leader_info,
             receiver,

@@ -4313,9 +4313,11 @@ dependencies = [
  "crossbeam-channel",
  "futures 0.3.21",
  "solana-banks-interface",
+ "solana-gossip",
  "solana-runtime",
  "solana-sdk 1.11.0",
  "solana-send-transaction-service",
+ "solana-streamer",
  "tarpc",
  "tokio",
  "tokio-serde",
@@ -5791,11 +5793,13 @@ dependencies = [
  "crossbeam-channel",
  "log",
  "solana-client",
+ "solana-gossip",
  "solana-logger 1.11.0",
  "solana-measure",
  "solana-metrics",
  "solana-runtime",
  "solana-sdk 1.11.0",
+ "solana-streamer",
 ]
 
 [[package]]
