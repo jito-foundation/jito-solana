@@ -175,6 +175,7 @@ pub struct ValidatorConfig {
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
     pub validator_interface_address: String,
+    pub tip_program_pubkey: Pubkey,
 }
 
 impl Default for ValidatorConfig {
@@ -236,6 +237,7 @@ impl Default for ValidatorConfig {
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
             validator_interface_address: String::new(),
+            tip_program_pubkey: Pubkey::default(),
         }
     }
 }
@@ -996,6 +998,7 @@ impl Validator {
             &cost_model,
             &identity_keypair,
             config.validator_interface_address.clone(),
+            config.tip_program_pubkey,
         );
 
         datapoint_info!("validator-new", ("id", id.to_string(), String));

@@ -12,7 +12,10 @@ use {
     solana_entry::entry::hash_transactions,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
-    solana_mev::bundle::Bundle,
+    solana_mev::{
+        bundle::Bundle,
+        tip_manager::{TipManager, TipPaymentError},
+    },
     solana_perf::{
         cuda_runtime::PinnedVec,
         packet::{limited_deserialize, Packet, PacketBatch},
@@ -28,7 +31,7 @@ use {
         accounts::TransactionLoadResult,
         bank::{
             Bank, LoadAndExecuteTransactionsOutput, TransactionBalances, TransactionBalancesSet,
-            TransactionExecutionResult,
+            TransactionExecutionResult, TransactionResults,
         },
         bank_utils,
         cost_model::{CostModel, TransactionCost},
@@ -41,8 +44,11 @@ use {
         message::Message,
         pubkey::Pubkey,
         saturating_add_assign,
+        signature::{Keypair, Signer},
+        system_instruction,
         transaction::{
-            self, AddressLoader, SanitizedTransaction, TransactionError, VersionedTransaction,
+            self, AddressLoader, MessageHash, SanitizedTransaction, Transaction, TransactionError,
+            VersionedTransaction,
         },
     },
     solana_transaction_status::token_balances::{
@@ -50,10 +56,11 @@ use {
         TransactionTokenBalancesSet,
     },
     std::{
-        collections::HashMap,
+        borrow::Cow,
+        collections::{HashMap, HashSet},
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, Mutex, MutexGuard, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,
@@ -83,10 +90,14 @@ pub enum BundleExecutionError {
 
     #[error("The validator is not a leader yet, dropping")]
     NotLeaderYet,
+
+    #[error("Tip error {0}")]
+    TipError(#[from] TipPaymentError),
 }
 
 type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
 
+#[derive(Debug)]
 struct AllExecutionResults {
     pub load_and_execute_tx_output: LoadAndExecuteTransactionsOutput,
     pub sanitized_txs: Vec<SanitizedTransaction>,
@@ -107,6 +118,7 @@ impl BundleStage {
         cost_model: Arc<RwLock<CostModel>>,
         bundle_receiver: Receiver<Bundle>,
         exit: Arc<AtomicBool>,
+        tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
         Self::start_bundle_thread(
             poh_recorder,
@@ -115,6 +127,7 @@ impl BundleStage {
             cost_model,
             bundle_receiver,
             exit,
+            tip_manager,
         )
     }
 
@@ -126,6 +139,7 @@ impl BundleStage {
         cost_model: Arc<RwLock<CostModel>>,
         bundle_receiver: Receiver<Bundle>,
         exit: Arc<AtomicBool>,
+        tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
         let poh_recorder = poh_recorder.clone();
 
@@ -141,6 +155,7 @@ impl BundleStage {
                     0,
                     cost_model,
                     exit,
+                    tip_manager,
                 );
             })
             .unwrap();
@@ -229,6 +244,230 @@ impl BundleStage {
         batched_transaction_details
     }
 
+    /// Executes transactions, records them to PoH, and commits them to the bank
+    fn execute_record_and_commit(
+        tx: Transaction,
+        bank: &Arc<Bank>,
+        qos_service: &QosService,
+        recorder: &TransactionRecorder,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        gossip_vote_sender: &ReplayVoteSender,
+    ) -> BundleExecutionResult<()> {
+        let account_overrides = AccountOverrides::default();
+        let mut mint_decimals = HashMap::new();
+
+        let sanitized_txs = vec![SanitizedTransaction::try_create(
+            VersionedTransaction::from(tx),
+            MessageHash::Compute,
+            None,
+            bank.as_ref(),
+        )?];
+
+        let tx_costs = qos_service.compute_transaction_costs(sanitized_txs.iter());
+        let (transactions_qos_results, num_included) =
+            qos_service.select_transactions_per_cost(sanitized_txs.iter(), tx_costs.iter(), bank);
+        if sanitized_txs.len().saturating_sub(num_included) > 0 {
+            return Err(BundleExecutionError::ExceedsCostModel);
+        }
+
+        qos_service.accumulate_estimated_transaction_costs(
+            &Self::accumulate_batched_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+            ),
+        );
+
+        let batch = TransactionBatch::new(vec![Ok(())], bank, Cow::from(sanitized_txs));
+
+        let (pre_balances, _) = Measure::this(
+            |_| {
+                Self::collect_balances(
+                    bank,
+                    &batch,
+                    &account_overrides,
+                    transaction_status_sender,
+                    &mut mint_decimals,
+                )
+            },
+            (),
+            "collect_balances",
+        );
+
+        let (load_and_execute_tx_output, load_execute_time) = Measure::this(
+            |_| {
+                bank.load_and_execute_transactions(
+                    &batch,
+                    MAX_PROCESSING_AGE,
+                    transaction_status_sender.is_some(),
+                    transaction_status_sender.is_some(),
+                    transaction_status_sender.is_some(),
+                    &mut execute_and_commit_timings.execute_timings,
+                    Some(&account_overrides),
+                )
+            },
+            (),
+            "load_execute",
+        );
+        execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
+
+        if let Err(e) =
+            Self::check_all_executed_ok(&load_and_execute_tx_output.execution_results.as_slice())
+        {
+            QosService::remove_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+                bank,
+            );
+            return Err(e);
+        }
+
+        let (post_balances, _) = Measure::this(
+            |_| {
+                Self::collect_balances(
+                    bank,
+                    &batch,
+                    &account_overrides,
+                    transaction_status_sender,
+                    &mut mint_decimals,
+                )
+            },
+            (),
+            "collect_balances",
+        );
+
+        let execution_results = vec![AllExecutionResults {
+            load_and_execute_tx_output,
+            sanitized_txs: batch.sanitized_transactions().to_vec(),
+            pre_balances,
+            post_balances,
+        }];
+
+        Self::record_and_commit_and_handle_qos(
+            bank,
+            execution_results,
+            recorder,
+            execute_and_commit_timings,
+            transaction_status_sender,
+            gossip_vote_sender,
+            tx_costs,
+            transactions_qos_results,
+            qos_service,
+        )?;
+
+        Ok(())
+    }
+
+    fn maybe_create_tip_receiver_and_initialize_program(
+        bank: &Arc<Bank>,
+        tip_manager_l: &MutexGuard<TipManager>,
+        qos_service: &QosService,
+        recorder: &TransactionRecorder,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        gossip_vote_sender: &ReplayVoteSender,
+        tip_receiver: &Keypair,
+    ) -> BundleExecutionResult<()> {
+        if bank.get_account(&tip_manager_l.config_pubkey()).is_none() {
+            let my_kp = tip_manager_l.keypair();
+            if let Err(e) = Self::execute_record_and_commit(
+                Transaction::new_signed_with_payer(
+                    &vec![system_instruction::create_account(
+                        &my_kp.pubkey(), // funder
+                        &tip_receiver.pubkey(),
+                        bank.get_minimum_balance_for_rent_exemption(500),
+                        500,
+                        &my_kp.pubkey(),
+                    )],
+                    Some(&my_kp.pubkey()),
+                    &[&my_kp, tip_receiver],
+                    bank.last_blockhash(),
+                ),
+                bank,
+                qos_service,
+                recorder,
+                transaction_status_sender,
+                execute_and_commit_timings,
+                gossip_vote_sender,
+            ) {
+                warn!("error creating tip receiver!!! error: {}", e);
+                return Err(e);
+            }
+
+            if let Err(e) = Self::execute_record_and_commit(
+                tip_manager_l.build_initialize_tx(&bank.last_blockhash()),
+                bank,
+                qos_service,
+                recorder,
+                transaction_status_sender,
+                execute_and_commit_timings,
+                gossip_vote_sender,
+            ) {
+                warn!("error initializing the tip program!!! error: {}", e);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn maybe_change_tip_receiver(
+        bank: &Arc<Bank>,
+        tip_manager_l: &MutexGuard<TipManager>,
+        qos_service: &QosService,
+        recorder: &TransactionRecorder,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        gossip_vote_sender: &ReplayVoteSender,
+        tip_receiver: &Keypair,
+    ) -> BundleExecutionResult<()> {
+        let current_tip_receiver = tip_manager_l.get_current_tip_receiver(&bank)?;
+        if current_tip_receiver != tip_receiver.pubkey() {
+            match tip_manager_l.build_change_tip_receiver_tx(&tip_receiver.pubkey(), &bank) {
+                Ok(tx) => {
+                    if let Err(e) = Self::execute_record_and_commit(
+                        tx,
+                        bank,
+                        qos_service,
+                        recorder,
+                        transaction_status_sender,
+                        execute_and_commit_timings,
+                        gossip_vote_sender,
+                    ) {
+                        warn!("error changing tip receiver!!! error: {}", e);
+                        return Err(e);
+                    } else {
+                        info!("tip receiver changed!")
+                    }
+                }
+                Err(e) => {
+                    error!("error build tip tx! error: {:?}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns true if any of the transactions in a bundle mention one of the tip PDAs
+    fn bundle_touches_tip_pdas(
+        transactions: &[SanitizedTransaction],
+        tip_pdas: &HashSet<Pubkey>,
+    ) -> bool {
+        let mut bundle_touches_tip_pdas = false;
+        for tx in transactions {
+            if tx
+                .message()
+                .account_keys()
+                .iter()
+                .any(|a| tip_pdas.contains(a))
+            {
+                bundle_touches_tip_pdas = true;
+                break;
+            }
+        }
+        bundle_touches_tip_pdas
+    }
+
     /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
     ///
     /// Notes:
@@ -267,6 +506,8 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
+        tip_manager: &Arc<Mutex<TipManager>>,
+        tip_receiver: &Keypair,
     ) -> BundleExecutionResult<()> {
         let mut chunk_start = 0;
 
@@ -278,6 +519,9 @@ impl BundleStage {
 
         let mut execution_results = Vec::new();
         let mut mint_decimals: HashMap<Pubkey, u8> = HashMap::new();
+
+        let tip_program_id = tip_manager.lock().unwrap().program_id();
+        let tip_pdas = tip_manager.lock().unwrap().get_tip_accounts();
 
         // ************************************************************************
         // Ensure validator is leader according to PoH
@@ -293,7 +537,7 @@ impl BundleStage {
             bank_creation_time,
         } = &*working_bank_start.unwrap();
 
-        let transactions = Self::get_bundle_txs(&bundle, bank);
+        let transactions = Self::get_bundle_txs(&bundle, bank, &tip_program_id);
         if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
             return Err(BundleExecutionError::InvalidBundle);
         }
@@ -316,6 +560,33 @@ impl BundleStage {
                 transactions_qos_results.iter(),
             ),
         );
+
+        if Self::bundle_touches_tip_pdas(&transactions, &tip_pdas) {
+            // NOTE: ensure that tip_manager locked while TX is executing to avoid any race conditions with bundle_stage
+            // writing to the account
+            let tip_manager_l = tip_manager.lock().unwrap();
+            // TODO (LB): remove creating tip receiver and initializing program when live
+            Self::maybe_create_tip_receiver_and_initialize_program(
+                bank,
+                &tip_manager_l,
+                qos_service,
+                recorder,
+                transaction_status_sender,
+                &mut execute_and_commit_timings,
+                gossip_vote_sender,
+                tip_receiver,
+            )?;
+            Self::maybe_change_tip_receiver(
+                bank,
+                &tip_manager_l,
+                qos_service,
+                recorder,
+                transaction_status_sender,
+                &mut execute_and_commit_timings,
+                gossip_vote_sender,
+                tip_receiver,
+            )?;
+        }
 
         while chunk_start != transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
@@ -440,24 +711,99 @@ impl BundleStage {
         // not all together
         // *********************************************************************************
 
+        Self::record_and_commit_and_handle_qos(
+            bank,
+            execution_results,
+            recorder,
+            &mut execute_and_commit_timings,
+            transaction_status_sender,
+            gossip_vote_sender,
+            tx_costs,
+            transactions_qos_results,
+            qos_service,
+        )?;
+
+        Ok(())
+    }
+
+    fn record_and_commit_and_handle_qos(
+        bank: &Arc<Bank>,
+        execution_results: Vec<AllExecutionResults>,
+        recorder: &TransactionRecorder,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        gossip_vote_sender: &ReplayVoteSender,
+        tx_costs: Vec<TransactionCost>,
+        transactions_qos_results: Vec<transaction::Result<()>>,
+        qos_service: &QosService,
+    ) -> BundleExecutionResult<()> {
+        match Self::record_and_commit_results(
+            bank,
+            execution_results,
+            recorder,
+            execute_and_commit_timings,
+            transaction_status_sender,
+            gossip_vote_sender,
+        ) {
+            Err(e) => {
+                QosService::remove_transaction_costs(
+                    tx_costs.iter(),
+                    transactions_qos_results.iter(),
+                    bank,
+                );
+                return Err(e);
+            }
+            Ok(transaction_results) => {
+                transaction_results.iter().for_each(|results| {
+                    let commit_transaction_statuses = results
+                        .execution_results
+                        .iter()
+                        .map(|tx_results| match tx_results.details() {
+                            Some(details) => CommitTransactionDetails::Committed {
+                                compute_units: details.executed_units,
+                            },
+                            None => CommitTransactionDetails::NotCommitted,
+                        })
+                        .collect();
+                    QosService::update_or_remove_transaction_costs(
+                        tx_costs.iter(),
+                        transactions_qos_results.iter(),
+                        Some(&commit_transaction_statuses),
+                        bank,
+                    );
+                    let (cu, us) = Self::accumulate_execute_units_and_time(
+                        &execute_and_commit_timings.execute_timings,
+                    );
+                    qos_service.accumulate_actual_execute_cu(cu);
+                    qos_service.accumulate_actual_execute_time(us);
+                });
+                qos_service.report_metrics(bank.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn record_and_commit_results(
+        bank: &Arc<Bank>,
+        execution_results: Vec<AllExecutionResults>,
+        recorder: &TransactionRecorder,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        gossip_vote_sender: &ReplayVoteSender,
+    ) -> BundleExecutionResult<Vec<TransactionResults>> {
         let (freeze_lock, _freeze_lock_time) =
             Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        if let Err(e) = recorder.record(record) {
-            QosService::remove_transaction_costs(
-                tx_costs.iter(),
-                transactions_qos_results.iter(),
-                bank,
-            );
-            return Err(e.into());
-        }
 
+        recorder.record(record)?;
+
+        let mut transaction_results = Vec::new();
         for r in execution_results {
             let mut output = r.load_and_execute_tx_output;
             let sanitized_txs = r.sanitized_txs;
 
-            let transaction_results = bank.commit_transactions(
+            let results = bank.commit_transactions(
                 &sanitized_txs,
                 &mut output.loaded_transactions,
                 output.execution_results.clone(),
@@ -474,7 +820,7 @@ impl BundleStage {
                 |_| {
                     bank_utils::find_and_send_votes(
                         &sanitized_txs,
-                        &transaction_results,
+                        &results,
                         Some(gossip_vote_sender),
                     );
                     if let Some(transaction_status_sender) = transaction_status_sender {
@@ -484,44 +830,18 @@ impl BundleStage {
                             output.execution_results,
                             TransactionBalancesSet::new(r.pre_balances.0, r.post_balances.0),
                             TransactionTokenBalancesSet::new(r.pre_balances.1, r.post_balances.1),
-                            transaction_results.rent_debits.clone(),
+                            results.rent_debits.clone(),
                         );
                     }
                 },
                 (),
                 "find_and_send_votes",
             );
-
-            let commit_transaction_statuses = transaction_results
-                .execution_results
-                .iter()
-                .map(|tx_results| match tx_results.details() {
-                    Some(details) => CommitTransactionDetails::Committed {
-                        compute_units: details.executed_units,
-                    },
-                    None => CommitTransactionDetails::NotCommitted,
-                })
-                .collect();
-
-            QosService::update_or_remove_transaction_costs(
-                tx_costs.iter(),
-                transactions_qos_results.iter(),
-                Some(&commit_transaction_statuses),
-                bank,
-            );
-            let (cu, us) = Self::accumulate_execute_units_and_time(
-                &execute_and_commit_timings.execute_timings,
-            );
-            qos_service.accumulate_actual_execute_cu(cu);
-            qos_service.accumulate_actual_execute_time(us);
+            transaction_results.push(results);
         }
 
-        // reports qos service stats for this batch
-        qos_service.report_metrics(bank.clone());
-
         drop(freeze_lock);
-
-        Ok(())
+        Ok(transaction_results)
     }
 
     fn accumulate_execute_units_and_time(execute_timings: &ExecuteTimings) -> (u64, u64) {
@@ -574,6 +894,7 @@ impl BundleStage {
     fn check_all_executed_ok(
         execution_results: &[TransactionExecutionResult],
     ) -> BundleExecutionResult<()> {
+        info!("execution_results: {:?}", execution_results);
         let maybe_err = execution_results
             .iter()
             .find(|er| er.was_executed() && !er.was_executed_successfully());
@@ -582,7 +903,10 @@ impl BundleStage {
                 Ok(_) => {
                     unreachable!();
                 }
-                Err(e) => return Err(e.clone().into()),
+                Err(e) => {
+                    warn!("transaction failed: {:?}", details);
+                    return Err(e.clone().into());
+                }
             }
         }
         Ok(())
@@ -611,9 +935,18 @@ impl BundleStage {
         id: u32,
         cost_model: Arc<RwLock<CostModel>>,
         exit: Arc<AtomicBool>,
+        tip_manager: Arc<Mutex<TipManager>>,
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
+
+        // TODO (LB): temporary keypair for tip receiver
+        let tip_receiver = Keypair::new();
+        info!(
+            "tip_receiver pubkey: {}, tip_receiver keypair: {:?}",
+            tip_receiver.pubkey(),
+            tip_receiver.to_base58_string()
+        );
 
         loop {
             if exit.load(Ordering::Relaxed) {
@@ -638,10 +971,10 @@ impl BundleStage {
                 &transaction_status_sender,
                 &gossip_vote_sender,
                 &qos_service,
+                &tip_manager,
+                &tip_receiver,
             ) {
-                Ok(_) => {
-                    info!("bundle processed ok");
-                }
+                Ok(_) => {}
                 Err(e) => {
                     error!("error recording bundle {:?}", e);
                 }
@@ -649,7 +982,11 @@ impl BundleStage {
         }
     }
 
-    fn get_bundle_txs(bundle: &Bundle, bank: &Arc<Bank>) -> Vec<SanitizedTransaction> {
+    fn get_bundle_txs(
+        bundle: &Bundle,
+        bank: &Arc<Bank>,
+        tip_program_id: &Pubkey,
+    ) -> Vec<SanitizedTransaction> {
         let packet_indexes = Self::generate_packet_indexes(&bundle.batch.packets);
         let (transactions, _) = Self::transactions_from_packets(
             &bundle.batch,
@@ -657,6 +994,7 @@ impl BundleStage {
             &bank.feature_set,
             bank.vote_only_bank(),
             bank.as_ref(),
+            tip_program_id,
         );
         transactions
     }
@@ -671,7 +1009,7 @@ impl BundleStage {
 
     fn prepare_poh_record_bundle(
         bank_slot: &Slot,
-        execution_results_txs: &Vec<AllExecutionResults>,
+        execution_results_txs: &[AllExecutionResults],
     ) -> Record {
         let mixins_txs = execution_results_txs
             .iter()
@@ -709,6 +1047,7 @@ impl BundleStage {
         feature_set: &Arc<feature_set::FeatureSet>,
         votes_only: bool,
         address_loader: impl AddressLoader,
+        tip_program_id: &Pubkey,
     ) -> (Vec<SanitizedTransaction>, Vec<usize>) {
         transaction_indexes
             .iter()
@@ -729,6 +1068,19 @@ impl BundleStage {
                 )
                 .ok()?;
                 tx.verify_precompiles(feature_set).ok()?;
+
+                // Avoid any transactions that mention the tip program because someone could
+                // change the tip_receiver to themselves and steal all tips from transactions and
+                // bundles
+                if tx
+                    .message()
+                    .account_keys()
+                    .iter()
+                    .any(|a| a == tip_program_id)
+                {
+                    warn!("someone attempted to change the tip program!!");
+                    return None;
+                }
                 Some((tx, *tx_index))
             })
             .unzip()

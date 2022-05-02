@@ -14,6 +14,7 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_measure::measure::Measure,
+    solana_mev::tip_manager::TipManager,
     solana_perf::packet::to_packet_batches,
     solana_poh::poh_recorder::{create_test_recorder, PohRecorder, WorkingBankEntry},
     solana_runtime::{
@@ -22,7 +23,7 @@ use {
     },
     solana_sdk::{
         hash::Hash,
-        signature::{Keypair, Signature},
+        signature::{Keypair, Signature, Signer},
         system_transaction,
         timing::{duration_as_us, timestamp},
         transaction::Transaction,
@@ -300,6 +301,11 @@ fn main() {
         );
         let cluster_info = Arc::new(cluster_info);
 
+        let tip_manager = Arc::new(Mutex::new(TipManager::new(
+            Keypair::new().pubkey(),
+            Keypair::new(),
+        )));
+
         let banking_stage = BankingStage::new_num_threads(
             &cluster_info,
             &poh_recorder,
@@ -310,6 +316,7 @@ fn main() {
             None,
             replay_vote_sender,
             Arc::new(RwLock::new(CostModel::default())),
+            tip_manager,
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
 

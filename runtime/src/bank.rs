@@ -652,6 +652,7 @@ impl TransactionExecutionResult {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadAndExecuteTransactionsOutput {
     pub loaded_transactions: Vec<TransactionLoadResult>,
     // Vector of results indicating whether a transaction was executed or could not

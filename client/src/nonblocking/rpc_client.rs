@@ -21,7 +21,7 @@ use {
         rpc_config::{RpcAccountInfoConfig, *},
         rpc_request::{RpcError, RpcRequest, RpcResponseErrorData, TokenAccountsFilter},
         rpc_response::*,
-        rpc_sender::*,
+        rpc_sender::{RpcSender, *},
         spinner,
     },
     bincode::serialize,
