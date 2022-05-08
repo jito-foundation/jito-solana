@@ -1,6 +1,7 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
+use crate::unprocessed_packet_batches;
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
@@ -13,10 +14,7 @@ use {
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
     solana_mev::bundle::Bundle,
-    solana_perf::{
-        cuda_runtime::PinnedVec,
-        packet::{limited_deserialize, Packet, PacketBatch},
-    },
+    solana_perf::{cuda_runtime::PinnedVec, packet::Packet},
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
         PohRecorderError::{self},
@@ -38,7 +36,6 @@ use {
     solana_sdk::{
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
-        message::Message,
         pubkey::Pubkey,
         saturating_add_assign,
         transaction::{
@@ -570,19 +567,25 @@ impl BundleStage {
         }
     }
 
-    /// Return an Error if a transaction wasn't executed
+    /// Return an Error if a transaction was executed and reverted
     fn check_all_executed_ok(
         execution_results: &[TransactionExecutionResult],
     ) -> BundleExecutionResult<()> {
         let maybe_err = execution_results
             .iter()
             .find(|er| er.was_executed() && !er.was_executed_successfully());
-        if let Some(TransactionExecutionResult::Executed(details)) = maybe_err {
-            match &details.status {
-                Ok(_) => {
-                    unreachable!();
-                }
-                Err(e) => return Err(e.clone().into()),
+        if let Some(exec_results) = maybe_err {
+            match exec_results {
+                TransactionExecutionResult::Executed {
+                    details,
+                    executors: _,
+                } => match &details.status {
+                    Ok(_) => {
+                        unreachable!();
+                    }
+                    Err(e) => return Err(e.clone().into()),
+                },
+                _ => {}
             }
         }
         Ok(())
@@ -651,14 +654,20 @@ impl BundleStage {
 
     fn get_bundle_txs(bundle: &Bundle, bank: &Arc<Bank>) -> Vec<SanitizedTransaction> {
         let packet_indexes = Self::generate_packet_indexes(&bundle.batch.packets);
-        let (transactions, _) = Self::transactions_from_packets(
-            &bundle.batch,
-            &packet_indexes,
-            &bank.feature_set,
-            bank.vote_only_bank(),
-            bank.as_ref(),
-        );
-        transactions
+        let deserialized_packets =
+            unprocessed_packet_batches::deserialize_packets(&bundle.batch, &packet_indexes, None);
+
+        deserialized_packets
+            .filter_map(|p| {
+                let immutable_packet = p.immutable_section().clone();
+                Self::transaction_from_deserialized_packet(
+                    &immutable_packet,
+                    &bank.feature_set,
+                    bank.vote_only_bank(),
+                    bank.as_ref(),
+                )
+            })
+            .collect()
     }
 
     fn generate_packet_indexes(vers: &PinnedVec<Packet>) -> Vec<usize> {
@@ -703,35 +712,26 @@ impl BundleStage {
     // messages, and verifies secp256k1 instructions. A list of sanitized transactions are returned
     // with their packet indexes.
     #[allow(clippy::needless_collect)]
-    fn transactions_from_packets(
-        packet_batch: &PacketBatch,
-        transaction_indexes: &[usize],
+    fn transaction_from_deserialized_packet(
+        deserialized_packet: &ImmutableDeserializedPacket,
         feature_set: &Arc<feature_set::FeatureSet>,
         votes_only: bool,
         address_loader: impl AddressLoader,
-    ) -> (Vec<SanitizedTransaction>, Vec<usize>) {
-        transaction_indexes
-            .iter()
-            .filter_map(|tx_index| {
-                let p = &packet_batch.packets[*tx_index];
-                if votes_only && !p.meta.is_simple_vote_tx() {
-                    return None;
-                }
+    ) -> Option<SanitizedTransaction> {
+        if votes_only && !deserialized_packet.is_simple_vote() {
+            return None;
+        }
 
-                let tx: VersionedTransaction = limited_deserialize(&p.data[0..p.meta.size]).ok()?;
-                let message_bytes = DeserializedPacketBatch::packet_message(p)?;
-                let message_hash = Message::hash_raw_message(message_bytes);
-                let tx = SanitizedTransaction::try_create(
-                    tx,
-                    message_hash,
-                    Some(p.meta.is_simple_vote_tx()),
-                    address_loader.clone(),
-                )
-                .ok()?;
-                tx.verify_precompiles(feature_set).ok()?;
-                Some((tx, *tx_index))
-            })
-            .unzip()
+        let tx = SanitizedTransaction::try_create(
+            deserialized_packet.versioned_transaction().clone(),
+            *deserialized_packet.message_hash(),
+            Some(deserialized_packet.is_simple_vote()),
+            address_loader,
+            feature_set.is_active(&feature_set::require_static_program_ids_in_transaction::ID),
+        )
+        .ok()?;
+        tx.verify_precompiles(feature_set).ok()?;
+        Some(tx)
     }
 
     pub fn join(self) -> thread::Result<()> {
