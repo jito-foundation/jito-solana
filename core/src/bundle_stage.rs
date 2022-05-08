@@ -642,9 +642,7 @@ impl BundleStage {
                 &gossip_vote_sender,
                 &qos_service,
             ) {
-                Ok(_) => {
-                    info!("bundle processed ok");
-                }
+                Ok(_) => {}
                 Err(e) => {
                     error!("error recording bundle {:?}", e);
                 }
