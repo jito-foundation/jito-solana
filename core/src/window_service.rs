@@ -193,7 +193,7 @@ pub(crate) fn should_retransmit_and_persist(
         } else if shred.index() >= MAX_DATA_SHREDS_PER_SLOT as u32 {
             inc_new_counter_warn!("streamer-recv_window-shred_index_overrun", 1);
             false
-        } else if !shred.sanitize() {
+        } else if shred.sanitize().is_err() {
             inc_new_counter_warn!("streamer-recv_window-invalid-shred", 1);
             false
         } else {
@@ -209,7 +209,7 @@ fn run_check_duplicate(
     cluster_info: &ClusterInfo,
     blockstore: &Blockstore,
     shred_receiver: &Receiver<Shred>,
-    duplicate_slot_sender: &DuplicateSlotSender,
+    duplicate_slots_sender: &DuplicateSlotSender,
 ) -> Result<()> {
     let check_duplicate = |shred: Shred| -> Result<()> {
         let shred_slot = shred.slot();
@@ -224,7 +224,7 @@ fn run_check_duplicate(
                     shred.into_payload(),
                 )?;
 
-                duplicate_slot_sender.send(shred_slot)?;
+                duplicate_slots_sender.send(shred_slot)?;
             }
         }
 
@@ -530,7 +530,7 @@ impl WindowService {
         exit: Arc<AtomicBool>,
         blockstore: Arc<Blockstore>,
         duplicate_receiver: Receiver<Shred>,
-        duplicate_slot_sender: DuplicateSlotSender,
+        duplicate_slots_sender: DuplicateSlotSender,
     ) -> JoinHandle<()> {
         let handle_error = || {
             inc_new_counter_error!("solana-check-duplicate-error", 1, 1);
@@ -547,7 +547,7 @@ impl WindowService {
                     &cluster_info,
                     &blockstore,
                     &duplicate_receiver,
-                    &duplicate_slot_sender,
+                    &duplicate_slots_sender,
                 ) {
                     if Self::should_exit_on_error(e, &mut noop, &handle_error) {
                         break;
@@ -863,14 +863,15 @@ mod test {
         ));
 
         // coding shreds don't contain parent slot information, test that slot >= root
-        let mut coding_shred = Shred::new_empty_coding(
-            5, // slot
-            5, // index
-            5, // fec_set_index
-            6, // num_data_shreds
-            6, // num_coding_shreds
-            3, // position
-            0, // version
+        let mut coding_shred = Shred::new_from_parity_shard(
+            5,   // slot
+            5,   // index
+            &[], // parity_shard
+            5,   // fec_set_index
+            6,   // num_data_shreds
+            6,   // num_coding_shreds
+            3,   // position
+            0,   // version
         );
         coding_shred.sign(&leader_keypair);
         // shred.slot() > root, shred continues
@@ -945,14 +946,15 @@ mod test {
             std::net::{IpAddr, Ipv4Addr},
         };
         solana_logger::setup();
-        let shred = Shred::new_empty_coding(
-            5, // slot
-            5, // index
-            5, // fec_set_index
-            6, // num_data_shreds
-            6, // num_coding_shreds
-            4, // position
-            0, // version
+        let shred = Shred::new_from_parity_shard(
+            5,   // slot
+            5,   // index
+            &[], // parity_shard
+            5,   // fec_set_index
+            6,   // num_data_shreds
+            6,   // num_coding_shreds
+            4,   // position
+            0,   // version
         );
         let mut shreds = vec![shred.clone(), shred.clone(), shred];
         let _from_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);

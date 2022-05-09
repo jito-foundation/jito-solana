@@ -591,8 +591,8 @@ mod tests {
             bank_forks::BankForks,
             commitment::{BlockCommitmentCache, CommitmentSlots},
             genesis_utils::{
-                create_genesis_config, create_genesis_config_with_vote_accounts, GenesisConfigInfo,
-                ValidatorVoteKeypairs,
+                activate_all_features, create_genesis_config,
+                create_genesis_config_with_vote_accounts, GenesisConfigInfo, ValidatorVoteKeypairs,
             },
             vote_transaction::VoteTransaction,
         },
@@ -603,6 +603,7 @@ mod tests {
             hash::Hash,
             message::Message,
             pubkey::Pubkey,
+            rent::Rent,
             signature::{Keypair, Signer},
             stake::{
                 self, instruction as stake_instruction,
@@ -824,10 +825,12 @@ mod tests {
     #[serial]
     fn test_account_subscribe() {
         let GenesisConfigInfo {
-            genesis_config,
+            mut genesis_config,
             mint_keypair: alice,
             ..
         } = create_genesis_config(10_000_000_000);
+        genesis_config.rent = Rent::default();
+        activate_all_features(&mut genesis_config);
 
         let new_stake_authority = solana_sdk::pubkey::new_rand();
         let stake_authority = Keypair::new();
@@ -837,7 +840,7 @@ mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
@@ -874,10 +877,7 @@ mod tests {
         let balance = {
             let bank = bank_forks.read().unwrap().working_bank();
             let rent = &bank.rent_collector().rent;
-            let rent_exempt_reserve = rent.minimum_balance(StakeState::size_of());
-            let minimum_delegation =
-                solana_stake_program::get_minimum_delegation(&bank.feature_set);
-            rent_exempt_reserve + minimum_delegation
+            rent.minimum_balance(StakeState::size_of())
         };
 
         let tx = system_transaction::transfer(&alice, &from.pubkey(), balance, blockhash);
@@ -927,7 +927,13 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&response).unwrap(),
         );
 
-        let tx = system_transaction::transfer(&alice, &stake_authority.pubkey(), 1, blockhash);
+        let balance = {
+            let bank = bank_forks.read().unwrap().working_bank();
+            let rent = &bank.rent_collector().rent;
+            rent.minimum_balance(0)
+        };
+        let tx =
+            system_transaction::transfer(&alice, &stake_authority.pubkey(), balance, blockhash);
         process_transaction_and_notify(&bank_forks, &tx, &rpc_subscriptions, 1).unwrap();
         sleep(Duration::from_millis(200));
         let ix = stake_instruction::authorize(
@@ -963,7 +969,7 @@ mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
@@ -1151,7 +1157,7 @@ mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let bob = Keypair::new();

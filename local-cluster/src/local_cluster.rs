@@ -221,7 +221,7 @@ impl LocalCluster {
             create_stake_config_account(
                 1,
                 &stake_config::Config {
-                    warmup_cooldown_rate: 1_000_000_000.0f64,
+                    warmup_cooldown_rate: std::f64::MAX,
                     slash_penalty: std::u8::MAX,
                 },
             ),
@@ -248,6 +248,7 @@ impl LocalCluster {
             true, // should_check_duplicate_instance
             Arc::new(RwLock::new(ValidatorStartProgress::default())),
             socket_addr_space,
+            false, // use_quic
         );
 
         let mut validators = HashMap::new();
@@ -441,6 +442,7 @@ impl LocalCluster {
             true, // should_check_duplicate_instance
             Arc::new(RwLock::new(ValidatorStartProgress::default())),
             socket_addr_space,
+            false, // use_quic
         );
 
         let validator_pubkey = validator_keypair.pubkey();
@@ -566,8 +568,8 @@ impl LocalCluster {
         let vote_account_pubkey = vote_account.pubkey();
         let node_pubkey = from_account.pubkey();
         info!(
-            "setup_vote_and_stake_accounts: {}, {}",
-            node_pubkey, vote_account_pubkey
+            "setup_vote_and_stake_accounts: {}, {}, amount: {}",
+            node_pubkey, vote_account_pubkey, amount,
         );
         let stake_account_keypair = Keypair::new();
         let stake_account_pubkey = stake_account_keypair.pubkey();
@@ -777,6 +779,7 @@ impl Cluster for LocalCluster {
             true, // should_check_duplicate_instance
             Arc::new(RwLock::new(ValidatorStartProgress::default())),
             socket_addr_space,
+            false, // use_quic
         );
         cluster_validator_info.validator = Some(restarted_node);
         cluster_validator_info

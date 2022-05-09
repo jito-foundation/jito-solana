@@ -463,7 +463,7 @@ impl ReplayStage {
 
                     let mut replay_active_banks_time = Measure::start("replay_active_banks_time");
                     let mut ancestors = bank_forks.read().unwrap().ancestors();
-                    let mut descendants = bank_forks.read().unwrap().descendants().clone();
+                    let mut descendants = bank_forks.read().unwrap().descendants();
                     let did_complete_bank = Self::replay_active_banks(
                         &blockstore,
                         &bank_forks,
@@ -533,7 +533,7 @@ impl ReplayStage {
                     // and switching proofs because these may be votes that haven't yet been
                     // included in a block, so we may not have yet observed these votes just
                     // by replaying blocks.
-                    let mut process_unfrozen_gossip_verified_vote_hashes_time = Measure::start("process_gossip_duplicate_confirmed_slots");
+                    let mut process_unfrozen_gossip_verified_vote_hashes_time = Measure::start("process_gossip_verified_vote_hashes");
                     Self::process_gossip_verified_vote_hashes(
                         &gossip_verified_vote_hash_receiver,
                         &mut unfrozen_gossip_verified_vote_hashes,
@@ -1519,8 +1519,7 @@ impl ReplayStage {
             .read()
             .unwrap()
             .get(parent_slot)
-            .expect("parent_slot doesn't exist in bank forks")
-            .clone();
+            .expect("parent_slot doesn't exist in bank forks");
 
         assert!(parent.is_frozen());
 
@@ -1768,8 +1767,7 @@ impl ReplayStage {
                 .read()
                 .unwrap()
                 .get(new_root)
-                .expect("Root bank doesn't exist")
-                .clone();
+                .expect("Root bank doesn't exist");
             let mut rooted_banks = root_bank.parents();
             rooted_banks.push(root_bank.clone());
             let rooted_slots: Vec<_> = rooted_banks.iter().map(|bank| bank.slot()).collect();
@@ -2155,7 +2153,7 @@ impl ReplayStage {
                 continue;
             }
 
-            let bank = bank_forks.read().unwrap().get(*bank_slot).unwrap().clone();
+            let bank = bank_forks.read().unwrap().get(*bank_slot).unwrap();
             let parent_slot = bank.parent_slot();
             let prev_leader_slot = progress.get_bank_prev_leader_slot(&bank);
             let (num_blocks_on_fork, num_dropped_blocks_on_fork) = {
@@ -3125,7 +3123,7 @@ impl ReplayStage {
 }
 
 #[cfg(test)]
-pub mod tests {
+pub(crate) mod tests {
     use {
         super::*,
         crate::{
@@ -3144,7 +3142,7 @@ pub mod tests {
             create_new_tmp_ledger,
             genesis_utils::{create_genesis_config, create_genesis_config_with_leader},
             get_tmp_ledger_path,
-            shred::{Shred, SIZE_OF_DATA_SHRED_PAYLOAD},
+            shred::{Shred, ShredFlags, SIZE_OF_DATA_SHRED_PAYLOAD},
         },
         solana_rpc::{
             optimistically_confirmed_bank_tracker::OptimisticallyConfirmedBank,
@@ -3322,7 +3320,7 @@ pub mod tests {
         // Insert a non-root bank so that the propagation logic will update this
         // bank
         let bank1 = Bank::new_from_parent(
-            bank_forks.read().unwrap().get(0).unwrap(),
+            &bank_forks.read().unwrap().get(0).unwrap(),
             &leader_schedule_cache.slot_leader_at(1, None).unwrap(),
             1,
         );
@@ -3422,7 +3420,7 @@ pub mod tests {
 
         let root = 3;
         let root_bank = Bank::new_from_parent(
-            bank_forks.read().unwrap().get(0).unwrap(),
+            &bank_forks.read().unwrap().get(0).unwrap(),
             &Pubkey::default(),
             root,
         );
@@ -3511,20 +3509,20 @@ pub mod tests {
         let confirmed_root = 1;
         let fork = 2;
         let bank1 = Bank::new_from_parent(
-            bank_forks.read().unwrap().get(0).unwrap(),
+            &bank_forks.read().unwrap().get(0).unwrap(),
             &Pubkey::default(),
             confirmed_root,
         );
         bank_forks.write().unwrap().insert(bank1);
         let bank2 = Bank::new_from_parent(
-            bank_forks.read().unwrap().get(confirmed_root).unwrap(),
+            &bank_forks.read().unwrap().get(confirmed_root).unwrap(),
             &Pubkey::default(),
             fork,
         );
         bank_forks.write().unwrap().insert(bank2);
         let root = 3;
         let root_bank = Bank::new_from_parent(
-            bank_forks.read().unwrap().get(confirmed_root).unwrap(),
+            &bank_forks.read().unwrap().get(confirmed_root).unwrap(),
             &Pubkey::default(),
             root,
         );
@@ -3749,12 +3747,11 @@ pub mod tests {
                 bank.slot(),
                 0, // index,
                 parent_offset as u16,
-                Some(&gibberish),
-                true,  // is_last_data
-                false, // is_last_in_slot
-                0,     // reference_tick
-                0,     // version
-                0,     // fec_set_index
+                &gibberish,
+                ShredFlags::DATA_COMPLETE_SHRED,
+                0, // reference_tick
+                0, // version
+                0, // fec_set_index
             );
             vec![shred]
         });
@@ -3789,12 +3786,12 @@ pub mod tests {
                 ..
             } = vote_simulator;
 
-            let bank0 = bank_forks.read().unwrap().get(0).cloned().unwrap();
+            let bank0 = bank_forks.read().unwrap().get(0).unwrap();
             assert!(bank0.is_frozen());
             assert_eq!(bank0.tick_height(), bank0.max_tick_height());
             let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
             bank_forks.write().unwrap().insert(bank1);
-            let bank1 = bank_forks.read().unwrap().get(1).cloned().unwrap();
+            let bank1 = bank_forks.read().unwrap().get(1).unwrap();
             let bank1_progress = progress
                 .entry(bank1.slot())
                 .or_insert_with(|| ForkProgress::new(bank1.last_blockhash(), None, None, 0, 0));
@@ -3910,7 +3907,7 @@ pub mod tests {
             .is_none());
 
         for i in 1..=3 {
-            let prev_bank = bank_forks.read().unwrap().get(i - 1).unwrap().clone();
+            let prev_bank = bank_forks.read().unwrap().get(i - 1).unwrap();
             let bank = Bank::new_from_parent(&prev_bank, &Pubkey::default(), prev_bank.slot() + 1);
             let _res = bank.transfer(
                 10,
@@ -3921,7 +3918,7 @@ pub mod tests {
                 bank.register_tick(&Hash::default());
             }
             bank_forks.write().unwrap().insert(bank);
-            let arc_bank = bank_forks.read().unwrap().get(i).unwrap().clone();
+            let arc_bank = bank_forks.read().unwrap().get(i).unwrap();
             leader_vote(i - 1, &arc_bank, &leader_voting_pubkey);
             ReplayStage::update_commitment_cache(
                 arc_bank.clone(),
@@ -4056,7 +4053,7 @@ pub mod tests {
             vote_simulator::initialize_state(&keypairs, 10_000);
         let mut latest_validator_votes_for_frozen_banks =
             LatestValidatorVotesForFrozenBanks::default();
-        let bank0 = bank_forks.get(0).unwrap().clone();
+        let bank0 = bank_forks.get(0).unwrap();
         let my_keypairs = keypairs.get(&my_node_pubkey).unwrap();
         let vote_tx = vote_transaction::new_vote_transaction(
             vec![0],
@@ -4215,20 +4212,8 @@ pub mod tests {
             &mut latest_validator_votes_for_frozen_banks,
         );
 
-        let bank1 = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .clone();
-        let bank2 = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .get(2)
-            .unwrap()
-            .clone();
+        let bank1 = vote_simulator.bank_forks.read().unwrap().get(1).unwrap();
+        let bank2 = vote_simulator.bank_forks.read().unwrap().get(2).unwrap();
         assert_eq!(
             heaviest_subtree_fork_choice
                 .stake_voted_subtree(&(1, bank1.hash()))
@@ -4530,9 +4515,9 @@ pub mod tests {
         let (mut bank_forks, mut progress_map, _) =
             vote_simulator::initialize_state(&keypairs, stake);
 
-        let bank0 = bank_forks.get(0).unwrap().clone();
+        let bank0 = bank_forks.get(0).unwrap();
         bank_forks.insert(Bank::new_from_parent(&bank0, &Pubkey::default(), 9));
-        let bank9 = bank_forks.get(9).unwrap().clone();
+        let bank9 = bank_forks.get(9).unwrap();
         bank_forks.insert(Bank::new_from_parent(&bank9, &Pubkey::default(), 10));
         bank_forks.set_root(9, &AbsRequestSender::default(), None);
         let total_epoch_stake = bank0.total_epoch_stake();
@@ -4859,7 +4844,7 @@ pub mod tests {
             Bank::new_from_parent(&Arc::new(bank0), &Pubkey::default(), parent_slot);
         let mut bank_forks = BankForks::new(parent_slot_bank);
         let bank5 =
-            Bank::new_from_parent(bank_forks.get(parent_slot).unwrap(), &Pubkey::default(), 5);
+            Bank::new_from_parent(&bank_forks.get(parent_slot).unwrap(), &Pubkey::default(), 5);
         bank_forks.insert(bank5);
 
         // Should purge only `previous_leader_slot` from the progress map
@@ -4970,14 +4955,14 @@ pub mod tests {
         // Create bank 7
         let root_bank = bank_forks.read().unwrap().root_bank();
         let bank7 = Bank::new_from_parent(
-            &bank_forks.read().unwrap().get(6).unwrap().clone(),
+            &bank_forks.read().unwrap().get(6).unwrap(),
             &Pubkey::default(),
             7,
         );
         bank_forks.write().unwrap().insert(bank7);
         blockstore.add_tree(tr(6) / tr(7), false, false, 3, Hash::default());
-        let bank7 = bank_forks.read().unwrap().get(7).unwrap().clone();
-        let mut descendants = bank_forks.read().unwrap().descendants().clone();
+        let bank7 = bank_forks.read().unwrap().get(7).unwrap();
+        let mut descendants = bank_forks.read().unwrap().descendants();
         let mut ancestors = bank_forks.read().unwrap().ancestors();
 
         // Process a transfer on bank 7
@@ -4995,7 +4980,7 @@ pub mod tests {
 
         // Process a vote for slot 0 in bank 5
         let validator0_keypairs = &validator_keypairs.get(&sender).unwrap();
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let vote_tx = vote_transaction::new_vote_transaction(
             vec![0],
             bank0.hash(),
@@ -5053,7 +5038,7 @@ pub mod tests {
         assert_eq!(bank7.get_balance(&sender), old_balance);
 
         // Purging slot 4 should purge only slot 4
-        let mut descendants = bank_forks.read().unwrap().descendants().clone();
+        let mut descendants = bank_forks.read().unwrap().descendants();
         let mut ancestors = bank_forks.read().unwrap().ancestors();
         ReplayStage::purge_unconfirmed_duplicate_slot(
             4,
@@ -5076,7 +5061,7 @@ pub mod tests {
         }
 
         // Purging slot 1 should purge both forks 2 and 3
-        let mut descendants = bank_forks.read().unwrap().descendants().clone();
+        let mut descendants = bank_forks.read().unwrap().descendants();
         let mut ancestors = bank_forks.read().unwrap().ancestors();
         ReplayStage::purge_unconfirmed_duplicate_slot(
             1,
@@ -5101,7 +5086,7 @@ pub mod tests {
         let (VoteSimulator { bank_forks, .. }, _) = setup_default_forks(1, None::<GenerateVotes>);
 
         // Purge branch rooted at slot 2
-        let mut descendants = bank_forks.read().unwrap().descendants().clone();
+        let mut descendants = bank_forks.read().unwrap().descendants();
         let mut ancestors = bank_forks.read().unwrap().ancestors();
         let slot_2_descendants = descendants.get(&2).unwrap().clone();
         ReplayStage::purge_ancestors_descendants(
@@ -5123,7 +5108,7 @@ pub mod tests {
         ));
         assert!(check_map_eq(
             &descendants,
-            bank_forks.read().unwrap().descendants()
+            &bank_forks.read().unwrap().descendants()
         ));
 
         // Try to purge the root
@@ -5131,7 +5116,7 @@ pub mod tests {
             .write()
             .unwrap()
             .set_root(3, &AbsRequestSender::default(), None);
-        let mut descendants = bank_forks.read().unwrap().descendants().clone();
+        let mut descendants = bank_forks.read().unwrap().descendants();
         let mut ancestors = bank_forks.read().unwrap().ancestors();
         let slot_3_descendants = descendants.get(&3).unwrap().clone();
         ReplayStage::purge_ancestors_descendants(
@@ -5275,7 +5260,7 @@ pub mod tests {
 
         // Record the vote for 4
         tower.record_bank_vote(
-            bank_forks.read().unwrap().get(4).unwrap(),
+            &bank_forks.read().unwrap().get(4).unwrap(),
             &Pubkey::default(),
         );
 
@@ -5411,7 +5396,7 @@ pub mod tests {
 
         let (mut ancestors, mut descendants) = {
             let r_bank_forks = bank_forks.read().unwrap();
-            (r_bank_forks.ancestors(), r_bank_forks.descendants().clone())
+            (r_bank_forks.ancestors(), r_bank_forks.descendants())
         };
 
         // Insert different versions of both 1 and 2. Both slots 1 and 2 should
@@ -5490,7 +5475,7 @@ pub mod tests {
         } = vote_simulator;
 
         tower.record_bank_vote(
-            bank_forks.read().unwrap().get(first_vote).unwrap(),
+            &bank_forks.read().unwrap().get(first_vote).unwrap(),
             &Pubkey::default(),
         );
 
@@ -5528,7 +5513,7 @@ pub mod tests {
             duplicate_confirmed_bank2_hash
         );
         let mut ancestors = bank_forks.read().unwrap().ancestors();
-        let mut descendants = bank_forks.read().unwrap().descendants().clone();
+        let mut descendants = bank_forks.read().unwrap().descendants();
         let old_descendants_of_2 = descendants.get(&2).unwrap().clone();
 
         ReplayStage::dump_then_repair_correct_slots(
@@ -5584,7 +5569,7 @@ pub mod tests {
             .collect();
 
         let ancestors = bank_forks.read().unwrap().ancestors();
-        let descendants = bank_forks.read().unwrap().descendants().clone();
+        let descendants = bank_forks.read().unwrap().descendants();
 
         ReplayStage::compute_bank_stats(
             &Pubkey::new_unique(),
@@ -5711,7 +5696,7 @@ pub mod tests {
             .collect();
 
         let ancestors = bank_forks.read().unwrap().ancestors();
-        let descendants = bank_forks.read().unwrap().descendants().clone();
+        let descendants = bank_forks.read().unwrap().descendants();
 
         ReplayStage::compute_bank_stats(
             &Pubkey::new_unique(),
@@ -5821,7 +5806,7 @@ pub mod tests {
 
         // Cast a vote for slot 3 on one fork
         let vote_slot = 3;
-        let vote_bank = bank_forks.read().unwrap().get(vote_slot).unwrap().clone();
+        let vote_bank = bank_forks.read().unwrap().get(vote_slot).unwrap();
         gossip_verified_vote_hash_sender
             .send((vote_pubkey, vote_slot, vote_bank.hash()))
             .expect("Send should succeed");
@@ -5873,7 +5858,7 @@ pub mod tests {
             validator_keypairs.remove(&my_pubkey).unwrap().vote_keypair,
         )];
         let my_vote_pubkey = my_vote_keypair[0].pubkey();
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
 
         let (voting_sender, voting_receiver) = unbounded();
 
@@ -6139,7 +6124,7 @@ pub mod tests {
         let (retransmit_slots_sender, retransmit_slots_receiver) = unbounded();
 
         let bank1 = Bank::new_from_parent(
-            bank_forks.read().unwrap().get(0).unwrap(),
+            &bank_forks.read().unwrap().get(0).unwrap(),
             &leader_schedule_cache.slot_leader_at(1, None).unwrap(),
             1,
         );
@@ -6310,7 +6295,7 @@ pub mod tests {
         let mut prev_index = 0;
         for i in (1..10).chain(11..15) {
             let bank = Bank::new_from_parent(
-                bank_forks.read().unwrap().get(prev_index).unwrap(),
+                &bank_forks.read().unwrap().get(prev_index).unwrap(),
                 &leader_schedule_cache.slot_leader_at(i, None).unwrap(),
                 i,
             );
@@ -6382,7 +6367,7 @@ pub mod tests {
             .cloned()
             .collect();
         let ancestors = &bank_forks.read().unwrap().ancestors();
-        let descendants = &bank_forks.read().unwrap().descendants().clone();
+        let descendants = &bank_forks.read().unwrap().descendants();
         ReplayStage::compute_bank_stats(
             &Pubkey::default(),
             &bank_forks.read().unwrap().ancestors(),

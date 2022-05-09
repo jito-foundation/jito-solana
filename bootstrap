@@ -11,3 +11,4 @@ RUST_LOG=INFO \
   --rpc-pubsub-enable-block-subscription \
   --enable-rpc-transaction-history \
   --tip-program-pubkey Ek3SBXmGDvyvCGPYb98du8CNNjTomyiuc1wh7dMBw8gk
+

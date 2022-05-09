@@ -244,8 +244,7 @@ impl Tower {
             .get_with_checked_hash((best_slot, best_hash))
             .expect(
                 "The best overall slot must be one of `frozen_banks` which all exist in bank_forks",
-            )
-            .clone();
+            );
 
         Self::new(node_pubkey, vote_account, root, &heaviest_bank)
     }
@@ -1405,6 +1404,7 @@ pub mod test {
                 let mut account = AccountSharedData::from(Account {
                     data: vec![0; VoteState::size_of()],
                     lamports: *lamports,
+                    owner: solana_vote_program::id(),
                     ..Account::default()
                 });
                 let mut vote_state = VoteState::default();
@@ -1418,7 +1418,7 @@ pub mod test {
                 .expect("serialize state");
                 (
                     solana_sdk::pubkey::new_rand(),
-                    (*lamports, VoteAccount::from(account)),
+                    (*lamports, VoteAccount::try_from(account).unwrap()),
                 )
             })
             .collect()
@@ -1522,13 +1522,7 @@ pub mod test {
         // Init state
         assert!(num_accounts > 1);
         let mut vote_simulator = VoteSimulator::new(num_accounts);
-        let bank0 = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .get(0)
-            .unwrap()
-            .clone();
+        let bank0 = vote_simulator.bank_forks.read().unwrap().get(0).unwrap();
         let total_stake = bank0.total_epoch_stake();
         assert_eq!(
             total_stake,
@@ -1560,12 +1554,7 @@ pub mod test {
     fn run_test_switch_threshold_duplicate_rollback(should_panic: bool) {
         let (bank0, mut vote_simulator, total_stake) = setup_switch_test(2);
         let ancestors = vote_simulator.bank_forks.read().unwrap().ancestors();
-        let descendants = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .descendants()
-            .clone();
+        let descendants = vote_simulator.bank_forks.read().unwrap().descendants();
         let mut tower = Tower::default();
 
         // Last vote is 47
@@ -1666,12 +1655,7 @@ pub mod test {
     fn test_switch_threshold() {
         let (bank0, mut vote_simulator, total_stake) = setup_switch_test(2);
         let ancestors = vote_simulator.bank_forks.read().unwrap().ancestors();
-        let mut descendants = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .descendants()
-            .clone();
+        let mut descendants = vote_simulator.bank_forks.read().unwrap().descendants();
         let mut tower = Tower::default();
         let other_vote_account = vote_simulator.vote_pubkeys[1];
 
@@ -1819,12 +1803,7 @@ pub mod test {
         tower.vote_state.root_slot = Some(43);
         // Refresh ancestors and descendants for new root.
         let ancestors = vote_simulator.bank_forks.read().unwrap().ancestors();
-        let descendants = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .descendants()
-            .clone();
+        let descendants = vote_simulator.bank_forks.read().unwrap().descendants();
 
         assert_eq!(
             tower.check_switch_threshold(
@@ -1846,12 +1825,7 @@ pub mod test {
         let num_validators = 2;
         let (bank0, mut vote_simulator, total_stake) = setup_switch_test(2);
         let ancestors = vote_simulator.bank_forks.read().unwrap().ancestors();
-        let descendants = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .descendants()
-            .clone();
+        let descendants = vote_simulator.bank_forks.read().unwrap().descendants();
         let mut tower = Tower::default();
         let other_vote_account = vote_simulator.vote_pubkeys[1];
 
@@ -1927,12 +1901,7 @@ pub mod test {
         // included in the switching proof
         vote_simulator.set_root(44);
         let ancestors = vote_simulator.bank_forks.read().unwrap().ancestors();
-        let descendants = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .descendants()
-            .clone();
+        let descendants = vote_simulator.bank_forks.read().unwrap().descendants();
         assert_eq!(
             tower.check_switch_threshold(
                 110,
@@ -2574,13 +2543,7 @@ pub mod test {
         // Init state
         let mut vote_simulator = VoteSimulator::new(2);
         let other_vote_account = vote_simulator.vote_pubkeys[1];
-        let bank0 = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .get(0)
-            .unwrap()
-            .clone();
+        let bank0 = vote_simulator.bank_forks.read().unwrap().get(0).unwrap();
         let total_stake = bank0.total_epoch_stake();
         assert_eq!(
             total_stake,
@@ -2605,12 +2568,7 @@ pub mod test {
         }
 
         let ancestors = vote_simulator.bank_forks.read().unwrap().ancestors();
-        let descendants = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .descendants()
-            .clone();
+        let descendants = vote_simulator.bank_forks.read().unwrap().descendants();
         let mut tower = Tower::default();
 
         tower.record_vote(43, Hash::default());
@@ -2679,13 +2637,7 @@ pub mod test {
         // Prepare simulated validator restart!
         let mut vote_simulator = VoteSimulator::new(2);
         let other_vote_account = vote_simulator.vote_pubkeys[1];
-        let bank0 = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .get(0)
-            .unwrap()
-            .clone();
+        let bank0 = vote_simulator.bank_forks.read().unwrap().get(0).unwrap();
         let total_stake = bank0.total_epoch_stake();
         let forks = tr(0)
             / (tr(1)
@@ -2708,12 +2660,7 @@ pub mod test {
         let mut slot_history = SlotHistory::default();
         vote_simulator.set_root(replayed_root_slot);
         let ancestors = vote_simulator.bank_forks.read().unwrap().ancestors();
-        let descendants = vote_simulator
-            .bank_forks
-            .read()
-            .unwrap()
-            .descendants()
-            .clone();
+        let descendants = vote_simulator.bank_forks.read().unwrap().descendants();
         for slot in &[0, 1, 2, 43, replayed_root_slot] {
             slot_history.add(*slot);
         }

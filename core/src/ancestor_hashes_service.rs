@@ -23,7 +23,7 @@ use {
         pubkey::Pubkey,
         timing::timestamp,
     },
-    solana_streamer::streamer::{self, PacketBatchReceiver},
+    solana_streamer::streamer::{self, PacketBatchReceiver, StreamerReceiveStats},
     std::{
         collections::HashSet,
         net::UdpSocket,
@@ -149,10 +149,12 @@ impl AncestorHashesService {
         let (response_sender, response_receiver) = unbounded();
         let t_receiver = streamer::receiver(
             ancestor_hashes_request_socket.clone(),
-            &exit,
+            exit.clone(),
             response_sender,
             Recycler::default(),
-            "ancestor_hashes_response_receiver",
+            Arc::new(StreamerReceiveStats::new(
+                "ancestor_hashes_response_receiver",
+            )),
             1,
             false,
         );
@@ -910,10 +912,12 @@ mod test {
             // Set up response threads
             let t_request_receiver = streamer::receiver(
                 Arc::new(responder_node.sockets.serve_repair),
-                &exit,
+                exit.clone(),
                 requests_sender,
                 Recycler::default(),
-                "serve_repair_receiver",
+                Arc::new(StreamerReceiveStats::new(
+                    "ancestor_hashes_response_receiver",
+                )),
                 1,
                 false,
             );
@@ -1442,7 +1446,7 @@ mod test {
         ReplayStage::dump_then_repair_correct_slots(
             &mut duplicate_slots_to_repair,
             &mut bank_forks.read().unwrap().ancestors(),
-            &mut bank_forks.read().unwrap().descendants().clone(),
+            &mut bank_forks.read().unwrap().descendants(),
             &mut progress,
             &bank_forks,
             &requester_blockstore,

@@ -28,9 +28,10 @@ use {
     },
     solana_rbpf::{
         aligned_memory::AlignedMemory,
-        ebpf::HOST_ALIGN,
+        ebpf::{HOST_ALIGN, MM_INPUT_START},
         elf::Executable,
         error::{EbpfError, UserDefinedError},
+        memory_region::MemoryRegion,
         static_analysis::Analysis,
         verifier::{self, VerifierError},
         vm::{Config, EbpfVm, InstructionMeter},
@@ -146,6 +147,11 @@ pub fn create_executor(
         reject_callx_r10: invoke_context
             .feature_set
             .is_active(&reject_callx_r10::id()),
+        dynamic_stack_frames: false,
+        enable_sdiv: false,
+        optimize_rodata: false,
+        static_syscalls: false,
+        enable_elf_vaddr: false,
         // Warning, do not use `Config::default()` so that configuration here is explicit.
     };
     let mut create_executor_metrics = executor_metrics::CreateMetrics::default();
@@ -259,7 +265,8 @@ pub fn create_vm<'a, 'b>(
     }
     let mut heap =
         AlignedMemory::new_with_size(compute_budget.heap_size.unwrap_or(HEAP_LENGTH), HOST_ALIGN);
-    let mut vm = EbpfVm::new(program, heap.as_slice_mut(), parameter_bytes)?;
+    let parameter_region = MemoryRegion::new_writable(parameter_bytes, MM_INPUT_START);
+    let mut vm = EbpfVm::new(program, heap.as_slice_mut(), vec![parameter_region])?;
     syscalls::bind_syscall_context_objects(&mut vm, invoke_context, heap)?;
     Ok(vm)
 }
@@ -1194,7 +1201,7 @@ impl Executor for BpfExecutor {
             );
             if log_enabled!(Trace) {
                 let mut trace_buffer = Vec::<u8>::new();
-                let analysis = Analysis::from_executable(&self.executable);
+                let analysis = Analysis::from_executable(&self.executable).unwrap();
                 vm.get_tracer().write(&mut trace_buffer, &analysis).unwrap();
                 let trace_string = String::from_utf8(trace_buffer).unwrap();
                 trace!("BPF Program Instruction Trace:\n{}", trace_string);
@@ -1355,7 +1362,7 @@ mod tests {
             0x05, 0x00, 0xfe, 0xff, 0x00, 0x00, 0x00, 0x00, // goto -2
             0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // exit
         ];
-        let input = &mut [0x00];
+        let mut input_mem = [0x00];
         let config = Config::default();
         let syscall_registry = SyscallRegistry::default();
         let mut bpf_functions = std::collections::BTreeMap::<u32, (usize, String)>::new();
@@ -1375,8 +1382,10 @@ mod tests {
             bpf_functions,
         )
         .unwrap();
+        let input_region = MemoryRegion::new_writable(&mut input_mem, MM_INPUT_START);
         let mut vm =
-            EbpfVm::<BpfError, TestInstructionMeter>::new(&program, &mut [], input).unwrap();
+            EbpfVm::<BpfError, TestInstructionMeter>::new(&program, &mut [], vec![input_region])
+                .unwrap();
         let mut instruction_meter = TestInstructionMeter { remaining: 10 };
         vm.execute_program_interpreted(&mut instruction_meter)
             .unwrap();
@@ -1463,7 +1472,7 @@ mod tests {
         let loader_id = bpf_loader::id();
         let program_id = Pubkey::new_unique();
         let mut program_account =
-            load_program_account_from_elf(&loader_id, "test_elfs/noop_aligned.so");
+            load_program_account_from_elf(&loader_id, "test_elfs/out/noop_aligned.so");
         program_account.set_executable(false);
         let instruction_data = bincode::serialize(&LoaderInstruction::Finalize).unwrap();
 
@@ -1527,7 +1536,7 @@ mod tests {
         let loader_id = bpf_loader::id();
         let program_id = Pubkey::new_unique();
         let mut program_account =
-            load_program_account_from_elf(&loader_id, "test_elfs/noop_aligned.so");
+            load_program_account_from_elf(&loader_id, "test_elfs/out/noop_aligned.so");
         let parameter_id = Pubkey::new_unique();
         let parameter_account = AccountSharedData::new(1, 0, &loader_id);
         let parameter_meta = AccountMeta {
@@ -1618,7 +1627,7 @@ mod tests {
         let loader_id = bpf_loader_deprecated::id();
         let program_id = Pubkey::new_unique();
         let program_account =
-            load_program_account_from_elf(&loader_id, "test_elfs/noop_unaligned.so");
+            load_program_account_from_elf(&loader_id, "test_elfs/out/noop_unaligned.so");
         let parameter_id = Pubkey::new_unique();
         let parameter_account = AccountSharedData::new(1, 0, &loader_id);
         let parameter_meta = AccountMeta {
@@ -1659,7 +1668,7 @@ mod tests {
         let loader_id = bpf_loader::id();
         let program_id = Pubkey::new_unique();
         let program_account =
-            load_program_account_from_elf(&loader_id, "test_elfs/noop_aligned.so");
+            load_program_account_from_elf(&loader_id, "test_elfs/out/noop_aligned.so");
         let parameter_id = Pubkey::new_unique();
         let parameter_account = AccountSharedData::new(1, 0, &loader_id);
         let parameter_meta = AccountMeta {
@@ -2037,7 +2046,7 @@ mod tests {
         let upgrade_authority_keypair = Keypair::new();
 
         // Load program file
-        let mut file = File::open("test_elfs/noop_aligned.so").expect("file open failed");
+        let mut file = File::open("test_elfs/out/noop_aligned.so").expect("file open failed");
         let mut elf = Vec::new();
         file.read_to_end(&mut elf).unwrap();
 
@@ -2720,10 +2729,10 @@ mod tests {
 
     #[test]
     fn test_bpf_loader_upgradeable_upgrade() {
-        let mut file = File::open("test_elfs/noop_aligned.so").expect("file open failed");
+        let mut file = File::open("test_elfs/out/noop_aligned.so").expect("file open failed");
         let mut elf_orig = Vec::new();
         file.read_to_end(&mut elf_orig).unwrap();
-        let mut file = File::open("test_elfs/noop_unaligned.so").expect("file open failed");
+        let mut file = File::open("test_elfs/out/noop_unaligned.so").expect("file open failed");
         let mut elf_new = Vec::new();
         file.read_to_end(&mut elf_new).unwrap();
         assert_ne!(elf_orig.len(), elf_new.len());
@@ -3755,7 +3764,7 @@ mod tests {
         let program_id = Pubkey::new_unique();
 
         // Create program account
-        let mut file = File::open("test_elfs/noop_aligned.so").expect("file open failed");
+        let mut file = File::open("test_elfs/out/noop_aligned.so").expect("file open failed");
         let mut elf = Vec::new();
         file.read_to_end(&mut elf).unwrap();
 

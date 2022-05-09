@@ -52,7 +52,10 @@ pub fn nonce(buf: &[u8]) -> Option<Nonce> {
 mod test {
     use {
         super::*,
-        solana_ledger::{shred::Shred, sigverify_shreds::verify_shred_cpu},
+        solana_ledger::{
+            shred::{Shred, ShredFlags},
+            sigverify_shreds::verify_shred_cpu,
+        },
         solana_sdk::{
             packet::PacketFlags,
             signature::{Keypair, Signer},
@@ -69,9 +72,8 @@ mod test {
             slot,
             0xc0de,
             0xdead,
-            Some(&[1, 2, 3, 4]),
-            true,
-            true,
+            &[1, 2, 3, 4],
+            ShredFlags::LAST_SHRED_IN_SLOT,
             0,
             0,
             0xc0de,

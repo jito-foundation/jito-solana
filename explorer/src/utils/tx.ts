@@ -24,6 +24,7 @@ import { TokenInfoMap } from "@solana/spl-token-registry";
 export enum PROGRAM_NAMES {
   // native built-ins
   ADDRESS_MAP = "Address Map Program",
+  COMPUTE_BUDGET = "Compute Budget Program",
   CONFIG = "Config Program",
   STAKE = "Stake Program",
   SYSTEM = "System Program",
@@ -114,6 +115,10 @@ export const PROGRAM_INFO_BY_ID: { [address: string]: ProgramInfo } = {
   // native built-ins
   AddressMap111111111111111111111111111111111: {
     name: PROGRAM_NAMES.ADDRESS_MAP,
+    deployments: ALL_CLUSTERS,
+  },
+  ComputeBudget111111111111111111111111111111: {
+    name: PROGRAM_NAMES.COMPUTE_BUDGET,
     deployments: ALL_CLUSTERS,
   },
   Config1111111111111111111111111111111111111: {
@@ -406,6 +411,12 @@ export const SYSVAR_IDS = {
   [SYSVAR_STAKE_HISTORY_PUBKEY.toBase58()]: "Sysvar: Stake History",
   Sysvar1nstructions1111111111111111111111111: "Sysvar: Instructions",
 };
+
+export function getProgramName(address: string, cluster: Cluster): string {
+  const label = programLabel(address, cluster);
+  if (label) return label;
+  return `Unknown Program (${address})`;
+}
 
 export function programLabel(
   address: string,

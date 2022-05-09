@@ -44,7 +44,7 @@ use {
         pubkey::Pubkey,
         slot_hashes::SlotHashes,
         system_program,
-        sysvar::{self, instructions::construct_instructions_data},
+        sysvar::{self, epoch_schedule::EpochSchedule, instructions::construct_instructions_data},
         transaction::{Result, SanitizedTransaction, TransactionAccountLocks, TransactionError},
         transaction_context::TransactionAccount,
     },
@@ -777,6 +777,7 @@ impl Accounts {
         slot: Slot,
         can_cached_slot_be_unflushed: bool,
         debug_verify: bool,
+        epoch_schedule: &EpochSchedule,
         rent_collector: &RentCollector,
     ) -> u64 {
         let use_index = false;
@@ -789,6 +790,7 @@ impl Accounts {
                 ancestors,
                 None,
                 can_cached_slot_be_unflushed,
+                epoch_schedule,
                 rent_collector,
                 is_startup,
             )
@@ -803,14 +805,18 @@ impl Accounts {
         ancestors: &Ancestors,
         total_lamports: u64,
         test_hash_calculation: bool,
+        epoch_schedule: &EpochSchedule,
         rent_collector: &RentCollector,
+        can_cached_slot_be_unflushed: bool,
     ) -> bool {
         if let Err(err) = self.accounts_db.verify_bank_hash_and_lamports_new(
             slot,
             ancestors,
             total_lamports,
             test_hash_calculation,
+            epoch_schedule,
             rent_collector,
+            can_cached_slot_be_unflushed,
         ) {
             warn!("verify_bank_hash failed: {:?}", err);
             false
@@ -1258,7 +1264,7 @@ impl Accounts {
             }
 
             let execution_status = match &execution_results[i] {
-                TransactionExecutionResult::Executed(details) => &details.status,
+                TransactionExecutionResult::Executed { details, .. } => &details.status,
                 // Don't store any accounts if tx wasn't executed
                 TransactionExecutionResult::NotExecuted(_) => continue,
             };
@@ -1421,6 +1427,7 @@ mod tests {
             rent_collector::RentCollector,
         },
         solana_address_lookup_table_program::state::LookupTableMeta,
+        solana_program_runtime::invoke_context::Executors,
         solana_sdk::{
             account::{AccountSharedData, WritableAccount},
             epoch_schedule::EpochSchedule,
@@ -1436,7 +1443,9 @@ mod tests {
         },
         std::{
             borrow::Cow,
+            cell::RefCell,
             convert::TryFrom,
+            rc::Rc,
             sync::atomic::{AtomicBool, AtomicU64, Ordering},
             thread, time,
         },
@@ -1458,14 +1467,17 @@ mod tests {
         status: Result<()>,
         nonce: Option<&NonceFull>,
     ) -> TransactionExecutionResult {
-        TransactionExecutionResult::Executed(TransactionExecutionDetails {
-            status,
-            log_messages: None,
-            inner_instructions: None,
-            durable_nonce_fee: nonce.map(DurableNonceFee::from),
-            return_data: None,
-            executed_units: 0u64,
-        })
+        TransactionExecutionResult::Executed {
+            details: TransactionExecutionDetails {
+                status,
+                log_messages: None,
+                inner_instructions: None,
+                durable_nonce_fee: nonce.map(DurableNonceFee::from),
+                return_data: None,
+                executed_units: 0u64,
+            },
+            executors: Rc::new(RefCell::new(Executors::default())),
+        }
     }
 
     fn load_accounts_with_fee_and_rent(

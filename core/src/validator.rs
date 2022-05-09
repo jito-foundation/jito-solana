@@ -382,6 +382,7 @@ impl Validator {
         should_check_duplicate_instance: bool,
         start_progress: Arc<RwLock<ValidatorStartProgress>>,
         socket_addr_space: SocketAddrSpace,
+        use_quic: bool,
     ) -> Self {
         let id = identity_keypair.pubkey();
         assert_eq!(id, node.info.id);
@@ -966,6 +967,7 @@ impl Validator {
             block_metadata_notifier,
             config.wait_to_vote_slot,
             accounts_background_request_sender,
+            use_quic,
         );
 
         let tpu = Tpu::new(
@@ -2074,6 +2076,7 @@ mod tests {
             true, // should_check_duplicate_instance
             start_progress.clone(),
             SocketAddrSpace::Unspecified,
+            false, // use_quic
         );
         assert_eq!(
             *start_progress.read().unwrap(),
@@ -2168,6 +2171,7 @@ mod tests {
                     true, // should_check_duplicate_instance
                     Arc::new(RwLock::new(ValidatorStartProgress::default())),
                     SocketAddrSpace::Unspecified,
+                    false, // use_quic
                 )
             })
             .collect();

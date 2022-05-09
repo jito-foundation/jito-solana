@@ -145,7 +145,8 @@ where
     X: Clone + Default,
 {
     let mut notified = false;
-    if let Some(bank) = bank_forks.read().unwrap().get(slot).cloned() {
+    let bank = bank_forks.read().unwrap().get(slot);
+    if let Some(bank) = bank {
         let results = bank_method(&bank, params);
         let mut w_last_notified_slot = subscription.last_notified_slot.write().unwrap();
         let (filter_results, result_slot) =
@@ -442,7 +443,7 @@ fn initial_last_notified_slot(
     bank_forks: &RwLock<BankForks>,
     block_commitment_cache: &RwLock<BlockCommitmentCache>,
     optimistically_confirmed_bank: &RwLock<OptimisticallyConfirmedBank>,
-) -> Slot {
+) -> Option<Slot> {
     match params {
         SubscriptionParams::Account(params) => {
             let slot = if params.commitment.is_finalized() {
@@ -456,18 +457,10 @@ fn initial_last_notified_slot(
                 block_commitment_cache.read().unwrap().slot()
             };
 
-            if let Some((_account, slot)) = bank_forks
-                .read()
-                .unwrap()
-                .get(slot)
-                .and_then(|bank| bank.get_account_modified_slot(&params.pubkey))
-            {
-                slot
-            } else {
-                0
-            }
+            let bank = bank_forks.read().unwrap().get(slot)?;
+            Some(bank.get_account_modified_slot(&params.pubkey)?.1)
         }
-        _ => 0,
+        _ => None,
     }
 }
 
@@ -754,6 +747,7 @@ impl RpcSubscriptions {
                                     &block_commitment_cache,
                                     &optimistically_confirmed_bank,
                                 )
+                                .unwrap_or(0)
                             });
                         }
                         NotificationEntry::Unsubscribed(params, id) => {
@@ -942,7 +936,7 @@ impl RpcSubscriptions {
                 SubscriptionParams::Block(params) => {
                     num_blocks_found.fetch_add(1, Ordering::Relaxed);
                     if let Some(slot) = slot {
-                        let bank = bank_forks.read().unwrap().get(slot).cloned();
+                        let bank = bank_forks.read().unwrap().get(slot);
                         if let Some(bank) = bank {
                             // We're calling it unnotified in this context
                             // because, logically, it gets set to `last_notified_slot + 1`
@@ -1211,7 +1205,8 @@ pub(crate) mod tests {
         serial_test::serial,
         solana_client::rpc_config::{
             RpcAccountInfoConfig, RpcBlockSubscribeConfig, RpcBlockSubscribeFilter,
-            RpcProgramAccountsConfig, RpcSignatureSubscribeConfig, RpcTransactionLogsFilter,
+            RpcProgramAccountsConfig, RpcSignatureSubscribeConfig, RpcTransactionLogsConfig,
+            RpcTransactionLogsFilter,
         },
         solana_runtime::{
             commitment::BlockCommitment,
@@ -1262,7 +1257,7 @@ pub(crate) mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let alice = Keypair::new();
@@ -1839,10 +1834,10 @@ pub(crate) mod tests {
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
 
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
-        let bank1 = bank_forks.read().unwrap().get(1).unwrap().clone();
+        let bank1 = bank_forks.read().unwrap().get(1).unwrap();
 
         // add account for alice and process the transaction at bank1
         let alice = Keypair::new();
@@ -1870,7 +1865,7 @@ pub(crate) mod tests {
             16,
             &stake::program::id(),
         );
-        let bank2 = bank_forks.read().unwrap().get(2).unwrap().clone();
+        let bank2 = bank_forks.read().unwrap().get(2).unwrap();
 
         bank2.process_transaction(&tx).unwrap();
 
@@ -1887,7 +1882,7 @@ pub(crate) mod tests {
             16,
             &stake::program::id(),
         );
-        let bank3 = bank_forks.read().unwrap().get(3).unwrap().clone();
+        let bank3 = bank_forks.read().unwrap().get(3).unwrap();
 
         bank3.process_transaction(&tx).unwrap();
 
@@ -2026,10 +2021,10 @@ pub(crate) mod tests {
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
 
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
-        let bank1 = bank_forks.read().unwrap().get(1).unwrap().clone();
+        let bank1 = bank_forks.read().unwrap().get(1).unwrap();
 
         // add account for alice and process the transaction at bank1
         let alice = Keypair::new();
@@ -2057,7 +2052,7 @@ pub(crate) mod tests {
             16,
             &stake::program::id(),
         );
-        let bank2 = bank_forks.read().unwrap().get(2).unwrap().clone();
+        let bank2 = bank_forks.read().unwrap().get(2).unwrap();
 
         bank2.process_transaction(&tx).unwrap();
 
@@ -2137,10 +2132,10 @@ pub(crate) mod tests {
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
 
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
-        let bank1 = bank_forks.read().unwrap().get(1).unwrap().clone();
+        let bank1 = bank_forks.read().unwrap().get(1).unwrap();
 
         // add account for alice and process the transaction at bank1
         let alice = Keypair::new();
@@ -2168,7 +2163,7 @@ pub(crate) mod tests {
             16,
             &stake::program::id(),
         );
-        let bank2 = bank_forks.read().unwrap().get(2).unwrap().clone();
+        let bank2 = bank_forks.read().unwrap().get(2).unwrap();
 
         bank2.process_transaction(&tx).unwrap();
 
@@ -2265,7 +2260,7 @@ pub(crate) mod tests {
             16,
             &stake::program::id(),
         );
-        let bank3 = bank_forks.read().unwrap().get(3).unwrap().clone();
+        let bank3 = bank_forks.read().unwrap().get(3).unwrap();
 
         bank3.process_transaction(&tx).unwrap();
         bank3.freeze();
@@ -2330,7 +2325,7 @@ pub(crate) mod tests {
             .unwrap();
 
         let next_bank = Bank::new_from_parent(
-            &bank_forks.get(0).unwrap().clone(),
+            &bank_forks.get(0).unwrap(),
             &solana_sdk::pubkey::new_rand(),
             1,
         );
@@ -2630,7 +2625,7 @@ pub(crate) mod tests {
         let bank = Bank::new_for_tests(&genesis_config);
         let blockhash = bank.last_blockhash();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let bank0 = bank_forks.read().unwrap().get(0).unwrap().clone();
+        let bank0 = bank_forks.read().unwrap().get(0).unwrap();
         let bank1 = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
         bank_forks.write().unwrap().insert(bank1);
         let bank2 = Bank::new_from_parent(&bank0, &Pubkey::default(), 2);
@@ -2677,7 +2672,7 @@ pub(crate) mod tests {
         );
 
         // Add the transaction to the 1st bank and then freeze the bank
-        let bank1 = bank_forks.write().unwrap().get(1).cloned().unwrap();
+        let bank1 = bank_forks.write().unwrap().get(1).unwrap();
         bank1.process_transaction(&tx).unwrap();
         bank1.freeze();
 
@@ -2752,7 +2747,7 @@ pub(crate) mod tests {
             )
             .unwrap();
 
-        let bank2 = bank_forks.read().unwrap().get(2).unwrap().clone();
+        let bank2 = bank_forks.read().unwrap().get(2).unwrap();
         bank2.freeze();
         highest_confirmed_slot = 0;
         OptimisticallyConfirmedBankTracker::process_notification(
@@ -2790,6 +2785,114 @@ pub(crate) mod tests {
         rpc1.account_unsubscribe(sub_id1).unwrap();
 
         assert!(!subscriptions.control.account_subscribed(&alice.pubkey()));
+    }
+
+    fn make_logs_result(signature: &str, subscription_id: u64) -> serde_json::Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "logsNotification",
+            "params": {
+                "result": {
+                    "context": {
+                        "slot": 0
+                    },
+                    "value": {
+                        "signature": signature,
+                        "err": null,
+                        "logs": [
+                            "Program 11111111111111111111111111111111 invoke [1]",
+                            "Program 11111111111111111111111111111111 success"
+                        ]
+                    }
+                },
+                "subscription": subscription_id
+            }
+        })
+    }
+
+    #[test]
+    #[serial]
+    fn test_logs_subscribe() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(100);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let blockhash = bank.last_blockhash();
+        let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
+
+        let alice = Keypair::new();
+
+        let exit = Arc::new(AtomicBool::new(false));
+        let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
+        let optimistically_confirmed_bank =
+            OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
+        let subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
+            &exit,
+            max_complete_transaction_status_slot,
+            bank_forks.clone(),
+            Arc::new(RwLock::new(BlockCommitmentCache::new_for_tests())),
+            optimistically_confirmed_bank,
+        ));
+
+        let sub_config = RpcTransactionLogsConfig {
+            commitment: Some(CommitmentConfig::processed()),
+        };
+
+        let (rpc_all, mut receiver_all) = rpc_pubsub_service::test_connection(&subscriptions);
+        let sub_id_for_all = rpc_all
+            .logs_subscribe(RpcTransactionLogsFilter::All, Some(sub_config.clone()))
+            .unwrap();
+        assert!(subscriptions.control.logs_subscribed(None));
+
+        let (rpc_alice, mut receiver_alice) = rpc_pubsub_service::test_connection(&subscriptions);
+        let sub_id_for_alice = rpc_alice
+            .logs_subscribe(
+                RpcTransactionLogsFilter::Mentions(vec![alice.pubkey().to_string()]),
+                Some(sub_config),
+            )
+            .unwrap();
+        assert!(subscriptions.control.logs_subscribed(Some(&alice.pubkey())));
+
+        let tx = system_transaction::create_account(
+            &mint_keypair,
+            &alice,
+            blockhash,
+            1,
+            0,
+            &system_program::id(),
+        );
+
+        bank_forks
+            .read()
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .process_transaction_with_logs(&tx)
+            .unwrap();
+
+        subscriptions.notify_subscribers(CommitmentSlots::new_from_slot(0));
+
+        let expected_response_all =
+            make_logs_result(&tx.signatures[0].to_string(), u64::from(sub_id_for_all));
+        let response_all = receiver_all.recv();
+        assert_eq!(
+            expected_response_all,
+            serde_json::from_str::<serde_json::Value>(&response_all).unwrap(),
+        );
+        let expected_response_alice =
+            make_logs_result(&tx.signatures[0].to_string(), u64::from(sub_id_for_alice));
+        let response_alice = receiver_alice.recv();
+        assert_eq!(
+            expected_response_alice,
+            serde_json::from_str::<serde_json::Value>(&response_alice).unwrap(),
+        );
+
+        rpc_all.logs_unsubscribe(sub_id_for_all).unwrap();
+        assert!(!subscriptions.control.logs_subscribed(None));
+        rpc_alice.logs_unsubscribe(sub_id_for_alice).unwrap();
+        assert!(!subscriptions.control.logs_subscribed(Some(&alice.pubkey())));
     }
 
     #[test]

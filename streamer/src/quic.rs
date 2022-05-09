@@ -31,6 +31,7 @@ use {
 
 pub const MAX_STAKED_CONNECTIONS: usize = 2000;
 pub const MAX_UNSTAKED_CONNECTIONS: usize = 500;
+const NUM_QUIC_STREAMER_WORKER_THREADS: usize = 4;
 
 /// Returns default server configuration along with its PEM certificate chain.
 #[allow(clippy::field_reassign_with_default)] // https://github.com/rust-lang/rust-clippy/issues/6527
@@ -131,7 +132,7 @@ fn new_cert_params(identity_keypair: &Keypair, san: IpAddr) -> CertificateParams
 
 fn rt() -> Runtime {
     Builder::new_multi_thread()
-        .worker_threads(1)
+        .worker_threads(NUM_QUIC_STREAMER_WORKER_THREADS)
         .enable_all()
         .build()
         .unwrap()
@@ -153,6 +154,7 @@ fn handle_chunk(
     remote_addr: &SocketAddr,
     packet_sender: &Sender<PacketBatch>,
     stats: Arc<StreamStats>,
+    stake: u64,
 ) -> bool {
     match chunk {
         Ok(maybe_chunk) => {
@@ -177,6 +179,7 @@ fn handle_chunk(
                     let mut batch = PacketBatch::with_capacity(1);
                     let mut packet = Packet::default();
                     packet.meta.set_addr(remote_addr);
+                    packet.meta.sender_stake = stake;
                     batch.packets.push(packet);
                     *maybe_batch = Some(batch);
                     stats
@@ -372,52 +375,52 @@ impl StreamStats {
             ),
             (
                 "connection_add_failed",
-                self.connection_add_failed.load(Ordering::Relaxed),
+                self.connection_add_failed.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "connection_setup_timeout",
-                self.connection_setup_timeout.load(Ordering::Relaxed),
+                self.connection_setup_timeout.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "invalid_chunk",
-                self.total_invalid_chunks.load(Ordering::Relaxed),
+                self.total_invalid_chunks.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "invalid_chunk_size",
-                self.total_invalid_chunk_size.load(Ordering::Relaxed),
+                self.total_invalid_chunk_size.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "packets_allocated",
-                self.total_packets_allocated.load(Ordering::Relaxed),
+                self.total_packets_allocated.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "chunks_received",
-                self.total_chunks_received.load(Ordering::Relaxed),
+                self.total_chunks_received.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "packet_batch_send_error",
-                self.total_packet_batch_send_err.load(Ordering::Relaxed),
+                self.total_packet_batch_send_err.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "packet_batches_sent",
-                self.total_packet_batches_sent.load(Ordering::Relaxed),
+                self.total_packet_batches_sent.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "packet_batch_empty",
-                self.total_packet_batches_none.load(Ordering::Relaxed),
+                self.total_packet_batches_none.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
                 "stream_read_errors",
-                self.total_stream_read_errors.load(Ordering::Relaxed),
+                self.total_stream_read_errors.swap(0, Ordering::Relaxed),
                 i64
             ),
         );
@@ -432,6 +435,7 @@ fn handle_connection(
     connection_table: Arc<Mutex<ConnectionTable>>,
     stream_exit: Arc<AtomicBool>,
     stats: Arc<StreamStats>,
+    stake: u64,
 ) {
     tokio::spawn(async move {
         debug!(
@@ -454,6 +458,7 @@ fn handle_connection(
                                 &remote_addr,
                                 &packet_sender,
                                 stats.clone(),
+                                stake,
                             ) {
                                 last_update.store(timing::timestamp(), Ordering::Relaxed);
                                 break;
@@ -534,21 +539,26 @@ pub fn spawn_server(
 
                         let remote_addr = connection.remote_address();
 
-                        let mut connection_table_l =
-                            if staked_nodes.read().unwrap().contains_key(&remote_addr.ip()) {
+                        let (mut connection_table_l, stake) = {
+                            let staked_nodes = staked_nodes.read().unwrap();
+                            if let Some(stake) = staked_nodes.get(&remote_addr.ip()) {
+                                let stake = *stake;
+                                drop(staked_nodes);
                                 let mut connection_table_l =
                                     staked_connection_table.lock().unwrap();
                                 let num_pruned =
                                     connection_table_l.prune_oldest(max_staked_connections);
                                 stats.num_evictions.fetch_add(num_pruned, Ordering::Relaxed);
-                                connection_table_l
+                                (connection_table_l, stake)
                             } else {
+                                drop(staked_nodes);
                                 let mut connection_table_l = connection_table.lock().unwrap();
                                 let num_pruned =
                                     connection_table_l.prune_oldest(max_unstaked_connections);
                                 stats.num_evictions.fetch_add(num_pruned, Ordering::Relaxed);
-                                connection_table_l
-                            };
+                                (connection_table_l, 0)
+                            }
+                        };
 
                         if let Some((last_update, stream_exit)) = connection_table_l
                             .try_add_connection(
@@ -569,6 +579,7 @@ pub fn spawn_server(
                                 connection_table1,
                                 stream_exit,
                                 stats,
+                                stake,
                             );
                         } else {
                             stats.connection_add_failed.fetch_add(1, Ordering::Relaxed);
@@ -701,7 +712,14 @@ mod test {
             let mut s2 = conn2.connection.open_uni().await.unwrap();
             s1.write_all(&[0u8]).await.unwrap();
             s1.finish().await.unwrap();
-            s2.write_all(&[0u8])
+            // Send enough data to create more than 1 chunks.
+            // The first will try to open the connection (which should fail).
+            // The following chunks will enable the detection of connection failure.
+            let data = vec![1u8; PACKET_DATA_SIZE * 2];
+            s2.write_all(&data)
+                .await
+                .expect_err("shouldn't be able to open 2 connections");
+            s2.finish()
                 .await
                 .expect_err("shouldn't be able to open 2 connections");
         });
