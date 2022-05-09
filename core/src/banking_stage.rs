@@ -1,7 +1,6 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use solana_mev::tip_manager::TipManager;
 use {
     crate::{
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
@@ -21,6 +20,7 @@ use {
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
     solana_metrics::inc_new_counter_info,
+    solana_mev::tip_manager::TipManager,
     solana_perf::{
         cuda_runtime::PinnedVec,
         data_budget::DataBudget,
