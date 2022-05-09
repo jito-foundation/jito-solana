@@ -1136,7 +1136,6 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // TODO (LB): does this return programs?
         if tx
             .message()
             .account_keys()

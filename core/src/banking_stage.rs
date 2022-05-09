@@ -1766,7 +1766,6 @@ impl BankingStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // TODO (LB): does this return programs?
         if tx.message().account_keys().iter().any(|a| a == tip_program) {
             warn!("someone attempted to change the tip program!!");
             return None;
