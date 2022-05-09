@@ -81,7 +81,7 @@ impl TipManager {
         }
     }
 
-    // TODO (LB): hacky bruh!
+    // TODO (LB): remove when contract and tip payer don't need initialization
     pub fn keypair(&self) -> Keypair {
         Keypair::from_base58_string(&self.keypair.to_base58_string())
     }
