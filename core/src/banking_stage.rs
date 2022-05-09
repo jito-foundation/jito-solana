@@ -1766,6 +1766,7 @@ impl BankingStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
+        // TODO (LB): does this return programs?
         if tx.message().account_keys().iter().any(|a| a == tip_program) {
             warn!("someone attempted to change the tip program!!");
             return None;
@@ -2244,6 +2245,10 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let tip_manager = Arc::new(Mutex::new(TipManager::new(
+                Keypair::new().pubkey(),
+                Keypair::new(),
+            )));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2253,6 +2258,7 @@ mod tests {
                 None,
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
+                tip_manager,
             );
             drop(verified_sender);
             drop(gossip_verified_vote_sender);
@@ -2293,6 +2299,10 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let tip_manager = Arc::new(Mutex::new(TipManager::new(
+                Keypair::new().pubkey(),
+                Keypair::new(),
+            )));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2302,6 +2312,7 @@ mod tests {
                 None,
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
+                tip_manager,
             );
             trace!("sending bank");
             drop(verified_sender);
@@ -2374,6 +2385,10 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let tip_manager = Arc::new(Mutex::new(TipManager::new(
+                Keypair::new().pubkey(),
+                Keypair::new(),
+            )));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2383,6 +2398,7 @@ mod tests {
                 None,
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
+                tip_manager,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -2530,6 +2546,10 @@ mod tests {
                     create_test_recorder(&bank, &blockstore, Some(poh_config), None);
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
+                let tip_manager = Arc::new(Mutex::new(TipManager::new(
+                    Keypair::new().pubkey(),
+                    Keypair::new(),
+                )));
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
                     &poh_recorder,
@@ -2540,6 +2560,7 @@ mod tests {
                     None,
                     gossip_vote_sender,
                     Arc::new(RwLock::new(CostModel::default())),
+                    tip_manager,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -3892,6 +3913,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let tip_program_id = Keypair::new().pubkey();
+
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.lock().unwrap().has_bank());
             let max_tx_processing_ns = std::u128::MAX;
@@ -3908,6 +3931,7 @@ mod tests {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 num_conflicting_transactions,
+                &tip_program_id,
             );
             assert_eq!(buffered_packet_batches.len(), num_conflicting_transactions);
             // When the poh recorder has a bank, should process all non conflicting buffered packets.
@@ -3928,6 +3952,7 @@ mod tests {
                     &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                     &mut LeaderSlotMetricsTracker::new(0),
                     num_packets_to_process_per_iteration,
+                    &tip_program_id,
                 );
                 if num_expected_unprocessed == 0 {
                     assert!(buffered_packet_batches.is_empty())
@@ -3988,6 +4013,8 @@ mod tests {
                         .iter()
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
+
+                    let tip_program_id = Keypair::new().pubkey();
                     BankingStage::consume_buffered_packets(
                         &Pubkey::default(),
                         std::u128::MAX,
@@ -4001,6 +4028,7 @@ mod tests {
                         &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                         &mut LeaderSlotMetricsTracker::new(0),
                         num_packets_to_process_per_iteration,
+                        &tip_program_id,
                     );
 
                     // Check everything is correct. All indexes after `interrupted_iteration`
@@ -4276,6 +4304,8 @@ mod tests {
             None,
         );
 
+        let tip_program = Keypair::new().pubkey();
+
         // packets with no votes
         {
             let vote_indexes = vec![];
@@ -4289,6 +4319,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
+                    &tip_program,
                 )
             });
             assert_eq!(2, txs.count());
@@ -4300,6 +4331,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
+                    &tip_program,
                 )
             });
             assert_eq!(0, txs.count());
@@ -4320,6 +4352,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
+                    &tip_program,
                 )
             });
             assert_eq!(3, txs.count());
@@ -4331,6 +4364,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
+                    &tip_program,
                 )
             });
             assert_eq!(2, txs.count());
@@ -4351,6 +4385,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
+                    &tip_program,
                 )
             });
             assert_eq!(3, txs.count());
@@ -4362,6 +4397,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
+                    &tip_program,
                 )
             });
             assert_eq!(3, txs.count());
