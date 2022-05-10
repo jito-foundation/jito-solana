@@ -341,6 +341,11 @@ pub struct RpcSignatureConfirmation {
     pub status: Result<()>,
 }
 
+// TODO(seg)
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleBatchResult {}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateTransactionResult {

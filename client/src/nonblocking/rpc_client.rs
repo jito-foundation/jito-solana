@@ -33,6 +33,7 @@ use {
     },
     solana_sdk::{
         account::Account,
+        bundle::BundleBatch,
         clock::{Epoch, Slot, UnixTimestamp, DEFAULT_MS_PER_SLOT, MAX_HASH_AGE_IN_SECONDS},
         commitment_config::{CommitmentConfig, CommitmentLevel},
         epoch_info::EpochInfo,
@@ -1365,6 +1366,21 @@ impl RpcClient {
             json!([serialized_encoded, config]),
         )
         .await
+    }
+
+    pub async fn simulate_bundle_batch(
+        &self,
+        _bundle_batch: &BundleBatch,
+    ) -> RpcResult<RpcSimulateBundleBatchResult> {
+        todo!()
+    }
+
+    pub async fn simulate_bundle_batch_with_config(
+        &self,
+        _bundle_batch: &BundleBatch,
+        _config: RpcSimulateBundleBatchConfig,
+    ) -> RpcResult<RpcSimulateBundleBatchResult> {
+        todo!()
     }
 
     /// Returns the highest slot information that the node has snapshots for.
