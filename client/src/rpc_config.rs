@@ -31,6 +31,14 @@ pub struct RpcSimulateTransactionAccountsConfig {
     pub addresses: Vec<String>,
 }
 
+// TODO(seg): nessacita mas!
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleBatchConfig {
+    #[serde(default)]
+    pub slot: Slot,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateTransactionConfig {

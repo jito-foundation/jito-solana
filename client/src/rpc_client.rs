@@ -27,6 +27,7 @@ use {
     },
     solana_sdk::{
         account::Account,
+        bundle::BundleBatch,
         clock::{Epoch, Slot, UnixTimestamp},
         commitment_config::CommitmentConfig,
         epoch_info::EpochInfo,
@@ -1108,6 +1109,24 @@ impl RpcClient {
         self.invoke(
             self.rpc_client
                 .simulate_transaction_with_config(transaction, config),
+        )
+    }
+
+    pub fn simulate_bundle_batch(
+        &self,
+        bundle_batch: &BundleBatch,
+    ) -> RpcResult<RpcSimulateBundleBatchResult> {
+        self.invoke(self.rpc_client.simulate_bundle_batch(bundle_batch))
+    }
+
+    pub fn simulate_bundle_batch_with_config(
+        &self,
+        bundle_batch: &BundleBatch,
+        config: RpcSimulateBundleBatchConfig,
+    ) -> RpcResult<RpcSimulateBundleBatchResult> {
+        self.invoke(
+            self.rpc_client
+                .simulate_bundle_batch_with_config(bundle_batch, config),
         )
     }
 
