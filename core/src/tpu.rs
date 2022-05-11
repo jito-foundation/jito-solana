@@ -217,10 +217,7 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
-        let tip_manager = Arc::new(Mutex::new(TipManager::new(
-            tip_program_pubkey,
-            keypair.clone(),
-        )));
+        let tip_manager = Arc::new(Mutex::new(TipManager::new(tip_program_pubkey)));
 
         let banking_stage = BankingStage::new(
             cluster_info,
@@ -235,6 +232,7 @@ impl Tpu {
         );
 
         let bundle_stage = BundleStage::new(
+            cluster_info,
             poh_recorder,
             transaction_status_sender,
             replay_vote_sender,

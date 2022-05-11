@@ -342,10 +342,7 @@ fn main() {
         );
         let cluster_info = Arc::new(cluster_info);
 
-        let tip_manager = Arc::new(Mutex::new(TipManager::new(
-            Keypair::new().pubkey(),
-            Keypair::new(),
-        )));
+        let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
 
         let banking_stage = BankingStage::new_num_threads(
             &cluster_info,
