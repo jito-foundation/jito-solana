@@ -32,6 +32,7 @@ mod backoff;
 pub mod blocking_proxy_client;
 pub mod bundle;
 pub mod mev_stage;
+pub mod tip_manager;
 
 const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 

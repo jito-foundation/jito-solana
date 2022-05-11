@@ -88,6 +88,8 @@ members = [
 ]
 
 exclude = [
+    "anchor",
+    "jito-programs",
     "programs/bpf",
 ]
 

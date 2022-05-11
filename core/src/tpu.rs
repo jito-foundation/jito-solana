@@ -19,7 +19,7 @@ use {
     crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
-    solana_mev::mev_stage::MevStage,
+    solana_mev::{mev_stage::MevStage, tip_manager::TipManager},
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
         optimistically_confirmed_bank_tracker::BankNotificationSender,
@@ -30,7 +30,7 @@ use {
         cost_model::CostModel,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
-    solana_sdk::signature::Keypair,
+    solana_sdk::{pubkey::Pubkey, signature::Keypair},
     solana_streamer::quic::{spawn_server, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
     std::{
         collections::HashMap,
@@ -98,6 +98,7 @@ impl Tpu {
         cost_model: &Arc<RwLock<CostModel>>,
         keypair: &Keypair,
         validator_interface_address: String,
+        tip_program_pubkey: Pubkey,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -216,6 +217,11 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
+        let tip_manager = Arc::new(Mutex::new(TipManager::new(
+            tip_program_pubkey,
+            keypair.clone(),
+        )));
+
         let banking_stage = BankingStage::new(
             cluster_info,
             poh_recorder,
@@ -225,6 +231,7 @@ impl Tpu {
             transaction_status_sender.clone(),
             replay_vote_sender.clone(),
             cost_model.clone(),
+            tip_manager.clone(),
         );
 
         let bundle_stage = BundleStage::new(
@@ -234,6 +241,7 @@ impl Tpu {
             cost_model.clone(),
             bundle_receiver,
             exit.clone(),
+            tip_manager,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
