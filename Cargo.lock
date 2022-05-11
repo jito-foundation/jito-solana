@@ -1231,18 +1231,18 @@ dependencies = [
 
 [[package]]
 name = "enum-iterator"
-version = "0.7.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4eeac5c5edb79e4e39fe8439ef35207780a11f69c52cbe424ce3dfad4cb78de6"
+checksum = "2953d1df47ac0eb70086ccabf0275aa8da8591a28bd358ee2b52bd9f9e3ff9e9"
 dependencies = [
  "enum-iterator-derive",
 ]
 
 [[package]]
 name = "enum-iterator-derive"
-version = "0.7.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c134c37760b27a871ba422106eedbb8247da973a09e82558bf26d619c882b159"
+checksum = "8958699f9359f0b04e691a13850d48b7de329138023876d07cbd024c2c820598"
 dependencies = [
  "proc-macro2 1.0.38",
  "quote 1.0.18",
@@ -4909,9 +4909,9 @@ dependencies = [
 
 [[package]]
 name = "solana-frozen-abi"
-version = "1.10.13"
+version = "1.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7dd1cefedcc43251a0618c902b8a5ce7ae6c2a5103264633a65b1b40b6ba259"
+checksum = "23b55c0145bfb801cc009003ff0996c6bc410229c1b4f5a9e05c44c06bfb8066"
 dependencies = [
  "bs58",
  "bv",
@@ -4925,7 +4925,7 @@ dependencies = [
  "serde_bytes",
  "serde_derive",
  "sha2 0.10.2",
- "solana-frozen-abi-macro 1.10.13",
+ "solana-frozen-abi-macro 1.10.14",
  "thiserror",
 ]
 
@@ -4952,9 +4952,9 @@ dependencies = [
 
 [[package]]
 name = "solana-frozen-abi-macro"
-version = "1.10.13"
+version = "1.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b37c61a1bb5dd9ac1b8f6b4fd276ea4833822668e791f74ae8c45dd792167f4"
+checksum = "30012cbb6999f997d644a685c9cbbf5d9b09b3336c44d10b4c478eb78185136d"
 dependencies = [
  "proc-macro2 1.0.38",
  "quote 1.0.18",
@@ -5263,9 +5263,9 @@ dependencies = [
 
 [[package]]
 name = "solana-logger"
-version = "1.10.13"
+version = "1.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb5aee1180cc4baa90a25ac4e62897571675f59b3df2948bf4e17f904636fc9"
+checksum = "f762db6c1ee5dc155569f8ca70aac0ab70e1459544172024318b013d89b0bf2a"
 dependencies = [
  "env_logger",
  "lazy_static",
@@ -5456,9 +5456,9 @@ dependencies = [
 
 [[package]]
 name = "solana-program"
-version = "1.10.13"
+version = "1.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9452f34caedc50eeb0752c5f9ea7992ec8f618c2041acbbd455e70186f362d51"
+checksum = "8d475315a849774fb445cb2849897bcb028e9f23755c1ce050758825ccce50a5"
 dependencies = [
  "base64 0.13.0",
  "bincode",
@@ -5489,9 +5489,9 @@ dependencies = [
  "serde_derive",
  "sha2 0.10.2",
  "sha3 0.10.1",
- "solana-frozen-abi 1.10.13",
- "solana-frozen-abi-macro 1.10.13",
- "solana-sdk-macro 1.10.13",
+ "solana-frozen-abi 1.10.14",
+ "solana-frozen-abi-macro 1.10.14",
+ "solana-sdk-macro 1.10.14",
  "thiserror",
  "wasm-bindgen",
 ]
@@ -5753,9 +5753,9 @@ dependencies = [
 
 [[package]]
 name = "solana-sdk"
-version = "1.10.13"
+version = "1.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd83ce2d96b259233e698623c83431c5c9a1dccbc12b7dfcdbc500a0946ea516"
+checksum = "658f75cb5c105c16477973d98fdeb78bdb170c4e33d1f05834139f873a3e40c5"
 dependencies = [
  "assert_matches",
  "base64 0.13.0",
@@ -5792,11 +5792,11 @@ dependencies = [
  "serde_json",
  "sha2 0.10.2",
  "sha3 0.10.1",
- "solana-frozen-abi 1.10.13",
- "solana-frozen-abi-macro 1.10.13",
- "solana-logger 1.10.13",
- "solana-program 1.10.13",
- "solana-sdk-macro 1.10.13",
+ "solana-frozen-abi 1.10.14",
+ "solana-frozen-abi-macro 1.10.14",
+ "solana-logger 1.10.14",
+ "solana-program 1.10.14",
+ "solana-sdk-macro 1.10.14",
  "thiserror",
  "uriparse",
  "wasm-bindgen",
@@ -5856,9 +5856,9 @@ dependencies = [
 
 [[package]]
 name = "solana-sdk-macro"
-version = "1.10.13"
+version = "1.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cee7e7c63938c587870f33bd6b81a9c2913773009802ba3eed57116e9f24694a"
+checksum = "4c9a87b60a95843c416e4b47bc56570fa18a3b5a6601151f1d99e7c6c4eca767"
 dependencies = [
  "bs58",
  "proc-macro2 1.0.38",
@@ -6257,9 +6257,9 @@ dependencies = [
 
 [[package]]
 name = "solana-zk-token-sdk"
-version = "1.10.13"
+version = "1.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5500f3c96fafba02151420658dfb80b83113ddbaad8c43a4056367847bb2ddd"
+checksum = "d79d84783f3c7cb38c30e245284469f45c8cfa715bf2a79323e9fabe9b6afab5"
 dependencies = [
  "aes-gcm-siv",
  "arrayref",
@@ -6278,8 +6278,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3 0.9.1",
- "solana-program 1.10.13",
- "solana-sdk 1.10.13",
+ "solana-program 1.10.14",
+ "solana-sdk 1.10.14",
  "subtle",
  "thiserror",
  "zeroize",
@@ -6360,7 +6360,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b013067447a1396303ddfc294f36e3d260a32f8a16c501c295bcdc7de39b490"
 dependencies = [
  "borsh",
- "solana-program 1.10.13",
+ "solana-program 1.10.14",
  "spl-token",
 ]
 
@@ -6370,7 +6370,7 @@ version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd0dc6f70db6bacea7ff25870b016a65ba1d1b6013536f08e4fd79a8f9005325"
 dependencies = [
- "solana-program 1.10.13",
+ "solana-program 1.10.14",
 ]
 
 [[package]]
@@ -6383,7 +6383,7 @@ dependencies = [
  "num-derive",
  "num-traits",
  "num_enum",
- "solana-program 1.10.13",
+ "solana-program 1.10.14",
  "thiserror",
 ]
 
@@ -6398,8 +6398,8 @@ dependencies = [
  "num-derive",
  "num-traits",
  "num_enum",
- "solana-program 1.10.13",
- "solana-zk-token-sdk 1.10.13",
+ "solana-program 1.10.14",
+ "solana-zk-token-sdk 1.10.14",
  "spl-memo",
  "spl-token",
  "thiserror",
