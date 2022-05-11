@@ -588,7 +588,7 @@ impl BundleStage {
 
     fn maybe_create_tip_receiver_and_initialize_program(
         bank: &Arc<Bank>,
-        tip_manager_l: &MutexGuard<TipManager>,
+        tip_manager_l: &TipManager,
         qos_service: &QosService,
         recorder: &TransactionRecorder,
         transaction_status_sender: &Option<TransactionStatusSender>,
@@ -640,7 +640,7 @@ impl BundleStage {
 
     fn maybe_change_tip_receiver(
         bank: &Arc<Bank>,
-        tip_manager_l: &MutexGuard<TipManager>,
+        tip_manager_l: &TipManager,
         qos_service: &QosService,
         recorder: &TransactionRecorder,
         transaction_status_sender: &Option<TransactionStatusSender>,

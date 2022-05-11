@@ -81,9 +81,8 @@ impl TipManager {
         }
     }
 
-    // TODO (LB): remove when contract and tip payer don't need initialization
     pub fn keypair(&self) -> Keypair {
-        Keypair::from_base58_string(&self.keypair.to_base58_string())
+        self.keypair.clone()
     }
 
     pub fn program_id(&self) -> Pubkey {

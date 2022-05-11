@@ -219,7 +219,7 @@ impl Tpu {
 
         let tip_manager = Arc::new(Mutex::new(TipManager::new(
             tip_program_pubkey,
-            Keypair::from_base58_string(&keypair.to_base58_string()), // hacky
+            keypair.clone(),
         )));
 
         let banking_stage = BankingStage::new(
