@@ -206,8 +206,15 @@ pub struct JsonRpcRequestProcessor {
 impl Metadata for JsonRpcRequestProcessor {}
 
 impl JsonRpcRequestProcessor {
+    fn bank_from_slot(&self, slot: Slot) -> Option<Arc<Bank>> {
+        debug!("Slot: {:?}", slot);
+
+        let r_bank_forks = self.bank_forks.read().unwrap();
+        r_bank_forks.get(slot)
+    }
+
     #[allow(deprecated)]
-    fn bank(&self, commitment: Option<CommitmentConfig>) -> Arc<Bank> {
+    fn bank_from_commitment(&self, commitment: Option<CommitmentConfig>) -> Arc<Bank> {
         debug!("RPC commitment_config: {:?}", commitment);
 
         let commitment = commitment.unwrap_or_default();
@@ -270,7 +277,7 @@ impl JsonRpcRequestProcessor {
     }
 
     fn genesis_creation_time(&self) -> UnixTimestamp {
-        self.bank(None).genesis_creation_time()
+        self.bank_from_commitment(None).genesis_creation_time()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -373,7 +380,7 @@ impl JsonRpcRequestProcessor {
         config: Option<RpcAccountInfoConfig>,
     ) -> Result<RpcResponse<Option<UiAccount>>> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let encoding = config.encoding.unwrap_or(UiAccountEncoding::Binary);
         check_slice_and_encoding(&encoding, config.data_slice.is_some())?;
 
@@ -387,7 +394,7 @@ impl JsonRpcRequestProcessor {
         config: Option<RpcAccountInfoConfig>,
     ) -> Result<RpcResponse<Vec<Option<UiAccount>>>> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let encoding = config.encoding.unwrap_or(UiAccountEncoding::Base64);
         check_slice_and_encoding(&encoding, config.data_slice.is_some())?;
 
@@ -403,7 +410,7 @@ impl JsonRpcRequestProcessor {
         data_len: usize,
         commitment: Option<CommitmentConfig>,
     ) -> u64 {
-        self.bank(commitment)
+        self.bank_from_commitment(commitment)
             .get_minimum_balance_for_rent_exemption(data_len)
     }
 
@@ -415,7 +422,7 @@ impl JsonRpcRequestProcessor {
         with_context: bool,
     ) -> Result<OptionalContext<Vec<RpcKeyedAccount>>> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let encoding = config.encoding.unwrap_or(UiAccountEncoding::Binary);
         let data_slice_config = config.data_slice;
         check_slice_and_encoding(&encoding, data_slice_config.is_some())?;
@@ -544,11 +551,11 @@ impl JsonRpcRequestProcessor {
         &self,
         commitment: Option<CommitmentConfig>,
     ) -> RpcInflationGovernor {
-        self.bank(commitment).inflation().into()
+        self.bank_from_commitment(commitment).inflation().into()
     }
 
     pub fn get_inflation_rate(&self) -> RpcInflationRate {
-        let bank = self.bank(None);
+        let bank = self.bank_from_commitment(None);
         let epoch = bank.epoch();
         let inflation = bank.inflation();
         let slot_in_year = bank.slot_in_year_for_inflation();
@@ -564,7 +571,7 @@ impl JsonRpcRequestProcessor {
     pub fn get_epoch_schedule(&self) -> EpochSchedule {
         // Since epoch schedule data comes from the genesis config, any commitment level should be
         // fine
-        let bank = self.bank(Some(CommitmentConfig::finalized()));
+        let bank = self.bank_from_commitment(Some(CommitmentConfig::finalized()));
         *bank.epoch_schedule()
     }
 
@@ -573,7 +580,7 @@ impl JsonRpcRequestProcessor {
         pubkey: &Pubkey,
         commitment: Option<CommitmentConfig>,
     ) -> RpcResponse<u64> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         new_response(&bank, bank.get_balance(pubkey))
     }
 
@@ -581,7 +588,7 @@ impl JsonRpcRequestProcessor {
         &self,
         commitment: Option<CommitmentConfig>,
     ) -> RpcResponse<RpcBlockhashFeeCalculator> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let blockhash = bank.confirmed_last_blockhash();
         let lamports_per_signature = bank
             .get_lamports_per_signature_for_blockhash(&blockhash)
@@ -596,7 +603,7 @@ impl JsonRpcRequestProcessor {
     }
 
     fn get_fees(&self, commitment: Option<CommitmentConfig>) -> RpcResponse<RpcFees> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let blockhash = bank.confirmed_last_blockhash();
         let lamports_per_signature = bank
             .get_lamports_per_signature_for_blockhash(&blockhash)
@@ -624,7 +631,7 @@ impl JsonRpcRequestProcessor {
         blockhash: &Hash,
         commitment: Option<CommitmentConfig>,
     ) -> RpcResponse<Option<RpcFeeCalculator>> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let lamports_per_signature = bank.get_lamports_per_signature_for_blockhash(blockhash);
         new_response(
             &bank,
@@ -635,7 +642,7 @@ impl JsonRpcRequestProcessor {
     }
 
     fn get_fee_rate_governor(&self) -> RpcResponse<RpcFeeRateGovernor> {
-        let bank = self.bank(None);
+        let bank = self.bank_from_commitment(None);
         #[allow(deprecated)]
         let fee_rate_governor = bank.get_fee_rate_governor();
         new_response(
@@ -651,7 +658,7 @@ impl JsonRpcRequestProcessor {
         signature: &Signature,
         commitment: Option<CommitmentConfig>,
     ) -> RpcResponse<bool> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let status = bank.get_signature_status(signature);
         match status {
             Some(status) => new_response(&bank, status.is_ok()),
@@ -670,11 +677,11 @@ impl JsonRpcRequestProcessor {
     }
 
     fn get_slot(&self, commitment: Option<CommitmentConfig>) -> Slot {
-        self.bank(commitment).slot()
+        self.bank_from_commitment(commitment).slot()
     }
 
     fn get_block_height(&self, commitment: Option<CommitmentConfig>) -> u64 {
-        self.bank(commitment).block_height()
+        self.bank_from_commitment(commitment).block_height()
     }
 
     fn get_max_retransmit_slot(&self) -> Slot {
@@ -686,7 +693,9 @@ impl JsonRpcRequestProcessor {
     }
 
     fn get_slot_leader(&self, commitment: Option<CommitmentConfig>) -> String {
-        self.bank(commitment).collector_id().to_string()
+        self.bank_from_commitment(commitment)
+            .collector_id()
+            .to_string()
     }
 
     fn get_slot_leaders(
@@ -695,7 +704,7 @@ impl JsonRpcRequestProcessor {
         start_slot: Slot,
         limit: usize,
     ) -> Result<Vec<Pubkey>> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
 
         let (mut epoch, mut slot_index) =
             bank.epoch_schedule().get_epoch_and_slot_index(start_slot);
@@ -740,11 +749,11 @@ impl JsonRpcRequestProcessor {
     }
 
     fn get_transaction_count(&self, commitment: Option<CommitmentConfig>) -> u64 {
-        self.bank(commitment).transaction_count() as u64
+        self.bank_from_commitment(commitment).transaction_count() as u64
     }
 
     fn get_total_supply(&self, commitment: Option<CommitmentConfig>) -> u64 {
-        self.bank(commitment).capitalization()
+        self.bank_from_commitment(commitment).capitalization()
     }
 
     fn get_cached_largest_accounts(
@@ -770,7 +779,7 @@ impl JsonRpcRequestProcessor {
         config: Option<RpcLargestAccountsConfig>,
     ) -> RpcCustomResult<RpcResponse<Vec<RpcAccountBalance>>> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
 
         if let Some((slot, accounts)) = self.get_cached_largest_accounts(&config.filter) {
             Ok(RpcResponse {
@@ -816,7 +825,7 @@ impl JsonRpcRequestProcessor {
         config: Option<RpcSupplyConfig>,
     ) -> RpcCustomResult<RpcResponse<RpcSupply>> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let non_circulating_supply =
             calculate_non_circulating_supply(&bank).map_err(|e| RpcCustomError::ScanError {
                 message: e.to_string(),
@@ -855,7 +864,7 @@ impl JsonRpcRequestProcessor {
             None
         };
 
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let vote_accounts = bank.vote_accounts();
         let epoch_vote_accounts = bank
             .epoch_vote_accounts(bank.get_epoch_and_slot_index(bank.slot()).0)
@@ -1053,7 +1062,7 @@ impl JsonRpcRequestProcessor {
                     .transpose();
             } else if commitment.is_confirmed() {
                 // Check if block is confirmed
-                let confirmed_bank = self.bank(Some(CommitmentConfig::confirmed()));
+                let confirmed_bank = self.bank_from_commitment(Some(CommitmentConfig::confirmed()));
                 if confirmed_bank.status_cache_ancestors().contains(&slot) {
                     self.check_status_is_complete(slot)?;
                     let result = self.blockstore.get_complete_block(slot, true);
@@ -1109,7 +1118,8 @@ impl JsonRpcRequestProcessor {
             if commitment.is_finalized() {
                 highest_confirmed_root
             } else {
-                self.bank(Some(CommitmentConfig::confirmed())).slot()
+                self.bank_from_commitment(Some(CommitmentConfig::confirmed()))
+                    .slot()
             },
         );
         if end_slot < start_slot {
@@ -1161,7 +1171,7 @@ impl JsonRpcRequestProcessor {
 
         // Maybe add confirmed blocks
         if commitment.is_confirmed() && last_element < end_slot {
-            let confirmed_bank = self.bank(Some(CommitmentConfig::confirmed()));
+            let confirmed_bank = self.bank_from_commitment(Some(CommitmentConfig::confirmed()));
             let mut confirmed_blocks = confirmed_bank
                 .status_cache_ancestors()
                 .into_iter()
@@ -1227,7 +1237,7 @@ impl JsonRpcRequestProcessor {
                 .last()
                 .cloned()
                 .unwrap_or_else(|| start_slot.saturating_sub(1));
-            let confirmed_bank = self.bank(Some(CommitmentConfig::confirmed()));
+            let confirmed_bank = self.bank_from_commitment(Some(CommitmentConfig::confirmed()));
             let mut confirmed_blocks = confirmed_bank
                 .status_cache_ancestors()
                 .into_iter()
@@ -1279,7 +1289,7 @@ impl JsonRpcRequestProcessor {
         signature: Signature,
         commitment: Option<CommitmentConfig>,
     ) -> Option<RpcSignatureConfirmation> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let transaction_status = self.get_transaction_status(signature, &bank)?;
         let confirmations = transaction_status
             .confirmations
@@ -1295,7 +1305,7 @@ impl JsonRpcRequestProcessor {
         signature: Signature,
         commitment: Option<CommitmentConfig>,
     ) -> Option<transaction::Result<()>> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let (_, status) = bank.get_signature_status_slot(&signature)?;
         Some(status)
     }
@@ -1310,7 +1320,7 @@ impl JsonRpcRequestProcessor {
         let search_transaction_history = config
             .map(|x| x.search_transaction_history)
             .unwrap_or(false);
-        let bank = self.bank(Some(CommitmentConfig::processed()));
+        let bank = self.bank_from_commitment(Some(CommitmentConfig::processed()));
 
         if search_transaction_history && !self.config.enable_rpc_transaction_history {
             return Err(RpcCustomError::TransactionHistoryNotAvailable.into());
@@ -1368,7 +1378,8 @@ impl JsonRpcRequestProcessor {
         let (slot, status) = bank.get_signature_status_slot(&signature)?;
         let r_block_commitment_cache = self.block_commitment_cache.read().unwrap();
 
-        let optimistically_confirmed_bank = self.bank(Some(CommitmentConfig::confirmed()));
+        let optimistically_confirmed_bank =
+            self.bank_from_commitment(Some(CommitmentConfig::confirmed()));
         let optimistically_confirmed =
             optimistically_confirmed_bank.get_signature_status_slot(&signature);
 
@@ -1411,7 +1422,7 @@ impl JsonRpcRequestProcessor {
         check_is_at_least_confirmed(commitment)?;
 
         if self.config.enable_rpc_transaction_history {
-            let confirmed_bank = self.bank(Some(CommitmentConfig::confirmed()));
+            let confirmed_bank = self.bank_from_commitment(Some(CommitmentConfig::confirmed()));
             let confirmed_transaction = if commitment.is_confirmed() {
                 let highest_confirmed_slot = confirmed_bank.slot();
                 self.blockstore
@@ -1510,7 +1521,7 @@ impl JsonRpcRequestProcessor {
                 .unwrap()
                 .highest_confirmed_root();
             let highest_slot = if commitment.is_confirmed() {
-                let confirmed_bank = self.bank(Some(CommitmentConfig::confirmed()));
+                let confirmed_bank = self.bank_from_commitment(Some(CommitmentConfig::confirmed()));
                 confirmed_bank.slot()
             } else {
                 highest_confirmed_root
@@ -1636,7 +1647,7 @@ impl JsonRpcRequestProcessor {
         config: Option<RpcEpochConfig>,
     ) -> Result<RpcStakeActivation> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let epoch = config.epoch.unwrap_or_else(|| bank.epoch());
         if bank.epoch().saturating_sub(epoch) > solana_sdk::stake_history::MAX_ENTRIES as u64 {
             return Err(Error::invalid_params(format!(
@@ -1716,7 +1727,7 @@ impl JsonRpcRequestProcessor {
         pubkey: &Pubkey,
         commitment: Option<CommitmentConfig>,
     ) -> Result<RpcResponse<UiTokenAmount>> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let account = bank.get_account(pubkey).ok_or_else(|| {
             Error::invalid_params("Invalid param: could not find account".to_string())
         })?;
@@ -1740,7 +1751,7 @@ impl JsonRpcRequestProcessor {
         mint: &Pubkey,
         commitment: Option<CommitmentConfig>,
     ) -> Result<RpcResponse<UiTokenAmount>> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let mint_account = bank.get_account(mint).ok_or_else(|| {
             Error::invalid_params("Invalid param: could not find account".to_string())
         })?;
@@ -1762,7 +1773,7 @@ impl JsonRpcRequestProcessor {
         mint: &Pubkey,
         commitment: Option<CommitmentConfig>,
     ) -> Result<RpcResponse<Vec<RpcTokenAccountBalance>>> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let (mint_owner, decimals) = get_mint_owner_and_decimals(&bank, mint)?;
         if !is_known_spl_token_id(&mint_owner) {
             return Err(Error::invalid_params(
@@ -1802,7 +1813,7 @@ impl JsonRpcRequestProcessor {
         config: Option<RpcAccountInfoConfig>,
     ) -> Result<RpcResponse<Vec<RpcKeyedAccount>>> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let encoding = config.encoding.unwrap_or(UiAccountEncoding::Binary);
         let data_slice_config = config.data_slice;
         check_slice_and_encoding(&encoding, data_slice_config.is_some())?;
@@ -1847,7 +1858,7 @@ impl JsonRpcRequestProcessor {
         config: Option<RpcAccountInfoConfig>,
     ) -> Result<RpcResponse<Vec<RpcKeyedAccount>>> {
         let config = config.unwrap_or_default();
-        let bank = self.bank(config.commitment);
+        let bank = self.bank_from_commitment(config.commitment);
         let encoding = config.encoding.unwrap_or(UiAccountEncoding::Binary);
         let data_slice_config = config.data_slice;
         check_slice_and_encoding(&encoding, data_slice_config.is_some())?;
@@ -2050,7 +2061,7 @@ impl JsonRpcRequestProcessor {
         &self,
         commitment: Option<CommitmentConfig>,
     ) -> RpcResponse<RpcBlockhash> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let blockhash = bank.last_blockhash();
         let last_valid_block_height = bank
             .get_blockhash_last_valid_block_height(&blockhash)
@@ -2069,7 +2080,7 @@ impl JsonRpcRequestProcessor {
         blockhash: &Hash,
         commitment: Option<CommitmentConfig>,
     ) -> RpcResponse<bool> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let is_valid = bank.is_blockhash_valid(blockhash);
         new_response(&bank, is_valid)
     }
@@ -2079,7 +2090,7 @@ impl JsonRpcRequestProcessor {
         message: &SanitizedMessage,
         commitment: Option<CommitmentConfig>,
     ) -> RpcResponse<Option<u64>> {
-        let bank = self.bank(commitment);
+        let bank = self.bank_from_commitment(commitment);
         let fee = bank.get_fee_for_message(message);
         new_response(&bank, fee)
     }
@@ -2491,7 +2502,7 @@ pub mod rpc_minimal {
             commitment: Option<CommitmentConfig>,
         ) -> Result<EpochInfo> {
             debug!("get_epoch_info rpc request received");
-            let bank = meta.bank(commitment);
+            let bank = meta.bank_from_commitment(commitment);
             Ok(bank.get_epoch_info())
         }
 
@@ -2610,7 +2621,7 @@ pub mod rpc_minimal {
                 let _ = verify_pubkey(identity)?;
             }
 
-            let bank = meta.bank(config.commitment);
+            let bank = meta.bank_from_commitment(config.commitment);
             let slot = slot.unwrap_or_else(|| bank.slot());
             let epoch = bank.epoch_schedule().get_epoch(slot);
 
@@ -2773,7 +2784,7 @@ pub mod rpc_bank {
                 None
             };
 
-            let bank = meta.bank(config.commitment);
+            let bank = meta.bank_from_commitment(config.commitment);
             let (first_slot, last_slot) = match config.range {
                 None => (
                     bank.epoch_schedule().get_first_slot_in_epoch(bank.epoch()),
@@ -3213,6 +3224,14 @@ pub mod rpc_full {
             config: Option<RpcSimulateTransactionConfig>,
         ) -> Result<RpcResponse<RpcSimulateTransactionResult>>;
 
+        #[rpc(meta, name = "simulateBundleBatch")]
+        fn simulate_bundle_batch(
+            &self,
+            meta: Self::Metadata,
+            data: Vec<Vec<String>>,
+            config: Option<RpcSimulateBundleBatchConfig>,
+        ) -> Result<RpcResponse<RpcSimulateBundleBatchResult>>;
+
         #[rpc(meta, name = "minimumLedgerSlot")]
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot>;
 
@@ -3428,7 +3447,7 @@ pub mod rpc_full {
             let pubkey = verify_pubkey(&pubkey_str)?;
 
             let config = config.unwrap_or_default();
-            let bank = meta.bank(config.commitment);
+            let bank = meta.bank_from_commitment(config.commitment);
 
             let blockhash = if let Some(blockhash) = config.recent_blockhash {
                 verify_hash(&blockhash)?
@@ -3489,7 +3508,7 @@ pub mod rpc_full {
             let preflight_commitment = config
                 .preflight_commitment
                 .map(|commitment| CommitmentConfig { commitment });
-            let preflight_bank = &*meta.bank(preflight_commitment);
+            let preflight_bank = &*meta.bank_from_commitment(preflight_commitment);
             let transaction = sanitize_transaction(unsanitized_tx, preflight_bank)?;
             let signature = *transaction.signature();
 
@@ -3594,7 +3613,7 @@ pub mod rpc_full {
             let (_, mut unsanitized_tx) =
                 decode_and_deserialize::<VersionedTransaction>(data, binary_encoding)?;
 
-            let bank = &*meta.bank(config.commitment);
+            let bank = &*meta.bank_from_commitment(config.commitment);
             if config.replace_recent_blockhash {
                 if config.sig_verify {
                     return Err(Error::invalid_params(
@@ -3677,10 +3696,123 @@ pub mod rpc_full {
         fn simulate_bundle_batch(
             &self,
             meta: Self::Metadata,
-            data: Vec<Vec<String>>,
+            encoded_bundle_batch: Vec<Vec<String>>,
             config: Option<RpcSimulateBundleBatchConfig>,
         ) -> Result<RpcResponse<RpcSimulateBundleBatchResult>> {
-            todo!()
+            debug!("simulate_bundle_batch rpc request received");
+
+            let config = config.unwrap_or_default();
+
+            let bank = match config.simulation_bank.unwrap_or_default() {
+                SimulationBankConfig::Commitment(commitment) => {
+                    meta.bank_from_commitment(Some(commitment))
+                }
+                SimulationBankConfig::Slot(slot) => {
+                    meta.bank_from_slot(slot)
+                        .ok_or(Err(Error::invalid_params(format!(
+                            "bank not found for the provided slot: {}",
+                            slot
+                        ))))?
+                }
+            };
+
+            let tx_encoding = config.encoding.unwrap_or(UiTransactionEncoding::Base64);
+            let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
+                Error::invalid_params(format!(
+                    "Unsupported encoding: {}. Supported encodings are: base58 & base64",
+                    tx_encoding
+                ))
+            })?;
+
+            let decoded_bundle_batch = encoded_bundle_batch
+                .into_iter()
+                .flat_map(|encoded_bundle| {
+                    encoded_bundle.into_iter.map(|encoded_tx| {
+                        decode_and_deserialize::<VersionedTransaction>(enc, binary_encoding)?
+                    })?
+                })
+                .collect::<Result<Vec<Vec<VersionedTransaction>>>>()?;
+
+            if config.replace_recent_blockhash {
+                if !config.skip_sig_verify {
+                    return Err(Error::invalid_params(
+                        "sigVerify may not be used with replaceRecentBlockhash",
+                    ));
+                }
+
+                decoded_bundle_batch.into_iter().map(|bundle| {
+                    bundle.into_iter().map(|mut tx| {
+                        tx.message.set_recent_blockhash(bank.last_blockhash());
+                        sanitize_transaction(tx, bank)?;
+                    });
+                })?;
+            }
+
+            if config.sig_verify {
+                verify_transaction(&transaction, &bank.feature_set)?;
+            }
+            let number_of_accounts = transaction.message().account_keys().len();
+
+            let TransactionSimulationResult {
+                result,
+                logs,
+                post_simulation_accounts,
+                units_consumed,
+                return_data,
+            } = bank.simulate_transaction(transaction);
+
+            let accounts = if let Some(config_accounts) = config.accounts {
+                let accounts_encoding = config_accounts
+                    .encoding
+                    .unwrap_or(UiAccountEncoding::Base64);
+
+                if accounts_encoding == UiAccountEncoding::Binary
+                    || accounts_encoding == UiAccountEncoding::Base58
+                {
+                    return Err(Error::invalid_params("base58 encoding not supported"));
+                }
+
+                if config_accounts.addresses.len() > number_of_accounts {
+                    return Err(Error::invalid_params(format!(
+                        "Too many accounts provided; max {}",
+                        number_of_accounts
+                    )));
+                }
+
+                if result.is_err() {
+                    Some(vec![None; config_accounts.addresses.len()])
+                } else {
+                    Some(
+                        config_accounts
+                            .addresses
+                            .iter()
+                            .map(|address_str| {
+                                let address = verify_pubkey(address_str)?;
+                                post_simulation_accounts
+                                    .iter()
+                                    .find(|(key, _account)| key == &address)
+                                    .map(|(pubkey, account)| {
+                                        encode_account(account, pubkey, accounts_encoding, None)
+                                    })
+                                    .transpose()
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    )
+                }
+            } else {
+                None
+            };
+
+            Ok(new_response(
+                bank,
+                RpcSimulateTransactionResult {
+                    err: result.err(),
+                    logs: Some(logs),
+                    accounts,
+                    units_consumed: Some(units_consumed),
+                    return_data: return_data.map(|return_data| return_data.into()),
+                },
+            ))
         }
 
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot> {

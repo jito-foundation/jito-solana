@@ -31,11 +31,20 @@ pub struct RpcSimulateTransactionAccountsConfig {
     pub addresses: Vec<String>,
 }
 
+// TODO(seg): maybe don't need all these derivations
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub enum SimulationCommitment {
+pub enum SimulationBankConfig {
     Commitment(CommitmentConfig),
     Slot(Slot),
+}
+
+impl Default for SimulationBankConfig {
+    fn default() -> Self {
+        Self::Commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Confirmed,
+        })
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,11 +52,11 @@ pub enum SimulationCommitment {
 pub struct RpcSimulateBundleBatchConfig {
     pub accounts: Option<RpcSimulateTransactionAccountsConfig>,
     pub encoding: Option<UiTransactionEncoding>,
-    pub simulation_bank: Option<SimulationBank>,
+    pub simulation_bank: Option<SimulationBankConfig>,
     #[serde(default)]
     pub skip_sig_verify: bool,
     #[serde(default)]
-    pub replace_recent_block_hash: bool,
+    pub replace_recent_blockhash: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
