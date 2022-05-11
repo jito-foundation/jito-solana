@@ -615,6 +615,8 @@ impl BundleStage {
             ) {
                 warn!("error initializing the tip program!!! error: {}", e);
                 return Err(e);
+            } else {
+                info!("initialized tip program");
             }
         }
         Ok(())
