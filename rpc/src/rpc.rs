@@ -3674,6 +3674,15 @@ pub mod rpc_full {
             ))
         }
 
+        fn simulate_bundle_batch(
+            &self,
+            meta: Self::Metadata,
+            data: Vec<Vec<String>>,
+            config: Option<RpcSimulateBundleBatchConfig>,
+        ) -> Result<RpcResponse<RpcSimulateBundleBatchResult>> {
+            todo!()
+        }
+
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot> {
             debug!("minimum_ledger_slot rpc request received");
             meta.minimum_ledger_slot()

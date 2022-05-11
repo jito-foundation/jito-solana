@@ -31,12 +31,23 @@ pub struct RpcSimulateTransactionAccountsConfig {
     pub addresses: Vec<String>,
 }
 
-// TODO(seg): nessacita mas!
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SimulationCommitment {
+    Commitment(CommitmentConfig),
+    Slot(Slot),
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateBundleBatchConfig {
+    pub accounts: Option<RpcSimulateTransactionAccountsConfig>,
+    pub encoding: Option<UiTransactionEncoding>,
+    pub simulation_bank: Option<SimulationBank>,
     #[serde(default)]
-    pub slot: Slot,
+    pub skip_sig_verify: bool,
+    #[serde(default)]
+    pub replace_recent_block_hash: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
