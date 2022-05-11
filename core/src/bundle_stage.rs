@@ -56,7 +56,7 @@ use {
         collections::{HashMap, HashSet},
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex, MutexGuard, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,
@@ -1142,7 +1142,7 @@ impl BundleStage {
             .iter()
             .any(|a| a == tip_program_id)
         {
-            warn!("someone attempted to change the tip program!!");
+            warn!("someone attempted to change the tip program!! tx: {:?}", tx);
             return None;
         }
 
