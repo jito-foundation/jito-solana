@@ -54,7 +54,7 @@ use {
     },
     std::{
         borrow::Cow,
-        collections::{HashMap, HashSet},
+        collections::{hash_map::RandomState, HashMap, HashSet},
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, Mutex, RwLock,
@@ -1039,18 +1039,39 @@ impl BundleStage {
         let deserialized_packets =
             unprocessed_packet_batches::deserialize_packets(&bundle.batch, &packet_indexes, None);
 
-        deserialized_packets
-            .filter_map(|p| {
-                let immutable_packet = p.immutable_section().clone();
-                Self::transaction_from_deserialized_packet(
-                    &immutable_packet,
-                    &bank.feature_set,
-                    bank.vote_only_bank(),
-                    bank.as_ref(),
-                    tip_program_id,
-                )
-            })
-            .collect()
+        if let Some(epoch_stakes) = bank.epoch_stakes(bank.epoch()) {
+            // NOTE: bundles shall not touch consensus
+            // votes use the following accounts:
+            // - vote_account pubkey: bank.vote_accounts() (also see NodeIdToVoteAccounts)
+            // - authorized_voter_keypair pubkey: bank.epoch_stakes.get(epoch).unwrap().epoch_authorized_voters() maps vote_account -> pubkey
+            // - node_keypair pubkey:
+            let vote_accounts = bank.vote_accounts();
+            let mut consens_accounts: HashSet<&Pubkey, RandomState> =
+                HashSet::from_iter(vote_accounts.keys());
+            consens_accounts.extend(epoch_stakes.epoch_authorized_voters().keys());
+            consens_accounts.extend(epoch_stakes.node_id_to_vote_accounts().keys());
+
+            deserialized_packets
+                .filter_map(|p| {
+                    let immutable_packet = p.immutable_section().clone();
+                    Self::transaction_from_deserialized_packet(
+                        &immutable_packet,
+                        &bank.feature_set,
+                        bank.vote_only_bank(),
+                        bank.as_ref(),
+                        tip_program_id,
+                        &consens_accounts,
+                    )
+                })
+                .collect()
+        } else {
+            error!(
+                "error getting epoch stakes from bank for slot: {} epoch: {}",
+                bank.slot(),
+                bank.epoch()
+            );
+            vec![]
+        }
     }
 
     fn generate_packet_indexes(vers: &PinnedVec<Packet>) -> Vec<usize> {
@@ -1101,6 +1122,7 @@ impl BundleStage {
         votes_only: bool,
         address_loader: impl AddressLoader,
         tip_program_id: &Pubkey,
+        consensus_accounts: &HashSet<&Pubkey, RandomState>,
     ) -> Option<SanitizedTransaction> {
         if votes_only && !deserialized_packet.is_simple_vote() {
             return None;
@@ -1116,6 +1138,8 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
+        // Prevent transactions from mentioning the tip program to avoid getting the tip_receiver
+        // changed mid-slot and the rest of the tips stolen
         // NOTE: if this is a weak assumption helpful for testing deployment,
         // before production it shall only be the tip program
         let tx_accounts = tx.message().account_keys();
@@ -1127,6 +1151,21 @@ impl BundleStage {
             warn!("someone attempted to change the tip program!! tx: {:?}", tx);
             return None;
         }
+
+        // Prevent transactions from locking consensus-related accounts
+        if tx_accounts.iter().any(|a| consensus_accounts.contains(a)) {
+            warn!(
+                "someone attempted to lock a consensus related account!! tx: {:?}",
+                tx
+            );
+            return None;
+        }
+
+        // NOTE: bundles shall not touch consensus
+        // votes use the following accounts:
+        // - vote_account pubkey: bank.vote_accounts() (also see NodeIdToVoteAccounts)
+        // - authorized_voter_keypair pubkey: bank.epoch_stakes.get(epoch).unwrap().epoch_authorized_voters() maps vote_account -> pubkey
+        // - node_keypair pubkey:
 
         Some(tx)
     }
