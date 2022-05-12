@@ -459,7 +459,14 @@ impl BundleStage {
                 post_balances: (post_balances, post_token_balances),
             });
 
-            // TODO(seg): double check!
+            // start at the next available transaction in the batch that threw an error
+            let processing_end = batch.lock_results().iter().position(|lr| lr.is_err());
+            if let Some(end) = processing_end {
+                chunk_start += end;
+            } else {
+                chunk_start = chunk_end;
+            }
+
             drop(batch);
         }
 
