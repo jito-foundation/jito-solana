@@ -988,21 +988,6 @@ impl BundleStage {
         Ok(())
     }
 
-    /// Checks that preparing a bundle gives an acceptable batch back
-    fn check_bundle_batch_ok(batch: &TransactionBatch) -> BundleExecutionResult<()> {
-        for r in batch.lock_results() {
-            match r {
-                Ok(())
-                | Err(TransactionError::AccountInUse)
-                | Err(TransactionError::BundleNotContinuous) => {}
-                Err(e) => {
-                    return Err(e.clone().into());
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn bundle_stage(
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,

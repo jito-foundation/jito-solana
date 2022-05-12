@@ -6,51 +6,24 @@ use {
     solana_sdk::{
         feature_set,
         pubkey::Pubkey,
-        transaction::{AddressLoader, SanitizedTransaction},
+        transaction::{AddressLoader, SanitizedTransaction, TransactionError},
     },
     std::sync::Arc,
 };
 
-pub struct LockedBundle {
-    bank: Arc<Bank>,
-    sanitized_txs: Vec<SanitizedTransaction>,
-    chunk_start: usize,
-    chunk_end: usize,
-}
-
-impl LockedBundle {
-    pub fn new(bank: Arc<Bank>, sanitized_txs: Vec<SanitizedTransaction>) -> LockedBundle {
-        let chunk_start = 0;
-        let chunk_end = std::cmp::min(sanitized_txs.len(), chunk_start + 128);
-
-        Self {
-            bank,
-            sanitized_txs,
-            chunk_start,
-            chunk_end,
+/// Checks that preparing a bundle gives an acceptable batch back
+pub fn check_bundle_batch_ok(batch: &TransactionBatch) -> BundleExecutionResult<()> {
+    for r in batch.lock_results() {
+        match r {
+            Ok(())
+            | Err(TransactionError::AccountInUse)
+            | Err(TransactionError::BundleNotContinuous) => {}
+            Err(e) => {
+                return Err(e.clone().into());
+            }
         }
     }
-}
-
-impl<'a, 'b> Iterator for LockedBundle {
-    type Item = TransactionBatch<'a, 'b>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let chunk = &self.sanitized_txs[self.chunk_start..self.chunk_end];
-        let tx_batch = self
-            .bank
-            .prepare_sequential_sanitized_batch_with_results(chunk);
-
-        // start at the next available transaction in the batch that threw an error
-        let processing_end = tx_batch.lock_results().iter().position(|res| res.is_err());
-        if let Some(end) = processing_end {
-            self.chunk_start += end;
-        } else {
-            self.chunk_start = self.chunk_end;
-        }
-
-        Some(tx_batch)
-    }
+    Ok(())
 }
 
 pub fn get_bundle_txs(

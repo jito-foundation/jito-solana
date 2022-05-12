@@ -696,6 +696,10 @@ impl DurableNonceFee {
     }
 }
 
+pub struct BundleSimulationResult {
+    pub transaction_simulation_results: Vec<TransactionSimulationResult>,
+}
+
 pub struct TransactionSimulationResult {
     pub result: Result<()>,
     pub logs: TransactionLogMessages,
@@ -703,6 +707,7 @@ pub struct TransactionSimulationResult {
     pub units_consumed: u64,
     pub return_data: Option<TransactionReturnData>,
 }
+
 pub struct TransactionBalancesSet {
     pub pre_balances: TransactionBalances,
     pub post_balances: TransactionBalances,
@@ -3867,6 +3872,25 @@ impl Bank {
     }
 
     /// Prepare a transaction batch without locking accounts for transaction simulation.
+    pub(crate) fn prepare_bundle_simulation_batch<'a>(
+        &'a self,
+        bundle: &Bundle,
+    ) -> TransactionBatch<'a, '_> {
+        // let lock_results = self
+        //     .rc
+        //     .accounts
+        //     .lock_accounts_sequential_with_results(transactions.iter(), &self.feature_set);
+        // TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+
+        let lock_results = bundle
+            .transactions
+            .iter()
+            .map(|tx| tx.get_account_locks())
+            .collect();
+        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+    }
+
+    /// Prepare a transaction batch without locking accounts for transaction simulation.
     pub(crate) fn prepare_simulation_batch<'a>(
         &'a self,
         transaction: SanitizedTransaction,
@@ -3887,7 +3911,13 @@ impl Bank {
 
     /// Run transactions against a bank without committing the results; does not check if the bank is frozen.
     pub fn simulate_bundle_unchecked(&self, bundle: Bundle) -> BundleSimulationResult {
-        todo!()
+        let transactions = &bundle.transactions;
+        let mut chunk_start = 0;
+        while chunk_start != transactions.len() {
+            let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
+            let chunk = &transactions[chunk_start..chunk_end];
+            let batch = self.prepare_sequential_sanitized_batch_with_results(chunk);
+        }
     }
 
     /// Run transactions against a frozen bank without committing the results
