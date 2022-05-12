@@ -373,6 +373,17 @@ impl BundleStage {
             // Build a TransactionBatch that ensures transactions in the bundle
             // are executed sequentially.
             // ************************************************************************
+            let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
+            let chunk = &transactions[chunk_start..chunk_end];
+            let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
+            if let Err(e) = Self::check_bundle_batch_ok(&batch) {
+                QosService::remove_transaction_costs(
+                    tx_costs.iter(),
+                    transactions_qos_results.iter(),
+                    bank,
+                );
+                return Err(e);
+            }
             if let Err(e) = Self::check_bundle_batch_ok(&batch) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
