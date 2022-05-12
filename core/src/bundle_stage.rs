@@ -1137,8 +1137,6 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // Prevent transactions from mentioning the tip program to avoid getting the tip_receiver
-        // changed mid-slot and the rest of the tips stolen
         // NOTE: if this is a weak assumption helpful for testing deployment,
         // before production it shall only be the tip program
         let tx_accounts = tx.message().account_keys();
@@ -1151,7 +1149,8 @@ impl BundleStage {
             return None;
         }
 
-        // Prevent transactions from locking consensus-related accounts
+        // Prevent transactions from mentioning the tip program to avoid getting the tip_receiver
+        // changed mid-slot and the rest of the tips stolen
         if tx_accounts.iter().any(|a| consensus_accounts.contains(a)) {
             warn!(
                 "someone attempted to lock a consensus related account!! tx: {:?}",
@@ -1159,12 +1158,6 @@ impl BundleStage {
             );
             return None;
         }
-
-        // NOTE: bundles shall not touch consensus
-        // votes use the following accounts:
-        // - vote_account pubkey: bank.vote_accounts() (also see NodeIdToVoteAccounts)
-        // - authorized_voter_keypair pubkey: bank.epoch_stakes.get(epoch).unwrap().epoch_authorized_voters() maps vote_account -> pubkey
-        // - node_keypair pubkey:
 
         Some(tx)
     }
