@@ -1041,9 +1041,9 @@ impl BundleStage {
 
         if let Some(epoch_stakes) = bank.epoch_stakes(bank.epoch()) {
             // votes use the following accounts:
-            // - vote_account pubkey
-            // - authorized_voter_keypair pubkey
-            // - node_keypair pubkey
+            // - vote_account pubkey: writeable
+            // - authorized_voter_pubkey: read-only
+            // - node_keypair pubkey: payer (writeable)
             let vote_accounts = bank.vote_accounts();
             let mut consens_accounts: HashSet<&Pubkey, RandomState> =
                 HashSet::from_iter(vote_accounts.keys());
