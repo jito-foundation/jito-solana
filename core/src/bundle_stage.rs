@@ -4,7 +4,7 @@
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
-        bundle_utils::{get_bundle_txs, LockedBundle},
+        bundle_utils::get_bundle_txs,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::{CommitTransactionDetails, QosService},
         unprocessed_packet_batches::{self, *},
@@ -37,6 +37,7 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
+        bundle::utils::check_bundle_lock_results,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
@@ -64,33 +65,6 @@ use {
     },
     thiserror::Error,
 };
-
-#[derive(Error, Debug, Clone)]
-pub enum BundleExecutionError {
-    #[error("Bank is not processing transactions.")]
-    BankNotProcessingTransactions,
-
-    #[error("Bundle is invalid")]
-    InvalidBundle,
-
-    #[error("PoH max height reached in the middle of a bundle.")]
-    PohError(#[from] PohRecorderError),
-
-    #[error("No records to record to PoH")]
-    NoRecordsToRecord,
-
-    #[error("A transaction in the bundle failed")]
-    TransactionFailure(#[from] TransactionError),
-
-    #[error("The bundle exceeds the cost model")]
-    ExceedsCostModel,
-
-    #[error("The validator is not a leader yet, dropping")]
-    NotLeaderYet,
-
-    #[error("Tip error {0}")]
-    TipError(#[from] TipPaymentError),
-}
 
 type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
 
@@ -376,7 +350,7 @@ impl BundleStage {
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
-            if let Err(e) = Self::check_bundle_batch_ok(&batch) {
+            if let Some((e, _)) = check_bundle_lock_results(&batch.lock_results()) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
@@ -384,7 +358,7 @@ impl BundleStage {
                 );
                 return Err(e);
             }
-            if let Err(e) = Self::check_bundle_batch_ok(&batch) {
+            if let Some((e, _)) = check_bundle_lock_results(&batch.lock_results()) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),

@@ -1,10 +1,9 @@
 use solana_sdk::transaction::SanitizedTransaction;
-
 // TODO(seg)
-pub struct BundleBatch {
+pub struct SanitizedBundleBatch {
     pub bundles: Vec<Bundle>,
 }
 
-pub struct Bundle {
+pub struct SanitizedBundle {
     pub transactions: Vec<SanitizedTransaction>,
 }

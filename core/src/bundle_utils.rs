@@ -2,7 +2,7 @@ use {
     crate::{unprocessed_packet_batches, unprocessed_packet_batches::ImmutableDeserializedPacket},
     solana_mev::bundle::Bundle,
     solana_perf::{cuda_runtime::PinnedVec, packet::Packet},
-    solana_runtime::{bank::Bank, transaction_batch::TransactionBatch},
+    solana_runtime::bank::Bank,
     solana_sdk::{
         feature_set,
         pubkey::Pubkey,
@@ -10,21 +10,6 @@ use {
     },
     std::sync::Arc,
 };
-
-/// Checks that preparing a bundle gives an acceptable batch back
-pub fn check_bundle_batch_ok(batch: &TransactionBatch) -> BundleExecutionResult<()> {
-    for r in batch.lock_results() {
-        match r {
-            Ok(())
-            | Err(TransactionError::AccountInUse)
-            | Err(TransactionError::BundleNotContinuous) => {}
-            Err(e) => {
-                return Err(e.clone().into());
-            }
-        }
-    }
-    Ok(())
-}
 
 pub fn get_bundle_txs(
     bundle: &Bundle,

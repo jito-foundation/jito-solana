@@ -27,6 +27,7 @@ pub mod blockhash_queue;
 pub mod bucket_map_holder;
 pub mod bucket_map_holder_stats;
 pub mod builtins;
+pub mod bundle_utils;
 pub mod cache_hash_data;
 pub mod cache_hash_data_stats;
 pub mod commitment;

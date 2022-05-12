@@ -156,6 +156,7 @@ use {
         ops::{Deref, Div, RangeInclusive},
         path::PathBuf,
         rc::Rc,
+        result,
         sync::{
             atomic::{
                 AtomicBool, AtomicU64, AtomicUsize,
@@ -532,7 +533,16 @@ pub struct BankRc {
 
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 use solana_frozen_abi::abi_example::AbiExample;
-use solana_sdk::bundle::Bundle;
+use {
+    crate::accounts::AccountLocks,
+    solana_sdk::{
+        bundle::{
+            error::BundleExecutionError, sanitized::SanitizedBundle,
+            utils::check_bundle_lock_results, Bundle,
+        },
+        transaction::TransactionError::BundleNotContinuous,
+    },
+};
 
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 impl AbiExample for BankRc {
@@ -697,7 +707,11 @@ impl DurableNonceFee {
 }
 
 pub struct BundleSimulationResult {
-    pub transaction_simulation_results: Vec<TransactionSimulationResult>,
+    /// a pair of error and first offending transaction signature
+    pub result: Option<(BundleExecutionError, Signature)>,
+    pub post_simulation_accounts: Vec<TransactionAccount>,
+    pub return_data: Option<TransactionReturnData>,
+    pub units_consumed: u64,
 }
 
 pub struct TransactionSimulationResult {
@@ -3872,22 +3886,46 @@ impl Bank {
     }
 
     /// Prepare a transaction batch without locking accounts for transaction simulation.
-    pub(crate) fn prepare_bundle_simulation_batch<'a>(
+    pub(crate) fn prepare_bundle_simulation_batch<'a, 'b>(
         &'a self,
-        bundle: &Bundle,
+        txs: &'b [SanitizedTransaction],
     ) -> TransactionBatch<'a, '_> {
-        // let lock_results = self
-        //     .rc
-        //     .accounts
-        //     .lock_accounts_sequential_with_results(transactions.iter(), &self.feature_set);
-        // TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+        let mut lock_results = vec![];
+        let mut read_locked_accounts = HashSet::new();
+        let mut write_locked_accounts = HashSet::new();
 
-        let lock_results = bundle
-            .transactions
-            .iter()
-            .map(|tx| tx.get_account_locks())
-            .collect();
-        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+        // Loops over each tx and tries to eagerly lock the accounts.
+        for tx in txs {
+            if let Ok(tx_account_locks) = tx.get_account_locks() {
+                {
+                    let read_locks = tx_account_locks.readonly;
+                    for r_lock in read_locks {
+                        if write_locked_accounts.contains(r_lock) {
+                            lock_results.push(Err(BundleNotContinuous));
+                        } else {
+                            read_locked_accounts.insert(r_lock);
+                            lock_results.push(Ok(()));
+                        }
+                    }
+
+                    let write_locks = tx_account_locks.writable;
+                    for w_lock in write_locks {
+                        if write_locked_accounts.contains(w_lock)
+                            || read_locked_accounts.contains(w_lock)
+                        {
+                            lock_results.push(Err(BundleNotContinuous));
+                        } else {
+                            read_locked_accounts.insert(r_lock);
+                            lock_results.push(Ok(()));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut batch = TransactionBatch::new(lock_results, self, Cow::Borrowed(txs));
+        batch.needs_unlock = false;
+        batch
     }
 
     /// Prepare a transaction batch without locking accounts for transaction simulation.
@@ -3910,14 +3948,32 @@ impl Bank {
     }
 
     /// Run transactions against a bank without committing the results; does not check if the bank is frozen.
-    pub fn simulate_bundle_unchecked(&self, bundle: Bundle) -> BundleSimulationResult {
+    pub fn simulate_bundle_unchecked(&self, bundle: SanitizedBundle) -> BundleSimulationResult {
+        let mut bundle_sim_result = BundleSimulationResult {
+            result: None,
+            post_simulation_accounts: vec![],
+            return_data: None,
+            units_consumed: 0,
+        };
+
         let transactions = &bundle.transactions;
         let mut chunk_start = 0;
         while chunk_start != transactions.len() {
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
-            let batch = self.prepare_sequential_sanitized_batch_with_results(chunk);
+
+            let batch = self.prepare_bundle_simulation_batch(chunk);
+
+            // check if any error
+            if let Some((e, failed_tx_idx)) = check_bundle_lock_results(&batch.lock_results()) {
+                let failed_tx = &batch.sanitized_transactions()[failed_tx_idx];
+                bundle_sim_result.result = Some((e, failed_tx.signature()));
+
+                return bundle_sim_result;
+            }
         }
+
+        bundle_sim_result
     }
 
     /// Run transactions against a frozen bank without committing the results
