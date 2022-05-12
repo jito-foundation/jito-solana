@@ -1137,8 +1137,10 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // NOTE: if this is a weak assumption helpful for testing deployment,
-        // before production it shall only be the tip program
+        // Prevent transactions from mentioning the tip program to avoid getting the tip_receiver
+        // changed mid-slot and the rest of the tips stolen.
+        // NOTE: if this is a weak assumption helpful for testing deployment, before production
+        // it shall only be the tip program
         let tx_accounts = tx.message().account_keys();
         if tx_accounts.iter().any(|a| a == tip_program_id)
             && !tx_accounts
@@ -1149,8 +1151,9 @@ impl BundleStage {
             return None;
         }
 
-        // Prevent transactions from mentioning the tip program to avoid getting the tip_receiver
-        // changed mid-slot and the rest of the tips stolen
+        // Prevent bundles from touching consensus related accounts
+        // NOTE: may want to revisit this as it may reduce use cases of locking accounts
+        // used for legitimate cases like the tip-distribution program.
         if tx_accounts.iter().any(|a| consensus_accounts.contains(a)) {
             warn!(
                 "someone attempted to lock a consensus related account!! tx: {:?}",
