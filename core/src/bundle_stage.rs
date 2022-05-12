@@ -1,7 +1,6 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use solana_sdk::bpf_loader_upgradeable;
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
@@ -38,6 +37,7 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
+        bpf_loader_upgradeable,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
