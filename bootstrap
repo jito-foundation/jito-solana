@@ -10,5 +10,5 @@ RUST_LOG=INFO \
   --validator_interface_address http://127.0.0.1:10101 \
   --rpc-pubsub-enable-block-subscription \
   --enable-rpc-transaction-history \
-  --tip-program-pubkey Ek3SBXmGDvyvCGPYb98du8CNNjTomyiuc1wh7dMBw8gk
+  --tip-program-pubkey vVuPSav1121dHVnErQdxHiXYjPzxdHAQgmLsAWqsHRC
 

@@ -10,6 +10,7 @@ use {
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_entry::entry::hash_transactions,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
     solana_mev::{
@@ -36,12 +37,12 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
+        bpf_loader_upgradeable,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
         saturating_add_assign,
-        signature::{Keypair, Signer},
-        system_instruction,
+        signature::Signer,
         transaction::{
             self, AddressLoader, MessageHash, SanitizedTransaction, Transaction, TransactionError,
             VersionedTransaction,
@@ -107,6 +108,7 @@ pub struct BundleStage {
 impl BundleStage {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
+        cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
@@ -116,6 +118,7 @@ impl BundleStage {
         tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
         Self::start_bundle_thread(
+            cluster_info,
             poh_recorder,
             transaction_status_sender,
             gossip_vote_sender,
@@ -128,6 +131,7 @@ impl BundleStage {
 
     #[allow(clippy::too_many_arguments)]
     fn start_bundle_thread(
+        cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
@@ -137,12 +141,14 @@ impl BundleStage {
         tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
         let poh_recorder = poh_recorder.clone();
+        let cluster_info = cluster_info.clone();
 
         let bundle_thread = Builder::new()
             .name("solana-bundle-stage".to_string())
             .spawn(move || {
                 let transaction_status_sender = transaction_status_sender.clone();
                 Self::bundle_stage(
+                    cluster_info,
                     &poh_recorder,
                     transaction_status_sender,
                     bundle_receiver,
@@ -271,6 +277,7 @@ impl BundleStage {
     ///   bundle execution stage, it'll bias towards loading from the cache to have the most recent
     ///   state.
     fn execute_bundle(
+        cluster_info: &Arc<ClusterInfo>,
         bundle: Bundle,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         recorder: &TransactionRecorder,
@@ -278,7 +285,6 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         tip_manager: &Arc<Mutex<TipManager>>,
-        tip_receiver: &Keypair,
     ) -> BundleExecutionResult<()> {
         let mut chunk_start = 0;
 
@@ -336,8 +342,8 @@ impl BundleStage {
             // NOTE: ensure that tip_manager locked while TX is executing to avoid any race conditions with bundle_stage
             // writing to the account
             let tip_manager_l = tip_manager.lock().unwrap();
-            // TODO (LB): remove creating tip receiver and initializing program when live
-            Self::maybe_create_tip_receiver_and_initialize_program(
+            // TODO: remove initializing the tip program when done testing
+            Self::maybe_initialize_config_account(
                 bank,
                 &tip_manager_l,
                 qos_service,
@@ -345,7 +351,7 @@ impl BundleStage {
                 transaction_status_sender,
                 &mut execute_and_commit_timings,
                 gossip_vote_sender,
-                tip_receiver,
+                cluster_info,
             )?;
             Self::maybe_change_tip_receiver(
                 bank,
@@ -355,7 +361,7 @@ impl BundleStage {
                 transaction_status_sender,
                 &mut execute_and_commit_timings,
                 gossip_vote_sender,
-                tip_receiver,
+                cluster_info,
             )?;
         }
 
@@ -586,7 +592,7 @@ impl BundleStage {
         bundle_touches_tip_pdas
     }
 
-    fn maybe_create_tip_receiver_and_initialize_program(
+    fn maybe_initialize_config_account(
         bank: &Arc<Bank>,
         tip_manager_l: &TipManager,
         qos_service: &QosService,
@@ -594,36 +600,13 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         gossip_vote_sender: &ReplayVoteSender,
-        tip_receiver: &Keypair,
+        cluster_info: &Arc<ClusterInfo>,
     ) -> BundleExecutionResult<()> {
         if bank.get_account(&tip_manager_l.config_pubkey()).is_none() {
-            let my_kp = tip_manager_l.keypair();
+            let init_tx =
+                tip_manager_l.build_initialize_tx(&bank.last_blockhash(), &cluster_info.keypair());
             if let Err(e) = Self::execute_record_and_commit(
-                Transaction::new_signed_with_payer(
-                    &vec![system_instruction::create_account(
-                        &my_kp.pubkey(), // funder
-                        &tip_receiver.pubkey(),
-                        bank.get_minimum_balance_for_rent_exemption(500),
-                        500,
-                        &my_kp.pubkey(),
-                    )],
-                    Some(&my_kp.pubkey()),
-                    &[&my_kp, tip_receiver],
-                    bank.last_blockhash(),
-                ),
-                bank,
-                qos_service,
-                recorder,
-                transaction_status_sender,
-                execute_and_commit_timings,
-                gossip_vote_sender,
-            ) {
-                warn!("error creating tip receiver!!! error: {}", e);
-                return Err(e);
-            }
-
-            if let Err(e) = Self::execute_record_and_commit(
-                tip_manager_l.build_initialize_tx(&bank.last_blockhash()),
+                init_tx,
                 bank,
                 qos_service,
                 recorder,
@@ -633,6 +616,8 @@ impl BundleStage {
             ) {
                 warn!("error initializing the tip program!!! error: {}", e);
                 return Err(e);
+            } else {
+                info!("initialized tip program");
             }
         }
         Ok(())
@@ -646,11 +631,13 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         gossip_vote_sender: &ReplayVoteSender,
-        tip_receiver: &Keypair,
+        cluster_info: &Arc<ClusterInfo>,
     ) -> BundleExecutionResult<()> {
         let current_tip_receiver = tip_manager_l.get_current_tip_receiver(&bank)?;
-        if current_tip_receiver != tip_receiver.pubkey() {
-            match tip_manager_l.build_change_tip_receiver_tx(&tip_receiver.pubkey(), &bank) {
+        let my_kp = cluster_info.keypair();
+
+        if current_tip_receiver != my_kp.pubkey() {
+            match tip_manager_l.build_change_tip_receiver_tx(&my_kp.pubkey(), &bank, &my_kp) {
                 Ok(tx) => {
                     if let Err(e) = Self::execute_record_and_commit(
                         tx,
@@ -996,6 +983,7 @@ impl BundleStage {
     }
 
     fn bundle_stage(
+        cluster_info: Arc<ClusterInfo>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         bundle_receiver: Receiver<Bundle>,
@@ -1007,14 +995,6 @@ impl BundleStage {
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
-
-        // TODO (LB): temporary keypair for tip receiver
-        let tip_receiver = Keypair::new();
-        info!(
-            "tip_receiver pubkey: {}, tip_receiver keypair: {:?}",
-            tip_receiver.pubkey(),
-            tip_receiver.to_base58_string()
-        );
 
         loop {
             if exit.load(Ordering::Relaxed) {
@@ -1033,6 +1013,7 @@ impl BundleStage {
             };
 
             match Self::execute_bundle(
+                &cluster_info,
                 bundle,
                 poh_recorder,
                 &recorder,
@@ -1040,7 +1021,6 @@ impl BundleStage {
                 &gossip_vote_sender,
                 &qos_service,
                 &tip_manager,
-                &tip_receiver,
             ) {
                 Ok(_) => {}
                 Err(e) => {
@@ -1136,11 +1116,13 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        if tx
-            .message()
-            .account_keys()
-            .iter()
-            .any(|a| a == tip_program_id)
+        // NOTE: if this is a weak assumption helpful for testing deployment,
+        // before production it shall only be the tip program
+        let tx_accounts = tx.message().account_keys();
+        if tx_accounts.iter().any(|a| a == tip_program_id)
+            && !tx_accounts
+                .iter()
+                .any(|a| a == &bpf_loader_upgradeable::id())
         {
             warn!("someone attempted to change the tip program!! tx: {:?}", tx);
             return None;

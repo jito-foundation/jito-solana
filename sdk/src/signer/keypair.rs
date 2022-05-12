@@ -25,12 +25,6 @@ use {
 #[derive(Debug)]
 pub struct Keypair(ed25519_dalek::Keypair);
 
-impl Clone for Keypair {
-    fn clone(&self) -> Self {
-        Keypair::from_base58_string(self.to_base58_string().as_str())
-    }
-}
-
 impl Keypair {
     /// Constructs a new, random `Keypair` using a caller-proveded RNG
     pub fn generate<R>(csprng: &mut R) -> Self

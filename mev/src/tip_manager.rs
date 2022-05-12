@@ -47,12 +47,10 @@ struct ProgramInfo {
 
 pub struct TipManager {
     program_info: ProgramInfo,
-
-    keypair: Keypair,
 }
 
 impl TipManager {
-    pub fn new(program_id: Pubkey, keypair: Keypair) -> TipManager {
+    pub fn new(program_id: Pubkey) -> TipManager {
         let config_pda_bump = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], &program_id);
 
         let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], &program_id);
@@ -77,12 +75,7 @@ impl TipManager {
                 tip_pda_7,
                 tip_pda_8,
             },
-            keypair,
         }
-    }
-
-    pub fn keypair(&self) -> Keypair {
-        self.keypair.clone()
     }
 
     pub fn program_id(&self) -> Pubkey {
@@ -120,7 +113,7 @@ impl TipManager {
     }
 
     /// Only called once during contract creation
-    pub fn build_initialize_tx(&self, blockhash: &Hash) -> Transaction {
+    pub fn build_initialize_tx(&self, blockhash: &Hash, keypair: &Keypair) -> Transaction {
         let init_ix = Instruction {
             program_id: self.program_info.program_id,
             data: tip_payment::instruction::Initialize {
@@ -148,14 +141,14 @@ impl TipManager {
                 tip_payment_account_7: self.program_info.tip_pda_7.0,
                 tip_payment_account_8: self.program_info.tip_pda_8.0,
                 system_program: system_program::id(),
-                payer: self.keypair.pubkey(),
+                payer: keypair.pubkey(),
             }
             .to_account_metas(None),
         };
         Transaction::new_signed_with_payer(
             &[init_ix],
-            Some(&self.keypair.pubkey()),
-            &[&self.keypair],
+            Some(&keypair.pubkey()),
+            &[keypair],
             *blockhash,
         )
     }
@@ -167,6 +160,7 @@ impl TipManager {
         &self,
         new_tip_receiver: &Pubkey,
         bank: &Arc<Bank>,
+        keypair: &Keypair,
     ) -> Result<Transaction> {
         let config = self.get_config_account(bank)?;
 
@@ -185,14 +179,14 @@ impl TipManager {
                 tip_payment_account_6: self.program_info.tip_pda_6.0,
                 tip_payment_account_7: self.program_info.tip_pda_7.0,
                 tip_payment_account_8: self.program_info.tip_pda_8.0,
-                signer: self.keypair.pubkey(),
+                signer: keypair.pubkey(),
             }
             .to_account_metas(None),
         };
         Ok(Transaction::new_signed_with_payer(
             &[change_tip_ix],
-            Some(&self.keypair.pubkey()),
-            &[&self.keypair],
+            Some(&keypair.pubkey()),
+            &[keypair],
             bank.last_blockhash(),
         ))
     }

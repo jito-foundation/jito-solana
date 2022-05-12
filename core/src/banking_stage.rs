@@ -42,6 +42,7 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
+        bpf_loader_upgradeable,
         clock::{
             Slot, DEFAULT_TICKS_PER_SLOT, MAX_PROCESSING_AGE, MAX_TRANSACTION_FORWARDING_DELAY,
             MAX_TRANSACTION_FORWARDING_DELAY_GPU,
@@ -1766,7 +1767,14 @@ impl BankingStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        if tx.message().account_keys().iter().any(|a| a == tip_program) {
+        // NOTE: if this is a weak assumption helpful for testing deployment,
+        // before production it shall only be the tip program
+        let tx_accounts = tx.message().account_keys();
+        if tx_accounts.iter().any(|a| a == tip_program)
+            && !tx_accounts
+                .iter()
+                .any(|a| a == &bpf_loader_upgradeable::id())
+        {
             warn!("someone attempted to change the tip program!! tx: {:?}", tx);
             return None;
         }
@@ -2244,10 +2252,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = Arc::new(Mutex::new(TipManager::new(
-                Keypair::new().pubkey(),
-                Keypair::new(),
-            )));
+            let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2298,10 +2303,7 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = Arc::new(Mutex::new(TipManager::new(
-                Keypair::new().pubkey(),
-                Keypair::new(),
-            )));
+            let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2384,10 +2386,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = Arc::new(Mutex::new(TipManager::new(
-                Keypair::new().pubkey(),
-                Keypair::new(),
-            )));
+            let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2545,10 +2544,7 @@ mod tests {
                     create_test_recorder(&bank, &blockstore, Some(poh_config), None);
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
-                let tip_manager = Arc::new(Mutex::new(TipManager::new(
-                    Keypair::new().pubkey(),
-                    Keypair::new(),
-                )));
+                let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
                     &poh_recorder,
