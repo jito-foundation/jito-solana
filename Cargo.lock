@@ -6197,6 +6197,7 @@ version = "1.11.0"
 dependencies = [
  "log",
  "rustc_version",
+ "semver",
  "serde",
  "serde_derive",
  "solana-frozen-abi 1.11.0",
