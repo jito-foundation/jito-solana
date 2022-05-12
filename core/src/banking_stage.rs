@@ -1767,12 +1767,13 @@ impl BankingStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // NOTE: if this is a weak assumption helpful for testing, make it only the tip program
-        if tx
-            .message()
-            .account_keys()
-            .iter()
-            .any(|a| (a == tip_program && a != &bpf_loader_upgradeable::id()))
+        // NOTE: if this is a weak assumption helpful for testing deployment,
+        // before production it shall only be the tip program
+        let tx_accounts = tx.message().account_keys();
+        if tx_accounts.iter().any(|a| a == tip_program)
+            && !tx_accounts
+                .iter()
+                .any(|a| a == &bpf_loader_upgradeable::id())
         {
             warn!("someone attempted to change the tip program!! tx: {:?}", tx);
             return None;
