@@ -1,6 +1,7 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to contruct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
+use solana_sdk::bpf_loader_upgradeable;
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
@@ -1115,11 +1116,13 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        if tx
-            .message()
-            .account_keys()
-            .iter()
-            .any(|a| a == tip_program_id)
+        // NOTE: if this is a weak assumption helpful for testing deployment,
+        // before production it shall only be the tip program
+        let tx_accounts = tx.message().account_keys();
+        if tx_accounts.iter().any(|a| a == tip_program_id)
+            && !tx_accounts
+                .iter()
+                .any(|a| a == &bpf_loader_upgradeable::id())
         {
             warn!("someone attempted to change the tip program!! tx: {:?}", tx);
             return None;
