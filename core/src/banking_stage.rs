@@ -42,6 +42,7 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
+        bpf_loader_upgradeable,
         clock::{
             Slot, DEFAULT_TICKS_PER_SLOT, MAX_PROCESSING_AGE, MAX_TRANSACTION_FORWARDING_DELAY,
             MAX_TRANSACTION_FORWARDING_DELAY_GPU,
@@ -1766,7 +1767,13 @@ impl BankingStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        if tx.message().account_keys().iter().any(|a| a == tip_program) {
+        // NOTE: if this is a weak assumption helpful for testing, make it only the tip program
+        if tx
+            .message()
+            .account_keys()
+            .iter()
+            .any(|a| (a == tip_program && a != &bpf_loader_upgradeable::id()))
+        {
             warn!("someone attempted to change the tip program!! tx: {:?}", tx);
             return None;
         }
