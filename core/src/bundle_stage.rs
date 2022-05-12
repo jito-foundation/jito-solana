@@ -358,8 +358,8 @@ impl BundleStage {
             )?;
         }
 
-        let mut locked_bundle_iter = LockedBundle::new(bank.clone(), transactions);
-        while let Some(batch) = locked_bundle_iter.next() {
+        let mut chunk_start = 0;
+        while chunk_start != transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
