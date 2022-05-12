@@ -4,6 +4,7 @@
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
+        bundle_utils::{get_bundle_txs, LockedBundle},
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::{CommitTransactionDetails, QosService},
         unprocessed_packet_batches::{self, *},
@@ -280,8 +281,6 @@ impl BundleStage {
         tip_manager: &Arc<Mutex<TipManager>>,
         tip_receiver: &Keypair,
     ) -> BundleExecutionResult<()> {
-        let mut chunk_start = 0;
-
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let mut account_override = AccountOverrides {
             slot_history: None,
@@ -308,7 +307,7 @@ impl BundleStage {
             bank_creation_time,
         } = &*working_bank_start.unwrap();
 
-        let transactions = Self::get_bundle_txs(&bundle, bank, &tip_program_id);
+        let transactions = get_bundle_txs(&bundle, bank, Some(&tip_program_id));
         if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
             return Err(BundleExecutionError::InvalidBundle);
         }
@@ -359,7 +358,8 @@ impl BundleStage {
             )?;
         }
 
-        while chunk_start != transactions.len() {
+        let mut locked_bundle_iter = LockedBundle::new(bank.clone(), transactions);
+        while let Some(batch) = locked_bundle_iter.next() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
@@ -373,9 +373,6 @@ impl BundleStage {
             // Build a TransactionBatch that ensures transactions in the bundle
             // are executed sequentially.
             // ************************************************************************
-            let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
-            let chunk = &transactions[chunk_start..chunk_end];
-            let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
             if let Err(e) = Self::check_bundle_batch_ok(&batch) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
@@ -462,14 +459,7 @@ impl BundleStage {
                 post_balances: (post_balances, post_token_balances),
             });
 
-            // start at the next available transaction in the batch that threw an error
-            let processing_end = batch.lock_results().iter().position(|lr| lr.is_err());
-            if let Some(end) = processing_end {
-                chunk_start += end;
-            } else {
-                chunk_start = chunk_end;
-            }
-
+            // TODO(seg): double check!
             drop(batch);
         }
 
@@ -1050,37 +1040,6 @@ impl BundleStage {
         }
     }
 
-    fn get_bundle_txs(
-        bundle: &Bundle,
-        bank: &Arc<Bank>,
-        tip_program_id: &Pubkey,
-    ) -> Vec<SanitizedTransaction> {
-        let packet_indexes = Self::generate_packet_indexes(&bundle.batch.packets);
-        let deserialized_packets =
-            unprocessed_packet_batches::deserialize_packets(&bundle.batch, &packet_indexes, None);
-
-        deserialized_packets
-            .filter_map(|p| {
-                let immutable_packet = p.immutable_section().clone();
-                Self::transaction_from_deserialized_packet(
-                    &immutable_packet,
-                    &bank.feature_set,
-                    bank.vote_only_bank(),
-                    bank.as_ref(),
-                    tip_program_id,
-                )
-            })
-            .collect()
-    }
-
-    fn generate_packet_indexes(vers: &PinnedVec<Packet>) -> Vec<usize> {
-        vers.iter()
-            .enumerate()
-            .filter(|(_, pkt)| !pkt.meta.discard())
-            .map(|(index, _)| index)
-            .collect()
-    }
-
     fn prepare_poh_record_bundle(
         bank_slot: &Slot,
         execution_results_txs: &Vec<AllExecutionResults>,
@@ -1109,44 +1068,6 @@ impl BundleStage {
             mixins_txs,
             slot: *bank_slot,
         }
-    }
-
-    // This function deserializes packets into transactions, computes the blake3 hash of transaction
-    // messages, and verifies secp256k1 instructions. A list of sanitized transactions are returned
-    // with their packet indexes.
-    #[allow(clippy::needless_collect)]
-    fn transaction_from_deserialized_packet(
-        deserialized_packet: &ImmutableDeserializedPacket,
-        feature_set: &Arc<feature_set::FeatureSet>,
-        votes_only: bool,
-        address_loader: impl AddressLoader,
-        tip_program_id: &Pubkey,
-    ) -> Option<SanitizedTransaction> {
-        if votes_only && !deserialized_packet.is_simple_vote() {
-            return None;
-        }
-
-        let tx = SanitizedTransaction::try_create(
-            deserialized_packet.versioned_transaction().clone(),
-            *deserialized_packet.message_hash(),
-            Some(deserialized_packet.is_simple_vote()),
-            address_loader,
-            feature_set.is_active(&feature_set::require_static_program_ids_in_transaction::ID),
-        )
-        .ok()?;
-        tx.verify_precompiles(feature_set).ok()?;
-
-        if tx
-            .message()
-            .account_keys()
-            .iter()
-            .any(|a| a == tip_program_id)
-        {
-            warn!("someone attempted to change the tip program!! tx: {:?}", tx);
-            return None;
-        }
-
-        Some(tx)
     }
 
     pub fn join(self) -> thread::Result<()> {

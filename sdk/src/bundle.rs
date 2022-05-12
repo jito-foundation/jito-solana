@@ -1,4 +1,4 @@
-use crate::transaction::Transaction;
+use solana_sdk::transaction::SanitizedTransaction;
 
 // TODO(seg)
 pub struct BundleBatch {
@@ -6,5 +6,5 @@ pub struct BundleBatch {
 }
 
 pub struct Bundle {
-    pub transactions: Vec<Transaction>,
+    pub transactions: Vec<SanitizedTransaction>,
 }

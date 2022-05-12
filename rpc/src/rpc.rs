@@ -3733,25 +3733,46 @@ pub mod rpc_full {
                 })
                 .collect::<Result<Vec<Vec<VersionedTransaction>>>>()?;
 
-            if config.replace_recent_blockhash {
+            let decoded_bundle_batch = if config.replace_recent_blockhash {
                 if !config.skip_sig_verify {
                     return Err(Error::invalid_params(
                         "sigVerify may not be used with replaceRecentBlockhash",
                     ));
                 }
 
-                decoded_bundle_batch.into_iter().map(|bundle| {
-                    bundle.into_iter().map(|mut tx| {
-                        tx.message.set_recent_blockhash(bank.last_blockhash());
-                        sanitize_transaction(tx, bank)?;
-                    });
-                })?;
-            }
+                decoded_bundle_batch
+                    .into_iter()
+                    .map(|bundle| {
+                        bundle.into_iter().map(|mut tx| {
+                            tx.message.set_recent_blockhash(bank.last_blockhash());
+                            tx
+                        });
+                    })
+                    .collect()
+            } else {
+                decoded_bundle_batch
+            };
 
-            if config.sig_verify {
-                verify_transaction(&transaction, &bank.feature_set)?;
+            let mut n_accounts = 0;
+            let sanitized_bundle_batch = decoded_bundle_batch
+                .into_iter()
+                .map(|bundle| {
+                    bundle.into_iter().map(|tx| {
+                        let sanitized_tx = sanitize_transaction(tx, bank)?;
+                        n_accounts += sanitized_tx.message().account_keys().len();
+
+                        sanitized_tx
+                    })
+                })
+                .collect::<Result<Vec<Vec<SanitizedTransaction>>>>()?;
+
+            if !config.skip_sig_verify {
+                sanitized_bundle_batch.iter().for_each(|bundle| {
+                    bundle
+                        .iter()
+                        .for_each(|tx| verify_transaction(tx, &bank.feature_set)?)
+                });
             }
-            let number_of_accounts = transaction.message().account_keys().len();
 
             let TransactionSimulationResult {
                 result,

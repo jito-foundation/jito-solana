@@ -532,6 +532,7 @@ pub struct BankRc {
 
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 use solana_frozen_abi::abi_example::AbiExample;
+use solana_sdk::bundle::Bundle;
 
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 impl AbiExample for BankRc {
@@ -3875,6 +3876,18 @@ impl Bank {
             TransactionBatch::new(vec![lock_result], self, Cow::Owned(vec![transaction]));
         batch.needs_unlock = false;
         batch
+    }
+
+    /// Run bundles against a frozen bank without committing the results.
+    pub fn simulate_bundle(&self, bundle: Bundle) -> BundleSimulationResult {
+        assert!(self.is_frozen(), "simulation bank must be frozen");
+
+        self.simulate_bundle_unchecked(bundle)
+    }
+
+    /// Run transactions against a bank without committing the results; does not check if the bank is frozen.
+    pub fn simulate_bundle_unchecked(&self, bundle: Bundle) -> BundleSimulationResult {
+        todo!()
     }
 
     /// Run transactions against a frozen bank without committing the results
