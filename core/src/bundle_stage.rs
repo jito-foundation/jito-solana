@@ -1040,11 +1040,10 @@ impl BundleStage {
             unprocessed_packet_batches::deserialize_packets(&bundle.batch, &packet_indexes, None);
 
         if let Some(epoch_stakes) = bank.epoch_stakes(bank.epoch()) {
-            // NOTE: bundles shall not touch consensus
             // votes use the following accounts:
-            // - vote_account pubkey: bank.vote_accounts() (also see NodeIdToVoteAccounts)
-            // - authorized_voter_keypair pubkey: bank.epoch_stakes.get(epoch).unwrap().epoch_authorized_voters() maps vote_account -> pubkey
-            // - node_keypair pubkey:
+            // - vote_account pubkey
+            // - authorized_voter_keypair pubkey
+            // - node_keypair pubkey
             let vote_accounts = bank.vote_accounts();
             let mut consens_accounts: HashSet<&Pubkey, RandomState> =
                 HashSet::from_iter(vote_accounts.keys());
