@@ -709,9 +709,9 @@ impl DurableNonceFee {
 
 pub struct BundleSimulationResult {
     /// a pair of error and first offending transaction signature
-    pub result: Option<(BundleExecutionError, Signature)>,
+    pub err: Option<(BundleExecutionError, Signature)>,
     pub post_simulation_accounts: Vec<TransactionAccount>,
-    pub return_data: Option<Vec<TransactionReturnData>>,
+    pub return_data: Vec<TransactionReturnData>,
     pub units_consumed: u64,
 }
 
@@ -3981,6 +3981,7 @@ impl Bank {
                 return bundle_sim_result;
             }
 
+            // TODO(seg): double check early return
             let LoadAndExecuteTransactionsOutput {
                 loaded_transactions,
                 mut execution_results,
@@ -3998,15 +3999,37 @@ impl Bank {
                 Some(&account_overrides),
             );
 
-            let sim_results = Self::aggregate_simulation_results(
+            let TransactionSimulationResult {
+                post_simulation_accounts,
+                units_consumed,
+                ..
+            } = Self::aggregate_simulation_results(
                 loaded_transactions,
-                execution_results,
+                &mut execution_results,
                 &timings,
             );
             bundle_sim_result
                 .post_simulation_accounts
-                .extend(sim_results.post_simulation_accounts);
-            bundle_sim_result.return_data;
+                .extend(post_simulation_accounts);
+            bundle_sim_result.units_consumed += units_consumed;
+
+            execution_results
+                .iter()
+                .zip(chunk) // TODO(seg): double check chunk indexes correspond to those of execution_results
+                .for_each(|(res, tx)| {
+                    if let Err(e) = res.flattened_result() {
+                        bundle_sim_result.err = Some((e, tx.signature().clone()));
+                        return bundle_sim_result; // TODO(seg): double check early return
+                    }
+                    match res {
+                        TransactionExecutionResult::Executed { details, .. } => {
+                            let _ = details.return_data.map(|data| {
+                                bundle_sim_result.return_data.push(data);
+                            });
+                        }
+                        TransactionExecutionResult::NotExecuted(_) => {}
+                    };
+                });
 
             let processing_end = batch.lock_results().iter().position(|res| res.is_err());
             if let Some(end) = processing_end {
@@ -4036,7 +4059,6 @@ impl Bank {
         transaction: SanitizedTransaction,
     ) -> TransactionSimulationResult {
         let account_keys = transaction.message().account_keys();
-        let number_of_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
         let batch = self.prepare_simulation_batch(transaction);
         let mut timings = ExecuteTimings::default();
@@ -4058,13 +4080,19 @@ impl Bank {
             Some(&account_overrides),
         );
 
-        Self::aggregate_simulation_results(loaded_transactions, execution_results, &timings)
+        Self::aggregate_simulation_results(
+            loaded_transactions,
+            &mut execution_results,
+            &timings,
+            account_keys.len(),
+        )
     }
 
     fn aggregate_simulation_results(
         loaded_transactions: Vec<TransactionLoadResult>,
-        execution_results: Vec<TransactionExecutionResult>,
+        execution_results: &mut Vec<TransactionExecutionResult>,
         timings: &ExecuteTimings,
+        n_accounts: usize,
     ) -> TransactionSimulationResult {
         let post_simulation_accounts = loaded_transactions
             .into_iter()
@@ -4076,7 +4104,7 @@ impl Bank {
                 loaded_transaction
                     .accounts
                     .into_iter()
-                    .take(number_of_accounts)
+                    .take(n_accounts)
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
