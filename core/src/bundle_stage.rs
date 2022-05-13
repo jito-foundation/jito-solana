@@ -358,14 +358,6 @@ impl BundleStage {
                 );
                 return Err(e);
             }
-            if let Some((e, _)) = check_bundle_lock_results(&batch.lock_results()) {
-                QosService::remove_transaction_costs(
-                    tx_costs.iter(),
-                    transactions_qos_results.iter(),
-                    bank,
-                );
-                return Err(e);
-            }
 
             let ((pre_balances, pre_token_balances), _) = Measure::this(
                 |_| {

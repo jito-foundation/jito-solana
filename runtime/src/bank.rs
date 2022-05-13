@@ -150,6 +150,7 @@ use {
     std::{
         borrow::Cow,
         cell::RefCell,
+        cmp::min,
         collections::{HashMap, HashSet},
         convert::{TryFrom, TryInto},
         fmt, mem,
@@ -710,7 +711,7 @@ pub struct BundleSimulationResult {
     /// a pair of error and first offending transaction signature
     pub result: Option<(BundleExecutionError, Signature)>,
     pub post_simulation_accounts: Vec<TransactionAccount>,
-    pub return_data: Option<TransactionReturnData>,
+    pub return_data: Option<Vec<TransactionReturnData>>,
     pub units_consumed: u64,
 }
 
@@ -3896,12 +3897,13 @@ impl Bank {
 
         // Loops over each tx and tries to eagerly lock the accounts.
         for tx in txs {
-            if let Ok(tx_account_locks) = tx.get_account_locks() {
+            if let Ok(tx_account_locks) = tx.get_account_locks(&self.feature_set) {
                 {
                     let read_locks = tx_account_locks.readonly;
                     for r_lock in read_locks {
                         if write_locked_accounts.contains(r_lock) {
                             lock_results.push(Err(BundleNotContinuous));
+                            bundle_is_continuous = false;
                         } else {
                             read_locked_accounts.insert(r_lock);
                             lock_results.push(Ok(()));
@@ -3914,6 +3916,7 @@ impl Bank {
                             || read_locked_accounts.contains(w_lock)
                         {
                             lock_results.push(Err(BundleNotContinuous));
+                            bundle_is_continuous = false;
                         } else {
                             read_locked_accounts.insert(r_lock);
                             lock_results.push(Ok(()));
@@ -3925,6 +3928,7 @@ impl Bank {
 
         let mut batch = TransactionBatch::new(lock_results, self, Cow::Borrowed(txs));
         batch.needs_unlock = false;
+
         batch
     }
 
@@ -3956,10 +3960,15 @@ impl Bank {
             units_consumed: 0,
         };
 
+        // TODO(seg): double check
+        let account_overrides = AccountOverrides::default();
+        // TODO(seg): ditto double check
+        let mut timings = ExecuteTimings::default();
+
         let transactions = &bundle.transactions;
         let mut chunk_start = 0;
         while chunk_start != transactions.len() {
-            let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
+            let chunk_end = min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
 
             let batch = self.prepare_bundle_simulation_batch(chunk);
@@ -3967,9 +3976,43 @@ impl Bank {
             // check if any error
             if let Some((e, failed_tx_idx)) = check_bundle_lock_results(&batch.lock_results()) {
                 let failed_tx = &batch.sanitized_transactions()[failed_tx_idx];
-                bundle_sim_result.result = Some((e, failed_tx.signature()));
+                bundle_sim_result.result = Some((e, failed_tx.signature().clone()));
 
                 return bundle_sim_result;
+            }
+
+            let LoadAndExecuteTransactionsOutput {
+                loaded_transactions,
+                mut execution_results,
+                ..
+            } = self.load_and_execute_transactions(
+                &batch,
+                // After simulation, transactions will need to be forwarded to the leader
+                // for processing. During forwarding, the transaction could expire if the
+                // delay is not accounted for.
+                MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+                false,
+                true,
+                true,
+                &mut timings,
+                Some(&account_overrides),
+            );
+
+            let sim_results = Self::aggregate_simulation_results(
+                loaded_transactions,
+                execution_results,
+                &timings,
+            );
+            bundle_sim_result
+                .post_simulation_accounts
+                .extend(sim_results.post_simulation_accounts);
+            bundle_sim_result.return_data;
+
+            let processing_end = batch.lock_results().iter().position(|res| res.is_err());
+            if let Some(end) = processing_end {
+                chunk_start += end;
+            } else {
+                chunk_start = chunk_end;
             }
         }
 
@@ -4015,6 +4058,14 @@ impl Bank {
             Some(&account_overrides),
         );
 
+        Self::aggregate_simulation_results(loaded_transactions, execution_results, &timings)
+    }
+
+    fn aggregate_simulation_results(
+        loaded_transactions: Vec<TransactionLoadResult>,
+        execution_results: Vec<TransactionExecutionResult>,
+        timings: &ExecuteTimings,
+    ) -> TransactionSimulationResult {
         let post_simulation_accounts = loaded_transactions
             .into_iter()
             .next()
