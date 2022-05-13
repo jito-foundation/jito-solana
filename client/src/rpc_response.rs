@@ -346,6 +346,11 @@ pub struct RpcSignatureConfirmation {
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateBundleBatchResult {}
 
+pub struct RpcSimulateBundleResult {
+    pub err: Option<TransactionError>,
+    pub units_consumed: Option<u64>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateTransactionResult {

@@ -33,7 +33,7 @@ use {
     },
     solana_sdk::{
         account::Account,
-        bundle::BundleBatch,
+        bundle::sanitized::SanitizedBundleBatch,
         clock::{Epoch, Slot, UnixTimestamp, DEFAULT_MS_PER_SLOT, MAX_HASH_AGE_IN_SECONDS},
         commitment_config::{CommitmentConfig, CommitmentLevel},
         epoch_info::EpochInfo,
@@ -1391,15 +1391,15 @@ impl RpcClient {
 
     pub async fn simulate_bundle_batch(
         &self,
-        _bundle_batch: &BundleBatch,
+        bundle_batch: &SanitizedBundleBatch,
     ) -> RpcResult<RpcSimulateBundleBatchResult> {
         todo!()
     }
 
     pub async fn simulate_bundle_batch_with_config(
         &self,
-        _bundle_batch: &BundleBatch,
-        _config: RpcSimulateBundleBatchConfig,
+        bundle_batch: &SanitizedBundleBatch,
+        config: RpcSimulateBundleBatchConfig,
     ) -> RpcResult<RpcSimulateBundleBatchResult> {
         todo!()
     }

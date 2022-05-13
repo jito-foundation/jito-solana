@@ -1,4 +1,4 @@
-use solana_sdk::transaction::TransactionError;
+use {solana_sdk::transaction::TransactionError, thiserror::Error};
 
 #[derive(Error, Debug, Clone)]
 pub enum BundleExecutionError {
@@ -9,7 +9,7 @@ pub enum BundleExecutionError {
     InvalidBundle,
 
     #[error("PoH max height reached in the middle of a bundle.")]
-    PohError(#[from] PohRecorderError),
+    PohError,
 
     #[error("No records to record to PoH")]
     NoRecordsToRecord,
@@ -24,5 +24,5 @@ pub enum BundleExecutionError {
     NotLeaderYet,
 
     #[error("Tip error {0}")]
-    TipError(#[from] TipPaymentError),
+    TipError(String),
 }

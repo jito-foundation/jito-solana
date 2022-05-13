@@ -157,7 +157,6 @@ use {
         ops::{Deref, Div, RangeInclusive},
         path::PathBuf,
         rc::Rc,
-        result,
         sync::{
             atomic::{
                 AtomicBool, AtomicU64, AtomicUsize,
@@ -534,15 +533,11 @@ pub struct BankRc {
 
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 use solana_frozen_abi::abi_example::AbiExample;
-use {
-    crate::accounts::AccountLocks,
-    solana_sdk::{
-        bundle::{
-            error::BundleExecutionError, sanitized::SanitizedBundle,
-            utils::check_bundle_lock_results, Bundle,
-        },
-        transaction::TransactionError::BundleNotContinuous,
+use solana_sdk::{
+    bundle::{
+        error::BundleExecutionError, sanitized::SanitizedBundle, utils::check_bundle_lock_results,
     },
+    transaction::TransactionError::BundleNotContinuous,
 };
 
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
@@ -3890,7 +3885,7 @@ impl Bank {
     pub(crate) fn prepare_bundle_simulation_batch<'a, 'b>(
         &'a self,
         txs: &'b [SanitizedTransaction],
-    ) -> TransactionBatch<'a, '_> {
+    ) -> TransactionBatch<'a, 'b> {
         let mut lock_results = vec![];
         let mut read_locked_accounts = HashSet::new();
         let mut write_locked_accounts = HashSet::new();
@@ -3898,29 +3893,23 @@ impl Bank {
         // Loops over each tx and tries to eagerly lock the accounts.
         for tx in txs {
             if let Ok(tx_account_locks) = tx.get_account_locks(&self.feature_set) {
-                {
-                    let read_locks = tx_account_locks.readonly;
-                    for r_lock in read_locks {
-                        if write_locked_accounts.contains(r_lock) {
-                            lock_results.push(Err(BundleNotContinuous));
-                            bundle_is_continuous = false;
-                        } else {
-                            read_locked_accounts.insert(r_lock);
-                            lock_results.push(Ok(()));
-                        }
+                for r_lock in tx_account_locks.readonly {
+                    if write_locked_accounts.contains(r_lock) {
+                        lock_results.push(Err(BundleNotContinuous));
+                    } else {
+                        read_locked_accounts.insert(r_lock);
+                        lock_results.push(Ok(()));
                     }
+                }
 
-                    let write_locks = tx_account_locks.writable;
-                    for w_lock in write_locks {
-                        if write_locked_accounts.contains(w_lock)
-                            || read_locked_accounts.contains(w_lock)
-                        {
-                            lock_results.push(Err(BundleNotContinuous));
-                            bundle_is_continuous = false;
-                        } else {
-                            read_locked_accounts.insert(r_lock);
-                            lock_results.push(Ok(()));
-                        }
+                for w_lock in tx_account_locks.writable {
+                    if write_locked_accounts.contains(w_lock)
+                        || read_locked_accounts.contains(w_lock)
+                    {
+                        lock_results.push(Err(BundleNotContinuous));
+                    } else {
+                        write_locked_accounts.insert(w_lock);
+                        lock_results.push(Ok(()));
                     }
                 }
             }
@@ -3945,7 +3934,7 @@ impl Bank {
     }
 
     /// Run bundles against a frozen bank without committing the results.
-    pub fn simulate_bundle(&self, bundle: Bundle) -> BundleSimulationResult {
+    pub fn simulate_bundle(&self, bundle: SanitizedBundle) -> BundleSimulationResult {
         assert!(self.is_frozen(), "simulation bank must be frozen");
 
         self.simulate_bundle_unchecked(bundle)
@@ -3954,9 +3943,9 @@ impl Bank {
     /// Run transactions against a bank without committing the results; does not check if the bank is frozen.
     pub fn simulate_bundle_unchecked(&self, bundle: SanitizedBundle) -> BundleSimulationResult {
         let mut bundle_sim_result = BundleSimulationResult {
-            result: None,
+            err: None,
             post_simulation_accounts: vec![],
-            return_data: None,
+            return_data: vec![],
             units_consumed: 0,
         };
 
@@ -3965,7 +3954,7 @@ impl Bank {
         // TODO(seg): ditto double check
         let mut timings = ExecuteTimings::default();
 
-        let transactions = &bundle.transactions;
+        let transactions = &bundle.sanitized_transactions;
         let mut chunk_start = 0;
         while chunk_start != transactions.len() {
             let chunk_end = min(transactions.len(), chunk_start + 128);
@@ -3976,7 +3965,7 @@ impl Bank {
             // check if any error
             if let Some((e, failed_tx_idx)) = check_bundle_lock_results(&batch.lock_results()) {
                 let failed_tx = &batch.sanitized_transactions()[failed_tx_idx];
-                bundle_sim_result.result = Some((e, failed_tx.signature().clone()));
+                bundle_sim_result.err = Some((e, failed_tx.signature().clone()));
 
                 return bundle_sim_result;
             }
@@ -4007,29 +3996,29 @@ impl Bank {
                 loaded_transactions,
                 &mut execution_results,
                 &timings,
+                None,
             );
             bundle_sim_result
                 .post_simulation_accounts
                 .extend(post_simulation_accounts);
             bundle_sim_result.units_consumed += units_consumed;
 
-            execution_results
-                .iter()
-                .zip(chunk) // TODO(seg): double check chunk indexes correspond to those of execution_results
-                .for_each(|(res, tx)| {
-                    if let Err(e) = res.flattened_result() {
-                        bundle_sim_result.err = Some((e, tx.signature().clone()));
-                        return bundle_sim_result; // TODO(seg): double check early return
+            // TODO(seg): double check chunk indexes correspond to those of execution_results
+            let zipped = execution_results.iter().zip(chunk);
+            for (res, tx) in zipped {
+                if let Err(e) = res.flattened_result() {
+                    bundle_sim_result.err = Some((e.into(), tx.signature().clone()));
+                    return bundle_sim_result; // TODO(seg): double check early return
+                }
+                match res {
+                    TransactionExecutionResult::Executed { details, .. } => {
+                        let _ = details.return_data.as_ref().map(|data| {
+                            bundle_sim_result.return_data.push(data.clone());
+                        });
                     }
-                    match res {
-                        TransactionExecutionResult::Executed { details, .. } => {
-                            let _ = details.return_data.map(|data| {
-                                bundle_sim_result.return_data.push(data);
-                            });
-                        }
-                        TransactionExecutionResult::NotExecuted(_) => {}
-                    };
-                });
+                    TransactionExecutionResult::NotExecuted(_) => {}
+                };
+            }
 
             let processing_end = batch.lock_results().iter().position(|res| res.is_err());
             if let Some(end) = processing_end {
@@ -4059,6 +4048,7 @@ impl Bank {
         transaction: SanitizedTransaction,
     ) -> TransactionSimulationResult {
         let account_keys = transaction.message().account_keys();
+        let n_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
         let batch = self.prepare_simulation_batch(transaction);
         let mut timings = ExecuteTimings::default();
@@ -4084,7 +4074,7 @@ impl Bank {
             loaded_transactions,
             &mut execution_results,
             &timings,
-            account_keys.len(),
+            Some(n_accounts),
         )
     }
 
@@ -4092,22 +4082,33 @@ impl Bank {
         loaded_transactions: Vec<TransactionLoadResult>,
         execution_results: &mut Vec<TransactionExecutionResult>,
         timings: &ExecuteTimings,
-        n_accounts: usize,
+        n_accounts: Option<usize>,
     ) -> TransactionSimulationResult {
-        let post_simulation_accounts = loaded_transactions
-            .into_iter()
-            .next()
-            .unwrap()
-            .0
-            .ok()
-            .map(|loaded_transaction| {
-                loaded_transaction
-                    .accounts
-                    .into_iter()
-                    .take(n_accounts)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let post_simulation_accounts = if let Some(n_accounts) = n_accounts {
+            loaded_transactions
+                .into_iter()
+                .next()
+                .unwrap()
+                .0
+                .ok()
+                .map(|loaded_transaction| {
+                    loaded_transaction
+                        .accounts
+                        .into_iter()
+                        .take(n_accounts)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            loaded_transactions
+                .into_iter()
+                .flat_map(|tx| {
+                    tx.0.ok()
+                        .map(|loaded_transaction| loaded_transaction.accounts)
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+        };
 
         let units_consumed = timings
             .details

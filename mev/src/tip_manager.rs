@@ -19,7 +19,7 @@ use {
 
 #[derive(Error, Debug, Clone)]
 pub enum TipPaymentError {
-    #[error("account is missing from bank: {0}")]
+    #[error("Account is missing from bank: {0}")]
     AccountMissing(Pubkey),
 
     #[error("MEV program is non-existent")]
@@ -47,7 +47,6 @@ struct ProgramInfo {
 
 pub struct TipManager {
     program_info: ProgramInfo,
-
     keypair: Keypair,
 }
 

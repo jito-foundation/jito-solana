@@ -9,6 +9,7 @@ use {
     crossbeam_channel::{unbounded, Receiver, Sender},
     jsonrpc_core::{futures::future, types::error, BoxFuture, Error, Metadata, Result},
     jsonrpc_derive::rpc,
+    rayon::{ThreadPool, ThreadPoolBuilder},
     serde::{Deserialize, Serialize},
     solana_account_decoder::{
         parse_token::{is_known_spl_token_id, token_amount_to_ui_amount, UiTokenAmount},
@@ -104,6 +105,7 @@ use {
         },
         time::Duration,
     },
+    tokio::runtime::Runtime,
 };
 
 type RpcCustomResult<T> = std::result::Result<T, RpcCustomError>;
@@ -150,6 +152,7 @@ pub struct JsonRpcConfig {
     pub max_multiple_accounts: Option<usize>,
     pub account_indexes: AccountSecondaryIndexes,
     pub rpc_threads: usize,
+    pub bundle_simulation_threads: usize,
     pub rpc_niceness_adj: i8,
     pub full_api: bool,
     pub obsolete_v1_7_api: bool,
@@ -185,6 +188,7 @@ impl Default for RpcBigtableConfig {
 
 #[derive(Clone)]
 pub struct JsonRpcRequestProcessor {
+    bundle_simulation_thread_pool: Arc<ThreadPool>,
     bank_forks: Arc<RwLock<BankForks>>,
     block_commitment_cache: Arc<RwLock<BlockCommitmentCache>>,
     blockstore: Arc<Blockstore>,
@@ -299,8 +303,16 @@ impl JsonRpcRequestProcessor {
         max_complete_transaction_status_slot: Arc<AtomicU64>,
     ) -> (Self, Receiver<TransactionInfo>) {
         let (sender, receiver) = unbounded();
+        let bundle_simulation_thread_pool = Arc::new(
+            ThreadPoolBuilder::new()
+                .num_threads(1.max(config.bundle_simulation_threads))
+                .build()
+                .unwrap(),
+        );
+
         (
             Self {
+                bundle_simulation_thread_pool,
                 config,
                 snapshot_config,
                 bank_forks,
@@ -347,8 +359,11 @@ impl JsonRpcRequestProcessor {
             1,
             DEFAULT_TPU_USE_QUIC,
         );
+        let bundle_simulation_thread_pool =
+            Arc::new(ThreadPoolBuilder::new().num_threads(1).build().unwrap());
 
         Self {
+            bundle_simulation_thread_pool,
             config: JsonRpcConfig::default(),
             snapshot_config: None,
             bank_forks,
@@ -3162,7 +3177,11 @@ pub mod rpc_accounts {
 // Full RPC interface that an API node is expected to provide
 // (rpc_minimal should also be provided by an API node)
 pub mod rpc_full {
-    use super::*;
+    use {
+        super::*,
+        solana_sdk::bundle::sanitized::{SanitizedBundle, SanitizedBundleBatch},
+        wg::WaitGroup,
+    };
     #[rpc]
     pub trait Full {
         type Metadata;
@@ -3712,7 +3731,8 @@ pub mod rpc_full {
                         .ok_or(Err(Error::invalid_params(format!(
                             "bank not found for the provided slot: {}",
                             slot
-                        ))))?
+                        ))
+                        .into()))?
                 }
             };
 
@@ -3727,8 +3747,8 @@ pub mod rpc_full {
             let decoded_bundle_batch = encoded_bundle_batch
                 .into_iter()
                 .flat_map(|encoded_bundle| {
-                    encoded_bundle.into_iter.map(|encoded_tx| {
-                        decode_and_deserialize::<VersionedTransaction>(enc, binary_encoding)?
+                    encoded_bundle.into_iter().map(|encoded_tx| {
+                        decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)?
                     })?
                 })
                 .collect::<Result<Vec<Vec<VersionedTransaction>>>>()?;
@@ -3754,17 +3774,24 @@ pub mod rpc_full {
             };
 
             let mut n_accounts = 0;
-            let sanitized_bundle_batch = decoded_bundle_batch
+            let sanitized_bundles = decoded_bundle_batch
                 .into_iter()
                 .map(|bundle| {
-                    bundle.into_iter().map(|tx| {
-                        let sanitized_tx = sanitize_transaction(tx, bank)?;
-                        n_accounts += sanitized_tx.message().account_keys().len();
+                    let sanitized_transactions = bundle
+                        .into_iter()
+                        .map(|tx| {
+                            let sanitized_tx = sanitize_transaction(tx, &bank)?;
+                            n_accounts += sanitized_tx.message().account_keys().len();
 
-                        sanitized_tx
-                    })
+                            sanitized_tx
+                        })
+                        .collect::<Vec<_>>();
+                    SanitizedBundle {
+                        sanitized_transactions,
+                    }
                 })
-                .collect::<Result<Vec<Vec<SanitizedTransaction>>>>()?;
+                .collect::<Result<Vec<SanitizedBundle>>>()?;
+            let sanitized_bundle_batch = SanitizedBundleBatch { sanitized_bundles };
 
             if !config.skip_sig_verify {
                 sanitized_bundle_batch.iter().for_each(|bundle| {
@@ -3774,13 +3801,19 @@ pub mod rpc_full {
                 });
             }
 
-            let TransactionSimulationResult {
-                result,
-                logs,
-                post_simulation_accounts,
-                units_consumed,
-                return_data,
-            } = bank.simulate_transaction(transaction);
+            // TODO(seg): maybe move this to the client?
+            let results = Arc::new(Mutex::new(Vec::new()));
+            let wg = WaitGroup::new();
+            for bundle in sanitized_bundle_batch.sanitized_bundles {
+                let t_wg = wg.add(1);
+                let mut results = results.clone();
+                meta.bundle_simulation_thread_pool.spawn(|| {
+                    let res = bank.simulate_bundle(bundle);
+                    results.lock().unwrap().push(res);
+                    t_wg.done();
+                });
+            }
+            wg.wait();
 
             let accounts = if let Some(config_accounts) = config.accounts {
                 let accounts_encoding = config_accounts
@@ -3790,50 +3823,50 @@ pub mod rpc_full {
                 if accounts_encoding == UiAccountEncoding::Binary
                     || accounts_encoding == UiAccountEncoding::Base58
                 {
-                    return Err(Error::invalid_params("base58 encoding not supported"));
+                    return Err(Error::invalid_params(
+                        "neither base58 or binary encoding is supported",
+                    ));
                 }
 
-                if config_accounts.addresses.len() > number_of_accounts {
+                if config_accounts.addresses.len() > n_accounts {
                     return Err(Error::invalid_params(format!(
-                        "Too many accounts provided; max {}",
-                        number_of_accounts
+                        "too many accounts provided; max {}",
+                        n_accounts
                     )));
                 }
 
-                if result.is_err() {
-                    Some(vec![None; config_accounts.addresses.len()])
-                } else {
-                    Some(
-                        config_accounts
-                            .addresses
-                            .iter()
-                            .map(|address_str| {
-                                let address = verify_pubkey(address_str)?;
-                                post_simulation_accounts
-                                    .iter()
-                                    .find(|(key, _account)| key == &address)
-                                    .map(|(pubkey, account)| {
-                                        encode_account(account, pubkey, accounts_encoding, None)
-                                    })
-                                    .transpose()
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                    )
+                let mut accounts = vec![];
+                for result in results.lock().unwrap().into_iter() {
+                    if result.is_err() {
+                        // TODO(seg): fix
+                        accounts.push(Some(vec![None; config_accounts.addresses.len()]));
+                    } else {
+                        accounts.push(Some(
+                            config_accounts
+                                .addresses
+                                .iter()
+                                .map(|address_str| {
+                                    let address = verify_pubkey(address_str)?;
+                                    result
+                                        .post_simulation_accounts
+                                        .iter()
+                                        .find(|(key, _account)| key == &address)
+                                        .map(|(pubkey, account)| {
+                                            encode_account(account, pubkey, accounts_encoding, None)
+                                        })
+                                        .transpose()
+                                })
+                                .collect::<Result<Vec<_>>>()?,
+                        ));
+                    }
                 }
+
+                accounts
             } else {
                 None
             };
 
-            Ok(new_response(
-                bank,
-                RpcSimulateTransactionResult {
-                    err: result.err(),
-                    logs: Some(logs),
-                    accounts,
-                    units_consumed: Some(units_consumed),
-                    return_data: return_data.map(|return_data| return_data.into()),
-                },
-            ))
+            Ok(new_response(&*bank, RpcSimulateBundleBatchResult {}))
         }
 
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot> {

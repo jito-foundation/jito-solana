@@ -5845,6 +5845,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util 0.6.9",
+ "wg",
 ]
 
 [[package]]
@@ -7697,6 +7698,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44d8de8415c823c8abd270ad483c6feeac771fad964890779f9a8cb24fbbc1bf"
 dependencies = [
  "webpki 0.22.0",
+]
+
+[[package]]
+name = "wg"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f0193600355622d5de21a3deadfffa0dc6b3aa3c40e02d5a476495c67841a76"
+dependencies = [
+ "parking_lot 0.11.2",
 ]
 
 [[package]]
