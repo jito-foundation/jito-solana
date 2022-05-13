@@ -34,7 +34,7 @@ use {
     solana_streamer::quic::{spawn_server, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
     std::{
         collections::HashMap,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread,
         time::Duration,
@@ -99,6 +99,7 @@ impl Tpu {
         keypair: &Keypair,
         validator_interface_address: String,
         tip_program_pubkey: Pubkey,
+        shred_receiver_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -251,6 +252,7 @@ impl Tpu {
             blockstore,
             &bank_forks,
             shred_version,
+            shred_receiver_address,
         );
 
         Self {
