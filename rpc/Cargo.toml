@@ -54,6 +54,7 @@ stream-cancel = "0.8.1"
 thiserror = "1.0"
 tokio = { version = "~1.14.1", features = ["full"] }
 tokio-util = { version = "0.6", features = ["codec", "compat"] }
+wg = "0.1.0"
 
 [dev-dependencies]
 serial_test = "0.6.0"

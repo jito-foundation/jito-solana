@@ -256,8 +256,6 @@ impl BundleStage {
         qos_service: &QosService,
         tip_manager: &Arc<Mutex<TipManager>>,
     ) -> BundleExecutionResult<()> {
-        let mut chunk_start = 0;
-
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let mut account_override = AccountOverrides {
             slot_history: None,
@@ -335,6 +333,7 @@ impl BundleStage {
             )?;
         }
 
+        let mut chunk_start = 0;
         while chunk_start != transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
                 QosService::remove_transaction_costs(

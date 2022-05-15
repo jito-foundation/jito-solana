@@ -1,6 +1,9 @@
-use {solana_program::pubkey::Pubkey, solana_sdk::transaction::TransactionError, thiserror::Error};
+use {
+    anchor_lang::error::Error, serde::Deserialize, solana_program::pubkey::Pubkey,
+    solana_sdk::transaction::TransactionError, thiserror::Error,
+};
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum BundleExecutionError {
     #[error("Bank is not processing transactions.")]
     BankNotProcessingTransactions,
@@ -27,7 +30,7 @@ pub enum BundleExecutionError {
     TipError(#[from] TipPaymentError),
 }
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum TipPaymentError {
     #[error("account is missing from bank: {0}")]
     AccountMissing(Pubkey),
@@ -36,5 +39,14 @@ pub enum TipPaymentError {
     ProgramNonExistent(Pubkey),
 
     #[error("Anchor error: {0}")]
-    AnchorError(#[from] anchor_lang::error::Error),
+    AnchorError(String),
+}
+
+impl From<anchor_lang::error::Error> for TipPaymentError {
+    fn from(anchor_err: Error) -> Self {
+        match anchor_err {
+            Error::AnchorError(e) => Self::AnchorError(e.error_msg),
+            Error::ProgramError(e) => Self::AnchorError(e.to_string()),
+        }
+    }
 }

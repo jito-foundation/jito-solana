@@ -451,6 +451,7 @@ pub fn main() {
         .batch_size
         .to_string();
     let default_rpc_threads = num_cpus::get().to_string();
+    let default_bundle_simulation_threads = num_cpus::get().to_string();
     let default_accountsdb_repl_threads = num_cpus::get().to_string();
     let default_maximum_full_snapshot_archives_to_retain =
         &DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN.to_string();
@@ -1235,6 +1236,16 @@ pub fn main() {
                 .takes_value(true)
                 .default_value(&default_rpc_threads)
                 .help("Number of threads to use for servicing RPC requests"),
+        )
+
+        .arg(
+            Arg::with_name("bundle_simulation_threads")
+                .long("bundle-simulation-threads")
+                .value_name("NUMBER")
+                .validator(is_parsable::<usize>)
+                .takes_value(true)
+                .default_value(&default_bundle_simulation_threads)
+                .help("Number of threads to use for servicing `simulate_bundle_batch` requests"),
         )
         .arg(
             Arg::with_name("rpc_niceness_adj")
@@ -2473,6 +2484,11 @@ pub fn main() {
                 u64
             ),
             rpc_threads: value_t_or_exit!(matches, "rpc_threads", usize),
+            bundle_simulation_threads: value_t_or_exit!(
+                matches,
+                "bundle_simulation_threads",
+                usize
+            ),
             rpc_niceness_adj: value_t_or_exit!(matches, "rpc_niceness_adj", i8),
             account_indexes: account_indexes.clone(),
             rpc_scan_and_fix_roots: matches.is_present("rpc_scan_and_fix_roots"),

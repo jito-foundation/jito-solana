@@ -3,10 +3,12 @@ use {
     serde::{Deserialize, Deserializer, Serialize, Serializer},
     solana_account_decoder::{parse_token::UiTokenAmount, UiAccount},
     solana_sdk::{
+        bundle::error::BundleExecutionError,
         clock::{Epoch, Slot, UnixTimestamp},
         fee_calculator::{FeeCalculator, FeeRateGovernor},
         hash::Hash,
         inflation::Inflation,
+        signature::Signature,
         transaction::{Result, TransactionError},
         transaction_context::TransactionReturnData,
     },
@@ -336,6 +338,32 @@ impl fmt::Display for RpcVersionInfo {
 pub struct RpcIdentity {
     /// The current node identity pubkey
     pub identity: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleBatchResult {
+    pub bundle_results: Option<Vec<RpcSimulateBundleResult>>,
+    /// sequence id of the most profitable bundle
+    pub most_profitable_bundle_id: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum RpcBundleSimulationSummary {
+    /// a pair of error and first offending transaction signature
+    Failed((BundleExecutionError, Signature)),
+    Succeeded,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleResult {
+    pub post_simulation_accounts: Option<Vec<Option<UiAccount>>>,
+    pub return_data: Option<Vec<RpcTransactionReturnData>>,
+    pub summary: Option<RpcBundleSimulationSummary>,
+    pub tip: Option<u64>,
+    pub total_units_consumed: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
