@@ -1115,10 +1115,11 @@ impl Accounts {
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
         feature_set: &FeatureSet,
+        account_locks_override: Option<Mutex<AccountLocks>>,
     ) -> Vec<Result<()>> {
         let tx_account_locks_results: Vec<Result<_>> =
             txs.map(|tx| tx.get_account_locks(feature_set)).collect();
-        self.lock_accounts_sequential_inner(tx_account_locks_results)
+        self.lock_accounts_sequential_inner(tx_account_locks_results, account_locks_override)
     }
 
     #[must_use]
@@ -1162,8 +1163,14 @@ impl Accounts {
     fn lock_accounts_sequential_inner(
         &self,
         tx_account_locks_results: Vec<Result<TransactionAccountLocks>>,
+        account_locks_override: Option<Mutex<AccountLocks>>,
     ) -> Vec<Result<()>> {
-        let account_locks = &mut self.account_locks.lock().unwrap();
+        let mut l_account_locks = if let Some(ref account_locks) = account_locks_override {
+            account_locks.lock().unwrap()
+        } else {
+            self.account_locks.lock().unwrap()
+        };
+
         let mut account_in_use_set = false;
         tx_account_locks_results
             .into_iter()
@@ -1172,7 +1179,7 @@ impl Accounts {
                     true => Err(TransactionError::BundleNotContinuous),
                     false => {
                         let locked = self.lock_account(
-                            account_locks,
+                            &mut l_account_locks,
                             tx_account_locks.writable,
                             tx_account_locks.readonly,
                         );
@@ -3502,7 +3509,7 @@ mod tests {
         let mut loaded = vec![loaded];
 
         let next_blockhash = Hash::new_unique();
-        let accounts = Accounts::new_with_config_for_tests(
+        let _accounts = Accounts::new_with_config_for_tests(
             Vec::new(),
             &ClusterType::Development,
             AccountSecondaryIndexes::default(),
@@ -3611,7 +3618,7 @@ mod tests {
         let mut loaded = vec![loaded];
 
         let next_blockhash = Hash::new_unique();
-        let accounts = Accounts::new_with_config_for_tests(
+        let _accounts = Accounts::new_with_config_for_tests(
             Vec::new(),
             &ClusterType::Development,
             AccountSecondaryIndexes::default(),
