@@ -97,6 +97,10 @@ use {
             AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
         },
         account_utils::StateMut,
+        bundle::{
+            error::BundleExecutionError, sanitized::SanitizedBundle,
+            utils::check_bundle_lock_results,
+        },
         clock::{
             BankId, Epoch, Slot, SlotCount, SlotIndex, UnixTimestamp, DEFAULT_TICKS_PER_SECOND,
             INITIAL_RENT_EPOCH, MAX_PROCESSING_AGE, MAX_TRANSACTION_FORWARDING_DELAY,
@@ -135,7 +139,8 @@ use {
         sysvar::{self, Sysvar, SysvarId},
         timing::years_as_slots,
         transaction::{
-            MessageHash, Result, SanitizedTransaction, Transaction, TransactionError,
+            MessageHash, Result, SanitizedTransaction, Transaction,
+            TransactionError::{self, BundleNotContinuous},
             TransactionVerificationMode, VersionedTransaction,
         },
         transaction_context::{
@@ -150,6 +155,7 @@ use {
     std::{
         borrow::Cow,
         cell::RefCell,
+        cmp::min,
         collections::{HashMap, HashSet},
         convert::{TryFrom, TryInto},
         fmt, mem,
@@ -695,6 +701,20 @@ impl DurableNonceFee {
     }
 }
 
+pub enum BundleSimulationSummary {
+    /// a pair of error and first offending transaction signature
+    Failed((BundleExecutionError, Signature)),
+    Succeeded,
+}
+
+pub struct BundleSimulationResult {
+    pub summary: Option<BundleSimulationSummary>,
+    pub post_simulation_accounts: Vec<TransactionAccount>,
+    pub return_data: Vec<TransactionReturnData>,
+    pub total_units_consumed: u64,
+    pub tip: u64,
+}
+
 pub struct TransactionSimulationResult {
     pub result: Result<()>,
     pub logs: TransactionLogMessages,
@@ -702,6 +722,7 @@ pub struct TransactionSimulationResult {
     pub units_consumed: u64,
     pub return_data: Option<TransactionReturnData>,
 }
+
 pub struct TransactionBalancesSet {
     pub pre_balances: TransactionBalances,
     pub post_balances: TransactionBalances,
@@ -3869,6 +3890,46 @@ impl Bank {
         TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
     }
 
+    /// Prepare a transaction batch without locking accounts for bundle simulation.
+    pub(crate) fn prepare_bundle_simulation_batch<'a, 'b>(
+        &'a self,
+        txs: &'b [SanitizedTransaction],
+    ) -> TransactionBatch<'a, 'b> {
+        let mut lock_results = vec![];
+        let mut read_locked_accounts = HashSet::new();
+        let mut write_locked_accounts = HashSet::new();
+
+        // Loops over each tx and tries to eagerly lock the accounts.
+        for tx in txs {
+            if let Ok(tx_account_locks) = tx.get_account_locks(&self.feature_set) {
+                for r_lock in tx_account_locks.readonly {
+                    if write_locked_accounts.contains(r_lock) {
+                        lock_results.push(Err(BundleNotContinuous));
+                    } else {
+                        read_locked_accounts.insert(r_lock);
+                        lock_results.push(Ok(()));
+                    }
+                }
+
+                for w_lock in tx_account_locks.writable {
+                    if write_locked_accounts.contains(w_lock)
+                        || read_locked_accounts.contains(w_lock)
+                    {
+                        lock_results.push(Err(BundleNotContinuous));
+                    } else {
+                        write_locked_accounts.insert(w_lock);
+                        lock_results.push(Ok(()));
+                    }
+                }
+            }
+        }
+
+        let mut batch = TransactionBatch::new(lock_results, self, Cow::Borrowed(txs));
+        batch.set_needs_unlock(false);
+
+        batch
+    }
+
     /// Prepare a transaction batch without locking accounts for transaction simulation.
     pub(crate) fn prepare_simulation_batch<'a>(
         &'a self,
@@ -3879,6 +3940,118 @@ impl Bank {
             TransactionBatch::new(vec![lock_result], self, Cow::Owned(vec![transaction]));
         batch.set_needs_unlock(false);
         batch
+    }
+
+    /// Run bundles against a frozen bank without committing the results.
+    pub fn simulate_bundle(&self, bundle: SanitizedBundle) -> BundleSimulationResult {
+        assert!(self.is_frozen(), "simulation bank must be frozen");
+
+        self.simulate_bundle_unchecked(bundle)
+    }
+
+    /// Run transactions against a bank without committing the results; does not check if the bank is frozen.
+    pub fn simulate_bundle_unchecked(&self, bundle: SanitizedBundle) -> BundleSimulationResult {
+        let mut bundle_sim_result = BundleSimulationResult {
+            summary: None,
+            post_simulation_accounts: vec![],
+            return_data: vec![],
+            total_units_consumed: 0,
+            // TODO: how to get this?
+            tip: 0,
+        };
+
+        // TODO(seg): double check
+        let account_overrides = AccountOverrides::default();
+        // TODO(seg): ditto double check
+        let mut timings = ExecuteTimings::default();
+
+        let transactions = &bundle.sanitized_transactions;
+        let mut chunk_start = 0;
+        while chunk_start != transactions.len() {
+            let chunk_end = min(transactions.len(), chunk_start + 128);
+            let chunk = &transactions[chunk_start..chunk_end];
+
+            let batch = self.prepare_bundle_simulation_batch(chunk);
+
+            // check if any error
+            if let Some((e, failed_tx_idx)) = check_bundle_lock_results(&batch.lock_results()) {
+                let failed_tx = &batch.sanitized_transactions()[failed_tx_idx];
+                bundle_sim_result.summary = Some(BundleSimulationSummary::Failed((
+                    e,
+                    failed_tx.signature().clone(),
+                )));
+
+                return bundle_sim_result;
+            }
+
+            // TODO(seg): double check early return
+            let LoadAndExecuteTransactionsOutput {
+                loaded_transactions,
+                mut execution_results,
+                ..
+            } = self.load_and_execute_transactions(
+                &batch,
+                // After simulation, transactions will need to be forwarded to the leader
+                // for processing. During forwarding, the transaction could expire if the
+                // delay is not accounted for.
+                MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+                false,
+                true,
+                true,
+                &mut timings,
+                Some(&account_overrides),
+            );
+
+            let TransactionSimulationResult {
+                post_simulation_accounts,
+                units_consumed,
+                ..
+            } = Self::aggregate_simulation_results(
+                loaded_transactions,
+                &mut execution_results,
+                &timings,
+                None,
+            );
+            bundle_sim_result
+                .post_simulation_accounts
+                .extend(post_simulation_accounts);
+            bundle_sim_result.total_units_consumed += units_consumed;
+
+            // TODO(seg): double check chunk indexes correspond to those of execution_results
+            let zipped = execution_results.iter().zip(chunk);
+            for (res, tx) in zipped {
+                if let Err(e) = res.flattened_result() {
+                    bundle_sim_result.summary = Some(BundleSimulationSummary::Failed((
+                        e.into(),
+                        tx.signature().clone(),
+                    )));
+                    return bundle_sim_result; // TODO(seg): double check early return
+                }
+                match res {
+                    TransactionExecutionResult::Executed { details, .. } => {
+                        let _ = details.return_data.as_ref().map(|data| {
+                            bundle_sim_result.return_data.push(data.clone());
+                        });
+                        bundle_sim_result.summary = Some(BundleSimulationSummary::Succeeded);
+                    }
+                    // NOTE: this arm should not get matched since `flattened_result()` check above
+                    TransactionExecutionResult::NotExecuted(_) => {
+                        unreachable!(
+                            "unreachable match arm `TransactionExecutionResult::NotExecuted` hit"
+                        );
+                    }
+                };
+            }
+
+            let processing_end = batch.lock_results().iter().position(|res| res.is_err());
+            if let Some(end) = processing_end {
+                chunk_start += end;
+            } else {
+                chunk_start = chunk_end;
+            }
+        }
+
+        bundle_sim_result
     }
 
     /// Run transactions against a frozen bank without committing the results
@@ -3920,20 +4093,45 @@ impl Bank {
             Some(&account_overrides),
         );
 
-        let post_simulation_accounts = loaded_transactions
-            .into_iter()
-            .next()
-            .unwrap()
-            .0
-            .ok()
-            .map(|loaded_transaction| {
-                loaded_transaction
-                    .accounts
-                    .into_iter()
-                    .take(number_of_accounts)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        Self::aggregate_simulation_results(
+            loaded_transactions,
+            &mut execution_results,
+            &timings,
+            Some(number_of_accounts),
+        )
+    }
+
+    fn aggregate_simulation_results(
+        loaded_transactions: Vec<TransactionLoadResult>,
+        execution_results: &mut Vec<TransactionExecutionResult>,
+        timings: &ExecuteTimings,
+        n_accounts: Option<usize>,
+    ) -> TransactionSimulationResult {
+        let post_simulation_accounts = if let Some(n_accounts) = n_accounts {
+            loaded_transactions
+                .into_iter()
+                .next()
+                .unwrap()
+                .0
+                .ok()
+                .map(|loaded_transaction| {
+                    loaded_transaction
+                        .accounts
+                        .into_iter()
+                        .take(n_accounts)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            loaded_transactions
+                .into_iter()
+                .flat_map(|tx| {
+                    tx.0.ok()
+                        .map(|loaded_transaction| loaded_transaction.accounts)
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+        };
 
         let units_consumed = timings
             .details
@@ -3953,6 +4151,7 @@ impl Bank {
             }
             TransactionExecutionResult::NotExecuted(_) => (None, None),
         };
+
         let logs = logs.unwrap_or_default();
 
         TransactionSimulationResult {

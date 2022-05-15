@@ -6,6 +6,7 @@ use {
         commitment_config::{CommitmentConfig, CommitmentLevel},
     },
     solana_transaction_status::{TransactionDetails, UiTransactionEncoding},
+    std::collections::HashMap,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -31,6 +32,13 @@ pub struct RpcSimulateTransactionAccountsConfig {
     pub addresses: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleBatchAccountsConfig {
+    pub encoding: Option<UiAccountEncoding>,
+    pub addresses: HashMap<usize, Vec<String>>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateTransactionConfig {
@@ -42,6 +50,34 @@ pub struct RpcSimulateTransactionConfig {
     pub commitment: Option<CommitmentConfig>,
     pub encoding: Option<UiTransactionEncoding>,
     pub accounts: Option<RpcSimulateTransactionAccountsConfig>,
+}
+
+// TODO(seg): maybe don't need all these derivations
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SimulationBankConfig {
+    Commitment(CommitmentConfig),
+    Slot(Slot),
+}
+
+impl Default for SimulationBankConfig {
+    fn default() -> Self {
+        Self::Commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Confirmed,
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleBatchConfig {
+    pub accounts_config: Option<RpcSimulateBundleBatchAccountsConfig>,
+    pub encoding: Option<UiTransactionEncoding>,
+    pub simulation_bank: Option<SimulationBankConfig>,
+    #[serde(default)]
+    pub skip_sig_verify: bool,
+    #[serde(default)]
+    pub replace_recent_blockhash: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

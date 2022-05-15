@@ -33,6 +33,7 @@ use {
     },
     solana_sdk::{
         account::Account,
+        bundle::BundleBatch,
         clock::{Epoch, Slot, UnixTimestamp, DEFAULT_MS_PER_SLOT, MAX_HASH_AGE_IN_SECONDS},
         commitment_config::{CommitmentConfig, CommitmentLevel},
         epoch_info::EpochInfo,
@@ -1383,6 +1384,48 @@ impl RpcClient {
         let serialized_encoded = serialize_and_encode::<Transaction>(transaction, encoding)?;
         self.send(
             RpcRequest::SimulateTransaction,
+            json!([serialized_encoded, config]),
+        )
+        .await
+    }
+
+    pub async fn simulate_bundle_batch(
+        &self,
+        bundle_batch: &BundleBatch,
+    ) -> RpcResult<RpcSimulateBundleBatchResult> {
+        self.simulate_bundle_batch_with_config(
+            bundle_batch,
+            RpcSimulateBundleBatchConfig {
+                simulation_bank: Some(SimulationBankConfig::Commitment(self.commitment())),
+                ..RpcSimulateBundleBatchConfig::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn simulate_bundle_batch_with_config(
+        &self,
+        bundle_batch: &BundleBatch,
+        config: RpcSimulateBundleBatchConfig,
+    ) -> RpcResult<RpcSimulateBundleBatchResult> {
+        let encoding = if let Some(encoding) = config.encoding {
+            encoding
+        } else {
+            self.default_cluster_transaction_encoding().await?
+        };
+
+        let simulation_bank = config.simulation_bank.unwrap_or_default();
+
+        let config = RpcSimulateBundleBatchConfig {
+            encoding: Some(encoding),
+            simulation_bank: Some(simulation_bank),
+            ..config
+        };
+
+        let serialized_encoded = serialize_and_encode::<BundleBatch>(bundle_batch, encoding)?;
+
+        self.send(
+            RpcRequest::SimulateBundleBatch,
             json!([serialized_encoded, config]),
         )
         .await
