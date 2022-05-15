@@ -13,10 +13,7 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
-    solana_mev::{
-        bundle::Bundle,
-        tip_manager::{TipManager, TipPaymentError},
-    },
+    solana_mev::{bundle::Bundle, tip_manager::TipManager},
     solana_perf::{cuda_runtime::PinnedVec, packet::Packet},
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
@@ -38,6 +35,7 @@ use {
     },
     solana_sdk::{
         bpf_loader_upgradeable,
+        bundle::{error::BundleExecutionError, utils::check_bundle_lock_results},
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
@@ -62,35 +60,7 @@ use {
         thread::{self, Builder, JoinHandle},
         time::Duration,
     },
-    thiserror::Error,
 };
-
-#[derive(Error, Debug, Clone)]
-pub enum BundleExecutionError {
-    #[error("Bank is not processing transactions.")]
-    BankNotProcessingTransactions,
-
-    #[error("Bundle is invalid")]
-    InvalidBundle,
-
-    #[error("PoH max height reached in the middle of a bundle.")]
-    PohError(#[from] PohRecorderError),
-
-    #[error("No records to record to PoH")]
-    NoRecordsToRecord,
-
-    #[error("A transaction in the bundle failed")]
-    TransactionFailure(#[from] TransactionError),
-
-    #[error("The bundle exceeds the cost model")]
-    ExceedsCostModel,
-
-    #[error("The validator is not a leader yet, dropping")]
-    NotLeaderYet,
-
-    #[error("Tip error {0}")]
-    TipError(#[from] TipPaymentError),
-}
 
 type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
 
@@ -372,7 +342,7 @@ impl BundleStage {
                     transactions_qos_results.iter(),
                     bank,
                 );
-                return Err(PohRecorderError::MaxHeightReached.into());
+                return Err(BundleExecutionError::PohMaxHeightError);
             }
 
             // ************************************************************************
@@ -382,7 +352,7 @@ impl BundleStage {
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
-            if let Err(e) = Self::check_bundle_batch_ok(&batch) {
+            if let Some((e, _)) = check_bundle_lock_results(&batch.lock_results()) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
@@ -492,14 +462,14 @@ impl BundleStage {
             Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        if let Err(e) = recorder.record(record) {
+        Self::try_record(recorder, record).map_err(|e| {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
                 transactions_qos_results.iter(),
                 bank,
             );
-            return Err(e.into());
-        }
+            e
+        })?;
 
         for r in execution_results {
             let mut output = r.load_and_execute_tx_output;
@@ -848,8 +818,7 @@ impl BundleStage {
             Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-
-        recorder.record(record)?;
+        let _ = Self::try_record(recorder, record)?;
 
         let mut transaction_results = Vec::new();
         for r in execution_results {
@@ -920,7 +889,6 @@ impl BundleStage {
         cached_accounts: &mut AccountOverrides,
     ) {
         let accounts = bank.collect_accounts_to_store(txs, res, loaded);
-        // info!("caching accounts {:?}", accounts);
         for (pubkey, data) in accounts {
             cached_accounts.put(*pubkey, data.clone());
         }
@@ -962,21 +930,6 @@ impl BundleStage {
                     Err(e) => return Err(e.clone().into()),
                 },
                 _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Checks that preparing a bundle gives an acceptable batch back
-    fn check_bundle_batch_ok(batch: &TransactionBatch) -> BundleExecutionResult<()> {
-        for r in batch.lock_results() {
-            match r {
-                Ok(())
-                | Err(TransactionError::AccountInUse)
-                | Err(TransactionError::BundleNotContinuous) => {}
-                Err(e) => {
-                    return Err(e.clone().into());
-                }
             }
         }
         Ok(())
@@ -1134,5 +1087,13 @@ impl BundleStage {
 
     pub fn join(self) -> thread::Result<()> {
         self.bundle_thread.join()
+    }
+
+    fn try_record(recorder: &TransactionRecorder, record: Record) -> BundleExecutionResult<()> {
+        return match recorder.record(record) {
+            Ok(()) => Ok(()),
+            Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
+            Err(e) => panic!("Poh recorder returned unexpected error: {:?}", e),
+        };
     }
 }

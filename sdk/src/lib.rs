@@ -12,6 +12,7 @@ pub use solana_program::*;
 pub mod account;
 pub mod account_utils;
 pub mod builtins;
+pub mod bundle;
 pub mod client;
 pub mod commitment_config;
 pub mod compute_budget;
