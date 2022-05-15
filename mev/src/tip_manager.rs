@@ -5,29 +5,17 @@ use {
     log::warn,
     solana_runtime::bank::Bank,
     solana_sdk::{
-        account::ReadableAccount, instruction::Instruction, pubkey::Pubkey, signature::Keypair,
-        signer::Signer, system_program, transaction::Transaction,
+        account::ReadableAccount, bundle::error::TipPaymentError, instruction::Instruction,
+        pubkey::Pubkey, signature::Keypair, signer::Signer, system_program,
+        transaction::Transaction,
     },
     std::{collections::HashSet, sync::Arc},
-    thiserror::Error,
     tip_payment::{
         Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_1,
         TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5,
         TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7, TIP_ACCOUNT_SEED_8,
     },
 };
-
-#[derive(Error, Debug, Clone)]
-pub enum TipPaymentError {
-    #[error("Account is missing from bank: {0}")]
-    AccountMissing(Pubkey),
-
-    #[error("MEV program is non-existent")]
-    ProgramNonExistent(Pubkey),
-
-    #[error("Anchor error: {0}")]
-    AnchorError(#[from] anchor_lang::error::Error),
-}
 
 pub type Result<T> = std::result::Result<T, TipPaymentError>;
 

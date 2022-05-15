@@ -1,4 +1,4 @@
-use {solana_sdk::transaction::TransactionError, thiserror::Error};
+use {solana_program::pubkey::Pubkey, solana_sdk::transaction::TransactionError, thiserror::Error};
 
 #[derive(Error, Debug, Clone)]
 pub enum BundleExecutionError {
@@ -9,7 +9,7 @@ pub enum BundleExecutionError {
     InvalidBundle,
 
     #[error("PoH max height reached in the middle of a bundle.")]
-    PohError,
+    PohMaxHeightError,
 
     #[error("No records to record to PoH")]
     NoRecordsToRecord,
@@ -24,5 +24,17 @@ pub enum BundleExecutionError {
     NotLeaderYet,
 
     #[error("Tip error {0}")]
-    TipError(String),
+    TipError(#[from] TipPaymentError),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum TipPaymentError {
+    #[error("Account is missing from bank: {0}")]
+    AccountMissing(Pubkey),
+
+    #[error("MEV program is non-existent")]
+    ProgramNonExistent(Pubkey),
+
+    #[error("Anchor error: {0}")]
+    AnchorError(#[from] anchor_lang::error::Error),
 }

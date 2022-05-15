@@ -7,17 +7,12 @@ use {
         bundle_utils::get_bundle_txs,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::{CommitTransactionDetails, QosService},
-        unprocessed_packet_batches::{self, *},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_entry::entry::hash_transactions,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure::Measure,
-    solana_mev::{
-        bundle::Bundle,
-        tip_manager::{TipManager, TipPaymentError},
-    },
-    solana_perf::{cuda_runtime::PinnedVec, packet::Packet},
+    solana_mev::{bundle::Bundle, tip_manager::TipManager},
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
         PohRecorderError::{self},
@@ -37,7 +32,7 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
-        bundle::utils::check_bundle_lock_results,
+        bundle::{error::BundleExecutionError, utils::check_bundle_lock_results},
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
@@ -45,7 +40,7 @@ use {
         signature::{Keypair, Signer},
         system_instruction,
         transaction::{
-            self, AddressLoader, MessageHash, SanitizedTransaction, Transaction, TransactionError,
+            self, MessageHash, SanitizedTransaction, Transaction, TransactionError,
             VersionedTransaction,
         },
     },
@@ -63,7 +58,6 @@ use {
         thread::{self, Builder, JoinHandle},
         time::Duration,
     },
-    thiserror::Error,
 };
 
 type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
@@ -340,7 +334,7 @@ impl BundleStage {
                     transactions_qos_results.iter(),
                     bank,
                 );
-                return Err(PohRecorderError::MaxHeightReached.into());
+                return Err(BundleExecutionError::PohMaxHeightError);
             }
 
             // ************************************************************************
@@ -460,14 +454,14 @@ impl BundleStage {
             Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        if let Err(e) = recorder.record(record) {
+        Self::try_record(recorder, record).map_err(|e| {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
                 transactions_qos_results.iter(),
                 bank,
             );
-            return Err(e.into());
-        }
+            e
+        })?;
 
         for r in execution_results {
             let mut output = r.load_and_execute_tx_output;
@@ -648,6 +642,14 @@ impl BundleStage {
             }
         }
         Ok(())
+    }
+
+    fn try_record(recorder: &TransactionRecorder, record: Record) -> BundleExecutionResult<()> {
+        return match recorder.record(record) {
+            Ok(()) => Ok(()),
+            Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
+            Err(e) => panic!("Poh recorder returned unexpected error: {:?}", e),
+        };
     }
 
     /// Executes transactions, records them to PoH, and commits them to the bank
@@ -835,8 +837,7 @@ impl BundleStage {
             Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-
-        recorder.record(record)?;
+        let _ = Self::try_record(recorder, record)?;
 
         let mut transaction_results = Vec::new();
         for r in execution_results {

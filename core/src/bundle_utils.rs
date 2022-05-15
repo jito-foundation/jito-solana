@@ -6,7 +6,7 @@ use {
     solana_sdk::{
         feature_set,
         pubkey::Pubkey,
-        transaction::{AddressLoader, SanitizedTransaction, TransactionError},
+        transaction::{AddressLoader, SanitizedTransaction},
     },
     std::sync::Arc,
 };

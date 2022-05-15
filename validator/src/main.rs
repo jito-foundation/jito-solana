@@ -451,6 +451,7 @@ pub fn main() {
         .batch_size
         .to_string();
     let default_rpc_threads = num_cpus::get().to_string();
+    let default_bundle_simulation_threads = num_cpus::get().to_string();
     let default_accountsdb_repl_threads = num_cpus::get().to_string();
     let default_maximum_full_snapshot_archives_to_retain =
         &DEFAULT_MAX_FULL_SNAPSHOT_ARCHIVES_TO_RETAIN.to_string();
@@ -1218,6 +1219,15 @@ pub fn main() {
                 .takes_value(true)
                 .validator(solana_net_utils::is_host)
                 .help("IP address to bind the RPC port [default: 127.0.0.1 if --private-rpc is present, otherwise use --bind-address]"),
+        )
+        .arg(
+            Arg::with_name("bundle_simulation_threads")
+                .long("bundle-simulation-threads")
+                .value_name("NUMBER")
+                .validator(is_parsable::<usize>)
+                .takes_value(true)
+                .default_value(&default_bundle_simulation_threads)
+                .help("Number of threads to use for servicing RPC requests"),
         )
         .arg(
             Arg::with_name("rpc_threads")
@@ -2449,6 +2459,11 @@ pub fn main() {
                 matches,
                 "health_check_slot_distance",
                 u64
+            ),
+            bundle_simulation_threads: value_t_or_exit!(
+                matches,
+                "bundle_simulation_threads",
+                usize
             ),
             rpc_threads: value_t_or_exit!(matches, "rpc_threads", usize),
             rpc_niceness_adj: value_t_or_exit!(matches, "rpc_niceness_adj", i8),

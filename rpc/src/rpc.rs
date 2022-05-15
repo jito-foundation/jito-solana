@@ -105,7 +105,6 @@ use {
         },
         time::Duration,
     },
-    tokio::runtime::Runtime,
 };
 
 type RpcCustomResult<T> = std::result::Result<T, RpcCustomError>;
@@ -3724,17 +3723,16 @@ pub mod rpc_full {
 
             let bank = match config.simulation_bank.unwrap_or_default() {
                 SimulationBankConfig::Commitment(commitment) => {
-                    meta.bank_from_commitment(Some(commitment))
+                    Ok(meta.bank_from_commitment(Some(commitment)))
                 }
                 SimulationBankConfig::Slot(slot) => {
                     meta.bank_from_slot(slot)
-                        .ok_or(Err(Error::invalid_params(format!(
+                        .ok_or(Error::invalid_params(format!(
                             "bank not found for the provided slot: {}",
                             slot
-                        ))
-                        .into()))?
+                        )))
                 }
-            };
+            }?;
 
             let tx_encoding = config.encoding.unwrap_or(UiTransactionEncoding::Base64);
             let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
@@ -3744,14 +3742,20 @@ pub mod rpc_full {
                 ))
             })?;
 
-            let decoded_bundle_batch = encoded_bundle_batch
-                .into_iter()
-                .flat_map(|encoded_bundle| {
-                    encoded_bundle.into_iter().map(|encoded_tx| {
-                        decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)?
-                    })?
-                })
-                .collect::<Result<Vec<Vec<VersionedTransaction>>>>()?;
+            // TODO(seg): change to functional
+            let mut decoded_bundle_batch = vec![];
+            for encoded_bundle in encoded_bundle_batch {
+                let mut decoded_txs = vec![];
+                for encoded_tx in encoded_bundle {
+                    let decoded_tx = decode_and_deserialize::<VersionedTransaction>(
+                        encoded_tx,
+                        binary_encoding,
+                    )?
+                    .1;
+                    decoded_txs.push(decoded_tx);
+                }
+                decoded_bundle_batch.push(decoded_txs);
+            }
 
             let decoded_bundle_batch = if config.replace_recent_blockhash {
                 if !config.skip_sig_verify {
@@ -3763,42 +3767,41 @@ pub mod rpc_full {
                 decoded_bundle_batch
                     .into_iter()
                     .map(|bundle| {
-                        bundle.into_iter().map(|mut tx| {
-                            tx.message.set_recent_blockhash(bank.last_blockhash());
-                            tx
-                        });
+                        bundle
+                            .into_iter()
+                            .map(|mut tx| {
+                                tx.message.set_recent_blockhash(bank.last_blockhash());
+                                tx
+                            })
+                            .collect::<Vec<VersionedTransaction>>()
                     })
-                    .collect()
+                    .collect::<Vec<Vec<VersionedTransaction>>>()
             } else {
                 decoded_bundle_batch
             };
 
+            // TODO(seg): make functional
             let mut n_accounts = 0;
-            let sanitized_bundles = decoded_bundle_batch
-                .into_iter()
-                .map(|bundle| {
-                    let sanitized_transactions = bundle
-                        .into_iter()
-                        .map(|tx| {
-                            let sanitized_tx = sanitize_transaction(tx, &bank)?;
-                            n_accounts += sanitized_tx.message().account_keys().len();
-
-                            sanitized_tx
-                        })
-                        .collect::<Vec<_>>();
-                    SanitizedBundle {
-                        sanitized_transactions,
-                    }
-                })
-                .collect::<Result<Vec<SanitizedBundle>>>()?;
+            let mut sanitized_bundles = vec![];
+            for bundle in decoded_bundle_batch {
+                let mut sanitized_transactions = vec![];
+                for tx in bundle {
+                    let sanitized_tx = sanitize_transaction(tx, &*bank)?;
+                    n_accounts += sanitized_tx.message().account_keys().len();
+                    sanitized_transactions.push(sanitized_tx);
+                }
+                sanitized_bundles.push(SanitizedBundle {
+                    sanitized_transactions,
+                });
+            }
             let sanitized_bundle_batch = SanitizedBundleBatch { sanitized_bundles };
 
             if !config.skip_sig_verify {
-                sanitized_bundle_batch.iter().for_each(|bundle| {
-                    bundle
-                        .iter()
-                        .for_each(|tx| verify_transaction(tx, &bank.feature_set)?)
-                });
+                for bundle in &sanitized_bundle_batch.sanitized_bundles {
+                    for tx in &bundle.sanitized_transactions {
+                        let _ = verify_transaction(tx, &bank.feature_set)?;
+                    }
+                }
             }
 
             // TODO(seg): maybe move this to the client?
@@ -3806,8 +3809,9 @@ pub mod rpc_full {
             let wg = WaitGroup::new();
             for bundle in sanitized_bundle_batch.sanitized_bundles {
                 let t_wg = wg.add(1);
-                let mut results = results.clone();
-                meta.bundle_simulation_thread_pool.spawn(|| {
+                let results = results.clone();
+                let bank = bank.clone();
+                meta.bundle_simulation_thread_pool.spawn(move || {
                     let res = bank.simulate_bundle(bundle);
                     results.lock().unwrap().push(res);
                     t_wg.done();
@@ -3836,8 +3840,8 @@ pub mod rpc_full {
                 }
 
                 let mut accounts = vec![];
-                for result in results.lock().unwrap().into_iter() {
-                    if result.is_err() {
+                for result in results.lock().unwrap().iter() {
+                    if result.err.is_some() {
                         // TODO(seg): fix
                         accounts.push(Some(vec![None; config_accounts.addresses.len()]));
                     } else {
@@ -3863,7 +3867,7 @@ pub mod rpc_full {
 
                 accounts
             } else {
-                None
+                vec![]
             };
 
             Ok(new_response(&*bank, RpcSimulateBundleBatchResult {}))
