@@ -1,7 +1,8 @@
 use {
     crate::proto::validator_interface::{
         validator_interface_client::ValidatorInterfaceClient, GetTpuConfigsRequest,
-        SubscribePacketsRequest, SubscribePacketsResponse,
+        SubscribeBundlesRequest, SubscribeBundlesResponse, SubscribePacketsRequest,
+        SubscribePacketsResponse,
     },
     crossbeam_channel::{unbounded, Receiver},
     solana_sdk::{pubkey::Pubkey, signature::Signature},
@@ -105,6 +106,28 @@ impl BlockingProxyClient {
         self.rt.spawn(async move {
             loop {
                 let msg = packet_subscription.message().await;
+                let error = msg.is_err();
+                if sender.send(msg).is_err() || error {
+                    break;
+                }
+            }
+        });
+
+        Ok(receiver)
+    }
+
+    pub fn subscribe_bundles(
+        &mut self,
+    ) -> ProxyResult<Receiver<std::result::Result<Option<SubscribeBundlesResponse>, Status>>> {
+        let mut bundle_subscription = self
+            .rt
+            .block_on(self.client.subscribe_bundles(SubscribeBundlesRequest {}))?
+            .into_inner();
+
+        let (sender, receiver) = unbounded();
+        self.rt.spawn(async move {
+            loop {
+                let msg = bundle_subscription.message().await;
                 let error = msg.is_err();
                 if sender.send(msg).is_err() || error {
                     break;

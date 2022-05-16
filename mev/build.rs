@@ -4,7 +4,9 @@ fn main() {
     configure()
         .compile(
             &[
+                "protos/bundle.proto",
                 "protos/packet.proto",
+                "protos/searcher.proto",
                 "protos/shared.proto",
                 "protos/validator_interface_service.proto",
             ],

@@ -46,7 +46,6 @@ impl ShredFetchStage {
             // Seems reasonable to limit shreds to 2 epochs away
             if slot > last_root && slot < (last_slot + 2 * slots_per_epoch) {
                 // Shred filter
-
                 let hash = packet_hasher.hash_packet(p);
 
                 if shreds_received.get(&hash).is_none() {

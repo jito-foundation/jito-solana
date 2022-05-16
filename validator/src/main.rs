@@ -1741,11 +1741,26 @@ pub fn main() {
         )
         .arg(
             Arg::with_name("validator_interface_address")
-                .long("validator_interface_address")
+                .long("validator-interface-address")
                 .value_name("VALIDATOR_INTERFACE_ADDRESS")
                 .required(true)
                 .takes_value(true)
                 .help("Validator interface listening address")
+        )
+        .arg(
+            Arg::with_name("tip_program_pubkey")
+                .long("tip-program-pubkey")
+                .value_name("PUBKEY")
+                .required(true)
+                .takes_value(true)
+                .help("The public key of the tip program")
+        )
+        .arg(
+            Arg::with_name("shred_receiver_address")
+                .long("shred-receiver-address")
+                .value_name("SHRED_RECEIVER_ADDRESS")
+                .takes_value(true)
+                .help("Shred receiver listening address")
         )
         .after_help("The default subcommand is run")
         .subcommand(
@@ -2548,6 +2563,10 @@ pub fn main() {
         },
         validator_interface_address: value_of(&matches, "validator_interface_address")
             .unwrap_or_default(),
+        tip_program_pubkey: value_t!(matches.value_of("tip_program_pubkey"), Pubkey).unwrap(),
+        shred_receiver_address: matches
+            .value_of("shred_receiver_address")
+            .map(|address| SocketAddr::from_str(address).expect("shred_receiver_address invalid")),
         ..ValidatorConfig::default()
     };
 
