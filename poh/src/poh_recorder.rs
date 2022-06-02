@@ -745,7 +745,7 @@ impl PohRecorder {
             Measure::this(|_| self.report_metrics(bank_slot), (), "report_metrics");
         self.report_metrics_us += report_metrics_time.as_us();
 
-        let mixins: Vec<Hash> = mixins_txs.iter().map(|(m, _)| m.clone()).collect();
+        let mixins: Vec<Hash> = mixins_txs.iter().map(|(m, _)| *m).collect();
         let transactions: Vec<Vec<VersionedTransaction>> =
             mixins_txs.iter().map(|(_, tx)| tx.clone()).collect();
 

@@ -175,7 +175,7 @@ pub struct ValidatorConfig {
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
     pub validator_interface_address: String,
-    pub tip_program_pubkey: Pubkey,
+    pub tip_program_pubkey: Option<Pubkey>,
     pub shred_receiver_address: Option<SocketAddr>,
 }
 
@@ -238,7 +238,7 @@ impl Default for ValidatorConfig {
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
             validator_interface_address: String::new(),
-            tip_program_pubkey: Pubkey::default(),
+            tip_program_pubkey: None,
             shred_receiver_address: None,
         }
     }
@@ -974,6 +974,12 @@ impl Validator {
             config.shred_receiver_address,
         );
 
+        let tip_program_pubkey = if config.voting_disabled {
+            Default::default()
+        } else {
+            config.tip_program_pubkey.unwrap()
+        };
+
         let tpu = Tpu::new(
             &cluster_info,
             &poh_recorder,
@@ -1004,7 +1010,7 @@ impl Validator {
             &cost_model,
             &identity_keypair,
             config.validator_interface_address.clone(),
-            config.tip_program_pubkey,
+            tip_program_pubkey,
             config.shred_receiver_address,
         );
 

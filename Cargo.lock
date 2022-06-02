@@ -4583,6 +4583,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-bench-batch-simulate-bundle"
+version = "0.1.0"
+dependencies = [
+ "clap 3.1.18",
+ "env_logger",
+ "log",
+ "num-traits",
+ "rayon",
+ "solana-client",
+ "solana-runtime",
+ "solana-sdk 1.11.0",
+ "solana-transaction-status",
+]
+
+[[package]]
 name = "solana-bench-streamer"
 version = "1.11.0"
 dependencies = [

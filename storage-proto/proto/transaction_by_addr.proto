@@ -57,6 +57,7 @@ enum TransactionErrorType {
     WOULD_EXCEED_ACCOUNT_DATA_TOTAL_LIMIT = 29;
     DUPLICATE_INSTRUCTION = 30;
     BUNDLE_NOT_CONTINUOUS = 31;
+    SKIPPED_EXECUTION = 32;
 }
 
 message InstructionError {

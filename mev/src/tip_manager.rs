@@ -67,7 +67,7 @@ impl TipManager {
     }
 
     pub fn program_id(&self) -> Pubkey {
-        self.program_info.program_id.clone()
+        self.program_info.program_id
     }
 
     pub fn config_pubkey(&self) -> Pubkey {
@@ -76,7 +76,7 @@ impl TipManager {
 
     /// Given a bank, returns the current tip receiver
     pub fn get_current_tip_receiver(&self, bank: &Arc<Bank>) -> Result<Pubkey> {
-        return Ok(self.get_config_account(bank)?.tip_receiver);
+        Ok(self.get_config_account(bank)?.tip_receiver)
     }
 
     pub fn get_tip_accounts(&self) -> HashSet<Pubkey> {
@@ -95,7 +95,9 @@ impl TipManager {
     pub fn get_config_account(&self, bank: &Arc<Bank>) -> Result<Config> {
         let config_data = bank
             .get_account(&self.program_info.config_pda_bump.0)
-            .ok_or_else(|| TipPaymentError::AccountMissing(self.program_info.config_pda_bump.0))?;
+            .ok_or(TipPaymentError::AccountMissing(
+                self.program_info.config_pda_bump.0,
+            ))?;
 
         Ok(Config::try_deserialize(&mut config_data.data())?)
     }
