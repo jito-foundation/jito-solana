@@ -105,7 +105,7 @@ impl MevStage {
             packet_sender,
             heartbeat_receiver,
             cluster_info,
-            exit.clone(),
+            exit,
         );
 
         info!("started mev stage");
@@ -336,17 +336,13 @@ impl MevStage {
         match msg {
             Ok(msg) => {
                 let response = msg?.ok_or(MevStageError::GrpcStreamDisconnected)?;
-                let bundles: Vec<_> = response
-                    .bundles
-                    .into_iter()
-                    .map(|b| {
-                        let batch = PacketBatch::new(
-                            b.packets.into_iter().map(proto_packet_to_packet).collect(),
-                        );
-                        Bundle { batch }
-                    })
-                    .collect();
-                bundles.into_iter().for_each(|b| {
+                let bundles = response.bundles.into_iter().map(|b| {
+                    let batch = PacketBatch::new(
+                        b.packets.into_iter().map(proto_packet_to_packet).collect(),
+                    );
+                    Bundle { batch }
+                });
+                bundles.for_each(|b| {
                     if let Err(e) = bundle_sender.send(b) {
                         error!("error forwarding bundle: {:?}", e);
                     }
@@ -414,7 +410,7 @@ impl MevStage {
                     total_packets_received += packets_received;
                 }
                 recv(bundle_receiver) -> msg => {
-                    let _ = Self::handle_bundle(msg, bundle_sender)?;
+                    Self::handle_bundle(msg, bundle_sender)?;
                 }
                 recv(metrics_tick) -> _ => {
                     datapoint_info!(

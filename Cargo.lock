@@ -858,9 +858,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.3"
+version = "3.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1df386a2d0f35bdefc0642fd8bcb2cd28243959f028abfd22fbade6f7d30980e"
+checksum = "6d20de3739b4fb45a17837824f40aa1769cc7655d7a83e68739a77fe7b30c87a"
 dependencies = [
  "atty",
  "bitflags",
@@ -875,9 +875,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "3.2.3"
+version = "3.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b740354ad9fcf20e27b46d921be4bb3712f5b3c2c7a89ba68a72a8e51d3a47f"
+checksum = "026baf08b89ffbd332836002ec9378ef0e69648cbfadd68af7cd398ca5bf98f7"
 dependencies = [
  "heck 0.4.0",
  "proc-macro-error",
@@ -960,9 +960,9 @@ checksum = "e4c78c047431fee22c1a7bb92e00ad095a02a983affe4d8a72e2a2c62c1b94f3"
 
 [[package]]
 name = "const_format"
-version = "0.2.24"
+version = "0.2.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6a1316fa6a23fea1ee41cb80321590385e5f3e575e99f77c4d918ce5d44379d"
+checksum = "2906f2480cdc015e998deac388331a0f1c1cd88744948c749513020c83c370bc"
 dependencies = [
  "const_format_proc_macros",
 ]
@@ -3749,7 +3749,7 @@ dependencies = [
 name = "rbpf-cli"
 version = "1.11.0"
 dependencies = [
- "clap 3.2.3",
+ "clap 3.2.4",
  "serde",
  "serde_json",
  "solana-bpf-loader-program",
@@ -4547,7 +4547,7 @@ dependencies = [
 name = "solana-banking-bench"
 version = "1.11.0"
 dependencies = [
- "clap 3.2.3",
+ "clap 3.2.4",
  "crossbeam-channel",
  "log",
  "rand 0.7.3",
@@ -4613,10 +4613,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-bench-batch-simulate-bundle"
+version = "0.1.0"
+dependencies = [
+ "clap 3.2.4",
+ "env_logger",
+ "log",
+ "num-traits",
+ "rayon",
+ "solana-client",
+ "solana-runtime",
+ "solana-sdk 1.11.0",
+ "solana-transaction-status",
+]
+
+[[package]]
 name = "solana-bench-streamer"
 version = "1.11.0"
 dependencies = [
- "clap 3.2.3",
+ "clap 3.2.4",
  "crossbeam-channel",
  "solana-net-utils",
  "solana-streamer",
@@ -4712,7 +4727,7 @@ name = "solana-cargo-build-bpf"
 version = "1.11.0"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.3",
+ "clap 3.2.4",
  "solana-sdk 1.11.0",
 ]
 
@@ -4722,7 +4737,7 @@ version = "1.11.0"
 dependencies = [
  "bzip2",
  "cargo_metadata",
- "clap 3.2.3",
+ "clap 3.2.4",
  "log",
  "regex",
  "serial_test 0.7.0",
@@ -4737,7 +4752,7 @@ name = "solana-cargo-test-bpf"
 version = "1.11.0"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.3",
+ "clap 3.2.4",
 ]
 
 [[package]]
@@ -4745,7 +4760,7 @@ name = "solana-cargo-test-sbf"
 version = "1.11.0"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.3",
+ "clap 3.2.4",
 ]
 
 [[package]]
@@ -4770,7 +4785,7 @@ name = "solana-clap-v3-utils"
 version = "1.11.0"
 dependencies = [
  "chrono",
- "clap 3.2.3",
+ "clap 3.2.4",
  "rpassword",
  "solana-perf",
  "solana-remote-wallet",
@@ -4982,7 +4997,7 @@ dependencies = [
  "bs58 0.4.0",
  "bytes",
  "chrono",
- "clap 3.2.3",
+ "clap 3.2.4",
  "crossbeam-channel",
  "dashmap",
  "etcd-client",
@@ -5056,7 +5071,7 @@ name = "solana-dos"
 version = "1.11.0"
 dependencies = [
  "bincode",
- "clap 3.2.3",
+ "clap 3.2.4",
  "itertools",
  "log",
  "rand 0.7.3",
@@ -5355,7 +5370,7 @@ name = "solana-keygen"
 version = "1.11.0"
 dependencies = [
  "bs58 0.4.0",
- "clap 3.2.3",
+ "clap 3.2.4",
  "dirs-next",
  "num_cpus",
  "solana-clap-v3-utils",
@@ -5495,7 +5510,7 @@ name = "solana-log-analyzer"
 version = "1.11.0"
 dependencies = [
  "byte-unit",
- "clap 3.2.3",
+ "clap 3.2.4",
  "serde",
  "serde_json",
  "solana-logger 1.11.0",
@@ -5572,7 +5587,7 @@ dependencies = [
 name = "solana-net-shaper"
 version = "1.11.0"
 dependencies = [
- "clap 3.2.3",
+ "clap 3.2.4",
  "rand 0.7.3",
  "serde",
  "serde_json",
@@ -5584,7 +5599,7 @@ name = "solana-net-utils"
 version = "1.11.0"
 dependencies = [
  "bincode",
- "clap 3.2.3",
+ "clap 3.2.4",
  "crossbeam-channel",
  "log",
  "nix",
@@ -5661,7 +5676,7 @@ dependencies = [
 name = "solana-poh-bench"
 version = "1.11.0"
 dependencies = [
- "clap 3.2.3",
+ "clap 3.2.4",
  "log",
  "rand 0.7.3",
  "rayon",

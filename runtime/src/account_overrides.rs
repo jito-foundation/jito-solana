@@ -43,10 +43,9 @@ impl AccountOverrides {
                 None
             }
         } else {
-            match self.cached_accounts_with_rent.get(pubkey) {
-                None => None,
-                Some(acc) => Some(AccountWithRentInfo::SubtractRent(acc.clone())),
-            }
+            self.cached_accounts_with_rent
+                .get(pubkey)
+                .map(|acc| AccountWithRentInfo::SubtractRent(acc.clone()))
         }
     }
 

@@ -36,7 +36,10 @@ use {
     },
     solana_sdk::{
         bpf_loader_upgradeable,
-        bundle::{error::BundleExecutionError, utils::check_bundle_lock_results},
+        bundle::{
+            error::BundleExecutionError,
+            utils::{check_bundle_lock_results, BundleExecutionResult},
+        },
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
@@ -62,8 +65,6 @@ use {
         time::Duration,
     },
 };
-
-type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
 
 struct AllExecutionResults {
     pub load_and_execute_tx_output: LoadAndExecuteTransactionsOutput,
@@ -257,10 +258,8 @@ impl BundleStage {
         qos_service: &QosService,
         tip_manager: &Arc<Mutex<TipManager>>,
     ) -> BundleExecutionResult<()> {
-        let mut chunk_start = 0;
-
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-        let mut account_override = AccountOverrides {
+        let mut account_overrides = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
         };
@@ -336,6 +335,7 @@ impl BundleStage {
             )?;
         }
 
+        let mut chunk_start = 0;
         while chunk_start != transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
                 QosService::remove_transaction_costs(
@@ -352,21 +352,21 @@ impl BundleStage {
             // ************************************************************************
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
-            let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
-            if let Some((e, _)) = check_bundle_lock_results(&batch.lock_results()) {
+            let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk, None);
+            if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
                     bank,
                 );
-                return Err(e);
+                return Err(e.into());
             }
 
             let ((pre_balances, pre_token_balances), _) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
-                    &account_override,
+                    &account_overrides,
                     transaction_status_sender,
                     &mut mint_decimals,
                 ),
@@ -381,16 +381,17 @@ impl BundleStage {
                     transaction_status_sender.is_some(),
                     transaction_status_sender.is_some(),
                     &mut execute_and_commit_timings.execute_timings,
-                    Some(&account_override),
+                    Some(&account_overrides),
                 ),
                 "load_execute",
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
-            if let Err(e) = Self::check_all_executed_ok(
-                &load_and_execute_transactions_output
+            if let Err((e, _)) = TransactionExecutionResult::check_bundle_execution_results(
+                load_and_execute_transactions_output
                     .execution_results
                     .as_slice(),
+                batch.sanitized_transactions(),
             ) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
@@ -406,17 +407,17 @@ impl BundleStage {
             // *********************************************************************************
             Self::cache_accounts(
                 bank,
-                &batch.sanitized_transactions(),
+                batch.sanitized_transactions(),
                 &load_and_execute_transactions_output.execution_results,
                 &mut load_and_execute_transactions_output.loaded_transactions,
-                &mut account_override,
+                &mut account_overrides,
             );
 
             let ((post_balances, post_token_balances), _) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
-                    &account_override,
+                    &account_overrides,
                     transaction_status_sender,
                     &mut mint_decimals,
                 ),
@@ -600,11 +601,11 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         cluster_info: &Arc<ClusterInfo>,
     ) -> BundleExecutionResult<()> {
-        let current_tip_receiver = tip_manager_l.get_current_tip_receiver(&bank)?;
+        let current_tip_receiver = tip_manager_l.get_current_tip_receiver(bank)?;
         let my_kp = cluster_info.keypair();
 
         if current_tip_receiver != my_kp.pubkey() {
-            match tip_manager_l.build_change_tip_receiver_tx(&my_kp.pubkey(), &bank, &my_kp) {
+            match tip_manager_l.build_change_tip_receiver_tx(&my_kp.pubkey(), bank, &my_kp) {
                 Ok(tx) => {
                     if let Err(e) = Self::execute_record_and_commit(
                         tx,
@@ -693,9 +694,10 @@ impl BundleStage {
         );
         execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
-        if let Err(e) =
-            Self::check_all_executed_ok(&load_and_execute_tx_output.execution_results.as_slice())
-        {
+        if let Err((e, _)) = TransactionExecutionResult::check_bundle_execution_results(
+            load_and_execute_tx_output.execution_results.as_slice(),
+            batch.sanitized_transactions(),
+        ) {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
                 transactions_qos_results.iter(),
@@ -805,7 +807,7 @@ impl BundleStage {
         let (freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        let _ = Self::try_record(recorder, record)?;
+        Self::try_record(recorder, record)?;
 
         let mut transaction_results = Vec::new();
         for r in execution_results {
@@ -895,37 +897,13 @@ impl BundleStage {
         mint_decimals: &mut HashMap<Pubkey, u8>,
     ) -> (TransactionBalances, TransactionTokenBalances) {
         if transaction_status_sender.is_some() {
-            let balances = collect_balances_with_cache(&batch, bank, Some(&cached_accounts));
+            let balances = collect_balances_with_cache(batch, bank, Some(cached_accounts));
             let token_balances =
-                collect_token_balances(bank, &batch, mint_decimals, Some(&cached_accounts));
+                collect_token_balances(bank, batch, mint_decimals, Some(cached_accounts));
             (balances, token_balances)
         } else {
             (vec![], vec![])
         }
-    }
-
-    /// Return an Error if a transaction was executed and reverted
-    fn check_all_executed_ok(
-        execution_results: &[TransactionExecutionResult],
-    ) -> BundleExecutionResult<()> {
-        let maybe_err = execution_results
-            .iter()
-            .find(|er| er.was_executed() && !er.was_executed_successfully());
-        if let Some(exec_results) = maybe_err {
-            match exec_results {
-                TransactionExecutionResult::Executed {
-                    details,
-                    executors: _,
-                } => match &details.status {
-                    Ok(_) => {
-                        unreachable!();
-                    }
-                    Err(e) => return Err(e.clone().into()),
-                },
-                _ => {}
-            }
-        }
-        Ok(())
     }
 
     fn bundle_stage(
@@ -1010,7 +988,7 @@ impl BundleStage {
 
     fn prepare_poh_record_bundle(
         bank_slot: &Slot,
-        execution_results_txs: &Vec<AllExecutionResults>,
+        execution_results_txs: &[AllExecutionResults],
     ) -> Record {
         let mixins_txs = execution_results_txs
             .iter()
