@@ -84,7 +84,7 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_receiver: Receiver<Bundle>,
+        bundle_receiver: Receiver<Vec<Bundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
@@ -107,7 +107,7 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_receiver: Receiver<Bundle>,
+        bundle_receiver: Receiver<Vec<Bundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
@@ -917,7 +917,7 @@ impl BundleStage {
         cluster_info: Arc<ClusterInfo>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
-        bundle_receiver: Receiver<Bundle>,
+        bundle_receiver: Receiver<Vec<Bundle>>,
         gossip_vote_sender: ReplayVoteSender,
         id: u32,
         cost_model: Arc<RwLock<CostModel>>,
@@ -931,7 +931,7 @@ impl BundleStage {
             if exit.load(Ordering::Relaxed) {
                 break;
             }
-            let bundle = {
+            let bundles = {
                 match bundle_receiver.recv_timeout(Duration::from_millis(100)) {
                     Ok(bundle) => bundle,
                     Err(RecvTimeoutError::Timeout) => {
@@ -943,19 +943,21 @@ impl BundleStage {
                 }
             };
 
-            match Self::execute_bundle(
-                &cluster_info,
-                bundle,
-                poh_recorder,
-                &recorder,
-                &transaction_status_sender,
-                &gossip_vote_sender,
-                &qos_service,
-                &tip_manager,
-            ) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("error recording bundle {:?}", e);
+            for bundle in bundles {
+                match Self::execute_bundle(
+                    &cluster_info,
+                    bundle,
+                    poh_recorder,
+                    &recorder,
+                    &transaction_status_sender,
+                    &gossip_vote_sender,
+                    &qos_service,
+                    &tip_manager,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("error recording bundle {:?}", e);
+                    }
                 }
             }
         }

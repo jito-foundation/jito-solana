@@ -4,7 +4,7 @@
 
 use {
     crate::{
-        backoff::{self, BackoffStrategy},
+        backoff::BackoffStrategy,
         blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
         bundle::Bundle,
         proto::validator_interface::{
@@ -72,7 +72,7 @@ impl MevStage {
         cluster_info: &Arc<ClusterInfo>,
         validator_interface_address: String,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
-        bundle_sender: Sender<Bundle>,
+        bundle_sender: Sender<Vec<Bundle>>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
@@ -121,7 +121,7 @@ impl MevStage {
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<Vec<PacketBatch>>,
         heartbeat_sender: Sender<HeartbeatEvent>,
-        bundle_sender: Sender<Bundle>,
+        bundle_sender: Sender<Vec<Bundle>>,
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::Builder::new()
@@ -330,22 +330,24 @@ impl MevStage {
             std::result::Result<Option<SubscribeBundlesResponse>, Status>,
             RecvError,
         >,
-        bundle_sender: &Sender<Bundle>,
+        bundle_sender: &Sender<Vec<Bundle>>,
     ) -> Result<()> {
         match msg {
             Ok(msg) => {
                 let response = msg?.ok_or(MevStageError::GrpcStreamDisconnected)?;
-                let bundles = response.bundles.into_iter().map(|b| {
-                    let batch = PacketBatch::new(
-                        b.packets.into_iter().map(proto_packet_to_packet).collect(),
-                    );
-                    Bundle { batch }
-                });
-                bundles.for_each(|b| {
-                    if let Err(e) = bundle_sender.send(b) {
-                        error!("error forwarding bundle: {:?}", e);
-                    }
-                });
+                let bundles = response
+                    .bundles
+                    .into_iter()
+                    .map(|b| {
+                        let batch = PacketBatch::new(
+                            b.packets.into_iter().map(proto_packet_to_packet).collect(),
+                        );
+                        Bundle { batch }
+                    })
+                    .collect();
+                if let Err(e) = bundle_sender.send(bundles) {
+                    error!("error forwarding bundle: {:?}", e);
+                }
             }
             Err(_) => return Err(MevStageError::ChannelError),
         }
@@ -358,8 +360,8 @@ impl MevStage {
         tpu: SocketAddr,
         tpu_fwd: SocketAddr,
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
-        backoff: &mut backoff::BackoffStrategy,
-        bundle_sender: &Sender<Bundle>,
+        backoff: &mut BackoffStrategy,
+        bundle_sender: &Sender<Vec<Bundle>>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let packet_receiver = client.subscribe_packets()?;
@@ -429,7 +431,7 @@ impl MevStage {
         heartbeat_sender: &Sender<HeartbeatEvent>,
         verified_packet_sender: &Sender<Vec<PacketBatch>>,
         backoff: &mut BackoffStrategy,
-        bundle_sender: &Sender<Bundle>,
+        bundle_sender: &Sender<Vec<Bundle>>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let mut client =
