@@ -45,6 +45,16 @@ jobs:
             platform: android
             os: ubuntu-latest
     steps:
+      - uses: actions/checkout@v2
+      - name: Checkout submodules using a PAT
+        # https://github.com/actions/checkout/issues/116#issuecomment-573880976
+        # Very hacky, but tells .gitmodules to pull from HTTPS instead of SSH
+        run: |
+          git config --file .gitmodules --get-regexp url | while read url; do
+          git config --file=.gitmodules $(echo "$url" | sed -E "s/org-87542516@github.com:|https:\/\/github.com\//https:\/\/${{ secrets.ACCESS_TOKEN }}:${{ secrets.ACCESS_TOKEN }}@github.com\//")
+          done
+          git submodule sync
+          git submodule update --init --recursive
       - name: Checkout code
         uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1

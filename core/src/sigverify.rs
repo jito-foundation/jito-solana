@@ -16,15 +16,8 @@ use {
     solana_perf::{cuda_runtime::PinnedVec, packet::PacketBatch, recycler::Recycler, sigverify},
     solana_sdk::packet::Packet,
 };
+use solana_perf::packet::TransactionTracerPacketStats;
 
-#[derive(Debug, Default, Clone)]
-pub struct TransactionTracerPacketStats {
-    pub total_removed_before_sigverify_stage: usize,
-    pub total_tracer_packets_received_in_sigverify_stage: usize,
-    pub total_tracer_packets_deduped: usize,
-    pub total_excess_tracer_packets: usize,
-    pub total_tracker_packets_passed_sigverify: usize,
-}
 
 #[derive(Clone)]
 pub struct TransactionSigVerifier {

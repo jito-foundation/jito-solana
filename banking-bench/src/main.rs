@@ -14,6 +14,7 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_measure::measure::Measure,
+    solana_mev::tip_manager::TipManager,
     solana_perf::packet::{to_packet_batches, PacketBatch},
     solana_poh::poh_recorder::{create_test_recorder, PohRecorder, WorkingBankEntry},
     solana_runtime::{
@@ -22,7 +23,7 @@ use {
     },
     solana_sdk::{
         hash::Hash,
-        signature::{Keypair, Signature},
+        signature::{Keypair, Signature, Signer},
         system_transaction,
         timing::{duration_as_us, timestamp},
         transaction::Transaction,
@@ -44,9 +45,15 @@ fn check_txs(
     let now = Instant::now();
     let mut no_bank = false;
     loop {
-        if let Ok((_bank, (entry, _tick_height))) = receiver.recv_timeout(Duration::from_millis(10))
+        if let Ok(WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        }) = receiver.recv_timeout(Duration::from_millis(10))
         {
-            total += entry.transactions.len();
+            total += entries_ticks
+                .iter()
+                .map(|e| e.0.transactions.len())
+                .sum::<usize>();
         }
         if total >= ref_tx_count {
             break;
@@ -334,6 +341,9 @@ fn main() {
             SocketAddrSpace::Unspecified,
         );
         let cluster_info = Arc::new(cluster_info);
+
+        let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+
         let banking_stage = BankingStage::new_num_threads(
             &cluster_info,
             &poh_recorder,
@@ -344,6 +354,7 @@ fn main() {
             None,
             replay_vote_sender,
             Arc::new(RwLock::new(CostModel::default())),
+            tip_manager,
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
 

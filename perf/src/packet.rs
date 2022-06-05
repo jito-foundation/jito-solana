@@ -18,9 +18,19 @@ pub const NUM_PACKETS: usize = 1024 * 8;
 pub const PACKETS_PER_BATCH: usize = 64;
 pub const NUM_RCVMMSGS: usize = 64;
 
+// TODO: @buffalu moved it here to keep it close to packetbatch, ugh
+#[derive(Debug, Default, Clone)]
+pub struct TransactionTracerPacketStats {
+    pub total_removed_before_sigverify_stage: usize,
+    pub total_tracer_packets_received_in_sigverify_stage: usize,
+    pub total_tracer_packets_deduped: usize,
+    pub total_excess_tracer_packets: usize,
+    pub total_tracker_packets_passed_sigverify: usize,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct PacketBatch {
-    packets: PinnedVec<Packet>,
+    pub packets: PinnedVec<Packet>,
 }
 
 pub type PacketBatchRecycler = Recycler<PinnedVec<Packet>>;

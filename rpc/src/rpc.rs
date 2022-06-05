@@ -350,10 +350,9 @@ impl JsonRpcRequestProcessor {
             Arc::new(Keypair::new()),
             socket_addr_space,
         ));
-        let tpu_address = cluster_info.my_contact_info().tpu;
         let (sender, receiver) = unbounded();
         SendTransactionService::new::<NullTpuInfo>(
-            tpu_address,
+            cluster_info.clone(),
             &bank_forks,
             None,
             receiver,
@@ -6232,7 +6231,6 @@ pub mod tests {
             Arc::new(Keypair::new()),
             SocketAddrSpace::Unspecified,
         ));
-        let tpu_address = cluster_info.my_contact_info().tpu;
         let (meta, receiver) = JsonRpcRequestProcessor::new(
             JsonRpcConfig::default(),
             None,
@@ -6241,7 +6239,7 @@ pub mod tests {
             blockstore,
             validator_exit,
             health.clone(),
-            cluster_info,
+            cluster_info.clone(),
             Hash::default(),
             None,
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks),
@@ -6251,7 +6249,7 @@ pub mod tests {
             Arc::new(AtomicU64::default()),
         );
         SendTransactionService::new::<NullTpuInfo>(
-            tpu_address,
+            cluster_info,
             &bank_forks,
             None,
             receiver,
@@ -6498,7 +6496,6 @@ pub mod tests {
             Arc::new(Keypair::new()),
             SocketAddrSpace::Unspecified,
         ));
-        let tpu_address = cluster_info.my_contact_info().tpu;
         let (request_processor, receiver) = JsonRpcRequestProcessor::new(
             JsonRpcConfig::default(),
             None,
@@ -6507,7 +6504,7 @@ pub mod tests {
             blockstore,
             validator_exit,
             RpcHealth::stub(),
-            cluster_info,
+            cluster_info.clone(),
             Hash::default(),
             None,
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks),
@@ -6517,7 +6514,7 @@ pub mod tests {
             Arc::new(AtomicU64::default()),
         );
         SendTransactionService::new::<NullTpuInfo>(
-            tpu_address,
+            cluster_info,
             &bank_forks,
             None,
             receiver,

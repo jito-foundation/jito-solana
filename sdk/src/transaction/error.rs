@@ -147,6 +147,10 @@ pub enum TransactionError {
         "Transaction results in an account ({account_index}) without insufficient funds for rent"
     )]
     InsufficientFundsForRent { account_index: u8 },
+
+    /// Bundle is not continuous
+    #[error("Bundle is not continuous")]
+    BundleNotContinuous,
 }
 
 impl From<SanitizeError> for TransactionError {

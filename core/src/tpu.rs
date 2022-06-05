@@ -5,6 +5,7 @@ use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
+        bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
             GossipVerifiedVoteHashSender, VerifiedVoteSender, VoteTracker,
@@ -18,6 +19,7 @@ use {
     crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
+    solana_mev::{mev_stage::MevStage, tip_manager::TipManager},
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
         optimistically_confirmed_bank_tracker::BankNotificationSender,
@@ -28,13 +30,13 @@ use {
         cost_model::CostModel,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
-    solana_sdk::signature::Keypair,
+    solana_sdk::{pubkey::Pubkey, signature::Keypair},
     solana_streamer::quic::{
         spawn_server, StreamStats, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS,
     },
     std::{
         collections::HashMap,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread,
         time::Duration,
@@ -62,6 +64,7 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
+    mev_stage: MevStage,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -70,6 +73,7 @@ pub struct Tpu {
     find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     vote_find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     staked_nodes_updater_service: StakedNodesUpdaterService,
+    bundle_stage: BundleStage,
 }
 
 impl Tpu {
@@ -97,6 +101,9 @@ impl Tpu {
         cluster_confirmed_slot_sender: GossipDuplicateConfirmedSlotsSender,
         cost_model: &Arc<RwLock<CostModel>>,
         keypair: &Keypair,
+        validator_interface_address: String,
+        tip_program_pubkey: Pubkey,
+        shred_receiver_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -107,6 +114,7 @@ impl Tpu {
             transactions_forwards_quic: transactions_forwards_quic_sockets,
         } = sockets;
 
+        let (packet_intercept_sender, packet_intercept_receiver) = unbounded();
         let (packet_sender, packet_receiver) = unbounded();
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let (forwarded_packet_sender, forwarded_packet_receiver) = unbounded();
@@ -115,7 +123,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit,
-            &packet_sender,
+            &packet_intercept_sender,
             &vote_packet_sender,
             &forwarded_packet_sender,
             forwarded_packet_receiver,
@@ -158,7 +166,7 @@ impl Tpu {
             transactions_quic_sockets,
             keypair,
             cluster_info.my_contact_info().tpu.ip(),
-            packet_sender,
+            packet_intercept_sender,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_IP,
             staked_nodes.clone(),
@@ -183,8 +191,12 @@ impl Tpu {
         .unwrap();
 
         let sigverify_stage = {
-            let verifier = TransactionSigVerifier::new(verified_sender);
-            SigVerifyStage::new(find_packet_sender_stake_receiver, verifier, "tpu-verifier")
+            let verifier = TransactionSigVerifier::new(verified_sender.clone());
+            SigVerifyStage::new(
+                find_packet_sender_stake_receiver,
+                verifier,
+                "tpu-verifier",
+            )
         };
 
         let (verified_tpu_vote_packets_sender, verified_tpu_vote_packets_receiver) = unbounded();
@@ -198,6 +210,18 @@ impl Tpu {
                 "tpu-vote-verifier",
             )
         };
+
+        let (bundle_sender, bundle_receiver) = unbounded();
+
+        let mev_stage = MevStage::new(
+            cluster_info,
+            validator_interface_address,
+            verified_sender,
+            bundle_sender,
+            packet_intercept_receiver,
+            packet_sender,
+            exit.clone(),
+        );
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
             unbounded();
@@ -217,15 +241,29 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
+        let tip_manager = Arc::new(Mutex::new(TipManager::new(tip_program_pubkey)));
+
         let banking_stage = BankingStage::new(
             cluster_info,
             poh_recorder,
             verified_receiver,
             verified_tpu_vote_packets_receiver,
             verified_gossip_vote_packets_receiver,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
+            cost_model.clone(),
+            tip_manager.clone(),
+        );
+
+        let bundle_stage = BundleStage::new(
+            cluster_info,
+            poh_recorder,
             transaction_status_sender,
             replay_vote_sender,
             cost_model.clone(),
+            bundle_receiver,
+            exit.clone(),
+            tip_manager,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
@@ -237,12 +275,14 @@ impl Tpu {
             blockstore,
             &bank_forks,
             shred_version,
+            shred_receiver_address,
         );
 
         Self {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
+            mev_stage,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -251,6 +291,7 @@ impl Tpu {
             find_packet_sender_stake_stage,
             vote_find_packet_sender_stake_stage,
             staked_nodes_updater_service,
+            bundle_stage,
         }
     }
 
@@ -280,6 +321,8 @@ impl Tpu {
             self.find_packet_sender_stake_stage.join(),
             self.vote_find_packet_sender_stake_stage.join(),
             self.staked_nodes_updater_service.join(),
+            self.mev_stage.join(),
+            self.bundle_stage.join(),
         ];
         self.tpu_quic_t.join()?;
         self.tpu_forwards_quic_t.join()?;
