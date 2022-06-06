@@ -40,7 +40,7 @@ use {
             error::BundleExecutionError,
             utils::{check_bundle_lock_results, BundleExecutionResult},
         },
-        clock::{Slot, MAX_PROCESSING_AGE},
+        clock::{Epoch, Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
         saturating_add_assign,
@@ -257,6 +257,8 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         tip_manager: &Arc<Mutex<TipManager>>,
+        consensus_accounts_cache: &mut HashSet<Pubkey>,
+        last_consensus_update: &mut Epoch,
     ) -> BundleExecutionResult<()> {
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let mut account_overrides = AccountOverrides {
@@ -284,8 +286,18 @@ impl BundleStage {
             bank_creation_time,
         } = &*working_bank_start.unwrap();
 
-        let transactions = Self::get_bundle_txs(&bundle, bank, &tip_program_id);
-        if transactions.is_empty() || bundle.batch.len() != transactions.len() {
+        // ************************************************************************
+        // Update consensus-related accounts on epoch boundaries to avoid
+        // locking those accounts
+        // ************************************************************************
+        if bank.epoch() > last_consensus_update.to_owned() {
+            *consensus_accounts_cache = Self::get_consensus_accounts(bank);
+            *last_consensus_update = bank.epoch();
+        }
+
+        let transactions =
+            Self::get_bundle_txs(&bundle, bank, &tip_program_id, consensus_accounts_cache);
+        if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
             return Err(BundleExecutionError::InvalidBundle);
         }
 
@@ -920,6 +932,9 @@ impl BundleStage {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
+        let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
+        let mut last_consensus_update = Epoch::default();
+
         loop {
             if exit.load(Ordering::Relaxed) {
                 break;
@@ -946,6 +961,8 @@ impl BundleStage {
                     &gossip_vote_sender,
                     &qos_service,
                     &tip_manager,
+                    &mut consensus_accounts_cache,
+                    &mut last_consensus_update,
                 ) {
                     Ok(_) => {}
                     Err(e) => {
@@ -956,15 +973,41 @@ impl BundleStage {
         }
     }
 
+    fn get_consensus_accounts(bank: &Arc<Bank>) -> HashSet<Pubkey> {
+        let mut consensus_accounts: HashSet<Pubkey> = HashSet::new();
+        bank.epoch_stakes(bank.epoch()).map(|epoch_stakes| {
+            // votes use the following accounts:
+            // - vote_account pubkey: writeable
+            // - authorized_voter_pubkey: read-only
+            // - node_keypair pubkey: payer (writeable)
+            let node_id_vote_accounts = epoch_stakes.node_id_to_vote_accounts();
+
+            let vote_accounts: Vec<Pubkey> = node_id_vote_accounts
+                .values()
+                .into_iter()
+                .map(|v| v.vote_accounts.clone())
+                .flatten()
+                .collect();
+
+            // vote_account
+            consensus_accounts.extend(vote_accounts.into_iter());
+            // authorized_voter_pubkey
+            consensus_accounts.extend(epoch_stakes.epoch_authorized_voters().keys().into_iter());
+            // node_keypair
+            consensus_accounts.extend(epoch_stakes.node_id_to_vote_accounts().keys().into_iter());
+        });
+        consensus_accounts
+    }
+
     fn get_bundle_txs(
         bundle: &Bundle,
         bank: &Arc<Bank>,
         tip_program_id: &Pubkey,
+        consensus_accounts_cache: &mut HashSet<Pubkey>,
     ) -> Vec<SanitizedTransaction> {
         let packet_indexes = Self::generate_packet_indexes(&bundle.batch);
         let deserialized_packets =
             unprocessed_packet_batches::deserialize_packets(&bundle.batch, &packet_indexes);
-
         deserialized_packets
             .filter_map(|p| {
                 let immutable_packet = p.immutable_section().clone();
@@ -974,6 +1017,7 @@ impl BundleStage {
                     bank.vote_only_bank(),
                     bank.as_ref(),
                     tip_program_id,
+                    &consensus_accounts_cache,
                 )
             })
             .collect()
@@ -1028,6 +1072,7 @@ impl BundleStage {
         votes_only: bool,
         address_loader: impl AddressLoader,
         tip_program_id: &Pubkey,
+        consensus_accounts_cache: &HashSet<Pubkey>,
     ) -> Option<SanitizedTransaction> {
         if votes_only && !deserialized_packet.is_simple_vote() {
             return None;
@@ -1042,8 +1087,8 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // TODO (LB): what happened to require_static_program_ids_in_transaction?
-
+        // Prevent transactions from mentioning the tip program to avoid getting the tip_receiver
+        // changed mid-slot and the rest of the tips stolen.
         // NOTE: if this is a weak assumption helpful for testing deployment,
         // before production it shall only be the tip program
         let tx_accounts = tx.message().account_keys();
@@ -1053,6 +1098,19 @@ impl BundleStage {
                 .any(|a| a == &bpf_loader_upgradeable::id())
         {
             warn!("someone attempted to change the tip program!! tx: {:?}", tx);
+            return None;
+        }
+
+        // NOTE: may want to revisit this as it may reduce use cases of locking accounts
+        // used for legitimate cases in bundles.
+        if tx_accounts
+            .iter()
+            .any(|a| consensus_accounts_cache.contains(a))
+        {
+            warn!(
+                "someone attempted to lock a consensus related account!! tx: {:?}",
+                tx
+            );
             return None;
         }
 
