@@ -505,7 +505,7 @@ pub fn main() {
                 .long("vote-account")
                 .value_name("ADDRESS")
                 .takes_value(true)
-                .requires_all(&["tip_program_pubkey", "validator_interface_service"][..])
+                .requires_all(&["tip_program_pubkey", "validator_interface_address"][..])
                 .validator(is_pubkey_or_keypair)
                 .requires("identity")
                 .help("Validator vote account public key.  \
