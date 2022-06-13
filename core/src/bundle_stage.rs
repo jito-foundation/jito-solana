@@ -918,6 +918,33 @@ impl BundleStage {
         }
     }
 
+    /// Return an Error if a transaction was executed and reverted
+    /// // TODO: if a exchange account is locked while a bundle of length 1 is submitted, still have an issue!
+    fn check_all_executed_ok(
+        execution_results: &[TransactionExecutionResult],
+    ) -> BundleExecutionResult<()> {
+        // TODO: cleanup
+        for i in execution_results {
+            match i {
+                TransactionExecutionResult::Executed {
+                    details,
+                    executors: _,
+                } => match &details.status {
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Err(e.clone().into())
+                    }
+                }
+                TransactionExecutionResult::NotExecuted(error) => {
+                    if !matches!(error, TransactionError::AccountInUse | TransactionError::BundleNotContinuous) {
+                        return Err(error.clone().into())
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn bundle_stage(
         cluster_info: Arc<ClusterInfo>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
