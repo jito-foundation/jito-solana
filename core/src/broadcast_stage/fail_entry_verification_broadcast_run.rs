@@ -152,6 +152,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &Arc<RwLock<BankForks>>,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Result<()> {
         let (shreds, _) = receiver.lock().unwrap().recv()?;
         broadcast_shreds(
@@ -163,6 +164,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             cluster_info,
             bank_forks,
             cluster_info.socket_addr_space(),
+            shred_receiver_addr,
         )
     }
     fn record(

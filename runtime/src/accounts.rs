@@ -1,6 +1,6 @@
 use {
     crate::{
-        account_overrides::AccountOverrides,
+        account_overrides::{AccountOverrides, AccountWithRentInfo},
         account_rent_state::{check_rent_state_with_account, RentState},
         accounts_db::{
             AccountShrinkThreshold, AccountsAddRootTiming, AccountsDb, AccountsDbConfig,
@@ -278,7 +278,24 @@ impl Accounts {
                         let (mut account, rent) = if let Some(account_override) =
                             account_overrides.and_then(|overrides| overrides.get(key))
                         {
-                            (account_override.clone(), 0)
+                            match account_override {
+                                AccountWithRentInfo::Zero(data) => (data.clone(), 0),
+                                AccountWithRentInfo::SubtractRent(mut data) => {
+                                    let rent_due = if message.is_writable(i) {
+                                        let rent_due = rent_collector
+                                            .collect_from_existing_account(
+                                                key,
+                                                &mut data,
+                                                self.accounts_db.filler_account_suffix.as_ref(),
+                                            )
+                                            .rent_amount;
+                                        rent_due
+                                    } else {
+                                        0
+                                    };
+                                    (data.clone(), rent_due)
+                                }
+                            }
                         } else {
                             self.accounts_db
                                 .load_with_fixed_root(ancestors, key)
@@ -1120,6 +1137,16 @@ impl Accounts {
         self.lock_accounts_inner(tx_account_locks_results)
     }
 
+    pub fn lock_accounts_sequential_with_results<'a>(
+        &self,
+        txs: impl Iterator<Item = &'a SanitizedTransaction>,
+        feature_set: &FeatureSet,
+    ) -> Vec<Result<()>> {
+        let tx_account_locks_results: Vec<Result<_>> =
+            txs.map(|tx| tx.get_account_locks(feature_set)).collect();
+        self.lock_accounts_sequential_inner(tx_account_locks_results)
+    }
+
     #[must_use]
     #[allow(clippy::needless_collect)]
     pub fn lock_accounts_with_results<'a>(
@@ -1152,6 +1179,35 @@ impl Accounts {
                     tx_account_locks.writable,
                     tx_account_locks.readonly,
                 ),
+                Err(err) => Err(err),
+            })
+            .collect()
+    }
+
+    #[must_use]
+    fn lock_accounts_sequential_inner(
+        &self,
+        tx_account_locks_results: Vec<Result<TransactionAccountLocks>>,
+    ) -> Vec<Result<()>> {
+        let account_locks = &mut self.account_locks.lock().unwrap();
+        let mut account_in_use_set = false;
+        tx_account_locks_results
+            .into_iter()
+            .map(|tx_account_locks_result| match tx_account_locks_result {
+                Ok(tx_account_locks) => match account_in_use_set {
+                    true => Err(TransactionError::BundleNotContinuous),
+                    false => {
+                        let locked = self.lock_account(
+                            account_locks,
+                            tx_account_locks.writable,
+                            tx_account_locks.readonly,
+                        );
+                        if matches!(locked, Err(TransactionError::AccountInUse)) {
+                            account_in_use_set = true;
+                        }
+                        locked
+                    }
+                },
                 Err(err) => Err(err),
             })
             .collect()
@@ -1223,8 +1279,7 @@ impl Accounts {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn collect_accounts_to_store<'a>(
-        &self,
+    pub fn collect_accounts_to_store<'a>(
         txs: &'a [SanitizedTransaction],
         execution_results: &'a [TransactionExecutionResult],
         load_results: &'a mut [TransactionLoadResult],

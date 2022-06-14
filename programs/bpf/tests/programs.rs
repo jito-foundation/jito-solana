@@ -360,7 +360,7 @@ fn execute_transactions(
     let batch = bank.prepare_batch_for_tests(txs.clone());
     let mut timings = ExecuteTimings::default();
     let mut mint_decimals = HashMap::new();
-    let tx_pre_token_balances = collect_token_balances(&bank, &batch, &mut mint_decimals);
+    let tx_pre_token_balances = collect_token_balances(&bank, &batch, &mut mint_decimals, None);
     let (
         TransactionResults {
             execution_results, ..
@@ -379,7 +379,7 @@ fn execute_transactions(
         true,
         &mut timings,
     );
-    let tx_post_token_balances = collect_token_balances(&bank, &batch, &mut mint_decimals);
+    let tx_post_token_balances = collect_token_balances(&bank, &batch, &mut mint_decimals, None);
 
     izip!(
         txs.iter(),

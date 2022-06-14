@@ -51,7 +51,7 @@ use {
     solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Keypair},
     std::{
         collections::HashSet,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread,
         time::Duration,
@@ -134,6 +134,8 @@ impl Tvu {
         wait_to_vote_slot: Option<Slot>,
         accounts_background_request_sender: AbsRequestSender,
         connection_cache: &Arc<ConnectionCache>,
+        use_quic: bool,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Self {
         let TvuSockets {
             repair: repair_socket,
@@ -199,6 +201,7 @@ impl Tvu {
             Some(rpc_subscriptions.clone()),
             duplicate_slots_sender,
             ancestor_hashes_replay_update_receiver,
+            shred_receiver_addr,
         );
 
         let (ledger_cleanup_slot_sender, ledger_cleanup_slot_receiver) = unbounded();
@@ -454,6 +457,8 @@ pub mod tests {
             None,
             AbsRequestSender::default(),
             &Arc::new(ConnectionCache::default()),
+            false, // use_quic
+            None,
         );
         exit.store(true, Ordering::Relaxed);
         tvu.join().unwrap();

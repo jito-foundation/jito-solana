@@ -11,6 +11,7 @@ pub mod accounts_hash_verifier;
 pub mod ancestor_hashes_service;
 pub mod banking_stage;
 pub mod broadcast_stage;
+pub mod bundle_stage;
 pub mod cache_block_meta_service;
 pub mod cluster_info_vote_listener;
 pub mod cluster_nodes;

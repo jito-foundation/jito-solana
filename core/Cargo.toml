@@ -23,6 +23,7 @@ crossbeam-channel = "0.5"
 dashmap = { version = "4.0.2", features = ["rayon", "raw-api"] }
 etcd-client = { version = "0.8.1", features = ["tls"] }
 fs_extra = "1.2.0"
+futures-util = "0.3"
 histogram = "0.6.9"
 itertools = "0.10.3"
 lazy_static = "1.4.0"
@@ -45,6 +46,7 @@ solana-gossip = { path = "../gossip", version = "=1.11.0" }
 solana-ledger = { path = "../ledger", version = "=1.11.0" }
 solana-measure = { path = "../measure", version = "=1.11.0" }
 solana-metrics = { path = "../metrics", version = "=1.11.0" }
+solana-mev = { path = "../mev" }
 solana-net-utils = { path = "../net-utils", version = "=1.11.0" }
 solana-perf = { path = "../perf", version = "=1.11.0" }
 solana-poh = { path = "../poh", version = "=1.11.0" }
