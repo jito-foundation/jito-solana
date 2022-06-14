@@ -75,7 +75,7 @@ impl Poh {
     }
 
     pub fn record(&mut self, mixin: Hash) -> Option<PohEntry> {
-        let entries = self.record_bundle(&vec![mixin]);
+        let entries = self.record_bundle(&[mixin]);
         entries.unwrap_or_default().pop()
     }
 
