@@ -12,7 +12,7 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
-    solana_measure::measure::Measure,
+    solana_measure::measure,
     solana_mev::{bundle::Bundle, tip_manager::TipManager},
     solana_perf::{cuda_runtime::PinnedVec, packet::Packet},
     solana_poh::poh_recorder::{
@@ -362,22 +362,18 @@ impl BundleStage {
                 return Err(e);
             }
 
-            let ((pre_balances, pre_token_balances), _) = Measure::this(
-                |_| {
-                    Self::collect_balances(
-                        bank,
-                        &batch,
-                        &account_override,
-                        transaction_status_sender,
-                        &mut mint_decimals,
-                    )
-                },
-                (),
+            let ((pre_balances, pre_token_balances), _) = measure!(
+                Self::collect_balances(
+                    bank,
+                    &batch,
+                    &account_override,
+                    transaction_status_sender,
+                    &mut mint_decimals,
+                ),
                 "collect_balances",
             );
 
-            let (mut load_and_execute_transactions_output, load_execute_time) = Measure::this(
-                |_| {
+            let (mut load_and_execute_transactions_output, load_execute_time) = measure!(
                     bank.load_and_execute_transactions(
                         &batch,
                         MAX_PROCESSING_AGE,
@@ -386,9 +382,7 @@ impl BundleStage {
                         transaction_status_sender.is_some(),
                         &mut execute_and_commit_timings.execute_timings,
                         Some(&account_override),
-                    )
-                },
-                (),
+                    ),
                 "load_execute",
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
@@ -418,17 +412,14 @@ impl BundleStage {
                 &mut account_override,
             );
 
-            let ((post_balances, post_token_balances), _) = Measure::this(
-                |_| {
+            let ((post_balances, post_token_balances), _) = measure!(
                     Self::collect_balances(
                         bank,
                         &batch,
                         &account_override,
                         transaction_status_sender,
                         &mut mint_decimals,
-                    )
-                },
-                (),
+                    ),
                 "collect_balances",
             );
 
@@ -459,8 +450,7 @@ impl BundleStage {
         // not all together
         // *********************************************************************************
 
-        let (freeze_lock, _freeze_lock_time) =
-            Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
+        let (freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
         Self::try_record(recorder, record).map_err(|e| {
@@ -495,8 +485,7 @@ impl BundleStage {
                 &mut execute_and_commit_timings.execute_timings,
             );
 
-            let (_, _) = Measure::this(
-                |_| {
+            let (_, _) = measure!({
                     bank_utils::find_and_send_votes(
                         &sanitized_txs,
                         &transaction_results,
@@ -513,7 +502,6 @@ impl BundleStage {
                         );
                     }
                 },
-                (),
                 "find_and_send_votes",
             );
 
@@ -678,22 +666,18 @@ impl BundleStage {
 
         let batch = TransactionBatch::new(vec![Ok(())], bank, Cow::from(sanitized_txs));
 
-        let (pre_balances, _) = Measure::this(
-            |_| {
+        let (pre_balances, _) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
                     &account_overrides,
                     transaction_status_sender,
                     &mut mint_decimals,
-                )
-            },
-            (),
+                ),
             "collect_balances",
         );
 
-        let (load_and_execute_tx_output, load_execute_time) = Measure::this(
-            |_| {
+        let (load_and_execute_tx_output, load_execute_time) = measure!(
                 bank.load_and_execute_transactions(
                     &batch,
                     MAX_PROCESSING_AGE,
@@ -702,9 +686,7 @@ impl BundleStage {
                     transaction_status_sender.is_some(),
                     &mut execute_and_commit_timings.execute_timings,
                     Some(&account_overrides),
-                )
-            },
-            (),
+                ),
             "load_execute",
         );
         execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
@@ -720,17 +702,14 @@ impl BundleStage {
             return Err(e);
         }
 
-        let (post_balances, _) = Measure::this(
-            |_| {
+        let (post_balances, _) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
                     &account_overrides,
                     transaction_status_sender,
                     &mut mint_decimals,
-                )
-            },
-            (),
+                ),
             "collect_balances",
         );
 
@@ -821,8 +800,7 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
     ) -> BundleExecutionResult<Vec<TransactionResults>> {
-        let (freeze_lock, _freeze_lock_time) =
-            Measure::this(|_| bank.freeze_lock(), (), "freeze_lock");
+        let (freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
         let _ = Self::try_record(recorder, record)?;
@@ -851,8 +829,7 @@ impl BundleStage {
                 &mut execute_and_commit_timings.execute_timings,
             );
 
-            let (_, _) = Measure::this(
-                |_| {
+            let (_, _) = measure!({
                     bank_utils::find_and_send_votes(
                         &sanitized_txs,
                         &results,
@@ -869,7 +846,6 @@ impl BundleStage {
                         );
                     }
                 },
-                (),
                 "find_and_send_votes",
             );
             transaction_results.push(results);

@@ -1,5 +1,6 @@
 //! The `poh_service` module implements a service that records the passing of
 //! "ticks", a measure of time in the PoH stream
+use crossbeam_channel::Receiver;
 use {
     crate::poh_recorder::{PohRecorder, Record, RecordReceiver, Result as PohRecordResult},
     crossbeam_channel::Sender,
@@ -192,11 +193,13 @@ impl PohService {
     ) {
         let record = record_receiver.recv_timeout(timeout);
         if let Ok((record, sender)) = record {
-            let res = poh_recorder
-                .lock()
-                .unwrap()
-                .record(record.slot, &record.mixins_txs);
-            if sender.send(res).is_err() {
+            if sender
+                .send(poh_recorder.lock().unwrap().record(
+                    record.slot,
+                    &record.mixins_txs,
+                ))
+                .is_err()
+            {
                 panic!("Error returning mixin hash");
             }
         }
@@ -253,10 +256,13 @@ impl PohService {
                 timing.total_lock_time_ns += lock_time.as_ns();
                 let mut record_time = Measure::start("record");
                 loop {
-                    let res = poh_recorder_l.record(record.slot, &record.mixins_txs);
+                    let res = poh_recorder_l.record(
+                        record.slot,
+                        &record.mixins_txs,
+                    );
                     // what do we do on failure here? Ignore for now.
                     let (_send_res, send_record_result_time) =
-                        measure!(record.sender.send(res), "send_record_result");
+                        measure!(sender.send(res), "send_record_result");
                     timing.total_send_record_result_us += send_record_result_time.as_us();
                     timing.num_hashes += 1; // note: may have also ticked inside record
 

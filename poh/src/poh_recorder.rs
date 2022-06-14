@@ -94,6 +94,17 @@ pub struct Record {
     pub mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
     pub slot: Slot,
 }
+impl Record {
+    pub fn new(
+        mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
+        slot: Slot,
+    ) -> Self {
+        Self {
+            mixins_txs,
+            slot,
+        }
+    }
+}
 
 pub struct TransactionRecorder {
     // shared by all users of PohRecorder
@@ -726,6 +737,7 @@ impl PohRecorder {
         }
     }
 
+    // TODO: @buffalu_ check this function
     pub fn record(
         &mut self,
         bank_slot: Slot,

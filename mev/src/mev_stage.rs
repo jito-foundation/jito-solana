@@ -31,7 +31,8 @@ use {
     tokio::time::Instant,
     tonic::Status,
 };
-use solana_perf::packet::TransactionTracerPacketStats;
+use solana_perf::packet::{BankingPacketBatch, TransactionTracerPacketStats};
+use solana_runtime::bank::Bank;
 
 pub struct MevStage {
     _heartbeat_sender: Sender<HeartbeatEvent>,
@@ -72,7 +73,7 @@ impl MevStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         validator_interface_address: String,
-        verified_packet_sender: Sender<(Vec<PacketBatch>, Option<TransactionTracerPacketStats>)>,
+        verified_packet_sender: Sender<BankingPacketBatch>,
         bundle_sender: Sender<Bundle>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
@@ -120,7 +121,7 @@ impl MevStage {
     fn spawn_proxy_thread(
         validator_interface_address: String,
         interceptor: AuthenticationInjector,
-        verified_packet_sender: Sender<(Vec<PacketBatch>, Option<TransactionTracerPacketStats>)>,
+        verified_packet_sender: Sender<BankingPacketBatch>,
         heartbeat_sender: Sender<HeartbeatEvent>,
         bundle_sender: Sender<Bundle>,
         exit: Arc<AtomicBool>,
@@ -268,7 +269,7 @@ impl MevStage {
 
     fn handle_packet(
         msg: std::result::Result<SubscribePacketsResult, RecvError>,
-        packet_sender: &Sender<(Vec<PacketBatch>, Option<TransactionTracerPacketStats>)>,
+        packet_sender: &Sender<BankingPacketBatch>,
         heartbeat_sender: &Sender<HeartbeatEvent>,
         tpu: &SocketAddr,
         tpu_fwd: &SocketAddr,
@@ -362,7 +363,7 @@ impl MevStage {
         heartbeat_sender: &Sender<HeartbeatEvent>,
         tpu: SocketAddr,
         tpu_fwd: SocketAddr,
-        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<TransactionTracerPacketStats>)>,
+        verified_packet_sender: &Sender<BankingPacketBatch>,
         backoff: &mut backoff::BackoffStrategy,
         bundle_sender: &Sender<Bundle>,
         exit: &Arc<AtomicBool>,
@@ -432,7 +433,7 @@ impl MevStage {
         validator_interface_address: String,
         auth_interceptor: &AuthenticationInjector,
         heartbeat_sender: &Sender<HeartbeatEvent>,
-        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<TransactionTracerPacketStats>)>,
+        verified_packet_sender: &Sender<BankingPacketBatch>,
         backoff: &mut BackoffStrategy,
         bundle_sender: &Sender<Bundle>,
         exit: &Arc<AtomicBool>,

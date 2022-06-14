@@ -4994,6 +4994,7 @@ impl Bank {
         }
     }
 
+    // TODO: @buffalu_ check
     pub fn collect_accounts_to_store<'a>(
         &self,
         txs: &'a [SanitizedTransaction],
@@ -5001,9 +5002,12 @@ impl Bank {
         loaded: &'a mut [TransactionLoadResult],
     ) -> Vec<(&'a Pubkey, &'a AccountSharedData)> {
         let (blockhash, lamports_per_signature) = self.last_blockhash_and_lamports_per_signature();
-        // TODO: @buffalu_ double check
-        let durable_nonce =
-            DurableNonce::from_blockhash(&blockhash, /*separate_domains:*/ true);
+        let durable_nonce = {
+            let separate_nonce_from_blockhash = self.separate_nonce_from_blockhash();
+            let durable_nonce =
+                DurableNonce::from_blockhash(&blockhash, separate_nonce_from_blockhash);
+            (durable_nonce, separate_nonce_from_blockhash)
+        };
         Accounts::collect_accounts_to_store(
             txs,
             res,
@@ -5012,7 +5016,7 @@ impl Bank {
             &durable_nonce,
             lamports_per_signature,
             self.leave_nonce_on_success(),
-        )
+        ).0
     }
 
     // Distribute collected rent fees for this slot to staked validators (excluding stakers)

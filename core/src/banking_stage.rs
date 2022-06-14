@@ -80,7 +80,7 @@ use {
         time::{Duration, Instant},
     },
 };
-use solana_perf::packet::TransactionTracerPacketStats;
+use solana_perf::packet::{BankingPacketBatch, TransactionTracerPacketStats};
 
 /// Transaction forwarding
 pub const FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET: u64 = 2;
@@ -99,7 +99,6 @@ const MIN_TOTAL_THREADS: u32 = NUM_VOTE_PROCESSING_THREADS + MIN_THREADS_BANKING
 const UNPROCESSED_BUFFER_STEP_SIZE: usize = 128;
 
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
-pub type BankingPacketBatch = (Vec<PacketBatch>, Option<SigverifyTracerPacketStats>);
 pub type BankingPacketSender = CrossbeamSender<BankingPacketBatch>;
 pub type BankingPacketReceiver = CrossbeamReceiver<BankingPacketBatch>;
 
@@ -1219,7 +1218,10 @@ impl BankingStage {
             record_transactions_timings.hash_us = hash_time.as_us();
 
             let (res, poh_record_time) =
-                measure!(recorder.record(bank_slot, hash, transactions), "hash");
+                measure!(recorder.record(Record {
+                        mixins_txs: vec![(hash, transactions)],
+                        slot: bank_slot,
+                    }), "hash");
             record_transactions_timings.poh_record_us = poh_record_time.as_us();
 
             match res {

@@ -1256,7 +1256,7 @@ impl Accounts {
         lamports_per_signature: u64,
         leave_nonce_on_success: bool,
     ) {
-        let (accounts_to_store, txn_signatures) = self.collect_accounts_to_store(
+        let (accounts_to_store, txn_signatures) = Self::collect_accounts_to_store(
             txs,
             res,
             loaded,
@@ -3088,7 +3088,7 @@ mod tests {
         }
         let txs = vec![tx0, tx1];
         let execution_results = vec![new_execution_result(Ok(()), None); 2];
-        let (collected_accounts, txn_signatures) = accounts.collect_accounts_to_store(
+        let (collected_accounts, txn_signatures) = Accounts::collect_accounts_to_store(
             &txs,
             &execution_results,
             loaded.as_mut_slice(),
@@ -3595,7 +3595,7 @@ mod tests {
             )),
             nonce.as_ref(),
         )];
-        let (collected_accounts, _) = accounts.collect_accounts_to_store(
+        let (collected_accounts, _) = Accounts::collect_accounts_to_store(
             &txs,
             &execution_results,
             loaded.as_mut_slice(),
@@ -3723,7 +3723,7 @@ mod tests {
             )),
             nonce.as_ref(),
         )];
-        let (collected_accounts, _) = accounts.collect_accounts_to_store(
+        let (collected_accounts, _) = Accounts::collect_accounts_to_store(
             &txs,
             &execution_results,
             loaded.as_mut_slice(),
