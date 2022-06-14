@@ -248,7 +248,7 @@ impl PohService {
         target_ns_per_tick: u64,
     ) -> bool {
         match next_record_and_sender.take() {
-            Some((record, sender)) => {
+            Some((mut record, mut sender)) => {
                 // received message to record
                 // so, record for as long as we have queued up record requests
                 let mut lock_time = Measure::start("lock");
@@ -268,7 +268,8 @@ impl PohService {
                     match new_record_result {
                         Ok(record_and_sender) => {
                             // we already have second request to record, so record again while we still have the mutex
-                            *next_record_and_sender = Some(record_and_sender);
+                            record = record_and_sender.0;
+                            sender = record_and_sender.1;
                         }
                         Err(_) => {
                             break;
