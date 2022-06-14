@@ -986,7 +986,6 @@ impl Validator {
             config.wait_to_vote_slot,
             accounts_background_request_sender,
             &connection_cache,
-            use_quic,
             config.shred_receiver_address,
         );
 

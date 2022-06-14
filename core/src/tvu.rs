@@ -134,7 +134,6 @@ impl Tvu {
         wait_to_vote_slot: Option<Slot>,
         accounts_background_request_sender: AbsRequestSender,
         connection_cache: &Arc<ConnectionCache>,
-        use_quic: bool,
         shred_receiver_addr: Option<SocketAddr>,
     ) -> Self {
         let TvuSockets {
@@ -457,7 +456,6 @@ pub mod tests {
             None,
             AbsRequestSender::default(),
             &Arc::new(ConnectionCache::default()),
-            false, // use_quic
             None,
         );
         exit.store(true, Ordering::Relaxed);
