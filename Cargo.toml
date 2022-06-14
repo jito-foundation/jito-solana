@@ -9,6 +9,7 @@ members = [
     "banks-server",
     "bench-streamer",
     "bench-tps",
+    "bench-batch-simulate-bundle",
     "bloom",
     "bucket_map",
     "clap-utils",
@@ -28,9 +29,11 @@ members = [
     "genesis-utils",
     "geyser-plugin-interface",
     "geyser-plugin-manager",
+    "bench-get-confirmed-blocks-with-data",
     "gossip",
     "install",
     "keygen",
+    "jito-protos",
     "ledger",
     "ledger-tool",
     "local-cluster",
@@ -88,6 +91,8 @@ members = [
 ]
 
 exclude = [
+    "anchor",
+    "jito-programs",
     "programs/bpf",
 ]
 

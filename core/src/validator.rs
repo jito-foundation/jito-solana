@@ -176,6 +176,9 @@ pub struct ValidatorConfig {
     pub wait_to_vote_slot: Option<Slot>,
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
+    pub validator_interface_address: String,
+    pub tip_program_pubkey: Option<Pubkey>,
+    pub shred_receiver_address: Option<SocketAddr>,
 }
 
 impl Default for ValidatorConfig {
@@ -237,6 +240,9 @@ impl Default for ValidatorConfig {
             wait_to_vote_slot: None,
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
+            validator_interface_address: String::new(),
+            tip_program_pubkey: None,
+            shred_receiver_address: None,
         }
     }
 }
@@ -351,6 +357,8 @@ pub struct Validator {
     ledger_metric_report_service: LedgerMetricReportService,
     accounts_background_service: AccountsBackgroundService,
     accounts_hash_verifier: AccountsHashVerifier,
+    pub validator_interface_address: String,
+    pub shred_receiver_address: Option<SocketAddr>,
 }
 
 // in the distant future, get rid of ::new()/exit() and use Result properly...
@@ -978,7 +986,10 @@ impl Validator {
             config.wait_to_vote_slot,
             accounts_background_request_sender,
             &connection_cache,
+            config.shred_receiver_address,
         );
+
+        let tip_program_pubkey = config.tip_program_pubkey.unwrap_or(Pubkey::new_unique());
 
         let tpu = Tpu::new(
             &cluster_info,
@@ -1011,6 +1022,9 @@ impl Validator {
             &cost_model,
             &connection_cache,
             &identity_keypair,
+            config.validator_interface_address.clone(),
+            tip_program_pubkey,
+            config.shred_receiver_address,
         );
 
         datapoint_info!(
@@ -1049,6 +1063,8 @@ impl Validator {
             ledger_metric_report_service,
             accounts_background_service,
             accounts_hash_verifier,
+            validator_interface_address: config.validator_interface_address.clone(),
+            shred_receiver_address: config.shred_receiver_address,
         }
     }
 

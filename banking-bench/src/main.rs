@@ -6,7 +6,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_client::connection_cache::{ConnectionCache, DEFAULT_TPU_CONNECTION_POOL_SIZE},
-    solana_core::banking_stage::BankingStage,
+    solana_core::{banking_stage::BankingStage, tip_manager::TipManager},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
         blockstore::Blockstore,
@@ -23,7 +23,7 @@ use {
     },
     solana_sdk::{
         hash::Hash,
-        signature::{Keypair, Signature},
+        signature::{Keypair, Signature, Signer},
         system_transaction,
         timing::{duration_as_us, timestamp},
         transaction::Transaction,
@@ -45,9 +45,15 @@ fn check_txs(
     let now = Instant::now();
     let mut no_bank = false;
     loop {
-        if let Ok((_bank, (entry, _tick_height))) = receiver.recv_timeout(Duration::from_millis(10))
+        if let Ok(WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        }) = receiver.recv_timeout(Duration::from_millis(10))
         {
-            total += entry.transactions.len();
+            total += entries_ticks
+                .iter()
+                .map(|e| e.0.transactions.len())
+                .sum::<usize>();
         }
         if total >= ref_tx_count {
             break;
@@ -342,6 +348,9 @@ fn main() {
         );
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
+
+        let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+
         let banking_stage = BankingStage::new_num_threads(
             &cluster_info,
             &poh_recorder,
@@ -356,6 +365,7 @@ fn main() {
                 tpu_use_quic,
                 DEFAULT_TPU_CONNECTION_POOL_SIZE,
             )),
+            tip_manager,
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
 

@@ -505,6 +505,7 @@ pub fn main() {
                 .long("vote-account")
                 .value_name("ADDRESS")
                 .takes_value(true)
+                .requires_all(&["tip_program_pubkey", "validator_interface_address"][..])
                 .validator(is_pubkey_or_keypair)
                 .requires("identity")
                 .help("Validator vote account public key.  \
@@ -1755,6 +1756,27 @@ pub fn main() {
                 .help("Allow contacting private ip addresses")
                 .hidden(true),
         )
+        .arg(
+            Arg::with_name("validator_interface_address")
+                .long("validator-interface-address")
+                .value_name("VALIDATOR_INTERFACE_ADDRESS")
+                .takes_value(true)
+                .help("Validator interface listening address")
+        )
+        .arg(
+            Arg::with_name("tip_program_pubkey")
+                .long("tip-program-pubkey")
+                .value_name("PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip program")
+        )
+        .arg(
+            Arg::with_name("shred_receiver_address")
+                .long("shred-receiver-address")
+                .value_name("SHRED_RECEIVER_ADDRESS")
+                .takes_value(true)
+                .help("Shred receiver listening address")
+        )
         .after_help("The default subcommand is run")
         .subcommand(
             SubCommand::with_name("exit")
@@ -2560,6 +2582,12 @@ pub fn main() {
             bpf_jit: !matches.is_present("no_bpf_jit"),
             ..RuntimeConfig::default()
         },
+        validator_interface_address: value_of(&matches, "validator_interface_address")
+            .unwrap_or_default(),
+        tip_program_pubkey: value_t!(matches.value_of("tip_program_pubkey"), Pubkey).ok(),
+        shred_receiver_address: matches
+            .value_of("shred_receiver_address")
+            .map(|address| SocketAddr::from_str(address).expect("shred_receiver_address invalid")),
         ..ValidatorConfig::default()
     };
 
