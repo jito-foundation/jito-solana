@@ -1,5 +1,5 @@
 [submodule "mev/protos"]
-	path = mev/protos
+	path = core/protos
 	url = org-87542516@github.com:jito-labs/mev-protos-priv.git
 [submodule "anchor"]
 	path = anchor

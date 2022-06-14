@@ -7,9 +7,9 @@ use {
         leader_slot_banking_stage_timing_metrics::{
             LeaderExecuteAndCommitTimings, RecordTransactionsTimings,
         },
+        qos_service::{CommitTransactionDetails, QosService},
         sigverify::SigverifyTracerPacketStats,
         tracer_packet_stats::TracerPacketStats,
-        qos_service::{CommitTransactionDetails, QosService},
         unprocessed_packet_batches::{self, *},
     },
     crossbeam_channel::{
@@ -30,7 +30,10 @@ use {
     solana_mev::tip_manager::TipManager,
     solana_perf::{
         data_budget::DataBudget,
-        packet::{Packet, PacketBatch, PACKETS_PER_BATCH},
+        packet::{
+            BankingPacketBatch, Packet, PacketBatch, TransactionTracerPacketStats,
+            PACKETS_PER_BATCH,
+        },
         perf_libs,
     },
     solana_poh::poh_recorder::{
@@ -80,7 +83,6 @@ use {
         time::{Duration, Instant},
     },
 };
-use solana_perf::packet::{BankingPacketBatch, TransactionTracerPacketStats};
 
 /// Transaction forwarding
 pub const FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET: u64 = 2;
@@ -99,6 +101,7 @@ const MIN_TOTAL_THREADS: u32 = NUM_VOTE_PROCESSING_THREADS + MIN_THREADS_BANKING
 const UNPROCESSED_BUFFER_STEP_SIZE: usize = 128;
 
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
+pub type BankingPacketBatch = (Vec<PacketBatch>, Option<SigverifyTracerPacketStats>);
 pub type BankingPacketSender = CrossbeamSender<BankingPacketBatch>;
 pub type BankingPacketReceiver = CrossbeamReceiver<BankingPacketBatch>;
 
@@ -1217,11 +1220,13 @@ impl BankingStage {
             let (hash, hash_time) = measure!(hash_transactions(&transactions), "hash");
             record_transactions_timings.hash_us = hash_time.as_us();
 
-            let (res, poh_record_time) =
-                measure!(recorder.record(Record {
-                        mixins_txs: vec![(hash, transactions)],
-                        slot: bank_slot,
-                    }), "hash");
+            let (res, poh_record_time) = measure!(
+                recorder.record(Record {
+                    mixins_txs: vec![(hash, transactions)],
+                    slot: bank_slot,
+                }),
+                "hash"
+            );
             record_transactions_timings.poh_record_us = poh_record_time.as_us();
 
             match res {

@@ -24,4 +24,16 @@ fn main() {
             println!("cargo:rustc-cfg=RUSTC_NEEDS_PROC_MACRO_HYGIENE");
         }
     }
+    configure()
+        .compile(
+            &[
+                "protos/bundle.proto",
+                "protos/packet.proto",
+                "protos/searcher.proto",
+                "protos/shared.proto",
+                "protos/validator_interface_service.proto",
+            ],
+            &["protos"],
+        )
+        .unwrap();
 }

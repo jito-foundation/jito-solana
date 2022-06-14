@@ -9,8 +9,11 @@
 
 pub mod accounts_hash_verifier;
 pub mod ancestor_hashes_service;
+mod backoff;
 pub mod banking_stage;
+pub mod blocking_proxy_client;
 pub mod broadcast_stage;
+pub mod bundle;
 pub mod bundle_stage;
 pub mod cache_block_meta_service;
 pub mod cluster_info_vote_listener;
@@ -34,6 +37,7 @@ pub mod leader_slot_banking_stage_metrics;
 pub mod leader_slot_banking_stage_timing_metrics;
 pub mod ledger_cleanup_service;
 pub mod ledger_metric_report_service;
+pub mod mev_stage;
 pub mod optimistic_confirmation_verifier;
 pub mod outstanding_requests;
 pub mod packet_hasher;
@@ -63,6 +67,7 @@ pub mod snapshot_packager_service;
 pub mod staked_nodes_updater_service;
 pub mod stats_reporter_service;
 pub mod system_monitor_service;
+pub mod tip_manager;
 mod tower1_7_14;
 pub mod tower_storage;
 pub mod tpu;
@@ -94,3 +99,63 @@ extern crate solana_frozen_abi_macro;
 #[cfg(test)]
 #[macro_use]
 extern crate matches;
+
+use {
+    solana_sdk::packet::{Packet, PacketFlags, PACKET_DATA_SIZE},
+    std::{
+        cmp::min,
+        net::{IpAddr, Ipv4Addr},
+    },
+};
+
+pub mod proto {
+    pub mod bundle {
+        tonic::include_proto!("bundle");
+    }
+
+    pub mod packet {
+        tonic::include_proto!("packet");
+    }
+
+    pub mod searcher {
+        tonic::include_proto!("searcher");
+    }
+
+    pub mod shared {
+        tonic::include_proto!("shared");
+    }
+
+    pub mod validator_interface {
+        tonic::include_proto!("validator_interface");
+    }
+}
+
+const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+
+// NOTE: last profiled at around 180ns
+pub fn proto_packet_to_packet(p: proto::packet::Packet) -> Packet {
+    let mut data = [0; PACKET_DATA_SIZE];
+    let copy_len = min(data.len(), p.data.len());
+    data[..copy_len].copy_from_slice(&p.data[..copy_len]);
+    let mut packet = Packet::new(data, Default::default());
+    if let Some(meta) = p.meta {
+        packet.meta.size = meta.size as usize;
+        packet.meta.addr = meta.addr.parse().unwrap_or(UNKNOWN_IP);
+        packet.meta.port = meta.port as u16;
+        if let Some(flags) = meta.flags {
+            if flags.simple_vote_tx {
+                packet.meta.flags.insert(PacketFlags::SIMPLE_VOTE_TX);
+            }
+            if flags.forwarded {
+                packet.meta.flags.insert(PacketFlags::FORWARDED);
+            }
+            if flags.tracer_tx {
+                packet.meta.flags.insert(PacketFlags::TRACER_PACKET);
+            }
+            if flags.repair {
+                packet.meta.flags.insert(PacketFlags::REPAIR);
+            }
+        }
+    }
+    packet
+}

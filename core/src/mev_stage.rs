@@ -4,9 +4,6 @@
 
 use {
     crate::{
-        backoff::{self, BackoffStrategy},
-        blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
-        bundle::Bundle,
         proto::validator_interface::{
             subscribe_packets_response::Msg, SubscribeBundlesResponse, SubscribePacketsResponse,
         },
@@ -14,9 +11,16 @@ use {
     },
     crossbeam_channel::{select, tick, unbounded, Receiver, RecvError, Sender},
     log::*,
+    solana_core::{
+        backoff,
+        backoff::{self, BackoffStrategy},
+        blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
+        bundle::Bundle,
+    },
     solana_gossip::cluster_info::ClusterInfo,
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
+    solana_runtime::bank::Bank,
     solana_sdk::{signature::Signature, signer::Signer},
     std::{
         net::SocketAddr,
@@ -31,8 +35,6 @@ use {
     tokio::time::Instant,
     tonic::Status,
 };
-use solana_perf::packet::{BankingPacketBatch, TransactionTracerPacketStats};
-use solana_runtime::bank::Bank;
 
 pub struct MevStage {
     _heartbeat_sender: Sender<HeartbeatEvent>,
@@ -73,7 +75,7 @@ impl MevStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         validator_interface_address: String,
-        verified_packet_sender: Sender<BankingPacketBatch>,
+        verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: Sender<Bundle>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
@@ -121,7 +123,7 @@ impl MevStage {
     fn spawn_proxy_thread(
         validator_interface_address: String,
         interceptor: AuthenticationInjector,
-        verified_packet_sender: Sender<BankingPacketBatch>,
+        verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         heartbeat_sender: Sender<HeartbeatEvent>,
         bundle_sender: Sender<Bundle>,
         exit: Arc<AtomicBool>,
@@ -269,7 +271,7 @@ impl MevStage {
 
     fn handle_packet(
         msg: std::result::Result<SubscribePacketsResult, RecvError>,
-        packet_sender: &Sender<BankingPacketBatch>,
+        packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         heartbeat_sender: &Sender<HeartbeatEvent>,
         tpu: &SocketAddr,
         tpu_fwd: &SocketAddr,
@@ -363,7 +365,7 @@ impl MevStage {
         heartbeat_sender: &Sender<HeartbeatEvent>,
         tpu: SocketAddr,
         tpu_fwd: SocketAddr,
-        verified_packet_sender: &Sender<BankingPacketBatch>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         backoff: &mut backoff::BackoffStrategy,
         bundle_sender: &Sender<Bundle>,
         exit: &Arc<AtomicBool>,
@@ -433,7 +435,7 @@ impl MevStage {
         validator_interface_address: String,
         auth_interceptor: &AuthenticationInjector,
         heartbeat_sender: &Sender<HeartbeatEvent>,
-        verified_packet_sender: &Sender<BankingPacketBatch>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         backoff: &mut BackoffStrategy,
         bundle_sender: &Sender<Bundle>,
         exit: &Arc<AtomicBool>,

@@ -31,7 +31,6 @@ members = [
     "bench-get-confirmed-blocks-with-data",
     "gossip",
     "install",
-    "mev",
     "keygen",
     "ledger",
     "ledger-tool",

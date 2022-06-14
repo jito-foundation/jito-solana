@@ -4547,7 +4547,6 @@ dependencies = [
  "solana-ledger",
  "solana-logger 1.11.0",
  "solana-measure",
- "solana-mev",
  "solana-perf",
  "solana-poh",
  "solana-runtime",
@@ -4966,22 +4965,29 @@ name = "solana-core"
 version = "1.11.0"
 dependencies = [
  "ahash",
+ "anchor-lang",
  "base64 0.13.0",
  "bincode",
  "bs58 0.4.0",
+ "bytes",
  "chrono",
+ "clap 3.2.3",
  "crossbeam-channel",
  "dashmap",
  "etcd-client",
  "fs_extra",
+ "futures 0.3.21",
  "futures-util",
  "histogram",
+ "indexmap",
  "itertools",
  "lazy_static",
  "log",
  "lru",
  "matches",
  "min-max-heap",
+ "prost 0.8.0",
+ "prost-types 0.8.0",
  "rand 0.7.3",
  "rand_chacha 0.2.2",
  "raptorq",
@@ -5004,7 +5010,6 @@ dependencies = [
  "solana-logger 1.11.0",
  "solana-measure",
  "solana-metrics",
- "solana-mev",
  "solana-net-utils",
  "solana-perf",
  "solana-poh",
@@ -5025,8 +5030,13 @@ dependencies = [
  "systemstat",
  "tempfile",
  "thiserror",
+ "tip-payment",
  "tokio",
+ "tokio-stream",
+ "tonic 0.5.2",
+ "tonic-build 0.5.2",
  "trees",
+ "uuid",
 ]
 
 [[package]]
@@ -5544,35 +5554,6 @@ dependencies = [
  "reqwest",
  "serial_test 0.6.0",
  "solana-sdk 1.11.0",
-]
-
-[[package]]
-name = "solana-mev"
-version = "1.11.0"
-dependencies = [
- "anchor-lang",
- "bytes",
- "clap 3.2.3",
- "crossbeam-channel",
- "futures 0.3.21",
- "futures-util",
- "indexmap",
- "log",
- "prost 0.8.0",
- "prost-types 0.8.0",
- "solana-client",
- "solana-gossip",
- "solana-metrics",
- "solana-perf",
- "solana-runtime",
- "solana-sdk 1.11.0",
- "thiserror",
- "tip-payment",
- "tokio",
- "tokio-stream",
- "tonic 0.5.2",
- "tonic-build 0.5.2",
- "uuid",
 ]
 
 [[package]]
