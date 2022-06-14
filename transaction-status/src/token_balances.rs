@@ -74,7 +74,7 @@ pub fn collect_balances_with_cache(
                 } else {
                     bank.get_account(account_key)
                         .map(|a| a.lamports())
-                        .or_else(|| Some(0))
+                        .or(Some(0))
                         .unwrap()
                 }
             };
