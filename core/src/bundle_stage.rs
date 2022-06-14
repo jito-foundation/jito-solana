@@ -15,10 +15,7 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure,
-    solana_perf::{
-        cuda_runtime::PinnedVec,
-        packet::{Packet, PacketBatch},
-    },
+    solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
         PohRecorderError::{self},
@@ -66,7 +63,7 @@ use {
     },
 };
 
-type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
+type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
 
 struct AllExecutionResults {
     pub load_and_execute_tx_output: LoadAndExecuteTransactionsOutput,
