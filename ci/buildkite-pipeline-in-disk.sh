@@ -106,19 +106,19 @@ EOF
 }
 
 
-#trigger_secondary_step() {
-#  cat  >> "$output_file" <<"EOF"
-#  - trigger: "solana-secondary"
-#    branches: "!pull/*"
-#    async: true
-#    build:
-#      message: "${BUILDKITE_MESSAGE}"
-#      commit: "${BUILDKITE_COMMIT}"
-#      branch: "${BUILDKITE_BRANCH}"
-#      env:
-#        TRIGGERED_BUILDKITE_TAG: "${BUILDKITE_TAG}"
-#EOF
-#}
+trigger_secondary_step() {
+  cat  >> "$output_file" <<"EOF"
+  - trigger: "solana-secondary"
+    branches: "!pull/*"
+    async: true
+    build:
+      message: "${BUILDKITE_MESSAGE}"
+      commit: "${BUILDKITE_COMMIT}"
+      branch: "${BUILDKITE_BRANCH}"
+      env:
+        TRIGGERED_BUILDKITE_TAG: "${BUILDKITE_TAG}"
+EOF
+}
 
 wait_step() {
   echo "  - wait" >> "$output_file"
@@ -312,7 +312,7 @@ if [[ -n $BUILDKITE_TAG ]]; then
     "https://github.com/solana-labs/solana/releases/$BUILDKITE_TAG"
 
   # Jump directly to the secondary build to publish release artifacts quickly
-  trigger_secondary_step
+#  trigger_secondary_step
   exit 0
 fi
 
@@ -340,5 +340,5 @@ fi
 start_pipeline "Push pipeline for ${BUILDKITE_BRANCH:-?unknown branch?}"
 pull_or_push_steps
 wait_step
-trigger_secondary_step
+#trigger_secondary_step
 exit 0
