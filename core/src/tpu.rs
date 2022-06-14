@@ -12,15 +12,16 @@ use {
         },
         fetch_stage::FetchStage,
         find_packet_sender_stake_stage::FindPacketSenderStakeStage,
+        mev_stage::MevStage,
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
+        tip_manager::TipManager,
     },
     crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError},
     solana_client::connection_cache::ConnectionCache,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
-    solana_mev::{mev_stage::MevStage, tip_manager::TipManager},
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
         optimistically_confirmed_bank_tracker::BankNotificationSender,
@@ -194,11 +195,7 @@ impl Tpu {
 
         let sigverify_stage = {
             let verifier = TransactionSigVerifier::new(verified_sender.clone());
-            SigVerifyStage::new(
-                find_packet_sender_stake_receiver,
-                verifier,
-                "tpu-verifier",
-            )
+            SigVerifyStage::new(find_packet_sender_stake_receiver, verifier, "tpu-verifier")
         };
 
         let (verified_tpu_vote_packets_sender, verified_tpu_vote_packets_receiver) = unbounded();

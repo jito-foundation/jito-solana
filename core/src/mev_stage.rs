@@ -4,23 +4,20 @@
 
 use {
     crate::{
-        proto::validator_interface::{
-            subscribe_packets_response::Msg, SubscribeBundlesResponse, SubscribePacketsResponse,
-        },
-        proto_packet_to_packet,
-    },
-    crossbeam_channel::{select, tick, unbounded, Receiver, RecvError, Sender},
-    log::*,
-    solana_core::{
-        backoff,
-        backoff::{self, BackoffStrategy},
+        backoff::BackoffStrategy,
         blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
         bundle::Bundle,
+        proto_packet_to_packet,
+        sigverify::SigverifyTracerPacketStats,
     },
+    crossbeam_channel::{select, tick, unbounded, Receiver, RecvError, Sender},
+    jito_protos::proto::validator_interface::{
+        subscribe_packets_response::Msg, SubscribeBundlesResponse, SubscribePacketsResponse,
+    },
+    log::*,
     solana_gossip::cluster_info::ClusterInfo,
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
-    solana_runtime::bank::Bank,
     solana_sdk::{signature::Signature, signer::Signer},
     std::{
         net::SocketAddr,
@@ -366,7 +363,7 @@ impl MevStage {
         tpu: SocketAddr,
         tpu_fwd: SocketAddr,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        backoff: &mut backoff::BackoffStrategy,
+        backoff: &mut BackoffStrategy,
         bundle_sender: &Sender<Bundle>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {

@@ -108,32 +108,10 @@ use {
     },
 };
 
-pub mod proto {
-    pub mod bundle {
-        tonic::include_proto!("bundle");
-    }
-
-    pub mod packet {
-        tonic::include_proto!("packet");
-    }
-
-    pub mod searcher {
-        tonic::include_proto!("searcher");
-    }
-
-    pub mod shared {
-        tonic::include_proto!("shared");
-    }
-
-    pub mod validator_interface {
-        tonic::include_proto!("validator_interface");
-    }
-}
-
 const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
 // NOTE: last profiled at around 180ns
-pub fn proto_packet_to_packet(p: proto::packet::Packet) -> Packet {
+pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> Packet {
     let mut data = [0; PACKET_DATA_SIZE];
     let copy_len = min(data.len(), p.data.len());
     data[..copy_len].copy_from_slice(&p.data[..copy_len]);

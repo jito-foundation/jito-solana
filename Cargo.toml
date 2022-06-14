@@ -32,6 +32,7 @@ members = [
     "gossip",
     "install",
     "keygen",
+    "jito-protos",
     "ledger",
     "ledger-tool",
     "local-cluster",

@@ -9,6 +9,7 @@ use {
         },
         qos_service::{CommitTransactionDetails, QosService},
         sigverify::SigverifyTracerPacketStats,
+        tip_manager::TipManager,
         tracer_packet_stats::TracerPacketStats,
         unprocessed_packet_batches::{self, *},
     },
@@ -27,13 +28,9 @@ use {
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::{measure, measure::Measure},
     solana_metrics::inc_new_counter_info,
-    solana_mev::tip_manager::TipManager,
     solana_perf::{
         data_budget::DataBudget,
-        packet::{
-            BankingPacketBatch, Packet, PacketBatch, TransactionTracerPacketStats,
-            PACKETS_PER_BATCH,
-        },
+        packet::{Packet, PacketBatch, PACKETS_PER_BATCH},
         perf_libs,
     },
     solana_poh::poh_recorder::{

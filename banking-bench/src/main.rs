@@ -6,7 +6,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_client::connection_cache::{ConnectionCache, DEFAULT_TPU_CONNECTION_POOL_SIZE},
-    solana_core::banking_stage::BankingStage,
+    solana_core::{banking_stage::BankingStage, tip_manager::TipManager},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
         blockstore::Blockstore,
@@ -15,7 +15,6 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_measure::measure::Measure,
-    solana_mev::tip_manager::TipManager,
     solana_perf::packet::{to_packet_batches, PacketBatch},
     solana_poh::poh_recorder::{create_test_recorder, PohRecorder, WorkingBankEntry},
     solana_runtime::{

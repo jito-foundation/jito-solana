@@ -4,6 +4,6 @@
 [submodule "jito-programs"]
 	path = jito-programs
 	url = org-87542516@github.com:jito-labs/jito-programs.git
-[submodule "core/protos"]
-	path = core/protos
+[submodule "jito-protos/protos"]
+	path = jito-protos/protos
 	url = org-87542516@github.com:jito-labs/mev-protos-priv.git

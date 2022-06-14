@@ -4,8 +4,10 @@
 use {
     crate::{
         banking_stage::BatchedTransactionDetails,
+        bundle::Bundle,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::{CommitTransactionDetails, QosService},
+        tip_manager::TipManager,
         unprocessed_packet_batches::{self, *},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
@@ -13,8 +15,10 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure,
-    solana_mev::{bundle::Bundle, tip_manager::TipManager},
-    solana_perf::{cuda_runtime::PinnedVec, packet::Packet},
+    solana_perf::{
+        cuda_runtime::PinnedVec,
+        packet::{Packet, PacketBatch},
+    },
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
         PohRecorderError::{self},
@@ -25,8 +29,8 @@ use {
         account_overrides::AccountOverrides,
         accounts::TransactionLoadResult,
         bank::{
-            Bank, LoadAndExecuteTransactionsOutput, TransactionBalances, TransactionBalancesSet,
-            TransactionExecutionResult, TransactionResults,
+            Bank, CommitTransactionCounts, LoadAndExecuteTransactionsOutput, TransactionBalances,
+            TransactionBalancesSet, TransactionExecutionResult, TransactionResults,
         },
         bank_utils,
         cost_model::{CostModel, TransactionCost},
@@ -61,7 +65,6 @@ use {
         time::Duration,
     },
 };
-use solana_runtime::bank::CommitTransactionCounts;
 
 type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
 
@@ -286,7 +289,7 @@ impl BundleStage {
         } = &*working_bank_start.unwrap();
 
         let transactions = Self::get_bundle_txs(&bundle, bank, &tip_program_id);
-        if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
+        if transactions.is_empty() || bundle.batch.len() != transactions.len() {
             return Err(BundleExecutionError::InvalidBundle);
         }
 
@@ -374,15 +377,15 @@ impl BundleStage {
             );
 
             let (mut load_and_execute_transactions_output, load_execute_time) = measure!(
-                    bank.load_and_execute_transactions(
-                        &batch,
-                        MAX_PROCESSING_AGE,
-                        transaction_status_sender.is_some(),
-                        transaction_status_sender.is_some(),
-                        transaction_status_sender.is_some(),
-                        &mut execute_and_commit_timings.execute_timings,
-                        Some(&account_override),
-                    ),
+                bank.load_and_execute_transactions(
+                    &batch,
+                    MAX_PROCESSING_AGE,
+                    transaction_status_sender.is_some(),
+                    transaction_status_sender.is_some(),
+                    transaction_status_sender.is_some(),
+                    &mut execute_and_commit_timings.execute_timings,
+                    Some(&account_override),
+                ),
                 "load_execute",
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
@@ -413,13 +416,13 @@ impl BundleStage {
             );
 
             let ((post_balances, post_token_balances), _) = measure!(
-                    Self::collect_balances(
-                        bank,
-                        &batch,
-                        &account_override,
-                        transaction_status_sender,
-                        &mut mint_decimals,
-                    ),
+                Self::collect_balances(
+                    bank,
+                    &batch,
+                    &account_override,
+                    transaction_status_sender,
+                    &mut mint_decimals,
+                ),
                 "collect_balances",
             );
 
@@ -467,14 +470,15 @@ impl BundleStage {
             let sanitized_txs = r.sanitized_txs;
 
             // TODO: @buffalu_ double check: e66ea7cb6ac1b9881b11c81ecfec287af6a59754
-            let (last_blockhash, lamports_per_signature) = bank.last_blockhash_and_lamports_per_signature();
+            let (last_blockhash, lamports_per_signature) =
+                bank.last_blockhash_and_lamports_per_signature();
             let transaction_results = bank.commit_transactions(
                 &sanitized_txs,
                 &mut output.loaded_transactions,
                 output.execution_results.clone(),
                 last_blockhash,
                 lamports_per_signature,
-                CommitTransactionCounts{
+                CommitTransactionCounts {
                     committed_transactions_count: output.executed_transactions_count as u64,
                     committed_with_failure_result_count: output
                         .executed_transactions_count
@@ -485,7 +489,8 @@ impl BundleStage {
                 &mut execute_and_commit_timings.execute_timings,
             );
 
-            let (_, _) = measure!({
+            let (_, _) = measure!(
+                {
                     bank_utils::find_and_send_votes(
                         &sanitized_txs,
                         &transaction_results,
@@ -667,26 +672,26 @@ impl BundleStage {
         let batch = TransactionBatch::new(vec![Ok(())], bank, Cow::from(sanitized_txs));
 
         let (pre_balances, _) = measure!(
-                Self::collect_balances(
-                    bank,
-                    &batch,
-                    &account_overrides,
-                    transaction_status_sender,
-                    &mut mint_decimals,
-                ),
+            Self::collect_balances(
+                bank,
+                &batch,
+                &account_overrides,
+                transaction_status_sender,
+                &mut mint_decimals,
+            ),
             "collect_balances",
         );
 
         let (load_and_execute_tx_output, load_execute_time) = measure!(
-                bank.load_and_execute_transactions(
-                    &batch,
-                    MAX_PROCESSING_AGE,
-                    transaction_status_sender.is_some(),
-                    transaction_status_sender.is_some(),
-                    transaction_status_sender.is_some(),
-                    &mut execute_and_commit_timings.execute_timings,
-                    Some(&account_overrides),
-                ),
+            bank.load_and_execute_transactions(
+                &batch,
+                MAX_PROCESSING_AGE,
+                transaction_status_sender.is_some(),
+                transaction_status_sender.is_some(),
+                transaction_status_sender.is_some(),
+                &mut execute_and_commit_timings.execute_timings,
+                Some(&account_overrides),
+            ),
             "load_execute",
         );
         execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
@@ -703,13 +708,13 @@ impl BundleStage {
         }
 
         let (post_balances, _) = measure!(
-                Self::collect_balances(
-                    bank,
-                    &batch,
-                    &account_overrides,
-                    transaction_status_sender,
-                    &mut mint_decimals,
-                ),
+            Self::collect_balances(
+                bank,
+                &batch,
+                &account_overrides,
+                transaction_status_sender,
+                &mut mint_decimals,
+            ),
             "collect_balances",
         );
 
@@ -811,14 +816,15 @@ impl BundleStage {
             let sanitized_txs = r.sanitized_txs;
 
             // TODO: @buffalu_ double check, see above
-            let (last_blockhash, lamports_per_signature) = bank.last_blockhash_and_lamports_per_signature();
+            let (last_blockhash, lamports_per_signature) =
+                bank.last_blockhash_and_lamports_per_signature();
             let results = bank.commit_transactions(
                 &sanitized_txs,
                 &mut output.loaded_transactions,
                 output.execution_results.clone(),
                 last_blockhash,
                 lamports_per_signature,
-                CommitTransactionCounts{
+                CommitTransactionCounts {
                     committed_transactions_count: output.executed_transactions_count as u64,
                     committed_with_failure_result_count: output
                         .executed_transactions_count
@@ -829,7 +835,8 @@ impl BundleStage {
                 &mut execute_and_commit_timings.execute_timings,
             );
 
-            let (_, _) = measure!({
+            let (_, _) = measure!(
+                {
                     bank_utils::find_and_send_votes(
                         &sanitized_txs,
                         &results,
@@ -977,7 +984,7 @@ impl BundleStage {
         bank: &Arc<Bank>,
         tip_program_id: &Pubkey,
     ) -> Vec<SanitizedTransaction> {
-        let packet_indexes = Self::generate_packet_indexes(&bundle.batch.packets);
+        let packet_indexes = Self::generate_packet_indexes(&bundle.batch);
         let deserialized_packets =
             unprocessed_packet_batches::deserialize_packets(&bundle.batch, &packet_indexes);
 
@@ -995,8 +1002,9 @@ impl BundleStage {
             .collect()
     }
 
-    fn generate_packet_indexes(vers: &PinnedVec<Packet>) -> Vec<usize> {
-        vers.iter()
+    fn generate_packet_indexes(batch: &PacketBatch) -> Vec<usize> {
+        batch
+            .iter()
             .enumerate()
             .filter(|(_, pkt)| !pkt.meta.discard())
             .map(|(index, _)| index)

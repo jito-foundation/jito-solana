@@ -1,10 +1,10 @@
 use {
-    crate::proto::validator_interface::{
+    crossbeam_channel::{unbounded, Receiver},
+    jito_protos::proto::validator_interface::{
         validator_interface_client::ValidatorInterfaceClient, GetTpuConfigsRequest,
         SubscribeBundlesRequest, SubscribeBundlesResponse, SubscribePacketsRequest,
         SubscribePacketsResponse,
     },
-    crossbeam_channel::{unbounded, Receiver},
     solana_sdk::{pubkey::Pubkey, signature::Signature},
     std::{
         fs::File,
@@ -153,10 +153,7 @@ impl AuthenticationInjector {
 }
 
 impl Interceptor for AuthenticationInjector {
-    fn call(
-        &mut self,
-        mut request: tonic::Request<()>,
-    ) -> std::result::Result<tonic::Request<()>, Status> {
+    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
         request.metadata_mut().append_bin(
             "public-key-bin",
             MetadataValue::from_bytes(&self.pubkey.to_bytes()),
