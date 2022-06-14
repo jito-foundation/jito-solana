@@ -413,7 +413,7 @@ checksum = "dea908e7347a8c64e378c17e30ef880ad73e3b4498346b055c2c00ea342f3179"
 
 [[package]]
 name = "bench-get-confirmed-blocks-with-data"
-version = "0.1.0"
+version = "1.11.0"
 dependencies = [
  "prost 0.9.0",
  "rand 0.8.5",
