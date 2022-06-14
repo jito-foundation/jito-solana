@@ -106,19 +106,19 @@ EOF
 }
 
 
-trigger_secondary_step() {
-  cat  >> "$output_file" <<"EOF"
-  - trigger: "solana-secondary"
-    branches: "!pull/*"
-    async: true
-    build:
-      message: "${BUILDKITE_MESSAGE}"
-      commit: "${BUILDKITE_COMMIT}"
-      branch: "${BUILDKITE_BRANCH}"
-      env:
-        TRIGGERED_BUILDKITE_TAG: "${BUILDKITE_TAG}"
-EOF
-}
+#trigger_secondary_step() {
+#  cat  >> "$output_file" <<"EOF"
+#  - trigger: "solana-secondary"
+#    branches: "!pull/*"
+#    async: true
+#    build:
+#      message: "${BUILDKITE_MESSAGE}"
+#      commit: "${BUILDKITE_COMMIT}"
+#      branch: "${BUILDKITE_BRANCH}"
+#      env:
+#        TRIGGERED_BUILDKITE_TAG: "${BUILDKITE_TAG}"
+#EOF
+#}
 
 wait_step() {
   echo "  - wait" >> "$output_file"
