@@ -339,7 +339,14 @@ impl SendTransactionService {
             leader_forward_count,
             ..Config::default()
         };
-        Self::new_with_config(cluster_info, bank_forks, leader_info, receiver, connection_cache, config)
+        Self::new_with_config(
+            cluster_info,
+            bank_forks,
+            leader_info,
+            receiver,
+            connection_cache,
+            config,
+        )
     }
 
     pub fn new_with_config<T: TpuInfo + std::marker::Send + Clone + 'static>(
@@ -796,7 +803,7 @@ mod test {
         let connection_cache = Arc::new(ConnectionCache::default());
         let contact_info = ContactInfo {
             tpu: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
-            ..Default::default()
+            ..ContactInfo::default()
         };
         let cluster_info: Arc<ClusterInfo> = Arc::new(ClusterInfo::new(
             contact_info,
