@@ -95,14 +95,8 @@ pub struct Record {
     pub slot: Slot,
 }
 impl Record {
-    pub fn new(
-        mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
-        slot: Slot,
-    ) -> Self {
-        Self {
-            mixins_txs,
-            slot,
-        }
+    pub fn new(mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>, slot: Slot) -> Self {
+        Self { mixins_txs, slot }
     }
 }
 
@@ -754,7 +748,7 @@ impl PohRecorder {
         let ((), report_metrics_time) = measure!(self.report_metrics(bank_slot), "report_metrics");
         self.report_metrics_us += report_metrics_time.as_us();
 
-        let mixins: Vec<Hash> = mixins_txs.iter().map(|(m, _)| m.clone()).collect();
+        let mixins: Vec<Hash> = mixins_txs.iter().map(|(m, _)| *m).collect();
         let transactions: Vec<Vec<VersionedTransaction>> =
             mixins_txs.iter().map(|(_, tx)| tx.clone()).collect();
 
@@ -1272,7 +1266,7 @@ mod tests {
             // We haven't yet reached the minimum tick height for the working bank,
             // so record should fail
             assert_matches!(
-                poh_recorder.record(bank1.slot(), &vec![(h1, vec![tx.into()])]),
+                poh_recorder.record(bank1.slot(), &[(h1, vec![tx.into()])]),
                 Err(PohRecorderError::MinHeightNotReached)
             );
             assert!(entry_receiver.try_recv().is_err());
@@ -1315,7 +1309,7 @@ mod tests {
             // However we hand over a bad slot so record fails
             let bad_slot = bank.slot() + 1;
             assert_matches!(
-                poh_recorder.record(bad_slot, &vec![(h1, vec![tx.into()])]),
+                poh_recorder.record(bad_slot, &[(h1, vec![tx.into()])]),
                 Err(PohRecorderError::MaxHeightReached)
             );
         }
@@ -1362,7 +1356,7 @@ mod tests {
             let tx = test_tx();
             let h1 = hash(b"hello world!");
             assert!(poh_recorder
-                .record(bank1.slot(), &vec![(h1, vec![tx.into()])])
+                .record(bank1.slot(), &[(h1, vec![tx.into()])])
                 .is_ok());
             assert_eq!(poh_recorder.tick_cache.len(), 0);
 
@@ -1418,7 +1412,7 @@ mod tests {
             let tx = test_tx();
             let h1 = hash(b"hello world!");
             assert!(poh_recorder
-                .record(bank.slot(), &vec![(h1, vec![tx.into()])])
+                .record(bank.slot(), &[(h1, vec![tx.into()])])
                 .is_err());
 
             for _ in 0..num_ticks_to_max {
@@ -1684,7 +1678,7 @@ mod tests {
             let tx = test_tx();
             let h1 = hash(b"hello world!");
             assert!(poh_recorder
-                .record(bank.slot(), &vec![(h1, vec![tx.into()])])
+                .record(bank.slot(), &[(h1, vec![tx.into()])])
                 .is_err());
             assert!(poh_recorder.working_bank.is_none());
 
