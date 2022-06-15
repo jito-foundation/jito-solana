@@ -387,6 +387,6 @@ impl AddressLoader for MockAddressLoader {
         self,
         _lookups: &[MessageAddressTableLookup],
     ) -> solana_sdk::transaction::Result<LoadedAddresses> {
-        Ok(Default::default())
+        Ok(LoadedAddresses::default())
     }
 }

@@ -8099,7 +8099,7 @@ pub(crate) mod tests {
                 num_readonly_unsigned_accounts,
             },
             account_keys: writeable_accounts,
-            recent_blockhash: Default::default(),
+            recent_blockhash: Hash::default(),
             instructions: vec![],
         };
         let signature = signer_key_pair.sign_message(&message.serialize()[..]);
