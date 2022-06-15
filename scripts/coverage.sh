@@ -69,7 +69,7 @@ if [[ -n $CI || -z $1 ]]; then
 fi
 
 # limit jobs to 4gb/thread
-JOBS=$(grep MemTotal /proc/meminfo | awk '{printf "%.0f", ($2 / (4 * 1024 * 1024))}')
+JOBS=$(grep MemTotal /proc/meminfo | awk '{printf "%.0f", ($2 / (16 * 1024 * 1024))}')
 NPROC=$(nproc)
 JOBS=$((JOBS>NPROC ? NPROC : JOBS))
 
