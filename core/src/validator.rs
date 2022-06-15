@@ -989,11 +989,13 @@ impl Validator {
             config.shred_receiver_address,
         );
 
-        let tip_program_pubkey = if config.voting_disabled {
-            Default::default()
-        } else {
-            config.tip_program_pubkey.unwrap()
-        };
+        // let tip_program_pubkey = if config.voting_disabled {
+        //     Pubkey::new_unique()
+        // } else {
+        //     // TODO (LB): fix
+        //     config.tip_program_pubkey.unwrap_or(Pubkey::new_unique())
+        // };
+        let tip_program_pubkey = config.tip_program_pubkey.unwrap_or(Pubkey::new_unique());
 
         let tpu = Tpu::new(
             &cluster_info,
