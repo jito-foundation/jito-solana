@@ -222,7 +222,7 @@ impl JsonRpcRequestProcessor {
                 return Err(RpcCustomError::MinContextSlotNotReached {
                     context_slot: bank.slot(),
                 }
-                    .into());
+                .into());
             }
         }
         Ok(bank)
@@ -736,7 +736,8 @@ impl JsonRpcRequestProcessor {
     }
 
     fn get_slot_leader(&self, config: RpcContextConfig) -> Result<String> {
-        Ok(self.bank_from_commitment(config.commitment)
+        Ok(self
+            .bank_from_commitment(config.commitment)
             .collector_id()
             .to_string())
     }
@@ -792,7 +793,9 @@ impl JsonRpcRequestProcessor {
     }
 
     fn get_transaction_count(&self, config: RpcContextConfig) -> Result<u64> {
-        Ok(self.bank_from_commitment(config.commitment).transaction_count() as u64)
+        Ok(self
+            .bank_from_commitment(config.commitment)
+            .transaction_count() as u64)
     }
 
     fn get_total_supply(&self, commitment: Option<CommitmentConfig>) -> Result<u64> {
@@ -3749,8 +3752,8 @@ pub mod rpc_full {
             let (wire_transaction, unsanitized_tx) =
                 decode_and_deserialize::<VersionedTransaction>(data, binary_encoding)?;
 
-            let preflight_commitment = preflight_commitment
-                .map(|commitment| CommitmentConfig { commitment });
+            let preflight_commitment =
+                preflight_commitment.map(|commitment| CommitmentConfig { commitment });
             let preflight_bank = &*meta.bank_from_commitment(preflight_commitment);
             let transaction = sanitize_transaction(unsanitized_tx, preflight_bank)?;
             let signature = *transaction.signature();

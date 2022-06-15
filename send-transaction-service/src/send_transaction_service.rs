@@ -339,7 +339,14 @@ impl SendTransactionService {
             leader_forward_count,
             ..Config::default()
         };
-        Self::new_with_config(cluster_info, bank_forks, leader_info, receiver, connection_cache, config)
+        Self::new_with_config(
+            cluster_info,
+            bank_forks,
+            leader_info,
+            receiver,
+            connection_cache,
+            config,
+        )
     }
 
     pub fn new_with_config<T: TpuInfo + std::marker::Send + Clone + 'static>(
