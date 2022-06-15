@@ -43,7 +43,7 @@ fn bench_batch_list_to_packets(bencher: &mut Bencher) {
         header: None,
         batch_list: (0..100)
             .map(|_| PacketBatch {
-                packets: (0..128).map(|i| get_proto_packet(i)).collect(),
+                packets: (0..128).map(get_proto_packet).collect(),
             })
             .collect(),
     };
@@ -53,12 +53,7 @@ fn bench_batch_list_to_packets(bencher: &mut Bencher) {
             packet_batch_list
                 .batch_list
                 .iter()
-                .map(|b| {
-                    b.packets
-                        .iter()
-                        .map(|p| proto_packet_to_packet(p.clone()))
-                        .collect()
-                })
+                .map(|b| b.packets.into_iter().map(proto_packet_to_packet).collect())
                 .collect::<Vec<Vec<Packet>>>(),
         );
     });
