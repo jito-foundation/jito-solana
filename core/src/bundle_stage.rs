@@ -353,7 +353,7 @@ impl BundleStage {
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
-            if let Some((e, _)) = check_bundle_lock_results(&batch.lock_results()) {
+            if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
@@ -388,7 +388,7 @@ impl BundleStage {
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
             if let Err(e) = Self::check_all_executed_ok(
-                &load_and_execute_transactions_output
+                load_and_execute_transactions_output
                     .execution_results
                     .as_slice(),
             ) {
@@ -406,7 +406,7 @@ impl BundleStage {
             // *********************************************************************************
             Self::cache_accounts(
                 bank,
-                &batch.sanitized_transactions(),
+                batch.sanitized_transactions(),
                 &load_and_execute_transactions_output.execution_results,
                 &mut load_and_execute_transactions_output.loaded_transactions,
                 &mut account_override,
@@ -600,11 +600,11 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         cluster_info: &Arc<ClusterInfo>,
     ) -> BundleExecutionResult<()> {
-        let current_tip_receiver = tip_manager_l.get_current_tip_receiver(&bank)?;
+        let current_tip_receiver = tip_manager_l.get_current_tip_receiver(bank)?;
         let my_kp = cluster_info.keypair();
 
         if current_tip_receiver != my_kp.pubkey() {
-            match tip_manager_l.build_change_tip_receiver_tx(&my_kp.pubkey(), &bank, &my_kp) {
+            match tip_manager_l.build_change_tip_receiver_tx(&my_kp.pubkey(), bank, &my_kp) {
                 Ok(tx) => {
                     if let Err(e) = Self::execute_record_and_commit(
                         tx,
@@ -694,7 +694,7 @@ impl BundleStage {
         execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
         if let Err(e) =
-            Self::check_all_executed_ok(&load_and_execute_tx_output.execution_results.as_slice())
+            Self::check_all_executed_ok(load_and_execute_tx_output.execution_results.as_slice())
         {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
@@ -895,9 +895,9 @@ impl BundleStage {
         mint_decimals: &mut HashMap<Pubkey, u8>,
     ) -> (TransactionBalances, TransactionTokenBalances) {
         if transaction_status_sender.is_some() {
-            let balances = collect_balances_with_cache(&batch, bank, Some(&cached_accounts));
+            let balances = collect_balances_with_cache(batch, bank, Some(cached_accounts));
             let token_balances =
-                collect_token_balances(bank, &batch, mint_decimals, Some(&cached_accounts));
+                collect_token_balances(bank, batch, mint_decimals, Some(cached_accounts));
             (balances, token_balances)
         } else {
             (vec![], vec![])
@@ -911,20 +911,19 @@ impl BundleStage {
         let maybe_err = execution_results
             .iter()
             .find(|er| er.was_executed() && !er.was_executed_successfully());
-        if let Some(exec_results) = maybe_err {
-            match exec_results {
-                TransactionExecutionResult::Executed {
-                    details,
-                    executors: _,
-                } => match &details.status {
-                    Ok(_) => {
-                        unreachable!();
-                    }
-                    Err(e) => return Err(e.clone().into()),
-                },
-                _ => {}
+        if let Some(TransactionExecutionResult::Executed {
+            details,
+            executors: _,
+        }) = maybe_err
+        {
+            match &details.status {
+                Ok(_) => {
+                    unreachable!();
+                }
+                Err(e) => return Err(e.clone().into()),
             }
         }
+
         Ok(())
     }
 
@@ -1010,7 +1009,7 @@ impl BundleStage {
 
     fn prepare_poh_record_bundle(
         bank_slot: &Slot,
-        execution_results_txs: &Vec<AllExecutionResults>,
+        execution_results_txs: &[AllExecutionResults],
     ) -> Record {
         let mixins_txs = execution_results_txs
             .iter()

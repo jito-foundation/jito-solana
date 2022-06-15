@@ -406,6 +406,7 @@ struct FilterForwardingResults<'a> {
 impl BankingStage {
     /// Create the stage using `bank`. Exit when `verified_receiver` is dropped.
     #[allow(clippy::new_ret_no_self)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
@@ -2435,13 +2436,12 @@ mod tests {
             trace!("getting entries");
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .map(
+                .flat_map(
                     |WorkingBankEntry {
                          bank: _,
                          entries_ticks,
                      }| entries_ticks.into_iter().map(|e| e.0),
                 )
-                .flatten()
                 .collect();
             trace!("done");
             assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
@@ -2559,13 +2559,12 @@ mod tests {
             loop {
                 let entries: Vec<_> = entry_receiver
                     .iter()
-                    .map(
+                    .flat_map(
                         |WorkingBankEntry {
                              bank: _,
                              entries_ticks,
                          }| entries_ticks.into_iter().map(|e| e.0),
                     )
-                    .flatten()
                     .collect();
 
                 assert!(entries.verify(&blockhash));
@@ -2684,13 +2683,12 @@ mod tests {
             // check that the balance is what we expect.
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .map(
+                .flat_map(
                     |WorkingBankEntry {
                          bank: _,
                          entries_ticks,
                      }| entries_ticks.into_iter().map(|e| e.0),
                 )
-                .flatten()
                 .collect();
 
             let bank = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);

@@ -179,7 +179,7 @@ mod tests {
                 } else {
                     s.send(WorkingBankEntry {
                         bank: bank1.clone(),
-                        entries_ticks: vec![(entry.clone(), tick_height)],
+                        entries_ticks: vec![(entry, tick_height)],
                     })
                     .unwrap();
                     None
