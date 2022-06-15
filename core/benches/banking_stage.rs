@@ -30,7 +30,7 @@ use {
         genesis_config::GenesisConfig,
         hash::Hash,
         message::Message,
-        pubkey,
+        pubkey::{self, Pubkey},
         signature::{Keypair, Signature, Signer},
         system_instruction, system_transaction,
         timing::{duration_as_us, timestamp},
@@ -106,6 +106,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 10,
+                Pubkey::new_unique(),
             );
         });
 

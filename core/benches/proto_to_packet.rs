@@ -4,7 +4,7 @@ extern crate test;
 
 use {
     jito_protos::proto::packet::{
-        Meta as PbMeta, Packet as PbPacket, PacketBatch, PacketBatchList,
+        Meta as PbMeta, Packet as PbPacket, PacketBatch, PacketBatchList, PacketFlags as PbFlags,
     },
     solana_core::proto_packet_to_packet,
     solana_sdk::packet::{Packet, PACKET_DATA_SIZE},

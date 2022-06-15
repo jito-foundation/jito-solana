@@ -64,7 +64,7 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         ledger_column_options: config.ledger_column_options.clone(),
         runtime_config: config.runtime_config.clone(),
         validator_interface_address: config.validator_interface_address.clone(),
-        tip_program_pubkey: config.tip_program_pubkey.clone(),
+        tip_program_pubkey: config.tip_program_pubkey,
         shred_receiver_address: config.shred_receiver_address,
     }
 }
