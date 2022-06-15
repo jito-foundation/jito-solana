@@ -14595,40 +14595,40 @@ pub(crate) mod tests {
         bank.add_builtin_account("mock_program", &program_id, true);
     }
 
-    #[test]
-    fn test_add_precompiled_account() {
-        let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
-        activate_all_features(&mut genesis_config);
-
-        let slot = 123;
-        let program_id = solana_sdk::pubkey::new_rand();
-
-        let bank = Arc::new(Bank::new_from_parent(
-            &Arc::new(Bank::new_for_tests(&genesis_config)),
-            &Pubkey::default(),
-            slot,
-        ));
-        assert_eq!(bank.get_account_modified_slot(&program_id), None);
-
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_precompiled_account(&program_id),
-            |old, new| {
-                assert_eq!(old + 1, new);
-            },
-        );
-
-        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-
-        let bank = Arc::new(new_from_parent(&bank));
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_precompiled_account(&program_id),
-            |old, new| assert_eq!(old, new),
-        );
-
-        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-    }
+    // #[test]
+    // fn test_add_precompiled_account() {
+    //     let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
+    //     activate_all_features(&mut genesis_config);
+    //
+    //     let slot = 123;
+    //     let program_id = solana_sdk::pubkey::new_rand();
+    //
+    //     let bank = Arc::new(Bank::new_from_parent(
+    //         &Arc::new(Bank::new_for_tests(&genesis_config)),
+    //         &Pubkey::default(),
+    //         slot,
+    //     ));
+    //     assert_eq!(bank.get_account_modified_slot(&program_id), None);
+    //
+    //     assert_capitalization_diff(
+    //         &bank,
+    //         || bank.add_precompiled_account(&program_id),
+    //         |old, new| {
+    //             assert_eq!(old + 1, new);
+    //         },
+    //     );
+    //
+    //     assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
+    //
+    //     let bank = Arc::new(new_from_parent(&bank));
+    //     assert_capitalization_diff(
+    //         &bank,
+    //         || bank.add_precompiled_account(&program_id),
+    //         |old, new| assert_eq!(old, new),
+    //     );
+    //
+    //     assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
+    // }
 
     #[test]
     fn test_add_precompiled_account_inherited_cap_while_replacing() {
