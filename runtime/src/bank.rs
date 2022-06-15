@@ -14595,6 +14595,7 @@ pub(crate) mod tests {
         bank.add_builtin_account("mock_program", &program_id, true);
     }
 
+    // broken in master
     // #[test]
     // fn test_add_precompiled_account() {
     //     let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
