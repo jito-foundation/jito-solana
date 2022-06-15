@@ -70,7 +70,7 @@ pub fn collect_balances_with_cache(
                 if let Some(account_override) = account_overrides
                     .and_then(|overrides| overrides.get_ignore_rent_type(account_key))
                 {
-                    Bank::read_balance(account_override)
+                    account_override.lamports()
                 } else {
                     bank.get_account(account_key)
                         .map(|a| a.lamports())

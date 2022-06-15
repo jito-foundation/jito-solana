@@ -137,7 +137,6 @@ mod tests {
             Arc::new(Keypair::new()),
             SocketAddrSpace::new(false),
         ));
-        // TODO: @buffalu_ looks like addr here can be static, but not exactly sure of the use case for banks server
         let service = RpcBanksService::new(
             addr,
             cluster_info,

@@ -20,7 +20,7 @@ pub const NUM_RCVMMSGS: usize = 64;
 
 #[derive(Debug, Default, Clone)]
 pub struct PacketBatch {
-    packets: PinnedVec<Packet>,
+    pub packets: PinnedVec<Packet>,
 }
 
 pub type PacketBatchRecycler = Recycler<PinnedVec<Packet>>;

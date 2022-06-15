@@ -6,18 +6,18 @@ use {
 type LockResult = result::Result<(), TransactionError>;
 
 /// Checks that preparing a bundle gives an acceptable batch back
-pub fn check_bundle_lock_results(
-    lock_results: &[LockResult],
-) -> Option<(BundleExecutionError, usize)> {
+pub fn check_bundle_lock_results(lock_results: &[LockResult]) -> Option<(TransactionError, usize)> {
     for (i, res) in lock_results.iter().enumerate() {
         match res {
             Ok(())
             | Err(TransactionError::AccountInUse)
             | Err(TransactionError::BundleNotContinuous) => {}
             Err(e) => {
-                return Some((e.clone().into(), i));
+                return Some((e.clone(), i));
             }
         }
     }
     None
 }
+
+pub type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;

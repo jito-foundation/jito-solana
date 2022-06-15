@@ -37,7 +37,7 @@ use {
     solana_sdk::{
         bpf_loader_upgradeable,
         bundle::{error::BundleExecutionError, utils::check_bundle_lock_results},
-        clock::{Slot, MAX_PROCESSING_AGE},
+        clock::{Epoch, Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
         saturating_add_assign,
@@ -84,7 +84,7 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_receiver: Receiver<Bundle>,
+        bundle_receiver: Receiver<Vec<Bundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
@@ -107,7 +107,7 @@ impl BundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
-        bundle_receiver: Receiver<Bundle>,
+        bundle_receiver: Receiver<Vec<Bundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: Arc<Mutex<TipManager>>,
     ) -> Self {
@@ -256,11 +256,11 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         tip_manager: &Arc<Mutex<TipManager>>,
+        consensus_accounts_cache: &mut HashSet<Pubkey>,
+        last_consensus_update: &mut Epoch,
     ) -> BundleExecutionResult<()> {
-        let mut chunk_start = 0;
-
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-        let mut account_override = AccountOverrides {
+        let mut account_overrides = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
         };
@@ -285,8 +285,18 @@ impl BundleStage {
             bank_creation_time,
         } = &*working_bank_start.unwrap();
 
-        let transactions = Self::get_bundle_txs(&bundle, bank, &tip_program_id);
-        if transactions.is_empty() || bundle.batch.len() != transactions.len() {
+        // ************************************************************************
+        // Update consensus-related accounts on epoch boundaries to avoid
+        // locking those accounts
+        // ************************************************************************
+        if bank.epoch() > last_consensus_update.to_owned() {
+            *consensus_accounts_cache = Self::get_consensus_accounts(bank);
+            *last_consensus_update = bank.epoch();
+        }
+
+        let transactions =
+            Self::get_bundle_txs(&bundle, bank, &tip_program_id, consensus_accounts_cache);
+        if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
             return Err(BundleExecutionError::InvalidBundle);
         }
 
@@ -336,6 +346,7 @@ impl BundleStage {
             )?;
         }
 
+        let mut chunk_start = 0;
         while chunk_start != transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
                 QosService::remove_transaction_costs(
@@ -352,21 +363,21 @@ impl BundleStage {
             // ************************************************************************
             let chunk_end = std::cmp::min(transactions.len(), chunk_start + 128);
             let chunk = &transactions[chunk_start..chunk_end];
-            let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk);
+            let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk, None);
             if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
                     bank,
                 );
-                return Err(e);
+                return Err(e.into());
             }
 
             let ((pre_balances, pre_token_balances), _) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
-                    &account_override,
+                    &account_overrides,
                     transaction_status_sender,
                     &mut mint_decimals,
                 ),
@@ -381,16 +392,17 @@ impl BundleStage {
                     transaction_status_sender.is_some(),
                     transaction_status_sender.is_some(),
                     &mut execute_and_commit_timings.execute_timings,
-                    Some(&account_override),
+                    Some(&account_overrides),
                 ),
                 "load_execute",
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
-            if let Err(e) = Self::check_all_executed_ok(
+            if let Err((e, _)) = TransactionExecutionResult::check_bundle_execution_results(
                 load_and_execute_transactions_output
                     .execution_results
                     .as_slice(),
+                batch.sanitized_transactions(),
             ) {
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
@@ -409,14 +421,14 @@ impl BundleStage {
                 batch.sanitized_transactions(),
                 &load_and_execute_transactions_output.execution_results,
                 &mut load_and_execute_transactions_output.loaded_transactions,
-                &mut account_override,
+                &mut account_overrides,
             );
 
             let ((post_balances, post_token_balances), _) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
-                    &account_override,
+                    &account_overrides,
                     transaction_status_sender,
                     &mut mint_decimals,
                 ),
@@ -693,9 +705,10 @@ impl BundleStage {
         );
         execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
-        if let Err(e) =
-            Self::check_all_executed_ok(load_and_execute_tx_output.execution_results.as_slice())
-        {
+        if let Err((e, _)) = TransactionExecutionResult::check_bundle_execution_results(
+            load_and_execute_tx_output.execution_results.as_slice(),
+            batch.sanitized_transactions(),
+        ) {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
                 transactions_qos_results.iter(),
@@ -805,7 +818,7 @@ impl BundleStage {
         let (freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        let _ = Self::try_record(recorder, record)?;
+        Self::try_record(recorder, record)?;
 
         let mut transaction_results = Vec::new();
         for r in execution_results {
@@ -904,34 +917,11 @@ impl BundleStage {
         }
     }
 
-    /// Return an Error if a transaction was executed and reverted
-    fn check_all_executed_ok(
-        execution_results: &[TransactionExecutionResult],
-    ) -> BundleExecutionResult<()> {
-        let maybe_err = execution_results
-            .iter()
-            .find(|er| er.was_executed() && !er.was_executed_successfully());
-        if let Some(TransactionExecutionResult::Executed {
-            details,
-            executors: _,
-        }) = maybe_err
-        {
-            match &details.status {
-                Ok(_) => {
-                    unreachable!();
-                }
-                Err(e) => return Err(e.clone().into()),
-            }
-        }
-
-        Ok(())
-    }
-
     fn bundle_stage(
         cluster_info: Arc<ClusterInfo>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
-        bundle_receiver: Receiver<Bundle>,
+        bundle_receiver: Receiver<Vec<Bundle>>,
         gossip_vote_sender: ReplayVoteSender,
         id: u32,
         cost_model: Arc<RwLock<CostModel>>,
@@ -941,11 +931,14 @@ impl BundleStage {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
+        let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
+        let mut last_consensus_update = Epoch::default();
+
         loop {
             if exit.load(Ordering::Relaxed) {
                 break;
             }
-            let bundle = {
+            let bundles = {
                 match bundle_receiver.recv_timeout(Duration::from_millis(100)) {
                     Ok(bundle) => bundle,
                     Err(RecvTimeoutError::Timeout) => {
@@ -957,28 +950,59 @@ impl BundleStage {
                 }
             };
 
-            match Self::execute_bundle(
-                &cluster_info,
-                bundle,
-                poh_recorder,
-                &recorder,
-                &transaction_status_sender,
-                &gossip_vote_sender,
-                &qos_service,
-                &tip_manager,
-            ) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("error recording bundle {:?}", e);
+            for bundle in bundles {
+                match Self::execute_bundle(
+                    &cluster_info,
+                    bundle,
+                    poh_recorder,
+                    &recorder,
+                    &transaction_status_sender,
+                    &gossip_vote_sender,
+                    &qos_service,
+                    &tip_manager,
+                    &mut consensus_accounts_cache,
+                    &mut last_consensus_update,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("error recording bundle {:?}", e);
+                    }
                 }
             }
         }
+    }
+
+    fn get_consensus_accounts(bank: &Arc<Bank>) -> HashSet<Pubkey> {
+        let mut consensus_accounts: HashSet<Pubkey> = HashSet::new();
+        bank.epoch_stakes(bank.epoch()).map(|epoch_stakes| {
+            // votes use the following accounts:
+            // - vote_account pubkey: writeable
+            // - authorized_voter_pubkey: read-only
+            // - node_keypair pubkey: payer (writeable)
+            let node_id_vote_accounts = epoch_stakes.node_id_to_vote_accounts();
+
+            let vote_accounts: Vec<Pubkey> = node_id_vote_accounts
+                .values()
+                .into_iter()
+                .map(|v| v.vote_accounts.clone())
+                .flatten()
+                .collect();
+
+            // vote_account
+            consensus_accounts.extend(vote_accounts.into_iter());
+            // authorized_voter_pubkey
+            consensus_accounts.extend(epoch_stakes.epoch_authorized_voters().keys().into_iter());
+            // node_keypair
+            consensus_accounts.extend(epoch_stakes.node_id_to_vote_accounts().keys().into_iter());
+        });
+        consensus_accounts
     }
 
     fn get_bundle_txs(
         bundle: &Bundle,
         bank: &Arc<Bank>,
         tip_program_id: &Pubkey,
+        consensus_accounts_cache: &mut HashSet<Pubkey>,
     ) -> Vec<SanitizedTransaction> {
         let packet_indexes = Self::generate_packet_indexes(&bundle.batch);
         let deserialized_packets =
@@ -993,6 +1017,7 @@ impl BundleStage {
                     bank.vote_only_bank(),
                     bank.as_ref(),
                     tip_program_id,
+                    &consensus_accounts_cache,
                 )
             })
             .collect()
@@ -1047,6 +1072,7 @@ impl BundleStage {
         votes_only: bool,
         address_loader: impl AddressLoader,
         tip_program_id: &Pubkey,
+        consensus_accounts_cache: &HashSet<Pubkey>,
     ) -> Option<SanitizedTransaction> {
         if votes_only && !deserialized_packet.is_simple_vote() {
             return None;
@@ -1061,8 +1087,8 @@ impl BundleStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // TODO (LB): what happened to require_static_program_ids_in_transaction?
-
+        // Prevent transactions from mentioning the tip program to avoid getting the tip_receiver
+        // changed mid-slot and the rest of the tips stolen.
         // NOTE: if this is a weak assumption helpful for testing deployment,
         // before production it shall only be the tip program
         let tx_accounts = tx.message().account_keys();
@@ -1075,6 +1101,18 @@ impl BundleStage {
             return None;
         }
 
+        // NOTE: may want to revisit this as it may reduce use cases of locking accounts
+        // used for legitimate cases in bundles.
+        if tx_accounts
+            .iter()
+            .any(|a| consensus_accounts_cache.contains(a))
+        {
+            warn!(
+                "someone attempted to lock a consensus related account!! tx: {:?}",
+                tx
+            );
+            return None;
+        }
         Some(tx)
     }
 

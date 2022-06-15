@@ -9,6 +9,7 @@ members = [
     "banks-server",
     "bench-streamer",
     "bench-tps",
+    "bench-batch-simulate-bundle",
     "bloom",
     "bucket_map",
     "clap-utils",

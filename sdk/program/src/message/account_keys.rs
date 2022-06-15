@@ -29,6 +29,14 @@ impl<'a> AccountKeys<'a> {
         }
     }
 
+    pub fn static_keys(&self) -> &[Pubkey] {
+        self.static_keys
+    }
+
+    pub fn dynamic_keys(&self) -> Option<&LoadedAddresses> {
+        self.dynamic_keys
+    }
+
     /// Returns an iterator of account key segments. The ordering of segments
     /// affects how account indexes from compiled instructions are resolved and
     /// so should not be changed.
