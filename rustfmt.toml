@@ -1,2 +1,8 @@
 imports_granularity = "One"
 group_imports = "One"
+
+[ignore]
+directories = [
+    "jito-programs",
+    "anchor"
+]
