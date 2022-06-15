@@ -241,7 +241,7 @@ impl Default for ValidatorConfig {
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
             validator_interface_address: String::new(),
-            tip_program_pubkey: Pubkey::default(),
+            tip_program_pubkey: Pubkey::new_unique(),
             shred_receiver_address: None,
         }
     }

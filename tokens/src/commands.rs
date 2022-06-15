@@ -1965,6 +1965,8 @@ mod tests {
         let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
         write_keypair_file(&alice, &sender_keypair_file).unwrap();
 
+        let slot = client.get_slot().unwrap();
+
         let allocation_amount = 1000.0;
         let unlocked_sol = 1.0;
         let stake_args = initialize_stake_account(
