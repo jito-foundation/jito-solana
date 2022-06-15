@@ -33,7 +33,7 @@ use {
     },
     solana_sdk::{
         account::Account,
-        bundle::Bundle,
+        bundle::VersionedBundle,
         clock::{Epoch, Slot, UnixTimestamp, DEFAULT_MS_PER_SLOT, MAX_HASH_AGE_IN_SECONDS},
         commitment_config::{CommitmentConfig, CommitmentLevel},
         epoch_info::EpochInfo,
@@ -1395,7 +1395,7 @@ impl RpcClient {
 
     pub async fn batch_simulate_bundle(
         &self,
-        bundles: Vec<Bundle>,
+        bundles: Vec<VersionedBundle>,
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         let configs = bundles
             .iter()
@@ -1413,7 +1413,7 @@ impl RpcClient {
 
     pub async fn batch_simulate_bundle_with_config(
         &self,
-        bundles_and_configs: Vec<(Bundle, RpcSimulateBundleConfig)>,
+        bundles_and_configs: Vec<(VersionedBundle, RpcSimulateBundleConfig)>,
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         let mut params = vec![];
         for (bundle, config) in bundles_and_configs {
@@ -1450,7 +1450,10 @@ impl RpcClient {
         self.send_batch(requests_and_params).await
     }
 
-    pub async fn simulate_bundle(&self, bundle: &Bundle) -> RpcResult<RpcSimulateBundleResult> {
+    pub async fn simulate_bundle(
+        &self,
+        bundle: &VersionedBundle,
+    ) -> RpcResult<RpcSimulateBundleResult> {
         self.simulate_bundle_with_config(
             bundle,
             RpcSimulateBundleConfig {
@@ -1463,7 +1466,7 @@ impl RpcClient {
 
     pub async fn simulate_bundle_with_config(
         &self,
-        bundle: &Bundle,
+        bundle: &VersionedBundle,
         config: RpcSimulateBundleConfig,
     ) -> RpcResult<RpcSimulateBundleResult> {
         let transaction_encoding = if let Some(enc) = config.transaction_encoding {

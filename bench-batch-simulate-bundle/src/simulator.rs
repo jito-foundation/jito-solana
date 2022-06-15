@@ -7,7 +7,7 @@ use {
         rpc_config::{RpcSimulateBundleConfig, SimulationSlotConfig},
         rpc_response::RpcBundleSimulationSummary,
     },
-    solana_sdk::bundle::Bundle,
+    solana_sdk::bundle::VersionedBundle,
     std::{
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
@@ -96,7 +96,7 @@ impl Simulator {
 
     /// returns (num_succeeded, num_failed) simulations
     fn do_simulate(
-        bundles: Vec<Bundle>,
+        bundles: Vec<VersionedBundle>,
         simulation_slot: Slot,
         rpc_client: &Arc<RpcClient>,
     ) -> Option<(u64, u64)> {

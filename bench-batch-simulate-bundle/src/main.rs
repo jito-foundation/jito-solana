@@ -9,7 +9,7 @@ use {
     },
     solana_runtime::cost_model::CostModel,
     solana_sdk::{
-        bundle::Bundle,
+        bundle::VersionedBundle,
         clock::Slot,
         commitment_config::{CommitmentConfig, CommitmentLevel},
         message::v0::{LoadedAddresses, MessageAddressTableLookup},
@@ -68,7 +68,7 @@ const SIMULATION_REFRESH_SECS: u64 = 5;
 const BUNDLE_SIZE: usize = 3;
 
 pub struct BundleBatch {
-    pub bundles: Vec<Bundle>,
+    pub bundles: Vec<VersionedBundle>,
     pub simulation_slot: Slot,
 }
 
@@ -117,10 +117,10 @@ fn main() {
     let (transactions, simulation_slot) =
         fetch_n_highest_cost_transactions(&rpc_client, BUNDLE_SIZE);
 
-    let bundle = Bundle { transactions };
+    let bundle = VersionedBundle { transactions };
     let bundles = (0..args.bundle_batch_size)
         .map(|_| bundle.clone())
-        .collect::<Vec<Bundle>>();
+        .collect::<Vec<VersionedBundle>>();
     drop(bundle);
 
     // This object is read-locked by all Simulator threads and write-locked by `spawn_highest_cost_bundle_scraper`
@@ -205,10 +205,10 @@ fn spawn_highest_cost_bundle_scraper(
             let (transactions, simulation_slot) =
                 fetch_n_highest_cost_transactions(&rpc_client, bundle_size);
 
-            let bundle = Bundle { transactions };
+            let bundle = VersionedBundle { transactions };
             let bundles = (0..batch_size)
                 .map(|_| bundle.clone())
-                .collect::<Vec<Bundle>>();
+                .collect::<Vec<VersionedBundle>>();
             drop(bundle);
 
             let mut w_bundle_batch = bundle_batch.write().unwrap();

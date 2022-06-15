@@ -27,7 +27,7 @@ use {
     },
     solana_sdk::{
         account::Account,
-        bundle::Bundle,
+        bundle::VersionedBundle,
         clock::{Epoch, Slot, UnixTimestamp},
         commitment_config::CommitmentConfig,
         epoch_info::EpochInfo,
@@ -1114,14 +1114,14 @@ impl RpcClient {
 
     pub fn batch_simulate_bundle(
         &self,
-        bundles: Vec<Bundle>,
+        bundles: Vec<VersionedBundle>,
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         self.invoke(self.rpc_client.batch_simulate_bundle(bundles))
     }
 
     pub fn batch_simulate_bundle_with_config(
         &self,
-        bundles_and_configs: Vec<(Bundle, RpcSimulateBundleConfig)>,
+        bundles_and_configs: Vec<(VersionedBundle, RpcSimulateBundleConfig)>,
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         self.invoke(
             self.rpc_client
@@ -1129,13 +1129,13 @@ impl RpcClient {
         )
     }
 
-    pub fn simulate_bundle(&self, bundle: &Bundle) -> RpcResult<RpcSimulateBundleResult> {
+    pub fn simulate_bundle(&self, bundle: &VersionedBundle) -> RpcResult<RpcSimulateBundleResult> {
         self.invoke(self.rpc_client.simulate_bundle(bundle))
     }
 
     pub fn simulate_bundle_with_config(
         &self,
-        bundle: &Bundle,
+        bundle: &VersionedBundle,
         config: RpcSimulateBundleConfig,
     ) -> RpcResult<RpcSimulateBundleResult> {
         self.invoke(self.rpc_client.simulate_bundle_with_config(bundle, config))
