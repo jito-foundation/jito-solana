@@ -5016,7 +5016,8 @@ impl Bank {
             &durable_nonce,
             lamports_per_signature,
             self.leave_nonce_on_success(),
-        ).0
+        )
+        .0
     }
 
     // Distribute collected rent fees for this slot to staked validators (excluding stakers)
