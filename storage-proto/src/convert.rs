@@ -763,6 +763,7 @@ impl TryFrom<tx_by_addr::TransactionError> for TransactionError {
             28 => TransactionError::WouldExceedMaxVoteCostLimit,
             29 => TransactionError::WouldExceedAccountDataTotalLimit,
             32 => TransactionError::BundleNotContinuous,
+            33 => TransactionError::SkippedExecution,
             _ => return Err("Invalid TransactionError"),
         })
     }
