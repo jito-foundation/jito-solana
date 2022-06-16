@@ -72,6 +72,7 @@ fi
 JOBS=$(grep MemTotal /proc/meminfo | awk '{printf "%.0f", ($2 / (16 * 1024 * 1024))}')
 NPROC=$(nproc)
 JOBS=$((JOBS>NPROC ? NPROC : JOBS))
+JOBS=32
 
 RUST_LOG=solana=trace _ "$cargo" nightly test --jobs "$JOBS" --target-dir target/cov --no-run "${packages[@]}"
 if RUST_LOG=solana=trace _ "$cargo" nightly test --jobs "$JOBS" --target-dir target/cov "${packages[@]}" 2> target/cov/coverage-stderr.log; then
