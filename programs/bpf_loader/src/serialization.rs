@@ -167,14 +167,14 @@ pub fn deserialize_parameters_unaligned(
             start += size_of::<u8>(); // is_signer
             start += size_of::<u8>(); // is_writable
             start += size_of::<Pubkey>(); // key
-            borrowed_account.set_lamports(LittleEndian::read_u64(
+            let _ = borrowed_account.set_lamports(LittleEndian::read_u64(
                 buffer
                     .get(start..)
                     .ok_or(InstructionError::InvalidArgument)?,
             ));
             start += size_of::<u64>() // lamports
                 + size_of::<u64>(); // data length
-            borrowed_account.set_data(
+            let _ = borrowed_account.set_data(
                 buffer
                     .get(start..start + pre_len)
                     .ok_or(InstructionError::InvalidArgument)?,
@@ -307,13 +307,13 @@ pub fn deserialize_parameters_aligned(
                 + size_of::<u8>() // executable
                 + 4 // padding to 128-bit aligned
                 + size_of::<Pubkey>(); // key
-            borrowed_account.set_owner(
+            let _ = borrowed_account.set_owner(
                 buffer
                     .get(start..start + size_of::<Pubkey>())
                     .ok_or(InstructionError::InvalidArgument)?,
             );
             start += size_of::<Pubkey>(); // owner
-            borrowed_account.set_lamports(LittleEndian::read_u64(
+            let _ = borrowed_account.set_lamports(LittleEndian::read_u64(
                 buffer
                     .get(start..)
                     .ok_or(InstructionError::InvalidArgument)?,
