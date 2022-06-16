@@ -701,13 +701,25 @@ impl TransactionExecutionResult {
     pub fn check_bundle_execution_results<'a>(
         execution_results: &[TransactionExecutionResult],
         sanitized_txs: &'a [SanitizedTransaction],
-    ) -> std::result::Result<(), (BundleExecutionError, &'a Signature)> {
-        let mut zipped = execution_results.iter().zip(sanitized_txs);
-        let maybe_err =
-            zipped.find(|(res, _tx)| res.was_executed() && !res.was_executed_successfully());
-        if let Some((TransactionExecutionResult::Executed { details, .. }, tx)) = maybe_err {
-            if let Err(e) = &details.status {
-                return Err((e.clone().into(), tx.signature()));
+    ) -> result::Result<(), (BundleExecutionError, &'a Signature)> {
+        for (exec_results, sanitized_tx) in execution_results.iter().zip(sanitized_txs) {
+            match exec_results {
+                TransactionExecutionResult::Executed {
+                    details,
+                    executors: _,
+                } => {
+                    if let Err(e) = &details.status {
+                        return Err((e.clone().into(), sanitized_tx.signature()));
+                    }
+                }
+                TransactionExecutionResult::NotExecuted(e) => {
+                    if !matches!(
+                        e,
+                        TransactionError::AccountInUse | TransactionError::BundleNotContinuous
+                    ) {
+                        return Err((e.clone().into(), sanitized_tx.signature()));
+                    }
+                }
             }
         }
         Ok(())

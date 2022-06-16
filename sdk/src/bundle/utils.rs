@@ -1,9 +1,6 @@
-use {
-    crate::bundle::error::BundleExecutionError, solana_sdk::transaction::TransactionError,
-    std::result,
-};
+use {crate::bundle::error::BundleExecutionError, solana_sdk::transaction::TransactionError};
 
-type LockResult = result::Result<(), TransactionError>;
+type LockResult = Result<(), TransactionError>;
 
 /// Checks that preparing a bundle gives an acceptable batch back
 pub fn check_bundle_lock_results(lock_results: &[LockResult]) -> Option<(TransactionError, usize)> {
@@ -20,4 +17,4 @@ pub fn check_bundle_lock_results(lock_results: &[LockResult]) -> Option<(Transac
     None
 }
 
-pub type BundleExecutionResult<T> = std::result::Result<T, BundleExecutionError>;
+pub type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
