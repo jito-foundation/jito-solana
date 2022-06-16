@@ -8188,19 +8188,17 @@ pub(crate) mod tests {
         let batch = bank
             .prepare_sequential_sanitized_batch_with_results(chunk, Some(account_locks_override));
 
-        let okay_txs = batch
-            .lock_results()
-            .iter()
-            .filter(|res| res.is_ok())
-            .collect::<Vec<_>>();
-        assert_eq!(okay_txs.len(), expected_okays);
+        assert_eq!(
+            batch
+                .lock_results()
+                .iter()
+                .filter(|res| res.is_ok())
+                .count(),
+            expected_okays
+        );
 
         let first_err_idx = batch.lock_results().iter().position(|res| res.is_err());
-        let actual_next_start = if let Some(first_err_idx) = first_err_idx {
-            Some(first_err_idx + chunk_start)
-        } else {
-            None
-        };
+        let actual_next_start = first_err_idx.map(|first_err_idx| first_err_idx + chunk_start);
         assert_eq!(actual_next_start, expected_next_start);
     }
 
@@ -8819,7 +8817,7 @@ pub(crate) mod tests {
                 actual,
                 &expected,
                 "{}",
-                format!("result at index {} did not match", i)
+                format_args!("result at index {} did not match", i)
             );
         }
     }
@@ -8956,14 +8954,14 @@ pub(crate) mod tests {
             Some(vec![a, b]),
             Some(vec![c]),
         ];
-        let bundle = vec![tx_0, tx_1, tx_2.clone(), tx_3.clone(), tx_4];
+        let bundle = vec![tx_0, tx_1, tx_2, tx_3.clone(), tx_4];
 
         // Do it!
         let result = bank
             .simulate_bundle(
                 bundle.clone(),
-                pre_execution_accounts.clone(),
-                post_execution_accounts.clone(),
+                pre_execution_accounts,
+                post_execution_accounts,
             )
             .unwrap();
 
@@ -9007,7 +9005,6 @@ pub(crate) mod tests {
 
         let actual_post_lamports = result
             .transaction_results
-            .clone()
             .into_iter()
             .map(|res| res.post_execution_accounts)
             .collect::<Vec<Option<Vec<AccountData>>>>();
@@ -9147,14 +9144,14 @@ pub(crate) mod tests {
             Some(vec![a, b]),
             Some(vec![c]),
         ];
-        let bundle = vec![tx_0, tx_1, tx_2.clone(), tx_3.clone(), tx_4];
+        let bundle = vec![tx_0, tx_1, tx_2, tx_3.clone(), tx_4];
 
         // Do it!
         let result = bank
             .simulate_bundle(
                 bundle.clone(),
-                pre_execution_accounts.clone(),
-                post_execution_accounts.clone(),
+                pre_execution_accounts,
+                post_execution_accounts,
             )
             .unwrap();
 
@@ -9201,7 +9198,6 @@ pub(crate) mod tests {
 
         let actual_post_lamports = result
             .transaction_results
-            .clone()
             .into_iter()
             .map(|res| res.post_execution_accounts)
             .collect::<Vec<Option<Vec<AccountData>>>>();
@@ -9325,8 +9321,8 @@ pub(crate) mod tests {
         let result = bank
             .simulate_bundle(
                 bundle.clone(),
-                pre_execution_accounts.clone(),
-                post_execution_accounts.clone(),
+                pre_execution_accounts,
+                post_execution_accounts,
             )
             .unwrap();
 
@@ -9356,7 +9352,6 @@ pub(crate) mod tests {
 
         let actual_post_lamports = result
             .transaction_results
-            .clone()
             .into_iter()
             .map(|res| res.post_execution_accounts)
             .collect::<Vec<Option<Vec<AccountData>>>>();
