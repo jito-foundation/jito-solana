@@ -8,7 +8,7 @@ use {
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::{CommitTransactionDetails, QosService},
         tip_manager::TipManager,
-        unprocessed_packet_batches::deserialize_packets,
+        unprocessed_packet_batches::{deserialize_packets, ImmutableDeserializedPacket},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_entry::entry::hash_transactions,
