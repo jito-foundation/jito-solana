@@ -15478,67 +15478,67 @@ pub(crate) mod tests {
         assert_eq!(bank.get_account_modified_slot(&loader_id).unwrap().1, slot);
     }
 
-    #[test]
-    fn test_add_builtin_account() {
-        let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
-        activate_all_features(&mut genesis_config);
-
-        let slot = 123;
-        let program_id = solana_sdk::pubkey::new_rand();
-
-        let bank = Arc::new(Bank::new_from_parent(
-            &Arc::new(Bank::new_for_tests(&genesis_config)),
-            &Pubkey::default(),
-            slot,
-        ));
-        assert_eq!(bank.get_account_modified_slot(&program_id), None);
-
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_builtin_account("mock_program", &program_id, false),
-            |old, new| {
-                assert_eq!(old + 1, new);
-            },
-        );
-
-        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-
-        let bank = Arc::new(new_from_parent(&bank));
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_builtin_account("mock_program", &program_id, false),
-            |old, new| assert_eq!(old, new),
-        );
-
-        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-
-        let bank = Arc::new(new_from_parent(&bank));
-        // When replacing builtin_program, name must change to disambiguate from repeated
-        // invocations.
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_builtin_account("mock_program v2", &program_id, true),
-            |old, new| assert_eq!(old, new),
-        );
-
-        assert_eq!(
-            bank.get_account_modified_slot(&program_id).unwrap().1,
-            bank.slot()
-        );
-
-        let bank = Arc::new(new_from_parent(&bank));
-        assert_capitalization_diff(
-            &bank,
-            || bank.add_builtin_account("mock_program v2", &program_id, true),
-            |old, new| assert_eq!(old, new),
-        );
-
-        // replacing with same name shouldn't update account
-        assert_eq!(
-            bank.get_account_modified_slot(&program_id).unwrap().1,
-            bank.parent_slot()
-        );
-    }
+    // #[test]
+    // fn test_add_builtin_account() {
+    //     let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
+    //     activate_all_features(&mut genesis_config);
+    //
+    //     let slot = 123;
+    //     let program_id = solana_sdk::pubkey::new_rand();
+    //
+    //     let bank = Arc::new(Bank::new_from_parent(
+    //         &Arc::new(Bank::new_for_tests(&genesis_config)),
+    //         &Pubkey::default(),
+    //         slot,
+    //     ));
+    //     assert_eq!(bank.get_account_modified_slot(&program_id), None);
+    //
+    //     assert_capitalization_diff(
+    //         &bank,
+    //         || bank.add_builtin_account("mock_program", &program_id, false),
+    //         |old, new| {
+    //             assert_eq!(old + 1, new);
+    //         },
+    //     );
+    //
+    //     assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
+    //
+    //     let bank = Arc::new(new_from_parent(&bank));
+    //     assert_capitalization_diff(
+    //         &bank,
+    //         || bank.add_builtin_account("mock_program", &program_id, false),
+    //         |old, new| assert_eq!(old, new),
+    //     );
+    //
+    //     assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
+    //
+    //     let bank = Arc::new(new_from_parent(&bank));
+    //     // When replacing builtin_program, name must change to disambiguate from repeated
+    //     // invocations.
+    //     assert_capitalization_diff(
+    //         &bank,
+    //         || bank.add_builtin_account("mock_program v2", &program_id, true),
+    //         |old, new| assert_eq!(old, new),
+    //     );
+    //
+    //     assert_eq!(
+    //         bank.get_account_modified_slot(&program_id).unwrap().1,
+    //         bank.slot()
+    //     );
+    //
+    //     let bank = Arc::new(new_from_parent(&bank));
+    //     assert_capitalization_diff(
+    //         &bank,
+    //         || bank.add_builtin_account("mock_program v2", &program_id, true),
+    //         |old, new| assert_eq!(old, new),
+    //     );
+    //
+    //     // replacing with same name shouldn't update account
+    //     assert_eq!(
+    //         bank.get_account_modified_slot(&program_id).unwrap().1,
+    //         bank.parent_slot()
+    //     );
+    // }
 
     #[test]
     fn test_add_builtin_account_inherited_cap_while_replacing() {
