@@ -247,6 +247,7 @@ impl BundleStage {
     ///   cache that saves the state of accounts from transaction n-1. When loading accounts in the
     ///   bundle execution stage, it'll bias towards loading from the cache to have the most recent
     ///   state.
+    #[allow(clippy::too_many_arguments)]
     fn execute_bundle(
         cluster_info: &Arc<ClusterInfo>,
         bundle: Bundle,
@@ -289,7 +290,7 @@ impl BundleStage {
         // Update consensus-related accounts on epoch boundaries to avoid
         // locking those accounts
         // ************************************************************************
-        if bank.epoch() > last_consensus_update.to_owned() {
+        if bank.epoch() > *last_consensus_update {
             *consensus_accounts_cache = Self::get_consensus_accounts(bank);
             *last_consensus_update = bank.epoch();
         }
@@ -974,19 +975,17 @@ impl BundleStage {
 
     fn get_consensus_accounts(bank: &Arc<Bank>) -> HashSet<Pubkey> {
         let mut consensus_accounts: HashSet<Pubkey> = HashSet::new();
-        bank.epoch_stakes(bank.epoch()).map(|epoch_stakes| {
+        if let Some(epoch_stakes) = bank.epoch_stakes(bank.epoch()) {
             // votes use the following accounts:
             // - vote_account pubkey: writeable
             // - authorized_voter_pubkey: read-only
             // - node_keypair pubkey: payer (writeable)
             let node_id_vote_accounts = epoch_stakes.node_id_to_vote_accounts();
 
-            let vote_accounts: Vec<Pubkey> = node_id_vote_accounts
+            let vote_accounts = node_id_vote_accounts
                 .values()
                 .into_iter()
-                .map(|v| v.vote_accounts.clone())
-                .flatten()
-                .collect();
+                .flat_map(|v| v.vote_accounts.clone());
 
             // vote_account
             consensus_accounts.extend(vote_accounts.into_iter());
@@ -994,7 +993,7 @@ impl BundleStage {
             consensus_accounts.extend(epoch_stakes.epoch_authorized_voters().keys().into_iter());
             // node_keypair
             consensus_accounts.extend(epoch_stakes.node_id_to_vote_accounts().keys().into_iter());
-        });
+        }
         consensus_accounts
     }
 
@@ -1005,8 +1004,7 @@ impl BundleStage {
         consensus_accounts_cache: &mut HashSet<Pubkey>,
     ) -> Vec<SanitizedTransaction> {
         let packet_indexes = Self::generate_packet_indexes(&bundle.batch);
-        let deserialized_packets =
-            unprocessed_packet_batches::deserialize_packets(&bundle.batch, &packet_indexes);
+        let deserialized_packets = deserialize_packets(&bundle.batch, &packet_indexes);
 
         deserialized_packets
             .filter_map(|p| {
@@ -1017,7 +1015,7 @@ impl BundleStage {
                     bank.vote_only_bank(),
                     bank.as_ref(),
                     tip_program_id,
-                    &consensus_accounts_cache,
+                    consensus_accounts_cache,
                 )
             })
             .collect()
