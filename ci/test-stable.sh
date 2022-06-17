@@ -123,7 +123,6 @@ test-local-cluster-slow-2)
   exit 0
   ;;
 test-wasm)
-  alias npm="node --dns-result-order=ipv4first $(which npm)"
   _ node --version
   _ npm --version
   for dir in sdk/{program,}; do
