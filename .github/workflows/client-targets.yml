@@ -49,8 +49,6 @@ jobs:
         with:
           submodules: recursive
           ssh-key: ${{ secrets.DEPLOYER_SSH_KEY }}
-      - name: Checkout code
-        uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
