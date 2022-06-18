@@ -203,14 +203,16 @@ EOF
              ^programs/ \
              ^sdk/ \
       ; then
-    cat >> "$output_file" <<"EOF"
-  - command: "ci/test-stable-perf.sh"
-    name: "stable-perf"
-    timeout_in_minutes: 20
-    artifact_paths: "log-*.txt"
-    agents:
-      - "queue=cuda"
-EOF
+        annotate --style warning \
+                      "test-stable-perf is currently disabled (LB)"
+#    cat >> "$output_file" <<"EOF"
+#  - command: "ci/test-stable-perf.sh"
+#    name: "stable-perf"
+#    timeout_in_minutes: 20
+#    artifact_paths: "log-*.txt"
+#    agents:
+#      - "queue=cuda"
+#EOF
   else
     annotate --style info \
       "Stable-perf skipped as no relevant files were modified"
