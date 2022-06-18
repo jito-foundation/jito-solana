@@ -415,9 +415,8 @@ checksum = "dea908e7347a8c64e378c17e30ef880ad73e3b4498346b055c2c00ea342f3179"
 name = "bench-get-confirmed-blocks-with-data"
 version = "1.11.0"
 dependencies = [
- "prost 0.9.0",
- "rand 0.8.5",
- "serde",
+ "env_logger",
+ "log",
  "solana-sdk 1.11.0",
  "solana-storage-bigtable",
  "solana-transaction-status",
