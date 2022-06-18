@@ -247,8 +247,8 @@ EOF
              ^ci/test-stable.sh \
              ^sdk/ \
       ; then
-        annotate --style info \
-                      "wasm supposed to run but skipped. TODO"
+        annotate --style warn \
+                      "test-wasm is currently disabled (LB)"
 #    command_step wasm ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-wasm.sh" 20
   else
     annotate --style info \
