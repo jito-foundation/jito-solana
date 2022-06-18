@@ -1,3 +1,5 @@
+#![cfg(feature = "full")]
+
 use crate::transaction::VersionedTransaction;
 
 pub mod error;
