@@ -185,7 +185,7 @@ all_test_steps() {
       - "queue=sol-private"
 EOF
   else
-    annotate --style info \
+    annotate --style info --context test-stable-bpf \
       "Stable-BPF skipped as no relevant files were modified"
   fi
 
@@ -203,7 +203,7 @@ EOF
              ^programs/ \
              ^sdk/ \
       ; then
-        annotate --style warning \
+        annotate --style warning --context test-stable-perf \
                       "test-stable-perf is currently disabled (LB)"
 #    cat >> "$output_file" <<"EOF"
 #  - command: "ci/test-stable-perf.sh"
@@ -214,7 +214,7 @@ EOF
 #      - "queue=sol-private"
 #EOF
   else
-    annotate --style info \
+    annotate --style info --context test-stable-perf \
       "Stable-perf skipped as no relevant files were modified"
   fi
 
@@ -241,7 +241,7 @@ EOF
       - "queue=sol-private"
 EOF
   else
-    annotate --style info \
+    annotate --style info --context test-downstream-projects \
       "downstream-projects skipped as no relevant files were modified"
   fi
 
@@ -251,11 +251,11 @@ EOF
              ^ci/test-stable.sh \
              ^sdk/ \
       ; then
-        annotate --style warning \
+        annotate --style warning --context test-wasm \
                               "test-wasm is currently disabled (LB)"
 #    command_step wasm ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-wasm.sh" 20
   else
-    annotate --style info \
+    annotate --style info --context test-wasm \
       "wasm skipped as no relevant files were modified"
   fi
 
