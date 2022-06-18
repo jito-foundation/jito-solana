@@ -249,7 +249,9 @@ EOF
              ^ci/test-stable.sh \
              ^sdk/ \
       ; then
-    command_step wasm ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-wasm.sh" 20
+        annotate --style info \
+                      "wasm supposed to run but skipped. TODO"
+#    command_step wasm ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-wasm.sh" 20
   else
     annotate --style info \
       "wasm skipped as no relevant files were modified"
