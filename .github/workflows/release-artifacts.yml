@@ -26,6 +26,8 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
+          submodules: recursive
+          ssh-key: ${{ secrets.DEPLOYER_SSH_KEY }}
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
