@@ -3587,13 +3587,6 @@ mod tests {
 
         let durable_nonce =
             DurableNonce::from_blockhash(&Hash::new_unique(), /*separate_domains:*/ true);
-        let accounts = Accounts::new_with_config_for_tests(
-            Vec::new(),
-            &ClusterType::Development,
-            AccountSecondaryIndexes::default(),
-            false,
-            AccountShrinkThreshold::default(),
-        );
         let txs = vec![tx];
         let execution_results = vec![new_execution_result(
             Err(TransactionError::InstructionError(
@@ -3715,13 +3708,6 @@ mod tests {
 
         let durable_nonce =
             DurableNonce::from_blockhash(&Hash::new_unique(), /*separate_domains:*/ true);
-        let accounts = Accounts::new_with_config_for_tests(
-            Vec::new(),
-            &ClusterType::Development,
-            AccountSecondaryIndexes::default(),
-            false,
-            AccountShrinkThreshold::default(),
-        );
         let txs = vec![tx];
         let execution_results = vec![new_execution_result(
             Err(TransactionError::InstructionError(

@@ -731,7 +731,6 @@ impl PohRecorder {
         }
     }
 
-    // TODO: @buffalu_ check this function
     pub fn record(
         &mut self,
         bank_slot: Slot,
@@ -1266,7 +1265,7 @@ mod tests {
             // We haven't yet reached the minimum tick height for the working bank,
             // so record should fail
             assert_matches!(
-                poh_recorder.record(bank1.slot(), &vec![(h1, vec![tx.into()])]),
+                poh_recorder.record(bank1.slot(), &[(h1, vec![tx.into()])]),
                 Err(PohRecorderError::MinHeightNotReached)
             );
             assert!(entry_receiver.try_recv().is_err());
@@ -1309,7 +1308,7 @@ mod tests {
             // However we hand over a bad slot so record fails
             let bad_slot = bank.slot() + 1;
             assert_matches!(
-                poh_recorder.record(bad_slot, &vec![(h1, vec![tx.into()])]),
+                poh_recorder.record(bad_slot, &[(h1, vec![tx.into()])]),
                 Err(PohRecorderError::MaxHeightReached)
             );
         }
@@ -1356,7 +1355,7 @@ mod tests {
             let tx = test_tx();
             let h1 = hash(b"hello world!");
             assert!(poh_recorder
-                .record(bank1.slot(), &vec![(h1, vec![tx.into()])])
+                .record(bank1.slot(), &[(h1, vec![tx.into()])])
                 .is_ok());
             assert_eq!(poh_recorder.tick_cache.len(), 0);
 
@@ -1412,7 +1411,7 @@ mod tests {
             let tx = test_tx();
             let h1 = hash(b"hello world!");
             assert!(poh_recorder
-                .record(bank.slot(), &vec![(h1, vec![tx.into()])])
+                .record(bank.slot(), &[(h1, vec![tx.into()])])
                 .is_err());
 
             for _ in 0..num_ticks_to_max {
@@ -1678,7 +1677,7 @@ mod tests {
             let tx = test_tx();
             let h1 = hash(b"hello world!");
             assert!(poh_recorder
-                .record(bank.slot(), &vec![(h1, vec![tx.into()])])
+                .record(bank.slot(), &[(h1, vec![tx.into()])])
                 .is_err());
             assert!(poh_recorder.working_bank.is_none());
 

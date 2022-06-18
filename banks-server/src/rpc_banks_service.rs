@@ -130,14 +130,13 @@ mod tests {
         let addr = "127.0.0.1:0".parse().unwrap();
         let contact_info = ContactInfo {
             tpu: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
-            ..Default::default()
+            ..ContactInfo::default()
         };
         let cluster_info: Arc<ClusterInfo> = Arc::new(ClusterInfo::new(
             contact_info,
             Arc::new(Keypair::new()),
             SocketAddrSpace::new(false),
         ));
-        // TODO: @buffalu_ looks like addr here can be static, but not exactly sure of the use case for banks server
         let service = RpcBanksService::new(
             addr,
             cluster_info,

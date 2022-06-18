@@ -13,6 +13,7 @@ use {
         banking_stage::{BankingStage, BankingStageStats},
         leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         qos_service::QosService,
+        tip_manager::TipManager,
         unprocessed_packet_batches::*,
     },
     solana_entry::entry::{next_hash, Entry},
@@ -30,7 +31,7 @@ use {
         genesis_config::GenesisConfig,
         hash::Hash,
         message::Message,
-        pubkey,
+        pubkey::{self, Pubkey},
         signature::{Keypair, Signature, Signer},
         system_instruction, system_transaction,
         timing::{duration_as_us, timestamp},
@@ -38,7 +39,7 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
-        sync::{atomic::Ordering, Arc, RwLock},
+        sync::{atomic::Ordering, Arc, Mutex, RwLock},
         time::{Duration, Instant},
     },
     test::Bencher,
@@ -106,6 +107,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 10,
+                &Pubkey::new_unique(),
             );
         });
 
@@ -239,6 +241,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             s,
             Arc::new(RwLock::new(CostModel::default())),
             Arc::new(ConnectionCache::default()),
+            Arc::new(Mutex::new(TipManager::new(Pubkey::new_unique()))),
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
 

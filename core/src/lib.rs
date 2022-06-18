@@ -101,7 +101,7 @@ extern crate solana_frozen_abi_macro;
 extern crate matches;
 
 use {
-    solana_sdk::packet::{Packet, PacketFlags, PACKET_DATA_SIZE},
+    solana_sdk::packet::{Meta, Packet, PacketFlags, PACKET_DATA_SIZE},
     std::{
         cmp::min,
         net::{IpAddr, Ipv4Addr},
@@ -115,7 +115,7 @@ pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> Packet {
     let mut data = [0; PACKET_DATA_SIZE];
     let copy_len = min(data.len(), p.data.len());
     data[..copy_len].copy_from_slice(&p.data[..copy_len]);
-    let mut packet = Packet::new(data, Default::default());
+    let mut packet = Packet::new(data, Meta::default());
     if let Some(meta) = p.meta {
         packet.meta.size = meta.size as usize;
         packet.meta.addr = meta.addr.parse().unwrap_or(UNKNOWN_IP);

@@ -1,3 +1,5 @@
+#![cfg(feature = "full")]
+
 use solana_sdk::transaction::SanitizedTransaction;
 
 pub struct SanitizedBundle {

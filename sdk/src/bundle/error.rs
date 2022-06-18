@@ -1,3 +1,5 @@
+#![cfg(feature = "full")]
+
 use {
     anchor_lang::error::Error, serde::Deserialize, solana_program::pubkey::Pubkey,
     solana_sdk::transaction::TransactionError, thiserror::Error,

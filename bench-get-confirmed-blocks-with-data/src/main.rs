@@ -22,20 +22,22 @@ fn main() {
             let tasks: Vec<JoinHandle<usize>> = (0..num_tasks)
                 .map(|_| {
                     let mut rng = thread_rng();
-                    let starting_slot: Slot = rng.gen_range(highest_slot - 1_000_000..highest_slot); // prevent caching by requesting random slot
+                    let starting_slot: Slot = rng.gen_range(
+                        highest_slot.checked_sub(1_000_000).unwrap_or_default()..highest_slot,
+                    ); // prevent caching by requesting random slot
                     runtime.spawn(async move {
                         let bigtable =
                             solana_storage_bigtable::LedgerStorage::new(true, None, None)
                                 .await
                                 .expect("connected to bigtable");
-                        let slots: Vec<_> = (starting_slot..starting_slot + limit).collect();
-                        let blocks: Vec<_> = bigtable
-                            .get_confirmed_blocks_with_data(&slots.as_slice())
+                        let slots: Vec<_> = (starting_slot
+                            ..starting_slot.checked_add(limit).unwrap_or(u64::MAX))
+                            .collect();
+                        bigtable
+                            .get_confirmed_blocks_with_data(slots.as_slice())
                             .await
                             .expect("got blocks")
-                            .collect();
-
-                        blocks.len()
+                            .count()
                     })
                 })
                 .collect();

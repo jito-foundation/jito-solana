@@ -117,8 +117,8 @@ impl Simulator {
             .batch_simulate_bundle_with_config(bundles.into_iter().zip(configs).collect())
         {
             Ok(response) => {
-                let mut n_succeeded = 0;
-                let mut n_failed = 0;
+                let mut n_succeeded: u64 = 0;
+                let mut n_failed: u64 = 0;
 
                 for result in response {
                     match result.result.value.summary {
@@ -130,9 +130,11 @@ impl Simulator {
                                 "bundle simulation failed [error={:?}, tx_signature={}]",
                                 error, tx_signature
                             );
-                            n_failed += 1;
+                            n_failed = n_failed.checked_add(1).unwrap();
                         }
-                        RpcBundleSimulationSummary::Succeeded => n_succeeded += 1,
+                        RpcBundleSimulationSummary::Succeeded => {
+                            n_succeeded = n_succeeded.checked_add(1).unwrap()
+                        }
                     }
                 }
 

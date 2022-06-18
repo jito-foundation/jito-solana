@@ -4,6 +4,7 @@ use {
     crate::simulator::{Simulator, Stats},
     clap::Parser,
     log::*,
+    num_traits::abs_sub,
     solana_client::{
         pubsub_client::PubsubClient, rpc_client::RpcClient, rpc_config::RpcBlockConfig,
     },
@@ -101,7 +102,7 @@ fn main() {
         "[baseline_node_slot: {}, simulation_node_slot: {}, diff: {}]",
         baseline_node_slot,
         simulation_node_slot,
-        (baseline_node_slot - simulation_node_slot).abs()
+        abs_sub(baseline_node_slot, simulation_node_slot)
     );
 
     let t_hdls = vec![
@@ -185,7 +186,7 @@ fn main() {
             "[baseline_node_slot: {}, simulation_node_slot: {}, diff: {}]",
             baseline_node_slot,
             simulation_node_slot,
-            baseline_node_slot - simulation_node_slot
+            abs_sub(baseline_node_slot, simulation_node_slot)
         );
     }
 
@@ -365,7 +366,7 @@ fn fetch_and_assert_slot_diff(
         .unwrap() as i64;
 
     if let Some(tolerable_diff) = tolerable_diff {
-        let actual_diff = (slot_0 - slot_1).abs();
+        let actual_diff = abs_sub(slot_0, slot_1);
         assert!(
             actual_diff < tolerable_diff,
             "{}",
@@ -387,6 +388,6 @@ impl AddressLoader for MockAddressLoader {
         self,
         _lookups: &[MessageAddressTableLookup],
     ) -> solana_sdk::transaction::Result<LoadedAddresses> {
-        Ok(Default::default())
+        Ok(LoadedAddresses::default())
     }
 }

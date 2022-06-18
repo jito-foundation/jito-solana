@@ -3,13 +3,10 @@
 extern crate test;
 
 use {
-    solana_mev::{
-        proto::packet::{
-            Meta as PbMeta, Packet as PbPacket, PacketBatch, PacketBatchList,
-            PacketFlags as PbFlags,
-        },
-        proto_packet_to_packet,
+    jito_protos::proto::packet::{
+        Meta as PbMeta, Packet as PbPacket, PacketBatch, PacketBatchList, PacketFlags as PbFlags,
     },
+    solana_core::proto_packet_to_packet,
     solana_sdk::packet::{Packet, PACKET_DATA_SIZE},
     std::iter::repeat,
     test::{black_box, Bencher},
@@ -46,7 +43,7 @@ fn bench_batch_list_to_packets(bencher: &mut Bencher) {
         header: None,
         batch_list: (0..100)
             .map(|_| PacketBatch {
-                packets: (0..128).map(|i| get_proto_packet(i)).collect(),
+                packets: (0..128).map(get_proto_packet).collect(),
             })
             .collect(),
     };

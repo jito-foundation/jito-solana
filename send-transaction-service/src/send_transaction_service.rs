@@ -803,7 +803,7 @@ mod test {
         let connection_cache = Arc::new(ConnectionCache::default());
         let contact_info = ContactInfo {
             tpu: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
-            ..Default::default()
+            ..ContactInfo::default()
         };
         let cluster_info: Arc<ClusterInfo> = Arc::new(ClusterInfo::new(
             contact_info,

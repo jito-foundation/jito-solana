@@ -6,8 +6,11 @@
 
 [![Solana crate](https://img.shields.io/crates/v/solana-core.svg)](https://crates.io/crates/solana-core)
 [![Solana documentation](https://docs.rs/solana-core/badge.svg)](https://docs.rs/solana-core)
-[![Build status](https://badge.buildkite.com/8cc350de251d61483db98bdfc895b9ea0ac8ffa4a32ee850ed.svg?branch=master)](https://buildkite.com/solana-labs/solana/builds?branch=master)
+[![Build status](https://badge.buildkite.com/a6981eb34c6e0c7c09e3a3cb4bda09579f0ff2dcb1bd74b2ad.svg)](https://buildkite.com/jito-labs/jito-solana)
 [![codecov](https://codecov.io/gh/solana-labs/solana/branch/master/graph/badge.svg)](https://codecov.io/gh/solana-labs/solana)
+
+# About
+This repository contains Jito Lab's fork of the Solana validator.
 
 # Building
 

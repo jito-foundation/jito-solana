@@ -463,7 +463,7 @@ mod tests {
                             let _ = poh_recorder
                                 .lock()
                                 .unwrap()
-                                .record(bank_slot, &vec![(h1, vec![tx.clone()])]);
+                                .record(bank_slot, &[(h1, vec![tx.clone()])]);
                             time.stop();
                             total_us += time.as_us();
                             total_times += 1;
