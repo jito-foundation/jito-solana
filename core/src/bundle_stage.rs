@@ -479,7 +479,6 @@ impl BundleStage {
             let mut output = r.load_and_execute_tx_output;
             let sanitized_txs = r.sanitized_txs;
 
-            // TODO: @buffalu_ double check: e66ea7cb6ac1b9881b11c81ecfec287af6a59754
             let (last_blockhash, lamports_per_signature) =
                 bank.last_blockhash_and_lamports_per_signature();
             let transaction_results = bank.commit_transactions(
@@ -826,7 +825,6 @@ impl BundleStage {
             let mut output = r.load_and_execute_tx_output;
             let sanitized_txs = r.sanitized_txs;
 
-            // TODO: @buffalu_ double check, see above
             let (last_blockhash, lamports_per_signature) =
                 bank.last_blockhash_and_lamports_per_signature();
             let results = bank.commit_transactions(

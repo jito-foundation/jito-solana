@@ -963,7 +963,6 @@ impl BankingStage {
         );
         slot_metrics_tracker.increment_make_decision_us(make_decision_time.as_us());
 
-        // TODO: @buffalu_ double check
         match decision {
             BufferedPacketsDecision::Consume(max_tx_ingestion_ns) => {
                 // Take metrics action before consume packets (potentially resetting the

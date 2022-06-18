@@ -731,7 +731,6 @@ impl PohRecorder {
         }
     }
 
-    // TODO: @buffalu_ check this function
     pub fn record(
         &mut self,
         bank_slot: Slot,

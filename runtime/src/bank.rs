@@ -5315,7 +5315,6 @@ impl Bank {
         }
     }
 
-    // TODO: @buffalu_ check
     pub fn collect_accounts_to_store<'a>(
         &self,
         txs: &'a [SanitizedTransaction],
