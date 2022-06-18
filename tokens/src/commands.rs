@@ -1691,87 +1691,87 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_check_payer_balances_distribute_tokens_separate_payers() {
-    //     let alice = Keypair::new();
-    //     let test_validator = TestValidator::with_custom_fees(
-    //         alice.pubkey(),
-    //         10_000,
-    //         None,
-    //         SocketAddrSpace::Unspecified,
-    //     );
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //
-    //     let fees = client
-    //         .get_fee_for_message(&one_signer_message(&client))
-    //         .unwrap();
-    //     let fees_in_sol = lamports_to_sol(fees);
-    //
-    //     let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
-    //     write_keypair_file(&alice, &sender_keypair_file).unwrap();
-    //
-    //     let allocation_amount = 1000.0;
-    //
-    //     let funded_payer = Keypair::new();
-    //     let funded_payer_keypair_file = tmp_file_path("keypair_file", &funded_payer.pubkey());
-    //     write_keypair_file(&funded_payer, &funded_payer_keypair_file).unwrap();
-    //     let transaction = transfer(
-    //         &client,
-    //         sol_to_lamports(allocation_amount),
-    //         &alice,
-    //         &funded_payer.pubkey(),
-    //     )
-    //     .unwrap();
-    //     client
-    //         .send_and_confirm_transaction_with_spinner(&transaction)
-    //         .unwrap();
-    //
-    //     // Fully funded payers
-    //     let (allocations, mut args) = initialize_check_payer_balances_inputs(
-    //         sol_to_lamports(allocation_amount),
-    //         &funded_payer_keypair_file,
-    //         &sender_keypair_file,
-    //         None,
-    //     );
-    //     check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
-    //
-    //     // Unfunded sender
-    //     let unfunded_payer = Keypair::new();
-    //     let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
-    //     write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
-    //     args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(sources, vec![FundingSource::SystemAccount].into());
-    //         assert_eq!(amount, allocation_amount.to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    //
-    //     // Unfunded fee payer
-    //     args.sender_keypair = read_keypair_file(&sender_keypair_file).unwrap().into();
-    //     args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(sources, vec![FundingSource::FeePayer].into());
-    //         assert_eq!(amount, fees_in_sol.to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    // }
+    #[test]
+    fn test_check_payer_balances_distribute_tokens_separate_payers() {
+        let alice = Keypair::new();
+        let test_validator = TestValidator::with_custom_fees(
+            alice.pubkey(),
+            10_000,
+            None,
+            SocketAddrSpace::Unspecified,
+        );
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+
+        let fees = client
+            .get_fee_for_message(&one_signer_message(&client))
+            .unwrap();
+        let fees_in_sol = lamports_to_sol(fees);
+
+        let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
+        write_keypair_file(&alice, &sender_keypair_file).unwrap();
+
+        let allocation_amount = 1000.0;
+
+        let funded_payer = Keypair::new();
+        let funded_payer_keypair_file = tmp_file_path("keypair_file", &funded_payer.pubkey());
+        write_keypair_file(&funded_payer, &funded_payer_keypair_file).unwrap();
+        let transaction = transfer(
+            &client,
+            sol_to_lamports(allocation_amount),
+            &alice,
+            &funded_payer.pubkey(),
+        )
+        .unwrap();
+        client
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .unwrap();
+
+        // Fully funded payers
+        let (allocations, mut args) = initialize_check_payer_balances_inputs(
+            sol_to_lamports(allocation_amount),
+            &funded_payer_keypair_file,
+            &sender_keypair_file,
+            None,
+        );
+        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+
+        // Unfunded sender
+        let unfunded_payer = Keypair::new();
+        let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
+        write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
+        args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+        args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(sources, vec![FundingSource::SystemAccount].into());
+            assert_eq!(amount, allocation_amount.to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+
+        // Unfunded fee payer
+        args.sender_keypair = read_keypair_file(&sender_keypair_file).unwrap().into();
+        args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(sources, vec![FundingSource::FeePayer].into());
+            assert_eq!(amount, fees_in_sol.to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+    }
 
     fn initialize_stake_account(
         stake_account_amount: u64,
