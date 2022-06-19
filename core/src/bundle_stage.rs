@@ -399,6 +399,8 @@ impl BundleStage {
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
+            // Return error if executed and failed or didn't execute because of an unexpected reason
+            // (AlreadyProcessed, InsufficientFundsForFee, etc.)
             if let Err((e, _)) = TransactionExecutionResult::check_bundle_execution_results(
                 load_and_execute_transactions_output
                     .execution_results
@@ -411,6 +413,16 @@ impl BundleStage {
                     bank,
                 );
                 return Err(e);
+            }
+
+            // if none executed okay, nothing to record so try again
+            if !load_and_execute_transactions_output
+                .execution_results
+                .iter()
+                .any(|r| r.was_executed())
+            {
+                warn!("none of the transactions executed, trying again");
+                continue;
             }
 
             // *********************************************************************************
