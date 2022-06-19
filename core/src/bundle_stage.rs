@@ -416,11 +416,10 @@ impl BundleStage {
             }
 
             // if none executed okay, nothing to record so try again
-            if load_and_execute_transactions_output
+            if !load_and_execute_transactions_output
                 .execution_results
                 .iter()
-                .find(|r| r.was_executed())
-                .is_none()
+                .any(|r| r.was_executed())
             {
                 warn!("none of the transactions executed, trying again");
                 continue;
