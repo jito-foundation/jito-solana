@@ -28,7 +28,7 @@ impl BroadcastRun for BroadcastFakeShredsRun {
     fn run(
         &mut self,
         keypair: &Keypair,
-        blockstore: &Arc<Blockstore>,
+        blockstore: &Blockstore,
         receiver: &Receiver<WorkingBankEntry>,
         socket_sender: &Sender<(Arc<Vec<Shred>>, Option<BroadcastShredBatchInfo>)>,
         blockstore_sender: &Sender<(Arc<Vec<Shred>>, Option<BroadcastShredBatchInfo>)>,
@@ -120,10 +120,10 @@ impl BroadcastRun for BroadcastFakeShredsRun {
     }
     fn transmit(
         &mut self,
-        receiver: &Arc<Mutex<TransmitReceiver>>,
+        receiver: &Mutex<TransmitReceiver>,
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
-        _bank_forks: &Arc<RwLock<BankForks>>,
+        _bank_forks: &RwLock<BankForks>,
         _shred_receiver_addr: Option<SocketAddr>,
     ) -> Result<()> {
         for (data_shreds, batch_info) in receiver.lock().unwrap().iter() {
@@ -140,11 +140,7 @@ impl BroadcastRun for BroadcastFakeShredsRun {
         }
         Ok(())
     }
-    fn record(
-        &mut self,
-        receiver: &Arc<Mutex<RecordReceiver>>,
-        blockstore: &Arc<Blockstore>,
-    ) -> Result<()> {
+    fn record(&mut self, receiver: &Mutex<RecordReceiver>, blockstore: &Blockstore) -> Result<()> {
         for (data_shreds, _) in receiver.lock().unwrap().iter() {
             blockstore.insert_shreds(data_shreds.to_vec(), None, true)?;
         }

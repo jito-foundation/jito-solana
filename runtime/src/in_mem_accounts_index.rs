@@ -21,7 +21,7 @@ use {
         ops::{Bound, RangeBounds, RangeInclusive},
         sync::{
             atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
-            Arc, RwLock, RwLockWriteGuard,
+            Arc, Mutex, RwLock, RwLockWriteGuard,
         },
     },
 };
@@ -30,8 +30,7 @@ type CacheRangesHeld = RwLock<Vec<RangeInclusive<Pubkey>>>;
 
 type InMemMap<T> = HashMap<Pubkey, AccountMapEntry<T>>;
 
-#[allow(dead_code)] // temporary during staging
-                    // one instance of this represents one bin of the accounts index.
+// one instance of this represents one bin of the accounts index.
 pub struct InMemAccountsIndex<T: IndexValue> {
     last_age_flushed: AtomicU8,
 
@@ -50,6 +49,9 @@ pub struct InMemAccountsIndex<T: IndexValue> {
     stop_evictions: AtomicU64,
     // set to true while this bin is being actively flushed
     flushing_active: AtomicBool,
+
+    /// info to streamline initial index generation
+    startup_info: Mutex<StartupInfo<T>>,
 }
 
 impl<T: IndexValue> Debug for InMemAccountsIndex<T> {
@@ -64,6 +66,14 @@ pub enum InsertNewEntryResults {
     ExistedNewEntryNonZeroLamports,
 }
 
+#[derive(Default, Debug)]
+struct StartupInfo<T: IndexValue> {
+    /// entries to add next time we are flushing to disk
+    insert: Vec<(Slot, Pubkey, T)>,
+    /// pubkeys that were found to have duplicate index entries
+    duplicates: Vec<(Slot, Pubkey)>,
+}
+
 /// result from scanning in-mem index during flush
 struct FlushScanResult<T> {
     /// pubkeys whose age indicates they may be evicted now, pending further checks.
@@ -72,7 +82,6 @@ struct FlushScanResult<T> {
     evictions_random: Vec<(Pubkey, Option<AccountMapEntry<T>>)>,
 }
 
-#[allow(dead_code)] // temporary during staging
 impl<T: IndexValue> InMemAccountsIndex<T> {
     pub fn new(storage: &Arc<BucketMapHolder<T>>, bin: usize) -> Self {
         Self {
@@ -90,6 +99,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
             flushing_active: AtomicBool::default(),
             // initialize this to max, to make it clear we have not flushed at age 0, the starting age
             last_age_flushed: AtomicU8::new(Age::MAX),
+            startup_info: Mutex::default(),
         }
     }
 
@@ -101,9 +111,9 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
     }
 
     /// called after flush scans this bucket at the current age
-    fn set_has_aged(&self, age: Age) {
+    fn set_has_aged(&self, age: Age, can_advance_age: bool) {
         self.last_age_flushed.store(age, Ordering::Release);
-        self.storage.bucket_flushed_at_current_age();
+        self.storage.bucket_flushed_at_current_age(can_advance_age);
     }
 
     fn last_age_flushed(&self) -> Age {
@@ -579,6 +589,18 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         self.stats().count_in_bucket(self.bin)
     }
 
+    /// Queue up these insertions for when the flush thread is dealing with this bin.
+    /// This is very fast and requires no lookups or disk access.
+    pub fn startup_insert_only(&self, slot: Slot, items: impl Iterator<Item = (Pubkey, T)>) {
+        assert!(self.storage.get_startup());
+        assert!(self.bucket.is_some());
+
+        let insert = &mut self.startup_info.lock().unwrap().insert;
+        items
+            .into_iter()
+            .for_each(|(k, v)| insert.push((slot, k, v)));
+    }
+
     pub fn insert_new_entry_if_missing_with_lock(
         &self,
         pubkey: Pubkey,
@@ -878,9 +900,9 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         self.stop_evictions_changes.load(Ordering::Acquire)
     }
 
-    pub(crate) fn flush(&self) {
+    pub(crate) fn flush(&self, can_advance_age: bool) {
         if let Some(flush_guard) = FlushGuard::lock(&self.flushing_active) {
-            self.flush_internal(&flush_guard)
+            self.flush_internal(&flush_guard, can_advance_age)
         }
     }
 
@@ -984,8 +1006,76 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
         }
     }
 
+    fn write_startup_info_to_disk(&self) {
+        let mut insert = vec![];
+        {
+            let mut lock = self.startup_info.lock().unwrap();
+            std::mem::swap(&mut insert, &mut lock.insert);
+        }
+        if insert.is_empty() {
+            // nothing to insert for this bin
+            return;
+        }
+
+        // during startup, nothing should be in the in-mem map
+        let map_internal = self.map_internal.read().unwrap();
+        assert!(
+            map_internal.is_empty(),
+            "len: {}, first: {:?}",
+            map_internal.len(),
+            map_internal.iter().take(1).collect::<Vec<_>>()
+        );
+        drop(map_internal);
+
+        let mut duplicates = vec![];
+
+        // merge all items into the disk index now
+        let disk = self.bucket.as_ref().unwrap();
+        let mut duplicate = vec![];
+        insert.into_iter().for_each(|(slot, k, v)| {
+            let entry = (slot, v);
+            let new_ref_count = if v.is_cached() { 0 } else { 1 };
+            disk.update(&k, |current| {
+                match current {
+                    Some((current_slot_list, mut ref_count)) => {
+                        // merge this in, mark as conflict
+                        let mut slot_list = Vec::with_capacity(current_slot_list.len() + 1);
+                        slot_list.extend_from_slice(current_slot_list);
+                        slot_list.push(entry); // will never be from the same slot that already exists in the list
+                        ref_count += new_ref_count;
+                        duplicate.push((slot, k));
+                        Some((slot_list, ref_count))
+                    }
+                    None => {
+                        // not on disk, insert it
+                        Some((vec![entry], new_ref_count))
+                    }
+                }
+            });
+        });
+        self.startup_info
+            .lock()
+            .unwrap()
+            .duplicates
+            .append(&mut duplicates);
+    }
+
+    /// pull out all duplicate pubkeys from 'startup_info'
+    /// duplicate pubkeys have a slot list with len > 1
+    /// These were collected for this bin when we did batch inserts in the bg flush threads.
+    pub fn retrieve_duplicate_keys_from_startup(&self) -> Vec<(Slot, Pubkey)> {
+        let mut write = self.startup_info.lock().unwrap();
+        // in order to return accurate and complete duplicates, we must have nothing left remaining to insert
+        assert!(write.insert.is_empty());
+
+        let write = &mut write.duplicates;
+        let mut duplicates = vec![];
+        std::mem::swap(&mut duplicates, write);
+        duplicates
+    }
+
     /// synchronize the in-mem index with the disk index
-    fn flush_internal(&self, flush_guard: &FlushGuard) {
+    fn flush_internal(&self, flush_guard: &FlushGuard, can_advance_age: bool) {
         let current_age = self.storage.current_age();
         let iterate_for_age = self.get_should_age(current_age);
         let startup = self.storage.get_startup();
@@ -1000,6 +1090,10 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
             mut evictions_age_possible,
             mut evictions_random,
         } = self.flush_scan(current_age, startup, flush_guard);
+
+        if startup {
+            self.write_startup_info_to_disk();
+        }
 
         // write to disk outside in-mem map read lock
         {
@@ -1095,7 +1189,7 @@ impl<T: IndexValue> InMemAccountsIndex<T> {
             if iterate_for_age {
                 // completed iteration of the buckets at the current age
                 assert_eq!(current_age, self.storage.current_age());
-                self.set_has_aged(current_age);
+                self.set_has_aged(current_age, can_advance_age);
             }
         }
     }
@@ -1557,13 +1651,13 @@ mod tests {
         let test = new_for_test::<u64>();
         assert!(test.get_should_age(test.storage.current_age()));
         assert_eq!(test.storage.count_buckets_flushed(), 0);
-        test.set_has_aged(0);
+        test.set_has_aged(0, true);
         assert!(!test.get_should_age(test.storage.current_age()));
         assert_eq!(test.storage.count_buckets_flushed(), 1);
         // simulate rest of buckets aging
         for _ in 1..BINS_FOR_TESTING {
             assert!(!test.storage.all_buckets_flushed_at_current_age());
-            test.storage.bucket_flushed_at_current_age();
+            test.storage.bucket_flushed_at_current_age(true);
         }
         assert!(test.storage.all_buckets_flushed_at_current_age());
         // advance age
