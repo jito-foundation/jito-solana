@@ -203,16 +203,16 @@ EOF
              ^programs/ \
              ^sdk/ \
       ; then
-#        annotate --style warning --context test-stable-perf \
-#                      "test-stable-perf is currently disabled (LB)"
-    cat >> "$output_file" <<"EOF"
-  - command: "ci/test-stable-perf.sh"
-    name: "stable-perf"
-    timeout_in_minutes: 35
-    artifact_paths: "log-*.txt"
-    agents:
-      - "queue=sol-private"
-EOF
+        annotate --style warning --context test-stable-perf  \
+                              "test-stable-perf is currently disabled because it requires GPUs (LB)"
+#    cat >> "$output_file" <<"EOF"
+#  - command: "ci/test-stable-perf.sh"
+#    name: "stable-perf"
+#    timeout_in_minutes: 35
+#    artifact_paths: "log-*.txt"
+#    agents:
+#      - "queue=sol-private"
+#EOF
   else
     annotate --style info --context test-stable-perf \
       "Stable-perf skipped as no relevant files were modified"
