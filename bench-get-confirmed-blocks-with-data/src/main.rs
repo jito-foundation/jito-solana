@@ -17,10 +17,14 @@ fn main() {
     let num_tasks = 128;
     let lowest_slot: Slot = 1_000_000;
     let highest_slot: Slot = 135_000_000;
-    let task_unit = (highest_slot - lowest_slot) / num_tasks;
+    let task_unit = (highest_slot.checked_sub(lowest_slot).unwrap())
+        .checked_div(num_tasks)
+        .unwrap();
+    let test_duration_s = 4_u64.checked_mul(60).unwrap().checked_mul(60).unwrap();
+
     let log_duration = Duration::from_secs(1);
 
-    let test_duration = Duration::from_secs(4 * 60 * 60);
+    let test_duration = Duration::from_secs(test_duration_s);
 
     for chunk_size in num_blocks_to_fetch {
         info!(
@@ -28,7 +32,7 @@ fn main() {
             chunk_size
         );
 
-        let total_blocks_read = Arc::new(Mutex::new(0));
+        let total_blocks_read = Arc::new(Mutex::new(0_usize));
 
         let thread = {
             let total_blocks_read = total_blocks_read.clone();
@@ -42,7 +46,8 @@ fn main() {
                     let elapsed = last_update_time.elapsed();
                     if elapsed > log_duration {
                         let total_blocks_read = *total_blocks_read.lock().unwrap();
-                        let blocks_received = total_blocks_read - last_update_count;
+                        let blocks_received =
+                            total_blocks_read.checked_sub(last_update_count).unwrap();
                         let recent_block_rate = blocks_received as f64 / elapsed.as_secs_f64();
                         let total_block_rate =
                             total_blocks_read as f64 / test_start.elapsed().as_secs_f64();
@@ -77,8 +82,10 @@ fn main() {
                                 .expect("connected to bigtable");
 
                         let start = Instant::now();
-                        let mut starting_slot = (task_unit * i) + lowest_slot;
-                        let stopping_slot = starting_slot + task_unit;
+                        let mut starting_slot = (task_unit.checked_mul(i).unwrap())
+                            .checked_add(lowest_slot)
+                            .unwrap();
+                        let stopping_slot = starting_slot.checked_add(task_unit).unwrap();
 
                         while start.elapsed() < test_duration {
                             let slot_requests: Vec<_> = (starting_slot
@@ -90,7 +97,11 @@ fn main() {
                                 .expect("got blocks")
                                 .collect();
                             starting_slot = slots_blocks.last().unwrap().0;
-                            *total_blocks_read.lock().unwrap() += slots_blocks.len();
+                            {
+                                let mut total_blocks_read = total_blocks_read.lock().unwrap();
+                                *total_blocks_read =
+                                    total_blocks_read.checked_add(slots_blocks.len()).unwrap();
+                            }
                             if starting_slot >= stopping_slot {
                                 info!("work here is done!!");
                                 break;
