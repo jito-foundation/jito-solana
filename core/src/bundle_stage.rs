@@ -957,3 +957,182 @@ impl BundleStage {
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        crossbeam_channel::{unbounded, Receiver},
+        solana_address_lookup_table_program::state::{AddressLookupTable, LookupTableMeta},
+        solana_entry::entry::{next_entry, next_versioned_entry, EntrySlice},
+        solana_gossip::{cluster_info::Node, contact_info::ContactInfo},
+        solana_ledger::{
+            blockstore::{entries_to_test_shreds, Blockstore},
+            genesis_utils::{create_genesis_config, GenesisConfigInfo},
+            get_tmp_ledger_path_auto_delete,
+            leader_schedule_cache::LeaderScheduleCache,
+        },
+        solana_perf::packet::{to_packet_batches, PacketFlags},
+        solana_poh::{
+            poh_recorder::{create_test_recorder, RecordReceiver, WorkingBankEntry},
+            poh_service::PohService,
+        },
+        solana_program_runtime::timings::ProgramTiming,
+        solana_rpc::transaction_status_service::TransactionStatusService,
+        solana_sdk::{
+            account::AccountSharedData,
+            hash::Hash,
+            instruction::InstructionError,
+            message::{
+                v0::{self, MessageAddressTableLookup},
+                MessageHeader, VersionedMessage,
+            },
+            poh_config::PohConfig,
+            signature::{Keypair, Signer},
+            system_transaction,
+            transaction::{
+                MessageHash, SimpleAddressLoader, Transaction, TransactionError,
+                VersionedTransaction,
+            },
+        },
+        solana_streamer::{recvmmsg::recv_mmsg, socket::SocketAddrSpace},
+        solana_transaction_status::{TransactionStatusMeta, VersionedTransactionWithStatusMeta},
+        solana_vote_program::vote_transaction,
+        std::{
+            borrow::Cow,
+            collections::HashSet,
+            path::Path,
+            sync::atomic::{AtomicBool, Ordering},
+            thread::sleep,
+        },
+        unprocessed_packet_batches::DeserializedPacket,
+    };
+
+    #[test]
+    fn test_bundle_stage_happy_path() {
+        solana_logger::setup();
+        // In this attack we'll demonstrate that a verifier can interpret the ledger
+        // differently if either the server doesn't signal the ledger to add an
+        // Entry OR if the verifier tries to parallelize across multiple Entries.
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(2); // TODO: copy from banking_stage, 2 == starting balance?
+        let (verified_sender, verified_receiver) = unbounded();
+
+        // Process a batch that includes a transaction that receives two lamports.
+        let alice = Keypair::new();
+        let tx =
+            system_transaction::transfer(&mint_keypair, &alice.pubkey(), 2, genesis_config.hash());
+
+        let packet_batches = to_packet_batches(&[tx], 1);
+        let packet_batches = packet_batches
+            .into_iter()
+            .map(|batch| (batch, vec![1u8]))
+            .collect();
+        let packet_batches = convert_from_old_verified(packet_batches); // TODO: copy from banking stage
+        verified_sender.send((packet_batches, None)).unwrap();
+
+        // Process a second batch that uses the same from account, so conflicts with above TX
+        let tx =
+            system_transaction::transfer(&mint_keypair, &alice.pubkey(), 1, genesis_config.hash());
+        let packet_batches = to_packet_batches(&[tx], 1);
+        let packet_batches = packet_batches
+            .into_iter()
+            .map(|batch| (batch, vec![1u8]))
+            .collect();
+        let packet_batches = convert_from_old_verified(packet_batches);
+        verified_sender.send((packet_batches, None)).unwrap();
+
+        // NOTE: at this point the verified_sender channel has two tx, but has not executed anything
+
+        let (vote_sender, vote_receiver) = unbounded();
+        let (tpu_vote_sender, tpu_vote_receiver) = unbounded();
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        {
+            let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
+
+            let entry_receiver = {
+                // start a banking_stage to eat verified receiver
+                let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+                let blockstore = Arc::new(
+                    Blockstore::open(ledger_path.path())
+                        .expect("Expected to be able to open database ledger"),
+                );
+                let poh_config = PohConfig {
+                    // limit tick count to avoid clearing working_bank at
+                    // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
+                    target_tick_count: Some(bank.max_tick_height() - 1),
+                    ..PohConfig::default()
+                };
+                let (exit, poh_recorder, poh_service, entry_receiver) =
+                    create_test_recorder(&bank, &blockstore, Some(poh_config), None); // (2) (7)
+                let cluster_info = new_test_cluster_info(Node::new_localhost().info);
+                let cluster_info = Arc::new(cluster_info); // (1)
+                let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+                // TODO: bundle stage needs these params
+//                cluster_info: &Arc<ClusterInfo>, (1)
+//                poh_recorder: &Arc<Mutex<PohRecorder>>, (2)
+//                transaction_status_sender: Option<TransactionStatusSender>, (3)
+//                gossip_vote_sender: ReplayVoteSender, (4)
+//                cost_model: Arc<RwLock<CostModel>>, (5)
+//                bundle_receiver: Receiver<Vec<Bundle>>, (6)
+//                exit: Arc<AtomicBool>, (7)
+//                tip_manager: Arc<Mutex<TipManager>>, (8)
+                let _banking_stage = BundleStage::new(
+                    &cluster_info, // (1)
+                    &poh_recorder, // (2)
+                    verified_receiver, // analogous to (6)
+                    tpu_vote_receiver,
+                    vote_receiver,
+                    3,
+                    None,JJ
+                    gossip_vote_sender, // (4)
+                    Arc::new(RwLock::new(CostModel::default())), // (5)
+                    Arc::new(ConnectionCache::default()),
+                    tip_manager,
+                );
+
+                // wait for banking_stage to eat the packets
+                while bank.get_balance(&alice.pubkey()) < 1 {
+                    sleep(Duration::from_millis(10));
+                }
+                exit.store(true, Ordering::Relaxed);
+                poh_service.join().unwrap();
+                entry_receiver // we return the entry_receiver here so we can drop everything else
+                // and have the banking_stage exit fully after record
+            };
+            drop(verified_sender);
+            drop(vote_sender);
+            drop(tpu_vote_sender);
+
+            // consume the entire entry_receiver, feed it into a new bank
+            // check that the balance is what we expect.
+            let entries: Vec<_> = entry_receiver
+                .iter()
+                .flat_map(
+                    |WorkingBankEntry {
+                         bank: _,
+                         entries_ticks,
+                     }| entries_ticks.into_iter().map(|e| e.0),
+                )
+                .collect();
+
+            // create a new bank to replay entries (similar to how shreds would propagate and get confirmed on other
+            // validators?
+            let bank = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+            for entry in entries {
+                bank.process_entry_transactions(entry.transactions)
+                    .iter()
+                    .for_each(|x| assert_eq!(*x, Ok(())));
+            }
+
+            // Assert the user doesn't hold three lamports. If the stage only outputs one
+            // entry, then one of the transactions will be rejected, because it drives
+            // the account balance below zero before the credit is added.
+            assert!(bank.get_balance(&alice.pubkey()) != 3);
+        }
+        Blockstore::destroy(ledger_path.path()).unwrap();
+    }
+}
