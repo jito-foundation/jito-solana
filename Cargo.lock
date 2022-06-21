@@ -453,6 +453,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bigdecimal"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aaf33151a6429fe9211d1b276eafdf70cdff28b071e76c0b0e1503221ea3744"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6471,6 +6482,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-tip-distributor"
+version = "1.11.0"
+dependencies = [
+ "anchor-lang",
+ "bigdecimal",
+ "clap 3.2.6",
+ "env_logger",
+ "im",
+ "itertools",
+ "log",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-genesis-utils",
+ "solana-ledger",
+ "solana-merkle-tree",
+ "solana-runtime",
+ "solana-sdk 1.11.0",
+ "solana-stake-program",
+ "thiserror",
+ "tip-distribution",
+ "tokio",
+]
+
+[[package]]
 name = "solana-tokens"
 version = "1.11.2"
 dependencies = [
@@ -7206,6 +7243,13 @@ name = "tinyvec_macros"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
+
+[[package]]
+name = "tip-distribution"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
 
 [[package]]
 name = "tip-payment"

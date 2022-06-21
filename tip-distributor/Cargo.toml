@@ -1,0 +1,36 @@
+[package]
+name = "solana-tip-distributor"
+version = "1.11.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Collection of binaries used to distribute MEV rewards to delegators and validators."
+
+[dependencies]
+anchor-lang = { path = "../anchor/lang" }
+clap = { version = "3.2.5", features = ["derive", "env"] }
+env_logger = "0.9.0"
+itertools = "0.10.3"
+bigdecimal = "0.3.0"
+im = "15.1.0"
+log = "0.4.17"
+num-traits = "0.2.15"
+serde = "1.0.137"
+serde_json = "1.0.81"
+solana-client = { path = "../client", version = "=1.11.0" }
+solana-genesis-utils = { path = "../genesis-utils", version = "=1.11.0" }
+solana-ledger = { path = "../ledger", version = "=1.11.0" }
+solana-merkle-tree = { path = "../merkle-tree", version = "=1.11.0" }
+solana-stake-program = { path = "../programs/stake", version = "=1.11.0" }
+solana-runtime = { path = "../runtime", version = "=1.11.0" }
+solana-sdk = { path = "../sdk", version = "=1.11.0" }
+thiserror = "1.0.31"
+tip-distribution = { path = "../jito-programs/tip-payment/programs/tip-distribution", features = ["no-entrypoint"] }
+tokio = { version = "1.12.0", features = ["rt-multi-thread", "macros", "sync", "time", "full"] }
+
+[[bin]]
+name = "stake-meta-generator"
+path = "src/bin/stake-meta-generator.rs"
+
+[[bin]]
+name = "merkle-root-generator"
+path = "src/bin/merkle-root-generator.rs"
