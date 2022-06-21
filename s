@@ -13,4 +13,4 @@ echo "Syncing to host: $HOST"
 
 # sync + build
 rsync -avh --delete --exclude .git --exclude target "$SCRIPT_DIR" "$HOST":~/
-ssh $HOST "source ~/.profile && cd mev-solana-priv && cargo b --release"
+#ssh $HOST "source ~/.profile && cd mev-solana-priv && cargo b --release"
