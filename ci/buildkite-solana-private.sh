@@ -251,9 +251,9 @@ EOF
              ^ci/test-stable.sh \
              ^sdk/ \
       ; then
-#        annotate --style warning --context test-wasm \
-#                              "test-wasm is currently disabled (LB)"
-    command_step wasm ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-wasm.sh" 20
+    annotate --style warning --context test-wasm  \
+                          "test-wasm is currently disabled because it times out (LB)"
+#    command_step wasm ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/test-wasm.sh" 20
   else
     annotate --style info --context test-wasm \
       "wasm skipped as no relevant files were modified"
