@@ -70,8 +70,8 @@ pub struct Tpu {
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
-    tpu_quic_t: thread::JoinHandle<()>,
-    tpu_forwards_quic_t: thread::JoinHandle<()>,
+    tpu_quic_t: Option<thread::JoinHandle<()>>,
+    tpu_forwards_quic_t: Option<thread::JoinHandle<()>>,
     find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     vote_find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     staked_nodes_updater_service: StakedNodesUpdaterService,
@@ -104,6 +104,7 @@ impl Tpu {
         cost_model: &Arc<RwLock<CostModel>>,
         connection_cache: &Arc<ConnectionCache>,
         keypair: &Keypair,
+        enable_quic_servers: bool,
         validator_interface_address: String,
         tip_program_pubkey: Pubkey,
         shred_receiver_address: Option<SocketAddr>,
@@ -165,33 +166,37 @@ impl Tpu {
         let (verified_sender, verified_receiver) = unbounded();
 
         let stats = Arc::new(StreamStats::default());
-        let tpu_quic_t = spawn_server(
-            transactions_quic_sockets,
-            keypair,
-            cluster_info.my_contact_info().tpu.ip(),
-            packet_intercept_sender,
-            exit.clone(),
-            MAX_QUIC_CONNECTIONS_PER_IP,
-            staked_nodes.clone(),
-            MAX_STAKED_CONNECTIONS,
-            MAX_UNSTAKED_CONNECTIONS,
-            stats.clone(),
-        )
-        .unwrap();
+        let tpu_quic_t = enable_quic_servers.then(|| {
+            spawn_server(
+                transactions_quic_sockets,
+                keypair,
+                cluster_info.my_contact_info().tpu.ip(),
+                packet_intercept_sender,
+                exit.clone(),
+                MAX_QUIC_CONNECTIONS_PER_IP,
+                staked_nodes.clone(),
+                MAX_STAKED_CONNECTIONS,
+                MAX_UNSTAKED_CONNECTIONS,
+                stats.clone(),
+            )
+            .unwrap()
+        });
 
-        let tpu_forwards_quic_t = spawn_server(
-            transactions_forwards_quic_sockets,
-            keypair,
-            cluster_info.my_contact_info().tpu_forwards.ip(),
-            forwarded_packet_sender,
-            exit.clone(),
-            MAX_QUIC_CONNECTIONS_PER_IP,
-            staked_nodes,
-            MAX_STAKED_CONNECTIONS.saturating_add(MAX_UNSTAKED_CONNECTIONS),
-            0, // Prevent unstaked nodes from forwarding transactions
-            stats,
-        )
-        .unwrap();
+        let tpu_forwards_quic_t = enable_quic_servers.then(|| {
+            spawn_server(
+                transactions_forwards_quic_sockets,
+                keypair,
+                cluster_info.my_contact_info().tpu_forwards.ip(),
+                forwarded_packet_sender,
+                exit.clone(),
+                MAX_QUIC_CONNECTIONS_PER_IP,
+                staked_nodes,
+                MAX_STAKED_CONNECTIONS.saturating_add(MAX_UNSTAKED_CONNECTIONS),
+                0, // Prevent unstaked nodes from forwarding transactions
+                stats,
+            )
+            .unwrap()
+        });
 
         let sigverify_stage = {
             let verifier = TransactionSigVerifier::new(verified_sender.clone());
@@ -271,9 +276,9 @@ impl Tpu {
             cluster_info.clone(),
             entry_receiver,
             retransmit_slots_receiver,
-            exit,
-            blockstore,
-            &bank_forks,
+            exit.clone(),
+            blockstore.clone(),
+            bank_forks,
             shred_version,
             shred_receiver_address,
         );
@@ -324,8 +329,12 @@ impl Tpu {
             self.mev_stage.join(),
             self.bundle_stage.join(),
         ];
-        self.tpu_quic_t.join()?;
-        self.tpu_forwards_quic_t.join()?;
+        if let Some(tpu_quic_t) = self.tpu_quic_t {
+            tpu_quic_t.join()?;
+        }
+        if let Some(tpu_forwards_quic_t) = self.tpu_forwards_quic_t {
+            tpu_forwards_quic_t.join()?;
+        }
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
             result?;

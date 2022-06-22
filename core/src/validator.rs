@@ -90,7 +90,7 @@ use {
         clock::Slot,
         epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
         exit::Exit,
-        genesis_config::GenesisConfig,
+        genesis_config::{ClusterType, GenesisConfig},
         hash::Hash,
         pubkey::Pubkey,
         shred_version::compute_shred_version,
@@ -176,6 +176,7 @@ pub struct ValidatorConfig {
     pub wait_to_vote_slot: Option<Slot>,
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
+    pub enable_quic_servers: bool,
     pub validator_interface_address: String,
     pub tip_program_pubkey: Option<Pubkey>,
     pub shred_receiver_address: Option<SocketAddr>,
@@ -240,6 +241,7 @@ impl Default for ValidatorConfig {
             wait_to_vote_slot: None,
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
+            enable_quic_servers: false,
             validator_interface_address: String::new(),
             tip_program_pubkey: None,
             shred_receiver_address: None,
@@ -707,10 +709,12 @@ impl Validator {
             };
 
         let mut block_commitment_cache = BlockCommitmentCache::default();
+        let bank_forks_guard = bank_forks.read().unwrap();
         block_commitment_cache.initialize_slots(
-            bank_forks.read().unwrap().working_bank().slot(),
-            bank_forks.read().unwrap().root(),
+            bank_forks_guard.working_bank().slot(),
+            bank_forks_guard.root(),
         );
+        drop(bank_forks_guard);
         let block_commitment_cache = Arc::new(RwLock::new(block_commitment_cache));
 
         let optimistically_confirmed_bank =
@@ -991,6 +995,18 @@ impl Validator {
 
         let tip_program_pubkey = config.tip_program_pubkey.unwrap_or_else(Pubkey::new_unique);
 
+        let enable_quic_servers = if genesis_config.cluster_type == ClusterType::MainnetBeta {
+            config.enable_quic_servers
+        } else {
+            if config.enable_quic_servers {
+                warn!(
+                    "ignoring --enable-quic-servers. QUIC is always enabled for cluster type: {:?}",
+                    genesis_config.cluster_type
+                );
+            }
+            true
+        };
+
         let tpu = Tpu::new(
             &cluster_info,
             &poh_recorder,
@@ -1022,6 +1038,7 @@ impl Validator {
             &cost_model,
             &connection_cache,
             &identity_keypair,
+            enable_quic_servers,
             config.validator_interface_address.clone(),
             tip_program_pubkey,
             config.shred_receiver_address,

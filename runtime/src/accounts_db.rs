@@ -8084,6 +8084,7 @@ impl AccountsDb {
         limit_load_slot_count_from_snapshot: Option<usize>,
         verify: bool,
         genesis_config: &GenesisConfig,
+        accounts_db_skip_shrink: bool,
     ) -> IndexGenerationInfo {
         let mut slots = self.storage.all_slots();
         #[allow(clippy::stable_sort_primitive)]
@@ -8216,6 +8217,30 @@ impl AccountsDb {
                 })
                 .sum();
 
+            let mut index_flush_us = 0;
+            if pass == 0 {
+                // tell accounts index we are done adding the initial accounts at startup
+                let mut m = Measure::start("accounts_index_idle_us");
+                self.accounts_index.set_startup(Startup::Normal);
+                m.stop();
+                index_flush_us = m.as_us();
+
+                // this has to happen before pubkeys_to_duplicate_accounts_data_len below
+                // get duplicate keys from acct idx. We have to wait until we've finished flushing.
+                for (slot, key) in self
+                    .accounts_index
+                    .retrieve_duplicate_keys_from_startup()
+                    .into_iter()
+                    .flatten()
+                {
+                    match self.uncleaned_pubkeys.entry(slot) {
+                        Occupied(mut occupied) => occupied.get_mut().push(key),
+                        Vacant(vacant) => {
+                            vacant.insert(vec![key]);
+                        }
+                    }
+                }
+            }
             // subtract data.len() from accounts_data_len for all old accounts that are in the index twice
             let mut accounts_data_len_dedup_timer =
                 Measure::start("handle accounts data len duplicates");
@@ -8242,15 +8267,6 @@ impl AccountsDb {
 
             let storage_info_timings = storage_info_timings.into_inner().unwrap();
 
-            let mut index_flush_us = 0;
-            if pass == 0 {
-                // tell accounts index we are done adding the initial accounts at startup
-                let mut m = Measure::start("accounts_index_idle_us");
-                self.accounts_index.set_startup(Startup::Normal);
-                m.stop();
-                index_flush_us = m.as_us();
-            }
-
             let mut timings = GenerateIndexTimings {
                 index_flush_us,
                 scan_time,
@@ -8271,7 +8287,12 @@ impl AccountsDb {
             if pass == 0 {
                 // Need to add these last, otherwise older updates will be cleaned
                 for slot in &slots {
-                    self.accounts_index.add_root(*slot, false);
+                    // passing 'false' to 'add_root' causes all slots to be added to 'uncleaned_slots'
+                    // passing 'true' to 'add_root' does NOT add all slots to 'uncleaned_slots'
+                    // if we are skipping shrink, this potentially massive amount of work is never processed at startup, when all threads can be used.
+                    // This causes failures such as oom during the first bg clean, which is expecting to work in 'normal' operating circumstances.
+                    // So, don't add all slots to 'uncleaned_slots' here since by requesting to skip clean and shrink, caller is expecting the starting snapshot to be reasonable.
+                    self.accounts_index.add_root(*slot, accounts_db_skip_shrink);
                 }
 
                 self.set_storage_count_and_alive_bytes(storage_info, &mut timings);
