@@ -8,7 +8,7 @@ use std::cmp::min;
 
 const INITIAL_LAST_WAIT: u64 = 0;
 const INITIAL_CUR_WAIT: u64 = 100;
-const MAX_WAIT: u64 = 60 * 1000; // One minute
+const MAX_WAIT: u64 = 1000;
 
 #[derive(Copy, Clone)]
 pub struct BackoffStrategy {

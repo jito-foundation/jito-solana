@@ -3,6 +3,7 @@
 //! can do its processing in parallel with signature verification on the GPU.
 use {
     crate::{
+        bundle_account_locker::BundleAccountLocker,
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
         leader_slot_banking_stage_timing_metrics::{
             LeaderExecuteAndCommitTimings, RecordTransactionsTimings,
@@ -417,7 +418,8 @@ impl BankingStage {
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
         connection_cache: Arc<ConnectionCache>,
-        tip_manager: Arc<Mutex<TipManager>>,
+        tip_manager: TipManager,
+        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) -> Self {
         Self::new_num_threads(
             cluster_info,
@@ -431,6 +433,7 @@ impl BankingStage {
             cost_model,
             connection_cache,
             tip_manager,
+            bundle_account_locker,
         )
     }
 
@@ -446,7 +449,8 @@ impl BankingStage {
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
         connection_cache: Arc<ConnectionCache>,
-        tip_manager: Arc<Mutex<TipManager>>,
+        tip_manager: TipManager,
+        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -480,6 +484,7 @@ impl BankingStage {
                 let cost_model = cost_model.clone();
                 let connection_cache = connection_cache.clone();
                 let tip_manager = tip_manager.clone();
+                let bundle_account_locker = bundle_account_locker.clone();
 
                 Builder::new()
                     .name(format!("solana-banking-stage-tx-{}", i))
@@ -498,6 +503,7 @@ impl BankingStage {
                             cost_model,
                             connection_cache,
                             tip_manager,
+                            bundle_account_locker,
                         );
                     })
                     .unwrap()
@@ -653,6 +659,7 @@ impl BankingStage {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         num_packets_to_process_per_iteration: usize,
         tip_program: &Pubkey,
+        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) {
         let mut rebuffered_packet_count = 0;
         let mut consumed_buffered_packets_count = 0;
@@ -701,6 +708,7 @@ impl BankingStage {
                                     qos_service,
                                     slot_metrics_tracker,
                                     tip_program,
+                                bundle_account_locker
                                 ),
                             "process_packets_transactions",
                         );
@@ -925,6 +933,7 @@ impl BankingStage {
         connection_cache: &ConnectionCache,
         tracer_packet_stats: &mut TracerPacketStats,
         tip_program: &Pubkey,
+        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
             {
@@ -985,6 +994,7 @@ impl BankingStage {
                         slot_metrics_tracker,
                         UNPROCESSED_BUFFER_STEP_SIZE,
                         tip_program,
+                        bundle_account_locker
                     ),
                     "consume_buffered_packets",
                 );
@@ -1113,7 +1123,8 @@ impl BankingStage {
         data_budget: &DataBudget,
         cost_model: Arc<RwLock<CostModel>>,
         connection_cache: Arc<ConnectionCache>,
-        tip_manager: Arc<Mutex<TipManager>>,
+        tip_manager: TipManager,
+        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let mut buffered_packet_batches = UnprocessedPacketBatches::with_capacity(batch_limit);
@@ -1124,7 +1135,7 @@ impl BankingStage {
         let mut slot_metrics_tracker = LeaderSlotMetricsTracker::new(id);
         let mut last_metrics_update = Instant::now();
 
-        let tip_program = tip_manager.lock().unwrap().program_id();
+        let tip_program = tip_manager.program_id();
         loop {
             let my_pubkey = cluster_info.id();
             if !buffered_packet_batches.is_empty()
@@ -1147,6 +1158,7 @@ impl BankingStage {
                         &connection_cache,
                         &mut tracer_packet_stats,
                         &tip_program,
+                        &bundle_account_locker
                     ),
                     "process_buffered_packets",
                 );
@@ -1480,6 +1492,7 @@ impl BankingStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
+        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionBatchOutput {
         let mut cost_model_time = Measure::start("cost_model");
 
@@ -1500,9 +1513,18 @@ impl BankingStage {
 
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
-        // same account state
+        // same account state.
+        // BundleStage prevents locking ALL accounts in ALL transactions in a bundle mid-execution
+        // to ensure that avoid race conditions
         let mut lock_time = Measure::start("lock_time");
-        let batch = bank.prepare_sanitized_batch_with_results(txs, transactions_qos_results.iter());
+        let bundle_account_locker_l = bundle_account_locker.lock().unwrap();
+        let batch = bank.prepare_sanitized_batch_with_results(
+            txs,
+            transactions_qos_results.iter(),
+            &bundle_account_locker_l.read_locks(),
+            &bundle_account_locker_l.write_locks(),
+        );
+        drop(bundle_account_locker_l);
         lock_time.stop();
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
@@ -1671,6 +1693,7 @@ impl BankingStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
+        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
         let mut all_retryable_tx_indexes = vec![];
@@ -1702,6 +1725,7 @@ impl BankingStage {
                 transaction_status_sender.clone(),
                 gossip_vote_sender,
                 qos_service,
+                bundle_account_locker,
             );
 
             let ProcessTransactionBatchOutput {
@@ -1927,6 +1951,7 @@ impl BankingStage {
         qos_service: &'a QosService,
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
         tip_program: &Pubkey,
+        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionsSummary {
         // Convert packets to transactions
         let ((transactions, transaction_to_packet_indexes), packet_conversion_time): (
@@ -1966,6 +1991,7 @@ impl BankingStage {
                 transaction_status_sender,
                 gossip_vote_sender,
                 qos_service,
+                bundle_account_locker
             ),
             "process_transaction_time",
         );
@@ -2359,7 +2385,9 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+            let tip_manager = TipManager::new(Keypair::new().pubkey());
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2371,6 +2399,7 @@ mod tests {
                 Arc::new(RwLock::new(CostModel::default())),
                 Arc::new(ConnectionCache::default()),
                 tip_manager,
+                bundle_account_locker,
             );
             drop(verified_sender);
             drop(gossip_verified_vote_sender);
@@ -2411,7 +2440,9 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+            let tip_manager = TipManager::new(Keypair::new().pubkey());
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2423,6 +2454,7 @@ mod tests {
                 Arc::new(RwLock::new(CostModel::default())),
                 Arc::new(ConnectionCache::default()),
                 tip_manager,
+                bundle_account_locker,
             );
             trace!("sending bank");
             drop(verified_sender);
@@ -2493,7 +2525,8 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+            let tip_manager = TipManager::new(Keypair::new().pubkey());
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2505,6 +2538,7 @@ mod tests {
                 Arc::new(RwLock::new(CostModel::default())),
                 Arc::new(ConnectionCache::default()),
                 tip_manager,
+                bundle_account_locker,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -2651,7 +2685,10 @@ mod tests {
                     create_test_recorder(&bank, &blockstore, Some(poh_config), None);
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
-                let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+
+                let tip_manager = TipManager::new(Keypair::new().pubkey());
+                let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
                     &poh_recorder,
@@ -2664,6 +2701,7 @@ mod tests {
                     Arc::new(RwLock::new(CostModel::default())),
                     Arc::new(ConnectionCache::default()),
                     tip_manager,
+                    bundle_account_locker,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -2973,6 +3011,8 @@ mod tests {
             poh_recorder.lock().unwrap().set_bank(&bank);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -2981,6 +3021,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &bundle_account_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3031,6 +3072,8 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3039,6 +3082,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &bundle_account_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3114,6 +3158,8 @@ mod tests {
             poh_recorder.lock().unwrap().set_bank(&bank);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3122,6 +3168,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &bundle_account_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3205,6 +3252,8 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3213,6 +3262,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &qos_service,
+                &bundle_account_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3252,6 +3302,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &qos_service,
+                &bundle_account_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3339,6 +3390,7 @@ mod tests {
             let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3348,6 +3400,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &bundle_account_locker,
             );
 
             poh_recorder
@@ -3474,6 +3527,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let process_transactions_summary = BankingStage::process_transactions(
                 &bank,
                 &Instant::now(),
@@ -3482,6 +3537,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &bundle_account_locker,
             );
 
             let ProcessTransactionsSummary {
@@ -3540,6 +3596,8 @@ mod tests {
 
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
         let process_transactions_summary = BankingStage::process_transactions(
             &bank,
             &Instant::now(),
@@ -3548,6 +3606,7 @@ mod tests {
             None,
             &gossip_vote_sender,
             &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+            &bundle_account_locker,
         );
 
         poh_recorder
@@ -3760,6 +3819,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3770,6 +3831,7 @@ mod tests {
                 }),
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &bundle_account_locker,
             );
 
             transaction_status_service.join().unwrap();
@@ -3921,6 +3983,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
                 &[sanitized_tx.clone()],
@@ -3931,6 +3995,7 @@ mod tests {
                 }),
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                &bundle_account_locker,
             );
 
             transaction_status_service.join().unwrap();
@@ -4038,6 +4103,7 @@ mod tests {
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
             let tip_program_id = Keypair::new().pubkey();
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.lock().unwrap().has_bank());
@@ -4056,6 +4122,7 @@ mod tests {
                 &mut LeaderSlotMetricsTracker::new(0),
                 num_conflicting_transactions,
                 &tip_program_id,
+                &bundle_account_locker,
             );
             assert_eq!(buffered_packet_batches.len(), num_conflicting_transactions);
             // When the poh recorder has a bank, should process all non conflicting buffered packets.
@@ -4077,6 +4144,7 @@ mod tests {
                     &mut LeaderSlotMetricsTracker::new(0),
                     num_packets_to_process_per_iteration,
                     &tip_program_id,
+                    &bundle_account_locker,
                 );
                 if num_expected_unprocessed == 0 {
                     assert!(buffered_packet_batches.is_empty())
@@ -4139,6 +4207,8 @@ mod tests {
                         .collect();
 
                     let tip_program_id = Keypair::new().pubkey();
+                    let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+
                     BankingStage::consume_buffered_packets(
                         &Pubkey::default(),
                         std::u128::MAX,
@@ -4153,6 +4223,7 @@ mod tests {
                         &mut LeaderSlotMetricsTracker::new(0),
                         num_packets_to_process_per_iteration,
                         &tip_program_id,
+                        &bundle_account_locker,
                     );
 
                     // Check everything is correct. All indexes after `interrupted_iteration`

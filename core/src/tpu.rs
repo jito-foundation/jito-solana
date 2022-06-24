@@ -5,6 +5,7 @@ use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
+        bundle_account_locker::BundleAccountLocker,
         bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
@@ -245,7 +246,9 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
-        let tip_manager = Arc::new(Mutex::new(TipManager::new(tip_program_pubkey)));
+        let tip_manager = TipManager::new(tip_program_pubkey);
+
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(3)));
 
         let banking_stage = BankingStage::new(
             cluster_info,
@@ -258,6 +261,7 @@ impl Tpu {
             cost_model.clone(),
             connection_cache.clone(),
             tip_manager.clone(),
+            bundle_account_locker.clone(),
         );
 
         let bundle_stage = BundleStage::new(
@@ -269,6 +273,7 @@ impl Tpu {
             bundle_receiver,
             exit.clone(),
             tip_manager,
+            bundle_account_locker,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(

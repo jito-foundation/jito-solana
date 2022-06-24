@@ -3919,12 +3919,16 @@ impl Bank {
         &'a self,
         transactions: &'b [SanitizedTransaction],
         transaction_results: impl Iterator<Item = &'b Result<()>>,
+        additional_read_locks: &HashSet<Pubkey>,
+        additional_write_locks: &HashSet<Pubkey>,
     ) -> TransactionBatch<'a, 'b> {
         // this lock_results could be: Ok, AccountInUse, AccountLoadedTwice or TooManyAccountLocks
         let lock_results = self.rc.accounts.lock_accounts_with_results(
             transactions.iter(),
             transaction_results,
             &self.feature_set,
+            additional_read_locks,
+            additional_write_locks,
         );
         TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
     }
