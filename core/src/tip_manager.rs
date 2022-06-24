@@ -11,9 +11,9 @@ use {
     },
     std::{collections::HashSet, sync::Arc},
     tip_payment::{
-        Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_1,
-        TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5,
-        TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7, TIP_ACCOUNT_SEED_8,
+        Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
+        TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
+        TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
     },
 };
 
@@ -23,6 +23,7 @@ struct ProgramInfo {
     program_id: Pubkey,
 
     config_pda_bump: (Pubkey, u8),
+    tip_pda_0: (Pubkey, u8),
     tip_pda_1: (Pubkey, u8),
     tip_pda_2: (Pubkey, u8),
     tip_pda_3: (Pubkey, u8),
@@ -30,7 +31,6 @@ struct ProgramInfo {
     tip_pda_5: (Pubkey, u8),
     tip_pda_6: (Pubkey, u8),
     tip_pda_7: (Pubkey, u8),
-    tip_pda_8: (Pubkey, u8),
 }
 
 pub struct TipManager {
@@ -41,6 +41,7 @@ impl TipManager {
     pub fn new(program_id: Pubkey) -> TipManager {
         let config_pda_bump = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], &program_id);
 
+        let tip_pda_0 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], &program_id);
         let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], &program_id);
         let tip_pda_2 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], &program_id);
         let tip_pda_3 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_3], &program_id);
@@ -48,12 +49,12 @@ impl TipManager {
         let tip_pda_5 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_5], &program_id);
         let tip_pda_6 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_6], &program_id);
         let tip_pda_7 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], &program_id);
-        let tip_pda_8 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_8], &program_id);
 
         TipManager {
             program_info: ProgramInfo {
                 program_id,
                 config_pda_bump,
+                tip_pda_0,
                 tip_pda_1,
                 tip_pda_2,
                 tip_pda_3,
@@ -61,7 +62,6 @@ impl TipManager {
                 tip_pda_5,
                 tip_pda_6,
                 tip_pda_7,
-                tip_pda_8,
             },
         }
     }
@@ -81,6 +81,7 @@ impl TipManager {
 
     pub fn get_tip_accounts(&self) -> HashSet<Pubkey> {
         HashSet::from([
+            self.program_info.tip_pda_0.0,
             self.program_info.tip_pda_1.0,
             self.program_info.tip_pda_2.0,
             self.program_info.tip_pda_3.0,
@@ -88,7 +89,6 @@ impl TipManager {
             self.program_info.tip_pda_5.0,
             self.program_info.tip_pda_6.0,
             self.program_info.tip_pda_7.0,
-            self.program_info.tip_pda_8.0,
         ])
     }
 
@@ -109,6 +109,7 @@ impl TipManager {
             data: tip_payment::instruction::Initialize {
                 _bumps: InitBumps {
                     config: self.program_info.config_pda_bump.1,
+                    tip_payment_account_0: self.program_info.tip_pda_0.1,
                     tip_payment_account_1: self.program_info.tip_pda_1.1,
                     tip_payment_account_2: self.program_info.tip_pda_2.1,
                     tip_payment_account_3: self.program_info.tip_pda_3.1,
@@ -116,12 +117,12 @@ impl TipManager {
                     tip_payment_account_5: self.program_info.tip_pda_5.1,
                     tip_payment_account_6: self.program_info.tip_pda_6.1,
                     tip_payment_account_7: self.program_info.tip_pda_7.1,
-                    tip_payment_account_8: self.program_info.tip_pda_8.1,
                 },
             }
             .data(),
             accounts: tip_payment::accounts::Initialize {
                 config: self.program_info.config_pda_bump.0,
+                tip_payment_account_0: self.program_info.tip_pda_0.0,
                 tip_payment_account_1: self.program_info.tip_pda_1.0,
                 tip_payment_account_2: self.program_info.tip_pda_2.0,
                 tip_payment_account_3: self.program_info.tip_pda_3.0,
@@ -129,7 +130,6 @@ impl TipManager {
                 tip_payment_account_5: self.program_info.tip_pda_5.0,
                 tip_payment_account_6: self.program_info.tip_pda_6.0,
                 tip_payment_account_7: self.program_info.tip_pda_7.0,
-                tip_payment_account_8: self.program_info.tip_pda_8.0,
                 system_program: system_program::id(),
                 payer: keypair.pubkey(),
             }
@@ -161,6 +161,7 @@ impl TipManager {
                 config: self.program_info.config_pda_bump.0,
                 old_tip_receiver: config.tip_receiver,
                 new_tip_receiver: *new_tip_receiver,
+                tip_payment_account_0: self.program_info.tip_pda_0.0,
                 tip_payment_account_1: self.program_info.tip_pda_1.0,
                 tip_payment_account_2: self.program_info.tip_pda_2.0,
                 tip_payment_account_3: self.program_info.tip_pda_3.0,
@@ -168,7 +169,6 @@ impl TipManager {
                 tip_payment_account_5: self.program_info.tip_pda_5.0,
                 tip_payment_account_6: self.program_info.tip_pda_6.0,
                 tip_payment_account_7: self.program_info.tip_pda_7.0,
-                tip_payment_account_8: self.program_info.tip_pda_8.0,
                 signer: keypair.pubkey(),
             }
             .to_account_metas(None),
