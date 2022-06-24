@@ -281,7 +281,6 @@ impl BundleStage {
                 );
                 qos_service.accumulate_actual_execute_cu(cu);
                 qos_service.accumulate_actual_execute_time(us);
-
                 qos_service.report_metrics(bank_start.working_bank.clone());
                 Ok(())
             }
@@ -529,6 +528,25 @@ impl BundleStage {
             }
         }
         Ok(commit_transaction_details)
+    }
+
+    /// Returns false if:
+    ///     bundle is empty
+    ///     bundle packet length is not equal to transaction length
+    ///     bundle contains duplicate transactions
+    ///     TODO: bundle contains previously processed transactions
+    fn valid_bundle(transactions: &Vec<SanitizedTransaction>, bundle: Bundle) -> bool {
+        if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
+            return false;
+        }
+        let mut previous_transactions = HashSet::new();
+        for tx in transactions {
+            if previous_transactions.contains(&tx.signatures()[0]) {
+                return false;
+            }
+            previous_transactions.insert(tx.signatures()[0]);
+        }
+        return true;
     }
 
     /// Returns true if any of the transactions in a bundle mention one of the tip PDAs
@@ -960,12 +978,10 @@ impl BundleStage {
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
-    use fs_extra::dir::create;
-    use itertools::min;
+    use etcd_client::SortTarget::Key;
     use {
         super::*,
-        crossbeam_channel::{unbounded, Receiver},
+        crossbeam_channel::unbounded,
         solana_address_lookup_table_program::state::{AddressLookupTable, LookupTableMeta},
         solana_entry::entry::{next_entry, next_versioned_entry, EntrySlice},
         solana_gossip::{cluster_info::Node, contact_info::ContactInfo},
@@ -1010,9 +1026,7 @@ mod tests {
             thread::sleep,
         },
     };
-    use solana_client::nonce_utils::Error::InvalidAccountData;
-    use solana_runtime::bank::DurableNonceFee::Invalid;
-    use solana_sdk::bundle::error::BundleExecutionError::{ExceedsCostModel, PohMaxHeightError, TransactionFailure};
+    use solana_sdk::bundle::error::BundleExecutionError::{ExceedsCostModel, InvalidBundle, PohMaxHeightError, TransactionFailure};
     use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::genesis_config::GenesisConfig;
     use solana_sdk::message::Message;
@@ -1022,15 +1036,16 @@ mod tests {
 
     // Test cases to cover:
 //    Test bundle fails to record to PoH (X)
-//    Try to whitebox test the caching, rent, and fee things
+//    Try to whitebox test the caching, rent, and fee things // TODO: tested cost model exceeded...what else?
 //    Test nonce transaction success and failure (1/2)
 //    Test multiple of the same transaction in a bundle (X)
 //    Test 0 balance fee payer in bundle (X)
 //    Test invalid blockhash (X)
-//    Ensure QoS/cost-model is calculated properly
+//    Ensure QoS/cost-model is calculated properly // TODO: how? push through invalid bundle and see the QoS is the same
 //    Some creative tests if i can think of more edge cases after the above
     // ideas for these: unsigned tx?
-    // exceed cost model for second bundle?
+    // QOS is reverted on failure
+    // tip payer -> allow serializations but return error in the valid_bundle method
 
     #[cfg(test)]
     fn test_single_bundle_failure(genesis_config: GenesisConfig, bundle: Bundle) -> Result<(), BundleExecutionError> {
@@ -1092,9 +1107,133 @@ mod tests {
     }
 
     #[test]
-    fn test_txs_exceed_cost_model() {
+    fn test_qos_rollback() {
+        // This test first executes a bundle so cost tracker number of transactions is non-zero, then
+        // executes a bundle with a few successful txs followed by a failed tx. This will force cost
+        // model rollback. We then check the number of transactions is the same as after the first bundle
+        // to confirm.
+        solana_logger::setup();
         let GenesisConfigInfo {
             mut genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(100);
+        genesis_config.ticks_per_slot *= 8; // Increase ticks so bank doesn't reset
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        {
+            let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
+            {
+                // start a banking_stage to eat verified receiver
+                let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+                error!("bank: {:?}", bank.read_cost_tracker().unwrap());
+                let blockstore = Arc::new(
+                    Blockstore::open(ledger_path.path())
+                        .expect("Expected to be able to open database ledger"),
+                );
+                let poh_config = PohConfig {
+                    // limit tick count to avoid clearing working_bank at
+                    // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
+                    target_tick_count: Some(bank.max_tick_height() - 1),
+                    ..PohConfig::default()
+                };
+                let (exit, poh_recorder, poh_service, entry_receiver) =
+                    create_test_recorder(&bank, &blockstore, Some(poh_config), None); // (2) (7)
+                let cluster_info = ClusterInfo::new(
+                    Node::new_localhost().info,
+                    Arc::new(Keypair::new()),
+                    SocketAddrSpace::Unspecified,
+                );
+                let cluster_info = Arc::new(cluster_info); // (1)
+                let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+                let recorder = poh_recorder.lock().unwrap().recorder();
+                let cost_model = Arc::new(RwLock::new(CostModel::default()));
+                let qos_service = QosService::new(cost_model, 0);
+
+                let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
+                let mut last_consensus_update = Epoch::default();
+
+                let kp_a = Keypair::new();
+                let kp_b = Keypair::new();
+                error!("mint_pubkey: {:?}, a_pubkey: {:?}, b_pubkey: {:?}", mint_keypair.pubkey(), kp_a.pubkey(), kp_b.pubkey());
+                let a = Packet::from_data(
+                    None,
+                    system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 10, genesis_config.hash()),
+                ).unwrap();
+                let b = Packet::from_data(
+                    None,
+                    system_transaction::transfer(&mint_keypair, &kp_b.pubkey(), 10, genesis_config.hash()),
+                ).unwrap();
+                let c = Packet::from_data(
+                    None,
+                    system_transaction::transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()),
+                ).unwrap();
+                let bundle = Bundle {batch: PacketBatch::new(vec![a, b, c])};
+
+                // Execute a bundle successfully to force cost model update
+                assert_eq!(BundleStage::execute_bundle(
+                    &cluster_info,
+                    bundle,
+                    &poh_recorder,
+                    &recorder,
+                    &None,
+                    &gossip_vote_sender,
+                    &qos_service,
+                    &tip_manager,
+                    &mut consensus_accounts_cache,
+                    &mut last_consensus_update,
+                ), Ok(()));
+                info!("bank slot: {}", bank.slot());
+                error!("bank: {:?}", bank.read_cost_tracker().unwrap());
+                let expected_num_tx = bank.read_cost_tracker().unwrap().transaction_count();
+
+                // Confirm we have non-zero expected txs
+                assert_ne!(expected_num_tx, 0);
+
+                let kp_c = Keypair::new();
+                let kp_d = Keypair::new();
+                let d = Packet::from_data(
+                    None,
+                    system_transaction::transfer(&mint_keypair, &kp_c.pubkey(), 10, genesis_config.hash()),
+                ).unwrap();
+                let e = Packet::from_data(
+                    None,
+                    system_transaction::transfer(&mint_keypair, &kp_d.pubkey(), 10, genesis_config.hash()),
+                ).unwrap();
+                // This tx should fail due to invalid blockhash
+                let f = Packet::from_data(
+                    None,
+                    system_transaction::transfer(&kp_c, &kp_d.pubkey(), 10, Hash::new_unique()),
+                ).unwrap();
+                let bundle = Bundle {batch: PacketBatch::new(vec![d, e, f])};
+
+                // Execute a bundle that partially fails to test rollback of QoS
+                assert_eq!(BundleStage::execute_bundle(
+                    &cluster_info,
+                    bundle,
+                    &poh_recorder,
+                    &recorder,
+                    &None,
+                    &gossip_vote_sender,
+                    &qos_service,
+                    &tip_manager,
+                    &mut consensus_accounts_cache,
+                    &mut last_consensus_update,
+                ), Err(TransactionFailure(BlockhashNotFound)));
+
+                // Transaction count of cost tracker should be equivalent to before
+                assert_eq!(expected_num_tx, bank.read_cost_tracker().unwrap().transaction_count());
+
+                exit.store(true, Ordering::Relaxed);
+                poh_service.join().unwrap();
+            };
+        }
+        Blockstore::destroy(ledger_path.path()).unwrap();
+    }
+
+    #[test]
+    fn test_txs_exceed_cost_model() {
+        let GenesisConfigInfo {
+            genesis_config,
             mint_keypair,
             ..
         } = create_genesis_config(5);
@@ -1117,11 +1256,11 @@ mod tests {
         let bundle = Bundle {batch: PacketBatch::new(vec![packet])};
         assert_eq!(test_single_bundle_failure(genesis_config, bundle), Err(ExceedsCostModel));
     }
-    
+
     #[test]
     fn test_nonce_tx_failure() {
         let GenesisConfigInfo {
-            mut genesis_config,
+            genesis_config,
             mint_keypair,
             ..
         } = create_genesis_config(4);
@@ -1141,7 +1280,7 @@ mod tests {
     #[test]
     fn test_invalid_blockhash() {
         let GenesisConfigInfo {
-            mut genesis_config,
+            genesis_config,
             mint_keypair,
             ..
         } = create_genesis_config(4);
@@ -1157,7 +1296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_balance_fee_payer() {
+    fn test_zero_balance_fee_payer() { // TODO: this tests zero account not fee payer balance
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair: _,
@@ -1198,7 +1337,7 @@ mod tests {
     fn test_nonce_tx_success() {
         solana_logger::setup();
         let GenesisConfigInfo {
-            mut genesis_config,
+            genesis_config,
             mint_keypair,
             ..
         } = create_genesis_config(4);
@@ -1276,106 +1415,25 @@ mod tests {
         Blockstore::destroy(ledger_path.path()).unwrap();
     }
 
-
-    // TODO: refactor after fixing cache bug
     #[test]
     fn test_tx_duplicates_fail() {
-        solana_logger::setup();
         let GenesisConfigInfo {
-            mut genesis_config,
+            genesis_config,
             mint_keypair,
             ..
         } = create_genesis_config(4);
-        genesis_config.ticks_per_slot *= 8; // Extend ticks so we don't run out in 1 slot test
 
-        let (bundle_sender, bundle_receiver) = unbounded();
-
-        let kp_b = Keypair::new();
+        let kp = Keypair::new();
         let packet = Packet::from_data(
             None,
-            system_transaction::transfer(&mint_keypair, &kp_b.pubkey(), 1, genesis_config.hash()),
+            system_transaction::transfer(&mint_keypair, &kp.pubkey(), 1, genesis_config.hash()),
         )
         .unwrap();
-
-        bundle_sender.send(vec![Bundle {
+        let bundle = Bundle{
             batch: PacketBatch::new(vec![packet.clone(), packet]),
-        }]);
+        };
 
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        {
-            let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
-
-            let entry_receiver = {
-                // start a banking_stage to eat verified receiver
-                let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-                let blockstore = Arc::new(
-                    Blockstore::open(ledger_path.path())
-                        .expect("Expected to be able to open database ledger"),
-                );
-                let poh_config = PohConfig {
-                    // limit tick count to avoid clearing working_bank at
-                    // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
-                    target_tick_count: Some(bank.max_tick_height() - 1),
-                    ..PohConfig::default()
-                };
-                let (exit, poh_recorder, poh_service, entry_receiver) =
-                    create_test_recorder(&bank, &blockstore, Some(poh_config), None); // (2) (7)
-                let cluster_info = ClusterInfo::new(
-                    Node::new_localhost().info,
-                    Arc::new(Keypair::new()),
-                    SocketAddrSpace::Unspecified,
-                );
-                let cluster_info = Arc::new(cluster_info); // (1)
-                let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
-                let _bundle_stage = BundleStage::new(
-                    &cluster_info,
-                    &poh_recorder,
-                    None,
-                    gossip_vote_sender,
-                    Arc::new(RwLock::new(CostModel::default())),
-                    bundle_receiver,
-                    exit.clone(),
-                    tip_manager,
-                );
-
-                // wait for banking_stage to eat the packets
-                while bank.get_balance(&kp_b.pubkey()) < 1 {
-                    sleep(Duration::from_millis(10));
-                }
-                exit.store(true, Ordering::Relaxed);
-                poh_service.join().unwrap();
-                entry_receiver // we return the entry_receiver here so we can drop everything else
-                               // and have the banking_stage exit fully after record
-            };
-            drop(bundle_sender);
-
-            // consume the entire entry_receiver, feed it into a new bank
-            // check that the balance is what we expect.
-            let entries: Vec<_> = entry_receiver
-                .iter()
-                .flat_map(
-                    |WorkingBankEntry {
-                         bank: _,
-                         entries_ticks,
-                     }| entries_ticks.into_iter().map(|e| e.0),
-                )
-                .collect();
-
-            let bank = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
-            // 0 index entry is empty
-            // 1 index entry is successful
-            // 2 index entry is duplicate tx
-
-            // first tx is successful
-            let result = bank.process_entry_transactions(entries.get(1).unwrap().transactions.clone());
-            assert_eq!(*result.get(0).unwrap(), Ok(()));
-
-            // second tx is duplicate
-            let result = bank.process_entry_transactions(entries.get(2).unwrap().transactions.clone());
-            assert_eq!(*result.get(0).unwrap(), Err(AlreadyProcessed));
-            assert_eq!(bank.get_balance(&kp_b.pubkey()), 1);
-        }
-        Blockstore::destroy(ledger_path.path()).unwrap();
+        assert_eq!(test_single_bundle_failure(genesis_config, bundle), Err(InvalidBundle));
     }
 
     #[test]
@@ -1455,8 +1513,7 @@ mod tests {
             };
             drop(bundle_sender);
 
-            // consume the entire entry_receiver, feed it into a new bank
-            // check that the balance is what we expect.
+            // consume the entire entry_receiver
             let entries: Vec<_> = entry_receiver
                 .iter()
                 .flat_map(
@@ -1467,8 +1524,7 @@ mod tests {
                 )
                 .collect();
 
-            // create a new bank to replay entries (similar to how shreds would propagate and get confirmed on other
-            // validators?
+            // create a new bank to replay entries and confirm balances post transfer
             let bank = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
             for entry in entries {
                 bank.process_entry_transactions(entry.transactions)
