@@ -413,7 +413,7 @@ impl BundleStage {
 
             drop(batch);
         }
-        return Ok(execution_results);
+        Ok(execution_results)
     }
 
     /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
@@ -521,7 +521,7 @@ impl BundleStage {
                 }
             }
         }
-        return Ok(commit_transaction_details);
+        Ok(commit_transaction_details)
     }
 
     /// Returns true if any of the transactions in a bundle mention one of the tip PDAs
