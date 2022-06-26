@@ -13,7 +13,7 @@ use {
         transaction::{AddressLoader, SanitizedTransaction, TransactionAccountLocks},
     },
     std::{
-        collections::{HashMap, HashSet, VecDeque},
+        collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
         sync::Arc,
     },
     thiserror::Error,
@@ -265,20 +265,24 @@ impl BundleAccountLocker {
 
     /// unlocks any pre-locked accounts in this bundle
     /// the caller is responsible for ensuring the LockedBundle passed in here was returned from
-    /// BundleScheduler::pop
+    /// BundleScheduler::pop as an already-scheduled bundle.
     pub fn unlock_bundle(&mut self, locked_bundle: LockedBundle) {
         for (acc, count) in locked_bundle.read_locks() {
-            let entry = self.read_locks.entry(*acc).or_insert(0);
-            *entry = entry.saturating_sub(*count);
-            if self.read_locks.get(acc) == Some(&0) {
-                self.read_locks.remove(acc);
+            if let Entry::Occupied(mut e) = self.read_locks.entry(*acc) {
+                let val = e.get_mut();
+                *val = val.saturating_sub(*count);
+                if e.get() == &0 {
+                    let _ = e.remove();
+                }
             }
         }
         for (acc, count) in locked_bundle.write_locks() {
-            let entry = self.write_locks.entry(*acc).or_insert(0);
-            *entry = entry.saturating_sub(*count);
-            if self.write_locks.get(acc) == Some(&0) {
-                self.write_locks.remove(acc);
+            if let Entry::Occupied(mut e) = self.write_locks.entry(*acc) {
+                let val = e.get_mut();
+                *val = val.saturating_sub(*count);
+                if e.get() == &0 {
+                    let _ = e.remove();
+                }
             }
         }
 

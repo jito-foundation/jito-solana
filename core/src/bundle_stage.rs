@@ -434,6 +434,7 @@ impl BundleStage {
             bank_start,
             execute_and_commit_timings,
         )?;
+        // in order for bundle to succeed, it most have something to record + commit
         assert!(!execution_results.is_empty());
 
         Self::record_commit_bundle(
