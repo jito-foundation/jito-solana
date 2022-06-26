@@ -217,6 +217,74 @@ impl BundleStage {
         batched_transaction_details
     }
 
+    fn update_qos_and_execute_bundle(
+        sanitized_bundle: &SanitizedBundle,
+        recorder: &TransactionRecorder,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        gossip_vote_sender: &ReplayVoteSender,
+        qos_service: &QosService,
+        bank_start: &BankStart,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+    ) -> BundleExecutionResult<()> {
+        // ************************************************************************
+        // Quality-of-service and block size check
+        // ************************************************************************
+        let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
+        let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
+            sanitized_bundle.transactions.iter(),
+            tx_costs.iter(),
+            &bank_start.working_bank,
+        );
+
+        // qos rate-limited a tx in here, drop the bundle
+        if sanitized_bundle.transactions.len() != num_included {
+            return Err(BundleExecutionError::ExceedsCostModel);
+        }
+
+        qos_service.accumulate_estimated_transaction_costs(
+            &Self::accumulate_batched_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+            ),
+        );
+
+        match Self::execute_bundle(
+            sanitized_bundle,
+            recorder,
+            transaction_status_sender,
+            gossip_vote_sender,
+            bank_start,
+            execute_and_commit_timings,
+        ) {
+            Ok(commit_transaction_details) => {
+                for commit_transaction_statuses in commit_transaction_details {
+                    QosService::update_or_remove_transaction_costs(
+                        tx_costs.iter(),
+                        transactions_qos_results.iter(),
+                        Some(&commit_transaction_statuses),
+                        &bank_start.working_bank,
+                    );
+                    let (cu, us) = Self::accumulate_execute_units_and_time(
+                        &execute_and_commit_timings.execute_timings,
+                    );
+                    qos_service.accumulate_actual_execute_cu(cu);
+                    qos_service.accumulate_actual_execute_time(us);
+                }
+                qos_service.report_metrics(bank_start.working_bank.clone());
+                return Ok(());
+            }
+            Err(e) => {
+                QosService::remove_transaction_costs(
+                    tx_costs.iter(),
+                    transactions_qos_results.iter(),
+                    &bank_start.working_bank,
+                );
+                qos_service.report_metrics(bank_start.working_bank.clone());
+                return Err(e);
+            }
+        }
+    }
+
     /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
     ///
     /// Notes:
@@ -254,10 +322,9 @@ impl BundleStage {
         recorder: &TransactionRecorder,
         transaction_status_sender: &Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
-        qos_service: &QosService,
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
-    ) -> BundleExecutionResult<()> {
+    ) -> BundleExecutionResult<Vec<Vec<CommitTransactionDetails>>> {
         let mut account_overrides = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
@@ -271,36 +338,9 @@ impl BundleStage {
             bank_creation_time,
         } = bank_start;
 
-        // ************************************************************************
-        // Quality-of-service and block size check
-        // ************************************************************************
-        let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
-        let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
-            sanitized_bundle.transactions.iter(),
-            tx_costs.iter(),
-            bank,
-        );
-
-        // qos rate-limited a tx in here, drop the bundle
-        if sanitized_bundle.transactions.len() != num_included {
-            return Err(BundleExecutionError::ExceedsCostModel);
-        }
-
-        qos_service.accumulate_estimated_transaction_costs(
-            &Self::accumulate_batched_transaction_costs(
-                tx_costs.iter(),
-                transactions_qos_results.iter(),
-            ),
-        );
-
         let mut chunk_start = 0;
         while chunk_start != sanitized_bundle.transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
-                QosService::remove_transaction_costs(
-                    tx_costs.iter(),
-                    transactions_qos_results.iter(),
-                    bank,
-                );
                 return Err(BundleExecutionError::PohMaxHeightError);
             }
 
@@ -312,11 +352,6 @@ impl BundleStage {
             let chunk = &sanitized_bundle.transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk, None);
             if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
-                QosService::remove_transaction_costs(
-                    tx_costs.iter(),
-                    transactions_qos_results.iter(),
-                    bank,
-                );
                 return Err(e.into());
             }
 
@@ -353,11 +388,6 @@ impl BundleStage {
                     .as_slice(),
                 batch.sanitized_transactions(),
             ) {
-                QosService::remove_transaction_costs(
-                    tx_costs.iter(),
-                    transactions_qos_results.iter(),
-                    bank,
-                );
                 return Err(e);
             }
 
@@ -424,15 +454,9 @@ impl BundleStage {
         let (freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        Self::try_record(recorder, record).map_err(|e| {
-            QosService::remove_transaction_costs(
-                tx_costs.iter(),
-                transactions_qos_results.iter(),
-                bank,
-            );
-            e
-        })?;
+        Self::try_record(recorder, record)?;
 
+        let mut commit_transaction_details = Vec::new();
         for r in execution_results {
             let mut output = r.load_and_execute_tx_output;
             let sanitized_txs = r.sanitized_txs;
@@ -487,26 +511,12 @@ impl BundleStage {
                     None => CommitTransactionDetails::NotCommitted,
                 })
                 .collect();
-
-            QosService::update_or_remove_transaction_costs(
-                tx_costs.iter(),
-                transactions_qos_results.iter(),
-                Some(&commit_transaction_statuses),
-                bank,
-            );
-            let (cu, us) = Self::accumulate_execute_units_and_time(
-                &execute_and_commit_timings.execute_timings,
-            );
-            qos_service.accumulate_actual_execute_cu(cu);
-            qos_service.accumulate_actual_execute_time(us);
+            commit_transaction_details.push(commit_transaction_statuses);
         }
-
-        // reports qos service stats for this batch
-        qos_service.report_metrics(bank.clone());
 
         drop(freeze_lock);
 
-        Ok(())
+        Ok(commit_transaction_details)
     }
 
     /// Returns true if any of the transactions in a bundle mention one of the tip PDAs
@@ -609,7 +619,8 @@ impl BundleStage {
                 return Ok(working_bank_start.unwrap().clone());
             } else {
                 // don't block too long because we want to pick up the working bank as fast as possible
-                // if we're transitioning from not leader -> leader and there's no bundles to read
+                // if we're transitioning from not leader -> leader and there's no new bundles to read
+                // but bundles already pushed into the account locker
                 match bundle_receiver.recv_timeout(Duration::from_millis(10)) {
                     Ok(bundles) => {
                         bundle_account_locker.lock().unwrap().push(bundles);
@@ -650,7 +661,7 @@ impl BundleStage {
                 uuid: Uuid::new_v4(),
             };
 
-            Self::execute_bundle(
+            Self::update_qos_and_execute_bundle(
                 &sanitized_bundle,
                 recorder,
                 transaction_status_sender,
@@ -678,7 +689,7 @@ impl BundleStage {
                 uuid: Uuid::new_v4(),
             };
 
-            Self::execute_bundle(
+            Self::update_qos_and_execute_bundle(
                 &sanitized_bundle,
                 recorder,
                 transaction_status_sender,
@@ -745,7 +756,7 @@ impl BundleStage {
                             }
                         }
                     }
-                    match Self::execute_bundle(
+                    match Self::update_qos_and_execute_bundle(
                         locked_bundle.sanitized_bundle(),
                         recorder,
                         transaction_status_sender,
