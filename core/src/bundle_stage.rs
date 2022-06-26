@@ -219,7 +219,7 @@ impl BundleStage {
 
     /// Calculates QoS and reserves compute space for the bundle. If the bundle succeeds, commits
     /// the results to the cost tracker. If the bundle fails, rolls back any QoS changes made.
-    fn update_qos_and_execute_bundle(
+    fn update_qos_and_execute_record_commit_bundle(
         sanitized_bundle: &SanitizedBundle,
         recorder: &TransactionRecorder,
         transaction_status_sender: &Option<TransactionStatusSender>,
@@ -247,7 +247,7 @@ impl BundleStage {
             ),
         );
 
-        return match Self::execute_bundle(
+        return match Self::execute_record_commit_bundle(
             sanitized_bundle,
             recorder,
             transaction_status_sender,
@@ -291,18 +291,12 @@ impl BundleStage {
         };
     }
 
-    /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
-    /// Executes all transactions until the end or the first failure. The account state between
-    /// iterations is cached to a temporary HashMap to be used on successive runs
-    #[allow(clippy::too_many_arguments)]
     fn execute_bundle(
         sanitized_bundle: &SanitizedBundle,
-        recorder: &TransactionRecorder,
         transaction_status_sender: &Option<TransactionStatusSender>,
-        gossip_vote_sender: &ReplayVoteSender,
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
-    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
+    ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
         let mut account_overrides = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
@@ -419,9 +413,49 @@ impl BundleStage {
 
             drop(batch);
         }
+        return Ok(execution_results);
+    }
 
+    /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
+    /// Executes all transactions until the end or the first failure. The account state between
+    /// iterations is cached to a temporary HashMap to be used on successive runs
+    #[allow(clippy::too_many_arguments)]
+    fn execute_record_commit_bundle(
+        sanitized_bundle: &SanitizedBundle,
+        recorder: &TransactionRecorder,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        gossip_vote_sender: &ReplayVoteSender,
+        bank_start: &BankStart,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
+        let execution_results = Self::execute_bundle(
+            sanitized_bundle,
+            transaction_status_sender,
+            bank_start,
+            execute_and_commit_timings,
+        )?;
         assert!(!execution_results.is_empty());
 
+        Self::record_commit_bundle(
+            execution_results,
+            &bank_start.working_bank,
+            recorder,
+            execute_and_commit_timings,
+            transaction_status_sender,
+            gossip_vote_sender,
+        )
+    }
+
+    /// Records the entire bundle to PoH and if successful, commits all transactions to the Bank
+    /// Note that the BundleAccountLocker still has a lock on these accounts in the bank
+    fn record_commit_bundle(
+        execution_results: Vec<AllExecutionResults>,
+        bank: &Arc<Bank>,
+        recorder: &TransactionRecorder,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        transaction_status_sender: &Option<TransactionStatusSender>,
+        gossip_vote_sender: &ReplayVoteSender,
+    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
         // *********************************************************************************
         // All transactions are executed in the bundle.
         // Record to PoH and send the saved execution results to the Bank.
@@ -429,7 +463,7 @@ impl BundleStage {
         // not all together
         // *********************************************************************************
 
-        let (freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
+        let (_freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
         let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
         Self::try_record(recorder, record)?;
@@ -487,10 +521,7 @@ impl BundleStage {
                 }
             }
         }
-
-        drop(freeze_lock);
-
-        Ok(commit_transaction_details)
+        return Ok(commit_transaction_details);
     }
 
     /// Returns true if any of the transactions in a bundle mention one of the tip PDAs
@@ -635,7 +666,7 @@ impl BundleStage {
                 uuid: Uuid::new_v4(),
             };
 
-            Self::update_qos_and_execute_bundle(
+            Self::update_qos_and_execute_record_commit_bundle(
                 &sanitized_bundle,
                 recorder,
                 transaction_status_sender,
@@ -663,7 +694,7 @@ impl BundleStage {
                 uuid: Uuid::new_v4(),
             };
 
-            Self::update_qos_and_execute_bundle(
+            Self::update_qos_and_execute_record_commit_bundle(
                 &sanitized_bundle,
                 recorder,
                 transaction_status_sender,
@@ -730,7 +761,7 @@ impl BundleStage {
                             }
                         }
                     }
-                    match Self::update_qos_and_execute_bundle(
+                    match Self::update_qos_and_execute_record_commit_bundle(
                         locked_bundle.sanitized_bundle(),
                         recorder,
                         transaction_status_sender,
