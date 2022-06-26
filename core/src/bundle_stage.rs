@@ -256,12 +256,13 @@ impl BundleStage {
             execute_and_commit_timings,
         ) {
             Ok(commit_transaction_details) => {
-                // NOTE: this assumes that commit_transaction_details are returned in the same ordering
-                // as tx_costs.
-                // It also assumes that the bundle was executed sequentially.
+                // NOTE: Assumptions made on the QoS tranaction costs:
+                // - commit_transaction_details are returned in the same ordering as the transactions
+                //   in the sanitized_bundle, which is the same ordering as tx_costs.
+                // - all contents in the bundle are committed (it's executed all or nothing).
                 // When fancier execution algorithms are made that may execute transactions out of
-                // order (but resulting in same result as if they were executed sequentially),
-                // one should revisit this.
+                // order (but resulting in same result as if they were executed sequentially), or
+                // allow failures in bundles, one should revisit this.
                 QosService::update_or_remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
