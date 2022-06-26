@@ -217,6 +217,8 @@ impl BundleStage {
         batched_transaction_details
     }
 
+    /// Calculates QoS and reserves compute space for the bundle. If the bundle succeeds, commits
+    /// the results to the cost tracker. If the bundle fails, rolls back any QoS changes made.
     fn update_qos_and_execute_bundle(
         sanitized_bundle: &SanitizedBundle,
         recorder: &TransactionRecorder,
