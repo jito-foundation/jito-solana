@@ -226,9 +226,6 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
     ) -> BundleExecutionResult<()> {
-        // ************************************************************************
-        // Quality-of-service and block size check
-        // ************************************************************************
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
             sanitized_bundle.transactions.iter(),
@@ -248,7 +245,7 @@ impl BundleStage {
             ),
         );
 
-        match Self::execute_bundle(
+        return match Self::execute_bundle(
             sanitized_bundle,
             recorder,
             transaction_status_sender,
@@ -257,21 +254,26 @@ impl BundleStage {
             execute_and_commit_timings,
         ) {
             Ok(commit_transaction_details) => {
-                for commit_transaction_statuses in commit_transaction_details {
-                    QosService::update_or_remove_transaction_costs(
-                        tx_costs.iter(),
-                        transactions_qos_results.iter(),
-                        Some(&commit_transaction_statuses),
-                        &bank_start.working_bank,
-                    );
-                    let (cu, us) = Self::accumulate_execute_units_and_time(
-                        &execute_and_commit_timings.execute_timings,
-                    );
-                    qos_service.accumulate_actual_execute_cu(cu);
-                    qos_service.accumulate_actual_execute_time(us);
-                }
+                // NOTE: this assumes that commit_transaction_details are returned in the same ordering
+                // as tx_costs.
+                // It also assumes that the bundle was executed sequentially.
+                // When fancier execution algorithms are made that may execute transactions out of
+                // order (but resulting in same result as if they were executed sequentially),
+                // one should revisit this.
+                QosService::update_or_remove_transaction_costs(
+                    tx_costs.iter(),
+                    transactions_qos_results.iter(),
+                    Some(&commit_transaction_details),
+                    &bank_start.working_bank,
+                );
+                let (cu, us) = Self::accumulate_execute_units_and_time(
+                    &execute_and_commit_timings.execute_timings,
+                );
+                qos_service.accumulate_actual_execute_cu(cu);
+                qos_service.accumulate_actual_execute_time(us);
+
                 qos_service.report_metrics(bank_start.working_bank.clone());
-                return Ok(());
+                Ok(())
             }
             Err(e) => {
                 QosService::remove_transaction_costs(
@@ -280,42 +282,14 @@ impl BundleStage {
                     &bank_start.working_bank,
                 );
                 qos_service.report_metrics(bank_start.working_bank.clone());
-                return Err(e);
+                Err(e)
             }
-        }
+        };
     }
 
     /// Executes a bundle, where all transactions in the bundle are executed all-or-nothing.
-    ///
-    /// Notes:
-    /// - Transactions are streamed out in the form of entries as they're produced instead of
-    /// all-at-once like other blockchains.
-    /// - There might be multiple entries for a given bundle because there might be shared state that's
-    /// written to in multiple transactions, which can't be parallelized.
-    /// - We have some knowledge of when the slot will end, but it's not known how long ahead of
-    /// time it'll take to execute a bundle.
-    ///
-    /// Assumptions:
-    /// - Bundles are executed all-or-nothing. There shall never be a situation where the back half
-    ///   of a bundle is dropped.
-    /// - Bundles can contain any number of transactions, potentially from multiple signers.
-    /// - Bundles are not executed across block boundaries.
-    /// - All other non-vote pipelines are locked while bundles are running. (Note: this might
-    ///   interfere with bundles that contain vote accounts bc the cache state might be incorrect).
-    ///
-    /// Given the above, there's a few things we need to do unique to normal transaction processing:
-    /// - Execute all transactions in the bundle before sending to PoH.
-    /// - In order to prevent being on a fork, we need to make sure that the transactions are
-    ///   recorded to PoH successfully before committing them to the bank.
-    /// - All of the records produced are batch sent to PoH and PoH will report back success only
-    ///   if all transactions are recorded. If all transactions are recorded according to PoH, only
-    ///   then will the transactions be committed to the bank.
-    /// - When executing a transaction, the account state is loaded from accountsdb. Transaction n
-    ///   might depend on state from transaction n-1, but that state isn't committed to the bank yet
-    ///   because it hasn't run through poh yet. Therefore, we need to add the concept of an accounts
-    ///   cache that saves the state of accounts from transaction n-1. When loading accounts in the
-    ///   bundle execution stage, it'll bias towards loading from the cache to have the most recent
-    ///   state.
+    /// Executes all transactions until the end or the first failure. The account state between
+    /// iterations is cached to a temporary HashMap to be used on successive runs
     #[allow(clippy::too_many_arguments)]
     fn execute_bundle(
         sanitized_bundle: &SanitizedBundle,
@@ -324,7 +298,7 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
-    ) -> BundleExecutionResult<Vec<Vec<CommitTransactionDetails>>> {
+    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
         let mut account_overrides = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
@@ -501,17 +475,13 @@ impl BundleStage {
                 "find_and_send_votes",
             );
 
-            let commit_transaction_statuses = transaction_results
-                .execution_results
-                .iter()
-                .map(|tx_results| match tx_results.details() {
-                    Some(details) => CommitTransactionDetails::Committed {
+            for tx_results in transaction_results.execution_results {
+                if let Some(details) = tx_results.details() {
+                    commit_transaction_details.push(CommitTransactionDetails::Committed {
                         compute_units: details.executed_units,
-                    },
-                    None => CommitTransactionDetails::NotCommitted,
-                })
-                .collect();
-            commit_transaction_details.push(commit_transaction_statuses);
+                    });
+                }
+            }
         }
 
         drop(freeze_lock);
