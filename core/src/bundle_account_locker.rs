@@ -76,7 +76,7 @@ impl LockedBundle {
 }
 
 pub struct BundleAccountLocker {
-    num_bundle_batches_prelock: u64,
+    num_bundles_prelock: u64,
     unlocked_bundles: VecDeque<PacketBundle>,
     locked_bundles: VecDeque<LockedBundle>,
     read_locks: HashMap<Pubkey, u64>,
@@ -100,11 +100,11 @@ impl BundleAccountLocker {
     // A larger num_bundle_batches_prelock means BankingStage may get blocked waiting for bundle to
     // execute. A smaller num_bundle_batches_prelock means BundleStage may get blocked waiting for
     // AccountInUse to disappear before execution.
-    pub fn new(num_bundle_batches_prelock: u64) -> BundleAccountLocker {
+    pub fn new(num_bundles_prelock: u64) -> BundleAccountLocker {
         BundleAccountLocker {
-            num_bundle_batches_prelock,
+            num_bundles_prelock,
             unlocked_bundles: VecDeque::with_capacity(100),
-            locked_bundles: VecDeque::with_capacity((num_bundle_batches_prelock + 1) as usize),
+            locked_bundles: VecDeque::with_capacity((num_bundles_prelock + 1) as usize),
             read_locks: HashMap::with_capacity(100),
             write_locks: HashMap::with_capacity(100),
         }
@@ -150,7 +150,7 @@ impl BundleAccountLocker {
         // pre-lock bundles up to num_bundle_batches_prelock
         // +1 because it will immediately pop one off
         while !self.unlocked_bundles.is_empty()
-            && self.locked_bundles.len() <= self.num_bundle_batches_prelock as usize + 1
+            && self.locked_bundles.len() <= self.num_bundles_prelock as usize + 1
         {
             let bundle = self.unlocked_bundles.pop_front().unwrap();
             match Self::get_lockable_bundle(&bundle, bank, tip_program_id, consensus_accounts_cache)

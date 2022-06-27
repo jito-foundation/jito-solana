@@ -54,6 +54,8 @@ const TPU_THREADS_JOIN_TIMEOUT_SECONDS: u64 = 10;
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_IP: usize = 8;
 
+const NUM_BUNDLES_PRE_LOCK: u64 = 4;
+
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
     pub transaction_forwards: Vec<UdpSocket>,
@@ -248,7 +250,8 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_program_pubkey);
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(3)));
+        let bundle_account_locker =
+            Arc::new(Mutex::new(BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK)));
 
         // tip accounts can't be used in BankingStage. This makes handling race conditions
         // for tip-related things in BundleStage easier.
