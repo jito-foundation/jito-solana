@@ -4,16 +4,22 @@ use {
         unprocessed_packet_batches::{deserialize_packets, ImmutableDeserializedPacket},
     },
     solana_perf::packet::PacketBatch,
-    solana_runtime::bank::Bank,
+    solana_runtime::{bank::Bank, transaction_error_metrics::TransactionErrorMetrics},
     solana_sdk::{
         bpf_loader_upgradeable,
         bundle::sanitized::SanitizedBundle,
+        clock::MAX_PROCESSING_AGE,
         feature_set::FeatureSet,
         pubkey::Pubkey,
+        signature::Signature,
         transaction::{AddressLoader, SanitizedTransaction, TransactionAccountLocks},
     },
     std::{
-        collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
+        collections::{
+            hash_map::{Entry, RandomState},
+            HashMap, HashSet, VecDeque,
+        },
+        iter::repeat,
         sync::Arc,
     },
     thiserror::Error,
@@ -156,7 +162,8 @@ impl BundleAccountLocker {
         }
 
         while !self.locked_bundles.is_empty() {
-            let old_locked_bundle = self.locked_bundles.pop_front()?;
+            // SAFETY: only runs this loop if it's not empty, unwrap shall always succeed
+            let old_locked_bundle = self.locked_bundles.pop_front().unwrap();
 
             let new_locked_bundle = match Self::get_locked_bundle(
                 old_locked_bundle.packet_bundle(),
@@ -313,7 +320,26 @@ impl BundleAccountLocker {
             })
             .collect();
 
-        if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
+        // check for duplicate transactions
+        let unique_signatures: HashSet<&Signature, RandomState> =
+            HashSet::from_iter(transactions.iter().map(|tx| tx.signature()));
+
+        // checks for already-processed transaction or expired/invalid blockhash
+        let lock_results: Vec<_> = repeat(Ok(())).take(transactions.len()).collect();
+        let mut metrics = TransactionErrorMetrics::default();
+        let check_results = bank.check_transactions(
+            &transactions,
+            &lock_results,
+            MAX_PROCESSING_AGE,
+            &mut metrics,
+        );
+
+        if transactions.is_empty()
+            || bundle.batch.packets.len() != transactions.len()
+            || unique_signatures.len() != transactions.len()
+            || check_results.iter().any(|r| r.0.is_err())
+        {
+            error!("check_results: {:?}", check_results);
             return Err(BundleSchedulerError::InvalidPackets(bundle.uuid));
         }
 
@@ -389,11 +415,431 @@ impl BundleAccountLocker {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_single_push_pop() {}
+    use {
+        crate::{bundle::PacketBundle, bundle_account_locker::BundleAccountLocker},
+        solana_ledger::genesis_utils::create_genesis_config,
+        solana_perf::packet::PacketBatch,
+        solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
+        solana_sdk::{
+            hash::Hash,
+            packet::Packet,
+            pubkey::Pubkey,
+            signature::{Keypair, Signer},
+            system_program,
+            system_transaction::transfer,
+            transaction::VersionedTransaction,
+        },
+        std::{collections::HashSet, sync::Arc},
+        uuid::Uuid,
+    };
 
     #[test]
-    fn test_simple_push_pop() {}
+    fn test_single_tx_bundle_push_pop() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker = BundleAccountLocker::new(4);
+
+        let kp = Keypair::new();
+
+        let tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        };
+
+        bundle_account_locker.push(vec![packet_bundle.clone()]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
+        let locked_bundle = bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .unwrap();
+        assert_eq!(locked_bundle.sanitized_bundle.transactions.len(), 1);
+        assert_eq!(
+            locked_bundle.sanitized_bundle.transactions[0].signature(),
+            &tx.signatures[0]
+        );
+
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from([system_program::id()])
+        );
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from([mint_keypair.pubkey(), kp.pubkey()])
+        );
+
+        bundle_account_locker.unlock_bundle(locked_bundle);
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.write_locks().is_empty());
+    }
+
+    #[test]
+    fn test_multi_tx_bundle_push_pop() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker = BundleAccountLocker::new(4);
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+
+        let tx1 = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp1.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let tx2 = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp2.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+
+        let packet1 = Packet::from_data(None, &tx1).unwrap();
+        let packet2 = Packet::from_data(None, &tx2).unwrap();
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet1, packet2]),
+            uuid: Uuid::new_v4(),
+        };
+
+        bundle_account_locker.push(vec![packet_bundle.clone()]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
+        let locked_bundle = bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .unwrap();
+        assert_eq!(locked_bundle.sanitized_bundle.transactions.len(), 2);
+        assert_eq!(
+            locked_bundle.sanitized_bundle.transactions[0].signature(),
+            &tx1.signatures[0]
+        );
+        assert_eq!(
+            locked_bundle.sanitized_bundle.transactions[1].signature(),
+            &tx2.signatures[0]
+        );
+
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from([system_program::id()])
+        );
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from([mint_keypair.pubkey(), kp1.pubkey(), kp2.pubkey()])
+        );
+
+        bundle_account_locker.unlock_bundle(locked_bundle);
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.write_locks().is_empty());
+    }
+
+    #[test]
+    fn test_multi_bundle_push_pop() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker = BundleAccountLocker::new(1);
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+
+        let tx1 = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp1.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let tx2 = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp2.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+
+        let packet1 = Packet::from_data(None, &tx1).unwrap();
+        let packet2 = Packet::from_data(None, &tx2).unwrap();
+
+        let packet_bundle_1 = PacketBundle {
+            batch: PacketBatch::new(vec![packet1]),
+            uuid: Uuid::new_v4(),
+        };
+
+        let packet_bundle_2 = PacketBundle {
+            batch: PacketBatch::new(vec![packet2]),
+            uuid: Uuid::new_v4(),
+        };
+
+        bundle_account_locker.push(vec![packet_bundle_1.clone(), packet_bundle_2.clone()]);
+        assert_eq!(bundle_account_locker.num_bundles(), 2);
+
+        let locked_bundle = bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .unwrap();
+        assert_eq!(locked_bundle.sanitized_bundle.transactions.len(), 1);
+        assert_eq!(
+            locked_bundle.sanitized_bundle.transactions[0].signature(),
+            &tx1.signatures[0]
+        );
+
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from([system_program::id()])
+        );
+        // pre-lock is being used, so kp2 in packet_bundle_2 is locked ahead of time
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from([mint_keypair.pubkey(), kp1.pubkey(), kp2.pubkey()])
+        );
+
+        bundle_account_locker.unlock_bundle(locked_bundle);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
+        // packet_bundle_1 is unlocked, so the lock should just contain contents for packet_bundle_2
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from([system_program::id()])
+        );
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from([mint_keypair.pubkey(), kp2.pubkey()])
+        );
+
+        // this shall be packet_bundle_2
+        let locked_bundle = bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .unwrap();
+        assert_eq!(locked_bundle.sanitized_bundle.transactions.len(), 1);
+        assert_eq!(
+            locked_bundle.sanitized_bundle.transactions[0].signature(),
+            &tx2.signatures[0]
+        );
+
+        // locks shall just be for packet_bundle_2
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from([system_program::id()])
+        );
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from([mint_keypair.pubkey(), kp2.pubkey()])
+        );
+
+        bundle_account_locker.unlock_bundle(locked_bundle);
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.write_locks().is_empty());
+    }
+
+    #[test]
+    fn test_fails_to_pop_consensus_acc() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker = BundleAccountLocker::new(4);
+
+        let kp = Keypair::new();
+
+        let tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        };
+
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
+        // fails to pop because bundle mentions consensus_accounts_cache
+        let consensus_accounts_cache = HashSet::from([kp.pubkey()]);
+        assert!(bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &consensus_accounts_cache)
+            .is_none());
+
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.write_locks().is_empty());
+    }
+
+    #[test]
+    fn test_duplicate_transactions_fails_to_lock() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker = BundleAccountLocker::new(4);
+
+        let kp = Keypair::new();
+
+        let tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
+
+        // bundle with a duplicate transaction
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet.clone(), packet]),
+            uuid: Uuid::new_v4(),
+        };
+
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
+        // fails to pop because bundle it locks the same transaction twice
+        assert!(bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .is_none());
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.write_locks().is_empty());
+    }
+
+    #[test]
+    fn test_bad_blockhash_fails_to_lock() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker = BundleAccountLocker::new(4);
+
+        let kp = Keypair::new();
+
+        let tx =
+            VersionedTransaction::from(transfer(&mint_keypair, &kp.pubkey(), 1, Hash::default()));
+        let packet = Packet::from_data(None, &tx).unwrap();
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet.clone(), packet]),
+            uuid: Uuid::new_v4(),
+        };
+
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
+        // fails to pop because bundle has bad blockhash
+        assert!(bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .is_none());
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.write_locks().is_empty());
+    }
+
+    #[test]
+    fn test_transaction_already_processed_fails_to_lock() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker = BundleAccountLocker::new(4);
+
+        let kp = Keypair::new();
+
+        let tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet.clone()]),
+            uuid: Uuid::new_v4(),
+        };
+
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
+        let locked_bundle = bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .unwrap();
+
+        let results = bank
+            .process_entry_transactions(vec![
+                locked_bundle.sanitized_bundle.transactions[0].to_versioned_transaction()
+            ]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], Ok(()));
+        bundle_account_locker.unlock_bundle(locked_bundle);
+
+        // try to process the same one again shall fail
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        };
+        bundle_account_locker.push(vec![packet_bundle]);
+
+        assert!(bundle_account_locker
+            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .is_none());
+        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.write_locks().is_empty());
+    }
+
+    #[test]
+    fn test_transaction_fails_to_sanitize_returns_next_bundle() {}
+
+    #[test]
+    fn test_revert_unlocks_accounts() {}
+
+    #[test]
+    fn test_failed_sanitized_bundle_fails_pop() {}
 
     #[test]
     fn test_txv2_single_push_pop() {}
@@ -402,5 +848,5 @@ mod tests {
     fn test_txv2_addr_changes() {}
 
     #[test]
-    fn test_locking() {}
+    fn test_push_front() {}
 }
