@@ -469,7 +469,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle.clone()]);
+        bundle_account_locker.push(vec![packet_bundle]);
         assert_eq!(bundle_account_locker.num_bundles(), 1);
 
         let locked_bundle = bundle_account_locker
@@ -533,7 +533,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle.clone()]);
+        bundle_account_locker.push(vec![packet_bundle]);
         assert_eq!(bundle_account_locker.num_bundles(), 1);
 
         let locked_bundle = bundle_account_locker
@@ -606,7 +606,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle_1.clone(), packet_bundle_2.clone()]);
+        bundle_account_locker.push(vec![packet_bundle_1, packet_bundle_2]);
         assert_eq!(bundle_account_locker.num_bundles(), 2);
 
         let locked_bundle = bundle_account_locker
