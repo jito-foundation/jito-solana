@@ -14,7 +14,6 @@ use {
         bundle_account_locker::BundleAccountLocker,
         leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         qos_service::QosService,
-        tip_manager::TipManager,
         unprocessed_packet_batches::*,
     },
     solana_entry::entry::{next_hash, Entry},
@@ -32,7 +31,7 @@ use {
         genesis_config::GenesisConfig,
         hash::Hash,
         message::Message,
-        pubkey::{self, Pubkey},
+        pubkey::{self},
         signature::{Keypair, Signature, Signer},
         system_instruction, system_transaction,
         timing::{duration_as_us, timestamp},
@@ -40,6 +39,7 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
+        collections::HashSet,
         sync::{atomic::Ordering, Arc, Mutex, RwLock},
         time::{Duration, Instant},
     },
@@ -94,7 +94,6 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
         let (s, _r) = unbounded();
 
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
-        let tip_program = Pubkey::new_unique();
 
         // This tests the performance of buffering packets.
         // If the packet buffers are copied, performance will be poor.
@@ -112,7 +111,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 10,
-                &tip_program,
+                &HashSet::default(),
                 &bundle_account_locker,
             );
         });
@@ -237,7 +236,6 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
-        let tip_manager = TipManager::new(Pubkey::new_unique());
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
         let _banking_stage = BankingStage::new(
             &cluster_info,
@@ -249,7 +247,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             s,
             Arc::new(RwLock::new(CostModel::default())),
             Arc::new(ConnectionCache::default()),
-            tip_manager,
+            HashSet::new(),
             bundle_account_locker,
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
