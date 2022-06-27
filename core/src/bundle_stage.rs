@@ -328,6 +328,7 @@ impl BundleStage {
             let chunk_end = std::cmp::min(sanitized_bundle.transactions.len(), chunk_start + 128);
             let chunk = &sanitized_bundle.transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk, None);
+            error!("chunk_start: {:?}, batch: {:?}", chunk_start, batch);
             if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
                 return Err(e.into());
             }
@@ -534,7 +535,7 @@ impl BundleStage {
     ///     bundle is empty
     ///     bundle packet length is not equal to transaction length
     ///     bundle contains duplicate transactions
-    ///     TODO: bundle contains previously processed transactions
+    ///     TODO: bundle contains previously processed transactions (lucas said some bank function can check this)
     fn valid_bundle(transactions: &Vec<SanitizedTransaction>, bundle: Bundle) -> bool {
         if transactions.is_empty() || bundle.batch.packets.len() != transactions.len() {
             return false;
