@@ -237,9 +237,15 @@ impl BundleStage {
 
         // qos rate-limited a tx in here, drop the bundle
         if sanitized_bundle.transactions.len() != num_included {
+            QosService::remove_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+                &bank_start.working_bank,
+            );
             return Err(BundleExecutionError::ExceedsCostModel);
         }
 
+        // accumulates QoS to metrics
         qos_service.accumulate_estimated_transaction_costs(
             &Self::accumulate_batched_transaction_costs(
                 tx_costs.iter(),
@@ -615,6 +621,7 @@ impl BundleStage {
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
         poh_recorder: &Arc<Mutex<PohRecorder>>,
     ) -> BundleExecutionResult<BankStart> {
+        // TODO (LB): drop bundle here if not leader anymore
         loop {
             let poh_recorder_bank = poh_recorder.lock().unwrap().get_poh_recorder_bank();
             let working_bank_start = poh_recorder_bank.working_bank_start();
@@ -710,8 +717,10 @@ impl BundleStage {
 
     /// Executes as many bundles as possible until there's no more bundles to execute or the slot
     /// is finished.
+    #[allow(clippy::too_many_arguments)]
     fn execute_bundles_until_empty_or_end_of_slot(
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bank_start: BankStart,
         consensus_accounts_cache: &HashSet<Pubkey>,
         cluster_info: &Arc<ClusterInfo>,
@@ -723,6 +732,8 @@ impl BundleStage {
     ) -> BundleExecutionResult<()> {
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         loop {
+            // ensure bundle_account_locker is topped off so it can lock accounts ahead of time
+            Self::try_recv_bundles(bundle_receiver, bundle_account_locker)?;
             let maybe_bundle = bundle_account_locker.lock().unwrap().pop(
                 &bank_start.working_bank,
                 &tip_manager.program_id(),
@@ -775,7 +786,7 @@ impl BundleStage {
                             bundle_account_locker
                                 .lock()
                                 .unwrap()
-                                .unlock_bundle(locked_bundle);
+                                .unlock_bundle_accounts(locked_bundle);
                         }
                         Err(BundleExecutionError::PohMaxHeightError) => {
                             // re-schedule bundle to be executed after grabbing a new bank
@@ -785,12 +796,12 @@ impl BundleStage {
                                 .push_front(locked_bundle);
                             return Err(BundleExecutionError::PohMaxHeightError);
                         }
-                        Err(BundleExecutionError::ExceedsCostModel) => {
-                            // right now we'll just drop this bundle
-                            // in the future, we may want to try to reschedule
-                        }
                         Err(e) => {
                             // keep going
+                            bundle_account_locker
+                                .lock()
+                                .unwrap()
+                                .unlock_bundle_accounts(locked_bundle);
                             error!("error executing bundle {:?}", e);
                         }
                     }
@@ -849,6 +860,7 @@ impl BundleStage {
                     );
                     match Self::execute_bundles_until_empty_or_end_of_slot(
                         &bundle_account_locker,
+                        &bundle_receiver,
                         bank_start,
                         &consensus_accounts_cache,
                         &cluster_info,

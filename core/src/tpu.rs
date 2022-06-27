@@ -250,6 +250,14 @@ impl Tpu {
 
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(3)));
 
+        // tip accounts can't be used in BankingStage. This makes handling race conditions
+        // for tip-related things in BundleStage easier.
+        // TODO (LB): once there's a unified scheduler, we should allow tips in BankingStage
+        //  and treat them w/ a priority similar to ComputeBudget::SetComputeUnitPrice
+        let mut tip_accounts = tip_manager.get_tip_accounts();
+        tip_accounts.insert(tip_manager.config_pubkey());
+        tip_accounts.insert(tip_manager.program_id());
+
         let banking_stage = BankingStage::new(
             cluster_info,
             poh_recorder,
@@ -260,7 +268,7 @@ impl Tpu {
             replay_vote_sender.clone(),
             cost_model.clone(),
             connection_cache.clone(),
-            tip_manager.clone(),
+            tip_accounts,
             bundle_account_locker.clone(),
         );
 

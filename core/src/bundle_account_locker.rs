@@ -97,6 +97,9 @@ pub struct BundleAccountLocker {
 /// When bundle stage is multi-threaded, we'll need to make this a scheduler that supports scheduling
 /// bundles across multiple threads and self-references read and write locks when determining what to schedule.
 impl BundleAccountLocker {
+    // A larger num_bundle_batches_prelock means BankingStage may get blocked waiting for bundle to
+    // execute. A smaller num_bundle_batches_prelock means BundleStage may get blocked waiting for
+    // AccountInUse to disappear before execution.
     pub fn new(num_bundle_batches_prelock: u64) -> BundleAccountLocker {
         BundleAccountLocker {
             num_bundle_batches_prelock,
@@ -147,12 +150,13 @@ impl BundleAccountLocker {
         // pre-lock bundles up to num_bundle_batches_prelock
         // +1 because it will immediately pop one off
         while !self.unlocked_bundles.is_empty()
-            && self.locked_bundles.len() < self.num_bundle_batches_prelock as usize + 1
+            && self.locked_bundles.len() <= self.num_bundle_batches_prelock as usize + 1
         {
             let bundle = self.unlocked_bundles.pop_front().unwrap();
-            match Self::get_locked_bundle(&bundle, bank, tip_program_id, consensus_accounts_cache) {
+            match Self::get_lockable_bundle(&bundle, bank, tip_program_id, consensus_accounts_cache)
+            {
                 Ok(locked_bundle) => {
-                    self.lock_bundle(&locked_bundle);
+                    self.lock_bundle_accounts(&locked_bundle);
                     self.locked_bundles.push_back(locked_bundle);
                 }
                 Err(e) => {
@@ -165,7 +169,9 @@ impl BundleAccountLocker {
             // SAFETY: only runs this loop if it's not empty, unwrap shall always succeed
             let old_locked_bundle = self.locked_bundles.pop_front().unwrap();
 
-            let new_locked_bundle = match Self::get_locked_bundle(
+            // NOTE: the bank may have changed between when the transaction when originally
+            // locked and this moment in time
+            let new_locked_bundle = match Self::get_lockable_bundle(
                 old_locked_bundle.packet_bundle(),
                 bank,
                 tip_program_id,
@@ -174,7 +180,7 @@ impl BundleAccountLocker {
                 Ok(new_locked_bundle) => new_locked_bundle,
                 Err(e) => {
                     error!("dropping bundle error: {:?}", e);
-                    self.unlock_bundle(old_locked_bundle);
+                    self.unlock_bundle_accounts(old_locked_bundle);
                     continue;
                 }
             };
@@ -184,8 +190,8 @@ impl BundleAccountLocker {
             if new_locked_bundle.read_locks() != old_locked_bundle.read_locks()
                 || new_locked_bundle.write_locks() != old_locked_bundle.write_locks()
             {
-                self.unlock_bundle(old_locked_bundle);
-                self.lock_bundle(&new_locked_bundle);
+                self.unlock_bundle_accounts(old_locked_bundle);
+                self.lock_bundle_accounts(&new_locked_bundle);
             }
 
             return Some(new_locked_bundle);
@@ -193,7 +199,7 @@ impl BundleAccountLocker {
         None
     }
 
-    fn get_locked_bundle(
+    fn get_lockable_bundle(
         packet_bundle: &PacketBundle,
         bank: &Arc<Bank>,
         tip_program_id: &Pubkey,
@@ -216,7 +222,7 @@ impl BundleAccountLocker {
         ))
     }
 
-    fn lock_bundle(&mut self, locked_bundle: &LockedBundle) {
+    fn lock_bundle_accounts(&mut self, locked_bundle: &LockedBundle) {
         for (acc, count) in locked_bundle.read_locks() {
             *self.read_locks.entry(*acc).or_insert(0) += count;
         }
@@ -273,22 +279,22 @@ impl BundleAccountLocker {
     /// unlocks any pre-locked accounts in this bundle
     /// the caller is responsible for ensuring the LockedBundle passed in here was returned from
     /// BundleScheduler::pop as an already-scheduled bundle.
-    pub fn unlock_bundle(&mut self, locked_bundle: LockedBundle) {
+    pub fn unlock_bundle_accounts(&mut self, locked_bundle: LockedBundle) {
         for (acc, count) in locked_bundle.read_locks() {
-            if let Entry::Occupied(mut e) = self.read_locks.entry(*acc) {
-                let val = e.get_mut();
+            if let Entry::Occupied(mut entry) = self.read_locks.entry(*acc) {
+                let val = entry.get_mut();
                 *val = val.saturating_sub(*count);
-                if e.get() == &0 {
-                    let _ = e.remove();
+                if entry.get() == &0 {
+                    let _ = entry.remove();
                 }
             }
         }
         for (acc, count) in locked_bundle.write_locks() {
-            if let Entry::Occupied(mut e) = self.write_locks.entry(*acc) {
-                let val = e.get_mut();
+            if let Entry::Occupied(mut entry) = self.write_locks.entry(*acc) {
+                let val = entry.get_mut();
                 *val = val.saturating_sub(*count);
-                if e.get() == &0 {
-                    let _ = e.remove();
+                if entry.get() == &0 {
+                    let _ = entry.remove();
                 }
             }
         }
@@ -333,6 +339,9 @@ impl BundleAccountLocker {
             MAX_PROCESSING_AGE,
             &mut metrics,
         );
+
+        // TODO: check to see if any accounts are owned by lookup table and write-locked and if so, fail
+        // TODO: can also do this on backend? requires reading from Accounts which may be slow
 
         if transactions.is_empty()
             || bundle.batch.packets.len() != transactions.len()
@@ -482,7 +491,7 @@ mod tests {
             HashSet::from([mint_keypair.pubkey(), kp.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle(locked_bundle);
+        bundle_account_locker.unlock_bundle_accounts(locked_bundle);
         assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
@@ -550,7 +559,7 @@ mod tests {
             HashSet::from([mint_keypair.pubkey(), kp1.pubkey(), kp2.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle(locked_bundle);
+        bundle_account_locker.unlock_bundle_accounts(locked_bundle);
         assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
@@ -620,7 +629,7 @@ mod tests {
             HashSet::from([mint_keypair.pubkey(), kp1.pubkey(), kp2.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle(locked_bundle);
+        bundle_account_locker.unlock_bundle_accounts(locked_bundle);
         assert_eq!(bundle_account_locker.num_bundles(), 1);
 
         // packet_bundle_1 is unlocked, so the lock should just contain contents for packet_bundle_2
@@ -653,7 +662,7 @@ mod tests {
             HashSet::from([mint_keypair.pubkey(), kp2.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle(locked_bundle);
+        bundle_account_locker.unlock_bundle_accounts(locked_bundle);
         assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
@@ -815,7 +824,7 @@ mod tests {
             ]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], Ok(()));
-        bundle_account_locker.unlock_bundle(locked_bundle);
+        bundle_account_locker.unlock_bundle_accounts(locked_bundle);
 
         // try to process the same one again shall fail
         let packet_bundle = PacketBundle {
@@ -832,21 +841,28 @@ mod tests {
         assert!(bundle_account_locker.write_locks().is_empty());
     }
 
-    #[test]
-    fn test_transaction_fails_to_sanitize_returns_next_bundle() {}
-
-    #[test]
-    fn test_revert_unlocks_accounts() {}
-
-    #[test]
-    fn test_failed_sanitized_bundle_fails_pop() {}
-
-    #[test]
-    fn test_txv2_single_push_pop() {}
-
-    #[test]
-    fn test_txv2_addr_changes() {}
-
-    #[test]
-    fn test_push_front() {}
+    // TODO (LB): complete in follow-up PR
+    // #[test]
+    // fn test_transaction_fails_to_sanitize_returns_next_bundle() {}
+    //
+    // #[test]
+    // fn test_vote_only_mode_fails_to_pop_and_unlocks_account() {
+    //     // shows that if we send two bundles in then go into vote-only mode, no bundles
+    //     // will be popped and locked accounts will be empty
+    // }
+    //
+    // #[test]
+    // fn test_revert_unlocks_accounts() {}
+    //
+    // #[test]
+    // fn test_failed_sanitized_bundle_fails_pop() {}
+    //
+    // #[test]
+    // fn test_txv2_single_push_pop() {}
+    //
+    // #[test]
+    // fn test_txv2_addr_changes() {}
+    //
+    // #[test]
+    // fn test_push_front() {}
 }

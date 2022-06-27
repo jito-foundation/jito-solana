@@ -10,7 +10,6 @@ use {
         },
         qos_service::{CommitTransactionDetails, QosService},
         sigverify::SigverifyTracerPacketStats,
-        tip_manager::TipManager,
         tracer_packet_stats::TracerPacketStats,
         unprocessed_packet_batches::{self, *},
     },
@@ -69,7 +68,7 @@ use {
     },
     std::{
         cmp,
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         env,
         net::SocketAddr,
         rc::Rc,
@@ -418,7 +417,7 @@ impl BankingStage {
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
         connection_cache: Arc<ConnectionCache>,
-        tip_manager: TipManager,
+        tip_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) -> Self {
         Self::new_num_threads(
@@ -432,7 +431,7 @@ impl BankingStage {
             gossip_vote_sender,
             cost_model,
             connection_cache,
-            tip_manager,
+            tip_accounts,
             bundle_account_locker,
         )
     }
@@ -449,7 +448,7 @@ impl BankingStage {
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
         connection_cache: Arc<ConnectionCache>,
-        tip_manager: TipManager,
+        tip_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
@@ -483,7 +482,7 @@ impl BankingStage {
                 let data_budget = data_budget.clone();
                 let cost_model = cost_model.clone();
                 let connection_cache = connection_cache.clone();
-                let tip_manager = tip_manager.clone();
+                let tip_accounts = tip_accounts.clone();
                 let bundle_account_locker = bundle_account_locker.clone();
 
                 Builder::new()
@@ -502,7 +501,7 @@ impl BankingStage {
                             &data_budget,
                             cost_model,
                             connection_cache,
-                            tip_manager,
+                            tip_accounts,
                             bundle_account_locker,
                         );
                     })
@@ -658,7 +657,7 @@ impl BankingStage {
         qos_service: &QosService,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         num_packets_to_process_per_iteration: usize,
-        tip_program: &Pubkey,
+        tip_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) {
         let mut rebuffered_packet_count = 0;
@@ -707,7 +706,7 @@ impl BankingStage {
                                     banking_stage_stats,
                                     qos_service,
                                     slot_metrics_tracker,
-                                    tip_program,
+                                    tip_accounts,
                                 bundle_account_locker
                                 ),
                             "process_packets_transactions",
@@ -838,7 +837,7 @@ impl BankingStage {
                     my_pubkey,
                     end_of_slot.next_slot_leader,
                     banking_stage_stats,
-                    tip_program,
+                    tip_accounts,
                 );
 
             inc_new_counter_info!(
@@ -932,7 +931,7 @@ impl BankingStage {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         connection_cache: &ConnectionCache,
         tracer_packet_stats: &mut TracerPacketStats,
-        tip_program: &Pubkey,
+        tip_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
@@ -993,7 +992,7 @@ impl BankingStage {
                         qos_service,
                         slot_metrics_tracker,
                         UNPROCESSED_BUFFER_STEP_SIZE,
-                        tip_program,
+                        tip_accounts,
                         bundle_account_locker
                     ),
                     "consume_buffered_packets",
@@ -1123,7 +1122,7 @@ impl BankingStage {
         data_budget: &DataBudget,
         cost_model: Arc<RwLock<CostModel>>,
         connection_cache: Arc<ConnectionCache>,
-        tip_manager: TipManager,
+        tip_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) {
         let recorder = poh_recorder.lock().unwrap().recorder();
@@ -1135,7 +1134,6 @@ impl BankingStage {
         let mut slot_metrics_tracker = LeaderSlotMetricsTracker::new(id);
         let mut last_metrics_update = Instant::now();
 
-        let tip_program = tip_manager.program_id();
         loop {
             let my_pubkey = cluster_info.id();
             if !buffered_packet_batches.is_empty()
@@ -1157,7 +1155,7 @@ impl BankingStage {
                         &mut slot_metrics_tracker,
                         &connection_cache,
                         &mut tracer_packet_stats,
-                        &tip_program,
+                        &tip_accounts,
                         &bundle_account_locker
                     ),
                     "process_buffered_packets",
@@ -1851,7 +1849,7 @@ impl BankingStage {
         feature_set: &Arc<feature_set::FeatureSet>,
         votes_only: bool,
         address_loader: impl AddressLoader,
-        tip_program: &Pubkey,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Option<SanitizedTransaction> {
         if votes_only && !deserialized_packet.is_simple_vote() {
             return None;
@@ -1866,10 +1864,10 @@ impl BankingStage {
         .ok()?;
         tx.verify_precompiles(feature_set).ok()?;
 
-        // NOTE: if this is a weak assumption helpful for testing deployment,
-        // before production it shall only be the tip program
+        // TODO (LB): this is a weak assumption helpful for testing deployment,
+        //  before production it shall only be the tip program
         let tx_accounts = tx.message().account_keys();
-        if tx_accounts.iter().any(|a| a == tip_program)
+        if tx_accounts.iter().any(|a| tip_accounts.contains(a))
             && !tx_accounts
                 .iter()
                 .any(|a| a == &bpf_loader_upgradeable::id())
@@ -1950,7 +1948,7 @@ impl BankingStage {
         banking_stage_stats: &'a BankingStageStats,
         qos_service: &'a QosService,
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
-        tip_program: &Pubkey,
+        tip_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionsSummary {
         // Convert packets to transactions
@@ -1966,7 +1964,7 @@ impl BankingStage {
                         &bank.feature_set,
                         bank.vote_only_bank(),
                         bank.as_ref(),
-                        tip_program,
+                        tip_accounts,
                     )
                     .map(|transaction| (transaction, i))
                 })
@@ -2057,7 +2055,7 @@ impl BankingStage {
         my_pubkey: &Pubkey,
         next_leader: Option<Pubkey>,
         banking_stage_stats: &BankingStageStats,
-        tip_program: &Pubkey,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> usize {
         // Check if we are the next leader. If so, let's not filter the packets
         // as we'll filter it again while processing the packets.
@@ -2081,7 +2079,7 @@ impl BankingStage {
                     &bank.feature_set,
                     bank.vote_only_bank(),
                     bank.as_ref(),
-                    tip_program,
+                    tip_accounts,
                 )
                 .is_some()
             };
@@ -2385,7 +2383,6 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = TipManager::new(Keypair::new().pubkey());
             let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
             let banking_stage = BankingStage::new(
@@ -2398,7 +2395,7 @@ mod tests {
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
                 Arc::new(ConnectionCache::default()),
-                tip_manager,
+                HashSet::default(),
                 bundle_account_locker,
             );
             drop(verified_sender);
@@ -2440,7 +2437,6 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = TipManager::new(Keypair::new().pubkey());
             let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
             let banking_stage = BankingStage::new(
@@ -2453,7 +2449,7 @@ mod tests {
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
                 Arc::new(ConnectionCache::default()),
-                tip_manager,
+                HashSet::default(),
                 bundle_account_locker,
             );
             trace!("sending bank");
@@ -2525,7 +2521,6 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_manager = TipManager::new(Keypair::new().pubkey());
             let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2537,7 +2532,7 @@ mod tests {
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
                 Arc::new(ConnectionCache::default()),
-                tip_manager,
+                HashSet::default(),
                 bundle_account_locker,
             );
 
@@ -2686,7 +2681,6 @@ mod tests {
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
 
-                let tip_manager = TipManager::new(Keypair::new().pubkey());
                 let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
                 let _banking_stage = BankingStage::new_num_threads(
@@ -2700,7 +2694,7 @@ mod tests {
                     gossip_vote_sender,
                     Arc::new(RwLock::new(CostModel::default())),
                     Arc::new(ConnectionCache::default()),
-                    tip_manager,
+                    HashSet::default(),
                     bundle_account_locker,
                 );
 
@@ -4102,7 +4096,6 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let tip_program_id = Keypair::new().pubkey();
             let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
             // When the working bank in poh_recorder is None, no packets should be processed
@@ -4121,7 +4114,7 @@ mod tests {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 num_conflicting_transactions,
-                &tip_program_id,
+                &HashSet::default(),
                 &bundle_account_locker,
             );
             assert_eq!(buffered_packet_batches.len(), num_conflicting_transactions);
@@ -4143,7 +4136,7 @@ mod tests {
                     &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                     &mut LeaderSlotMetricsTracker::new(0),
                     num_packets_to_process_per_iteration,
-                    &tip_program_id,
+                    &HashSet::default(),
                     &bundle_account_locker,
                 );
                 if num_expected_unprocessed == 0 {
@@ -4206,7 +4199,6 @@ mod tests {
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
 
-                    let tip_program_id = Keypair::new().pubkey();
                     let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
                     BankingStage::consume_buffered_packets(
@@ -4222,7 +4214,7 @@ mod tests {
                         &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                         &mut LeaderSlotMetricsTracker::new(0),
                         num_packets_to_process_per_iteration,
-                        &tip_program_id,
+                        &HashSet::default(),
                         &bundle_account_locker,
                     );
 
@@ -4509,8 +4501,6 @@ mod tests {
             None,
         );
 
-        let tip_program = Keypair::new().pubkey();
-
         // packets with no votes
         {
             let vote_indexes = vec![];
@@ -4524,7 +4514,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
-                    &tip_program,
+                    &HashSet::default(),
                 )
             });
             assert_eq!(2, txs.count());
@@ -4536,7 +4526,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
-                    &tip_program,
+                    &HashSet::default(),
                 )
             });
             assert_eq!(0, txs.count());
@@ -4557,7 +4547,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
-                    &tip_program,
+                    &HashSet::default(),
                 )
             });
             assert_eq!(3, txs.count());
@@ -4569,7 +4559,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
-                    &tip_program,
+                    &HashSet::default(),
                 )
             });
             assert_eq!(2, txs.count());
@@ -4590,7 +4580,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
-                    &tip_program,
+                    &HashSet::default(),
                 )
             });
             assert_eq!(3, txs.count());
@@ -4602,7 +4592,7 @@ mod tests {
                     &Arc::new(FeatureSet::default()),
                     votes_only,
                     SimpleAddressLoader::Disabled,
-                    &tip_program,
+                    &HashSet::default(),
                 )
             });
             assert_eq!(3, txs.count());
