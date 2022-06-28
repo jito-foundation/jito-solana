@@ -69,7 +69,7 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
-    mev_stage: RelayerStage,
+    relayer_stage: RelayerStage,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -221,7 +221,7 @@ impl Tpu {
 
         let (bundle_sender, bundle_receiver) = unbounded();
 
-        let mev_stage = RelayerStage::new(
+        let relayer_stage = RelayerStage::new(
             cluster_info,
             relayer_address,
             block_engine_address,
@@ -305,7 +305,7 @@ impl Tpu {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
-            mev_stage,
+            relayer_stage,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -344,7 +344,7 @@ impl Tpu {
             self.find_packet_sender_stake_stage.join(),
             self.vote_find_packet_sender_stake_stage.join(),
             self.staked_nodes_updater_service.join(),
-            self.mev_stage.join(),
+            self.relayer_stage.join(),
             self.bundle_stage.join(),
         ];
         if let Some(tpu_quic_t) = self.tpu_quic_t {

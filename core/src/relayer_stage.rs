@@ -52,7 +52,7 @@ use {
 
 pub struct RelayerStage {
     _heartbeat_sender: Sender<HeartbeatEvent>,
-    proxy_threads: Vec<JoinHandle<()>>,
+    relayer_threads: Vec<JoinHandle<()>>,
     heartbeat_thread: JoinHandle<()>,
 }
 
@@ -133,7 +133,7 @@ impl RelayerStage {
 
         Self {
             _heartbeat_sender: tpu_proxy_heartbeat_sender,
-            proxy_threads,
+            relayer_threads: proxy_threads,
             heartbeat_thread,
         }
     }
@@ -540,7 +540,7 @@ impl RelayerStage {
     }
 
     pub fn join(self) -> thread::Result<()> {
-        for t in self.proxy_threads {
+        for t in self.relayer_threads {
             t.join()?;
         }
         self.heartbeat_thread.join()?;

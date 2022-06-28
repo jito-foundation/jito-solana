@@ -1778,7 +1778,7 @@ pub fn main() {
         .arg(
             Arg::with_name("block_engine_address")
                 .long("block-engine-address")
-                .value_name("relayer_address")
+                .value_name("block_engine_address")
                 .takes_value(true)
                 .help("Address of the block engine")
         )
