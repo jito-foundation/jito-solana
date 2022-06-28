@@ -64,7 +64,8 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         ledger_column_options: config.ledger_column_options.clone(),
         runtime_config: config.runtime_config.clone(),
         enable_quic_servers: config.enable_quic_servers,
-        validator_interface_address: config.validator_interface_address.clone(),
+        relayer_address: config.relayer_address.clone(),
+        block_engine_address: config.block_engine_address.clone(),
         tip_program_pubkey: config.tip_program_pubkey,
         shred_receiver_address: config.shred_receiver_address,
     }

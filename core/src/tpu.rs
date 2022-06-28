@@ -13,7 +13,7 @@ use {
         },
         fetch_stage::FetchStage,
         find_packet_sender_stake_stage::FindPacketSenderStakeStage,
-        mev_stage::MevStage,
+        relayer_stage::RelayerStage,
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
@@ -69,7 +69,7 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
-    mev_stage: MevStage,
+    relayer_stage: RelayerStage,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -108,7 +108,8 @@ impl Tpu {
         connection_cache: &Arc<ConnectionCache>,
         keypair: &Keypair,
         enable_quic_servers: bool,
-        validator_interface_address: String,
+        relayer_address: String,
+        block_engine_address: String,
         tip_program_pubkey: Pubkey,
         shred_receiver_address: Option<SocketAddr>,
     ) -> Self {
@@ -220,9 +221,10 @@ impl Tpu {
 
         let (bundle_sender, bundle_receiver) = unbounded();
 
-        let mev_stage = MevStage::new(
+        let relayer_stage = RelayerStage::new(
             cluster_info,
-            validator_interface_address,
+            relayer_address,
+            block_engine_address,
             verified_sender,
             bundle_sender,
             packet_intercept_receiver,
@@ -303,7 +305,7 @@ impl Tpu {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
-            mev_stage,
+            relayer_stage,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -342,7 +344,7 @@ impl Tpu {
             self.find_packet_sender_stake_stage.join(),
             self.vote_find_packet_sender_stake_stage.join(),
             self.staked_nodes_updater_service.join(),
-            self.mev_stage.join(),
+            self.relayer_stage.join(),
             self.bundle_stage.join(),
         ];
         if let Some(tpu_quic_t) = self.tpu_quic_t {

@@ -177,7 +177,8 @@ pub struct ValidatorConfig {
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
     pub enable_quic_servers: bool,
-    pub validator_interface_address: String,
+    pub relayer_address: String,
+    pub block_engine_address: String,
     pub tip_program_pubkey: Option<Pubkey>,
     pub shred_receiver_address: Option<SocketAddr>,
 }
@@ -242,7 +243,8 @@ impl Default for ValidatorConfig {
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
             enable_quic_servers: false,
-            validator_interface_address: String::new(),
+            relayer_address: String::new(),
+            block_engine_address: String::new(),
             tip_program_pubkey: None,
             shred_receiver_address: None,
         }
@@ -359,7 +361,8 @@ pub struct Validator {
     ledger_metric_report_service: LedgerMetricReportService,
     accounts_background_service: AccountsBackgroundService,
     accounts_hash_verifier: AccountsHashVerifier,
-    pub validator_interface_address: String,
+    pub relayer_address: String,
+    pub block_engine_address: String,
     pub shred_receiver_address: Option<SocketAddr>,
 }
 
@@ -1039,7 +1042,8 @@ impl Validator {
             &connection_cache,
             &identity_keypair,
             enable_quic_servers,
-            config.validator_interface_address.clone(),
+            config.relayer_address.clone(),
+            config.block_engine_address.clone(),
             tip_program_pubkey,
             config.shred_receiver_address,
         );
@@ -1047,7 +1051,11 @@ impl Validator {
         datapoint_info!(
             "validator-new",
             ("id", id.to_string(), String),
-            ("version", solana_version::version!(), String)
+            (
+                "version",
+                format!("jito-{}", solana_version::version!()),
+                String
+            )
         );
 
         *start_progress.write().unwrap() = ValidatorStartProgress::Running;
@@ -1080,7 +1088,8 @@ impl Validator {
             ledger_metric_report_service,
             accounts_background_service,
             accounts_hash_verifier,
-            validator_interface_address: config.validator_interface_address.clone(),
+            relayer_address: config.relayer_address.clone(),
+            block_engine_address: config.block_engine_address.clone(),
             shred_receiver_address: config.shred_receiver_address,
         }
     }
