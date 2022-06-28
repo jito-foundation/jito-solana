@@ -2383,7 +2383,10 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2437,7 +2440,10 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2521,7 +2527,10 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2681,7 +2690,10 @@ mod tests {
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
 
-                let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+                let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                    4,
+                    &Pubkey::new_unique(),
+                )));
 
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
@@ -3005,7 +3017,10 @@ mod tests {
             poh_recorder.lock().unwrap().set_bank(&bank);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3066,7 +3081,10 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3152,7 +3170,10 @@ mod tests {
             poh_recorder.lock().unwrap().set_bank(&bank);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3246,7 +3267,10 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3384,7 +3408,10 @@ mod tests {
             let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3521,7 +3548,10 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let process_transactions_summary = BankingStage::process_transactions(
                 &bank,
@@ -3590,7 +3620,10 @@ mod tests {
 
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            4,
+            &Pubkey::new_unique(),
+        )));
 
         let process_transactions_summary = BankingStage::process_transactions(
             &bank,
@@ -3813,7 +3846,10 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3977,7 +4013,10 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -4096,7 +4135,10 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                4,
+                &Pubkey::new_unique(),
+            )));
 
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.lock().unwrap().has_bank());
@@ -4199,7 +4241,10 @@ mod tests {
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
 
-                    let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+                    let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+                        4,
+                        &Pubkey::new_unique(),
+                    )));
 
                     BankingStage::consume_buffered_packets(
                         &Pubkey::default(),

@@ -734,11 +734,10 @@ impl BundleStage {
         loop {
             // ensure bundle_account_locker is topped off so it can lock accounts ahead of time
             Self::try_recv_bundles(bundle_receiver, bundle_account_locker)?;
-            let maybe_bundle = bundle_account_locker.lock().unwrap().pop(
-                &bank_start.working_bank,
-                &tip_manager.program_id(),
-                consensus_accounts_cache,
-            );
+            let maybe_bundle = bundle_account_locker
+                .lock()
+                .unwrap()
+                .pop(&bank_start.working_bank, consensus_accounts_cache);
             match maybe_bundle {
                 None => {
                     break;

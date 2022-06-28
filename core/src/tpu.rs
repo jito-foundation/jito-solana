@@ -250,8 +250,10 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_program_pubkey);
 
-        let bundle_account_locker =
-            Arc::new(Mutex::new(BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK)));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            NUM_BUNDLES_PRE_LOCK,
+            &tip_manager.program_id(),
+        )));
 
         // tip accounts can't be used in BankingStage. This makes handling race conditions
         // for tip-related things in BundleStage easier.
