@@ -199,8 +199,9 @@ impl BundleAccountLocker {
                 }
             };
 
-            // rollback state and apply new state because transaction serialized differently
-            // this can happen because a change in the lookup table for TX v2
+            // even though we don't allow address table lookups in bundles, banking stage
+            // could have executed a transaction that changed the lookup table in the bank in between
+            // when the bundle was inserted into the locked_bundles queue and when it's ready to execute
             if new_locked_bundle.read_locks() != old_locked_bundle.read_locks()
                 || new_locked_bundle.write_locks() != old_locked_bundle.write_locks()
             {
