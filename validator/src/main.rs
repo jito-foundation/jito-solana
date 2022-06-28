@@ -1769,11 +1769,18 @@ pub fn main() {
                 .hidden(true),
         )
         .arg(
-            Arg::with_name("validator_interface_address")
-                .long("validator-interface-address")
-                .value_name("VALIDATOR_INTERFACE_ADDRESS")
+            Arg::with_name("relayer_address")
+                .long("relayer-address")
+                .value_name("relayer_address")
                 .takes_value(true)
-                .help("Validator interface listening address")
+                .help("Address of the relayer")
+        )
+        .arg(
+            Arg::with_name("block_engine_address")
+                .long("block-engine-address")
+                .value_name("relayer_address")
+                .takes_value(true)
+                .help("Address of the block engine")
         )
         .arg(
             Arg::with_name("tip_program_pubkey")
@@ -2601,8 +2608,8 @@ pub fn main() {
             ..RuntimeConfig::default()
         },
         enable_quic_servers,
-        validator_interface_address: value_of(&matches, "validator_interface_address")
-            .unwrap_or_default(),
+        relayer_address: value_of(&matches, "relayer_address").unwrap_or_default(),
+        block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
         tip_program_pubkey: value_t!(matches.value_of("tip_program_pubkey"), Pubkey).ok(),
         shred_receiver_address: matches
             .value_of("shred_receiver_address")

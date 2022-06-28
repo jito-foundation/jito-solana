@@ -1,4 +1,4 @@
-//! The `mev_stage` maintains a connection with the validator
+//! The `relayer_stage` maintains a connection with the validator
 //! interface and streams packets from TPU proxy to the banking stage.
 //! It notifies the tpu_proxy_advertiser on connect/disconnect.
 
@@ -34,14 +34,14 @@ use {
     uuid::Uuid,
 };
 
-pub struct MevStage {
+pub struct RelayerStage {
     _heartbeat_sender: Sender<HeartbeatEvent>,
-    proxy_thread: JoinHandle<()>,
+    proxy_threads: Vec<JoinHandle<()>>,
     heartbeat_thread: JoinHandle<()>,
 }
 
 #[derive(Error, Debug)]
-pub enum MevStageError {
+pub enum RelayerStageError {
     #[error("proxy error: {0}")]
     ProxyError(#[from] ProxyError),
     #[error("grpc error: {0}")]
@@ -58,9 +58,11 @@ pub enum MevStageError {
     HeartbeatChannelError,
     #[error("error forwarding packet to banking stage")]
     PacketForwardError,
+    #[error("relayer configuration is invalid error: {0:?}")]
+    InvalidRelayerConfig(String),
 }
 
-type Result<T> = std::result::Result<T, MevStageError>;
+type Result<T> = std::result::Result<T, RelayerStageError>;
 type HeartbeatEvent = (SocketAddr, SocketAddr);
 type SubscribePacketsResult = std::result::Result<Option<SubscribePacketsResponse>, Status>;
 
@@ -69,10 +71,11 @@ const DISCONNECT_DELAY_SEC: Duration = Duration::from_secs(60);
 const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
 const METRICS_NAME: &str = "mev_stage";
 
-impl MevStage {
+impl RelayerStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
-        validator_interface_address: String,
+        relayer_address: String,
+        block_engine_address: String,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: Sender<Vec<PacketBundle>>,
         packet_intercept_receiver: Receiver<PacketBatch>,
@@ -87,8 +90,9 @@ impl MevStage {
 
         let (heartbeat_sender, heartbeat_receiver) = unbounded();
 
-        let proxy_thread = Self::spawn_proxy_thread(
-            validator_interface_address,
+        let proxy_threads = Self::spawn_relayer_threads(
+            relayer_address,
+            block_engine_address,
             interceptor,
             verified_packet_sender,
             // if no validator interface address provided, sender side of the channel gets dropped
@@ -113,23 +117,70 @@ impl MevStage {
 
         Self {
             _heartbeat_sender: heartbeat_sender,
-            proxy_thread,
+            proxy_threads,
             heartbeat_thread,
         }
     }
 
-    fn spawn_proxy_thread(
-        validator_interface_address: String,
+    fn spawn_relayer_threads(
+        relayer_address: String,
+        block_engine_address: String,
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         heartbeat_sender: Sender<HeartbeatEvent>,
         bundle_sender: Sender<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
+    ) -> Vec<JoinHandle<()>> {
+        if relayer_address == block_engine_address || relayer_address.is_empty() {
+            // block engine is also a relayer
+            // the block engine can send packets and bundles
+            // the block engine heartbeat controls the TPU address
+            vec![Self::start_proxy_thread(
+                block_engine_address,
+                interceptor,
+                verified_packet_sender,
+                Some(heartbeat_sender),
+                Some(bundle_sender),
+                exit,
+            )]
+        } else {
+            // the relayer acts as the TPU proxy and the block engine sends bundles
+            // both the relayer and block engine can send packets
+            // only the relayer heartbeats and controls the TPU address
+            // only the block engine supports bundles
+            vec![
+                Self::start_proxy_thread(
+                    relayer_address,
+                    interceptor.clone(),
+                    verified_packet_sender.clone(),
+                    Some(heartbeat_sender),
+                    None,
+                    exit.clone(),
+                ),
+                Self::start_proxy_thread(
+                    block_engine_address,
+                    interceptor,
+                    verified_packet_sender,
+                    None,
+                    Some(bundle_sender),
+                    exit.clone(),
+                ),
+            ]
+        }
+    }
+
+    fn start_proxy_thread(
+        address: String,
+        interceptor: AuthenticationInjector,
+        verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        heartbeat_sender: Option<Sender<HeartbeatEvent>>,
+        bundle_sender: Option<Sender<Vec<PacketBundle>>>,
+        exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::Builder::new()
             .name("proxy_thread".into())
             .spawn(move || {
-                if !validator_interface_address.contains("http") {
+                if !address.contains("http") {
                     info!("malformed or missing mev proxy address provided, exiting mev loop");
                     datapoint_info!(METRICS_NAME, ("bad_proxy_addr", 1, i64));
                     return;
@@ -142,16 +193,20 @@ impl MevStage {
                         break;
                     }
                     if let Err(e) = Self::connect_and_stream(
-                        validator_interface_address.clone(),
+                        address.clone(),
                         &interceptor,
-                        &heartbeat_sender,
                         &verified_packet_sender,
-                        &mut backoff,
                         &bundle_sender,
+                        &heartbeat_sender,
+                        &mut backoff,
                         &exit,
                     ) {
-                        error!("spawn_proxy_thread error [error: {:?}]", e);
-                        datapoint_info!(METRICS_NAME, ("proxy_connection_error", 1, i64));
+                        error!("spawn_proxy_thread error: {:?}", e);
+                        datapoint_info!(
+                            METRICS_NAME,
+                            ("proxy_connection_error", 1, i64),
+                            ("addr", address, String)
+                        );
                         thread::sleep(Duration::from_millis(backoff.next_wait()));
                     }
                 }
@@ -199,7 +254,7 @@ impl MevStage {
                                 Ok(pkt) => {
                                     if fetch_connected {
                                         if packet_sender.send(pkt).is_err() {
-                                            error!("{:?}", MevStageError::PacketForwardError);
+                                            error!("{:?}", RelayerStageError::PacketForwardError);
                                             return;
                                         }
                                         packets_forwarded += 1;
@@ -270,7 +325,7 @@ impl MevStage {
     fn handle_packet(
         msg: std::result::Result<SubscribePacketsResult, RecvError>,
         packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        heartbeat_sender: &Sender<HeartbeatEvent>,
+        heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         tpu: &SocketAddr,
         tpu_fwd: &SocketAddr,
     ) -> Result<(usize, usize, bool)> {
@@ -281,12 +336,12 @@ impl MevStage {
             let msg = msg?
                 .ok_or_else(|| {
                     datapoint_info!(METRICS_NAME, ("grpc_stream_disconnected", 1, i64));
-                    MevStageError::GrpcStreamDisconnected
+                    RelayerStageError::GrpcStreamDisconnected
                 })?
                 .msg
                 .ok_or_else(|| {
                     datapoint_info!(METRICS_NAME, ("bad_message", 1, i64));
-                    MevStageError::BadMessage
+                    RelayerStageError::BadMessage
                 })?;
             match msg {
                 Msg::BatchList(batch_wrapper) => {
@@ -307,22 +362,24 @@ impl MevStage {
                         .collect();
                     packet_sender.send((packet_batches, None)).map_err(|_| {
                         datapoint_info!(METRICS_NAME, ("proxy_packet_forward_failed", 1, i64));
-                        MevStageError::ChannelError
+                        RelayerStageError::ChannelError
                     })?;
                 }
                 // The boolean value of heartbeat is meaningless but needs to be a protobuf type
                 Msg::Heartbeat(_) => {
                     // always sends because tpu_proxy has its own fail-safe and can't assume
                     // state
-                    heartbeat_sender.send((*tpu, *tpu_fwd)).map_err(|_| {
-                        datapoint_info!(METRICS_NAME, ("heartbeat_channel_error", 1, i64));
-                        MevStageError::HeartbeatChannelError
-                    })?;
+                    if let Some(heartbeat_sender) = heartbeat_sender {
+                        heartbeat_sender.send((*tpu, *tpu_fwd)).map_err(|_| {
+                            datapoint_info!(METRICS_NAME, ("heartbeat_channel_error", 1, i64));
+                            RelayerStageError::HeartbeatChannelError
+                        })?;
+                    }
                     is_heartbeat = true;
                 }
             }
         } else {
-            return Err(MevStageError::ChannelError);
+            return Err(RelayerStageError::ChannelError);
         }
         Ok((batches_received, packets_received, is_heartbeat))
     }
@@ -332,11 +389,11 @@ impl MevStage {
             std::result::Result<Option<SubscribeBundlesResponse>, Status>,
             RecvError,
         >,
-        bundle_sender: &Sender<Vec<PacketBundle>>,
+        bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
     ) -> Result<()> {
         match msg {
             Ok(msg) => {
-                let response = msg?.ok_or(MevStageError::GrpcStreamDisconnected)?;
+                let response = msg?.ok_or(RelayerStageError::GrpcStreamDisconnected)?;
                 let bundles = response
                     .bundles
                     .into_iter()
@@ -351,27 +408,35 @@ impl MevStage {
                         }
                     })
                     .collect();
-                if let Err(e) = bundle_sender.send(bundles) {
-                    error!("error forwarding bundle: {:?}", e);
+                if let Some(bundle_sender) = bundle_sender {
+                    if let Err(e) = bundle_sender.send(bundles) {
+                        error!("error forwarding bundle: {:?}", e);
+                    }
                 }
             }
-            Err(_) => return Err(MevStageError::ChannelError),
+            Err(_) => return Err(RelayerStageError::ChannelError),
         }
         Ok(())
     }
 
     fn stream_from_proxy(
         mut client: BlockingProxyClient,
-        heartbeat_sender: &Sender<HeartbeatEvent>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
+        heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         tpu: SocketAddr,
         tpu_fwd: SocketAddr,
-        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         backoff: &mut BackoffStrategy,
-        bundle_sender: &Sender<Vec<PacketBundle>>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let packet_receiver = client.subscribe_packets()?;
-        let bundle_receiver = client.subscribe_bundles()?;
+
+        // conditionally create an actual bundle receiver if there's a channel to send on
+        let (_stubbed_sender, mut bundle_receiver) = unbounded();
+
+        if bundle_sender.is_some() {
+            bundle_receiver = client.subscribe_bundles()?;
+        }
 
         let mut heartbeat_received = false;
         let mut received_first_heartbeat = false;
@@ -386,7 +451,7 @@ impl MevStage {
             select! {
                 recv(heartbeat_tick) -> _ => {
                     if exit.load(Ordering::Relaxed) {
-                        return Err(MevStageError::HeartbeatError);
+                        return Err(RelayerStageError::HeartbeatError);
                     }
 
                     if received_first_heartbeat {
@@ -401,7 +466,7 @@ impl MevStage {
                             METRICS_NAME,
                             ("proxy_stream_disconnect", 1, i64)
                         );
-                        return Err(MevStageError::HeartbeatError);
+                        return Err(RelayerStageError::HeartbeatError);
                     }
                     heartbeat_received = false;
                 }
@@ -432,33 +497,34 @@ impl MevStage {
     }
 
     fn connect_and_stream(
-        validator_interface_address: String,
+        address: String,
         auth_interceptor: &AuthenticationInjector,
-        heartbeat_sender: &Sender<HeartbeatEvent>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
+        heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         backoff: &mut BackoffStrategy,
-        bundle_sender: &Sender<Vec<PacketBundle>>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
-        let mut client =
-            BlockingProxyClient::new(validator_interface_address.clone(), auth_interceptor)?;
-        info!("connected to mev_proxy at {}", validator_interface_address);
+        let mut client = BlockingProxyClient::new(address.clone(), auth_interceptor)?;
+        info!("connected to relayer at {}", address);
         let (tpu, tpu_fwd) = client.fetch_tpu_config()?;
 
         Self::stream_from_proxy(
             client,
+            verified_packet_sender,
+            bundle_sender,
             heartbeat_sender,
             tpu,
             tpu_fwd,
-            verified_packet_sender,
             backoff,
-            bundle_sender,
             exit,
         )
     }
 
     pub fn join(self) -> thread::Result<()> {
-        self.proxy_thread.join()?;
+        for t in self.proxy_threads {
+            t.join()?;
+        }
         self.heartbeat_thread.join()?;
         Ok(())
     }
