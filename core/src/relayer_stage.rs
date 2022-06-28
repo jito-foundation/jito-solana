@@ -1,6 +1,22 @@
-//! The `relayer_stage` maintains a connection with the validator
-//! interface and streams packets from TPU proxy to the banking stage.
-//! It notifies the tpu_proxy_advertiser on connect/disconnect.
+//! The `relayer_stage` maintains connections to relayers and block engines.
+//!
+//! Relayer:
+//! - acts as a TPU proxy.
+//! - sends transactions to the validator
+//! - do not support bundles to avoid DOS vector.
+//! - when validator connects, it changes its TPU and TPU forward address to the relayer.
+//! - expected to send heartbeat to validator as watchdog. if watchdog times out, the validator
+//!   disconnects and reverts the TPU and TPU forward settings
+//!
+//! Block Engines:
+//! - acts as a system that sends high profit bundles and transactions to a validator.
+//! - sends transactions and bundles to the validator.
+//! - when validator connects, it doesn't touch the TPU and TPU forward addresses.
+//! - expected to send heartbeat to the validator as a watchdog. if watchdog times out, the validator
+//!   disconnects and reconnects.
+//!
+//! If the block engine and relayer address are the same or only a block engine address is provided,
+//! it also serves the same functionality as a relayer.
 
 use {
     crate::{
