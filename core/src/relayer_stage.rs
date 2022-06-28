@@ -88,7 +88,7 @@ impl RelayerStage {
         let pubkey = keypair.pubkey();
         let interceptor = AuthenticationInjector::new(msg, sig, pubkey);
 
-        let (heartbeat_sender, heartbeat_receiver) = unbounded();
+        let (tpu_proxy_heartbeat_sender, tpu_proxy_heartbeat_receiver) = unbounded();
 
         let proxy_threads = Self::spawn_relayer_threads(
             relayer_address,
@@ -98,7 +98,7 @@ impl RelayerStage {
             // if no validator interface address provided, sender side of the channel gets dropped
             // in heartbeat thread and causes packet forwarding to error. this clone, along with the
             // reference on self, prevents it from being dropped
-            heartbeat_sender.clone(),
+            tpu_proxy_heartbeat_sender.clone(),
             bundle_sender,
             exit.clone(),
         );
@@ -108,7 +108,7 @@ impl RelayerStage {
         let heartbeat_thread = Self::heartbeat_thread(
             packet_intercept_receiver,
             packet_sender,
-            heartbeat_receiver,
+            tpu_proxy_heartbeat_receiver,
             cluster_info,
             exit,
         );
@@ -116,7 +116,7 @@ impl RelayerStage {
         info!("started mev stage");
 
         Self {
-            _heartbeat_sender: heartbeat_sender,
+            _heartbeat_sender: tpu_proxy_heartbeat_sender,
             proxy_threads,
             heartbeat_thread,
         }
@@ -127,7 +127,7 @@ impl RelayerStage {
         block_engine_address: String,
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        heartbeat_sender: Sender<HeartbeatEvent>,
+        tpu_proxy_heartbeat_sender: Sender<HeartbeatEvent>,
         bundle_sender: Sender<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
     ) -> Vec<JoinHandle<()>> {
@@ -139,7 +139,7 @@ impl RelayerStage {
                 block_engine_address,
                 interceptor,
                 verified_packet_sender,
-                Some(heartbeat_sender),
+                Some(tpu_proxy_heartbeat_sender),
                 Some(bundle_sender),
                 exit,
             )]
@@ -153,7 +153,7 @@ impl RelayerStage {
                     relayer_address,
                     interceptor.clone(),
                     verified_packet_sender.clone(),
-                    Some(heartbeat_sender),
+                    Some(tpu_proxy_heartbeat_sender),
                     None,
                     exit.clone(),
                 ),
@@ -163,7 +163,7 @@ impl RelayerStage {
                     verified_packet_sender,
                     None,
                     Some(bundle_sender),
-                    exit.clone(),
+                    exit,
                 ),
             ]
         }
@@ -173,7 +173,7 @@ impl RelayerStage {
         address: String,
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        heartbeat_sender: Option<Sender<HeartbeatEvent>>,
+        tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
         bundle_sender: Option<Sender<Vec<PacketBundle>>>,
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
@@ -197,7 +197,7 @@ impl RelayerStage {
                         &interceptor,
                         &verified_packet_sender,
                         &bundle_sender,
-                        &heartbeat_sender,
+                        &tpu_proxy_heartbeat_sender,
                         &mut backoff,
                         &exit,
                     ) {
@@ -229,7 +229,7 @@ impl RelayerStage {
     fn heartbeat_thread(
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
-        heartbeat_receiver: Receiver<HeartbeatEvent>,
+        tpu_proxy_heartbeat_receiver: Receiver<HeartbeatEvent>,
         cluster_info: &Arc<ClusterInfo>,
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
@@ -279,7 +279,7 @@ impl RelayerStage {
                             }
                             heartbeat_received = false;
                         }
-                        recv(heartbeat_receiver) -> tpu_info => {
+                        recv(tpu_proxy_heartbeat_receiver) -> tpu_info => {
                             if let Ok((tpu_addr, tpu_forward_addr)) = tpu_info {
                                 heartbeats_received += 1;
                                 heartbeat_received = true;
@@ -325,7 +325,7 @@ impl RelayerStage {
     fn handle_packet(
         msg: std::result::Result<SubscribePacketsResult, RecvError>,
         packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         tpu: &SocketAddr,
         tpu_fwd: &SocketAddr,
     ) -> Result<(usize, usize, bool)> {
@@ -369,11 +369,13 @@ impl RelayerStage {
                 Msg::Heartbeat(_) => {
                     // always sends because tpu_proxy has its own fail-safe and can't assume
                     // state
-                    if let Some(heartbeat_sender) = heartbeat_sender {
-                        heartbeat_sender.send((*tpu, *tpu_fwd)).map_err(|_| {
-                            datapoint_info!(METRICS_NAME, ("heartbeat_channel_error", 1, i64));
-                            RelayerStageError::HeartbeatChannelError
-                        })?;
+                    if let Some(tpu_proxy_heartbeat_sender) = tpu_proxy_heartbeat_sender {
+                        tpu_proxy_heartbeat_sender
+                            .send((*tpu, *tpu_fwd))
+                            .map_err(|_| {
+                                datapoint_info!(METRICS_NAME, ("heartbeat_channel_error", 1, i64));
+                                RelayerStageError::HeartbeatChannelError
+                            })?;
                     }
                     is_heartbeat = true;
                 }
@@ -423,7 +425,7 @@ impl RelayerStage {
         mut client: BlockingProxyClient,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
-        heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         tpu: SocketAddr,
         tpu_fwd: SocketAddr,
         backoff: &mut BackoffStrategy,
@@ -472,7 +474,7 @@ impl RelayerStage {
                 }
                 recv(packet_receiver) -> msg => {
                     let (batches_received, packets_received, is_heartbeat) =
-                        Self::handle_packet(msg, verified_packet_sender, heartbeat_sender, &tpu, &tpu_fwd)?;
+                        Self::handle_packet(msg, verified_packet_sender, tpu_proxy_heartbeat_sender, &tpu, &tpu_fwd)?;
                     heartbeat_received |= is_heartbeat;
                     if is_heartbeat && !received_first_heartbeat {
                         received_first_heartbeat = true;
@@ -501,7 +503,7 @@ impl RelayerStage {
         auth_interceptor: &AuthenticationInjector,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
-        heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         backoff: &mut BackoffStrategy,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
@@ -513,7 +515,7 @@ impl RelayerStage {
             client,
             verified_packet_sender,
             bundle_sender,
-            heartbeat_sender,
+            tpu_proxy_heartbeat_sender,
             tpu,
             tpu_fwd,
             backoff,
