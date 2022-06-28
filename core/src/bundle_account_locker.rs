@@ -112,7 +112,7 @@ impl BundleAccountLocker {
                 // someone can change the addresses used in the lookup table at the beginning of
                 // the bundle and cause the transaction that was serialize on bundle creation to be
                 // different. to keep things simple for now, we'll prevent anyone from calling
-                // the address lookup table program to change a program
+                // the address lookup table program to change a lookup table mid-bundle
                 solana_address_lookup_table_program::id(),
                 // need to prevent a bundle from changing the tip_receiver unexpectedly and stealing
                 // all of the MEV profits from a validator and stakers.
