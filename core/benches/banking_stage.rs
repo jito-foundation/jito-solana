@@ -31,7 +31,7 @@ use {
         genesis_config::GenesisConfig,
         hash::Hash,
         message::Message,
-        pubkey::{self},
+        pubkey::{self, Pubkey},
         signature::{Keypair, Signature, Signer},
         system_instruction, system_transaction,
         timing::{duration_as_us, timestamp},
@@ -45,7 +45,6 @@ use {
     },
     test::Bencher,
 };
-use anchor_lang::prelude::Pubkey;
 
 fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
     let mut total = 0;
@@ -94,7 +93,10 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
             UnprocessedPacketBatches::from_iter(batches.into_iter(), 2 * batches_len);
         let (s, _r) = unbounded();
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4, &Pubkey::new_unique())));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            4,
+            &Pubkey::new_unique(),
+        )));
 
         // This tests the performance of buffering packets.
         // If the packet buffers are copied, performance will be poor.
@@ -237,7 +239,10 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4, &Pubkey::new_unique())));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            4,
+            &Pubkey::new_unique(),
+        )));
         let _banking_stage = BankingStage::new(
             &cluster_info,
             &poh_recorder,
