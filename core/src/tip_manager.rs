@@ -5,11 +5,19 @@ use {
     log::warn,
     solana_runtime::bank::Bank,
     solana_sdk::{
-        account::ReadableAccount, bundle::error::TipPaymentError, instruction::Instruction,
-        pubkey::Pubkey, signature::Keypair, signer::Signer, system_program,
-        transaction::Transaction,
+        account::ReadableAccount,
+        bundle::error::TipPaymentError,
+        instruction::Instruction,
+        pubkey::Pubkey,
+        signature::Keypair,
+        signer::Signer,
+        system_program,
+        transaction::{SanitizedTransaction, Transaction},
     },
-    std::{collections::HashSet, sync::Arc},
+    std::{
+        collections::HashSet,
+        sync::{Arc, Mutex, MutexGuard},
+    },
     tip_payment::{
         Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
         TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
@@ -19,6 +27,7 @@ use {
 
 pub type Result<T> = std::result::Result<T, TipPaymentError>;
 
+#[derive(Debug, Clone)]
 struct ProgramInfo {
     program_id: Pubkey,
 
@@ -33,8 +42,10 @@ struct ProgramInfo {
     tip_pda_7: (Pubkey, u8),
 }
 
+#[derive(Debug, Clone)]
 pub struct TipManager {
     program_info: ProgramInfo,
+    lock: Arc<Mutex<()>>,
 }
 
 impl TipManager {
@@ -63,7 +74,12 @@ impl TipManager {
                 tip_pda_6,
                 tip_pda_7,
             },
+            lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub fn lock(&self) -> MutexGuard<()> {
+        self.lock.lock().unwrap()
     }
 
     pub fn program_id(&self) -> Pubkey {
@@ -103,7 +119,11 @@ impl TipManager {
     }
 
     /// Only called once during contract creation
-    pub fn build_initialize_tx(&self, blockhash: &Hash, keypair: &Keypair) -> Transaction {
+    pub fn initialize_config_tx(
+        &self,
+        blockhash: &Hash,
+        keypair: &Keypair,
+    ) -> SanitizedTransaction {
         let init_ix = Instruction {
             program_id: self.program_info.program_id,
             data: tip_payment::instruction::Initialize {
@@ -135,23 +155,24 @@ impl TipManager {
             }
             .to_account_metas(None),
         };
-        Transaction::new_signed_with_payer(
+        SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
             &[init_ix],
             Some(&keypair.pubkey()),
             &[keypair],
             *blockhash,
-        )
+        ))
+        .unwrap()
     }
 
     /// Builds a transaction that changes the current tip receiver to new_tip_receiver.
     /// The on-chain program will transfer tips sitting in the tip accounts to the tip receiver
     /// before changing ownership.
-    pub fn build_change_tip_receiver_tx(
+    pub fn change_tip_receiver_tx(
         &self,
         new_tip_receiver: &Pubkey,
         bank: &Arc<Bank>,
         keypair: &Keypair,
-    ) -> Result<Transaction> {
+    ) -> Result<SanitizedTransaction> {
         let config = self.get_config_account(bank)?;
 
         let change_tip_ix = Instruction {
@@ -173,12 +194,15 @@ impl TipManager {
             }
             .to_account_metas(None),
         };
-        Ok(Transaction::new_signed_with_payer(
-            &[change_tip_ix],
-            Some(&keypair.pubkey()),
-            &[keypair],
-            bank.last_blockhash(),
-        ))
+        Ok(
+            SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
+                &[change_tip_ix],
+                Some(&keypair.pubkey()),
+                &[keypair],
+                bank.last_blockhash(),
+            ))
+            .unwrap(),
+        )
     }
 
     /// Returns the balance of all the MEV tip accounts

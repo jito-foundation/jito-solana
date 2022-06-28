@@ -1,4 +1,5 @@
 #![allow(clippy::integer_arithmetic)]
+
 use {
     clap::{crate_description, crate_name, Arg, ArgEnum, Command},
     crossbeam_channel::{unbounded, Receiver},
@@ -6,7 +7,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_client::connection_cache::{ConnectionCache, DEFAULT_TPU_CONNECTION_POOL_SIZE},
-    solana_core::{banking_stage::BankingStage, tip_manager::TipManager},
+    solana_core::{banking_stage::BankingStage, bundle_account_locker::BundleAccountLocker},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
         blockstore::Blockstore,
@@ -23,13 +24,14 @@ use {
     },
     solana_sdk::{
         hash::Hash,
-        signature::{Keypair, Signature, Signer},
+        signature::{Keypair, Signature},
         system_transaction,
         timing::{duration_as_us, timestamp},
         transaction::Transaction,
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
+        collections::HashSet,
         sync::{atomic::Ordering, Arc, Mutex, RwLock},
         thread::sleep,
         time::{Duration, Instant},
@@ -349,7 +351,7 @@ fn main() {
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
 
-        let tip_manager = Arc::new(Mutex::new(TipManager::new(Keypair::new().pubkey())));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
 
         let banking_stage = BankingStage::new_num_threads(
             &cluster_info,
@@ -365,7 +367,8 @@ fn main() {
                 tpu_use_quic,
                 DEFAULT_TPU_CONNECTION_POOL_SIZE,
             )),
-            tip_manager,
+            HashSet::default(),
+            bundle_account_locker,
         );
         poh_recorder.lock().unwrap().set_bank(&bank);
 

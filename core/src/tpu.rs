@@ -5,6 +5,7 @@ use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
+        bundle_account_locker::BundleAccountLocker,
         bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
@@ -52,6 +53,8 @@ const TPU_THREADS_JOIN_TIMEOUT_SECONDS: u64 = 10;
 
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_IP: usize = 8;
+
+const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
@@ -245,7 +248,18 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
-        let tip_manager = Arc::new(Mutex::new(TipManager::new(tip_program_pubkey)));
+        let tip_manager = TipManager::new(tip_program_pubkey);
+
+        let bundle_account_locker =
+            Arc::new(Mutex::new(BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK)));
+
+        // tip accounts can't be used in BankingStage. This makes handling race conditions
+        // for tip-related things in BundleStage easier.
+        // TODO (LB): once there's a unified scheduler, we should allow tips in BankingStage
+        //  and treat them w/ a priority similar to ComputeBudget::SetComputeUnitPrice
+        let mut tip_accounts = tip_manager.get_tip_accounts();
+        tip_accounts.insert(tip_manager.config_pubkey());
+        tip_accounts.insert(tip_manager.program_id());
 
         let banking_stage = BankingStage::new(
             cluster_info,
@@ -257,7 +271,8 @@ impl Tpu {
             replay_vote_sender.clone(),
             cost_model.clone(),
             connection_cache.clone(),
-            tip_manager.clone(),
+            tip_accounts,
+            bundle_account_locker.clone(),
         );
 
         let bundle_stage = BundleStage::new(
@@ -269,6 +284,7 @@ impl Tpu {
             bundle_receiver,
             exit.clone(),
             tip_manager,
+            bundle_account_locker,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(

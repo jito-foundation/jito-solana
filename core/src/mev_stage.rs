@@ -6,7 +6,7 @@ use {
     crate::{
         backoff::BackoffStrategy,
         blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
-        bundle::Bundle,
+        bundle::PacketBundle,
         proto_packet_to_packet,
         sigverify::SigverifyTracerPacketStats,
     },
@@ -31,6 +31,7 @@ use {
     thiserror::Error,
     tokio::time::Instant,
     tonic::Status,
+    uuid::Uuid,
 };
 
 pub struct MevStage {
@@ -73,7 +74,7 @@ impl MevStage {
         cluster_info: &Arc<ClusterInfo>,
         validator_interface_address: String,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        bundle_sender: Sender<Vec<Bundle>>,
+        bundle_sender: Sender<Vec<PacketBundle>>,
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
@@ -122,7 +123,7 @@ impl MevStage {
         interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         heartbeat_sender: Sender<HeartbeatEvent>,
-        bundle_sender: Sender<Vec<Bundle>>,
+        bundle_sender: Sender<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         thread::Builder::new()
@@ -331,7 +332,7 @@ impl MevStage {
             std::result::Result<Option<SubscribeBundlesResponse>, Status>,
             RecvError,
         >,
-        bundle_sender: &Sender<Vec<Bundle>>,
+        bundle_sender: &Sender<Vec<PacketBundle>>,
     ) -> Result<()> {
         match msg {
             Ok(msg) => {
@@ -343,7 +344,11 @@ impl MevStage {
                         let batch = PacketBatch::new(
                             b.packets.into_iter().map(proto_packet_to_packet).collect(),
                         );
-                        Bundle { batch }
+                        // TODO (LB): copy over UUID from Bundle
+                        PacketBundle {
+                            batch,
+                            uuid: Uuid::new_v4(),
+                        }
                     })
                     .collect();
                 if let Err(e) = bundle_sender.send(bundles) {
@@ -362,7 +367,7 @@ impl MevStage {
         tpu_fwd: SocketAddr,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         backoff: &mut BackoffStrategy,
-        bundle_sender: &Sender<Vec<Bundle>>,
+        bundle_sender: &Sender<Vec<PacketBundle>>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let packet_receiver = client.subscribe_packets()?;
@@ -432,7 +437,7 @@ impl MevStage {
         heartbeat_sender: &Sender<HeartbeatEvent>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         backoff: &mut BackoffStrategy,
-        bundle_sender: &Sender<Vec<Bundle>>,
+        bundle_sender: &Sender<Vec<PacketBundle>>,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
         let mut client =

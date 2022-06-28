@@ -14,6 +14,7 @@ pub mod banking_stage;
 pub mod blocking_proxy_client;
 pub mod broadcast_stage;
 pub mod bundle;
+pub mod bundle_account_locker;
 pub mod bundle_stage;
 pub mod cache_block_meta_service;
 pub mod cluster_info_vote_listener;
