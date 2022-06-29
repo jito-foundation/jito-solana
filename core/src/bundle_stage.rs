@@ -1044,16 +1044,12 @@ mod tests {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-
-        // Update when lucas diff lands
-        //                let mut bundle_account_locker =
-        //                    BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &tip_manager.program_id());
-        let mut bundle_account_locker = BundleAccountLocker::new(4);
+        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
         bundle_account_locker.push(bundle.clone());
         let locked_bundle = bundle_account_locker
-            .pop(&bank, &Pubkey::new_unique(), &HashSet::default())
+            .pop(&bank, &HashSet::default())
             .unwrap();
 
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(
@@ -1065,7 +1061,6 @@ mod tests {
             &bank_start,
             &mut execute_and_commit_timings,
         );
-        error!("results: {:?}", results);
 
         if options.is_some()
             && options
@@ -1077,7 +1072,7 @@ mod tests {
             assert_eq!(results, Ok(()));
             bundle_account_locker.push(bundle);
             assert!(bundle_account_locker
-                .pop(&bank, &Pubkey::new_unique(), &HashSet::default()).is_none());
+                .pop(&bank, &HashSet::default()).is_none());
         }
 
         // Transaction rolled back successfully if
@@ -1238,10 +1233,10 @@ mod tests {
         }];
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4);
+        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
         let locked_bundle =
-            bundle_account_locker.pop(&bank, &Pubkey::new_unique(), &HashSet::default());
+            bundle_account_locker.pop(&bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle
         assert!(locked_bundle.is_none());
@@ -1324,10 +1319,10 @@ mod tests {
         }];
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4);
+        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
         let locked_bundle =
-            bundle_account_locker.pop(&bank, &Pubkey::new_unique(), &HashSet::default());
+            bundle_account_locker.pop(&bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle due to duplicate transactions
         assert!(locked_bundle.is_none());
@@ -1341,7 +1336,7 @@ mod tests {
             mint_keypair,
             ..
         } = create_genesis_config(4);
-        genesis_config.ticks_per_slot = 2; // Reduce ticks so that POH fails
+        genesis_config.ticks_per_slot = 1; // Reduce ticks so that POH fails
 
         let kp_b = Keypair::new();
         let packet = Packet::from_data(
@@ -1397,7 +1392,7 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4, &Pubkey::new_unique())));
 
         let scheduled_bundles = BundleStage::schedule_bundles_until_leader(
             &bundle_receiver,
@@ -1408,7 +1403,6 @@ mod tests {
         assert_eq!(bundle_account_locker.lock().unwrap().num_bundles(), 1);
         let locked_bundle = bundle_account_locker.lock().unwrap().pop(
             &bank,
-            &Pubkey::new_unique(),
             &HashSet::default(),
         );
         assert!(locked_bundle.is_some());
