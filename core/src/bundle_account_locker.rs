@@ -35,6 +35,7 @@ pub enum BundleSchedulerError {
 
 pub type Result<T> = std::result::Result<T, BundleSchedulerError>;
 
+#[derive(Debug, Clone)]
 pub struct LockedBundle {
     packet_bundle: PacketBundle,
     sanitized_bundle: SanitizedBundle,
@@ -74,6 +75,7 @@ impl LockedBundle {
     }
 }
 
+#[derive(Clone)]
 pub struct BundleAccountLocker {
     num_bundles_prelock: u64,
     unlocked_bundles: VecDeque<PacketBundle>,
