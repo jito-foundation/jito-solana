@@ -1041,7 +1041,8 @@ mod tests {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-        let mut bundle_account_locker = BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
         bundle_account_locker.push(bundle.clone());
@@ -1238,7 +1239,8 @@ mod tests {
         }];
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
         let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
 
@@ -1323,7 +1325,8 @@ mod tests {
         }];
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
         let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
 
