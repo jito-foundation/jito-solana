@@ -328,9 +328,8 @@ impl BundleStage {
             let chunk_end = std::cmp::min(sanitized_bundle.transactions.len(), chunk_start + 128);
             let chunk = &sanitized_bundle.transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk, None);
-            error!("MADE IT HERE");
-            //            error!("chunk_start: {:?}, batch: {:?}", chunk_start, batch);
-            error!("WHAT THE FUCK");
+            // NOTE: previous logging around batch here caused issues with
+            // unit tests failing due to PoH hitting max height. Unknown why. Be advised.
             if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
                 return Err(e.into());
             }
@@ -998,6 +997,8 @@ mod tests {
         std::{collections::HashSet, sync::atomic::Ordering},
     };
 
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
+
     enum TestOption {
         LowComputeBudget,
         AssertZeroedCostModel,
@@ -1040,7 +1041,7 @@ mod tests {
         let recorder = poh_recorder.lock().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker = BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
         bundle_account_locker.push(bundle.clone());
@@ -1058,6 +1059,9 @@ mod tests {
             &mut execute_and_commit_timings,
         );
 
+        // This is ugly, not really an option for testing but a test itself.
+        // Still preferable to duplicating the entirety of this method
+        // just to test duplicate txs are dropped.
         if options.is_some()
             && options
                 .as_ref()
@@ -1134,15 +1138,15 @@ mod tests {
 
         let kp_a = Keypair::new();
         let kp_b = Keypair::new();
-        let tx_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
-        let tx_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
-        let message = Message::new(&[tx_mint_a, tx_mint_b], Some(&mint_keypair.pubkey()));
+        let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
+        let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
+        let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
         let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
         let packet = Packet::from_data(None, tx).unwrap();
 
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
         (genesis_config, bundle)
     }
@@ -1169,7 +1173,7 @@ mod tests {
 
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
         assert_eq!(
             test_single_bundle(genesis_config, bundle, Some(vec![LowComputeBudget])),
@@ -1202,7 +1206,7 @@ mod tests {
         .unwrap();
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
 
         assert_eq!(
@@ -1230,11 +1234,11 @@ mod tests {
         .unwrap();
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker = BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
         let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
 
@@ -1264,7 +1268,7 @@ mod tests {
         .unwrap();
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![successful_packet, failed_packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
 
         assert_eq!(
@@ -1290,7 +1294,7 @@ mod tests {
         .unwrap();
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
 
         assert_eq!(
@@ -1315,11 +1319,11 @@ mod tests {
         .unwrap();
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet.clone(), packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker = BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
         let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
 
@@ -1345,7 +1349,7 @@ mod tests {
         .unwrap();
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
         assert_eq!(
             test_single_bundle(genesis_config, bundle, None),
@@ -1365,15 +1369,15 @@ mod tests {
 
         let kp_a = Keypair::new();
         let kp_b = Keypair::new();
-        let tx_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
-        let tx_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
-        let message = Message::new(&[tx_mint_a, tx_mint_b], Some(&mint_keypair.pubkey()));
+        let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
+        let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
+        let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
         let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
         let packet = Packet::from_data(None, tx).unwrap();
 
         let bundle = vec![PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Default::default(),
+            uuid: Uuid::new_v4(),
         }];
         assert!(bundle_sender.send(bundle).is_ok());
 
@@ -1392,7 +1396,7 @@ mod tests {
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            4,
+            NUM_BUNDLES_PRE_LOCK,
             &Pubkey::new_unique(),
         )));
 

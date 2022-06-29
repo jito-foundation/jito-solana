@@ -5,7 +5,6 @@ use {
 };
 
 // Represents the results of trying to lock a set of accounts
-#[derive(Debug)]
 pub struct TransactionBatch<'a, 'b> {
     lock_results: Vec<Result<()>>,
     bank: &'a Bank,

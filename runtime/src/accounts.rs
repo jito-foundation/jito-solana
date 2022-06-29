@@ -1244,7 +1244,6 @@ impl Accounts {
     ) {
         let keys: Vec<_> = txs
             .zip(results)
-            // TODO: missing accounts not continuous
             .filter_map(|(tx, res)| match res {
                 Err(TransactionError::AccountLoadedTwice)
                 | Err(TransactionError::AccountInUse)
