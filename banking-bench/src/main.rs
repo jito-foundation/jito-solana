@@ -24,6 +24,7 @@ use {
     },
     solana_sdk::{
         hash::Hash,
+        pubkey::Pubkey,
         signature::{Keypair, Signature},
         system_transaction,
         timing::{duration_as_us, timestamp},
@@ -172,6 +173,8 @@ impl PacketsPerIteration {
 #[allow(clippy::cognitive_complexity)]
 fn main() {
     solana_logger::setup();
+
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
     let matches = Command::new(crate_name!())
         .about(crate_description!())
@@ -351,7 +354,10 @@ fn main() {
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4)));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            NUM_BUNDLES_PRE_LOCK,
+            &Pubkey::new_unique(),
+        )));
 
         let banking_stage = BankingStage::new_num_threads(
             &cluster_info,
