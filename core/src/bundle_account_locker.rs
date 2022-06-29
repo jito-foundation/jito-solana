@@ -174,7 +174,7 @@ impl BundleAccountLocker {
                     self.locked_bundles.push_back(locked_bundle);
                 }
                 Err(e) => {
-                    debug!("error locking bundle: {:?}", e);
+                    error!("error locking bundle: {:?}", e);
                 }
             }
         }
@@ -414,7 +414,7 @@ impl BundleAccountLocker {
             blacklisted_accounts.contains(acc) || consensus_accounts_cache.contains(acc)
         }) {
             warn!(
-                "someone attempted to touch a disabled account: {:?} tx: {:?}",
+                "someone attempted to touch a blacklisted account: {:?} tx: {:?}",
                 disabled_acc, tx
             );
             return None;
@@ -448,6 +448,8 @@ mod tests {
         uuid::Uuid,
     };
 
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
+
     #[test]
     fn test_single_tx_bundle_push_pop() {
         solana_logger::setup();
@@ -458,7 +460,8 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -513,7 +516,8 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -684,7 +688,8 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -725,7 +730,8 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -765,7 +771,8 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -800,7 +807,8 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -855,7 +863,8 @@ mod tests {
 
         let tip_manager = TipManager::new(Pubkey::new_unique());
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &tip_manager.program_id());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &tip_manager.program_id());
 
         let kp = Keypair::new();
         let tx =
@@ -897,7 +906,8 @@ mod tests {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
 
         let kp = Keypair::new();
         let tx =

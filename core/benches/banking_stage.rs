@@ -72,6 +72,7 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
 
 #[bench]
 fn bench_consume_buffered(bencher: &mut Bencher) {
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(100_000);
     let bank = Arc::new(Bank::new_for_benches(&genesis_config));
     let ledger_path = get_tmp_ledger_path!();
@@ -94,7 +95,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
         let (s, _r) = unbounded();
 
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            4,
+            NUM_BUNDLES_PRE_LOCK,
             &Pubkey::new_unique(),
         )));
 
@@ -169,6 +170,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
     //   a multiple of packet chunk duplicates to avoid races
     const CHUNKS: usize = 8;
     const PACKETS_PER_BATCH: usize = 192;
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
     let txes = PACKETS_PER_BATCH * num_threads * CHUNKS;
     let mint_total = 1_000_000_000_000;
     let GenesisConfigInfo {
@@ -240,7 +242,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            4,
+            NUM_BUNDLES_PRE_LOCK,
             &Pubkey::new_unique(),
         )));
         let _banking_stage = BankingStage::new(
