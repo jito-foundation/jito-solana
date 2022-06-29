@@ -28,7 +28,7 @@ use {
     },
     crossbeam_channel::{select, tick, unbounded, Receiver, RecvError, Sender},
     jito_protos::proto::validator_interface::{
-        subscribe_packets_response::Msg, SubscribeBundlesResponse, SubscribePacketsResponse,
+        packet_stream_msg::Msg, SubscribeBundlesResponse, PacketStreamMsg,
     },
     log::*,
     solana_gossip::cluster_info::ClusterInfo,
@@ -80,7 +80,7 @@ pub enum RelayerStageError {
 
 type Result<T> = std::result::Result<T, RelayerStageError>;
 type HeartbeatEvent = (SocketAddr, SocketAddr);
-type SubscribePacketsResult = std::result::Result<Option<SubscribePacketsResponse>, Status>;
+type SubscribePacketsResult = std::result::Result<Option<PacketStreamMsg>, Status>;
 
 const HEARTBEAT_TIMEOUT_MS: Duration = Duration::from_millis(1500); // Empirically determined from load testing
 const DISCONNECT_DELAY_SEC: Duration = Duration::from_secs(60);
@@ -447,7 +447,7 @@ impl RelayerStage {
         backoff: &mut BackoffStrategy,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
-        let packet_receiver = client.subscribe_packets()?;
+        let packet_receiver = client.start_bi_directional_packet_stream()?;
 
         // conditionally create an actual bundle receiver if there's a channel to send on
         let (_stubbed_sender, mut bundle_receiver) = unbounded();

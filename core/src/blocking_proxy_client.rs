@@ -1,9 +1,14 @@
+use futures_util::stream;
+use std::time::SystemTime;
 use {
     crossbeam_channel::{unbounded, Receiver},
-    jito_protos::proto::validator_interface::{
-        validator_interface_client::ValidatorInterfaceClient, GetTpuConfigsRequest,
-        SubscribeBundlesRequest, SubscribeBundlesResponse, SubscribePacketsRequest,
-        SubscribePacketsResponse,
+    jito_protos::proto::{
+        shared::Header as PbHeader,
+        validator_interface::{
+            packet_stream_msg::Msg::Heartbeat,
+            validator_interface_client::ValidatorInterfaceClient, GetTpuConfigsRequest,
+            PacketStreamMsg, SubscribeBundlesRequest, SubscribeBundlesResponse,
+        },
     },
     solana_sdk::{pubkey::Pubkey, signature::Signature},
     std::{
@@ -25,8 +30,7 @@ use {
 type ValidatorInterfaceClientType =
     ValidatorInterfaceClient<InterceptedService<Channel, AuthenticationInjector>>;
 
-type SubscribePacketsReceiver =
-    Receiver<std::result::Result<Option<SubscribePacketsResponse>, Status>>;
+type SubscribePacketsReceiver = Receiver<std::result::Result<Option<PacketStreamMsg>, Status>>;
 
 pub struct BlockingProxyClient {
     rt: Runtime,
@@ -96,10 +100,17 @@ impl BlockingProxyClient {
         Ok((tpu_socket, tpu_forward_socket))
     }
 
-    pub fn subscribe_packets(&mut self) -> ProxyResult<SubscribePacketsReceiver> {
+    pub fn start_bi_directional_packet_stream(&mut self) -> ProxyResult<SubscribePacketsReceiver> {
+        let ts = prost_types::Timestamp::from(SystemTime::now());
+        let header = PbHeader { ts: Some(ts) };
         let mut packet_subscription = self
             .rt
-            .block_on(self.client.subscribe_packets(SubscribePacketsRequest {}))?
+            .block_on(
+                self.client
+                    .start_bi_directional_packet_stream(stream::iter(vec![PacketStreamMsg {
+                        msg: Some(Heartbeat(header.clone())),
+                    }])),
+            )?
             .into_inner();
 
         let (sender, receiver) = unbounded();
