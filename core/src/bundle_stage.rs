@@ -281,7 +281,6 @@ impl BundleStage {
                 );
                 qos_service.accumulate_actual_execute_cu(cu);
                 qos_service.accumulate_actual_execute_time(us);
-
                 qos_service.report_metrics(bank_start.working_bank.clone());
                 Ok(())
             }
@@ -329,6 +328,8 @@ impl BundleStage {
             let chunk_end = std::cmp::min(sanitized_bundle.transactions.len(), chunk_start + 128);
             let chunk = &sanitized_bundle.transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk, None);
+            // NOTE: previous logging around batch here caused issues with
+            // unit tests failing due to PoH hitting max height. Unknown why. Be advised.
             if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
                 return Err(e.into());
             }
@@ -442,6 +443,7 @@ impl BundleStage {
         )?;
         // in order for bundle to succeed, it most have something to record + commit
         assert!(!execution_results.is_empty());
+        // TODO: do we really want assertions in production code?
 
         Self::record_commit_bundle(
             execution_results,
@@ -955,5 +957,470 @@ impl BundleStage {
             Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
             Err(e) => panic!("Poh recorder returned unexpected error: {:?}", e),
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        crate::bundle_stage::tests::TestOption::{
+            AssertDuplicateInBundleDropped, AssertNonZeroCostModel, AssertZeroedCostModel,
+            LowComputeBudget,
+        },
+        crossbeam_channel::unbounded,
+        solana_ledger::{
+            blockstore::Blockstore,
+            genesis_utils::{create_genesis_config, GenesisConfigInfo},
+            get_tmp_ledger_path_auto_delete,
+        },
+        solana_perf::packet::PacketBatch,
+        solana_poh::poh_recorder::create_test_recorder,
+        solana_sdk::{
+            bundle::error::BundleExecutionError::{
+                ExceedsCostModel, PohMaxHeightError, TransactionFailure,
+            },
+            compute_budget::ComputeBudgetInstruction,
+            genesis_config::GenesisConfig,
+            hash::Hash,
+            instruction::InstructionError,
+            message::Message,
+            packet::Packet,
+            poh_config::PohConfig,
+            signature::{Keypair, Signer},
+            system_instruction, system_transaction,
+            transaction::{
+                Transaction,
+                TransactionError::{self, AccountNotFound},
+            },
+        },
+        std::{collections::HashSet, sync::atomic::Ordering},
+    };
+
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
+
+    enum TestOption {
+        LowComputeBudget,
+        AssertZeroedCostModel,
+        AssertNonZeroCostModel,
+        AssertDuplicateInBundleDropped,
+    }
+
+    #[cfg(test)]
+    fn test_single_bundle(
+        genesis_config: GenesisConfig,
+        bundle: Vec<PacketBundle>,
+        options: Option<Vec<TestOption>>,
+    ) -> Result<(), BundleExecutionError> {
+        solana_logger::setup();
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
+        // start a banking_stage to eat verified receiver
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+        if options.is_some()
+            && options
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|option| matches!(option, LowComputeBudget))
+        {
+            bank.write_cost_tracker().unwrap().set_limits(1, 1, 1);
+        }
+        let blockstore = Arc::new(
+            Blockstore::open(ledger_path.path())
+                .expect("Expected to be able to open database ledger"),
+        );
+        let poh_config = PohConfig {
+            // limit tick count to avoid clearing working_bank at
+            // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
+            target_tick_count: Some(bank.max_tick_height() - 1), // == 1, only enough for ticks, not txs
+            ..PohConfig::default()
+        };
+        let (exit, poh_recorder, poh_service, _entry_receiver) =
+            create_test_recorder(&bank, &blockstore, Some(poh_config), None);
+        let recorder = poh_recorder.lock().unwrap().recorder();
+        let cost_model = Arc::new(RwLock::new(CostModel::default()));
+        let qos_service = QosService::new(cost_model, 0);
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
+        let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
+        bundle_account_locker.push(bundle.clone());
+        let locked_bundle = bundle_account_locker
+            .pop(&bank, &HashSet::default())
+            .unwrap();
+
+        let results = BundleStage::update_qos_and_execute_record_commit_bundle(
+            locked_bundle.sanitized_bundle(),
+            &recorder,
+            &None,
+            &gossip_vote_sender,
+            &qos_service,
+            &bank_start,
+            &mut execute_and_commit_timings,
+        );
+
+        // This is ugly, not really an option for testing but a test itself.
+        // Still preferable to duplicating the entirety of this method
+        // just to test duplicate txs are dropped.
+        if options.is_some()
+            && options
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|option| matches!(option, AssertDuplicateInBundleDropped))
+        {
+            assert_eq!(results, Ok(()));
+            bundle_account_locker.push(bundle);
+            assert!(bundle_account_locker
+                .pop(&bank, &HashSet::default())
+                .is_none());
+        }
+
+        // Transaction rolled back successfully if
+        // cost tracker has 0 transaction count
+        // cost tracker as 0 block cost
+        if options.is_some()
+            && options
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|option| matches!(option, AssertZeroedCostModel))
+        {
+            assert_eq!(bank.read_cost_tracker().unwrap().transaction_count(), 0);
+            assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+        }
+
+        if options.is_some()
+            && options
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|option| matches!(option, AssertNonZeroCostModel))
+        {
+            assert_ne!(bank.read_cost_tracker().unwrap().transaction_count(), 0);
+            assert_ne!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+        }
+
+        exit.store(true, Ordering::Relaxed);
+        poh_service.join().unwrap();
+        results
+    }
+
+    #[test]
+    fn test_successful_bundle() {
+        let (genesis_config, bundle) = setup_successful_tx();
+        assert_eq!(
+            test_single_bundle(genesis_config, bundle, Some(vec![AssertNonZeroCostModel])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_bundle_contains_processed_transaction() {
+        let (genesis_config, bundle) = setup_successful_tx();
+        assert_eq!(
+            test_single_bundle(
+                genesis_config,
+                bundle,
+                Some(vec![AssertDuplicateInBundleDropped])
+            ),
+            Ok(())
+        );
+    }
+
+    #[cfg(test)]
+    fn setup_successful_tx() -> (GenesisConfig, Vec<PacketBundle>) {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(5);
+
+        let kp_a = Keypair::new();
+        let kp_b = Keypair::new();
+        let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
+        let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
+        let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
+        let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
+        let packet = Packet::from_data(None, tx).unwrap();
+
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        }];
+        (genesis_config, bundle)
+    }
+
+    #[test]
+    fn test_txs_exceed_cost_model() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(5);
+
+        let kp = Keypair::new();
+        let instruction = system_instruction::transfer(&mint_keypair.pubkey(), &kp.pubkey(), 1);
+        let message = Message::new(
+            &[
+                ComputeBudgetInstruction::set_compute_unit_limit(1),
+                instruction,
+            ],
+            Some(&mint_keypair.pubkey()),
+        );
+        let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
+        let packet = Packet::from_data(None, tx).unwrap();
+
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        }];
+        assert_eq!(
+            test_single_bundle(genesis_config, bundle, Some(vec![LowComputeBudget])),
+            Err(ExceedsCostModel)
+        );
+    }
+
+    #[test]
+    fn test_nonce_tx_failure() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(4);
+
+        let kp_a = Keypair::new();
+        let kp_nonce = Keypair::new();
+        let kp_nonce_authority = Keypair::new();
+        let packet = Packet::from_data(
+            None,
+            system_transaction::nonced_transfer(
+                &mint_keypair,
+                &kp_a.pubkey(),
+                1,
+                &kp_nonce.pubkey(),
+                &kp_nonce_authority,
+                genesis_config.hash(),
+            ),
+        )
+        .unwrap();
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        }];
+
+        assert_eq!(
+            test_single_bundle(genesis_config, bundle, None),
+            Err(TransactionFailure(TransactionError::InstructionError(
+                0,
+                InstructionError::InvalidAccountData
+            )))
+        );
+    }
+
+    #[test]
+    fn test_invalid_blockhash() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(4);
+
+        let kp_a = Keypair::new();
+        let packet = Packet::from_data(
+            None,
+            system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 1, Hash::new_unique()),
+        )
+        .unwrap();
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        }];
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+        bundle_account_locker.push(bundle);
+        let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
+
+        // bundle is dropped by get_lockable_bundle->get_sanitized_bundle
+        assert!(locked_bundle.is_none());
+    }
+
+    #[test]
+    fn test_qos_rollback() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(4);
+
+        let kp_a = Keypair::new();
+        let kp_b = Keypair::new();
+        let successful_packet = Packet::from_data(
+            None,
+            system_transaction::transfer(&mint_keypair, &kp_b.pubkey(), 1, genesis_config.hash()),
+        )
+        .unwrap();
+        let failed_packet = Packet::from_data(
+            None,
+            system_transaction::transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()),
+        )
+        .unwrap();
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![successful_packet, failed_packet]),
+            uuid: Uuid::new_v4(),
+        }];
+
+        assert_eq!(
+            test_single_bundle(genesis_config, bundle, Some(vec![AssertZeroedCostModel])),
+            Err(TransactionFailure(AccountNotFound))
+        );
+    }
+
+    #[test]
+    fn test_zero_balance_account() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair: _,
+            ..
+        } = create_genesis_config(4);
+
+        let kp_a = Keypair::new();
+        let kp_b = Keypair::new();
+        let packet = Packet::from_data(
+            None,
+            system_transaction::transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()),
+        )
+        .unwrap();
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        }];
+
+        assert_eq!(
+            test_single_bundle(genesis_config, bundle, None),
+            Err(TransactionFailure(AccountNotFound))
+        );
+    }
+
+    #[test]
+    fn test_tx_duplicates_fail() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(4);
+
+        let kp = Keypair::new();
+        let packet = Packet::from_data(
+            None,
+            system_transaction::transfer(&mint_keypair, &kp.pubkey(), 1, genesis_config.hash()),
+        )
+        .unwrap();
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet.clone(), packet]),
+            uuid: Uuid::new_v4(),
+        }];
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+        bundle_account_locker.push(bundle);
+        let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
+
+        // bundle is dropped by get_lockable_bundle->get_sanitized_bundle due to duplicate transactions
+        assert!(locked_bundle.is_none());
+    }
+
+    #[test]
+    fn test_bundle_fails_poh_record() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            mut genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(4);
+        genesis_config.ticks_per_slot = 1; // Reduce ticks so that POH fails
+
+        let kp_b = Keypair::new();
+        let packet = Packet::from_data(
+            None,
+            system_transaction::transfer(&mint_keypair, &kp_b.pubkey(), 1, genesis_config.hash()),
+        )
+        .unwrap();
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        }];
+        assert_eq!(
+            test_single_bundle(genesis_config, bundle, None),
+            Err(PohMaxHeightError)
+        );
+    }
+
+    #[test]
+    fn test_schedule_bundles_until_leader() {
+        solana_logger::setup();
+        let (bundle_sender, bundle_receiver) = unbounded();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(5);
+
+        let kp_a = Keypair::new();
+        let kp_b = Keypair::new();
+        let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
+        let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
+        let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
+        let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
+        let packet = Packet::from_data(None, tx).unwrap();
+
+        let bundle = vec![PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        }];
+        assert!(bundle_sender.send(bundle).is_ok());
+
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+        let blockstore = Arc::new(
+            Blockstore::open(ledger_path.path())
+                .expect("Expected to be able to open database ledger"),
+        );
+        let poh_config = PohConfig {
+            // limit tick count to avoid clearing working_bank at
+            // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
+            target_tick_count: Some(bank.max_tick_height() - 1), // == 1, only enough for ticks, not txs
+            ..PohConfig::default()
+        };
+        let (exit, poh_recorder, poh_service, _entry_receiver) =
+            create_test_recorder(&bank, &blockstore, Some(poh_config), None);
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            NUM_BUNDLES_PRE_LOCK,
+            &Pubkey::new_unique(),
+        )));
+
+        let scheduled_bundles = BundleStage::schedule_bundles_until_leader(
+            &bundle_receiver,
+            &bundle_account_locker,
+            &poh_recorder,
+        );
+        assert!(scheduled_bundles.is_ok());
+        assert_eq!(bundle_account_locker.lock().unwrap().num_bundles(), 1);
+        let locked_bundle = bundle_account_locker
+            .lock()
+            .unwrap()
+            .pop(&bank, &HashSet::default());
+        assert!(locked_bundle.is_some());
+        // TODO: the logic around working bank makes it difficult to test bundles are returned
+        // when leader
+        // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_account_locker, &poh_recorder);
+        // assert!(scheduled_bundles.is_ok());
+        // assert_eq!(bundle_account_locker.lock().unwrap().num_bundles(), 0);
+        exit.store(true, Ordering::Relaxed);
+        poh_service.join().unwrap();
     }
 }
