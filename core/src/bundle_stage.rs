@@ -966,7 +966,8 @@ mod tests {
     use {
         super::*,
         crate::bundle_stage::tests::TestOption::{
-            AssertNonZeroCostModel, AssertZeroedCostModel, LowComputeBudget,
+            AssertDuplicateInBundleDropped, AssertNonZeroCostModel, AssertZeroedCostModel,
+            LowComputeBudget,
         },
         crossbeam_channel::unbounded,
         solana_ledger::{
@@ -988,19 +989,14 @@ mod tests {
             packet::Packet,
             poh_config::PohConfig,
             signature::{Keypair, Signer},
-            system_instruction,
-            system_transaction,
+            system_instruction, system_transaction,
             transaction::{
                 Transaction,
                 TransactionError::{self, AccountNotFound},
             },
         },
-        std::{
-            collections::HashSet,
-            sync::atomic::Ordering,
-        },
+        std::{collections::HashSet, sync::atomic::Ordering},
     };
-    use crate::bundle_stage::tests::TestOption::AssertDuplicateInBundleDropped;
 
     enum TestOption {
         LowComputeBudget,
@@ -1064,15 +1060,16 @@ mod tests {
 
         if options.is_some()
             && options
-            .as_ref()
-            .unwrap()
-            .iter()
-            .any(|option| matches!(option, AssertDuplicateInBundleDropped))
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|option| matches!(option, AssertDuplicateInBundleDropped))
         {
             assert_eq!(results, Ok(()));
             bundle_account_locker.push(bundle);
             assert!(bundle_account_locker
-                .pop(&bank, &HashSet::default()).is_none());
+                .pop(&bank, &HashSet::default())
+                .is_none());
         }
 
         // Transaction rolled back successfully if
@@ -1118,7 +1115,11 @@ mod tests {
     fn test_bundle_contains_processed_transaction() {
         let (genesis_config, bundle) = setup_successful_tx();
         assert_eq!(
-            test_single_bundle(genesis_config, bundle, Some(vec![AssertDuplicateInBundleDropped])),
+            test_single_bundle(
+                genesis_config,
+                bundle,
+                Some(vec![AssertDuplicateInBundleDropped])
+            ),
             Ok(())
         );
     }
@@ -1235,8 +1236,7 @@ mod tests {
 
         let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
-        let locked_bundle =
-            bundle_account_locker.pop(&bank, &HashSet::default());
+        let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle
         assert!(locked_bundle.is_none());
@@ -1321,8 +1321,7 @@ mod tests {
 
         let mut bundle_account_locker = BundleAccountLocker::new(4, &Pubkey::new_unique());
         bundle_account_locker.push(bundle);
-        let locked_bundle =
-            bundle_account_locker.pop(&bank, &HashSet::default());
+        let locked_bundle = bundle_account_locker.pop(&bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle due to duplicate transactions
         assert!(locked_bundle.is_none());
@@ -1392,7 +1391,10 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(4, &Pubkey::new_unique())));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            4,
+            &Pubkey::new_unique(),
+        )));
 
         let scheduled_bundles = BundleStage::schedule_bundles_until_leader(
             &bundle_receiver,
@@ -1401,10 +1403,10 @@ mod tests {
         );
         assert!(scheduled_bundles.is_ok());
         assert_eq!(bundle_account_locker.lock().unwrap().num_bundles(), 1);
-        let locked_bundle = bundle_account_locker.lock().unwrap().pop(
-            &bank,
-            &HashSet::default(),
-        );
+        let locked_bundle = bundle_account_locker
+            .lock()
+            .unwrap()
+            .pop(&bank, &HashSet::default());
         assert!(locked_bundle.is_some());
         // TODO: the logic around working bank makes it difficult to test bundles are returned
         // when leader
