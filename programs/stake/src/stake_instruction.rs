@@ -38,13 +38,10 @@ fn get_optional_pubkey<'a>(
             {
                 return Err(InstructionError::MissingRequiredSignature);
             }
-            Some(
-                transaction_context.get_key_of_account_at_index(
-                    instruction_context.get_index_of_instruction_account_in_transaction(
-                        instruction_account_index,
-                    )?,
-                )?,
-            )
+            Some(transaction_context.get_key_of_account_at_index(
+                instruction_context
+                    .get_index_of_instruction_account_in_transaction(instruction_account_index)?,
+            )?)
         } else {
             None
         },

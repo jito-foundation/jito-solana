@@ -1,7 +1,6 @@
-use futures_util::stream;
-use std::time::SystemTime;
 use {
     crossbeam_channel::{unbounded, Receiver},
+    futures_util::stream,
     jito_protos::proto::{
         shared::Header as PbHeader,
         validator_interface::{
@@ -15,6 +14,7 @@ use {
         fs::File,
         io::{self, Read},
         net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
+        time::SystemTime,
     },
     thiserror::Error,
     tokio::runtime::{Builder, Runtime},

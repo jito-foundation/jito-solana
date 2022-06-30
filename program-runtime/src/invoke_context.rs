@@ -433,14 +433,17 @@ impl<'a> InvokeContext<'a> {
                 ))
             })
             .chain(instruction_accounts.iter().map(|instruction_account| {
-                Ok((
-                    instruction_account.is_signer,
-                    instruction_account.is_writable,
-                    self.transaction_context
-                        .get_key_of_account_at_index(instruction_account.index_in_transaction)?,
-                    self.transaction_context
-                        .get_account_at_index(instruction_account.index_in_transaction)?,
-                ))
+                Ok(
+                    (
+                        instruction_account.is_signer,
+                        instruction_account.is_writable,
+                        self.transaction_context.get_key_of_account_at_index(
+                            instruction_account.index_in_transaction,
+                        )?,
+                        self.transaction_context
+                            .get_account_at_index(instruction_account.index_in_transaction)?,
+                    ),
+                )
             }))
             .collect::<Result<Vec<_>, InstructionError>>()?;
 
