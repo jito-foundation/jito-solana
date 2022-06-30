@@ -28,7 +28,7 @@ use {
     },
     crossbeam_channel::{select, tick, unbounded, Receiver, RecvError, Sender},
     jito_protos::proto::validator_interface::{
-        packet_stream_msg::Msg, SubscribeBundlesResponse, PacketStreamMsg,
+        packet_stream_msg::Msg, PacketStreamMsg, SubscribeBundlesResponse,
     },
     log::*,
     solana_gossip::cluster_info::ClusterInfo,
