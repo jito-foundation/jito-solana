@@ -6,30 +6,27 @@ use {
 /// Encapsulates overridden accounts, typically used for transaction simulations
 #[derive(Default)]
 pub struct AccountOverrides {
-    pub slot_history: Option<AccountSharedData>,
-    pub cached_accounts_with_rent: HashMap<Pubkey, AccountSharedData>,
-}
-
-pub enum AccountWithRentInfo {
-    Zero(AccountSharedData),
-    SubtractRent(AccountSharedData),
+    accounts: HashMap<Pubkey, AccountSharedData>,
 }
 
 impl AccountOverrides {
+    pub fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
+        match account {
+            Some(account) => self.accounts.insert(*pubkey, account),
+            None => self.accounts.remove(pubkey),
+        };
+    }
+
     /// Sets in the slot history
     ///
     /// Note: no checks are performed on the correctness of the contained data
     pub fn set_slot_history(&mut self, slot_history: Option<AccountSharedData>) {
-        self.slot_history = slot_history;
+        self.set_account(&sysvar::slot_history::id(), slot_history);
     }
 
     /// Gets the account if it's found in the list of overrides
-    pub fn get_ignore_rent_type(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
-        if pubkey == &sysvar::slot_history::id() {
-            self.slot_history.as_ref()
-        } else {
-            self.cached_accounts_with_rent.get(pubkey)
-        }
+    pub fn get(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
+        self.accounts.get(pubkey)
     }
 
     /// Gets the account info with info on whether rent should be subtracted or not

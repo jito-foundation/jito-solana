@@ -258,7 +258,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             HashSet::new(),
             bundle_account_locker,
         );
-        poh_recorder.lock().unwrap().set_bank(&bank);
+        poh_recorder.lock().unwrap().set_bank(&bank, false);
 
         let chunk_len = verified.len() / CHUNKS;
         let mut start = 0;

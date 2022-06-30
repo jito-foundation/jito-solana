@@ -46,7 +46,7 @@ use {
             AccountShrinkThreshold, AccountsDbConfig, SnapshotStorages,
             ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
         },
-        accounts_index::{AccountSecondaryIndexes, IndexKey, ScanConfig, ScanResult},
+        accounts_index::{AccountSecondaryIndexes, IndexKey, ScanConfig, ScanResult, ZeroLamport},
         accounts_update_notifier_interface::AccountsUpdateNotifier,
         ancestors::{Ancestors, AncestorsForSerialization},
         blockhash_queue::BlockhashQueue,
@@ -64,6 +64,7 @@ use {
         },
         stakes::{InvalidCacheEntryReason, Stakes, StakesCache, StakesEnum},
         status_cache::{SlotDelta, StatusCache},
+        storable_accounts::StorableAccounts,
         system_instruction_processor::{get_system_account_kind, SystemAccountKind},
         transaction_batch::TransactionBatch,
         transaction_error_metrics::TransactionErrorMetrics,
@@ -71,7 +72,7 @@ use {
         vote_parser,
     },
     byteorder::{ByteOrder, LittleEndian},
-    dashmap::DashMap,
+    dashmap::{DashMap, DashSet},
     itertools::Itertools,
     log::*,
     rand::Rng,
@@ -178,10 +179,12 @@ use {
 struct RewardsMetrics {
     load_vote_and_stake_accounts_us: AtomicU64,
     calculate_points_us: AtomicU64,
+    redeem_rewards_us: u64,
     store_stake_accounts_us: AtomicU64,
     store_vote_accounts_us: AtomicU64,
     invalid_cached_vote_accounts: usize,
     invalid_cached_stake_accounts: usize,
+    invalid_cached_stake_accounts_rent_epoch: usize,
     vote_accounts_cache_miss_count: usize,
 }
 
@@ -255,8 +258,8 @@ impl RentDebits {
     }
 }
 
-type BankStatusCache = StatusCache<Result<()>>;
-#[frozen_abi(digest = "82WhodJTtPtYR1R3XnVAn8iMJAMJvcWAGuoorbjSSRUb")]
+pub type BankStatusCache = StatusCache<Result<()>>;
+#[frozen_abi(digest = "2YZk2K45HmmAafmxPJnYVXyQ7uA7WuBrRkpwrCawdK31")]
 pub type BankSlotDelta = SlotDelta<Result<()>>;
 
 // Eager rent collection repeats in cyclic manner.
@@ -591,36 +594,6 @@ impl BankRc {
             slot,
             bank_id_generator: Arc::new(AtomicU64::new(0)),
         }
-    }
-}
-
-#[derive(Default, Debug, AbiExample)]
-pub struct StatusCacheRc {
-    /// where all the Accounts are stored
-    /// A cache of signature statuses
-    pub status_cache: Arc<RwLock<BankStatusCache>>,
-}
-
-impl StatusCacheRc {
-    pub fn slot_deltas(&self, slots: &[Slot]) -> Vec<BankSlotDelta> {
-        let sc = self.status_cache.read().unwrap();
-        sc.slot_deltas(slots)
-    }
-
-    pub fn roots(&self) -> Vec<Slot> {
-        self.status_cache
-            .read()
-            .unwrap()
-            .roots()
-            .iter()
-            .cloned()
-            .sorted()
-            .collect()
-    }
-
-    pub fn append(&self, slot_deltas: &[BankSlotDelta]) {
-        let mut sc = self.status_cache.write().unwrap();
-        sc.append(slot_deltas);
     }
 }
 
@@ -1112,7 +1085,7 @@ impl PartialEq for Bank {
         }
         let Self {
             rc: _,
-            src: _,
+            status_cache: _,
             blockhash_queue,
             ancestors,
             hash,
@@ -1282,7 +1255,8 @@ pub struct Bank {
     /// References to accounts, parent and signature status
     pub rc: BankRc,
 
-    pub src: StatusCacheRc,
+    /// A cache of signature statuses
+    pub status_cache: Arc<RwLock<BankStatusCache>>,
 
     /// FIFO queue of `recent_blockhash` items
     blockhash_queue: RwLock<BlockhashQueue>,
@@ -1459,6 +1433,7 @@ struct LoadVoteAndStakeAccountsResult {
     invalid_vote_keys: DashMap<Pubkey, InvalidCacheEntryReason>,
     invalid_cached_vote_accounts: usize,
     invalid_cached_stake_accounts: usize,
+    invalid_cached_stake_accounts_rent_epoch: usize,
     vote_accounts_cache_miss_count: usize,
 }
 
@@ -1479,6 +1454,41 @@ pub struct CommitTransactionCounts {
     pub committed_transactions_count: u64,
     pub committed_with_failure_result_count: u64,
     pub signature_count: u64,
+}
+
+struct StakeReward {
+    stake_pubkey: Pubkey,
+    stake_reward_info: RewardInfo,
+    stake_account: AccountSharedData,
+}
+
+impl StakeReward {
+    pub fn get_stake_reward(&self) -> i64 {
+        self.stake_reward_info.lamports
+    }
+}
+
+/// allow [StakeReward] to be passed to `StoreAccounts` directly without copies or vec construction
+impl<'a> StorableAccounts<'a, AccountSharedData> for (Slot, &'a [StakeReward]) {
+    fn pubkey(&self, index: usize) -> &Pubkey {
+        &self.1[index].stake_pubkey
+    }
+    fn account(&self, index: usize) -> &AccountSharedData {
+        &self.1[index].stake_account
+    }
+    fn slot(&self, _index: usize) -> Slot {
+        // per-index slot is not unique per slot when per-account slot is not included in the source data
+        self.target_slot()
+    }
+    fn target_slot(&self) -> Slot {
+        self.0
+    }
+    fn len(&self) -> usize {
+        self.1.len()
+    }
+    fn contains_multiple_slots(&self) -> bool {
+        false
+    }
 }
 
 impl Bank {
@@ -1551,7 +1561,7 @@ impl Bank {
         let mut bank = Self {
             rewrites_skipped_this_slot: Rewrites::default(),
             rc: BankRc::new(accounts, Slot::default()),
-            src: StatusCacheRc::default(),
+            status_cache: Arc::<RwLock<BankStatusCache>>::default(),
             blockhash_queue: RwLock::<BlockhashQueue>::default(),
             ancestors: Ancestors::default(),
             hash: RwLock::<Hash>::default(),
@@ -1786,12 +1796,8 @@ impl Bank {
             "bank_rc_creation",
         );
 
-        let (src, status_cache_rc_time) = measure!(
-            StatusCacheRc {
-                status_cache: parent.src.status_cache.clone(),
-            },
-            "status_cache_rc_creation",
-        );
+        let (status_cache, status_cache_time) =
+            measure!(Arc::clone(&parent.status_cache), "status_cache_creation",);
 
         let ((fee_rate_governor, fee_calculator), fee_components_time) = measure!(
             {
@@ -1861,7 +1867,7 @@ impl Bank {
         let mut new = Bank {
             rewrites_skipped_this_slot: Rewrites::default(),
             rc,
-            src,
+            status_cache,
             slot,
             bank_id,
             epoch,
@@ -2025,6 +2031,7 @@ impl Bank {
                             metrics.calculate_points_us.load(Relaxed),
                             i64
                         ),
+                        ("redeem_rewards_us", metrics.redeem_rewards_us, i64),
                         (
                             "store_stake_accounts_us",
                             metrics.store_stake_accounts_us.load(Relaxed),
@@ -2043,6 +2050,11 @@ impl Bank {
                         (
                             "invalid_cached_stake_accounts",
                             metrics.invalid_cached_stake_accounts,
+                            i64
+                        ),
+                        (
+                            "invalid_cached_stake_accounts_rent_epoch",
+                            metrics.invalid_cached_stake_accounts_rent_epoch,
                             i64
                         ),
                         (
@@ -2083,7 +2095,7 @@ impl Bank {
             ("parent_slot", parent.slot(), i64),
             ("bank_rc_creation_us", bank_rc_time.as_us(), i64),
             ("total_elapsed_us", time.as_us(), i64),
-            ("status_cache_rc_us", status_cache_rc_time.as_us(), i64),
+            ("status_cache_us", status_cache_time.as_us(), i64),
             ("fee_components_us", fee_components_time.as_us(), i64),
             ("blockhash_queue_us", blockhash_queue_time.as_us(), i64),
             ("stakes_cache_us", stakes_cache_time.as_us(), i64),
@@ -2211,7 +2223,7 @@ impl Bank {
         let mut bank = Self {
             rewrites_skipped_this_slot: Rewrites::default(),
             rc: bank_rc,
-            src: new(),
+            status_cache: new(),
             blockhash_queue: RwLock::new(fields.blockhash_queue),
             ancestors,
             hash: RwLock::new(fields.hash),
@@ -2412,7 +2424,7 @@ impl Bank {
     }
 
     pub fn status_cache_ancestors(&self) -> Vec<u64> {
-        let mut roots = self.src.status_cache.read().unwrap().roots().clone();
+        let mut roots = self.status_cache.read().unwrap().roots().clone();
         let min = roots.iter().min().cloned().unwrap_or(0);
         for ancestor in self.ancestors.keys() {
             if ancestor >= min {
@@ -2593,8 +2605,8 @@ impl Bank {
                     .stakes_cache
                     .stakes()
                     .vote_accounts()
-                    .iter()
-                    .map(|(pubkey, (stake, _))| (*pubkey, *stake))
+                    .delegated_stakes()
+                    .map(|(pubkey, stake)| (*pubkey, stake))
                     .collect();
                 info!(
                     "new epoch stakes, epoch: {}, stakes: {:#?}, total_stake: {}",
@@ -2674,7 +2686,7 @@ impl Bank {
             .filter_map(|id| self.feature_set.activated_slot(id))
             .collect::<Vec<_>>();
         slots.sort_unstable();
-        slots.get(0).cloned().unwrap_or_else(|| {
+        slots.first().cloned().unwrap_or_else(|| {
             self.feature_set
                 .activated_slot(&feature_set::pico_inflation::id())
                 .unwrap_or(0)
@@ -2784,7 +2796,15 @@ impl Bank {
             "distributed inflation: {} (rounded from: {})",
             validator_rewards_paid, validator_rewards
         );
-
+        // TODO: staked_nodes forces an eager stakes calculation. remove it!
+        let (num_stake_accounts, num_vote_accounts, num_staked_nodes) = {
+            let stakes = self.stakes_cache.stakes();
+            (
+                stakes.stake_delegations().len(),
+                stakes.vote_accounts().len(),
+                stakes.staked_nodes().len(),
+            )
+        };
         self.capitalization
             .fetch_add(validator_rewards_paid, Relaxed);
 
@@ -2806,7 +2826,10 @@ impl Bank {
             ("validator_rewards", validator_rewards_paid, i64),
             ("active_stake", active_stake, i64),
             ("pre_capitalization", capitalization, i64),
-            ("post_capitalization", self.capitalization(), i64)
+            ("post_capitalization", self.capitalization(), i64),
+            ("num_stake_accounts", num_stake_accounts as i64, i64),
+            ("num_vote_accounts", num_vote_accounts as i64, i64),
+            ("num_staked_nodes", num_staked_nodes as i64, i64)
         );
     }
 
@@ -2827,6 +2850,7 @@ impl Bank {
         let invalid_vote_keys: DashMap<Pubkey, InvalidCacheEntryReason> = DashMap::new();
         let invalid_cached_stake_accounts = AtomicUsize::default();
         let invalid_cached_vote_accounts = AtomicUsize::default();
+        let invalid_cached_stake_accounts_rent_epoch = AtomicUsize::default();
 
         let stake_delegations: Vec<_> = stakes.stake_delegations().iter().collect();
         thread_pool.install(|| {
@@ -2870,6 +2894,30 @@ impl Bank {
                     };
                     if cached_stake_account != &stake_account {
                         invalid_cached_stake_accounts.fetch_add(1, Relaxed);
+                        let mut cached_account = cached_stake_account.account().clone();
+                        // We could have collected rent on the loaded account already in this new epoch (we could be at partition_index 12, for example).
+                        // So, we may need to adjust the rent_epoch of the cached account. So, update rent_epoch and compare just the accounts.
+                        ExpectedRentCollection::maybe_update_rent_epoch_on_load(
+                            &mut cached_account,
+                            &SlotInfoInEpoch::new_small(self.slot()),
+                            &SlotInfoInEpoch::new_small(self.slot()),
+                            self.epoch_schedule(),
+                            self.rent_collector(),
+                            stake_pubkey,
+                            &self.rewrites_skipped_this_slot,
+                        );
+                        if &cached_account != stake_account.account() {
+                            info!(
+                                "cached stake account mismatch: {}: {:?}, {:?}",
+                                stake_pubkey,
+                                cached_account,
+                                stake_account.account()
+                            );
+                        } else {
+                            // track how many of 'invalid_cached_stake_accounts' were due to rent_epoch changes
+                            // subtract these to find real invalid cached accounts
+                            invalid_cached_stake_accounts_rent_epoch.fetch_add(1, Relaxed);
+                        }
                     }
                     let stake_delegation = (*stake_pubkey, stake_account);
                     let mut vote_delegations = if let Some(vote_delegations) =
@@ -2881,7 +2929,7 @@ impl Bank {
                         let vote_account = match self.get_account_with_fixed_root(vote_pubkey) {
                             Some(vote_account) => {
                                 match cached_vote_account {
-                                    Some((_stake, cached_vote_account))
+                                    Some(cached_vote_account)
                                         if cached_vote_account == &vote_account => {}
                                     _ => {
                                         invalid_cached_vote_accounts.fetch_add(1, Relaxed);
@@ -2943,6 +2991,8 @@ impl Bank {
             invalid_stake_keys,
             invalid_cached_vote_accounts: invalid_cached_vote_accounts.into_inner(),
             invalid_cached_stake_accounts: invalid_cached_stake_accounts.into_inner(),
+            invalid_cached_stake_accounts_rent_epoch: invalid_cached_stake_accounts_rent_epoch
+                .into_inner(),
             vote_accounts_cache_miss_count: 0,
         }
     }
@@ -2983,7 +3033,7 @@ impl Bank {
         let solana_vote_program: Pubkey = solana_vote_program::id();
         let vote_accounts_cache_miss_count = AtomicUsize::default();
         let get_vote_account = |vote_pubkey: &Pubkey| -> Option<VoteAccount> {
-            if let Some((_stake, vote_account)) = cached_vote_accounts.get(vote_pubkey) {
+            if let Some(vote_account) = cached_vote_accounts.get(vote_pubkey) {
                 return Some(vote_account.clone());
             }
             // If accounts-db contains a valid vote account, then it should
@@ -3061,12 +3111,13 @@ impl Bank {
             invalid_stake_keys: DashMap::default(),
             invalid_cached_vote_accounts: 0,
             invalid_cached_stake_accounts: 0,
+            invalid_cached_stake_accounts_rent_epoch: 0,
             vote_accounts_cache_miss_count: vote_accounts_cache_miss_count.into_inner(),
         }
     }
 
     /// iterate over all stakes, redeem vote credits for each stake we can
-    ///   successfully load and parse, return the lamport value of one point
+    /// successfully load and parse, return the lamport value of one point
     fn pay_validator_rewards_with_thread_pool(
         &mut self,
         rewarded_epoch: Epoch,
@@ -3086,6 +3137,7 @@ impl Bank {
                 invalid_vote_keys,
                 invalid_cached_vote_accounts,
                 invalid_cached_stake_accounts,
+                invalid_cached_stake_accounts_rent_epoch,
                 vote_accounts_cache_miss_count,
             } = if update_rewards_from_cached_accounts {
                 self.load_vote_and_stake_accounts(thread_pool, reward_calc_tracer.as_ref())
@@ -3101,6 +3153,8 @@ impl Bank {
                 .fetch_add(m.as_us(), Relaxed);
             metrics.invalid_cached_vote_accounts += invalid_cached_vote_accounts;
             metrics.invalid_cached_stake_accounts += invalid_cached_stake_accounts;
+            metrics.invalid_cached_stake_accounts_rent_epoch +=
+                invalid_cached_stake_accounts_rent_epoch;
             metrics.vote_accounts_cache_miss_count += vote_accounts_cache_miss_count;
             self.stakes_cache.handle_invalid_keys(
                 invalid_stake_keys,
@@ -3164,7 +3218,7 @@ impl Bank {
         );
 
         let mut m = Measure::start("redeem_rewards");
-        let mut stake_rewards = thread_pool.install(|| {
+        let stake_rewards: Vec<StakeReward> = thread_pool.install(|| {
             stake_delegation_iterator
                 .filter_map(|(vote_pubkey, vote_state, (stake_pubkey, stake_account))| {
                     // curry closure to add the contextual stake_pubkey
@@ -3199,21 +3253,17 @@ impl Bank {
                             *vote_rewards_sum = vote_rewards_sum.saturating_add(voters_reward);
                         }
 
-                        // store stake account even if stakers_reward is 0
-                        // because credits observed has changed
-                        self.store_account(&stake_pubkey, &stake_account);
-
-                        if stakers_reward > 0 {
-                            return Some((
-                                stake_pubkey,
-                                RewardInfo {
-                                    reward_type: RewardType::Staking,
-                                    lamports: stakers_reward as i64,
-                                    post_balance: stake_account.lamports(),
-                                    commission: Some(vote_state.commission),
-                                },
-                            ));
-                        }
+                        let post_balance = stake_account.lamports();
+                        return Some(StakeReward {
+                            stake_pubkey,
+                            stake_reward_info: RewardInfo {
+                                reward_type: RewardType::Staking,
+                                lamports: i64::try_from(stakers_reward).unwrap(),
+                                post_balance,
+                                commission: Some(vote_state.commission),
+                            },
+                            stake_account,
+                        });
                     } else {
                         debug!(
                             "stake_state::redeem_rewards() failed for {}: {:?}",
@@ -3224,6 +3274,13 @@ impl Bank {
                 })
                 .collect()
         });
+        m.stop();
+        metrics.redeem_rewards_us += m.as_us();
+
+        // store stake account even if stakers_reward is 0
+        // because credits observed has changed
+        let mut m = Measure::start("store_stake_account");
+        self.store_accounts((self.slot(), &stake_rewards[..]));
         m.stop();
         metrics
             .store_stake_accounts_us
@@ -3258,15 +3315,20 @@ impl Bank {
                     }
                 },
             )
-            .collect();
+            .collect::<Vec<_>>();
 
         m.stop();
         metrics.store_vote_accounts_us.fetch_add(m.as_us(), Relaxed);
 
+        let additional_reserve = stake_rewards.len() + vote_rewards.len();
         {
             let mut rewards = self.rewards.write().unwrap();
+            rewards.reserve(additional_reserve);
             rewards.append(&mut vote_rewards);
-            rewards.append(&mut stake_rewards);
+            stake_rewards
+                .into_iter()
+                .filter(|x| x.get_stake_reward() > 0)
+                .for_each(|x| rewards.push((x.stake_pubkey, x.stake_reward_info)));
         }
 
         point_value.rewards as f64 / point_value.points as f64
@@ -3461,7 +3523,7 @@ impl Bank {
         let mut squash_cache_time = Measure::start("squash_cache_time");
         roots
             .iter()
-            .for_each(|slot| self.src.status_cache.write().unwrap().add_root(*slot));
+            .for_each(|slot| self.status_cache.write().unwrap().add_root(*slot));
         squash_cache_time.stop();
 
         SquashTiming {
@@ -3498,7 +3560,7 @@ impl Bank {
                 "{} repeated in genesis config",
                 pubkey
             );
-            self.store_account(pubkey, &AccountSharedData::from(account.clone()));
+            self.store_account(pubkey, account);
             self.capitalization.fetch_add(account.lamports(), Relaxed);
         }
         // updating sysvars (the fees sysvar in this case) now depends on feature activations in
@@ -3511,7 +3573,7 @@ impl Bank {
                 "{} repeated in genesis config",
                 pubkey
             );
-            self.store_account(pubkey, &AccountSharedData::from(account.clone()));
+            self.store_account(pubkey, account);
         }
 
         // highest staked node is the first collector
@@ -3717,6 +3779,14 @@ impl Bank {
         ))
     }
 
+    pub fn get_startup_verification_complete(&self) -> &Arc<AtomicBool> {
+        &self.rc.accounts.accounts_db.startup_verification_complete
+    }
+
+    pub fn is_startup_verification_complete(&self) -> bool {
+        self.get_startup_verification_complete().load(Relaxed)
+    }
+
     pub fn get_fee_for_message_with_lamports_per_signature(
         &self,
         message: &SanitizedMessage,
@@ -3768,15 +3838,11 @@ impl Bank {
 
     /// Forget all signatures. Useful for benchmarking.
     pub fn clear_signatures(&self) {
-        self.src.status_cache.write().unwrap().clear();
+        self.status_cache.write().unwrap().clear();
     }
 
     pub fn clear_slot_signatures(&self, slot: Slot) {
-        self.src
-            .status_cache
-            .write()
-            .unwrap()
-            .clear_slot_entries(slot);
+        self.status_cache.write().unwrap().clear_slot_entries(slot);
     }
 
     fn update_transaction_statuses(
@@ -3784,7 +3850,7 @@ impl Bank {
         sanitized_txs: &[SanitizedTransaction],
         execution_results: &[TransactionExecutionResult],
     ) {
-        let mut status_cache = self.src.status_cache.write().unwrap();
+        let mut status_cache = self.status_cache.write().unwrap();
         assert_eq!(sanitized_txs.len(), execution_results.len());
         for (tx, execution_result) in sanitized_txs.iter().zip(execution_results) {
             if let Some(details) = execution_result.details() {
@@ -4377,7 +4443,7 @@ impl Bank {
     fn is_transaction_already_processed(
         &self,
         sanitized_tx: &SanitizedTransaction,
-        status_cache: &StatusCache<Result<()>>,
+        status_cache: &BankStatusCache,
     ) -> bool {
         let key = sanitized_tx.message_hash();
         let transaction_blockhash = sanitized_tx.message().recent_blockhash();
@@ -4392,7 +4458,7 @@ impl Bank {
         lock_results: Vec<TransactionCheckResult>,
         error_counters: &mut TransactionErrorMetrics,
     ) -> Vec<TransactionCheckResult> {
-        let rcache = self.src.status_cache.read().unwrap();
+        let rcache = self.status_cache.read().unwrap();
         sanitized_txs
             .iter()
             .zip(lock_results)
@@ -5039,7 +5105,7 @@ impl Bank {
         // operations being done and treating them like a signature
         for (program_id, instruction) in message.program_instructions_iter() {
             if secp256k1_program::check_id(program_id) || ed25519_program::check_id(program_id) {
-                if let Some(num_verifies) = instruction.data.get(0) {
+                if let Some(num_verifies) = instruction.data.first() {
                     num_signatures = num_signatures.saturating_add(u64::from(*num_verifies));
                 }
             }
@@ -5361,8 +5427,7 @@ impl Bank {
                     None
                 } else {
                     total_staked += *staked;
-                    let node_pubkey = account.vote_state().as_ref().ok()?.node_pubkey;
-                    Some((node_pubkey, *staked))
+                    Some((account.node_pubkey()?, *staked))
                 }
             })
             .collect::<Vec<(Pubkey, u64)>>();
@@ -5518,6 +5583,25 @@ impl Bank {
         self.collect_rent_eagerly(true);
     }
 
+    /// Get stake and stake node accounts
+    pub(crate) fn get_stake_accounts(&self, minimized_account_set: &DashSet<Pubkey>) {
+        self.stakes_cache
+            .stakes()
+            .stake_delegations()
+            .iter()
+            .for_each(|(pubkey, _)| {
+                minimized_account_set.insert(*pubkey);
+            });
+
+        self.stakes_cache
+            .stakes()
+            .staked_nodes()
+            .par_iter()
+            .for_each(|(pubkey, _)| {
+                minimized_account_set.insert(*pubkey);
+            });
+    }
+
     fn collect_rent_eagerly(&self, just_rewrites: bool) {
         if self.lazy_rent_collection.load(Relaxed) {
             return;
@@ -5642,6 +5726,7 @@ impl Bank {
         let mut time_storing_accounts_us = 0;
         let can_skip_rewrites = self.rc.accounts.accounts_db.skip_rewrites || just_rewrites;
         for (pubkey, account, loaded_slot) in accounts.iter_mut() {
+            let old_rent_epoch = account.rent_epoch();
             let (rent_collected_info, measure) =
                 measure!(self.rent_collector.collect_from_existing_account(
                     pubkey,
@@ -5660,7 +5745,7 @@ impl Bank {
                     bank_slot,
                     rent_collected_info.rent_amount,
                     *loaded_slot,
-                    account.rent_epoch(),
+                    old_rent_epoch,
                     account,
                 )
             {
@@ -5685,7 +5770,7 @@ impl Bank {
         if !accounts_to_store.is_empty() {
             // TODO: Maybe do not call `store_accounts()` here.  Instead return `accounts_to_store`
             // and have `collect_rent_in_partition()` perform all the stores.
-            let (_, measure) = measure!(self.store_accounts(&accounts_to_store));
+            let (_, measure) = measure!(self.store_accounts((self.slot(), &accounts_to_store[..])));
             time_storing_accounts_us += measure.as_us();
         }
 
@@ -5937,17 +6022,6 @@ impl Bank {
         end_pubkey[0..PREFIX_SIZE].copy_from_slice(&end_key_prefix.to_be_bytes());
         let start_pubkey_final = Pubkey::new_from_array(start_pubkey);
         let end_pubkey_final = Pubkey::new_from_array(end_pubkey);
-        if start_index != 0 && start_index == end_index {
-            error!(
-                "start=end, {}, {}, start, end: {:?}, {:?}, pubkeys: {}, {}",
-                start_pubkey.iter().map(|x| format!("{:02x}", x)).join(""),
-                end_pubkey.iter().map(|x| format!("{:02x}", x)).join(""),
-                start_key_prefix,
-                end_key_prefix,
-                start_pubkey_final,
-                end_pubkey_final
-            );
-        }
         trace!(
             "pubkey_range_from_partition: ({}-{})/{} [{}]: {}-{}",
             start_index,
@@ -6056,7 +6130,7 @@ impl Bank {
         partitions
     }
 
-    fn fixed_cycle_partitions_between_slots(
+    pub(crate) fn fixed_cycle_partitions_between_slots(
         &self,
         starting_slot: Slot,
         ending_slot: Slot,
@@ -6097,7 +6171,7 @@ impl Bank {
         )
     }
 
-    fn variable_cycle_partitions_between_slots(
+    pub(crate) fn variable_cycle_partitions_between_slots(
         &self,
         starting_slot: Slot,
         ending_slot: Slot,
@@ -6306,7 +6380,7 @@ impl Bank {
             && self.slot_count_per_normal_epoch() < self.slot_count_in_two_day()
     }
 
-    fn use_fixed_collection_cycle(&self) -> bool {
+    pub(crate) fn use_fixed_collection_cycle(&self) -> bool {
         // Force normal behavior, disabling fixed collection cycle for manual local testing
         #[cfg(not(test))]
         if self.slot_count_per_normal_epoch() == solana_sdk::epoch_schedule::MINIMUM_SLOTS_PER_EPOCH
@@ -6523,19 +6597,25 @@ impl Bank {
         parents
     }
 
-    pub fn store_account(&self, pubkey: &Pubkey, account: &AccountSharedData) {
-        self.store_accounts(&[(pubkey, account)])
+    pub fn store_account<T: ReadableAccount + Sync + ZeroLamport>(
+        &self,
+        pubkey: &Pubkey,
+        account: &T,
+    ) {
+        self.store_accounts((self.slot(), &[(pubkey, account)][..]))
     }
 
-    pub fn store_accounts(&self, accounts: &[(&Pubkey, &AccountSharedData)]) {
+    pub fn store_accounts<'a, T: ReadableAccount + Sync + ZeroLamport>(
+        &self,
+        accounts: impl StorableAccounts<'a, T>,
+    ) {
         assert!(!self.freeze_started());
-        self.rc
-            .accounts
-            .store_accounts_cached(self.slot(), accounts);
         let mut m = Measure::start("stakes_cache.check_and_store");
-        for (pubkey, account) in accounts {
-            self.stakes_cache.check_and_store(pubkey, account);
-        }
+        (0..accounts.len()).into_iter().for_each(|i| {
+            self.stakes_cache
+                .check_and_store(accounts.pubkey(i), accounts.account(i))
+        });
+        self.rc.accounts.store_accounts_cached(accounts);
         m.stop();
         self.rc
             .accounts
@@ -6921,14 +7001,14 @@ impl Bank {
         signature: &Signature,
         blockhash: &Hash,
     ) -> Option<Result<()>> {
-        let rcache = self.src.status_cache.read().unwrap();
+        let rcache = self.status_cache.read().unwrap();
         rcache
             .get_status(signature, blockhash, &self.ancestors)
             .map(|v| v.1)
     }
 
     pub fn get_signature_status_slot(&self, signature: &Signature) -> Option<(Slot, Result<()>)> {
-        let rcache = self.src.status_cache.read().unwrap();
+        let rcache = self.status_cache.read().unwrap();
         rcache.get_status_any_blockhash(signature, &self.ancestors)
     }
 
@@ -7013,6 +7093,15 @@ impl Bank {
             can_cached_slot_be_unflushed,
             ignore_mismatch,
         )
+    }
+
+    /// return true if bg hash verification is complete
+    /// return false if bg hash verification has not completed yet
+    /// if hash verification failed, a panic will occur
+    pub fn has_initial_accounts_hash_verification_completed(&self) -> bool {
+        // this will be live shortly
+        // for now, this check occurs at startup, so it must always be true
+        true
     }
 
     pub fn get_snapshot_storages(&self, base_slot: Option<Slot>) -> SnapshotStorages {
@@ -7346,10 +7435,11 @@ impl Bank {
         Arc::from(stakes.vote_accounts())
     }
 
-    /// Vote account for the given vote account pubkey along with the stake.
-    pub fn get_vote_account(&self, vote_account: &Pubkey) -> Option<(/*stake:*/ u64, VoteAccount)> {
+    /// Vote account for the given vote account pubkey.
+    pub fn get_vote_account(&self, vote_account: &Pubkey) -> Option<VoteAccount> {
         let stakes = self.stakes_cache.stakes();
-        stakes.vote_accounts().get(vote_account).cloned()
+        let vote_account = stakes.vote_accounts().get(vote_account)?;
+        Some(vote_account.clone())
     }
 
     /// Get the EpochStakes for a given epoch
@@ -8103,7 +8193,9 @@ pub(crate) mod tests {
                 MAX_LOCKOUT_HISTORY,
             },
         },
-        std::{result, sync::atomic::Ordering::Release, thread::Builder, time::Duration},
+        std::{
+            result, str::FromStr, sync::atomic::Ordering::Release, thread::Builder, time::Duration,
+        },
         test_utils::goto_end_of_slot,
     };
 
@@ -10389,10 +10481,11 @@ pub(crate) mod tests {
                 ])
         );
         let range = Bank::pubkey_range_from_partition((0, 1, max));
+        const ONE: u8 = 0x01;
         assert_eq!(
             range,
             Pubkey::new_from_array([
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, ONE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00,
             ])
@@ -10403,6 +10496,7 @@ pub(crate) mod tests {
                 ])
         );
         let range = Bank::pubkey_range_from_partition((max - 3, max - 2, max));
+        const FD: u8 = 0xfd;
         assert_eq!(
             range,
             Pubkey::new_from_array([
@@ -10411,7 +10505,7 @@ pub(crate) mod tests {
                 0x00, 0x00, 0x00, 0x00,
             ])
                 ..=Pubkey::new_from_array([
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff,
+                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, FD, 0xff, 0xff, 0xff, 0xff, 0xff,
                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff
                 ])
@@ -10423,12 +10517,7 @@ pub(crate) mod tests {
                 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00,
-            ])
-                ..=Pubkey::new_from_array([
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-                ])
+            ])..=pubkey_max_value()
         );
 
         fn should_cause_overflow(partition_count: u64) -> bool {
@@ -10448,19 +10537,7 @@ pub(crate) mod tests {
 
         for max in &[max_exact, max_inexact] {
             let range = Bank::pubkey_range_from_partition((max - 1, max - 1, *max));
-            assert_eq!(
-                range,
-                Pubkey::new_from_array([
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-                ])
-                    ..=Pubkey::new_from_array([
-                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-                    ])
-            );
+            assert_eq!(range, pubkey_max_value()..=pubkey_max_value());
         }
     }
 
@@ -10496,11 +10573,7 @@ pub(crate) mod tests {
         let range = Bank::pubkey_range_from_partition((0, 0, 3));
         assert_eq!(
             range,
-            Pubkey::new_from_array([
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00
-            ])
+            Pubkey::new_from_array([0x00; 32])
                 ..=Pubkey::new_from_array([
                     0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x54, 0xff, 0xff, 0xff, 0xff, 0xff,
                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -10510,36 +10583,51 @@ pub(crate) mod tests {
         let _ = test_map.range(range);
 
         let range = Bank::pubkey_range_from_partition((1, 1, 3));
-        assert_eq!(
-            range,
-            Pubkey::new_from_array([
-                0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00
-            ])
-                ..=Pubkey::new_from_array([
-                    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-                ])
-        );
+        let same = Pubkey::new_from_array([
+            0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ]);
+        assert_eq!(range, same..=same);
         let _ = test_map.range(range);
 
         let range = Bank::pubkey_range_from_partition((2, 2, 3));
-        assert_eq!(
-            range,
-            Pubkey::new_from_array([
-                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                0xff, 0xff, 0xff, 0xff
-            ])
-                ..=Pubkey::new_from_array([
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-                ])
-        );
+        assert_eq!(range, pubkey_max_value()..=pubkey_max_value());
         let _ = test_map.range(range);
+    }
+
+    fn pubkey_max_value() -> Pubkey {
+        let highest = Pubkey::from_str("JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG").unwrap();
+        let arr = Pubkey::new_from_array([0xff; 32]);
+        assert_eq!(highest, arr);
+        arr
+    }
+
+    #[test]
+    fn test_rent_pubkey_range_max() {
+        // start==end && start != 0 is curious behavior. Verifying it here.
+        solana_logger::setup();
+        let range = Bank::pubkey_range_from_partition((1, 1, 3));
+        let p = Bank::partition_from_pubkey(range.start(), 3);
+        assert_eq!(p, 2);
+        let range = Bank::pubkey_range_from_partition((1, 2, 3));
+        let p = Bank::partition_from_pubkey(range.start(), 3);
+        assert_eq!(p, 2);
+        let range = Bank::pubkey_range_from_partition((2, 2, 3));
+        let p = Bank::partition_from_pubkey(range.start(), 3);
+        assert_eq!(p, 2);
+        let range = Bank::pubkey_range_from_partition((1, 1, 16));
+        let p = Bank::partition_from_pubkey(range.start(), 16);
+        assert_eq!(p, 2);
+        let range = Bank::pubkey_range_from_partition((1, 2, 16));
+        let p = Bank::partition_from_pubkey(range.start(), 16);
+        assert_eq!(p, 2);
+        let range = Bank::pubkey_range_from_partition((2, 2, 16));
+        let p = Bank::partition_from_pubkey(range.start(), 16);
+        assert_eq!(p, 3);
+        let range = Bank::pubkey_range_from_partition((15, 15, 16));
+        let p = Bank::partition_from_pubkey(range.start(), 16);
+        assert_eq!(p, 15);
     }
 
     #[test]
@@ -10549,11 +10637,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             range,
-            Pubkey::new_from_array([
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00
-            ])
+            Pubkey::new_from_array([0x00; 32])
                 ..=Pubkey::new_from_array([
                     0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -10587,11 +10671,7 @@ pub(crate) mod tests {
         let range = Bank::pubkey_range_from_partition((0, 0, 3));
         assert_eq!(
             range,
-            Pubkey::new_from_array([
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00
-            ])
+            Pubkey::new_from_array([0x00; 32])
                 ..=Pubkey::new_from_array([
                     0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x54, 0xff, 0xff, 0xff, 0xff, 0xff,
                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -10786,6 +10866,57 @@ pub(crate) mod tests {
             bank.slots_by_pubkey(&zero_lamport_pubkey, &ancestors),
             vec![genesis_slot]
         );
+    }
+
+    fn new_from_parent_next_epoch(parent: &Arc<Bank>, epochs: Epoch) -> Bank {
+        let mut slot = parent.slot();
+        let mut epoch = parent.epoch();
+        for _ in 0..epochs {
+            slot += parent.epoch_schedule().get_slots_in_epoch(epoch);
+            epoch = parent.epoch_schedule().get_epoch(slot);
+        }
+
+        Bank::new_from_parent(parent, &Pubkey::default(), slot)
+    }
+
+    #[test]
+    /// tests that an account which has already had rent collected IN this slot does not skip rewrites
+    fn test_collect_rent_from_accounts() {
+        solana_logger::setup();
+
+        let (genesis_config, _mint_keypair) = create_genesis_config(100000);
+
+        let zero_lamport_pubkey = Pubkey::new(&[0; 32]);
+
+        let genesis_bank = Arc::new(Bank::new_for_tests(&genesis_config));
+        let first_bank = Arc::new(new_from_parent(&genesis_bank));
+        let first_slot = 1;
+        assert_eq!(first_slot, first_bank.slot());
+        let epoch_delta = 4;
+        let later_bank = Arc::new(new_from_parent_next_epoch(&first_bank, epoch_delta)); // a bank a few epochs in the future
+        let later_slot = later_bank.slot();
+        assert!(later_bank.epoch() == genesis_bank.epoch() + epoch_delta);
+
+        let data_size = 0; // make sure we're rent exempt
+        let lamports = later_bank.get_minimum_balance_for_rent_exemption(data_size); // cannot be 0 or we zero out rent_epoch in rent collection and we need to be rent exempt
+        let mut account = AccountSharedData::new(lamports, data_size, &Pubkey::default());
+        account.set_rent_epoch(later_bank.epoch() - 1); // non-zero, but less than later_bank's epoch
+
+        let just_rewrites = true;
+        // 'later_slot' here is the slot the account was loaded from.
+        // Since 'later_slot' is the same slot the bank is in, this means that the account was already written IN this slot.
+        // So, we should NOT skip rewrites.
+        let result = later_bank.collect_rent_from_accounts(
+            vec![(zero_lamport_pubkey, account.clone(), later_slot)],
+            just_rewrites,
+        );
+        assert!(result.rewrites_skipped.is_empty());
+        // loaded from previous slot, so we skip rent collection on it
+        let result = later_bank.collect_rent_from_accounts(
+            vec![(zero_lamport_pubkey, account, later_slot - 1)],
+            just_rewrites,
+        );
+        assert!(result.rewrites_skipped[0].0 == zero_lamport_pubkey);
     }
 
     #[test]
@@ -15718,7 +15849,6 @@ pub(crate) mod tests {
                    Maybe, inconsistent program activation is detected on snapshot restore?"
     )]
     fn test_add_builtin_account_after_frozen() {
-        use std::str::FromStr;
         let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
 
         let slot = 123;
@@ -15740,7 +15870,6 @@ pub(crate) mod tests {
                     CiXgo2KHKSDmDnV1F6B69eWFgNAPiSBjjYvfB4cvRNre)."
     )]
     fn test_add_builtin_account_replace_none() {
-        use std::str::FromStr;
         let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
 
         let slot = 123;
@@ -15833,7 +15962,6 @@ pub(crate) mod tests {
                    Maybe, inconsistent program activation is detected on snapshot restore?"
     )]
     fn test_add_precompiled_account_after_frozen() {
-        use std::str::FromStr;
         let (genesis_config, _mint_keypair) = create_genesis_config(100_000);
 
         let slot = 123;

@@ -6,7 +6,7 @@ use {
     log::*,
     rand::{thread_rng, Rng},
     rayon::prelude::*,
-    solana_client::connection_cache::{ConnectionCache, DEFAULT_TPU_CONNECTION_POOL_SIZE},
+    solana_client::connection_cache::{ConnectionCache, UseQUIC, DEFAULT_TPU_CONNECTION_POOL_SIZE},
     solana_core::{banking_stage::BankingStage, bundle_account_locker::BundleAccountLocker},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
@@ -352,12 +352,14 @@ fn main() {
             SocketAddrSpace::Unspecified,
         );
         let cluster_info = Arc::new(cluster_info);
-        let tpu_use_quic = matches.is_present("tpu_use_quic");
 
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
             NUM_BUNDLES_PRE_LOCK,
             &Pubkey::new_unique(),
         )));
+
+        let tpu_use_quic = UseQUIC::new(matches.is_present("tpu_use_quic"))
+            .expect("Failed to initialize QUIC flags");
 
         let banking_stage = BankingStage::new_num_threads(
             &cluster_info,
@@ -376,7 +378,7 @@ fn main() {
             HashSet::default(),
             bundle_account_locker,
         );
-        poh_recorder.lock().unwrap().set_bank(&bank);
+        poh_recorder.lock().unwrap().set_bank(&bank, false);
 
         // This is so that the signal_receiver does not go out of scope after the closure.
         // If it is dropped before poh_service, then poh_service will error when
@@ -457,7 +459,7 @@ fn main() {
                     std::u64::MAX,
                 );
 
-                poh_recorder.lock().unwrap().set_bank(&bank);
+                poh_recorder.lock().unwrap().set_bank(&bank, false);
                 assert!(poh_recorder.lock().unwrap().bank().is_some());
                 if bank.slot() > 32 {
                     leader_schedule_cache.set_root(&bank);

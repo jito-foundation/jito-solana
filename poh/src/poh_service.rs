@@ -497,7 +497,7 @@ mod tests {
                 hashes_per_batch,
                 record_receiver,
             );
-            poh_recorder.lock().unwrap().set_bank(&bank);
+            poh_recorder.lock().unwrap().set_bank(&bank, false);
 
             // get some events
             let mut hashes = 0;

@@ -19,7 +19,7 @@ use {
         staked_nodes_updater_service::StakedNodesUpdaterService,
         tip_manager::TipManager,
     },
-    crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError},
+    crossbeam_channel::{unbounded, Receiver},
     solana_client::connection_cache::ConnectionCache,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, blockstore_processor::TransactionStatusSender},
@@ -34,22 +34,19 @@ use {
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
     solana_sdk::{pubkey::Pubkey, signature::Keypair},
-    solana_streamer::quic::{
-        spawn_server, StreamStats, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS,
+    solana_streamer::{
+        quic::{spawn_server, StreamStats, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
+        streamer::StakedNodes,
     },
     std::{
-        collections::HashMap,
         net::{SocketAddr, UdpSocket},
+        collections::HashMap,
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread,
-        time::Duration,
     },
 };
 
 pub const DEFAULT_TPU_COALESCE_MS: u64 = 5;
-
-/// Timeout interval when joining threads during TPU close
-const TPU_THREADS_JOIN_TIMEOUT_SECONDS: u64 = 10;
 
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_IP: usize = 8;
@@ -140,7 +137,7 @@ impl Tpu {
             Some(bank_forks.read().unwrap().get_vote_only_mode_signal()),
         );
 
-        let staked_nodes = Arc::new(RwLock::new(HashMap::new()));
+        let staked_nodes = Arc::new(RwLock::new(StakedNodes::default()));
         let staked_nodes_updater_service = StakedNodesUpdaterService::new(
             exit.clone(),
             cluster_info.clone(),
@@ -321,22 +318,6 @@ impl Tpu {
     }
 
     pub fn join(self) -> thread::Result<()> {
-        // spawn a new thread to wait for tpu close
-        let (sender, receiver) = bounded(0);
-        let _ = thread::spawn(move || {
-            let _ = self.do_join();
-            sender.send(()).unwrap();
-        });
-
-        // exit can deadlock. put an upper-bound on how long we wait for it
-        let timeout = Duration::from_secs(TPU_THREADS_JOIN_TIMEOUT_SECONDS);
-        if let Err(RecvTimeoutError::Timeout) = receiver.recv_timeout(timeout) {
-            error!("timeout for closing tpu");
-        }
-        Ok(())
-    }
-
-    fn do_join(self) -> thread::Result<()> {
         let results = vec![
             self.fetch_stage.join(),
             self.sigverify_stage.join(),
