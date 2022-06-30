@@ -1,20 +1,15 @@
 use {
     crossbeam_channel::{unbounded, Receiver},
     futures_util::stream,
-    jito_protos::proto::{
-        shared::Header as PbHeader,
-        validator_interface::{
-            packet_stream_msg::Msg::Heartbeat,
-            validator_interface_client::ValidatorInterfaceClient, GetTpuConfigsRequest,
-            PacketStreamMsg, SubscribeBundlesRequest, SubscribeBundlesResponse,
-        },
+    jito_protos::proto::validator_interface::{
+        validator_interface_client::ValidatorInterfaceClient, GetTpuConfigsRequest,
+        PacketStreamMsg, SubscribeBundlesRequest, SubscribeBundlesResponse,
     },
     solana_sdk::{pubkey::Pubkey, signature::Signature},
     std::{
         fs::File,
         io::{self, Read},
         net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
-        time::SystemTime,
     },
     thiserror::Error,
     tokio::runtime::{Builder, Runtime},
@@ -101,15 +96,11 @@ impl BlockingProxyClient {
     }
 
     pub fn start_bi_directional_packet_stream(&mut self) -> ProxyResult<SubscribePacketsReceiver> {
-        let ts = prost_types::Timestamp::from(SystemTime::now());
-        let header = PbHeader { ts: Some(ts) };
         let mut packet_subscription = self
             .rt
             .block_on(
                 self.client
-                    .start_bi_directional_packet_stream(stream::iter(vec![PacketStreamMsg {
-                        msg: Some(Heartbeat(header.clone())),
-                    }])),
+                    .start_bi_directional_packet_stream(stream::iter(vec![])),
             )?
             .into_inner();
 
