@@ -24,8 +24,9 @@ fn get_proto_packet(i: u8) -> PbPacket {
                 forwarded: false,
                 repair: false,
                 simple_vote_tx: false,
-                tracer_tx: false,
+                tracer_packet: false,
             }),
+            sender_stake: 0,
         }),
     }
 }
@@ -46,6 +47,7 @@ fn bench_batch_list_to_packets(bencher: &mut Bencher) {
                 packets: (0..128).map(get_proto_packet).collect(),
             })
             .collect(),
+        expiry: 0,
     };
 
     bencher.iter(|| {

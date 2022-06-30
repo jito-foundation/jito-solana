@@ -1,9 +1,9 @@
 use {
     crossbeam_channel::{unbounded, Receiver},
+    futures_util::stream,
     jito_protos::proto::validator_interface::{
         validator_interface_client::ValidatorInterfaceClient, GetTpuConfigsRequest,
-        SubscribeBundlesRequest, SubscribeBundlesResponse, SubscribePacketsRequest,
-        SubscribePacketsResponse,
+        PacketStreamMsg, SubscribeBundlesRequest, SubscribeBundlesResponse,
     },
     solana_sdk::{pubkey::Pubkey, signature::Signature},
     std::{
@@ -25,8 +25,7 @@ use {
 type ValidatorInterfaceClientType =
     ValidatorInterfaceClient<InterceptedService<Channel, AuthenticationInjector>>;
 
-type SubscribePacketsReceiver =
-    Receiver<std::result::Result<Option<SubscribePacketsResponse>, Status>>;
+type SubscribePacketsReceiver = Receiver<std::result::Result<Option<PacketStreamMsg>, Status>>;
 
 pub struct BlockingProxyClient {
     rt: Runtime,
@@ -96,10 +95,13 @@ impl BlockingProxyClient {
         Ok((tpu_socket, tpu_forward_socket))
     }
 
-    pub fn subscribe_packets(&mut self) -> ProxyResult<SubscribePacketsReceiver> {
+    pub fn start_bi_directional_packet_stream(&mut self) -> ProxyResult<SubscribePacketsReceiver> {
         let mut packet_subscription = self
             .rt
-            .block_on(self.client.subscribe_packets(SubscribePacketsRequest {}))?
+            .block_on(
+                self.client
+                    .start_bi_directional_packet_stream(stream::iter(vec![])),
+            )?
             .into_inner();
 
         let (sender, receiver) = unbounded();

@@ -128,7 +128,7 @@ pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> Packet {
             if flags.forwarded {
                 packet.meta.flags.insert(PacketFlags::FORWARDED);
             }
-            if flags.tracer_tx {
+            if flags.tracer_packet {
                 packet.meta.flags.insert(PacketFlags::TRACER_PACKET);
             }
             if flags.repair {
