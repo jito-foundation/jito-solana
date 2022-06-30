@@ -1,6 +1,6 @@
 use {
     crate::{
-        account_overrides::{AccountOverrides, AccountWithRentInfo},
+        account_overrides::AccountOverrides,
         account_rent_state::{check_rent_state_with_account, RentState},
         accounts_db::{
             AccountShrinkThreshold, AccountsAddRootTiming, AccountsDb, AccountsDbConfig,
@@ -279,26 +279,9 @@ impl Accounts {
                         )
                     } else {
                         let (mut account, rent) = if let Some(account_override) =
-                            account_overrides.and_then(|overrides| overrides.get(key))
+                        account_overrides.and_then(|overrides| overrides.get(key))
                         {
-                            match account_override {
-                                AccountWithRentInfo::Zero(data) => (data.clone(), 0),
-                                AccountWithRentInfo::SubtractRent(mut data) => {
-                                    let rent_due = if message.is_writable(i) {
-                                        let rent_due = rent_collector
-                                            .collect_from_existing_account(
-                                                key,
-                                                &mut data,
-                                                self.accounts_db.filler_account_suffix.as_ref(),
-                                            )
-                                            .rent_amount;
-                                        rent_due
-                                    } else {
-                                        0
-                                    };
-                                    (data.clone(), rent_due)
-                                }
-                            }
+                            (account_override.clone(), 0)
                         } else {
                             self.accounts_db
                                 .load_with_fixed_root(ancestors, key)

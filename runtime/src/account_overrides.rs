@@ -28,25 +28,4 @@ impl AccountOverrides {
     pub fn get(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
         self.accounts.get(pubkey)
     }
-
-    /// Gets the account info with info on whether rent should be subtracted or not
-    pub fn get(&self, pubkey: &Pubkey) -> Option<AccountWithRentInfo> {
-        if pubkey == &sysvar::slot_history::id() {
-            if self.slot_history.is_some() {
-                Some(AccountWithRentInfo::Zero(
-                    self.slot_history.as_ref().unwrap().clone(),
-                ))
-            } else {
-                None
-            }
-        } else {
-            self.cached_accounts_with_rent
-                .get(pubkey)
-                .map(|acc| AccountWithRentInfo::SubtractRent(acc.clone()))
-        }
-    }
-
-    pub fn put(&mut self, pubkey: Pubkey, data: AccountSharedData) {
-        self.cached_accounts_with_rent.insert(pubkey, data);
-    }
 }

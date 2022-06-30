@@ -16,8 +16,8 @@ use {
         account::{AccountSharedData, ReadableAccount},
         bpf_loader_upgradeable::{self, UpgradeableLoaderState},
         feature_set::{
-            cap_accounts_data_len, neon_evm_compute_budget,
-            record_instruction_in_transaction_context_push, requestable_heap_size,
+            cap_accounts_data_len,
+            record_instruction_in_transaction_context_push,
             tx_wide_compute_cap, FeatureSet,
         },
         hash::Hash,
