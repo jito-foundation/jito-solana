@@ -17,7 +17,7 @@ use {
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
-        tip_manager::TipManager,
+        tip_manager::{TipManager, TipManagerConfig},
     },
     crossbeam_channel::{unbounded, Receiver},
     solana_client::connection_cache::ConnectionCache,
@@ -33,7 +33,7 @@ use {
         cost_model::CostModel,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
-    solana_sdk::{pubkey::Pubkey, signature::Keypair},
+    solana_sdk::signature::Keypair,
     solana_streamer::{
         quic::{spawn_server, StreamStats, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
         streamer::StakedNodes,
@@ -106,7 +106,7 @@ impl Tpu {
         enable_quic_servers: bool,
         relayer_address: String,
         block_engine_address: String,
-        tip_program_pubkey: Pubkey,
+        tip_manager_config: TipManagerConfig,
         shred_receiver_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
@@ -217,6 +217,7 @@ impl Tpu {
 
         let (bundle_sender, bundle_receiver) = unbounded();
 
+        info!("starting relayer...");
         let relayer_stage = RelayerStage::new(
             cluster_info,
             relayer_address,
@@ -246,11 +247,11 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
-        let tip_manager = TipManager::new(tip_program_pubkey);
+        let tip_manager = TipManager::new(tip_manager_config);
 
         let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
             NUM_BUNDLES_PRE_LOCK,
-            &tip_manager.program_id(),
+            &tip_manager.tip_payment_program_id(),
         )));
 
         // tip accounts can't be used in BankingStage. This makes handling race conditions
@@ -258,8 +259,8 @@ impl Tpu {
         // TODO (LB): once there's a unified scheduler, we should allow tips in BankingStage
         //  and treat them w/ a priority similar to ComputeBudget::SetComputeUnitPrice
         let mut tip_accounts = tip_manager.get_tip_accounts();
-        tip_accounts.insert(tip_manager.config_pubkey());
-        tip_accounts.insert(tip_manager.program_id());
+        tip_accounts.insert(tip_manager.tip_payment_config_pubkey());
+        tip_accounts.insert(tip_manager.tip_payment_program_id());
 
         let banking_stage = BankingStage::new(
             cluster_info,

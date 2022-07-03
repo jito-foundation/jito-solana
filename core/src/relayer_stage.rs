@@ -197,8 +197,7 @@ impl RelayerStage {
             .name("proxy_thread".into())
             .spawn(move || {
                 if !address.contains("http") {
-                    info!("malformed or missing mev proxy address provided, exiting mev loop");
-                    datapoint_info!(METRICS_NAME, ("bad_proxy_addr", 1, i64));
+                    error!("missing or malformed mev proxy address provided, exiting mev loop [address={}]", address);
                     return;
                 }
 

@@ -4864,6 +4864,7 @@ dependencies = [
  "sysctl",
  "tempfile",
  "thiserror",
+ "tip-distribution",
  "tip-payment",
  "tokio",
  "tokio-stream",
@@ -6382,6 +6383,13 @@ name = "tinyvec_macros"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
+
+[[package]]
+name = "tip-distribution"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
 
 [[package]]
 name = "tip-payment"

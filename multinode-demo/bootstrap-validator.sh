@@ -109,7 +109,13 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --block-engine-address ]]; then
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 == --tip-program-pubkey ]]; then
+    elif [[ $1 == --tip-payment-program-pubkey ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --tip-distribution-program-pubkey ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --commission-bps ]]; then
       args+=("$1" "$2")
       shift 2
     else
@@ -126,6 +132,7 @@ done
 
 # These keypairs are created by ./setup.sh and included in the genesis config
 identity=$SOLANA_CONFIG_DIR/bootstrap-validator/identity.json
+tip_distribution_account_payer=$SOLANA_CONFIG_DIR/bootstrap-validator/identity.json
 vote_account="$SOLANA_CONFIG_DIR"/bootstrap-validator/vote-account.json
 
 ledger_dir="$SOLANA_CONFIG_DIR"/bootstrap-validator
@@ -147,6 +154,8 @@ args+=(
   --no-incremental-snapshots
   --identity "$identity"
   --vote-account "$vote_account"
+  --tip-distribution-account-payer "$tip_distribution_account_payer"
+  --merkle-root-upload-authority "$vote_account"
   --rpc-faucet-address 127.0.0.1:9900
   --no-poh-speed-test
   --no-os-network-limits-test

@@ -86,6 +86,27 @@ while [[ -n $1 ]]; do
       vote_account=$2
       args+=("$1" "$2")
       shift 2
+    elif [[ $1 == --relayer-address ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --block-engine-address ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 = --tip-distribution-account-payer ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 = --merkle-root-upload-authority ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --tip-payment-program-pubkey ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --tip-distribution-program-pubkey ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --commission-bps ]]; then
+      args+=("$1" "$2")
+      shift 2
     elif [[ $1 = --init-complete-file ]]; then
       args+=("$1" "$2")
       shift 2
@@ -258,6 +279,7 @@ fi
 
 default_arg --identity "$identity"
 default_arg --vote-account "$vote_account"
+default_arg --merkle-root-upload-authority "$vote_account"
 default_arg --ledger "$ledger_dir"
 default_arg --log -
 default_arg --full-rpc-api

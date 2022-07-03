@@ -66,8 +66,8 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         enable_quic_servers: config.enable_quic_servers,
         relayer_address: config.relayer_address.clone(),
         block_engine_address: config.block_engine_address.clone(),
-        tip_program_pubkey: config.tip_program_pubkey,
         shred_receiver_address: config.shred_receiver_address,
+        tip_manager_config: config.tip_manager_config.clone(),
     }
 }
 

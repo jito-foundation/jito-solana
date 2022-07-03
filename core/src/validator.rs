@@ -19,6 +19,7 @@ use {
         snapshot_packager_service::SnapshotPackagerService,
         stats_reporter_service::StatsReporterService,
         system_monitor_service::{verify_udp_stats_access, SystemMonitorService},
+        tip_manager::TipManagerConfig,
         tower_storage::TowerStorage,
         tpu::{Tpu, TpuSockets, DEFAULT_TPU_COALESCE_MS},
         tvu::{Tvu, TvuConfig, TvuSockets},
@@ -179,8 +180,8 @@ pub struct ValidatorConfig {
     pub enable_quic_servers: bool,
     pub relayer_address: String,
     pub block_engine_address: String,
-    pub tip_program_pubkey: Option<Pubkey>,
     pub shred_receiver_address: Option<SocketAddr>,
+    pub tip_manager_config: TipManagerConfig,
 }
 
 impl Default for ValidatorConfig {
@@ -245,8 +246,8 @@ impl Default for ValidatorConfig {
             enable_quic_servers: false,
             relayer_address: String::new(),
             block_engine_address: String::new(),
-            tip_program_pubkey: None,
             shred_receiver_address: None,
+            tip_manager_config: TipManagerConfig::default(),
         }
     }
 }
@@ -997,8 +998,6 @@ impl Validator {
             config.shred_receiver_address,
         );
 
-        let tip_program_pubkey = config.tip_program_pubkey.unwrap_or_else(Pubkey::new_unique);
-
         let enable_quic_servers = if genesis_config.cluster_type == ClusterType::MainnetBeta {
             config.enable_quic_servers
         } else {
@@ -1045,7 +1044,7 @@ impl Validator {
             enable_quic_servers,
             config.relayer_address.clone(),
             config.block_engine_address.clone(),
-            tip_program_pubkey,
+            config.tip_manager_config.clone(),
             config.shred_receiver_address,
         );
 
@@ -2154,7 +2153,7 @@ mod tests {
             Arc::new(validator_keypair),
             &validator_ledger_path,
             &voting_keypair.pubkey(),
-            Arc::new(RwLock::new(vec![voting_keypair.clone()])),
+            Arc::new(RwLock::new(vec![voting_keypair])),
             vec![leader_node.info],
             &config,
             true, // should_check_duplicate_instance

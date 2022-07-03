@@ -16,6 +16,7 @@ use {
         fs::{self, File, OpenOptions},
         io::{Read, Write},
         path::Path,
+        sync::Arc,
     },
     wasm_bindgen::prelude::*,
 };
@@ -63,6 +64,28 @@ impl Keypair {
     /// Gets this `Keypair`'s SecretKey
     pub fn secret(&self) -> &ed25519_dalek::SecretKey {
         &self.0.secret
+    }
+}
+
+impl Signer for Arc<Keypair> {
+    fn pubkey(&self) -> Pubkey {
+        Pubkey::new(self.0.public.as_ref())
+    }
+
+    fn try_pubkey(&self) -> Result<Pubkey, SignerError> {
+        Ok(self.pubkey())
+    }
+
+    fn sign_message(&self, message: &[u8]) -> Signature {
+        Signature::new(&self.0.sign(message).to_bytes())
+    }
+
+    fn try_sign_message(&self, message: &[u8]) -> Result<Signature, SignerError> {
+        Ok(self.sign_message(message))
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
     }
 }
 
