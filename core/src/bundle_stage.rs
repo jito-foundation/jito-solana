@@ -609,10 +609,11 @@ impl BundleStage {
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> BundleExecutionResult<()> {
+        let mut bundle_account_locker_l = bundle_account_locker.lock().unwrap();
         loop {
             match bundle_receiver.try_recv() {
                 Ok(bundles) => {
-                    bundle_account_locker.lock().unwrap().push(bundles);
+                    bundle_account_locker_l.push(bundles);
                 }
                 Err(TryRecvError::Disconnected) => {
                     return Err(BundleExecutionError::Shutdown);
