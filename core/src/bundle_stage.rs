@@ -69,12 +69,6 @@ struct AllExecutionResults {
     pub post_balances: (TransactionBalances, TransactionTokenBalances),
 }
 
-pub enum BufferedBundleDecision {
-    Consume,
-    Drop,
-    Hold,
-}
-
 pub struct BundleStage {
     bundle_thread: JoinHandle<()>,
 }
@@ -376,7 +370,8 @@ impl BundleStage {
                 return Err(e);
             }
 
-            // if none executed okay, nothing to record so try again
+            // if none were executed, nothing to do.
+            // should only this is if AccountInUse due to a lock in BankingStage
             if !load_and_execute_transactions_output
                 .execution_results
                 .iter()
@@ -644,6 +639,7 @@ impl BundleStage {
 
             drop(poh_l);
 
+            // leader now with bundles to execute, drain the rest off the channel and run them
             if is_leader_now && bundle_account_locker.lock().unwrap().num_bundles() > 0 {
                 Self::try_recv_bundles(bundle_receiver, bundle_account_locker)?;
                 return Ok(working_bank_start.unwrap().clone());
@@ -653,10 +649,12 @@ impl BundleStage {
                 // but bundles already pushed into the account locker
                 match bundle_receiver.recv_timeout(Duration::from_millis(10)) {
                     Ok(bundles) => {
+                        // buffer bundles if leader now or soon
                         if is_leader_now || would_be_leader_soon {
                             bundle_account_locker.lock().unwrap().push(bundles);
                             Self::try_recv_bundles(bundle_receiver, bundle_account_locker)?;
                         } else {
+                            // not leader now or soon, drop all buffered and new bundles
                             let new_bundles_dropped: Vec<Uuid> =
                                 bundles.iter().map(|b| b.uuid).collect();
                             let old_bundles_dropped = bundle_account_locker.lock().unwrap().clear();
@@ -667,7 +665,9 @@ impl BundleStage {
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => {
-                        if !(is_leader_now || would_be_leader_soon) {
+                        if !is_leader_now && !would_be_leader_soon {
+                            // if not leader now and not leader soon and no new bundles, drop the buffered
+                            // bundles
                             let bundles_dropped = bundle_account_locker.lock().unwrap().clear();
                             if !bundles_dropped.is_empty() {
                                 warn!(
@@ -1005,7 +1005,8 @@ mod tests {
         solana_ledger::{
             blockstore::Blockstore,
             genesis_utils::{create_genesis_config, GenesisConfigInfo},
-            get_tmp_ledger_path_auto_delete,
+            get_tmp_ledger_path, get_tmp_ledger_path_auto_delete,
+            leader_schedule_cache::LeaderScheduleCache,
         },
         solana_perf::packet::PacketBatch,
         solana_poh::poh_recorder::create_test_recorder,
@@ -1263,7 +1264,7 @@ mod tests {
         let kp_a = Keypair::new();
         let packet = Packet::from_data(
             None,
-            system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 1, Hash::new_unique()),
+            system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 1, Hash::default()),
         )
         .unwrap();
         let bundle = vec![PacketBundle {
@@ -1394,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_bundles_until_leader() {
+    fn test_schedule_bundles_until_leader_always_leader() {
         solana_logger::setup();
         let (bundle_sender, bundle_receiver) = unbounded();
         let GenesisConfigInfo {
@@ -1456,4 +1457,169 @@ mod tests {
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
     }
+
+    // #[test]
+    // fn test_schedule_bundles_until_leader_caching() {
+    //     solana_logger::setup();
+    //
+    //     let ledger_path = get_tmp_ledger_path!();
+    //     {
+    //         let blockstore = Blockstore::open(&ledger_path)
+    //             .expect("Expected to be able to open database ledger");
+    //         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
+    //         let bank0 = Arc::new(Bank::new_for_tests(&genesis_config));
+    //         let prev_hash = bank0.last_blockhash();
+    //         let (mut poh_recorder, _entry_receiver, _record_receiver) = PohRecorder::new(
+    //             0,
+    //             prev_hash,
+    //             bank0.clone(),
+    //             None,
+    //             bank0.ticks_per_slot(),
+    //             &Pubkey::default(),
+    //             &Arc::new(blockstore),
+    //             &Arc::new(LeaderScheduleCache::new_from_bank(&bank0)),
+    //             &Arc::new(PohConfig::default()),
+    //             Arc::new(AtomicBool::default()),
+    //         );
+    //
+    //         // TODO: test no next leader slot
+    //
+    //         // Test that with no next leader slot, we don't reach the leader slot
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::NotReached
+    //         );
+    //
+    //         // Test that with no next leader slot in reset(), we don't reach the leader slot
+    //         assert_eq!(bank0.slot(), 0);
+    //         poh_recorder.reset(bank0.clone(), None);
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::NotReached
+    //         );
+    //
+    //         // Provide a leader slot one slot down
+    //         poh_recorder.reset(bank0.clone(), Some((2, 2)));
+    //
+    //         let init_ticks = poh_recorder.tick_height();
+    //
+    //         // Send one slot worth of ticks
+    //         for _ in 0..bank0.ticks_per_slot() {
+    //             poh_recorder.tick();
+    //         }
+    //
+    //         // Tick should be recorded
+    //         assert_eq!(
+    //             poh_recorder.tick_height(),
+    //             init_ticks + bank0.ticks_per_slot()
+    //         );
+    //
+    //         let parent_meta = SlotMeta {
+    //             received: 1,
+    //             ..SlotMeta::default()
+    //         };
+    //         poh_recorder
+    //             .blockstore
+    //             .put_meta_bytes(0, &serialize(&parent_meta).unwrap())
+    //             .unwrap();
+    //
+    //         // Test that we don't reach the leader slot because of grace ticks
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::NotReached
+    //         );
+    //
+    //         // reset poh now. we should immediately be leader
+    //         let bank1 = Arc::new(Bank::new_from_parent(&bank0, &Pubkey::default(), 1));
+    //         assert_eq!(bank1.slot(), 1);
+    //         poh_recorder.reset(bank1.clone(), Some((2, 2)));
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::Reached {
+    //                 poh_slot: 2,
+    //                 parent_slot: 1,
+    //             }
+    //         );
+    //
+    //         // Now test that with grace ticks we can reach leader slot
+    //         // Set the leader slot one slot down
+    //         poh_recorder.reset(bank1.clone(), Some((3, 3)));
+    //
+    //         // Send one slot worth of ticks ("skips" slot 2)
+    //         for _ in 0..bank1.ticks_per_slot() {
+    //             poh_recorder.tick();
+    //         }
+    //
+    //         // We are not the leader yet, as expected
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::NotReached
+    //         );
+    //
+    //         // Send the grace ticks
+    //         for _ in 0..bank1.ticks_per_slot() / GRACE_TICKS_FACTOR {
+    //             poh_recorder.tick();
+    //         }
+    //
+    //         // We should be the leader now
+    //         // without sending more ticks, we should be leader now
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::Reached {
+    //                 poh_slot: 3,
+    //                 parent_slot: 1,
+    //             }
+    //         );
+    //
+    //         // Let's test that correct grace ticks are reported
+    //         // Set the leader slot one slot down
+    //         let bank2 = Arc::new(Bank::new_from_parent(&bank1, &Pubkey::default(), 2));
+    //         poh_recorder.reset(bank2.clone(), Some((4, 4)));
+    //
+    //         // send ticks for a slot
+    //         for _ in 0..bank1.ticks_per_slot() {
+    //             poh_recorder.tick();
+    //         }
+    //
+    //         // We are not the leader yet, as expected
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::NotReached
+    //         );
+    //         let bank3 = Arc::new(Bank::new_from_parent(&bank2, &Pubkey::default(), 3));
+    //         assert_eq!(bank3.slot(), 3);
+    //         poh_recorder.reset(bank3.clone(), Some((4, 4)));
+    //
+    //         // without sending more ticks, we should be leader now
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::Reached {
+    //                 poh_slot: 4,
+    //                 parent_slot: 3,
+    //             }
+    //         );
+    //
+    //         // Let's test that if a node overshoots the ticks for its target
+    //         // leader slot, reached_leader_slot() will return true, because it's overdue
+    //         // Set the leader slot one slot down
+    //         let bank4 = Arc::new(Bank::new_from_parent(&bank3, &Pubkey::default(), 4));
+    //         poh_recorder.reset(bank4.clone(), Some((5, 5)));
+    //
+    //         // Overshoot ticks for the slot
+    //         let overshoot_factor = 4;
+    //         for _ in 0..overshoot_factor * bank4.ticks_per_slot() {
+    //             poh_recorder.tick();
+    //         }
+    //
+    //         // We are overdue to lead
+    //         assert_eq!(
+    //             poh_recorder.reached_leader_slot(),
+    //             PohLeaderStatus::Reached {
+    //                 poh_slot: 9,
+    //                 parent_slot: 4,
+    //             }
+    //         );
+    //     }
+    //     Blockstore::destroy(&ledger_path).unwrap();
+    // }
 }
