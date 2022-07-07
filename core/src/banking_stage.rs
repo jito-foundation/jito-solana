@@ -1,7 +1,6 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use std::sync::Mutex;
 use {
     crate::{
         bundle_account_locker::BundleAccountLocker,
@@ -33,9 +32,7 @@ use {
         packet::{Packet, PacketBatch, PACKETS_PER_BATCH},
         perf_libs,
     },
-    solana_poh::poh_recorder::{
-        BankStart, PohRecorder, PohRecorderError, TransactionRecorder,
-    },
+    solana_poh::poh_recorder::{BankStart, PohRecorder, PohRecorderError, TransactionRecorder},
     solana_program_runtime::timings::ExecuteTimings,
     solana_runtime::{
         bank::{
@@ -72,7 +69,7 @@ use {
         rc::Rc,
         sync::{
             atomic::{AtomicU64, AtomicUsize, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},

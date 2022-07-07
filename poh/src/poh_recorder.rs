@@ -99,7 +99,7 @@ impl Record {
     pub fn new(
         mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
         slot: Slot,
-        sender: RecordResultSender
+        sender: RecordResultSender,
     ) -> Self {
         Self {
             mixins_txs,
@@ -132,10 +132,16 @@ impl TransactionRecorder {
     }
 
     // Returns the index of `transactions.first()` in the slot, if being tracked by WorkingBank
-    pub fn record(&self, bank_slot: Slot, mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>) -> Result<Option<usize>> {
+    pub fn record(
+        &self,
+        bank_slot: Slot,
+        mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
+    ) -> Result<Option<usize>> {
         // create a new channel so that there is only 1 sender and when it goes out of scope, the receiver fails
         let (result_sender, result_receiver) = unbounded();
-        let res = self.record_sender.send(Record::new(mixins_txs, bank_slot, result_sender));
+        let res = self
+            .record_sender
+            .send(Record::new(mixins_txs, bank_slot, result_sender));
         if res.is_err() {
             // If the channel is dropped, then the validator is shutting down so return that we are hitting
             //  the max tick height to stop transaction processing and flush any transactions in the pipeline.
