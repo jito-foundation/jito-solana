@@ -12,7 +12,7 @@ use {
         crds_value::{CrdsData, CrdsValue},
         weighted_shuffle::WeightedShuffle,
     },
-    solana_ledger::shred::Shred,
+    solana_ledger::shred::ShredId,
     solana_runtime::bank::Bank,
     solana_sdk::{
         clock::{Epoch, Slot},
@@ -116,7 +116,7 @@ impl ClusterNodes<BroadcastStage> {
 
     pub fn maybe_extend_broadcast_addrs(
         &self,
-        shred: &Shred,
+        shred: &ShredId,
         root_bank: &Bank,
         fanout: usize,
         socket_addr_space: &SocketAddrSpace,
@@ -132,13 +132,13 @@ impl ClusterNodes<BroadcastStage> {
 
     pub(crate) fn get_broadcast_addrs(
         &self,
-        shred: &Shred,
+        shred: &ShredId,
         root_bank: &Bank,
         fanout: usize,
         socket_addr_space: &SocketAddrSpace,
     ) -> Vec<SocketAddr> {
         const MAX_CONTACT_INFO_AGE: Duration = Duration::from_secs(2 * 60);
-        let shred_seed = shred.seed(self.pubkey);
+        let shred_seed = shred.seed(&self.pubkey);
         let mut rng = ChaChaRng::from_seed(shred_seed);
         let index = match self.weighted_shuffle.first(&mut rng) {
             None => return Vec::default(),
@@ -192,8 +192,8 @@ impl ClusterNodes<BroadcastStage> {
 impl ClusterNodes<RetransmitStage> {
     pub fn maybe_extend_retransmit_addrs(
         &self,
-        slot_leader: Pubkey,
-        shred: &Shred,
+        slot_leader: &Pubkey,
+        shred: &ShredId,
         root_bank: &Bank,
         fanout: usize,
         shred_receiver_addr: Option<SocketAddr>,
@@ -208,8 +208,8 @@ impl ClusterNodes<RetransmitStage> {
 
     pub(crate) fn get_retransmit_addrs(
         &self,
-        slot_leader: Pubkey,
-        shred: &Shred,
+        slot_leader: &Pubkey,
+        shred: &ShredId,
         root_bank: &Bank,
         fanout: usize,
     ) -> (/*root_distance:*/ usize, Vec<SocketAddr>) {
@@ -244,8 +244,8 @@ impl ClusterNodes<RetransmitStage> {
 
     pub fn get_retransmit_peers(
         &self,
-        slot_leader: Pubkey,
-        shred: &Shred,
+        slot_leader: &Pubkey,
+        shred: &ShredId,
         root_bank: &Bank,
         fanout: usize,
     ) -> (
@@ -256,9 +256,9 @@ impl ClusterNodes<RetransmitStage> {
         let shred_seed = shred.seed(slot_leader);
         let mut weighted_shuffle = self.weighted_shuffle.clone();
         // Exclude slot leader from list of nodes.
-        if slot_leader == self.pubkey {
+        if slot_leader == &self.pubkey {
             error!("retransmit from slot leader: {}", slot_leader);
-        } else if let Some(index) = self.index.get(&slot_leader) {
+        } else if let Some(index) = self.index.get(slot_leader) {
             weighted_shuffle.remove_index(*index);
         };
         let mut rng = ChaChaRng::from_seed(shred_seed);
