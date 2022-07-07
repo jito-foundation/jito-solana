@@ -18,7 +18,7 @@ use {
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
         PohRecorderError::{self},
-        Record, TransactionRecorder,
+        TransactionRecorder,
     },
     solana_program_runtime::timings::ExecuteTimings,
     solana_runtime::{
@@ -39,6 +39,7 @@ use {
             utils::check_bundle_lock_results,
         },
         clock::{Epoch, Slot, MAX_PROCESSING_AGE},
+        hash::Hash,
         pubkey::Pubkey,
         saturating_add_assign,
         signature::Signer,
@@ -77,7 +78,7 @@ impl BundleStage {
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
-        poh_recorder: &Arc<Mutex<PohRecorder>>,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
@@ -102,7 +103,7 @@ impl BundleStage {
     #[allow(clippy::too_many_arguments)]
     fn start_bundle_thread(
         cluster_info: &Arc<ClusterInfo>,
-        poh_recorder: &Arc<Mutex<PohRecorder>>,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
@@ -305,6 +306,7 @@ impl BundleStage {
         let mut account_overrides = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
+            accounts: HashMap::with_capacity(20),
         };
 
         let mut execution_results = Vec::new();
@@ -474,8 +476,8 @@ impl BundleStage {
 
         let (_freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
-        let record = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        Self::try_record(recorder, record)?;
+        let (slot, mixins) = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
+        let mut transaction_index = Self::try_record(recorder, slot, mixins)?.unwrap_or_default();
 
         let mut commit_transaction_details = Vec::new();
         for r in execution_results {
@@ -509,6 +511,19 @@ impl BundleStage {
                         Some(gossip_vote_sender),
                     );
                     if let Some(transaction_status_sender) = transaction_status_sender {
+                        let batch_transaction_indexes: Vec<_> = transaction_results
+                            .execution_results
+                            .iter()
+                            .map(|result| {
+                                if result.was_executed() {
+                                    let this_transaction_index = transaction_index;
+                                    saturating_add_assign!(transaction_index, 1);
+                                    this_transaction_index
+                                } else {
+                                    0
+                                }
+                            })
+                            .collect();
                         transaction_status_sender.send_transaction_status_batch(
                             bank.clone(),
                             sanitized_txs,
@@ -516,6 +531,7 @@ impl BundleStage {
                             TransactionBalancesSet::new(r.pre_balances.0, r.post_balances.0),
                             TransactionTokenBalancesSet::new(r.pre_balances.1, r.post_balances.1),
                             transaction_results.rent_debits.clone(),
+                            batch_transaction_indexes,
                         );
                     }
                 },
@@ -621,11 +637,11 @@ impl BundleStage {
     fn schedule_bundles_until_leader(
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
-        poh_recorder: &Arc<Mutex<PohRecorder>>,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
     ) -> BundleExecutionResult<BankStart> {
         // TODO (LB): drop bundle here if not leader anymore
         loop {
-            let poh_recorder_bank = poh_recorder.lock().unwrap().get_poh_recorder_bank();
+            let poh_recorder_bank = poh_recorder.read().unwrap().get_poh_recorder_bank();
             let working_bank_start = poh_recorder_bank.working_bank_start();
             if PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_some()
                 && bundle_account_locker.lock().unwrap().num_bundles() > 0
@@ -827,7 +843,7 @@ impl BundleStage {
     #[allow(clippy::too_many_arguments)]
     fn bundle_stage(
         cluster_info: Arc<ClusterInfo>,
-        poh_recorder: &Arc<Mutex<PohRecorder>>,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         gossip_vote_sender: ReplayVoteSender,
@@ -837,7 +853,7 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) {
-        let recorder = poh_recorder.lock().unwrap().recorder();
+        let recorder = poh_recorder.read().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
         let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
@@ -920,7 +936,7 @@ impl BundleStage {
     fn prepare_poh_record_bundle(
         bank_slot: &Slot,
         execution_results_txs: &[AllExecutionResults],
-    ) -> Record {
+    ) -> (Slot, Vec<(Hash, Vec<VersionedTransaction>)>) {
         let mixins_txs = execution_results_txs
             .iter()
             .map(|r| {
@@ -941,19 +957,20 @@ impl BundleStage {
                 (hash, processed_transactions)
             })
             .collect();
-        Record {
-            mixins_txs,
-            slot: *bank_slot,
-        }
+        (*bank_slot, mixins_txs)
     }
 
     pub fn join(self) -> thread::Result<()> {
         self.bundle_thread.join()
     }
 
-    fn try_record(recorder: &TransactionRecorder, record: Record) -> BundleExecutionResult<()> {
-        return match recorder.record(record) {
-            Ok(()) => Ok(()),
+    fn try_record(
+        recorder: &TransactionRecorder,
+        bank_slot: Slot,
+        mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
+    ) -> BundleExecutionResult<Option<usize>> {
+        return match recorder.record(bank_slot, mixins_txs) {
+            Ok(maybe_tx_index) => Ok(maybe_tx_index),
             Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
             Err(e) => panic!("Poh recorder returned unexpected error: {:?}", e),
         };
@@ -1038,13 +1055,13 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let recorder = poh_recorder.lock().unwrap().recorder();
+        let recorder = poh_recorder.read().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
         let mut bundle_account_locker =
             BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-        let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
+        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
         bundle_account_locker.push(bundle.clone());
         let locked_bundle = bundle_account_locker
             .pop(&bank, &HashSet::default())
@@ -1123,7 +1140,7 @@ mod tests {
             test_single_bundle(
                 genesis_config,
                 bundle,
-                Some(vec![AssertDuplicateInBundleDropped])
+                Some(vec![AssertDuplicateInBundleDropped]),
             ),
             Ok(())
         );
@@ -1214,7 +1231,7 @@ mod tests {
             test_single_bundle(genesis_config, bundle, None),
             Err(TransactionFailure(TransactionError::InstructionError(
                 0,
-                InstructionError::InvalidAccountData
+                InstructionError::InvalidAccountData,
             )))
         );
     }
