@@ -1939,7 +1939,8 @@ impl BankingStage {
                     .filter(|tx| {
                         !tx.message()
                             .account_keys()
-                            .iter().any(|acc| tip_accounts.contains(acc))
+                            .iter()
+                            .any(|acc| tip_accounts.contains(acc))
                     })
                     .map(|transaction| (transaction, i))
                 })
@@ -2247,7 +2248,7 @@ mod tests {
         },
         solana_perf::packet::{to_packet_batches, PacketFlags},
         solana_poh::{
-            poh_recorder::{create_test_recorder, WorkingBankEntry},
+            poh_recorder::{create_test_recorder, Record, WorkingBankEntry},
             poh_service::PohService,
         },
         solana_program_runtime::timings::ProgramTiming,
@@ -2277,7 +2278,6 @@ mod tests {
         },
         unprocessed_packet_batches::DeserializedPacket,
     };
-    use solana_poh::poh_recorder::Record;
 
     fn new_test_cluster_info(contact_info: ContactInfo) -> ClusterInfo {
         ClusterInfo::new(
