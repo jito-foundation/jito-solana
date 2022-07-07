@@ -317,7 +317,7 @@ fn retransmit_shred(
     let (root_distance, addrs) = cluster_nodes.maybe_extend_retransmit_addrs(
         slot_leader,
         key,
-        &root_bank,
+        root_bank,
         DATA_PLANE_FANOUT,
         shred_receiver_addr,
     );
