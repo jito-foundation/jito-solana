@@ -2279,6 +2279,7 @@ mod tests {
         },
         unprocessed_packet_batches::DeserializedPacket,
     };
+    use solana_poh::poh_recorder::Record;
 
     fn new_test_cluster_info(contact_info: ContactInfo) -> ClusterInfo {
         ClusterInfo::new(

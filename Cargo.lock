@@ -442,7 +442,7 @@ checksum = "3bdca834647821e0b13d9539a8634eb62d3501b6b6c2cec1722786ee6671b851"
 
 [[package]]
 name = "bench-get-confirmed-blocks-with-data"
-version = "1.11.0"
+version = "1.11.2"
 dependencies = [
  "env_logger",
  "log",
