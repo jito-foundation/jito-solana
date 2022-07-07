@@ -1937,11 +1937,9 @@ impl BankingStage {
                         bank.as_ref(),
                     )
                     .filter(|tx| {
-                        tx.message()
+                        !tx.message()
                             .account_keys()
-                            .iter()
-                            .find(|acc| tip_accounts.contains(acc))
-                            .is_none()
+                            .iter().any(|acc| tip_accounts.contains(acc))
                     })
                     .map(|transaction| (transaction, i))
                 })
