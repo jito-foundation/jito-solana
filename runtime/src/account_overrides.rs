@@ -8,7 +8,6 @@ use {
 pub struct AccountOverrides {
     pub slot_history: Option<AccountSharedData>,
     pub cached_accounts_with_rent: HashMap<Pubkey, AccountSharedData>,
-    pub accounts: HashMap<Pubkey, AccountSharedData>,
 }
 
 pub enum AccountWithRentInfo {
@@ -19,8 +18,8 @@ pub enum AccountWithRentInfo {
 impl AccountOverrides {
     pub fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
         match account {
-            Some(account) => self.accounts.insert(*pubkey, account),
-            None => self.accounts.remove(pubkey),
+            Some(account) => self.cached_accounts_with_rent.insert(*pubkey, account),
+            None => self.cached_accounts_with_rent.remove(pubkey),
         };
     }
 
@@ -28,6 +27,7 @@ impl AccountOverrides {
     ///
     /// Note: no checks are performed on the correctness of the contained data
     pub fn set_slot_history(&mut self, slot_history: Option<AccountSharedData>) {
+        self.slot_history = slot_history.clone();
         self.set_account(&sysvar::slot_history::id(), slot_history);
     }
 

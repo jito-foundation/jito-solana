@@ -306,7 +306,6 @@ impl BundleStage {
         let mut account_overrides = AccountOverrides {
             slot_history: None,
             cached_accounts_with_rent: HashMap::with_capacity(20),
-            accounts: HashMap::with_capacity(20),
         };
 
         let mut execution_results = Vec::new();
