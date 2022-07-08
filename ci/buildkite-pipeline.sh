@@ -176,14 +176,16 @@ all_test_steps() {
              ^programs/ \
              ^sdk/ \
       ; then
-    cat >> "$output_file" <<"EOF"
-  - command: "ci/test-stable-bpf.sh"
-    name: "stable-bpf"
-    timeout_in_minutes: 35
-    artifact_paths: "bpf-dumps.tar.bz2"
-    agents:
-      - "queue=gcp"
-EOF
+      annotate --style warning --context test-stable-bpf  \
+        "stable-bpf was skipped until getrandom issue is debugged (0xspl.iff)"
+#    cat >> "$output_file" <<"EOF"
+#  - command: "ci/test-stable-bpf.sh"
+#    name: "stable-bpf"
+#    timeout_in_minutes: 35
+#    artifact_paths: "bpf-dumps.tar.bz2"
+#    agents:
+#      - "queue=gcp"
+#EOF
   else
     annotate --style info --context test-stable-bpf \
       "Stable-BPF skipped as no relevant files were modified"
