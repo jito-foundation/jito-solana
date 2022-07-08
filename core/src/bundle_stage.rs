@@ -1006,8 +1006,7 @@ mod tests {
         solana_ledger::{
             blockstore::Blockstore,
             genesis_utils::{create_genesis_config, GenesisConfigInfo},
-            get_tmp_ledger_path, get_tmp_ledger_path_auto_delete,
-            leader_schedule_cache::LeaderScheduleCache,
+            get_tmp_ledger_path_auto_delete,
         },
         solana_perf::packet::PacketBatch,
         solana_poh::poh_recorder::create_test_recorder,
