@@ -1396,7 +1396,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schedule_bundles_until_leader_always_leader() {
+    fn test_schedule_bundles_until_leader() {
         solana_logger::setup();
         let (bundle_sender, bundle_receiver) = unbounded();
         let GenesisConfigInfo {
