@@ -796,7 +796,8 @@ impl PohRecorder {
 
             if let Some(entries) = maybe_entries {
                 assert_eq!(entries.len(), transactions.len());
-                let num_transactions = transactions.len();
+                // TODO: ask @buffalu if we should add assertion around num_txs?
+                let num_transactions = transactions.iter().map(|txs| txs.len()).sum();
                 let (send_entry_res, send_entry_time) = measure!(
                     {
                         let entries_tick_heights: Vec<(Entry, u64)> = entries
