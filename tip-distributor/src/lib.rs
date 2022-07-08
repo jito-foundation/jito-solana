@@ -138,10 +138,7 @@ impl TreeNode {
                         ));
                     let mut weight = amount_delegated.div(&total_delegated);
 
-                    let mut use_multiplier = false;
-                    if weight < f64_precision_multiplier {
-                        use_multiplier = true;
-                    }
+                    let use_multiplier = weight < f64_precision_multiplier;
 
                     if use_multiplier {
                         weight = weight.mul(&f64_precision_multiplier);

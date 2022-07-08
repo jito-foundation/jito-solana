@@ -458,7 +458,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aaf33151a6429fe9211d1b276eafdf70cdff28b071e76c0b0e1503221ea3744"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.3",
  "num-integer",
  "num-traits",
 ]
@@ -6483,12 +6483,13 @@ dependencies = [
 
 [[package]]
 name = "solana-tip-distributor"
-version = "1.11.0"
+version = "1.11.2"
 dependencies = [
  "anchor-lang",
  "bigdecimal",
- "clap 3.2.6",
+ "clap 3.2.8",
  "env_logger",
+ "futures 0.3.21",
  "im",
  "itertools",
  "log",
@@ -6500,7 +6501,7 @@ dependencies = [
  "solana-ledger",
  "solana-merkle-tree",
  "solana-runtime",
- "solana-sdk 1.11.0",
+ "solana-sdk 1.11.2",
  "solana-stake-program",
  "thiserror",
  "tip-distribution",

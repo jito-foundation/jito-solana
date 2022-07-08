@@ -1,11 +1,10 @@
 use {
     crate::{GeneratedMerkleTreeCollection, StakeMetaCollection},
-    anchor_lang::{InstructionData, ToAccountMetas},
+    anchor_lang::AccountDeserialize,
     log::*,
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_sdk::{
         commitment_config::{CommitmentConfig, CommitmentLevel},
-        instruction::Instruction,
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         signer::Signer,
@@ -21,8 +20,14 @@ use {
         time::Duration,
     },
     thiserror::Error as ThisError,
-    tip_distribution::state::Config,
-    tokio::{runtime::Builder, task::JoinHandle},
+    tip_distribution::{
+        sdk::instruction::{upload_merkle_root_ix, UploadMerkleRootAccounts, UploadMerkleRootArgs},
+        state::{Config, TipDistributionAccount},
+    },
+    tokio::{
+        runtime::{Builder, Runtime},
+        task::JoinHandle,
+    },
 };
 
 #[derive(ThisError, Debug)]
@@ -53,6 +58,8 @@ pub fn run_workflow(
     rpc_url: String,
     my_keypair: Keypair,
     should_upload_roots: bool,
+    // If true then uploads the merkle-roots disregarding if one already has been uploaded.
+    force_upload_roots: bool,
 ) -> Result<(), Error> {
     let stake_meta_coll = read_stake_meta_collection(stake_meta_coll_path)?;
 
@@ -93,6 +100,7 @@ pub fn run_workflow(
             config,
             my_keypair,
             recent_blockhash,
+            force_upload_roots,
         );
     }
 
@@ -117,6 +125,7 @@ fn write_to_json_file(
     Ok(())
 }
 
+// TODO: Check root not already uploaded or force with a flag.
 fn upload_roots(
     rpc_client: Arc<RpcClient>,
     merkle_tree_coll: GeneratedMerkleTreeCollection,
@@ -124,10 +133,31 @@ fn upload_roots(
     config: Pubkey,
     my_keypair: Keypair,
     recent_blockhash: solana_sdk::hash::Hash,
+    force_upload_roots: bool,
 ) {
+    let rt = Runtime::new().unwrap();
+
     let txs = merkle_tree_coll
         .generated_merkle_trees
         .into_iter()
+        .filter(|gmt| {
+            if !force_upload_roots {
+                let account = rt
+                    .block_on(rpc_client.get_account(&gmt.tip_distribution_account))
+                    .expect(&*format!(
+                        "failed to get tip_distribution_account {}",
+                        gmt.tip_distribution_account
+                    ));
+                let mut data = account.data.as_slice();
+                let fetched_tip_distribution_account =
+                    TipDistributionAccount::try_deserialize(&mut data)
+                        .expect("failed to deserialize tip_distribution_account state");
+
+                fetched_tip_distribution_account.merkle_root.is_none()
+            } else {
+                true
+            }
+        })
         .map(|gmt| {
             // Get root.
             let root = gmt
@@ -142,12 +172,16 @@ fn upload_roots(
             // Create instruction.
             let ix = upload_merkle_root_ix(
                 tip_distribution_program_id,
-                root,
-                gmt.max_total_claim,
-                gmt.max_num_nodes,
-                config,
-                my_keypair.pubkey(),
-                gmt.tip_distribution_account,
+                UploadMerkleRootArgs {
+                    root,
+                    max_total_claim: gmt.max_total_claim,
+                    max_num_nodes: gmt.max_num_nodes,
+                },
+                UploadMerkleRootAccounts {
+                    config,
+                    merkle_root_upload_authority: my_keypair.pubkey(),
+                    tip_distribution_account: gmt.tip_distribution_account,
+                },
             );
 
             // Sign and return transaction.
@@ -192,9 +226,7 @@ fn execute_transactions(rpc_client: Arc<RpcClient>, txs: Vec<Transaction>) {
         })
         .collect::<Vec<JoinHandle<()>>>();
 
-    for h in hdls {
-        rt.block_on(h).unwrap();
-    }
+    rt.block_on(async { futures::future::join_all(hdls).await });
 }
 
 async fn send_transaction_with_retry(
@@ -217,32 +249,5 @@ async fn send_transaction_with_retry(
                 sleep(delay);
             }
         }
-    }
-}
-
-// TODO: move to program sdk
-fn upload_merkle_root_ix(
-    program_id: Pubkey,
-    root: [u8; 32],
-    max_total_claim: u64,
-    max_num_nodes: u64,
-    config: Pubkey,
-    merkle_root_upload_authority: Pubkey,
-    tip_distribution_account: Pubkey,
-) -> Instruction {
-    Instruction {
-        program_id,
-        data: tip_distribution::instruction::UploadMerkleRoot {
-            max_total_claim,
-            max_num_nodes,
-            root,
-        }
-        .data(),
-        accounts: tip_distribution::accounts::UploadMerkleRoot {
-            config,
-            merkle_root_upload_authority,
-            tip_distribution_account,
-        }
-        .to_account_metas(None),
     }
 }

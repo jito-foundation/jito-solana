@@ -36,7 +36,6 @@ use {
         sync::{Arc, RwLock},
     },
     thiserror::Error as ThisError,
-    tip_distribution::state::TipDistributionAccount,
 };
 
 #[derive(ThisError, Debug)]
@@ -80,12 +79,8 @@ pub fn run_workflow(
     info!("Generating stake_meta_collection object...");
     let stake_meta_coll = generate_stake_meta_collection(&bank, tip_distribution_program_id)?;
 
-    if let Some(stake_meta_coll) = stake_meta_coll {
-        info!("Writing stake_meta_collection to JSON {}...", out_path);
-        write_to_json_file(&stake_meta_coll, out_path)?;
-    } else {
-        info!("Nothing to write!");
-    }
+    info!("Writing stake_meta_collection to JSON {}...", out_path);
+    write_to_json_file(&stake_meta_coll, out_path)?;
 
     Ok(())
 }
@@ -97,11 +92,25 @@ fn create_bank_from_snapshot(
 ) -> Result<Arc<Bank>, Error> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
     let blockstore = open_blockstore(ledger_path, AccessType::Secondary, None)?;
+
     let bank_forks = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?;
 
     let working_bank = bank_forks.read().unwrap().working_bank();
-    assert_eq!(working_bank.hash().to_string(), expected_bank_hash);
-    assert_eq!(working_bank.slot(), snapshot_slot);
+    assert_eq!(
+        working_bank.hash().to_string(),
+        expected_bank_hash,
+        "expected working bank hash {}, found {} at slot {}",
+        expected_bank_hash,
+        working_bank.hash(),
+        snapshot_slot
+    );
+    assert_eq!(
+        working_bank.slot(),
+        snapshot_slot,
+        "expected working bank slot {}, found {}",
+        snapshot_slot,
+        working_bank.slot()
+    );
 
     Ok(working_bank)
 }
@@ -124,6 +133,9 @@ fn load_bank_forks(
         snapshot_utils::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir)
             .ok_or(Error::SnapshotSlotNotFound)?;
     assert_eq!(full_snapshot_slot, snapshot_slot);
+    if full_snapshot_slot != snapshot_slot {
+        assert_eq!(full_snapshot_slot, snapshot_slot, "The expected snapshot was not found, try moving your snapshot to a different directory than the ledger directory if you haven't already. [actual_highest_snapshot={}, expected_highest_snapshot={}]", full_snapshot_slot, snapshot_slot);
+    }
 
     let incremental_snapshot_archives_dir = blockstore.ledger_path().to_path_buf();
 
@@ -167,7 +179,7 @@ fn load_bank_forks(
         Some(&snapshot_config),
         ProcessOptions {
             new_hard_forks: None,
-            halt_at_slot: Some(full_snapshot_slot),
+            halt_at_slot: Some(snapshot_slot),
             poh_verify: false,
             ..ProcessOptions::default()
         },
@@ -217,97 +229,86 @@ pub fn generate_stake_meta_collection(
     bank: &Arc<Bank>,
     // Used to derive the PDA and fetch the account data from the Bank.
     tip_distribution_program_id: Pubkey,
-) -> Result<Option<StakeMetaCollection>, Error> {
+) -> Result<StakeMetaCollection, Error> {
     assert!(bank.is_frozen());
 
-    if let Some(epoch_vote_accounts) = bank.epoch_vote_accounts(bank.epoch()) {
-        let l_stakes = bank.stakes_cache.stakes();
-        let delegations = l_stakes.stake_delegations();
+    let epoch_vote_accounts = bank.epoch_vote_accounts(bank.epoch()).expect(&*format!(
+        "No epoch_vote_accounts found for slot {} at epoch {}",
+        bank.slot(),
+        bank.epoch()
+    ));
 
-        let vote_pk_and_maybe_tdas = epoch_vote_accounts
-            .iter()
-            .map(|(&vote_pubkey, (_total_stake, vote_account))| {
-                let tda = fetch_tip_distribution_account(
-                    bank,
-                    &vote_pubkey,
-                    &tip_distribution_program_id,
-                )
-                .map_err(Error::from)?;
+    let l_stakes = bank.stakes_cache.stakes();
+    let delegations = l_stakes.stake_delegations();
 
-                Ok(((vote_pubkey, vote_account), tda))
-            })
-            .collect::<Result<
-                Vec<(
-                    (Pubkey, &VoteAccount),
-                    Option<TipDistributionAccountWrapper>,
-                )>,
-                Error,
-            >>()?;
+    let vote_pk_and_maybe_tdas: Vec<(
+        (Pubkey, &VoteAccount),
+        Option<TipDistributionAccountWrapper>,
+    )> = epoch_vote_accounts
+        .iter()
+        .map(|(&vote_pubkey, (_total_stake, vote_account))| {
+            let tda =
+                fetch_tip_distribution_account(bank, &vote_pubkey, &tip_distribution_program_id)
+                    .map_err(Error::from)?;
 
-        let voter_pubkey_to_delegations =
-            group_delegations_by_voter_pubkey(delegations, bank.epoch());
+            Ok(((vote_pubkey, vote_account), tda))
+        })
+        .collect::<Result<_, Error>>()?;
 
-        let mut stake_metas = vec![];
-        for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {
-            if let Some(delegations) = voter_pubkey_to_delegations.get(&vote_pubkey).cloned() {
-                let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
-                    sum.checked_add(delegation.amount_delegated).unwrap()
-                });
+    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank.epoch());
 
-                let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
-                    // TODO: should we use account_data.data().len() to get rent exempt amount?
-                    let rent_exempt_amount =
-                        bank.get_minimum_balance_for_rent_exemption(TipDistributionAccount::SIZE);
+    let mut stake_metas = vec![];
+    for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {
+        if let Some(delegations) = voter_pubkey_to_delegations.get(&vote_pubkey).cloned() {
+            let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
+                sum.checked_add(delegation.amount_delegated).unwrap()
+            });
 
-                    Some(TipDistributionMeta {
-                        tip_distribution_account: bs58::encode(tda.tip_distribution_account_pubkey)
-                            .into_string(),
-                        total_tips: tda
-                            .account_data
-                            .lamports()
-                            .checked_sub(rent_exempt_amount)
-                            .unwrap(),
-                        validator_fee_bps: tda.tip_distribution_account.validator_commission_bps,
-                        merkle_root_upload_authority: bs58::encode(
-                            tda.tip_distribution_account.merkle_root_upload_authority,
-                        )
+            let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
+                let rent_exempt_amount =
+                    bank.get_minimum_balance_for_rent_exemption(tda.account_data.data().len());
+
+                Some(TipDistributionMeta {
+                    tip_distribution_account: bs58::encode(tda.tip_distribution_account_pubkey)
                         .into_string(),
-                    })
-                } else {
-                    None
-                };
-
-                stake_metas.push(StakeMeta {
-                    maybe_tip_distribution_meta,
-                    validator_vote_account: bs58::encode(vote_pubkey).into_string(),
-                    delegations: delegations.clone(),
-                    total_delegated,
-                    commission: vote_account.vote_state().as_ref().unwrap().commission,
-                });
+                    total_tips: tda
+                        .account_data
+                        .lamports()
+                        .checked_sub(rent_exempt_amount)
+                        .unwrap(),
+                    validator_fee_bps: tda.tip_distribution_account.validator_commission_bps,
+                    merkle_root_upload_authority: bs58::encode(
+                        tda.tip_distribution_account.merkle_root_upload_authority,
+                    )
+                    .into_string(),
+                })
             } else {
-                warn!(
+                None
+            };
+
+            stake_metas.push(StakeMeta {
+                maybe_tip_distribution_meta,
+                validator_vote_account: bs58::encode(vote_pubkey).into_string(),
+                delegations: delegations.clone(),
+                total_delegated,
+                commission: vote_account.vote_state().as_ref().unwrap().commission,
+            });
+        } else {
+            warn!(
                     "voter_pubkey not found in voter_pubkey_to_delegations map [validator_vote_pubkey={}]",
                     vote_pubkey
                 );
-            }
         }
-        Ok(Some(StakeMetaCollection {
-            stake_metas,
-            tip_distribution_program_id: bs58::encode(tip_distribution_program_id.as_ref())
-                .into_string(),
-            bank_hash: bank.hash().to_string(),
-            epoch: bank.epoch(),
-            slot: bank.slot(),
-        }))
-    } else {
-        println!("none...");
-        warn!(
-            "No epoch_vote_accounts found for slot {} at epoch {}",
-            bank.slot(),
-            bank.epoch()
-        );
-        Ok(None)
     }
+
+    Ok(StakeMetaCollection {
+        stake_metas,
+        tip_distribution_program_id: bs58::encode(tip_distribution_program_id.as_ref())
+            .into_string(),
+        bank_hash: bank.hash().to_string(),
+        epoch: bank.epoch(),
+        slot: bank.slot(),
+    })
 }
 
 /// Given an [EpochStakes] object, return delegations grouped by voter_pubkey (validator delegated to).
@@ -432,7 +433,7 @@ mod tests {
             (&delegator_4_pk, &d_4_data),
         ];
 
-        bank.store_accounts(&accounts[..]);
+        bank.store_accounts((bank.slot(), &accounts[..]));
 
         /* 3. Delegate some stake to the initial set of validators */
         let mut validator_0_delegations = vec![crate::Delegation {
@@ -584,69 +585,67 @@ mod tests {
             &tip_distribution_program_id,
             &validator_keypairs_0.vote_keypair.pubkey(),
             bank.epoch(),
-        )
-        .0;
+        );
         let tip_distribution_account_1 = derive_tip_distribution_account_address(
             &tip_distribution_program_id,
             &validator_keypairs_1.vote_keypair.pubkey(),
             bank.epoch(),
-        )
-        .0;
+        );
         let tip_distribution_account_2 = derive_tip_distribution_account_address(
             &tip_distribution_program_id,
             &validator_keypairs_2.vote_keypair.pubkey(),
             bank.epoch(),
-        )
-        .0;
+        );
 
         let tda_0 = TipDistributionAccount {
-            validator_vote_pubkey: validator_keypairs_0.vote_keypair.pubkey(),
+            validator_vote_account: validator_keypairs_0.vote_keypair.pubkey(),
             merkle_root_upload_authority,
             merkle_root: None,
             epoch_created_at: bank.epoch(),
             validator_commission_bps: 50,
+            bump: tip_distribution_account_0.1,
         };
         let tda_1 = TipDistributionAccount {
-            validator_vote_pubkey: validator_keypairs_1.vote_keypair.pubkey(),
+            validator_vote_account: validator_keypairs_1.vote_keypair.pubkey(),
             merkle_root_upload_authority,
             merkle_root: None,
             epoch_created_at: bank.epoch(),
             validator_commission_bps: 500,
+            bump: tip_distribution_account_1.1,
         };
         let tda_2 = TipDistributionAccount {
-            validator_vote_pubkey: validator_keypairs_2.vote_keypair.pubkey(),
+            validator_vote_account: validator_keypairs_2.vote_keypair.pubkey(),
             merkle_root_upload_authority,
             merkle_root: None,
             epoch_created_at: bank.epoch(),
             validator_commission_bps: 75,
+            bump: tip_distribution_account_2.1,
         };
 
         let tip_distro_0_tips = 1_000_000 * 10;
         let tip_distro_1_tips = 69_000_420 * 10;
         let tip_distro_2_tips = 789_000_111 * 10;
 
-        let tda_0_fields = (tip_distribution_account_0, tda_0.validator_commission_bps);
+        let tda_0_fields = (tip_distribution_account_0.0, tda_0.validator_commission_bps);
         let data_0 =
             tda_to_account_shared_data(&tip_distribution_program_id, tip_distro_0_tips, tda_0);
-        let tda_1_fields = (tip_distribution_account_1, tda_1.validator_commission_bps);
+        let tda_1_fields = (tip_distribution_account_1.0, tda_1.validator_commission_bps);
         let data_1 =
             tda_to_account_shared_data(&tip_distribution_program_id, tip_distro_1_tips, tda_1);
-        let tda_2_fields = (tip_distribution_account_2, tda_2.validator_commission_bps);
+        let tda_2_fields = (tip_distribution_account_2.0, tda_2.validator_commission_bps);
         let data_2 =
             tda_to_account_shared_data(&tip_distribution_program_id, tip_distro_2_tips, tda_2);
 
         let accounts = vec![
-            (&tip_distribution_account_0, &data_0),
-            (&tip_distribution_account_1, &data_1),
-            (&tip_distribution_account_2, &data_2),
+            (&tip_distribution_account_0.0, &data_0),
+            (&tip_distribution_account_1.0, &data_1),
+            (&tip_distribution_account_2.0, &data_2),
         ];
-        bank.store_accounts(&accounts[..]);
+        bank.store_accounts((bank.slot(), &accounts[..]));
 
         bank.freeze();
         let stake_meta_collection =
-            generate_stake_meta_collection(&bank, tip_distribution_program_id)
-                .unwrap()
-                .unwrap();
+            generate_stake_meta_collection(&bank, tip_distribution_program_id).unwrap();
         assert_eq!(
             stake_meta_collection.tip_distribution_program_id,
             bs58::encode(tip_distribution_program_id.as_ref()).into_string()

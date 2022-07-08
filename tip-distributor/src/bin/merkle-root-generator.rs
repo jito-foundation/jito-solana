@@ -34,6 +34,10 @@ struct Args {
     /// [TipDistributionAccount]'s  
     #[clap(long, env)]
     upload_roots: bool,
+
+    /// If true then this will upload the merkle-root disregarding whether one's been uploaded already.
+    #[clap(long, env)]
+    force_upload_root: Option<bool>,
 }
 
 fn main() {
@@ -51,6 +55,7 @@ fn main() {
         args.rpc_url,
         my_keypair,
         args.upload_roots,
+        args.force_upload_root.unwrap_or_default(),
     )
     .unwrap();
 }
