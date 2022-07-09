@@ -644,16 +644,16 @@ impl BundleStage {
         const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
 
         loop {
-            let poh_l = poh_recorder.lock().unwrap();
+            let r_poh_recorder = poh_recorder.read().unwrap();
 
-            let poh_recorder_bank = poh_l.get_poh_recorder_bank();
-            let working_bank_start = poh_l.working_bank_start();
+            let poh_recorder_bank = r_poh_recorder.get_poh_recorder_bank();
+            let working_bank_start = poh_recorder_bank.working_bank_start();
             let would_be_leader_soon =
-                poh_l.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
+                r_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
             let is_leader_now =
                 PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_some();
 
-            drop(poh_l);
+            drop(r_poh_recorder);
 
             // leader now with bundles to execute, drain the rest off the channel and run them
             if is_leader_now && bundle_account_locker.lock().unwrap().num_bundles() > 0 {
