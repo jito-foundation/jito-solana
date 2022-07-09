@@ -4,7 +4,6 @@ use {
     crate::{
         account::{AccountSharedData, ReadableAccount, WritableAccount},
         instruction::InstructionError,
-        lamports::LamportsError,
         pubkey::Pubkey,
     },
     std::{
@@ -132,7 +131,7 @@ impl TransactionContext {
     ) -> Result<&InstructionContext, InstructionError> {
         let top_level_index = *self
             .instruction_stack
-            .get(0)
+            .first()
             .ok_or(InstructionError::CallDepth)?;
         let cpi_index = if level == 0 {
             0
@@ -559,7 +558,7 @@ impl<'a> BorrowedAccount<'a> {
         self.set_lamports(
             self.get_lamports()
                 .checked_add(lamports)
-                .ok_or(LamportsError::ArithmeticOverflow)?,
+                .ok_or(InstructionError::ArithmeticOverflow)?,
         )
     }
 
@@ -568,7 +567,7 @@ impl<'a> BorrowedAccount<'a> {
         self.set_lamports(
             self.get_lamports()
                 .checked_sub(lamports)
-                .ok_or(LamportsError::ArithmeticUnderflow)?,
+                .ok_or(InstructionError::ArithmeticOverflow)?,
         )
     }
 

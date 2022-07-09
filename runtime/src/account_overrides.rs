@@ -16,11 +16,19 @@ pub enum AccountWithRentInfo {
 }
 
 impl AccountOverrides {
+    pub fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
+        match account {
+            Some(account) => self.cached_accounts_with_rent.insert(*pubkey, account),
+            None => self.cached_accounts_with_rent.remove(pubkey),
+        };
+    }
+
     /// Sets in the slot history
     ///
     /// Note: no checks are performed on the correctness of the contained data
     pub fn set_slot_history(&mut self, slot_history: Option<AccountSharedData>) {
-        self.slot_history = slot_history;
+        self.slot_history = slot_history.clone();
+        self.set_account(&sysvar::slot_history::id(), slot_history);
     }
 
     /// Gets the account if it's found in the list of overrides
