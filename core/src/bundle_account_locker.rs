@@ -78,11 +78,13 @@ impl LockedBundle {
 #[derive(Clone)]
 pub struct BundleAccountLocker {
     num_bundles_prelock: u64,
+    blacklisted_accounts: HashSet<Pubkey>,
+
+    // mutable state
     unlocked_bundles: VecDeque<PacketBundle>,
     locked_bundles: VecDeque<LockedBundle>,
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
-    blacklisted_accounts: HashSet<Pubkey>,
 }
 
 /// One can think of this like a bundle-level AccountLocks.
@@ -150,6 +152,22 @@ impl BundleAccountLocker {
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn write_locks(&self) -> HashSet<Pubkey> {
         self.write_locks.keys().cloned().collect()
+    }
+
+    pub fn clear(&mut self) -> Vec<Uuid> {
+        let uuids_dropped = self
+            .unlocked_bundles
+            .iter()
+            .map(|b| b.uuid)
+            .chain(self.locked_bundles.iter().map(|b| b.packet_bundle.uuid))
+            .collect();
+
+        self.unlocked_bundles.clear();
+        self.locked_bundles.clear();
+        self.read_locks.clear();
+        self.write_locks.clear();
+
+        uuids_dropped
     }
 
     /// Pop bundles off unlocked bundles deque.

@@ -38,7 +38,7 @@ use {
             error::BundleExecutionError, sanitized::SanitizedBundle,
             utils::check_bundle_lock_results,
         },
-        clock::{Epoch, Slot, MAX_PROCESSING_AGE},
+        clock::{Epoch, Slot, DEFAULT_TICKS_PER_SLOT, MAX_PROCESSING_AGE},
         hash::Hash,
         pubkey::Pubkey,
         saturating_add_assign,
@@ -371,7 +371,8 @@ impl BundleStage {
                 return Err(e);
             }
 
-            // if none executed okay, nothing to record so try again
+            // if none were executed, nothing to do.
+            // should only this is if AccountInUse due to a lock in BankingStage
             if !load_and_execute_transactions_output
                 .execution_results
                 .iter()
@@ -618,10 +619,11 @@ impl BundleStage {
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> BundleExecutionResult<()> {
+        let mut bundle_account_locker_l = bundle_account_locker.lock().unwrap();
         loop {
             match bundle_receiver.try_recv() {
                 Ok(bundles) => {
-                    bundle_account_locker.lock().unwrap().push(bundles);
+                    bundle_account_locker_l.push(bundles);
                 }
                 Err(TryRecvError::Disconnected) => {
                     return Err(BundleExecutionError::Shutdown);
@@ -638,13 +640,23 @@ impl BundleStage {
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
     ) -> BundleExecutionResult<BankStart> {
-        // TODO (LB): drop bundle here if not leader anymore
+        // drop bundles if not within this slot range
+        const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
+
         loop {
-            let poh_recorder_bank = poh_recorder.read().unwrap().get_poh_recorder_bank();
+            let r_poh_recorder = poh_recorder.read().unwrap();
+
+            let poh_recorder_bank = r_poh_recorder.get_poh_recorder_bank();
             let working_bank_start = poh_recorder_bank.working_bank_start();
-            if PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_some()
-                && bundle_account_locker.lock().unwrap().num_bundles() > 0
-            {
+            let would_be_leader_soon =
+                r_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
+            let is_leader_now =
+                PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_some();
+
+            drop(r_poh_recorder);
+
+            // leader now with bundles to execute, drain the rest off the channel and run them
+            if is_leader_now && bundle_account_locker.lock().unwrap().num_bundles() > 0 {
                 Self::try_recv_bundles(bundle_receiver, bundle_account_locker)?;
                 return Ok(working_bank_start.unwrap().clone());
             } else {
@@ -653,11 +665,33 @@ impl BundleStage {
                 // but bundles already pushed into the account locker
                 match bundle_receiver.recv_timeout(Duration::from_millis(10)) {
                     Ok(bundles) => {
-                        bundle_account_locker.lock().unwrap().push(bundles);
-                        Self::try_recv_bundles(bundle_receiver, bundle_account_locker)?;
+                        // buffer bundles if leader now or soon
+                        if is_leader_now || would_be_leader_soon {
+                            bundle_account_locker.lock().unwrap().push(bundles);
+                            Self::try_recv_bundles(bundle_receiver, bundle_account_locker)?;
+                        } else {
+                            // not leader now or soon, drop all buffered and new bundles
+                            let new_bundles_dropped: Vec<Uuid> =
+                                bundles.iter().map(|b| b.uuid).collect();
+                            let old_bundles_dropped = bundle_account_locker.lock().unwrap().clear();
+                            warn!(
+                                "dropping new and buffered bundles. new: {:?} buffered: {:?}",
+                                new_bundles_dropped, old_bundles_dropped
+                            );
+                        }
                     }
                     Err(RecvTimeoutError::Timeout) => {
-                        continue;
+                        if !(is_leader_now || would_be_leader_soon) {
+                            // if not leader now and not leader soon and no new bundles, drop the buffered
+                            // bundles
+                            let bundles_dropped = bundle_account_locker.lock().unwrap().clear();
+                            if !bundles_dropped.is_empty() {
+                                warn!(
+                                    "not leader anymore, dropping buffered bundles: {:?}",
+                                    bundles_dropped
+                                );
+                            }
+                        }
                     }
                     Err(RecvTimeoutError::Disconnected) => {
                         return Err(BundleExecutionError::Shutdown);
@@ -1246,7 +1280,7 @@ mod tests {
         let kp_a = Keypair::new();
         let packet = Packet::from_data(
             None,
-            system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 1, Hash::new_unique()),
+            system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 1, Hash::default()),
         )
         .unwrap();
         let bundle = vec![PacketBundle {
