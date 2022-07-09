@@ -1,8 +1,8 @@
 //! The `poh_service` module implements a service that records the passing of
 //! "ticks", a measure of time in the PoH stream
 use {
-    crate::poh_recorder::{PohRecorder, Record, RecordReceiver, Result as PohRecordResult},
-    crossbeam_channel::Sender,
+    crate::poh_recorder::{PohRecorder, Record},
+    crossbeam_channel::Receiver,
     log::*,
     solana_entry::poh::Poh,
     solana_measure::{measure, measure::Measure},
@@ -10,7 +10,7 @@ use {
     std::{
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -95,13 +95,13 @@ impl PohTiming {
 
 impl PohService {
     pub fn new(
-        poh_recorder: Arc<Mutex<PohRecorder>>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
         poh_config: &Arc<PohConfig>,
         poh_exit: &Arc<AtomicBool>,
         ticks_per_slot: u64,
         pinned_cpu_core: usize,
         hashes_per_batch: u64,
-        record_receiver: RecordReceiver,
+        record_receiver: Receiver<Record>,
     ) -> Self {
         let poh_exit_ = poh_exit.clone();
         let poh_config = poh_config.clone();
@@ -163,10 +163,10 @@ impl PohService {
     }
 
     fn sleepy_tick_producer(
-        poh_recorder: Arc<Mutex<PohRecorder>>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
         poh_config: &PohConfig,
         poh_exit: &AtomicBool,
-        record_receiver: RecordReceiver,
+        record_receiver: Receiver<Record>,
     ) {
         let mut last_tick = Instant::now();
         while !poh_exit.load(Ordering::Relaxed) {
@@ -180,22 +180,23 @@ impl PohService {
             );
             if remaining_tick_time.is_zero() {
                 last_tick = Instant::now();
-                poh_recorder.lock().unwrap().tick();
+                poh_recorder.write().unwrap().tick();
             }
         }
     }
 
     pub fn read_record_receiver_and_process(
-        poh_recorder: &Arc<Mutex<PohRecorder>>,
-        record_receiver: &RecordReceiver,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
+        record_receiver: &Receiver<Record>,
         timeout: Duration,
     ) {
         let record = record_receiver.recv_timeout(timeout);
-        if let Ok((record, sender)) = record {
-            if sender
+        if let Ok(record) = record {
+            if record
+                .sender
                 .send(
                     poh_recorder
-                        .lock()
+                        .write()
                         .unwrap()
                         .record(record.slot, &record.mixins_txs),
                 )
@@ -207,10 +208,10 @@ impl PohService {
     }
 
     fn short_lived_sleepy_tick_producer(
-        poh_recorder: Arc<Mutex<PohRecorder>>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
         poh_config: &PohConfig,
         poh_exit: &AtomicBool,
-        record_receiver: RecordReceiver,
+        record_receiver: Receiver<Record>,
     ) {
         let mut warned = false;
         let mut elapsed_ticks = 0;
@@ -227,7 +228,7 @@ impl PohService {
             );
             if remaining_tick_time.is_zero() {
                 last_tick = Instant::now();
-                poh_recorder.lock().unwrap().tick();
+                poh_recorder.write().unwrap().tick();
                 elapsed_ticks += 1;
             }
             if poh_exit.load(Ordering::Relaxed) && !warned {
@@ -239,20 +240,20 @@ impl PohService {
 
     // returns true if we need to tick
     fn record_or_hash(
-        next_record_and_sender: &mut Option<(Record, Sender<PohRecordResult<()>>)>,
-        poh_recorder: &Arc<Mutex<PohRecorder>>,
+        next_record: &mut Option<Record>,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
         timing: &mut PohTiming,
-        record_receiver: &RecordReceiver,
+        record_receiver: &Receiver<Record>,
         hashes_per_batch: u64,
         poh: &Arc<Mutex<Poh>>,
         target_ns_per_tick: u64,
     ) -> bool {
-        match next_record_and_sender.take() {
-            Some((mut record, mut sender)) => {
+        match next_record.take() {
+            Some(mut record) => {
                 // received message to record
                 // so, record for as long as we have queued up record requests
                 let mut lock_time = Measure::start("lock");
-                let mut poh_recorder_l = poh_recorder.lock().unwrap();
+                let mut poh_recorder_l = poh_recorder.write().unwrap();
                 lock_time.stop();
                 timing.total_lock_time_ns += lock_time.as_ns();
                 let mut record_time = Measure::start("record");
@@ -260,16 +261,15 @@ impl PohService {
                     let res = poh_recorder_l.record(record.slot, &record.mixins_txs);
                     // what do we do on failure here? Ignore for now.
                     let (_send_res, send_record_result_time) =
-                        measure!(sender.send(res), "send_record_result");
+                        measure!(record.sender.send(res), "send_record_result");
                     timing.total_send_record_result_us += send_record_result_time.as_us();
                     timing.num_hashes += 1; // note: may have also ticked inside record
 
                     let new_record_result = record_receiver.try_recv();
                     match new_record_result {
-                        Ok(record_and_sender) => {
+                        Ok(new_record) => {
                             // we already have second request to record, so record again while we still have the mutex
-                            record = record_and_sender.0;
-                            sender = record_and_sender.1;
+                            record = new_record;
                         }
                         Err(_) => {
                             break;
@@ -298,9 +298,9 @@ impl PohService {
                         return true;
                     }
                     // check to see if a record request has been sent
-                    if let Ok(record_and_sender) = record_receiver.try_recv() {
+                    if let Ok(record) = record_receiver.try_recv() {
                         // remember the record we just received as the next record to occur
-                        *next_record_and_sender = Some(record_and_sender);
+                        *next_record = Some(record);
                         break;
                     }
                     // check to see if we need to wait to catch up to ideal
@@ -314,9 +314,9 @@ impl PohService {
                     drop(poh_l);
                     while ideal_time > Instant::now() {
                         // check to see if a record request has been sent
-                        if let Ok(record_and_sender) = record_receiver.try_recv() {
+                        if let Ok(record) = record_receiver.try_recv() {
                             // remember the record we just received as the next record to occur
-                            *next_record_and_sender = Some(record_and_sender);
+                            *next_record = Some(record);
                             break;
                         }
                     }
@@ -329,14 +329,14 @@ impl PohService {
     }
 
     fn tick_producer(
-        poh_recorder: Arc<Mutex<PohRecorder>>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
         poh_exit: &AtomicBool,
         ticks_per_slot: u64,
         hashes_per_batch: u64,
-        record_receiver: RecordReceiver,
+        record_receiver: Receiver<Record>,
         target_ns_per_tick: u64,
     ) {
-        let poh = poh_recorder.lock().unwrap().poh.clone();
+        let poh = poh_recorder.read().unwrap().poh.clone();
         let mut timing = PohTiming::new();
         let mut next_record = None;
         loop {
@@ -353,7 +353,7 @@ impl PohService {
                 // Lock PohRecorder only for the final hash. record_or_hash will lock PohRecorder for record calls but not for hashing.
                 {
                     let mut lock_time = Measure::start("lock");
-                    let mut poh_recorder_l = poh_recorder.lock().unwrap();
+                    let mut poh_recorder_l = poh_recorder.write().unwrap();
                     lock_time.stop();
                     timing.total_lock_time_ns += lock_time.as_ns();
                     let mut tick_time = Measure::start("tick");
@@ -434,7 +434,7 @@ mod tests {
                 &poh_config,
                 exit.clone(),
             );
-            let poh_recorder = Arc::new(Mutex::new(poh_recorder));
+            let poh_recorder = Arc::new(RwLock::new(poh_recorder));
             let ticks_per_slot = bank.ticks_per_slot();
             let bank_slot = bank.slot();
 
@@ -461,7 +461,7 @@ mod tests {
                             // send some data
                             let mut time = Measure::start("record");
                             let _ = poh_recorder
-                                .lock()
+                                .write()
                                 .unwrap()
                                 .record(bank_slot, &[(h1, vec![tx.clone()])]);
                             time.stop();
@@ -497,7 +497,7 @@ mod tests {
                 hashes_per_batch,
                 record_receiver,
             );
-            poh_recorder.lock().unwrap().set_bank(&bank);
+            poh_recorder.write().unwrap().set_bank(&bank, false);
 
             // get some events
             let mut hashes = 0;

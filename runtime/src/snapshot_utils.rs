@@ -1663,7 +1663,7 @@ fn rebuild_bank_from_snapshots(
         Ok(slot_deltas)
     })?;
 
-    bank.src.append(&slot_deltas);
+    bank.status_cache.write().unwrap().append(&slot_deltas);
 
     bank.prepare_rewrites_for_hash();
 
@@ -1847,6 +1847,7 @@ fn get_snapshot_storages(bank: &Bank) -> SnapshotStorages {
 
 /// Convenience function to create a full snapshot archive out of any Bank, regardless of state.
 /// The Bank will be frozen during the process.
+/// This is only called from ledger-tool or tests. Warping is a special case as well.
 ///
 /// Requires:
 ///     - `bank` is complete
@@ -1890,6 +1891,7 @@ pub fn bank_to_full_snapshot_archive(
 
 /// Convenience function to create an incremental snapshot archive out of any Bank, regardless of
 /// state.  The Bank will be frozen during the process.
+/// This is only called from ledger-tool or tests. Warping is a special case as well.
 ///
 /// Requires:
 ///     - `bank` is complete
@@ -1949,11 +1951,12 @@ pub fn package_and_archive_full_snapshot(
     maximum_full_snapshot_archives_to_retain: usize,
     maximum_incremental_snapshot_archives_to_retain: usize,
 ) -> Result<FullSnapshotArchiveInfo> {
+    let slot_deltas = bank.status_cache.read().unwrap().root_slot_deltas();
     let accounts_package = AccountsPackage::new(
         bank,
         bank_snapshot_info,
         bank_snapshots_dir,
-        bank.src.slot_deltas(&bank.src.roots()),
+        slot_deltas,
         &full_snapshot_archives_dir,
         &incremental_snapshot_archives_dir,
         snapshot_storages,
@@ -1998,11 +2001,12 @@ pub fn package_and_archive_incremental_snapshot(
     maximum_full_snapshot_archives_to_retain: usize,
     maximum_incremental_snapshot_archives_to_retain: usize,
 ) -> Result<IncrementalSnapshotArchiveInfo> {
+    let slot_deltas = bank.status_cache.read().unwrap().root_slot_deltas();
     let accounts_package = AccountsPackage::new(
         bank,
         bank_snapshot_info,
         bank_snapshots_dir,
-        bank.src.slot_deltas(&bank.src.roots()),
+        slot_deltas,
         &full_snapshot_archives_dir,
         &incremental_snapshot_archives_dir,
         snapshot_storages,
