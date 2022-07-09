@@ -647,7 +647,7 @@ impl BundleStage {
             let poh_l = poh_recorder.lock().unwrap();
 
             let poh_recorder_bank = poh_l.get_poh_recorder_bank();
-            let working_bank_start = poh_recorder_bank.working_bank_start();
+            let working_bank_start = poh_l.working_bank_start();
             let would_be_leader_soon =
                 poh_l.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
             let is_leader_now =
