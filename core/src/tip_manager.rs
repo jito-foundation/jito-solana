@@ -346,7 +346,7 @@ impl TipManager {
         SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
             &[ix],
             Some(&self.tip_distribution_account_config.payer.pubkey()),
-            &[&self.tip_distribution_account_config.payer],
+            &[self.tip_distribution_account_config.payer.as_ref()],
             recent_blockhash,
         ))
         .unwrap()

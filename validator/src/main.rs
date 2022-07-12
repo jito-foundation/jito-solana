@@ -3207,7 +3207,7 @@ fn tip_manager_config_from_matches(
         tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
             || {
                 if !voting_disabled {
-                    panic!("--tip-payment-program-pubkey not specified");
+                    panic!("--tip-payment-program-pubkey argument required when validator is voting");
                 }
                 Pubkey::new_unique()
             },
@@ -3215,7 +3215,7 @@ fn tip_manager_config_from_matches(
         tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
             .unwrap_or_else(|| {
                 if !voting_disabled {
-                    panic!("--tip-distribution-program-pubkey not specified");
+                    panic!("--tip-distribution-program-pubkey argument required when validator is voting");
                 }
                 Pubkey::new_unique()
             }),
@@ -3224,7 +3224,7 @@ fn tip_manager_config_from_matches(
                 let keypair =
                     keypair_of(matches, "tip_distribution_account_payer").unwrap_or_else(|| {
                         if !voting_disabled {
-                            panic!("--tip-distribution-account-payer not specified");
+                            panic!("--tip-distribution-account-payer argument required when validator is voting");
                         }
                         Keypair::new()
                     });
@@ -3234,19 +3234,19 @@ fn tip_manager_config_from_matches(
             merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
                 .unwrap_or_else(|| {
                     if !voting_disabled {
-                        panic!("--merkle-root-upload-authority not specified");
+                        panic!("--merkle-root-upload-authority argument required when validator is voting");
                     }
                     Pubkey::new_unique()
                 }),
             vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
                 if !voting_disabled {
-                    panic!("--vote-account not specified");
+                    panic!("--vote-account argument required when validator is voting");
                 }
                 Pubkey::new_unique()
             }),
             commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
                 if !voting_disabled {
-                    panic!("--commission-bps not specified, validator will not vote");
+                    panic!("--commission-bps argument required when validator is voting");
                 }
                 0
             }),
