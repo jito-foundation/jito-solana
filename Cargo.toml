@@ -80,6 +80,7 @@ members = [
     "streamer",
     "sys-tuner",
     "test-validator",
+    "tip-distributor",
     "tokens",
     "transaction-dos",
     "transaction-status",

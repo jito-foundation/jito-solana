@@ -18,7 +18,7 @@ macro_rules! hash_intermediate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 pub struct MerkleTree {
     leaf_count: usize,
     nodes: Vec<Hash>,
