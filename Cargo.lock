@@ -5235,6 +5235,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "thiserror",
+ "tip-distribution",
  "tip-payment",
  "tokio",
  "tokio-stream",
