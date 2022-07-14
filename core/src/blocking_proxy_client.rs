@@ -1,4 +1,5 @@
 use {
+    crate::relayer_stage::RelayerStageError,
     crossbeam_channel::{unbounded, Receiver},
     futures_util::stream,
     jito_protos::proto::validator_interface::{
@@ -18,14 +19,14 @@ use {
         metadata::MetadataValue,
         service::Interceptor,
         transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Error},
-        Status,
+        Code, Status,
     },
 };
 
 type ValidatorInterfaceClientType =
-    ValidatorInterfaceClient<InterceptedService<Channel, AuthenticationInjector>>;
+    ValidatorInterfaceClient<InterceptedService<Channel, AuthInterceptor>>;
 
-type SubscribePacketsReceiver = Receiver<std::result::Result<Option<PacketStreamMsg>, Status>>;
+type SubscribePacketsReceiver = Receiver<Result<Option<PacketStreamMsg>, Status>>;
 
 pub struct BlockingProxyClient {
     rt: Runtime,
@@ -36,30 +37,32 @@ pub struct BlockingProxyClient {
 pub enum ProxyError {
     #[error("bad uri error: {0}")]
     BadUrl(#[from] InvalidUri),
+
     #[error("connecting error: {0}")]
     ConnectionError(#[from] Error),
+
     #[error("grpc error: {0}")]
     GrpcError(#[from] Status),
+
     #[error("missing tpu socket: {0}")]
     MissingTpuSocket(String),
+
     #[error("invalid tpu socket: {0}")]
     BadTpuSocket(#[from] AddrParseError),
+
     #[error("missing tls cert: {0}")]
     MissingTlsCert(#[from] io::Error),
 }
 
-pub type ProxyResult<T> = std::result::Result<T, ProxyError>;
+pub type ProxyResult<T> = Result<T, ProxyError>;
 
 /// Blocking interface to the validator interface server
 impl BlockingProxyClient {
-    pub fn new(
-        validator_interface_address: String,
-        auth_interceptor: &AuthenticationInjector,
-    ) -> ProxyResult<Self> {
+    pub fn new(address: String, auth_interceptor: AuthInterceptor) -> ProxyResult<Self> {
         let rt = Builder::new_multi_thread().enable_all().build().unwrap();
-        let mut validator_interface_endpoint =
-            Endpoint::from_shared(validator_interface_address.clone())?;
-        if validator_interface_address.as_str().contains("https") {
+        let mut validator_interface_endpoint = Endpoint::from_shared(address.clone())?;
+
+        if address.as_str().contains("https") {
             let mut buf = Vec::new();
             File::open("/etc/ssl/certs/jito_ca.pem")?.read_to_end(&mut buf)?;
             validator_interface_endpoint = validator_interface_endpoint.tls_config(
@@ -68,9 +71,38 @@ impl BlockingProxyClient {
                     .ca_certificate(Certificate::from_pem(buf)),
             )?;
         }
+
         let channel = rt.block_on(validator_interface_endpoint.connect())?;
-        let client = ValidatorInterfaceClient::with_interceptor(channel, auth_interceptor.clone());
+        let client = ValidatorInterfaceClient::with_interceptor(channel, auth_interceptor);
+
+        info!("connected to relayer at {}", address);
+
         Ok(Self { rt, client })
+    }
+
+    pub fn maybe_retryable_auth(e: &RelayerStageError, current_token: &[u8]) -> Option<String> {
+        if let RelayerStageError::GrpcError(status) = e {
+            if status.code() != Code::Unauthenticated {
+                return None;
+            }
+
+            let msg = status.message().split_whitespace().collect::<Vec<&str>>();
+            if msg.len() != 2 {
+                return None;
+            }
+
+            if msg[0] != "token" {
+                return None;
+            }
+
+            if msg[1].as_bytes() != current_token {
+                Some(msg[1].to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     pub fn fetch_tpu_config(&mut self) -> ProxyResult<(SocketAddr, SocketAddr)> {
@@ -120,7 +152,7 @@ impl BlockingProxyClient {
 
     pub fn subscribe_bundles(
         &mut self,
-    ) -> ProxyResult<Receiver<std::result::Result<Option<SubscribeBundlesResponse>, Status>>> {
+    ) -> ProxyResult<Receiver<Result<Option<SubscribeBundlesResponse>, Status>>> {
         let mut bundle_subscription = self
             .rt
             .block_on(self.client.subscribe_bundles(SubscribeBundlesRequest {}))?
@@ -142,19 +174,27 @@ impl BlockingProxyClient {
 }
 
 #[derive(Clone)]
-pub struct AuthenticationInjector {
+pub struct AuthInterceptor {
     msg: Vec<u8>,
     sig: Signature,
     pubkey: Pubkey,
 }
 
-impl AuthenticationInjector {
+impl AuthInterceptor {
     pub fn new(msg: Vec<u8>, sig: Signature, pubkey: Pubkey) -> Self {
-        AuthenticationInjector { msg, sig, pubkey }
+        AuthInterceptor { msg, sig, pubkey }
+    }
+
+    pub fn set_msg(&mut self, new_msg: Vec<u8>) {
+        self.msg = new_msg;
+    }
+
+    pub fn get_msg(&self) -> &Vec<u8> {
+        &self.msg
     }
 }
 
-impl Interceptor for AuthenticationInjector {
+impl Interceptor for AuthInterceptor {
     fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
         request.metadata_mut().append_bin(
             "public-key-bin",
@@ -168,6 +208,7 @@ impl Interceptor for AuthenticationInjector {
             "signature-bin",
             MetadataValue::from_bytes(self.sig.as_ref()),
         );
+
         Ok(request)
     }
 }

@@ -21,7 +21,7 @@
 use {
     crate::{
         backoff::BackoffStrategy,
-        blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
+        blocking_proxy_client::{AuthInterceptor, BlockingProxyClient, ProxyError},
         bundle::PacketBundle,
         proto_packet_to_packet,
         sigverify::SigverifyTracerPacketStats,
@@ -51,9 +51,7 @@ use {
 };
 
 pub struct RelayerStage {
-    _heartbeat_sender: Sender<HeartbeatEvent>,
-    relayer_threads: Vec<JoinHandle<()>>,
-    heartbeat_thread: JoinHandle<()>,
+    t_hdls: Vec<JoinHandle<()>>,
 }
 
 #[derive(Error, Debug)]
@@ -102,11 +100,13 @@ impl RelayerStage {
         let keypair = cluster_info.keypair();
         let sig: Signature = keypair.sign_message(msg.as_slice());
         let pubkey = keypair.pubkey();
-        let interceptor = AuthenticationInjector::new(msg, sig, pubkey);
+        let interceptor = AuthInterceptor::new(msg, sig, pubkey);
 
         let (tpu_proxy_heartbeat_sender, tpu_proxy_heartbeat_receiver) = unbounded();
 
-        let proxy_threads = Self::spawn_relayer_threads(
+        let mut t_hdls = vec![];
+
+        t_hdls.extend(Self::spawn_relayer_threads(
             relayer_address,
             block_engine_address,
             interceptor,
@@ -114,34 +114,28 @@ impl RelayerStage {
             // if no validator interface address provided, sender side of the channel gets dropped
             // in heartbeat thread and causes packet forwarding to error. this clone, along with the
             // reference on self, prevents it from being dropped
-            tpu_proxy_heartbeat_sender.clone(),
+            tpu_proxy_heartbeat_sender,
             bundle_sender,
             exit.clone(),
-        );
+        ));
 
-        // This thread is responsible for connecting and disconnecting the fetch stage to prevent
-        // circumventing TPU proxy.
-        let heartbeat_thread = Self::heartbeat_thread(
+        t_hdls.push(Self::heartbeat_thread(
             packet_intercept_receiver,
             packet_sender,
             tpu_proxy_heartbeat_receiver,
             cluster_info,
             exit,
-        );
+        ));
 
         info!("started mev stage");
 
-        Self {
-            _heartbeat_sender: tpu_proxy_heartbeat_sender,
-            relayer_threads: proxy_threads,
-            heartbeat_thread,
-        }
+        Self { t_hdls }
     }
 
     fn spawn_relayer_threads(
         relayer_address: String,
         block_engine_address: String,
-        interceptor: AuthenticationInjector,
+        interceptor: AuthInterceptor,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: Sender<HeartbeatEvent>,
         bundle_sender: Sender<Vec<PacketBundle>>,
@@ -165,29 +159,29 @@ impl RelayerStage {
             // only the relayer heartbeats and controls the TPU address
             // only the block engine supports bundles
             vec![
-                Self::start_proxy_thread(
-                    relayer_address,
-                    interceptor.clone(),
-                    verified_packet_sender.clone(),
-                    Some(tpu_proxy_heartbeat_sender),
-                    None,
-                    exit.clone(),
-                ),
-                Self::start_proxy_thread(
-                    block_engine_address,
-                    interceptor,
-                    verified_packet_sender,
-                    None,
-                    Some(bundle_sender),
-                    exit,
-                ),
+                (relayer_address, Some(tpu_proxy_heartbeat_sender), None),
+                (block_engine_address, None, Some(bundle_sender)),
             ]
+            .into_iter()
+            .map(
+                |(proxy_addr, maybe_heartbeat_sender, maybe_bundle_sender)| {
+                    Self::start_proxy_thread(
+                        proxy_addr,
+                        interceptor.clone(),
+                        verified_packet_sender.clone(),
+                        maybe_heartbeat_sender,
+                        maybe_bundle_sender,
+                        exit.clone(),
+                    )
+                },
+            )
+            .collect::<Vec<JoinHandle<()>>>()
         }
     }
 
     fn start_proxy_thread(
         address: String,
-        interceptor: AuthenticationInjector,
+        mut interceptor: AuthInterceptor,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
         bundle_sender: Option<Sender<Vec<PacketBundle>>>,
@@ -208,40 +202,70 @@ impl RelayerStage {
                     if exit.load(Ordering::Relaxed) {
                         break;
                     }
-                    if let Err(e) = Self::connect_and_stream(
-                        address.clone(),
-                        &interceptor,
+
+                    let mut client = match BlockingProxyClient::new(address.clone(), interceptor.clone()) {
+                        Ok(client) => client,
+                        Err(e) => {
+                            error!("error connecting to proxy: {:?}", e);
+                            datapoint_info!(
+                                METRICS_NAME,
+                                ("proxy_connection_error", 1, i64),
+                                ("addr", address, String)
+                            );
+
+                            thread::sleep(Duration::from_millis(backoff.next_wait()));
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = Self::start_stream(
+                        &mut client,
                         &verified_packet_sender,
                         &bundle_sender,
                         &tpu_proxy_heartbeat_sender,
                         &mut backoff,
                         &exit,
                     ) {
-                        error!("spawn_proxy_thread error: {:?}", e);
-                        datapoint_info!(
-                            METRICS_NAME,
-                            ("proxy_connection_error", 1, i64),
-                            ("addr", address, String)
-                        );
-                        thread::sleep(Duration::from_millis(backoff.next_wait()));
+                        if let Some(token) = BlockingProxyClient::maybe_retryable_auth(&e, interceptor.get_msg()) {
+                            interceptor.set_msg(token.as_bytes().to_vec());
+
+                            info!("retrying auth with new token");
+                            datapoint_info!(
+                                METRICS_NAME,
+                                ("retryable_auth", 1, i64),
+                                ("addr", address, String)
+                            );
+                        } else {
+                            error!("error starting proxy stream: {:?}", e);
+                            datapoint_info!(
+                                METRICS_NAME,
+                                ("proxy_stream_error", 1, i64),
+                                ("addr", address, String)
+                            );
+
+                            thread::sleep(Duration::from_millis(backoff.next_wait()));
+                        }
                     }
                 }
             })
             .unwrap()
     }
 
-    // Disconnect fetch behaviour
-    // Starts connected
-    // When connected and a packet is received, forward it
-    // When disconnected, packet is dropped
-    // When receiving heartbeat while connected and not pending disconnect
-    //      Sets pending_disconnect to true and records time
-    // When receiving heartbeat while connected, and pending for > DISCONNECT_DELAY_SEC
-    //      Sets fetch_connected to false, pending_disconnect to false
-    //      Advertises TPU ports sent in heartbeat
-    // When tick is received without heartbeat_received
-    //      Sets fetch_connected to true, pending_disconnect to false
-    //      Advertises saved contact info
+    /// This thread is responsible for connecting and disconnecting the fetch stage to prevent
+    /// circumventing TPU proxy.
+    ///
+    /// Disconnect fetch behaviour
+    /// Starts connected
+    /// When connected and a packet is received, forward it
+    /// When disconnected, packet is dropped
+    /// When receiving heartbeat while connected and not pending disconnect
+    ///      Sets pending_disconnect to true and records time
+    /// When receiving heartbeat while connected, and pending for > DISCONNECT_DELAY_SEC
+    ///      Sets fetch_connected to false, pending_disconnect to false
+    ///      Advertises TPU ports sent in heartbeat
+    /// When tick is received without heartbeat_received
+    ///      Sets fetch_connected to true, pending_disconnect to false
+    ///      Advertises saved contact info
     fn heartbeat_thread(
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
@@ -438,7 +462,7 @@ impl RelayerStage {
     }
 
     fn stream_from_proxy(
-        mut client: BlockingProxyClient,
+        client: &mut BlockingProxyClient,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
@@ -514,17 +538,14 @@ impl RelayerStage {
         }
     }
 
-    fn connect_and_stream(
-        address: String,
-        auth_interceptor: &AuthenticationInjector,
+    fn start_stream(
+        client: &mut BlockingProxyClient,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         backoff: &mut BackoffStrategy,
         exit: &Arc<AtomicBool>,
     ) -> Result<()> {
-        let mut client = BlockingProxyClient::new(address.clone(), auth_interceptor)?;
-        info!("connected to relayer at {}", address);
         let (tpu, tpu_fwd) = client.fetch_tpu_config()?;
 
         Self::stream_from_proxy(
@@ -540,10 +561,9 @@ impl RelayerStage {
     }
 
     pub fn join(self) -> thread::Result<()> {
-        for t in self.relayer_threads {
+        for t in self.t_hdls {
             t.join()?;
         }
-        self.heartbeat_thread.join()?;
         Ok(())
     }
 }
