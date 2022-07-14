@@ -13,7 +13,7 @@ use {
         },
         fetch_stage::FetchStage,
         find_packet_sender_stake_stage::FindPacketSenderStakeStage,
-        relayer_stage::RelayerStage,
+        relayer_stage::RelayerAndBlockEngineStage,
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
@@ -65,7 +65,7 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
-    relayer_stage: RelayerStage,
+    relayer_stage: RelayerAndBlockEngineStage,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -217,7 +217,7 @@ impl Tpu {
 
         let (bundle_sender, bundle_receiver) = unbounded();
 
-        let relayer_stage = RelayerStage::new(
+        let relayer_stage = RelayerAndBlockEngineStage::new(
             cluster_info,
             relayer_address,
             block_engine_address,
