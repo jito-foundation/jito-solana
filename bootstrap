@@ -1,15 +1,16 @@
 #!/usr/bin/env sh
 bank_hash=$(./target/release/solana-ledger-tool -l config/bootstrap-validator bank-hash)
 
-# NOTE: each developer will need to adjust the tip-program-pubkey AND the declare_id!() field
-# in the anchor program based on the private key used to deploy the program on your cluster
+# NOTE: each developer will need to adjust the tip-payment-program-pubkey and tip-distribution-program-pubkey AND
+# their respective declare_id!() fields in each anchor program based on the private key used to deploy the program on your cluster.
 RUST_LOG=INFO \
 	NDEBUG=1 ./multinode-demo/bootstrap-validator.sh  \
   --wait-for-supermajority 0 \
   --expected-bank-hash $bank_hash \
-  --block-engine-address http://127.0.0.1:10101 \
-  --relayer-address http://127.0.0.1:11226 \
+  --block-engine-address http://0.0.0.0:10101 \
+  --relayer-address http://0.0.0.0:11226 \
   --rpc-pubsub-enable-block-subscription \
   --enable-rpc-transaction-history \
-  --tip-program-pubkey vVuPSav1121dHVnErQdxHiXYjPzxdHAQgmLsAWqsHRC
-
+  --tip-payment-program-pubkey DThZmRNNXh7kvTQW9hXeGoWGPKktK8pgVAyoTLjH7UrT \
+  --tip-distribution-program-pubkey FjrdANjvo76aCYQ4kf9FM1R8aESUcEE6F8V7qyoVUQcM \
+  --commission-bps 0

@@ -447,8 +447,9 @@ impl BundleAccountLocker {
 mod tests {
     use {
         crate::{
-            bundle::PacketBundle, bundle_account_locker::BundleAccountLocker,
-            tip_manager::TipManager,
+            bundle::PacketBundle,
+            bundle_account_locker::BundleAccountLocker,
+            tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
         solana_address_lookup_table_program::instruction::create_lookup_table,
         solana_ledger::genesis_utils::create_genesis_config,
@@ -881,16 +882,25 @@ mod tests {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let tip_manager = TipManager::new(Pubkey::new_unique());
+        let tip_manager = TipManager::new(TipManagerConfig {
+            tip_payment_program_id: Pubkey::new_unique(),
+            tip_distribution_program_id: Pubkey::new_unique(),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                payer: Arc::new(Keypair::new()),
+                merkle_root_upload_authority: Pubkey::new_unique(),
+                vote_account: Pubkey::new_unique(),
+                commission_bps: 0,
+            },
+        });
 
         let mut bundle_account_locker =
-            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &tip_manager.program_id());
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &tip_manager.tip_payment_program_id());
 
         let kp = Keypair::new();
         let tx =
             SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
                 &[Instruction::new_with_bytes(
-                    tip_manager.program_id(),
+                    tip_manager.tip_payment_program_id(),
                     &[0],
                     vec![],
                 )],

@@ -42,7 +42,6 @@ use {
         hash::Hash,
         pubkey::Pubkey,
         saturating_add_assign,
-        signature::Signer,
         transaction::{self, SanitizedTransaction, TransactionError, VersionedTransaction},
     },
     solana_transaction_status::token_balances::{
@@ -701,7 +700,8 @@ impl BundleStage {
         }
     }
 
-    /// Initializes the tip config and changes tip receiver if needed and executes them as a bundle
+    /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then
+    /// sets the tip_receiver if needed and executes them as a bundle.
     fn maybe_initialize_and_change_tip_receiver(
         bank_start: &BankStart,
         tip_manager: &TipManager,
@@ -713,20 +713,62 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
     ) -> BundleExecutionResult<()> {
         let BankStart {
-            working_bank: bank,
-            bank_creation_time: _,
+            working_bank: bank, ..
         } = bank_start;
 
-        if bank.get_account(&tip_manager.config_pubkey()).is_none() {
-            info!("initializing tip program config");
-            let sanitized_bundle = SanitizedBundle {
-                transactions: vec![tip_manager
-                    .initialize_config_tx(&bank.last_blockhash(), &cluster_info.keypair())],
-                uuid: Uuid::new_v4(),
+        let maybe_init_tip_payment_config_tx =
+            if bank
+                .get_account(&tip_manager.tip_payment_config_pubkey())
+                .is_none()
+            {
+                info!("initializing tip-payment program config");
+                Some(tip_manager.initialize_tip_payment_program_tx(
+                    bank.last_blockhash(),
+                    &cluster_info.keypair(),
+                ))
+            } else {
+                None
             };
 
+        let maybe_init_tip_distro_config_tx = if bank
+            .get_account(&tip_manager.tip_distribution_config_pubkey())
+            .is_none()
+        {
+            info!("initializing tip-distribution program config");
+            Some(tip_manager.initialize_tip_distribution_config_tx(
+                bank.last_blockhash(),
+                &cluster_info.keypair(),
+            ))
+        } else {
+            None
+        };
+
+        let maybe_init_tip_distro_account_tx = if tip_manager
+            .should_init_tip_distribution_account(bank)
+        {
+            info!("initializing my [TipDistributionAccount]");
+
+            Some(tip_manager.init_tip_distribution_account_tx(bank.last_blockhash(), bank.epoch()))
+        } else {
+            None
+        };
+
+        let transactions = [
+            maybe_init_tip_payment_config_tx,
+            maybe_init_tip_distro_config_tx,
+            maybe_init_tip_distro_account_tx,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<SanitizedTransaction>>();
+
+        if !transactions.is_empty() {
+            info!("executing init txs");
             Self::update_qos_and_execute_record_commit_bundle(
-                &sanitized_bundle,
+                &SanitizedBundle {
+                    transactions,
+                    uuid: Uuid::new_v4(),
+                },
                 recorder,
                 transaction_status_sender,
                 gossip_vote_sender,
@@ -734,21 +776,22 @@ impl BundleStage {
                 bank_start,
                 execute_and_commit_timings,
             )?;
+            info!("successfully executed init txs");
         }
 
-        let current_tip_receiver = tip_manager.get_current_tip_receiver(bank)?;
-        let my_kp = cluster_info.keypair();
-        if current_tip_receiver != my_kp.pubkey() {
+        let configured_tip_receiver = tip_manager.get_configured_tip_receiver(bank)?;
+        let my_tip_distribution_pda = tip_manager.get_my_tip_distribution_pda(bank.epoch());
+
+        if configured_tip_receiver != my_tip_distribution_pda {
             info!(
                 "changing tip receiver from {:?} to {:?}",
-                current_tip_receiver,
-                my_kp.pubkey()
+                configured_tip_receiver, my_tip_distribution_pda
             );
             let sanitized_bundle = SanitizedBundle {
                 transactions: vec![tip_manager.change_tip_receiver_tx(
-                    &my_kp.pubkey(),
+                    &my_tip_distribution_pda,
                     bank,
-                    &my_kp,
+                    &cluster_info.keypair(),
                 )?],
                 uuid: Uuid::new_v4(),
             };
@@ -794,12 +837,12 @@ impl BundleStage {
                     break;
                 }
                 Some(locked_bundle) => {
+                    let _lock = tip_manager.lock();
                     let tip_pdas = tip_manager.get_tip_accounts();
                     if Self::bundle_touches_tip_pdas(
                         &locked_bundle.sanitized_bundle().transactions,
                         &tip_pdas,
                     ) {
-                        let _lock = tip_manager.lock();
                         match Self::maybe_initialize_and_change_tip_receiver(
                             &bank_start,
                             tip_manager,
