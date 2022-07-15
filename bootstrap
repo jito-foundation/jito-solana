@@ -8,7 +8,7 @@ RUST_LOG=INFO \
   --wait-for-supermajority 0 \
   --expected-bank-hash $bank_hash \
   --block-engine-address http://127.0.0.1:10101 \
-  --relayer-address http://127.0.0.1:10101 \
+  --relayer-address http://127.0.0.1:11226 \
   --rpc-pubsub-enable-block-subscription \
   --enable-rpc-transaction-history \
   --tip-program-pubkey vVuPSav1121dHVnErQdxHiXYjPzxdHAQgmLsAWqsHRC
