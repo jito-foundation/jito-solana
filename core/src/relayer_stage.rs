@@ -63,7 +63,6 @@ type HeartbeatEvent = (SocketAddr, SocketAddr);
 const HEARTBEAT_TIMEOUT_MS: Duration = Duration::from_millis(1500); // Empirically determined from load testing
 const DISCONNECT_DELAY_SEC: Duration = Duration::from_secs(60);
 const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
-const METRICS_NAME: &str = "mev_stage";
 
 #[derive(Clone)]
 pub struct AuthenticationInjector {
@@ -237,7 +236,7 @@ impl RelayerAndBlockEngineStage {
             .spawn(move || {
                 if !address.contains("http") {
                     error!("missing or malformed mev proxy address provided, exiting mev loop [address={}]", address);
-                    datapoint_info!(METRICS_NAME, ("bad_proxy_addr", 1, i64));
+                    datapoint_info!("block-engine-error", ("bad_proxy_addr", 1, i64));
                     return;
                 }
 
@@ -577,7 +576,7 @@ impl RelayerAndBlockEngineStage {
             .spawn(move || {
                 if !address.contains("http") {
                     info!("malformed or missing mev proxy address provided, exiting mev loop");
-                    datapoint_info!(METRICS_NAME, ("bad_proxy_addr", 1, i64));
+                    datapoint_info!("relayer-connection-error", ("bad_proxy_addr", 1, i64));
                     return;
                 }
                 let rt = tokio::runtime::Builder::new_multi_thread()
@@ -706,7 +705,7 @@ impl RelayerAndBlockEngineStage {
                         }
                         recv(metrics_tick) -> _ => {
                             datapoint_info!(
-                                METRICS_NAME,
+                                "relayer-heartbeat",
                                 ("fetch_stage_packets_forwarded", packets_forwarded, i64),
                                 ("heartbeats_received", heartbeats_received, i64),
                             );
