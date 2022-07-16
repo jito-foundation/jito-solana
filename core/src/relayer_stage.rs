@@ -235,14 +235,15 @@ impl RelayerAndBlockEngineStage {
         Builder::new()
             .name("jito-block-engine-thread".into())
             .spawn(move || {
-                if !address.contains("http") {
+                let endpoint = Endpoint::from_shared(address.clone());
+
+                if !address.contains("http") || endpoint.is_err() {
                     error!("missing or malformed mev proxy address provided, exiting mev loop [address={}]", address);
                     datapoint_info!("block-engine-error", ("bad_proxy_addr", 1, i64));
                     return;
                 }
 
-                // TODO: remove these unwraps
-                let mut endpoint = Endpoint::from_shared(address.clone()).unwrap();
+                let mut endpoint = endpoint.unwrap();
                 if address.as_str().contains("https") {
                     let mut buf = Vec::new();
                     File::open("/etc/ssl/certs/jito_ca.pem")
