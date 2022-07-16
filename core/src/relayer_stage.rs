@@ -38,6 +38,7 @@ use {
         io::Read,
         net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
         result,
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -476,15 +477,18 @@ impl RelayerAndBlockEngineStage {
         let bundles: Vec<PacketBundle> = bundles_response
             .bundles
             .into_iter()
-            .map(|bundle| PacketBundle {
-                batch: PacketBatch::new(
-                    bundle
-                        .packets
-                        .into_iter()
-                        .map(proto_packet_to_packet)
-                        .collect(),
-                ),
-                uuid: Uuid::new_v4(),
+            .filter_map(|bundle| {
+                Some(PacketBundle {
+                    batch: PacketBatch::new(
+                        bundle
+                            .bundle?
+                            .packets
+                            .into_iter()
+                            .map(proto_packet_to_packet)
+                            .collect(),
+                    ),
+                    uuid: Uuid::from_str(&bundle.uuid).ok()?,
+                })
             })
             .collect();
         bundle_sender
