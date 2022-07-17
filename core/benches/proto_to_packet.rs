@@ -40,28 +40,17 @@ fn bench_proto_to_packet(bencher: &mut Bencher) {
 
 #[bench]
 fn bench_batch_list_to_packets(bencher: &mut Bencher) {
-    let packet_batch_list = PacketBatchList {
-        header: None,
-        batch_list: (0..100)
-            .map(|_| PacketBatch {
-                packets: (0..128).map(get_proto_packet).collect(),
-            })
-            .collect(),
-        expiry: 0,
+    let packet_batch = PacketBatch {
+        packets: (0..128).map(get_proto_packet).collect(),
     };
 
     bencher.iter(|| {
         black_box(
-            packet_batch_list
-                .batch_list
+            packet_batch
+                .packets
                 .iter()
-                .map(|b| {
-                    b.packets
-                        .iter()
-                        .map(|p| proto_packet_to_packet(p.clone()))
-                        .collect()
-                })
-                .collect::<Vec<Vec<Packet>>>(),
+                .map(|p| proto_packet_to_packet(p.clone()))
+                .collect(),
         );
     });
 }
