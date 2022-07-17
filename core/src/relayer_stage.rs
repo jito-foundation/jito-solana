@@ -523,7 +523,7 @@ impl RelayerAndBlockEngineStage {
                 *last_heartbeat = Instant::now();
                 if let Some(tpu_proxy_heartbeat_sender) = tpu_proxy_heartbeat_sender {
                     tpu_proxy_heartbeat_sender
-                        .send(maybe_heartbeat_event.clone())
+                        .send(*maybe_heartbeat_event)
                         .map_err(|_| RelayerStageError::HeartbeatChannelError)?;
                 }
             }
@@ -560,7 +560,7 @@ impl RelayerAndBlockEngineStage {
                 *last_heartbeat = Instant::now();
                 if let Some(tpu_proxy_heartbeat_sender) = tpu_proxy_heartbeat_sender {
                     tpu_proxy_heartbeat_sender
-                        .send(maybe_heartbeat_event.clone().unwrap())
+                        .send((*maybe_heartbeat_event).unwrap())
                         .map_err(|_| RelayerStageError::HeartbeatChannelError)?;
                 }
             }
