@@ -4,7 +4,7 @@ extern crate test;
 
 use {
     jito_protos::proto::packet::{
-        Meta as PbMeta, Packet as PbPacket, PacketBatch, PacketBatchList, PacketFlags as PbFlags,
+        Meta as PbMeta, Packet as PbPacket, PacketBatch, PacketFlags as PbFlags,
     },
     solana_core::proto_packet_to_packet,
     solana_sdk::packet::{Packet, PACKET_DATA_SIZE},
@@ -50,7 +50,7 @@ fn bench_batch_list_to_packets(bencher: &mut Bencher) {
                 .packets
                 .iter()
                 .map(|p| proto_packet_to_packet(p.clone()))
-                .collect(),
+                .collect::<Vec<Packet>>(),
         );
     });
 }

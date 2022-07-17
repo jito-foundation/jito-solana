@@ -139,6 +139,7 @@ pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> Packet {
                 packet.meta.flags.insert(PacketFlags::REPAIR);
             }
         }
+        packet.meta.sender_stake = meta.sender_stake;
     }
     packet
 }
