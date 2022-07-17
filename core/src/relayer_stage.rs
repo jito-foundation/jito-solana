@@ -20,74 +20,112 @@
 
 use {
     crate::{
-        backoff::BackoffStrategy,
-        blocking_proxy_client::{AuthenticationInjector, BlockingProxyClient, ProxyError},
-        bundle::PacketBundle,
-        proto_packet_to_packet,
+        backoff::BackoffStrategy, bundle::PacketBundle, proto_packet_to_packet,
         sigverify::SigverifyTracerPacketStats,
     },
-    crossbeam_channel::{select, tick, unbounded, Receiver, RecvError, Sender},
-    jito_protos::proto::validator_interface::{
-        packet_stream_msg::Msg, PacketStreamMsg, SubscribeBundlesResponse,
+    crossbeam_channel::{select, tick, unbounded, Receiver, Sender},
+    jito_protos::proto::{
+        block_engine::{self, block_engine_validator_client::BlockEngineValidatorClient},
+        relayer::{self, relayer_client::RelayerClient},
     },
     log::*,
     solana_gossip::cluster_info::ClusterInfo,
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
-    solana_sdk::{signature::Signature, signer::Signer},
+    solana_sdk::{pubkey::Pubkey, signature::Signature, signer::Signer},
     std::{
-        net::SocketAddr,
+        fs::File,
+        io::Read,
+        net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
+        result,
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
         },
-        thread::{self, JoinHandle},
-        time::Duration,
+        thread::{self, Builder, JoinHandle},
+        time::{Duration, Instant},
     },
     thiserror::Error,
-    tokio::time::Instant,
-    tonic::Status,
+    tokio::time::{interval, sleep},
+    tonic::{
+        codegen::InterceptedService,
+        metadata::MetadataValue,
+        service::Interceptor,
+        transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
+        Response, Status, Streaming,
+    },
     uuid::Uuid,
 };
 
-pub struct RelayerStage {
+type Result<T> = result::Result<T, RelayerStageError>;
+type HeartbeatEvent = (SocketAddr, SocketAddr);
+
+const HEARTBEAT_TIMEOUT_MS: Duration = Duration::from_millis(1500); // Empirically determined from load testing
+const DISCONNECT_DELAY_SEC: Duration = Duration::from_secs(60);
+const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
+
+#[derive(Clone)]
+pub struct AuthenticationInjector {
+    msg: Vec<u8>,
+    sig: Signature,
+    pubkey: Pubkey,
+}
+
+impl AuthenticationInjector {
+    pub fn new(msg: Vec<u8>, sig: Signature, pubkey: Pubkey) -> Self {
+        AuthenticationInjector { msg, sig, pubkey }
+    }
+}
+
+impl Interceptor for AuthenticationInjector {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> result::Result<tonic::Request<()>, Status> {
+        request.metadata_mut().append_bin(
+            "public-key-bin",
+            MetadataValue::from_bytes(&self.pubkey.to_bytes()),
+        );
+        request.metadata_mut().append_bin(
+            "message-bin",
+            MetadataValue::from_bytes(self.msg.as_slice()),
+        );
+        request.metadata_mut().append_bin(
+            "signature-bin",
+            MetadataValue::from_bytes(self.sig.as_ref()),
+        );
+        Ok(request)
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum RelayerStageError {
+    #[error("grpc error: {0}")]
+    GrpcError(#[from] Status),
+    #[error("stream disconnected")]
+    GrpcStreamDisconnected,
+    #[error("heartbeat error")]
+    HeartbeatChannelError,
+    #[error("heartbeat expired")]
+    HeartbeatExpired,
+    #[error("error forwarding packet to banking stage")]
+    PacketForwardError,
+    #[error("missing tpu config: {0:?}")]
+    MissingTpuSocket(String),
+    #[error("invalid socket address: {0:?}")]
+    InvalidSocketAddress(#[from] AddrParseError),
+    #[error("shutdown")]
+    Shutdown,
+}
+
+pub struct RelayerAndBlockEngineStage {
     _heartbeat_sender: Sender<HeartbeatEvent>,
     relayer_threads: Vec<JoinHandle<()>>,
     heartbeat_thread: JoinHandle<()>,
 }
 
-#[derive(Error, Debug)]
-pub enum RelayerStageError {
-    #[error("proxy error: {0}")]
-    ProxyError(#[from] ProxyError),
-    #[error("grpc error: {0}")]
-    GrpcError(#[from] Status),
-    #[error("stream disconnected")]
-    GrpcStreamDisconnected,
-    #[error("bad packet message")]
-    BadMessage,
-    #[error("error sending message to another part of the system")]
-    ChannelError,
-    #[error("backend sent disconnection through heartbeat")]
-    HeartbeatError,
-    #[error("missed heartbeat, but failed to forward disconnect message")]
-    HeartbeatChannelError,
-    #[error("error forwarding packet to banking stage")]
-    PacketForwardError,
-    #[error("relayer configuration is invalid error: {0:?}")]
-    InvalidRelayerConfig(String),
-}
-
-type Result<T> = std::result::Result<T, RelayerStageError>;
-type HeartbeatEvent = (SocketAddr, SocketAddr);
-type SubscribePacketsResult = std::result::Result<Option<PacketStreamMsg>, Status>;
-
-const HEARTBEAT_TIMEOUT_MS: Duration = Duration::from_millis(1500); // Empirically determined from load testing
-const DISCONNECT_DELAY_SEC: Duration = Duration::from_secs(60);
-const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
-const METRICS_NAME: &str = "mev_stage";
-
-impl RelayerStage {
+impl RelayerAndBlockEngineStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         relayer_address: String,
@@ -111,9 +149,6 @@ impl RelayerStage {
             block_engine_address,
             interceptor,
             verified_packet_sender,
-            // if no validator interface address provided, sender side of the channel gets dropped
-            // in heartbeat thread and causes packet forwarding to error. this clone, along with the
-            // reference on self, prevents it from being dropped
             tpu_proxy_heartbeat_sender.clone(),
             bundle_sender,
             exit.clone(),
@@ -129,9 +164,10 @@ impl RelayerStage {
             exit,
         );
 
-        info!("started mev stage");
-
         Self {
+            // if no validator interface address provided, sender side of the channel gets dropped
+            // in heartbeat thread and causes packet forwarding to error. this reference
+            // on self, prevents it from being dropped
             _heartbeat_sender: tpu_proxy_heartbeat_sender,
             relayer_threads: proxy_threads,
             heartbeat_thread,
@@ -151,13 +187,13 @@ impl RelayerStage {
             // block engine is also a relayer
             // the block engine can send packets and bundles
             // the block engine heartbeat controls the TPU address
-            vec![Self::start_proxy_thread(
+            vec![Self::start_block_engine_thread(
                 block_engine_address,
-                interceptor,
                 verified_packet_sender,
                 Some(tpu_proxy_heartbeat_sender),
-                Some(bundle_sender),
+                bundle_sender,
                 exit,
+                interceptor,
             )]
         } else {
             // the relayer acts as the TPU proxy and the block engine sends bundles
@@ -165,83 +201,440 @@ impl RelayerStage {
             // only the relayer heartbeats and controls the TPU address
             // only the block engine supports bundles
             vec![
-                Self::start_proxy_thread(
-                    relayer_address,
-                    interceptor.clone(),
-                    verified_packet_sender.clone(),
-                    Some(tpu_proxy_heartbeat_sender),
-                    None,
-                    exit.clone(),
-                ),
-                Self::start_proxy_thread(
+                Self::start_block_engine_thread(
                     block_engine_address,
-                    interceptor,
+                    verified_packet_sender.clone(),
+                    None, // connected to a relayer, the relayer will heartbeat to tpu
+                    bundle_sender,
+                    exit.clone(),
+                    interceptor.clone(),
+                ),
+                Self::start_relayer_thread(
+                    relayer_address,
+                    // interceptor.clone(),
                     verified_packet_sender,
-                    None,
-                    Some(bundle_sender),
+                    Some(tpu_proxy_heartbeat_sender),
                     exit,
+                    interceptor,
                 ),
             ]
         }
     }
 
-    fn start_proxy_thread(
+    /// Connects to the block engine.
+    /// If tpu_proxy_heartbeat_sender is some, the block engine is also the relayer and will advertise
+    /// the block engine's IP address.
+    fn start_block_engine_thread(
         address: String,
-        interceptor: AuthenticationInjector,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
-        bundle_sender: Option<Sender<Vec<PacketBundle>>>,
+        bundle_sender: Sender<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
+        interceptor: AuthenticationInjector,
     ) -> JoinHandle<()> {
-        thread::Builder::new()
-            .name("proxy_thread".into())
+        Builder::new()
+            .name("jito-block-engine-thread".into())
             .spawn(move || {
-                if !address.contains("http") {
+                let endpoint = Endpoint::from_shared(address.clone());
+
+                if !address.contains("http") || endpoint.is_err() {
                     error!("missing or malformed mev proxy address provided, exiting mev loop [address={}]", address);
-                    datapoint_info!(METRICS_NAME, ("bad_proxy_addr", 1, i64));
+                    datapoint_info!("block-engine-error", ("bad_proxy_addr", 1, i64));
                     return;
                 }
 
-                let mut backoff = BackoffStrategy::new();
-
-                loop {
-                    if exit.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    if let Err(e) = Self::connect_and_stream(
-                        address.clone(),
-                        &interceptor,
-                        &verified_packet_sender,
-                        &bundle_sender,
-                        &tpu_proxy_heartbeat_sender,
-                        &mut backoff,
-                        &exit,
-                    ) {
-                        error!("spawn_proxy_thread error: {:?}", e);
-                        datapoint_info!(
-                            METRICS_NAME,
-                            ("proxy_connection_error", 1, i64),
-                            ("addr", address, String)
-                        );
-                        thread::sleep(Duration::from_millis(backoff.next_wait()));
-                    }
+                let mut endpoint = endpoint.unwrap();
+                if address.as_str().contains("https") {
+                    let mut buf = Vec::new();
+                    File::open("/etc/ssl/certs/jito_ca.pem")
+                        .unwrap()
+                        .read_to_end(&mut buf)
+                        .unwrap();
+                    endpoint = endpoint
+                        .tls_config(
+                            ClientTlsConfig::new()
+                                .domain_name("jito.wtf")
+                                .ca_certificate(Certificate::from_pem(buf)),
+                        )
+                        .unwrap();
                 }
+
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async move {
+                    let mut backoff = BackoffStrategy::new();
+
+                    loop {
+                        match endpoint.connect().await {
+                            Ok(channel) => {
+                                let client = BlockEngineValidatorClient::with_interceptor(
+                                    channel,
+                                    interceptor.clone(),
+                                );
+                                match Self::start_block_engine_stream(
+                                    client,
+                                    &verified_packet_sender,
+                                    &tpu_proxy_heartbeat_sender,
+                                    &bundle_sender,
+                                    &exit,
+                                    &mut backoff,
+                                )
+                                .await
+                                {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        error!("error in block engine stream: {:?}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("error connecting to block engine: {:?}", e);
+                            }
+                        }
+
+                        sleep(Duration::from_millis(backoff.next_wait())).await;
+                    }
+                });
             })
             .unwrap()
     }
 
-    // Disconnect fetch behaviour
-    // Starts connected
-    // When connected and a packet is received, forward it
-    // When disconnected, packet is dropped
-    // When receiving heartbeat while connected and not pending disconnect
-    //      Sets pending_disconnect to true and records time
-    // When receiving heartbeat while connected, and pending for > DISCONNECT_DELAY_SEC
-    //      Sets fetch_connected to false, pending_disconnect to false
-    //      Advertises TPU ports sent in heartbeat
-    // When tick is received without heartbeat_received
-    //      Sets fetch_connected to true, pending_disconnect to false
-    //      Advertises saved contact info
+    async fn start_block_engine_stream(
+        mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthenticationInjector>>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        bundle_sender: &Sender<Vec<PacketBundle>>,
+        exit: &Arc<AtomicBool>,
+        backoff: &mut BackoffStrategy,
+    ) -> Result<()> {
+        let maybe_heartbeat_event: Option<HeartbeatEvent> = if tpu_proxy_heartbeat_sender.is_some()
+        {
+            let tpu_config = client
+                .get_tpu_configs(block_engine::GetTpuConfigsRequest {})
+                .await?
+                .into_inner();
+            let tpu_addr = tpu_config
+                .tpu
+                .ok_or_else(|| RelayerStageError::MissingTpuSocket("tpu".into()))?;
+            let tpu_forward_addr = tpu_config
+                .tpu_forward
+                .ok_or_else(|| RelayerStageError::MissingTpuSocket("tpu_fwd".into()))?;
+
+            let tpu_ip = IpAddr::from(tpu_addr.ip.parse::<Ipv4Addr>()?);
+            let tpu_forward_ip = IpAddr::from(tpu_forward_addr.ip.parse::<Ipv4Addr>()?);
+
+            let tpu_socket = SocketAddr::new(tpu_ip, tpu_addr.port as u16);
+            let tpu_forward_socket = SocketAddr::new(tpu_forward_ip, tpu_forward_addr.port as u16);
+            Some((tpu_socket, tpu_forward_socket))
+        } else {
+            None
+        };
+
+        let subscribe_packets_response = client
+            .subscribe_packets(block_engine::SubscribePacketsRequest {})
+            .await?;
+        let subscribe_bundles_response = client
+            .subscribe_bundles(block_engine::SubscribeBundlesRequest {})
+            .await?;
+
+        backoff.reset();
+
+        Self::stream_block_engine_bundles_and_packets(
+            maybe_heartbeat_event,
+            subscribe_packets_response,
+            subscribe_bundles_response,
+            verified_packet_sender,
+            bundle_sender,
+            tpu_proxy_heartbeat_sender,
+            exit,
+        )
+        .await
+    }
+
+    async fn start_relayer_stream(
+        mut client: RelayerClient<InterceptedService<Channel, AuthenticationInjector>>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        exit: &Arc<AtomicBool>,
+        backoff: &mut BackoffStrategy,
+    ) -> Result<()> {
+        let heartbeat_event: HeartbeatEvent = {
+            let tpu_config = client
+                .get_tpu_configs(relayer::GetTpuConfigsRequest {})
+                .await?
+                .into_inner();
+            let tpu_addr = tpu_config
+                .tpu
+                .ok_or_else(|| RelayerStageError::MissingTpuSocket("tpu".into()))?;
+            let tpu_forward_addr = tpu_config
+                .tpu_forward
+                .ok_or_else(|| RelayerStageError::MissingTpuSocket("tpu_fwd".into()))?;
+
+            let tpu_ip = IpAddr::from(tpu_addr.ip.parse::<Ipv4Addr>()?);
+            let tpu_forward_ip = IpAddr::from(tpu_forward_addr.ip.parse::<Ipv4Addr>()?);
+
+            let tpu_socket = SocketAddr::new(tpu_ip, tpu_addr.port as u16);
+            let tpu_forward_socket = SocketAddr::new(tpu_forward_ip, tpu_forward_addr.port as u16);
+            (tpu_socket, tpu_forward_socket)
+        };
+
+        let subscribe_packets_response = client
+            .subscribe_packets(relayer::SubscribePacketsRequest {})
+            .await?;
+
+        // assume it's all good here
+        backoff.reset();
+
+        Self::stream_relayer_packets(
+            heartbeat_event,
+            subscribe_packets_response,
+            verified_packet_sender,
+            tpu_proxy_heartbeat_sender,
+            exit,
+        )
+        .await
+    }
+
+    async fn stream_relayer_packets(
+        heartbeat_event: HeartbeatEvent,
+        subscribe_packets_response: Response<Streaming<relayer::SubscribePacketsResponse>>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        exit: &Arc<AtomicBool>,
+    ) -> Result<()> {
+        let mut packet_stream = subscribe_packets_response.into_inner();
+
+        info!("relayer starting bundle and packet stream");
+
+        let mut heartbeat_check_tick = interval(Duration::from_millis(500));
+        let mut last_heartbeat = Instant::now();
+
+        loop {
+            if exit.load(Ordering::Relaxed) {
+                return Err(RelayerStageError::Shutdown);
+            }
+
+            tokio::select! {
+                maybe_packets = packet_stream.message() => {
+                    Self::handle_relayer_packets(maybe_packets, &heartbeat_event, tpu_proxy_heartbeat_sender, verified_packet_sender, &mut last_heartbeat)?;
+                }
+                _ = heartbeat_check_tick.tick() => {
+                    if last_heartbeat.elapsed() > Duration::from_millis(1_500) {
+                        return Err(RelayerStageError::HeartbeatExpired);
+                    }
+                }
+            }
+        }
+    }
+
+    async fn stream_block_engine_bundles_and_packets(
+        maybe_heartbeat_event: Option<HeartbeatEvent>,
+        subscribe_packets_response: Response<Streaming<block_engine::SubscribePacketsResponse>>,
+        subscribe_bundles_response: Response<Streaming<block_engine::SubscribeBundlesResponse>>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        bundle_sender: &Sender<Vec<PacketBundle>>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        exit: &Arc<AtomicBool>,
+    ) -> Result<()> {
+        let mut packet_stream = subscribe_packets_response.into_inner();
+        let mut bundle_stream = subscribe_bundles_response.into_inner();
+
+        let mut heartbeat_check_tick = interval(Duration::from_millis(500));
+        let mut last_heartbeat = Instant::now();
+
+        info!("block engine starting bundle and packet stream");
+        loop {
+            if exit.load(Ordering::Relaxed) {
+                return Err(RelayerStageError::Shutdown);
+            }
+
+            tokio::select! {
+                maybe_packets = packet_stream.message() => {
+                    Self::handle_block_engine_packets(maybe_packets, &maybe_heartbeat_event, tpu_proxy_heartbeat_sender, verified_packet_sender, &mut last_heartbeat)?;
+                }
+                maybe_bundles = bundle_stream.message() => {
+                    Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_sender)?;
+                }
+                _ = heartbeat_check_tick.tick() => {
+                    if last_heartbeat.elapsed() > Duration::from_millis(1_500) {
+                        return Err(RelayerStageError::HeartbeatExpired);
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_block_engine_maybe_bundles(
+        maybe_bundles_response: result::Result<
+            Option<block_engine::SubscribeBundlesResponse>,
+            Status,
+        >,
+        bundle_sender: &Sender<Vec<PacketBundle>>,
+    ) -> Result<()> {
+        let bundles_response =
+            maybe_bundles_response?.ok_or(RelayerStageError::GrpcStreamDisconnected)?;
+        let bundles: Vec<PacketBundle> = bundles_response
+            .bundles
+            .into_iter()
+            .filter_map(|bundle| {
+                Some(PacketBundle {
+                    batch: PacketBatch::new(
+                        bundle
+                            .bundle?
+                            .packets
+                            .into_iter()
+                            .map(proto_packet_to_packet)
+                            .collect(),
+                    ),
+                    uuid: Uuid::from_str(&bundle.uuid).ok()?,
+                })
+            })
+            .collect();
+        bundle_sender
+            .send(bundles)
+            .map_err(|_| RelayerStageError::PacketForwardError)
+    }
+
+    fn handle_relayer_packets(
+        maybe_packets_response: result::Result<Option<relayer::SubscribePacketsResponse>, Status>,
+        maybe_heartbeat_event: &HeartbeatEvent,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        last_heartbeat: &mut Instant,
+    ) -> Result<()> {
+        let packets = maybe_packets_response?.ok_or(RelayerStageError::GrpcStreamDisconnected)?;
+        match packets.msg {
+            None => return Err(RelayerStageError::GrpcStreamDisconnected),
+            Some(relayer::subscribe_packets_response::Msg::Batch(proto_batch)) => {
+                let packet_batch = PacketBatch::new(
+                    proto_batch
+                        .packets
+                        .into_iter()
+                        .map(proto_packet_to_packet)
+                        .collect(),
+                );
+                verified_packet_sender
+                    .send((vec![packet_batch], None))
+                    .map_err(|_| RelayerStageError::PacketForwardError)?;
+            }
+            Some(relayer::subscribe_packets_response::Msg::Heartbeat(_)) => {
+                *last_heartbeat = Instant::now();
+                if let Some(tpu_proxy_heartbeat_sender) = tpu_proxy_heartbeat_sender {
+                    tpu_proxy_heartbeat_sender
+                        .send(*maybe_heartbeat_event)
+                        .map_err(|_| RelayerStageError::HeartbeatChannelError)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_block_engine_packets(
+        maybe_packets_response: result::Result<
+            Option<block_engine::SubscribePacketsResponse>,
+            Status,
+        >,
+        maybe_heartbeat_event: &Option<HeartbeatEvent>,
+        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        last_heartbeat: &mut Instant,
+    ) -> Result<()> {
+        let packets = maybe_packets_response?.ok_or(RelayerStageError::GrpcStreamDisconnected)?;
+        match packets.msg {
+            None => return Err(RelayerStageError::GrpcStreamDisconnected),
+            Some(block_engine::subscribe_packets_response::Msg::Batch(proto_batch)) => {
+                let packet_batch = PacketBatch::new(
+                    proto_batch
+                        .packets
+                        .into_iter()
+                        .map(proto_packet_to_packet)
+                        .collect(),
+                );
+                verified_packet_sender
+                    .send((vec![packet_batch], None))
+                    .map_err(|_| RelayerStageError::PacketForwardError)?;
+            }
+            Some(block_engine::subscribe_packets_response::Msg::Heartbeat(_)) => {
+                *last_heartbeat = Instant::now();
+                if let Some(tpu_proxy_heartbeat_sender) = tpu_proxy_heartbeat_sender {
+                    tpu_proxy_heartbeat_sender
+                        .send((*maybe_heartbeat_event).unwrap())
+                        .map_err(|_| RelayerStageError::HeartbeatChannelError)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn start_relayer_thread(
+        address: String,
+        // interceptor: AuthenticationInjector,
+        verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
+        exit: Arc<AtomicBool>,
+        interceptor: AuthenticationInjector,
+    ) -> JoinHandle<()> {
+        Builder::new()
+            .name("jito-relayer-thread".into())
+            .spawn(move || {
+                if !address.contains("http") {
+                    info!("malformed or missing mev proxy address provided, exiting mev loop");
+                    datapoint_info!("relayer-connection-error", ("bad_proxy_addr", 1, i64));
+                    return;
+                }
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async move {
+                    let mut backoff = BackoffStrategy::new();
+
+                    loop {
+                        let endpoint = Endpoint::from_shared(address.clone()).unwrap();
+                        match endpoint.connect().await {
+                            Ok(channel) => {
+                                let client =
+                                    RelayerClient::with_interceptor(channel, interceptor.clone());
+                                match Self::start_relayer_stream(
+                                    client,
+                                    &verified_packet_sender,
+                                    &tpu_proxy_heartbeat_sender,
+                                    &exit,
+                                    &mut backoff,
+                                )
+                                .await
+                                {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        error!("error in relayer stream: {:?}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("error connecting to relayer: {:?}", e);
+                            }
+                        }
+                        sleep(Duration::from_millis(backoff.next_wait())).await;
+                    }
+                });
+            })
+            .unwrap()
+    }
+
+    /// Disconnect fetch behaviour
+    /// Starts connected
+    /// When connected and a packet is received, forward it
+    /// When disconnected, packet is dropped
+    /// When receiving heartbeat while connected and not pending disconnect
+    ///      Sets pending_disconnect to true and records time
+    /// When receiving heartbeat while connected, and pending for > DISCONNECT_DELAY_SEC
+    ///      Sets fetch_connected to false, pending_disconnect to false
+    ///      Advertises TPU ports sent in heartbeat
+    /// When tick is received without heartbeat_received
+    ///      Sets fetch_connected to true, pending_disconnect to false
+    ///      Advertises saved contact info
     fn heartbeat_thread(
         packet_intercept_receiver: Receiver<PacketBatch>,
         packet_sender: Sender<PacketBatch>,
@@ -250,7 +643,7 @@ impl RelayerStage {
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         let cluster_info = cluster_info.clone();
-        thread::Builder::new()
+        Builder::new()
             .name("heartbeat_thread".into())
             .spawn(move || {
                 let saved_contact_info = cluster_info.my_contact_info();
@@ -317,7 +710,7 @@ impl RelayerStage {
                         }
                         recv(metrics_tick) -> _ => {
                             datapoint_info!(
-                                METRICS_NAME,
+                                "relayer-heartbeat",
                                 ("fetch_stage_packets_forwarded", packets_forwarded, i64),
                                 ("heartbeats_received", heartbeats_received, i64),
                             );
@@ -336,207 +729,6 @@ impl RelayerStage {
         new_contact_info.tpu = tpu_address;
         new_contact_info.tpu_forwards = tpu_forward_address;
         cluster_info.set_my_contact_info(new_contact_info);
-    }
-
-    fn handle_packet(
-        msg: std::result::Result<SubscribePacketsResult, RecvError>,
-        packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
-        tpu: &SocketAddr,
-        tpu_fwd: &SocketAddr,
-    ) -> Result<(usize, usize, bool)> {
-        let mut is_heartbeat = false;
-        let mut batches_received = 0;
-        let mut packets_received = 0;
-        if let Ok(msg) = msg {
-            let msg = msg?
-                .ok_or_else(|| {
-                    datapoint_info!(METRICS_NAME, ("grpc_stream_disconnected", 1, i64));
-                    RelayerStageError::GrpcStreamDisconnected
-                })?
-                .msg
-                .ok_or_else(|| {
-                    datapoint_info!(METRICS_NAME, ("bad_message", 1, i64));
-                    RelayerStageError::BadMessage
-                })?;
-            match msg {
-                Msg::BatchList(batch_wrapper) => {
-                    batches_received += batch_wrapper.batch_list.len();
-                    let packet_batches = batch_wrapper
-                        .batch_list
-                        .into_iter()
-                        .map(|batch| {
-                            packets_received += batch.packets.len();
-                            PacketBatch::new(
-                                batch
-                                    .packets
-                                    .into_iter()
-                                    .map(proto_packet_to_packet)
-                                    .collect(),
-                            )
-                        })
-                        .collect();
-                    packet_sender.send((packet_batches, None)).map_err(|_| {
-                        datapoint_info!(METRICS_NAME, ("proxy_packet_forward_failed", 1, i64));
-                        RelayerStageError::ChannelError
-                    })?;
-                }
-                // The boolean value of heartbeat is meaningless but needs to be a protobuf type
-                Msg::Heartbeat(_) => {
-                    // always sends because tpu_proxy has its own fail-safe and can't assume
-                    // state
-                    if let Some(tpu_proxy_heartbeat_sender) = tpu_proxy_heartbeat_sender {
-                        tpu_proxy_heartbeat_sender
-                            .send((*tpu, *tpu_fwd))
-                            .map_err(|_| {
-                                datapoint_info!(METRICS_NAME, ("heartbeat_channel_error", 1, i64));
-                                RelayerStageError::HeartbeatChannelError
-                            })?;
-                    }
-                    is_heartbeat = true;
-                }
-            }
-        } else {
-            return Err(RelayerStageError::ChannelError);
-        }
-        Ok((batches_received, packets_received, is_heartbeat))
-    }
-
-    fn handle_bundle(
-        msg: std::result::Result<
-            std::result::Result<Option<SubscribeBundlesResponse>, Status>,
-            RecvError,
-        >,
-        bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
-    ) -> Result<()> {
-        match msg {
-            Ok(msg) => {
-                let response = msg?.ok_or(RelayerStageError::GrpcStreamDisconnected)?;
-                let bundles = response
-                    .bundles
-                    .into_iter()
-                    .map(|b| {
-                        let batch = PacketBatch::new(
-                            b.packets.into_iter().map(proto_packet_to_packet).collect(),
-                        );
-                        // TODO (LB): copy over UUID from Bundle
-                        PacketBundle {
-                            batch,
-                            uuid: Uuid::new_v4(),
-                        }
-                    })
-                    .collect();
-                if let Some(bundle_sender) = bundle_sender {
-                    if let Err(e) = bundle_sender.send(bundles) {
-                        error!("error forwarding bundle: {:?}", e);
-                    }
-                }
-            }
-            Err(_) => return Err(RelayerStageError::ChannelError),
-        }
-        Ok(())
-    }
-
-    fn stream_from_proxy(
-        mut client: BlockingProxyClient,
-        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
-        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
-        tpu: SocketAddr,
-        tpu_fwd: SocketAddr,
-        backoff: &mut BackoffStrategy,
-        exit: &Arc<AtomicBool>,
-    ) -> Result<()> {
-        let packet_receiver = client.start_bi_directional_packet_stream()?;
-
-        // conditionally create an actual bundle receiver if there's a channel to send on
-        let (_stubbed_sender, mut bundle_receiver) = unbounded();
-
-        if bundle_sender.is_some() {
-            bundle_receiver = client.subscribe_bundles()?;
-        }
-
-        let mut heartbeat_received = false;
-        let mut received_first_heartbeat = false;
-        let heartbeat_tick = tick(HEARTBEAT_TIMEOUT_MS);
-
-        let metrics_tick = tick(METRICS_CADENCE_SEC);
-        let mut total_msg_received = 0;
-        let mut total_batches_received = 0;
-        let mut total_packets_received = 0;
-
-        loop {
-            select! {
-                recv(heartbeat_tick) -> _ => {
-                    if exit.load(Ordering::Relaxed) {
-                        return Err(RelayerStageError::HeartbeatError);
-                    }
-
-                    if received_first_heartbeat {
-                        backoff.reset();
-                    } else {
-                        warn!("waiting for first heartbeat");
-                    }
-                    // Only disconnect if previously received heartbeat and then missed
-                    if !heartbeat_received && received_first_heartbeat {
-                        warn!("heartbeat late, disconnecting");
-                        datapoint_info!(
-                            METRICS_NAME,
-                            ("proxy_stream_disconnect", 1, i64)
-                        );
-                        return Err(RelayerStageError::HeartbeatError);
-                    }
-                    heartbeat_received = false;
-                }
-                recv(packet_receiver) -> msg => {
-                    let (batches_received, packets_received, is_heartbeat) =
-                        Self::handle_packet(msg, verified_packet_sender, tpu_proxy_heartbeat_sender, &tpu, &tpu_fwd)?;
-                    heartbeat_received |= is_heartbeat;
-                    if is_heartbeat && !received_first_heartbeat {
-                        received_first_heartbeat = true;
-                    }
-                    total_msg_received += 1;
-                    total_batches_received += batches_received;
-                    total_packets_received += packets_received;
-                }
-                recv(bundle_receiver) -> msg => {
-                    Self::handle_bundle(msg, bundle_sender)?;
-                }
-                recv(metrics_tick) -> _ => {
-                    datapoint_info!(
-                        METRICS_NAME,
-                        ("msg_received", total_msg_received, i64),
-                        ("batches_received", total_batches_received, i64),
-                        ("packets_received", total_packets_received, i64),
-                    );
-                }
-            }
-        }
-    }
-
-    fn connect_and_stream(
-        address: String,
-        auth_interceptor: &AuthenticationInjector,
-        verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        bundle_sender: &Option<Sender<Vec<PacketBundle>>>,
-        tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
-        backoff: &mut BackoffStrategy,
-        exit: &Arc<AtomicBool>,
-    ) -> Result<()> {
-        let mut client = BlockingProxyClient::new(address.clone(), auth_interceptor)?;
-        info!("connected to relayer at {}", address);
-        let (tpu, tpu_fwd) = client.fetch_tpu_config()?;
-
-        Self::stream_from_proxy(
-            client,
-            verified_packet_sender,
-            bundle_sender,
-            tpu_proxy_heartbeat_sender,
-            tpu,
-            tpu_fwd,
-            backoff,
-            exit,
-        )
     }
 
     pub fn join(self) -> thread::Result<()> {

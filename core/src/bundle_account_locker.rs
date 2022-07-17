@@ -30,7 +30,13 @@ pub enum BundleSchedulerError {
     #[error("Bundle locking error uuid: {0}")]
     GetLocksError(Uuid),
     #[error("Bundle contains invalid packets uuid: {0}")]
-    InvalidPackets(Uuid),
+    NoSerializedTransactions(Uuid),
+    #[error("Bundle contains a transaction that failed to serialize: {0}")]
+    FailedToSerializeTransaction(Uuid),
+    #[error("Bundle contains a duplicate transaction: {0}")]
+    DuplicateTransaction(Uuid),
+    #[error("Bundle failed check results: {0}")]
+    FailedCheckResults(Uuid),
 }
 
 pub type Result<T> = std::result::Result<T, BundleSchedulerError>;
@@ -377,14 +383,23 @@ impl BundleAccountLocker {
 
         // TODO: check to see if any accounts are owned by lookup table and write-locked and if so, fail
         // TODO: can also do this on backend? requires reading from Accounts which may be slow
+        if transactions.is_empty() {
+            return Err(BundleSchedulerError::NoSerializedTransactions(bundle.uuid));
+        }
 
-        if transactions.is_empty()
-            || bundle.batch.packets.len() != transactions.len()
-            || unique_signatures.len() != transactions.len()
-            || check_results.iter().any(|r| r.0.is_err())
-        {
-            debug!("check_results: {:?}", check_results);
-            return Err(BundleSchedulerError::InvalidPackets(bundle.uuid));
+        if bundle.batch.packets.len() != transactions.len() {
+            return Err(BundleSchedulerError::FailedToSerializeTransaction(
+                bundle.uuid,
+            ));
+        }
+
+        if unique_signatures.len() != transactions.len() {
+            return Err(BundleSchedulerError::DuplicateTransaction(bundle.uuid));
+        }
+
+        if let Some(failure) = check_results.iter().find(|r| r.0.is_err()) {
+            error!("failed: {:?}", failure);
+            return Err(BundleSchedulerError::FailedCheckResults(bundle.uuid));
         }
 
         Ok(SanitizedBundle {
