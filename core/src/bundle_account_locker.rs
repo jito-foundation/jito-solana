@@ -389,7 +389,7 @@ impl BundleAccountLocker {
                 return Err(BundleSchedulerError::FailedSigverify(bundle.uuid));
             }
         }
-        let packet_indexes = (0..bundle.batch.len()).collect();
+        let packet_indexes: Vec<usize> = (0..bundle.batch.len()).collect();
 
         let deserialized_packets = deserialize_packets(&bundle.batch, &packet_indexes);
 
