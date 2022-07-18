@@ -3,7 +3,7 @@ use {
         bundle::PacketBundle,
         unprocessed_packet_batches::{deserialize_packets, ImmutableDeserializedPacket},
     },
-    solana_perf::{packet::PacketBatch, sigverify::verify_packet},
+    solana_perf::sigverify::verify_packet,
     solana_runtime::{bank::Bank, transaction_error_metrics::TransactionErrorMetrics},
     solana_sdk::{
         bundle::sanitized::SanitizedBundle,
