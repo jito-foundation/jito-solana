@@ -386,13 +386,10 @@ impl BundleAccountLocker {
 
         for p in bundle.batch.iter_mut() {
             if !verify_packet(p, false) {
-                p.meta.set_discard(true);
+                return Err(BundleSchedulerError::FailedSigverify(bundle.uuid));
             }
         }
-        let packet_indexes = Self::generate_packet_indexes(&bundle.batch);
-        if packet_indexes.len() != bundle.batch.len() {
-            return Err(BundleSchedulerError::FailedSigverify(bundle.uuid));
-        }
+        let packet_indexes = (0..bundle.batch.len()).collect();
 
         let deserialized_packets = deserialize_packets(&bundle.batch, &packet_indexes);
 
@@ -443,15 +440,6 @@ impl BundleAccountLocker {
             transactions,
             uuid: bundle.uuid,
         })
-    }
-
-    fn generate_packet_indexes(batch: &PacketBatch) -> Vec<usize> {
-        batch
-            .iter()
-            .enumerate()
-            .filter(|(_, pkt)| !pkt.meta.discard())
-            .map(|(index, _)| index)
-            .collect()
     }
 
     // This function deserializes packets into transactions, computes the blake3 hash of transaction
