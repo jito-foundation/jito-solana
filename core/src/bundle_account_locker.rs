@@ -500,7 +500,7 @@ mod tests {
     use {
         crate::{
             bundle::PacketBundle,
-            bundle_account_locker::BundleAccountLocker,
+            bundle_account_locker::{BundleAccountLocker, MAX_PACKETS_PER_BUNDLE},
             tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
         solana_address_lookup_table_program::instruction::create_lookup_table,
@@ -1057,11 +1057,11 @@ mod tests {
 
         let kp = Keypair::new();
 
-        let packets = (0..NUM_BUNDLES_PRE_LOCK + 1).map(|i| {
+        let packets = (0..MAX_PACKETS_PER_BUNDLE + 1).map(|i| {
             let tx = VersionedTransaction::from(transfer(
                 &mint_keypair,
                 &kp.pubkey(),
-                i,
+                i as u64,
                 genesis_config.hash(),
             ));
             Packet::from_data(None, &tx).unwrap()
