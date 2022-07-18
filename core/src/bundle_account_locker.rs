@@ -3,7 +3,7 @@ use {
         bundle::PacketBundle,
         unprocessed_packet_batches::{deserialize_packets, ImmutableDeserializedPacket},
     },
-    solana_perf::packet::PacketBatch,
+    solana_perf::sigverify::verify_packet,
     solana_runtime::{bank::Bank, transaction_error_metrics::TransactionErrorMetrics},
     solana_sdk::{
         bundle::sanitized::SanitizedBundle,
@@ -25,6 +25,8 @@ use {
     uuid::Uuid,
 };
 
+pub const MAX_PACKETS_PER_BUNDLE: usize = 5;
+
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
 pub enum BundleSchedulerError {
     #[error("Bundle locking error uuid: {0}")]
@@ -37,6 +39,14 @@ pub enum BundleSchedulerError {
     DuplicateTransaction(Uuid),
     #[error("Bundle failed check results: {0}")]
     FailedCheckResults(Uuid),
+    #[error("Bundle contains too many transactions: {0}")]
+    TooManyTransactions(Uuid),
+    #[error("Bundle contains packet marked as discard: {0}")]
+    PacketMarkedAsDiscard(Uuid),
+    #[error("Bundle contains no packets: {0}")]
+    EmptyPackets(Uuid),
+    #[error("Failed sigverify: {0}")]
+    FailedSigverify(Uuid),
 }
 
 pub type Result<T> = std::result::Result<T, BundleSchedulerError>;
@@ -62,6 +72,10 @@ impl LockedBundle {
             read_locks,
             write_locks,
         }
+    }
+
+    pub fn packet_bundle_mut(&mut self) -> &mut PacketBundle {
+        &mut self.packet_bundle
     }
 
     pub fn packet_bundle(&self) -> &PacketBundle {
@@ -188,9 +202,9 @@ impl BundleAccountLocker {
         while !self.unlocked_bundles.is_empty()
             && self.locked_bundles.len() <= self.num_bundles_prelock as usize + 1
         {
-            let bundle = self.unlocked_bundles.pop_front().unwrap();
+            let mut bundle = self.unlocked_bundles.pop_front().unwrap();
             match Self::get_lockable_bundle(
-                &bundle,
+                &mut bundle,
                 bank,
                 &self.blacklisted_accounts,
                 consensus_accounts_cache,
@@ -207,12 +221,12 @@ impl BundleAccountLocker {
 
         while !self.locked_bundles.is_empty() {
             // SAFETY: only runs this loop if it's not empty, unwrap shall always succeed
-            let old_locked_bundle = self.locked_bundles.pop_front().unwrap();
+            let mut old_locked_bundle = self.locked_bundles.pop_front().unwrap();
 
             // NOTE: the bank may have changed between when the transaction when originally
             // locked and this moment in time
             let new_locked_bundle = match Self::get_lockable_bundle(
-                old_locked_bundle.packet_bundle(),
+                old_locked_bundle.packet_bundle_mut(),
                 bank,
                 &self.blacklisted_accounts,
                 consensus_accounts_cache,
@@ -241,7 +255,7 @@ impl BundleAccountLocker {
     }
 
     fn get_lockable_bundle(
-        packet_bundle: &PacketBundle,
+        packet_bundle: &mut PacketBundle,
         bank: &Arc<Bank>,
         blacklisted_accounts: &HashSet<Pubkey>,
         consensus_accounts_cache: &HashSet<Pubkey>,
@@ -344,13 +358,39 @@ impl BundleAccountLocker {
         debug!("unlock write locks: {:?}", self.write_locks);
     }
 
+    /// An invalid bundle contains one of the following:
+    ///  No packets.
+    ///  Too many packets.
+    ///  Packets marked for discard (not sure why someone would do this)
+    ///  One of the packets fails signature verification.
+    ///  Mentions an account in consensus or blacklisted accounts.
+    ///  Contains a packet that failed to serialize to a transaction.
+    ///  Contains duplicate transactions within the same bundle.
+    ///  Contains a transaction that was already processed or one with an invalid blockhash.
     fn get_sanitized_bundle(
-        bundle: &PacketBundle,
+        bundle: &mut PacketBundle,
         bank: &Arc<Bank>,
         blacklisted_accounts: &HashSet<Pubkey>,
         consensus_accounts_cache: &HashSet<Pubkey>,
     ) -> Result<SanitizedBundle> {
-        let packet_indexes = Self::generate_packet_indexes(&bundle.batch);
+        if bundle.batch.is_empty() {
+            return Err(BundleSchedulerError::EmptyPackets(bundle.uuid));
+        }
+        if bundle.batch.len() > MAX_PACKETS_PER_BUNDLE {
+            return Err(BundleSchedulerError::TooManyTransactions(bundle.uuid));
+        }
+        // Not sure why a searcher would mark a packet for discard, but worth checking
+        if bundle.batch.iter().any(|p| p.meta.discard()) {
+            return Err(BundleSchedulerError::PacketMarkedAsDiscard(bundle.uuid));
+        }
+
+        for p in bundle.batch.iter_mut() {
+            if !verify_packet(p, false) {
+                return Err(BundleSchedulerError::FailedSigverify(bundle.uuid));
+            }
+        }
+        let packet_indexes: Vec<usize> = (0..bundle.batch.len()).collect();
+
         let deserialized_packets = deserialize_packets(&bundle.batch, &packet_indexes);
 
         let transactions: Vec<SanitizedTransaction> = deserialized_packets
@@ -367,9 +407,20 @@ impl BundleAccountLocker {
             })
             .collect();
 
-        // check for duplicate transactions
+        if transactions.is_empty() {
+            return Err(BundleSchedulerError::NoSerializedTransactions(bundle.uuid));
+        }
+        if bundle.batch.len() != transactions.len() {
+            return Err(BundleSchedulerError::FailedToSerializeTransaction(
+                bundle.uuid,
+            ));
+        }
+
         let unique_signatures: HashSet<&Signature, RandomState> =
             HashSet::from_iter(transactions.iter().map(|tx| tx.signature()));
+        if unique_signatures.len() != transactions.len() {
+            return Err(BundleSchedulerError::DuplicateTransaction(bundle.uuid));
+        }
 
         // checks for already-processed transaction or expired/invalid blockhash
         let lock_results: Vec<_> = repeat(Ok(())).take(transactions.len()).collect();
@@ -380,23 +431,6 @@ impl BundleAccountLocker {
             MAX_PROCESSING_AGE,
             &mut metrics,
         );
-
-        // TODO: check to see if any accounts are owned by lookup table and write-locked and if so, fail
-        // TODO: can also do this on backend? requires reading from Accounts which may be slow
-        if transactions.is_empty() {
-            return Err(BundleSchedulerError::NoSerializedTransactions(bundle.uuid));
-        }
-
-        if bundle.batch.packets.len() != transactions.len() {
-            return Err(BundleSchedulerError::FailedToSerializeTransaction(
-                bundle.uuid,
-            ));
-        }
-
-        if unique_signatures.len() != transactions.len() {
-            return Err(BundleSchedulerError::DuplicateTransaction(bundle.uuid));
-        }
-
         if let Some(failure) = check_results.iter().find(|r| r.0.is_err()) {
             error!("failed: {:?}", failure);
             return Err(BundleSchedulerError::FailedCheckResults(bundle.uuid));
@@ -406,15 +440,6 @@ impl BundleAccountLocker {
             transactions,
             uuid: bundle.uuid,
         })
-    }
-
-    fn generate_packet_indexes(batch: &PacketBatch) -> Vec<usize> {
-        batch
-            .iter()
-            .enumerate()
-            .filter(|(_, pkt)| !pkt.meta.discard())
-            .map(|(index, _)| index)
-            .collect()
     }
 
     // This function deserializes packets into transactions, computes the blake3 hash of transaction
@@ -463,7 +488,7 @@ mod tests {
     use {
         crate::{
             bundle::PacketBundle,
-            bundle_account_locker::BundleAccountLocker,
+            bundle_account_locker::{BundleAccountLocker, MAX_PACKETS_PER_BUNDLE},
             tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
         solana_address_lookup_table_program::instruction::create_lookup_table,
@@ -984,15 +1009,138 @@ mod tests {
         assert!(bundle_account_locker.write_locks().is_empty());
     }
 
-    // #[test]
-    // fn test_vote_only_mode_fails_to_pop_and_unlocks_account() {
-    //     // shows that if we send two bundles in then go into vote-only mode, no bundles
-    //     // will be popped and locked accounts will be empty
-    // }
-    //
-    // #[test]
-    // fn test_revert_unlocks_accounts() {}
-    //
-    // #[test]
-    // fn test_failed_sanitized_bundle_fails_pop() {}
+    #[test]
+    fn test_fails_to_pop_empty_bundle() {
+        solana_logger::setup();
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![]),
+            uuid: Uuid::new_v4(),
+        };
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // fails to pop because empty bundle
+        assert!(bundle_account_locker
+            .pop(&bank, &HashSet::default())
+            .is_none());
+    }
+
+    #[test]
+    fn test_fails_to_pop_too_many_packets() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+
+        let kp = Keypair::new();
+
+        let packets = (0..MAX_PACKETS_PER_BUNDLE + 1).map(|i| {
+            let tx = VersionedTransaction::from(transfer(
+                &mint_keypair,
+                &kp.pubkey(),
+                i as u64,
+                genesis_config.hash(),
+            ));
+            Packet::from_data(None, &tx).unwrap()
+        });
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(packets.collect()),
+            uuid: Uuid::new_v4(),
+        };
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // fails to pop because too many packets in a bundle
+        assert!(bundle_account_locker
+            .pop(&bank, &HashSet::default())
+            .is_none());
+    }
+
+    #[test]
+    fn test_fails_to_pop_packet_marked_as_discard() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+
+        let kp = Keypair::new();
+
+        let tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let mut packet = Packet::from_data(None, &tx).unwrap();
+        packet.meta.set_discard(true);
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        };
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // fails to pop because one of the packets is marked as discard
+        assert!(bundle_account_locker
+            .pop(&bank, &HashSet::default())
+            .is_none());
+    }
+
+    #[test]
+    fn test_fails_to_pop_bad_sigverify() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+        let kp = Keypair::new();
+
+        let mut tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+
+        let _ = tx.signatures.pop();
+
+        let bad_kp = Keypair::new();
+        let serialized = tx.message.serialize();
+        let bad_sig = bad_kp.sign_message(&serialized);
+        tx.signatures.push(bad_sig);
+
+        let packet = Packet::from_data(None, &tx).unwrap();
+
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet]),
+            uuid: Uuid::new_v4(),
+        };
+        bundle_account_locker.push(vec![packet_bundle]);
+        assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // fails to pop because one of the packets is marked as discard
+        assert!(bundle_account_locker
+            .pop(&bank, &HashSet::default())
+            .is_none());
+    }
 }
