@@ -717,10 +717,7 @@ impl BundleStage {
         } = bank_start;
 
         let maybe_init_tip_payment_config_tx =
-            if bank
-                .get_account(&tip_manager.tip_payment_config_pubkey())
-                .is_none()
-            {
+            if tip_manager.should_initialize_tip_payment_program(bank) {
                 info!("initializing tip-payment program config");
                 Some(tip_manager.initialize_tip_payment_program_tx(
                     bank.last_blockhash(),
@@ -730,18 +727,16 @@ impl BundleStage {
                 None
             };
 
-        let maybe_init_tip_distro_config_tx = if bank
-            .get_account(&tip_manager.tip_distribution_config_pubkey())
-            .is_none()
-        {
-            info!("initializing tip-distribution program config");
-            Some(tip_manager.initialize_tip_distribution_config_tx(
-                bank.last_blockhash(),
-                &cluster_info.keypair(),
-            ))
-        } else {
-            None
-        };
+        let maybe_init_tip_distro_config_tx =
+            if tip_manager.should_initialize_tip_distribution_config(bank) {
+                info!("initializing tip-distribution program config");
+                Some(tip_manager.initialize_tip_distribution_config_tx(
+                    bank.last_blockhash(),
+                    &cluster_info.keypair(),
+                ))
+            } else {
+                None
+            };
 
         let maybe_init_tip_distro_account_tx = if tip_manager
             .should_init_tip_distribution_account(bank)

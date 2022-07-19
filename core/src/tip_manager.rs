@@ -267,6 +267,22 @@ impl TipManager {
         .0
     }
 
+    /// Returns whether or not the tip-payment program should be initialized.
+    pub fn should_initialize_tip_payment_program(&self, bank: &Arc<Bank>) -> bool {
+        match bank.get_account(&self.tip_payment_config_pubkey()) {
+            None => true,
+            Some(account) => account.owner() != &self.tip_payment_program_info.program_id,
+        }
+    }
+
+    /// Returns whether or not the tip-distribution program's [Config] PDA should be initialized.
+    pub fn should_initialize_tip_distribution_config(&self, bank: &Arc<Bank>) -> bool {
+        match bank.get_account(&self.tip_distribution_config_pubkey()) {
+            None => true,
+            Some(account) => account.owner() != &self.tip_distribution_program_info.program_id,
+        }
+    }
+
     /// Returns whether or not the current [TipDistributionAccount] PDA should be initialized for this epoch.
     pub fn should_init_tip_distribution_account(&self, bank: &Arc<Bank>) -> bool {
         let pda = derive_tip_distribution_account_address(
