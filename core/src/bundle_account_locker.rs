@@ -266,8 +266,7 @@ impl BundleAccountLocker {
             blacklisted_accounts,
             consensus_accounts_cache,
         )?;
-        let (read_locks, write_locks) =
-            Self::get_read_write_locks(&sanitized_bundle, &bank.feature_set)?;
+        let (read_locks, write_locks) = Self::get_read_write_locks(&sanitized_bundle)?;
 
         Ok(LockedBundle::new(
             packet_bundle.clone(),
@@ -293,12 +292,11 @@ impl BundleAccountLocker {
     /// Each lock type contains a HashMap which maps Pubkey to number of locks held
     fn get_read_write_locks(
         bundle: &SanitizedBundle,
-        feature_set: &FeatureSet,
     ) -> Result<(HashMap<Pubkey, u64>, HashMap<Pubkey, u64>)> {
         let transaction_locks: Vec<TransactionAccountLocks> = bundle
             .transactions
             .iter()
-            .filter_map(|tx| tx.get_account_locks(feature_set).ok())
+            .filter_map(|tx| tx.get_account_locks().ok())
             .collect();
 
         if transaction_locks.len() != bundle.transactions.len() {

@@ -1978,6 +1978,7 @@ impl AccountsDb {
             #[cfg(test)]
             load_limit: AtomicU64::default(),
             is_bank_drop_callback_enabled: AtomicBool::default(),
+            startup_verification_complete,
             remove_unrooted_slots_synchronization: RemoveUnrootedSlotsSynchronization::default(),
             shrink_ratio: AccountShrinkThreshold::default(),
             dirty_stores: DashMap::default(),
@@ -8292,7 +8293,6 @@ impl AccountsDb {
         limit_load_slot_count_from_snapshot: Option<usize>,
         verify: bool,
         genesis_config: &GenesisConfig,
-        accounts_db_skip_shrink: bool,
     ) -> IndexGenerationInfo {
         let mut slots = self.storage.all_slots();
         #[allow(clippy::stable_sort_primitive)]

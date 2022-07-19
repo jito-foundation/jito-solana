@@ -44,9 +44,7 @@ use {
         message::Message,
         pubkey::Pubkey,
         signature::Signature,
-        transaction::{
-            self, uses_durable_nonce, Transaction, TransactionError, VersionedTransaction,
-        },
+        transaction::{self, uses_durable_nonce, Transaction, VersionedTransaction},
     },
     solana_transaction_status::{
         EncodedConfirmedBlock, EncodedConfirmedTransactionWithStatusMeta, TransactionStatus,

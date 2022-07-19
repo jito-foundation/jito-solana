@@ -9,7 +9,7 @@ use {
         leader_slot_banking_stage_timing_metrics::{
             LeaderExecuteAndCommitTimings, RecordTransactionsTimings,
         },
-        qos_service::{CommitTransactionDetails, QosService},
+        qos_service::QosService,
         sigverify::SigverifyTracerPacketStats,
         tracer_packet_stats::TracerPacketStats,
         unprocessed_packet_batches::{self, *},

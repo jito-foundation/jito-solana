@@ -808,9 +808,6 @@ fn verify_and_unarchive_snapshots(
         incremental_snapshot_archive_info,
     )?;
 
-    let accounts_db_skip_shrink =
-        accounts_db_skip_shrink || !full_snapshot_archive_info.is_remote();
-
     let parallel_divisions = std::cmp::min(
         PARALLEL_UNTAR_READERS_DEFAULT,
         std::cmp::max(1, num_cpus::get() / 4),
@@ -941,7 +938,6 @@ pub fn bank_from_snapshot_archives(
         verify_index,
         accounts_db_config,
         accounts_update_notifier,
-        accounts_db_skip_shrink,
     )?;
     measure_rebuild.stop();
     info!("{}", measure_rebuild);
@@ -1683,7 +1679,6 @@ fn rebuild_bank_from_snapshots(
     verify_index: bool,
     accounts_db_config: Option<AccountsDbConfig>,
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
-    accounts_db_skip_shrink: bool,
 ) -> Result<Bank> {
     let (full_snapshot_version, full_snapshot_root_paths) =
         verify_unpacked_snapshots_dir_and_version(
@@ -1732,7 +1727,6 @@ fn rebuild_bank_from_snapshots(
                     verify_index,
                     accounts_db_config,
                     accounts_update_notifier,
-                    accounts_db_skip_shrink,
                 ),
             }?,
         )

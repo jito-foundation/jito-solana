@@ -1,6 +1,6 @@
 use {
     crate::{
-        account_overrides::{AccountOverrides, AccountWithRentInfo},
+        account_overrides::AccountOverrides,
         account_rent_state::{check_rent_state_with_account, RentState},
         accounts_db::{
             AccountShrinkThreshold, AccountsAddRootTiming, AccountsDb, AccountsDbConfig,
@@ -283,24 +283,7 @@ impl Accounts {
                         let (mut account, rent) = if let Some(account_override) =
                             account_overrides.and_then(|overrides| overrides.get(key))
                         {
-                            match account_override {
-                                AccountWithRentInfo::Zero(data) => (data.clone(), 0),
-                                AccountWithRentInfo::SubtractRent(mut data) => {
-                                    let rent_due = if message.is_writable(i) {
-                                        let rent_due = rent_collector
-                                            .collect_from_existing_account(
-                                                key,
-                                                &mut data,
-                                                self.accounts_db.filler_account_suffix.as_ref(),
-                                            )
-                                            .rent_amount;
-                                        rent_due
-                                    } else {
-                                        0
-                                    };
-                                    (data.clone(), rent_due)
-                                }
-                            }
+                            (account_override.clone(), 0)
                         } else {
                             self.accounts_db
                                 .load_with_fixed_root(ancestors, key)
@@ -1138,7 +1121,7 @@ impl Accounts {
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
     ) -> Vec<Result<()>> {
         let tx_account_locks_results: Vec<Result<_>> =
-            txs.map(|tx| tx.get_account_locks(feature_set)).collect();
+            txs.map(|tx| tx.get_account_locks()).collect();
         self.lock_accounts_inner(
             tx_account_locks_results,
             &HashSet::default(),
@@ -1149,11 +1132,10 @@ impl Accounts {
     pub fn lock_accounts_sequential_with_results<'a>(
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
-        feature_set: &FeatureSet,
         account_locks_override: Option<Mutex<AccountLocks>>,
     ) -> Vec<Result<()>> {
         let tx_account_locks_results: Vec<Result<_>> =
-            txs.map(|tx| tx.get_account_locks(feature_set)).collect();
+            txs.map(|tx| tx.get_account_locks()).collect();
         self.lock_accounts_sequential_inner(tx_account_locks_results, account_locks_override)
     }
 

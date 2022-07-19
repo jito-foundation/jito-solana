@@ -119,6 +119,8 @@ while [[ -n $1 ]]; do
       args+=("$1" "$2")
       shift 2
     elif [[ $1 == --shred-receiver-address ]]; then
+      args+=("$1" "$2")
+      shift 2
     elif [[ $1 = --log-messages-bytes-limit ]]; then
       args+=("$1" "$2")
       shift 2
@@ -127,10 +129,6 @@ while [[ -n $1 ]]; do
       $program --help
       exit 1
     fi
-  else
-    echo "Unknown argument: $1"
-    $program --help
-    exit 1
   fi
 done
 

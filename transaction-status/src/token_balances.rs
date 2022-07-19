@@ -67,8 +67,8 @@ pub fn collect_balances_with_cache(
         let mut transaction_balances: Vec<u64> = vec![];
         for account_key in transaction.message().account_keys().iter() {
             let balance = {
-                if let Some(account_override) = account_overrides
-                    .and_then(|overrides| overrides.get_ignore_rent_type(account_key))
+                if let Some(account_override) =
+                    account_overrides.and_then(|overrides| overrides.get(account_key))
                 {
                     account_override.lamports()
                 } else {
@@ -152,7 +152,7 @@ fn collect_token_balance_from_account(
 ) -> Option<TokenBalanceData> {
     let account = {
         if let Some(account_override) =
-            account_overrides.and_then(|overrides| overrides.get_ignore_rent_type(account_id))
+            account_overrides.and_then(|overrides| overrides.get(account_id))
         {
             Some(account_override.clone())
         } else {

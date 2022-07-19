@@ -48,7 +48,7 @@ use {
     solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Keypair},
     std::{
         collections::HashSet,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, RwLock},
         thread::{self, JoinHandle},
     },

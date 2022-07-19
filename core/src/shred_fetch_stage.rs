@@ -28,7 +28,7 @@ impl ShredFetchStage {
     // updates packets received on a channel and sends them on another channel
     fn modify_packets(
         recvr: PacketBatchReceiver,
-        sendr: Sender<Vec<PacketBatch>>,
+        sendr: Sender<PacketBatch>,
         bank_forks: &RwLock<BankForks>,
         shred_version: u16,
         name: &'static str,
@@ -132,7 +132,7 @@ impl ShredFetchStage {
         sockets: Vec<Arc<UdpSocket>>,
         forward_sockets: Vec<Arc<UdpSocket>>,
         repair_socket: Arc<UdpSocket>,
-        sender: Sender<Vec<PacketBatch>>,
+        sender: Sender<PacketBatch>,
         shred_version: u16,
         bank_forks: Arc<RwLock<BankForks>>,
         exit: &Arc<AtomicBool>,

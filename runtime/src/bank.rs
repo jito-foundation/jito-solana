@@ -4005,7 +4005,6 @@ impl Bank {
         let lock_results = self.rc.accounts.lock_accounts_with_results(
             transactions.iter(),
             transaction_results,
-            &self.feature_set,
             additional_read_locks,
             additional_write_locks,
         );
@@ -4021,11 +4020,10 @@ impl Bank {
         account_locks_override: Option<Mutex<AccountLocks>>,
     ) -> TransactionBatch<'a, 'b> {
         // this lock_results could be: Ok, AccountInUse, BundleNotContinuous, AccountLoadedTwice, or TooManyAccountLocks
-        let lock_results = self.rc.accounts.lock_accounts_sequential_with_results(
-            transactions.iter(),
-            &self.feature_set,
-            account_locks_override,
-        );
+        let lock_results = self
+            .rc
+            .accounts
+            .lock_accounts_sequential_with_results(transactions.iter(), account_locks_override);
         TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
     }
 
@@ -4139,9 +4137,7 @@ impl Bank {
                     let mut pre_accounts = Vec::with_capacity(accounts.len());
 
                     for pubkey in accounts {
-                        let data = if let Some(data) =
-                            account_overrides.get_ignore_rent_type(pubkey).cloned()
-                        {
+                        let data = if let Some(data) = account_overrides.get(pubkey).cloned() {
                             Ok(data)
                         } else {
                             self.get_account(pubkey)
@@ -4176,6 +4172,7 @@ impl Bank {
                 true,
                 &mut timings,
                 Some(&account_overrides),
+                None,
             );
 
             // Load account data for successful txs in current batch and store them to the overrides/cache.
@@ -4187,7 +4184,7 @@ impl Bank {
                 )
                 .into_iter()
                 .map(|(pubkey, data)| {
-                    account_overrides.put(*pubkey, data.clone());
+                    account_overrides.set_account(pubkey, Some(data.clone()));
                     (pubkey, data)
                 })
                 .collect::<HashMap<&Pubkey, &AccountSharedData>>();
@@ -4205,7 +4202,7 @@ impl Bank {
                             if let Some(data) = post_loaded_accounts.get(pubkey).cloned() {
                                 Some(data.clone())
                             } else {
-                                account_overrides.get_ignore_rent_type(pubkey).cloned()
+                                account_overrides.get(pubkey).cloned()
                             };
                         if let Some(data) = maybe_data {
                             post_accounts.push(AccountData {
@@ -4408,6 +4405,11 @@ impl Bank {
 
     pub fn set_shrink_paths(&self, paths: Vec<PathBuf>) {
         self.rc.accounts.accounts_db.set_shrink_paths(paths);
+    }
+
+    pub fn separate_nonce_from_blockhash(&self) -> bool {
+        self.feature_set
+            .is_active(&feature_set::separate_nonce_from_blockhash::id())
     }
 
     fn check_age<'a>(
@@ -5404,8 +5406,7 @@ impl Bank {
         let (blockhash, lamports_per_signature) = self.last_blockhash_and_lamports_per_signature();
         let durable_nonce = {
             let separate_nonce_from_blockhash = self.separate_nonce_from_blockhash();
-            let durable_nonce =
-                DurableNonce::from_blockhash(&blockhash, separate_nonce_from_blockhash);
+            let durable_nonce = DurableNonce::from_blockhash(&blockhash);
             (durable_nonce, separate_nonce_from_blockhash)
         };
         Accounts::collect_accounts_to_store(
@@ -5413,7 +5414,7 @@ impl Bank {
             res,
             loaded,
             &self.rent_collector,
-            &durable_nonce,
+            &(durable_nonce.0),
             lamports_per_signature,
             self.leave_nonce_on_success(),
         )
@@ -7298,15 +7299,6 @@ impl Bank {
             .check_complete()
     }
 
-    /// return true if bg hash verification is complete
-    /// return false if bg hash verification has not completed yet
-    /// if hash verification failed, a panic will occur
-    pub fn has_initial_accounts_hash_verification_completed(&self) -> bool {
-        // this will be live shortly
-        // for now, this check occurs at startup, so it must always be true
-        true
-    }
-
     pub fn get_snapshot_storages(&self, base_slot: Option<Slot>) -> SnapshotStorages {
         self.rc
             .accounts
@@ -7863,6 +7855,11 @@ impl Bank {
     pub fn credits_auto_rewind(&self) -> bool {
         self.feature_set
             .is_active(&feature_set::credits_auto_rewind::id())
+    }
+
+    pub fn leave_nonce_on_success(&self) -> bool {
+        self.feature_set
+            .is_active(&feature_set::leave_nonce_on_success::id())
     }
 
     pub fn send_to_tpu_vote_port_enabled(&self) -> bool {

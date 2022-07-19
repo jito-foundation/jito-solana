@@ -101,39 +101,8 @@ impl WindowServiceMetrics {
                 i64
             ),
         );
-    }
-}
-
-#[derive(Default)]
-struct ReceiveWindowStats {
-    num_iters: usize,
-    num_packets: usize,
-    num_repairs: usize,
-    num_shreds: usize, // num_discards: num_packets - num_shreds
-    elapsed: Duration, // excludes waiting time on the receiver channel.
-    addrs: HashMap</*source:*/ SocketAddr, /*num packets:*/ usize>,
-    since: Option<Instant>,
-}
-
-impl ReceiveWindowStats {
-    fn maybe_submit(&mut self) {
-        const MAX_NUM_ADDRS: usize = 5;
-        const SUBMIT_CADENCE: Duration = Duration::from_secs(2);
-        let elapsed = self.since.as_ref().map(Instant::elapsed);
-        if elapsed.unwrap_or(Duration::MAX) < SUBMIT_CADENCE {
-            return;
-        }
-        datapoint_info!(
-            "receive_window_stats",
-            ("num_iters", self.num_iters, i64),
-            ("num_packets", self.num_packets, i64),
-            ("num_shreds", self.num_shreds, i64),
-            ("num_repairs", self.num_repairs, i64),
-            ("elapsed_micros", self.elapsed.as_micros(), i64),
-        );
 
         let mut addrs: Vec<_> = self.addrs.iter().collect();
-
         let reverse_count = |(_addr, count): &_| Reverse(*count);
         if addrs.len() > MAX_NUM_ADDRS {
             addrs.select_nth_unstable_by_key(MAX_NUM_ADDRS, reverse_count);
@@ -145,11 +114,6 @@ impl ReceiveWindowStats {
             self.addrs.len(),
             addrs
         );
-
-        *self = Self {
-            since: Some(Instant::now()),
-            ..Self::default()
-        };
     }
 
     fn record_error(&mut self, err: &Error) {

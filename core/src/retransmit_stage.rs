@@ -305,7 +305,7 @@ fn retransmit_shred(
     shred_receiver_addr: Option<SocketAddr>,
 ) -> (/*root_distance:*/ usize, /*num_nodes:*/ usize) {
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) = cluster_nodes.get_retransmit_addrs(
+    let (root_distance, addrs) = cluster_nodes.maybe_extend_retransmit_addrs(
         slot_leader,
         key,
         root_bank,
@@ -461,69 +461,6 @@ impl AddAssign for RetransmitSlotStats {
     }
 }
 
-impl RetransmitStats {
-    const SLOT_STATS_CACHE_CAPACITY: usize = 750;
-
-    fn new(now: Instant) -> Self {
-        Self {
-            since: now,
-            num_nodes: AtomicUsize::default(),
-            num_addrs_failed: AtomicUsize::default(),
-            num_shreds: 0usize,
-            num_shreds_skipped: 0usize,
-            total_batches: 0usize,
-            num_small_batches: 0usize,
-            total_time: 0u64,
-            epoch_fetch: 0u64,
-            epoch_cache_update: 0u64,
-            retransmit_total: AtomicU64::default(),
-            compute_turbine_peers_total: AtomicU64::default(),
-            // Cache capacity is manually enforced.
-            slot_stats: LruCache::<Slot, RetransmitSlotStats>::unbounded(),
-            unknown_shred_slot_leader: 0usize,
-        }
-    }
-
-    fn upsert_slot_stats<I>(
-        &mut self,
-        feed: I,
-        root: Slot,
-        rpc_subscriptions: Option<&RpcSubscriptions>,
-    ) where
-        I: IntoIterator<Item = (Slot, RetransmitSlotStats)>,
-    {
-        for (slot, slot_stats) in feed {
-            match self.slot_stats.get_mut(&slot) {
-                None => {
-                    if let Some(rpc_subscriptions) = rpc_subscriptions {
-                        if slot > root {
-                            let slot_update = SlotUpdate::FirstShredReceived {
-                                slot,
-                                timestamp: slot_stats.outset,
-                            };
-                            rpc_subscriptions.notify_slot_update(slot_update);
-                            datapoint_info!("retransmit-first-shred", ("slot", slot, i64));
-                        }
-                    }
-                    self.slot_stats.put(slot, slot_stats);
-                }
-                Some(entry) => {
-                    *entry += slot_stats;
-                }
-            }
-        }
-        while self.slot_stats.len() > Self::SLOT_STATS_CACHE_CAPACITY {
-            // Pop and submit metrics for the slot which was updated least
-            // recently. At this point the node most likely will not receive
-            // and retransmit any more shreds for this slot.
-            match self.slot_stats.pop_lru() {
-                Some((slot, stats)) => stats.submit(slot),
-                None => break,
-            }
-        }
-    }
-}
-
 impl RetransmitSlotStats {
     fn record(&mut self, now: u64, root_distance: usize, num_nodes: usize) {
         self.outset = if self.outset == 0 {
@@ -635,57 +572,6 @@ impl RetransmitStats {
                 None => break,
             }
         }
-    }
-}
-
-impl RetransmitSlotStats {
-    fn record(&mut self, now: u64, root_distance: usize, num_nodes: usize) {
-        self.outset = if self.outset == 0 {
-            now
-        } else {
-            self.outset.min(now)
-        };
-        self.asof = self.asof.max(now);
-        self.num_shreds_received[root_distance] += 1;
-        self.num_shreds_sent[root_distance] += num_nodes;
-    }
-
-    fn merge(mut acc: HashMap<Slot, Self>, other: HashMap<Slot, Self>) -> HashMap<Slot, Self> {
-        if acc.len() < other.len() {
-            return Self::merge(other, acc);
-        }
-        for (key, value) in other {
-            *acc.entry(key).or_default() += value;
-        }
-        acc
-    }
-
-    fn submit(&self, slot: Slot) {
-        let num_shreds: usize = self.num_shreds_received.iter().sum();
-        let num_nodes: usize = self.num_shreds_sent.iter().sum();
-        let elapsed_millis = self.asof.saturating_sub(self.outset);
-        datapoint_info!(
-            "retransmit-stage-slot-stats",
-            ("slot", slot, i64),
-            ("outset_timestamp", self.outset, i64),
-            ("elapsed_millis", elapsed_millis, i64),
-            ("num_shreds", num_shreds, i64),
-            ("num_nodes", num_nodes, i64),
-            ("num_shreds_received_root", self.num_shreds_received[0], i64),
-            (
-                "num_shreds_received_1st_layer",
-                self.num_shreds_received[1],
-                i64
-            ),
-            (
-                "num_shreds_received_2nd_layer",
-                self.num_shreds_received[2],
-                i64
-            ),
-            ("num_shreds_sent_root", self.num_shreds_sent[0], i64),
-            ("num_shreds_sent_1st_layer", self.num_shreds_sent[1], i64),
-            ("num_shreds_sent_2nd_layer", self.num_shreds_sent[2], i64),
-        );
     }
 }
 

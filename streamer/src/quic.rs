@@ -14,7 +14,6 @@ use {
         signature::Keypair,
     },
     std::{
-        error::Error,
         net::{IpAddr, UdpSocket},
         sync::{
             atomic::{AtomicBool, AtomicUsize, Ordering},

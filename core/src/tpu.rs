@@ -271,10 +271,11 @@ impl Tpu {
             transaction_status_sender.clone(),
             replay_vote_sender.clone(),
             cost_model.clone(),
+            log_messages_bytes_limit,
             connection_cache.clone(),
+            bank_forks.clone(),
             tip_accounts,
             bundle_account_locker.clone(),
-            bank_forks.clone(),
         );
 
         let bundle_stage = BundleStage::new(

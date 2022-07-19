@@ -226,44 +226,6 @@ impl ShredSigVerifyStats {
     }
 }
 
-// Returns pubkey of leaders for shred slots refrenced in the packets.
-// Marks packets as discard if:
-//   - fails to deserialize the shred slot.
-//   - slot leader is unknown.
-//   - slot leader is the node itself (circular transmission).
-fn get_slot_leaders(
-    self_pubkey: &Pubkey,
-    batches: &mut [PacketBatch],
-    leader_schedule_cache: &LeaderScheduleCache,
-    bank: &Bank,
-) -> HashMap<Slot, Option<Pubkey>> {
-    let mut leaders = HashMap::<Slot, Option<Pubkey>>::new();
-    for batch in batches {
-        for packet in batch.iter_mut() {
-            if packet.meta.discard() {
-                continue;
-            }
-            let shred = shred::layout::get_shred(packet);
-            let slot = match shred.and_then(shred::layout::get_slot) {
-                None => {
-                    packet.meta.set_discard(true);
-                    continue;
-                }
-                Some(slot) => slot,
-            };
-            let leader = leaders.entry(slot).or_insert_with(|| {
-                let leader = leader_schedule_cache.slot_leader_at(slot, Some(bank))?;
-                // Discard the shred if the slot leader is the node itself.
-                (&leader != self_pubkey).then(|| leader)
-            });
-            if leader.is_none() {
-                packet.meta.set_discard(true);
-            }
-        }
-    }
-    leaders
-}
-
 #[cfg(test)]
 mod tests {
     use {

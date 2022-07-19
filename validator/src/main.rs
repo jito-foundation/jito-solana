@@ -1825,6 +1825,8 @@ pub fn main() {
                 .value_name("SHRED_RECEIVER_ADDRESS")
                 .takes_value(true)
                 .help("Shred receiver listening address")
+        )
+        .arg(
             Arg::with_name("log_messages_bytes_limit")
                 .long("log-messages-bytes-limit")
                 .takes_value(true)
