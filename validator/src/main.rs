@@ -1825,6 +1825,12 @@ pub fn main() {
                 .value_name("SHRED_RECEIVER_ADDRESS")
                 .takes_value(true)
                 .help("Shred receiver listening address")
+            Arg::with_name("log_messages_bytes_limit")
+                .long("log-messages-bytes-limit")
+                .takes_value(true)
+                .validator(is_parsable::<usize>)
+                .value_name("BYTES")
+                .help("Maximum number of bytes written to the program log before truncation")
         )
         .after_help("The default subcommand is run")
         .subcommand(
@@ -2698,6 +2704,7 @@ pub fn main() {
         accounts_shrink_ratio,
         runtime_config: RuntimeConfig {
             bpf_jit: !matches.is_present("no_bpf_jit"),
+            log_messages_bytes_limit: value_t!(matches, "log_messages_bytes_limit", usize).ok(),
             ..RuntimeConfig::default()
         },
         enable_quic_servers,

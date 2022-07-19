@@ -3,17 +3,10 @@
 
 use {
     crate::{
-        ancestor_hashes_service::AncestorHashesReplayUpdateReceiver,
-        cluster_info_vote_listener::VerifiedVoteReceiver,
         cluster_nodes::{ClusterNodes, ClusterNodesCache},
-        cluster_slots::ClusterSlots,
-        cluster_slots_service::{ClusterSlotsService, ClusterSlotsUpdateReceiver},
-        completed_data_sets_service::CompletedDataSetsSender,
         packet_hasher::PacketHasher,
-        repair_service::{DuplicateSlotsResetSender, RepairInfo},
-        window_service::WindowService,
     },
-    crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender},
+    crossbeam_channel::{Receiver, RecvTimeoutError},
     itertools::{izip, Itertools},
     lru::LruCache,
     rayon::{prelude::*, ThreadPool, ThreadPoolBuilder},
@@ -23,27 +16,25 @@ use {
         contact_info::ContactInfo,
     },
     solana_ledger::{
-        blockstore::Blockstore,
         leader_schedule_cache::LeaderScheduleCache,
         shred::{self, ShredId},
     },
     solana_measure::measure::Measure,
-    solana_perf::packet::PacketBatch,
     solana_rayon_threadlimit::get_thread_count,
     solana_rpc::{max_slots::MaxSlots, rpc_subscriptions::RpcSubscriptions},
     solana_runtime::{bank::Bank, bank_forks::BankForks},
-    solana_sdk::{clock::Slot, epoch_schedule::EpochSchedule, pubkey::Pubkey, timing::timestamp},
+    solana_sdk::{clock::Slot, pubkey::Pubkey, timing::timestamp},
     solana_streamer::{
         sendmmsg::{multi_target_send, SendPktsError},
         socket::SocketAddrSpace,
     },
     std::{
-        collections::{HashMap, HashSet},
+        collections::HashMap,
         iter::repeat,
         net::{SocketAddr, UdpSocket},
         ops::AddAssign,
         sync::{
-            atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+            atomic::{AtomicU64, AtomicUsize, Ordering},
             Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
@@ -314,7 +305,7 @@ fn retransmit_shred(
     shred_receiver_addr: Option<SocketAddr>,
 ) -> (/*root_distance:*/ usize, /*num_nodes:*/ usize) {
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) = cluster_nodes.maybe_extend_retransmit_addrs(
+    let (root_distance, addrs) = cluster_nodes.get_retransmit_addrs(
         slot_leader,
         key,
         root_bank,
@@ -388,125 +379,64 @@ pub fn retransmitter(
         .unwrap();
     Builder::new()
         .name("solana-retransmitter".to_string())
-        .spawn(move || {
-            trace!("retransmitter started");
-            loop {
-                match retransmit(
-                    &thread_pool,
-                    &bank_forks,
-                    &leader_schedule_cache,
-                    &cluster_info,
-                    &shreds_receiver,
-                    &sockets,
-                    &mut stats,
-                    &cluster_nodes_cache,
-                    &mut hasher_reset_ts,
-                    &mut shreds_received,
-                    &mut packet_hasher,
-                    &max_slots,
-                    rpc_subscriptions.as_deref(),
-                    shred_receiver_addr,
-                ) {
-                    Ok(()) => (),
-                    Err(RecvTimeoutError::Timeout) => (),
-                    Err(RecvTimeoutError::Disconnected) => break,
-                }
+        .spawn(move || loop {
+            match retransmit(
+                &thread_pool,
+                &bank_forks,
+                &leader_schedule_cache,
+                &cluster_info,
+                &shreds_receiver,
+                &sockets,
+                &mut stats,
+                &cluster_nodes_cache,
+                &mut hasher_reset_ts,
+                &mut shreds_received,
+                &mut packet_hasher,
+                &max_slots,
+                rpc_subscriptions.as_deref(),
+                shred_receiver_addr,
+            ) {
+                Ok(()) => (),
+                Err(RecvTimeoutError::Timeout) => (),
+                Err(RecvTimeoutError::Disconnected) => break,
             }
-            trace!("exiting retransmitter");
         })
         .unwrap()
 }
 
 pub struct RetransmitStage {
     retransmit_thread_handle: JoinHandle<()>,
-    window_service: WindowService,
-    cluster_slots_service: ClusterSlotsService,
 }
 
 impl RetransmitStage {
-    #[allow(clippy::new_ret_no_self)]
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         bank_forks: Arc<RwLock<BankForks>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
-        blockstore: Arc<Blockstore>,
         cluster_info: Arc<ClusterInfo>,
         retransmit_sockets: Arc<Vec<UdpSocket>>,
-        repair_socket: Arc<UdpSocket>,
-        ancestor_hashes_socket: Arc<UdpSocket>,
-        verified_receiver: Receiver<Vec<PacketBatch>>,
-        exit: Arc<AtomicBool>,
-        cluster_slots_update_receiver: ClusterSlotsUpdateReceiver,
-        epoch_schedule: EpochSchedule,
-        turbine_disabled: Arc<AtomicBool>,
-        cluster_slots: Arc<ClusterSlots>,
-        duplicate_slots_reset_sender: DuplicateSlotsResetSender,
-        verified_vote_receiver: VerifiedVoteReceiver,
-        repair_validators: Option<HashSet<Pubkey>>,
-        completed_data_sets_sender: CompletedDataSetsSender,
+        retransmit_receiver: Receiver<Vec</*shred:*/ Vec<u8>>>,
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
-        duplicate_slots_sender: Sender<Slot>,
-        ancestor_hashes_replay_update_receiver: AncestorHashesReplayUpdateReceiver,
         shred_receiver_addr: Option<SocketAddr>,
     ) -> Self {
-        let (retransmit_sender, retransmit_receiver) = unbounded();
-
         let retransmit_thread_handle = retransmitter(
             retransmit_sockets,
-            bank_forks.clone(),
-            leader_schedule_cache.clone(),
-            cluster_info.clone(),
+            bank_forks,
+            leader_schedule_cache,
+            cluster_info,
             retransmit_receiver,
             max_slots,
             rpc_subscriptions,
             shred_receiver_addr,
         );
 
-        let cluster_slots_service = ClusterSlotsService::new(
-            blockstore.clone(),
-            cluster_slots.clone(),
-            bank_forks.clone(),
-            cluster_info.clone(),
-            cluster_slots_update_receiver,
-            exit.clone(),
-        );
-
-        let repair_info = RepairInfo {
-            bank_forks,
-            epoch_schedule,
-            duplicate_slots_reset_sender,
-            repair_validators,
-            cluster_info,
-            cluster_slots,
-        };
-        let window_service = WindowService::new(
-            blockstore,
-            verified_receiver,
-            retransmit_sender,
-            repair_socket,
-            ancestor_hashes_socket,
-            exit,
-            repair_info,
-            leader_schedule_cache,
-            turbine_disabled,
-            verified_vote_receiver,
-            completed_data_sets_sender,
-            duplicate_slots_sender,
-            ancestor_hashes_replay_update_receiver,
-        );
-
         Self {
             retransmit_thread_handle,
-            window_service,
-            cluster_slots_service,
         }
     }
 
     pub(crate) fn join(self) -> thread::Result<()> {
-        self.retransmit_thread_handle.join()?;
-        self.window_service.join()?;
-        self.cluster_slots_service.join()
+        self.retransmit_thread_handle.join()
     }
 }
 
@@ -528,6 +458,120 @@ impl AddAssign for RetransmitSlotStats {
             self.num_shreds_received[k] += num_shreds_received[k];
             self.num_shreds_sent[k] += num_shreds_sent[k];
         }
+    }
+}
+
+impl RetransmitStats {
+    const SLOT_STATS_CACHE_CAPACITY: usize = 750;
+
+    fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            num_nodes: AtomicUsize::default(),
+            num_addrs_failed: AtomicUsize::default(),
+            num_shreds: 0usize,
+            num_shreds_skipped: 0usize,
+            total_batches: 0usize,
+            num_small_batches: 0usize,
+            total_time: 0u64,
+            epoch_fetch: 0u64,
+            epoch_cache_update: 0u64,
+            retransmit_total: AtomicU64::default(),
+            compute_turbine_peers_total: AtomicU64::default(),
+            // Cache capacity is manually enforced.
+            slot_stats: LruCache::<Slot, RetransmitSlotStats>::unbounded(),
+            unknown_shred_slot_leader: 0usize,
+        }
+    }
+
+    fn upsert_slot_stats<I>(
+        &mut self,
+        feed: I,
+        root: Slot,
+        rpc_subscriptions: Option<&RpcSubscriptions>,
+    ) where
+        I: IntoIterator<Item = (Slot, RetransmitSlotStats)>,
+    {
+        for (slot, slot_stats) in feed {
+            match self.slot_stats.get_mut(&slot) {
+                None => {
+                    if let Some(rpc_subscriptions) = rpc_subscriptions {
+                        if slot > root {
+                            let slot_update = SlotUpdate::FirstShredReceived {
+                                slot,
+                                timestamp: slot_stats.outset,
+                            };
+                            rpc_subscriptions.notify_slot_update(slot_update);
+                            datapoint_info!("retransmit-first-shred", ("slot", slot, i64));
+                        }
+                    }
+                    self.slot_stats.put(slot, slot_stats);
+                }
+                Some(entry) => {
+                    *entry += slot_stats;
+                }
+            }
+        }
+        while self.slot_stats.len() > Self::SLOT_STATS_CACHE_CAPACITY {
+            // Pop and submit metrics for the slot which was updated least
+            // recently. At this point the node most likely will not receive
+            // and retransmit any more shreds for this slot.
+            match self.slot_stats.pop_lru() {
+                Some((slot, stats)) => stats.submit(slot),
+                None => break,
+            }
+        }
+    }
+}
+
+impl RetransmitSlotStats {
+    fn record(&mut self, now: u64, root_distance: usize, num_nodes: usize) {
+        self.outset = if self.outset == 0 {
+            now
+        } else {
+            self.outset.min(now)
+        };
+        self.asof = self.asof.max(now);
+        self.num_shreds_received[root_distance] += 1;
+        self.num_shreds_sent[root_distance] += num_nodes;
+    }
+
+    fn merge(mut acc: HashMap<Slot, Self>, other: HashMap<Slot, Self>) -> HashMap<Slot, Self> {
+        if acc.len() < other.len() {
+            return Self::merge(other, acc);
+        }
+        for (key, value) in other {
+            *acc.entry(key).or_default() += value;
+        }
+        acc
+    }
+
+    fn submit(&self, slot: Slot) {
+        let num_shreds: usize = self.num_shreds_received.iter().sum();
+        let num_nodes: usize = self.num_shreds_sent.iter().sum();
+        let elapsed_millis = self.asof.saturating_sub(self.outset);
+        datapoint_info!(
+            "retransmit-stage-slot-stats",
+            ("slot", slot, i64),
+            ("outset_timestamp", self.outset, i64),
+            ("elapsed_millis", elapsed_millis, i64),
+            ("num_shreds", num_shreds, i64),
+            ("num_nodes", num_nodes, i64),
+            ("num_shreds_received_root", self.num_shreds_received[0], i64),
+            (
+                "num_shreds_received_1st_layer",
+                self.num_shreds_received[1],
+                i64
+            ),
+            (
+                "num_shreds_received_2nd_layer",
+                self.num_shreds_received[2],
+                i64
+            ),
+            ("num_shreds_sent_root", self.num_shreds_sent[0], i64),
+            ("num_shreds_sent_1st_layer", self.num_shreds_sent[1], i64),
+            ("num_shreds_sent_2nd_layer", self.num_shreds_sent[2], i64),
+        );
     }
 }
 

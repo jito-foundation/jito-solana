@@ -6,8 +6,7 @@ use {
 /// Encapsulates overridden accounts, typically used for transaction simulations
 #[derive(Default)]
 pub struct AccountOverrides {
-    pub slot_history: Option<AccountSharedData>,
-    pub cached_accounts_with_rent: HashMap<Pubkey, AccountSharedData>,
+    pub accounts: HashMap<Pubkey, AccountSharedData>,
 }
 
 pub enum AccountWithRentInfo {
@@ -18,8 +17,8 @@ pub enum AccountWithRentInfo {
 impl AccountOverrides {
     pub fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
         match account {
-            Some(account) => self.cached_accounts_with_rent.insert(*pubkey, account),
-            None => self.cached_accounts_with_rent.remove(pubkey),
+            Some(account) => self.accounts.insert(*pubkey, account),
+            None => self.accounts.remove(pubkey),
         };
     }
 
@@ -27,37 +26,11 @@ impl AccountOverrides {
     ///
     /// Note: no checks are performed on the correctness of the contained data
     pub fn set_slot_history(&mut self, slot_history: Option<AccountSharedData>) {
-        self.slot_history = slot_history.clone();
         self.set_account(&sysvar::slot_history::id(), slot_history);
     }
 
     /// Gets the account if it's found in the list of overrides
-    pub fn get_ignore_rent_type(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
-        if pubkey == &sysvar::slot_history::id() {
-            self.slot_history.as_ref()
-        } else {
-            self.cached_accounts_with_rent.get(pubkey)
-        }
-    }
-
-    /// Gets the account info with info on whether rent should be subtracted or not
-    pub fn get(&self, pubkey: &Pubkey) -> Option<AccountWithRentInfo> {
-        if pubkey == &sysvar::slot_history::id() {
-            if self.slot_history.is_some() {
-                Some(AccountWithRentInfo::Zero(
-                    self.slot_history.as_ref().unwrap().clone(),
-                ))
-            } else {
-                None
-            }
-        } else {
-            self.cached_accounts_with_rent
-                .get(pubkey)
-                .map(|acc| AccountWithRentInfo::SubtractRent(acc.clone()))
-        }
-    }
-
-    pub fn put(&mut self, pubkey: Pubkey, data: AccountSharedData) {
-        self.cached_accounts_with_rent.insert(pubkey, data);
+    pub fn get(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
+        self.accounts.get(pubkey)
     }
 }

@@ -46,7 +46,7 @@ impl ShredFetchStage {
         let mut stats = ShredFetchStats::default();
         let mut packet_hasher = PacketHasher::default();
 
-        while let Some(mut packet_batch) = recvr.iter().next() {
+        for mut packet_batch in recvr {
             if last_updated.elapsed().as_millis() as u64 > DEFAULT_MS_PER_SLOT {
                 last_updated = Instant::now();
                 packet_hasher.reset();
@@ -79,7 +79,7 @@ impl ShredFetchStage {
                 }
             }
             stats.maybe_submit(name, STATS_SUBMIT_CADENCE);
-            if sendr.send(vec![packet_batch]).is_err() {
+            if sendr.send(packet_batch).is_err() {
                 break;
             }
         }
@@ -88,7 +88,7 @@ impl ShredFetchStage {
     fn packet_modifier(
         sockets: Vec<Arc<UdpSocket>>,
         exit: &Arc<AtomicBool>,
-        sender: Sender<Vec<PacketBatch>>,
+        sender: Sender<PacketBatch>,
         recycler: PacketBatchRecycler,
         bank_forks: Arc<RwLock<BankForks>>,
         shred_version: u16,

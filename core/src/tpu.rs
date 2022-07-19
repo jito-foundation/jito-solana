@@ -48,7 +48,7 @@ use {
 pub const DEFAULT_TPU_COALESCE_MS: u64 = 5;
 
 // allow multiple connections for NAT and any open/close overlap
-pub const MAX_QUIC_CONNECTIONS_PER_IP: usize = 8;
+pub const MAX_QUIC_CONNECTIONS_PER_PEER: usize = 8;
 
 const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
@@ -104,6 +104,7 @@ impl Tpu {
         connection_cache: &Arc<ConnectionCache>,
         keypair: &Keypair,
         enable_quic_servers: bool,
+        log_messages_bytes_limit: Option<usize>,
         relayer_address: String,
         block_engine_address: String,
         tip_manager_config: TipManagerConfig,
@@ -173,7 +174,7 @@ impl Tpu {
                 cluster_info.my_contact_info().tpu.ip(),
                 packet_intercept_sender,
                 exit.clone(),
-                MAX_QUIC_CONNECTIONS_PER_IP,
+                MAX_QUIC_CONNECTIONS_PER_PEER,
                 staked_nodes.clone(),
                 MAX_STAKED_CONNECTIONS,
                 MAX_UNSTAKED_CONNECTIONS,
@@ -189,7 +190,7 @@ impl Tpu {
                 cluster_info.my_contact_info().tpu_forwards.ip(),
                 forwarded_packet_sender,
                 exit.clone(),
-                MAX_QUIC_CONNECTIONS_PER_IP,
+                MAX_QUIC_CONNECTIONS_PER_PEER,
                 staked_nodes,
                 MAX_STAKED_CONNECTIONS.saturating_add(MAX_UNSTAKED_CONNECTIONS),
                 0, // Prevent unstaked nodes from forwarding transactions

@@ -119,6 +119,7 @@ while [[ -n $1 ]]; do
       args+=("$1" "$2")
       shift 2
     elif [[ $1 == --shred-receiver-address ]]; then
+    elif [[ $1 = --log-messages-bytes-limit ]]; then
       args+=("$1" "$2")
       shift 2
     else

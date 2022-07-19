@@ -115,6 +115,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 10,
+                None,
                 &HashSet::default(),
                 &bundle_account_locker,
             );
@@ -255,10 +256,11 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             None,
             s,
             Arc::new(RwLock::new(CostModel::default())),
+            None,
             Arc::new(ConnectionCache::default()),
+            bank_forks,
             HashSet::new(),
             bundle_account_locker,
-            bank_forks,
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 

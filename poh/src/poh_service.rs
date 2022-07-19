@@ -198,7 +198,7 @@ impl PohService {
                     poh_recorder
                         .write()
                         .unwrap()
-                        .record(record.slot, &record.mixins_txs),
+                        .record(record.slot, &record.mixinx_txs),
                 )
                 .is_err()
             {
