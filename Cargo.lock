@@ -957,9 +957,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.12"
+version = "3.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab8b79fe3946ceb4a0b1c080b4018992b8d27e9ff363644c1c9b6387c854614d"
+checksum = "ac2bd7a1eb07da9ac757c923f69373deb7bc2ba5efc951b873bcb5e693992dca"
 dependencies = [
  "atty",
  "bitflags",
@@ -4006,7 +4006,7 @@ dependencies = [
 name = "rbpf-cli"
 version = "1.11.4"
 dependencies = [
- "clap 3.2.12",
+ "clap 3.2.13",
  "serde",
  "serde_json",
  "solana-bpf-loader-program",
@@ -4795,7 +4795,7 @@ dependencies = [
 name = "solana-banking-bench"
 version = "1.11.4"
 dependencies = [
- "clap 3.2.12",
+ "clap 3.2.13",
  "crossbeam-channel",
  "log",
  "rand 0.7.3",
@@ -4863,7 +4863,7 @@ dependencies = [
 name = "solana-bench-batch-simulate-bundle"
 version = "1.11.4"
 dependencies = [
- "clap 3.2.12",
+ "clap 3.2.13",
  "env_logger",
  "log",
  "num-traits",
@@ -4878,7 +4878,7 @@ dependencies = [
 name = "solana-bench-streamer"
 version = "1.11.4"
 dependencies = [
- "clap 3.2.12",
+ "clap 3.2.13",
  "crossbeam-channel",
  "solana-net-utils",
  "solana-streamer",
@@ -4985,7 +4985,7 @@ name = "solana-cargo-build-bpf"
 version = "1.11.4"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.12",
+ "clap 3.2.13",
  "solana-sdk 1.11.4",
 ]
 
@@ -4995,7 +4995,7 @@ version = "1.11.4"
 dependencies = [
  "bzip2",
  "cargo_metadata",
- "clap 3.2.12",
+ "clap 3.2.13",
  "log",
  "regex",
  "serial_test",
@@ -5010,7 +5010,7 @@ name = "solana-cargo-test-bpf"
 version = "1.11.4"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.12",
+ "clap 3.2.13",
 ]
 
 [[package]]
@@ -5018,7 +5018,7 @@ name = "solana-cargo-test-sbf"
 version = "1.11.4"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.12",
+ "clap 3.2.13",
 ]
 
 [[package]]
@@ -5043,7 +5043,7 @@ name = "solana-clap-v3-utils"
 version = "1.11.4"
 dependencies = [
  "chrono",
- "clap 3.2.12",
+ "clap 3.2.13",
  "rpassword",
  "solana-perf",
  "solana-remote-wallet",
@@ -5256,7 +5256,7 @@ dependencies = [
  "bs58 0.4.0",
  "bytes",
  "chrono",
- "clap 3.2.12",
+ "clap 3.2.13",
  "crossbeam-channel",
  "dashmap",
  "eager",
@@ -5332,7 +5332,7 @@ name = "solana-dos"
 version = "1.11.4"
 dependencies = [
  "bincode",
- "clap 3.2.12",
+ "clap 3.2.13",
  "itertools",
  "log",
  "rand 0.7.3",
@@ -5655,7 +5655,7 @@ name = "solana-keygen"
 version = "1.11.4"
 dependencies = [
  "bs58 0.4.0",
- "clap 3.2.12",
+ "clap 3.2.13",
  "dirs-next",
  "num_cpus",
  "solana-clap-v3-utils",
@@ -5796,7 +5796,7 @@ name = "solana-log-analyzer"
 version = "1.11.4"
 dependencies = [
  "byte-unit",
- "clap 3.2.12",
+ "clap 3.2.13",
  "serde",
  "serde_json",
  "solana-logger 1.11.4",
@@ -5873,7 +5873,7 @@ dependencies = [
 name = "solana-net-shaper"
 version = "1.11.4"
 dependencies = [
- "clap 3.2.12",
+ "clap 3.2.13",
  "rand 0.7.3",
  "serde",
  "serde_json",
@@ -5885,7 +5885,7 @@ name = "solana-net-utils"
 version = "1.11.4"
 dependencies = [
  "bincode",
- "clap 3.2.12",
+ "clap 3.2.13",
  "crossbeam-channel",
  "log",
  "nix",
@@ -5962,7 +5962,7 @@ dependencies = [
 name = "solana-poh-bench"
 version = "1.11.4"
 dependencies = [
- "clap 3.2.12",
+ "clap 3.2.13",
  "log",
  "rand 0.7.3",
  "rayon",
@@ -6604,7 +6604,7 @@ version = "1.11.4"
 dependencies = [
  "anchor-lang",
  "bigdecimal",
- "clap 3.2.12",
+ "clap 3.2.13",
  "env_logger",
  "futures 0.3.21",
  "im",
