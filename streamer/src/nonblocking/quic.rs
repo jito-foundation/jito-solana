@@ -1064,35 +1064,6 @@ pub mod test {
     }
 
     #[tokio::test]
-    async fn test_quic_server_staked_connection_removal() {
-        solana_logger::setup();
-
-        let mut staked_nodes = StakedNodes::default();
-        staked_nodes
-            .stake_map
-            .insert(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 100000);
-        staked_nodes.total_stake = 100000;
-
-        let (t, exit, receiver, server_address, stats) = setup_quic_server(Some(staked_nodes));
-        check_multiple_writes(receiver, server_address).await;
-        exit.store(true, Ordering::Relaxed);
-        t.await.unwrap();
-        assert_eq!(stats.connection_removed.load(Ordering::Relaxed), 1);
-        assert_eq!(stats.connection_remove_failed.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
-    async fn test_quic_server_unstaked_connection_removal() {
-        solana_logger::setup();
-        let (t, exit, receiver, server_address, stats) = setup_quic_server(None);
-        check_multiple_writes(receiver, server_address).await;
-        exit.store(true, Ordering::Relaxed);
-        t.await.unwrap();
-        assert_eq!(stats.connection_removed.load(Ordering::Relaxed), 1);
-        assert_eq!(stats.connection_remove_failed.load(Ordering::Relaxed), 0);
-    }
-
-    #[tokio::test]
     async fn test_quic_server_unstaked_node_connect_failure() {
         solana_logger::setup();
         let s = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -1397,85 +1368,6 @@ pub mod test {
 
         for socket in sockets.iter() {
             table.remove_connection(ConnectionTableKey::IP(socket.ip()), socket.port());
-        }
-        assert_eq!(table.total_size, 0);
-    }
-
-    #[test]
-    fn test_prune_table_random() {
-        use std::net::Ipv4Addr;
-        solana_logger::setup();
-        let mut table = ConnectionTable::new(ConnectionPeerType::Staked);
-        let num_entries = 5;
-        let max_connections_per_ip = 10;
-        let sockets: Vec<_> = (0..num_entries)
-            .into_iter()
-            .map(|i| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(i, 0, 0, 0)), 0))
-            .collect();
-        for (i, socket) in sockets.iter().enumerate() {
-            table
-                .try_add_connection(
-                    socket,
-                    None,
-                    (i + 1) as u64,
-                    i as u64,
-                    max_connections_per_ip,
-                )
-                .unwrap();
-        }
-
-        // Try pruninng with threshold stake less than all the entries in the table
-        // It should fail to prune (i.e. return 0 number of pruned entries)
-        let pruned = table.prune_random(0);
-        assert_eq!(pruned, 0);
-
-        // Try pruninng with threshold stake higher than all the entries in the table
-        // It should succeed to prune (i.e. return 1 number of pruned entries)
-        let pruned = table.prune_random(num_entries as u64 + 1);
-        assert_eq!(pruned, 1);
-    }
-
-    #[test]
-    fn test_remove_connections() {
-        use std::net::Ipv4Addr;
-        solana_logger::setup();
-        let mut table = ConnectionTable::new(ConnectionPeerType::Staked);
-        let num_ips = 5;
-        let max_connections_per_ip = 10;
-        let mut sockets: Vec<_> = (0..num_ips)
-            .into_iter()
-            .map(|i| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(i, 0, 0, 0)), 0))
-            .collect();
-        for (i, socket) in sockets.iter().enumerate() {
-            table
-                .try_add_connection(socket, None, 0, (i * 2) as u64, max_connections_per_ip)
-                .unwrap();
-
-            table
-                .try_add_connection(socket, None, 0, (i * 2 + 1) as u64, max_connections_per_ip)
-                .unwrap();
-        }
-
-        let single_connection_addr =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(num_ips, 0, 0, 0)), 0);
-        table
-            .try_add_connection(
-                &single_connection_addr,
-                None,
-                0,
-                (num_ips * 2) as u64,
-                max_connections_per_ip,
-            )
-            .unwrap();
-
-        let zero_connection_addr =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(num_ips + 1, 0, 0, 0)), 0);
-
-        sockets.push(single_connection_addr);
-        sockets.push(zero_connection_addr);
-
-        for socket in sockets.iter() {
-            table.remove_connection(socket);
         }
         assert_eq!(table.total_size, 0);
     }

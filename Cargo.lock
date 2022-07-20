@@ -4853,6 +4853,7 @@ dependencies = [
  "solana-runtime",
  "solana-sdk 1.11.4",
  "solana-send-transaction-service",
+ "solana-streamer",
  "tarpc",
  "tokio",
  "tokio-serde",
@@ -6432,6 +6433,7 @@ dependencies = [
  "solana-metrics",
  "solana-runtime",
  "solana-sdk 1.11.4",
+ "solana-streamer",
 ]
 
 [[package]]

@@ -1495,6 +1495,7 @@ mod tests {
             sync::atomic::{AtomicBool, AtomicU64, Ordering},
             thread, time,
         },
+        Accounts,
     };
 
     fn new_sanitized_tx<T: Signers>(
@@ -2946,7 +2947,6 @@ mod tests {
         let results = accounts.lock_accounts_with_results(
             txs.iter(),
             qos_results.iter(),
-            &FeatureSet::all_enabled(),
             &HashSet::default(),
             &HashSet::default(),
         );
@@ -3542,7 +3542,7 @@ mod tests {
         let mut loaded = vec![loaded];
 
         let durable_nonce = DurableNonce::from_blockhash(&Hash::new_unique());
-        let accounts = Accounts::new_with_config_for_tests(
+        let _accounts = Accounts::new_with_config_for_tests(
             Vec::new(),
             &ClusterType::Development,
             AccountSecondaryIndexes::default(),
@@ -3657,7 +3657,7 @@ mod tests {
         let mut loaded = vec![loaded];
 
         let durable_nonce = DurableNonce::from_blockhash(&Hash::new_unique());
-        let accounts = Accounts::new_with_config_for_tests(
+        let _accounts = Accounts::new_with_config_for_tests(
             Vec::new(),
             &ClusterType::Development,
             AccountSecondaryIndexes::default(),
