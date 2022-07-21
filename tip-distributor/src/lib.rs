@@ -215,7 +215,7 @@ pub struct StakeMetaCollection {
     pub slot: Slot,
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct StakeMeta {
     /// The validator's base58 encoded vote account.
     pub validator_vote_account: String,
@@ -233,7 +233,7 @@ pub struct StakeMeta {
     pub commission: u8,
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct TipDistributionMeta {
     /// The account authorized to generate and upload a merkle_root for the validator.
     pub merkle_root_upload_authority: String,
@@ -276,7 +276,7 @@ impl TipDistributionMeta {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct Delegation {
     /// The stake account of interest base58 encoded.
     pub stake_account: String,
@@ -317,7 +317,7 @@ pub trait AccountFetcher {
 
 /// Fetches and deserializes the vote_pubkey's corresponding [TipDistributionAccount].
 pub fn fetch_and_deserialize_tip_distribution_account(
-    account_fetcher: &Box<dyn AccountFetcher>,
+    account_fetcher: Arc<Box<dyn AccountFetcher>>,
     vote_pubkey: &Pubkey,
     tip_distribution_program_id: &Pubkey,
     epoch: Epoch,
@@ -363,7 +363,7 @@ struct RpcAccountFetcher {
     rpc_client: RpcClient,
 }
 
-impl<'a> AccountFetcher for RpcAccountFetcher {
+impl AccountFetcher for RpcAccountFetcher {
     /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from an RPC node.
     fn fetch_account(
         &self,
@@ -371,12 +371,12 @@ impl<'a> AccountFetcher for RpcAccountFetcher {
     ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
         match self
             .rpc_client
-            .get_account_with_commitment(&pubkey, self.rpc_client.commitment())
+            .get_account_with_commitment(pubkey, self.rpc_client.commitment())
         {
             Ok(resp) => Ok(resp.value.map(|a| a.into())),
             Err(e) => {
                 error!("error fetching account {}", e);
-                return Err(e.into());
+                Err(e.into())
             }
         }
     }

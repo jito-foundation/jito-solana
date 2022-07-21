@@ -257,6 +257,7 @@ pub fn generate_stake_meta_collection(
     } else {
         Box::new(BankAccountFetcher { bank: bank.clone() }) as Box<dyn AccountFetcher>
     };
+    let account_fetcher = Arc::new(account_fetcher);
 
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
@@ -265,7 +266,7 @@ pub fn generate_stake_meta_collection(
         .iter()
         .map(|(&vote_pubkey, (_total_stake, vote_account))| {
             let tda = fetch_and_deserialize_tip_distribution_account(
-                &account_fetcher,
+                account_fetcher.clone(),
                 &vote_pubkey,
                 &tip_distribution_program_id,
                 bank.epoch(),
