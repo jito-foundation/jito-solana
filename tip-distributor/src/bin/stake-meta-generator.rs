@@ -5,6 +5,7 @@
 use {
     clap::Parser,
     log::*,
+    solana_client::rpc_client::RpcClient,
     solana_sdk::{clock::Slot, pubkey::Pubkey},
     solana_tip_distributor::{self, stake_meta_generator_workflow::run_workflow},
     std::{
@@ -36,6 +37,10 @@ struct Args {
     /// The expected snapshot slot.
     #[clap(long, env)]
     snapshot_slot: Slot,
+
+    /// The RPC to fetch lamports from for the tip distribution accounts.
+    #[clap(long, env)]
+    rpc_url: String,
 }
 
 impl Args {
@@ -53,12 +58,15 @@ fn main() {
 
     let args: Args = Args::parse();
 
+    let rpc_client = RpcClient::new(args.rpc_url);
+
     run_workflow(
         &args.ledger_path,
         args.snapshot_bank_hash,
         args.snapshot_slot,
         args.tip_distribution_program_id,
         args.out_path,
+        rpc_client,
     )
     .expect("Workflow failed.");
 }

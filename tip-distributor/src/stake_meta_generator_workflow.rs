@@ -1,10 +1,12 @@
 use {
     crate::{
-        fetch_tip_distribution_account, StakeMeta, StakeMetaCollection,
-        TipDistributionAccountWrapper, TipDistributionMeta,
+        fetch_and_deserialize_tip_distribution_account, AccountFetcher, BankAccountFetcher,
+        RpcAccountFetcher, StakeMeta, StakeMetaCollection, TipDistributionAccountWrapper,
+        TipDistributionMeta,
     },
     itertools::Itertools,
     log::*,
+    solana_client::{client_error::ClientError, rpc_client::RpcClient},
     solana_ledger::{
         bank_forks_utils,
         blockstore::{Blockstore, BlockstoreError},
@@ -52,6 +54,11 @@ pub enum Error {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
+    CheckedMathError,
+
+    #[error(transparent)]
+    RpcError(#[from] ClientError),
+
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
 
@@ -72,12 +79,14 @@ pub fn run_workflow(
     snapshot_slot: Slot,
     tip_distribution_program_id: Pubkey,
     out_path: String,
+    rpc_client: RpcClient,
 ) -> Result<(), Error> {
     info!("Creating bank from ledger path...");
     let bank = create_bank_from_snapshot(ledger_path, snapshot_bank_hash, snapshot_slot)?;
 
     info!("Generating stake_meta_collection object...");
-    let stake_meta_coll = generate_stake_meta_collection(&bank, tip_distribution_program_id)?;
+    let stake_meta_coll =
+        generate_stake_meta_collection(&bank, tip_distribution_program_id, Some(rpc_client))?;
 
     info!("Writing stake_meta_collection to JSON {}...", out_path);
     write_to_json_file(&stake_meta_coll, out_path)?;
@@ -229,6 +238,8 @@ pub fn generate_stake_meta_collection(
     bank: &Arc<Bank>,
     // Used to derive the PDA and fetch the account data from the Bank.
     tip_distribution_program_id: Pubkey,
+    // Optionally used to fetch the tip distribution accounts from an RPC node.
+    maybe_rpc_client: Option<RpcClient>,
 ) -> Result<StakeMetaCollection, Error> {
     assert!(bank.is_frozen());
 
@@ -241,15 +252,25 @@ pub fn generate_stake_meta_collection(
     let l_stakes = bank.stakes_cache.stakes();
     let delegations = l_stakes.stake_delegations();
 
+    let account_fetcher = if let Some(rpc_client) = maybe_rpc_client {
+        Box::new(RpcAccountFetcher { rpc_client }) as Box<dyn AccountFetcher>
+    } else {
+        Box::new(BankAccountFetcher { bank: bank.clone() }) as Box<dyn AccountFetcher>
+    };
+
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
         Option<TipDistributionAccountWrapper>,
     )> = epoch_vote_accounts
         .iter()
         .map(|(&vote_pubkey, (_total_stake, vote_account))| {
-            let tda =
-                fetch_tip_distribution_account(bank, &vote_pubkey, &tip_distribution_program_id)
-                    .map_err(Error::from)?;
+            let tda = fetch_and_deserialize_tip_distribution_account(
+                &account_fetcher,
+                &vote_pubkey,
+                &tip_distribution_program_id,
+                bank.epoch(),
+            )
+            .map_err(Error::from)?;
 
             Ok(((vote_pubkey, vote_account), tda))
         })
@@ -268,20 +289,10 @@ pub fn generate_stake_meta_collection(
                 let rent_exempt_amount =
                     bank.get_minimum_balance_for_rent_exemption(tda.account_data.data().len());
 
-                Some(TipDistributionMeta {
-                    tip_distribution_account: bs58::encode(tda.tip_distribution_account_pubkey)
-                        .into_string(),
-                    total_tips: tda
-                        .account_data
-                        .lamports()
-                        .checked_sub(rent_exempt_amount)
-                        .unwrap(),
-                    validator_fee_bps: tda.tip_distribution_account.validator_commission_bps,
-                    merkle_root_upload_authority: bs58::encode(
-                        tda.tip_distribution_account.merkle_root_upload_authority,
-                    )
-                    .into_string(),
-                })
+                Some(TipDistributionMeta::from_tda_wrapper(
+                    tda,
+                    rent_exempt_amount,
+                )?)
             } else {
                 None
             };
@@ -645,7 +656,7 @@ mod tests {
 
         bank.freeze();
         let stake_meta_collection =
-            generate_stake_meta_collection(&bank, tip_distribution_program_id).unwrap();
+            generate_stake_meta_collection(&bank, tip_distribution_program_id, None).unwrap();
         assert_eq!(
             stake_meta_collection.tip_distribution_program_id,
             bs58::encode(tip_distribution_program_id.as_ref()).into_string()
