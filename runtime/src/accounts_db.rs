@@ -6141,7 +6141,7 @@ impl AccountsDb {
             .account_maps
             .iter()
             .flat_map(|map| {
-                let mut keys = map.read().unwrap().keys();
+                let mut keys = map.keys();
                 keys.sort_unstable(); // hashmap is not ordered, but bins are relative to each other
                 keys
             })
@@ -6592,8 +6592,8 @@ impl AccountsDb {
 
                     if result.is_err() {
                         info!(
-                            "FAILED_TO_SAVE: {}-{}, {}, first_boundary: {}, {:?}",
-                            range.start, range.end, width, first_boundary, file_name,
+                            "FAILED_TO_SAVE: {}-{}, {}, first_boundary: {}, {:?}, error: {:?}",
+                            range.start, range.end, width, first_boundary, file_name, result,
                         );
                     }
                 }
@@ -8435,7 +8435,7 @@ impl AccountsDb {
                 .account_maps
                 .iter()
                 .map(|map_bin| {
-                    let len = map_bin.read().unwrap().len_for_stats();
+                    let len = map_bin.len_for_stats();
                     min_bin_size = std::cmp::min(min_bin_size, len);
                     max_bin_size = std::cmp::max(max_bin_size, len);
                     len as usize
@@ -8722,7 +8722,7 @@ impl AccountsDb {
         let full_pubkey_range = Pubkey::new(&[0; 32])..=Pubkey::new(&[0xff; 32]);
 
         self.accounts_index.account_maps.iter().for_each(|map| {
-            for (pubkey, account_entry) in map.read().unwrap().items(&full_pubkey_range) {
+            for (pubkey, account_entry) in map.items(&full_pubkey_range) {
                 info!("  key: {} ref_count: {}", pubkey, account_entry.ref_count(),);
                 info!(
                     "      slots: {:?}",

@@ -109,8 +109,8 @@ use {
         epoch_schedule::EpochSchedule,
         feature,
         feature_set::{
-            self, add_set_compute_unit_price_ix, default_units_per_instruction,
-            disable_fee_calculator, enable_early_verification_of_account_modifications, FeatureSet,
+            self, add_set_compute_unit_price_ix, disable_fee_calculator,
+            enable_early_verification_of_account_modifications, FeatureSet,
         },
         fee::FeeStructure,
         fee_calculator::{FeeCalculator, FeeRateGovernor},
@@ -268,6 +268,7 @@ impl RentDebits {
 }
 
 pub type BankStatusCache = StatusCache<Result<()>>;
+
 #[frozen_abi(digest = "82WhodJTtPtYR1R3XnVAn8iMJAMJvcWAGuoorbjSSRUb")]
 pub type BankSlotDelta = SlotDelta<Result<()>>;
 
@@ -4885,7 +4886,6 @@ impl Bank {
                             Measure::start("compute_budget_process_transaction_time");
                         let process_transaction_result = compute_budget.process_instructions(
                             tx.message().program_instructions_iter(),
-                            feature_set.is_active(&default_units_per_instruction::id()),
                             feature_set.is_active(&add_set_compute_unit_price_ix::id()),
                         );
                         compute_budget_process_transaction_time.stop();
@@ -5180,7 +5180,6 @@ impl Bank {
         let prioritization_fee_details = compute_budget
             .process_instructions(
                 message.program_instructions_iter(),
-                false,
                 support_set_compute_unit_price_ix,
             )
             .unwrap_or_default();
