@@ -2,12 +2,16 @@ pub mod merkle_root_generator_workflow;
 pub mod stake_meta_generator_workflow;
 
 use {
-    crate::merkle_root_generator_workflow::Error,
+    crate::{
+        merkle_root_generator_workflow::Error,
+        stake_meta_generator_workflow::Error::CheckedMathError,
+    },
     anchor_lang::AccountDeserialize,
     bigdecimal::{num_bigint::BigUint, BigDecimal},
     log::*,
     num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
     serde::{Deserialize, Serialize},
+    solana_client::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
     solana_runtime::bank::Bank,
     solana_sdk::{
@@ -245,6 +249,33 @@ pub struct TipDistributionMeta {
     pub validator_fee_bps: u16,
 }
 
+impl TipDistributionMeta {
+    fn from_tda_wrapper(
+        tda_wrapper: TipDistributionAccountWrapper,
+        // The amount that will be left remaining in the tda to maintain rent exemption status.
+        rent_exempt_amount: u64,
+    ) -> Result<Self, stake_meta_generator_workflow::Error> {
+        Ok(TipDistributionMeta {
+            tip_distribution_account: bs58::encode(tda_wrapper.tip_distribution_account_pubkey)
+                .into_string(),
+            total_tips: tda_wrapper
+                .account_data
+                .lamports()
+                .checked_sub(rent_exempt_amount)
+                .ok_or(CheckedMathError)?,
+            validator_fee_bps: tda_wrapper
+                .tip_distribution_account
+                .validator_commission_bps,
+            merkle_root_upload_authority: bs58::encode(
+                tda_wrapper
+                    .tip_distribution_account
+                    .merkle_root_upload_authority,
+            )
+            .into_string(),
+        })
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
 pub struct Delegation {
     /// The stake account of interest base58 encoded.
@@ -277,25 +308,29 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
-/// Fetches and deserializes the vote_pubkey's corresponding [TipDistributionAccount] from the accounts' DB.
-pub fn fetch_tip_distribution_account(
-    bank: &Arc<Bank>,
+pub trait AccountFetcher {
+    fn fetch_account(
+        &self,
+        pubkey: &Pubkey,
+    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error>;
+}
+
+/// Fetches and deserializes the vote_pubkey's corresponding [TipDistributionAccount].
+pub fn fetch_and_deserialize_tip_distribution_account(
+    account_fetcher: &Box<dyn AccountFetcher>,
     vote_pubkey: &Pubkey,
     tip_distribution_program_id: &Pubkey,
-) -> Result<Option<TipDistributionAccountWrapper>, anchor_lang::error::Error> {
-    let tip_distribution_account_pubkey = derive_tip_distribution_account_address(
-        tip_distribution_program_id,
-        vote_pubkey,
-        bank.epoch(),
-    )
-    .0;
+    epoch: Epoch,
+) -> Result<Option<TipDistributionAccountWrapper>, stake_meta_generator_workflow::Error> {
+    let tip_distribution_account_pubkey =
+        derive_tip_distribution_account_address(tip_distribution_program_id, vote_pubkey, epoch).0;
 
-    match bank.get_account(&tip_distribution_account_pubkey) {
+    match account_fetcher.fetch_account(&tip_distribution_account_pubkey)? {
         None => {
             warn!(
                 "TipDistributionAccount not found for vote_pubkey {}, epoch {}, tip_distribution_account_pubkey {}",
                 vote_pubkey,
-                bank.epoch(),
+                epoch,
                 tip_distribution_account_pubkey,
             );
             Ok(None)
@@ -307,6 +342,43 @@ pub fn fetch_tip_distribution_account(
             account_data,
             tip_distribution_account_pubkey,
         })),
+    }
+}
+
+struct BankAccountFetcher {
+    bank: Arc<Bank>,
+}
+
+impl AccountFetcher for BankAccountFetcher {
+    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from the accounts DB.
+    fn fetch_account(
+        &self,
+        pubkey: &Pubkey,
+    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
+        Ok(self.bank.get_account(pubkey))
+    }
+}
+
+struct RpcAccountFetcher {
+    rpc_client: RpcClient,
+}
+
+impl<'a> AccountFetcher for RpcAccountFetcher {
+    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from an RPC node.
+    fn fetch_account(
+        &self,
+        pubkey: &Pubkey,
+    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
+        match self
+            .rpc_client
+            .get_account_with_commitment(&pubkey, self.rpc_client.commitment())
+        {
+            Ok(resp) => Ok(resp.value.map(|a| a.into())),
+            Err(e) => {
+                error!("error fetching account {}", e);
+                return Err(e.into());
+            }
+        }
     }
 }
 
