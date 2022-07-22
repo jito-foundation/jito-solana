@@ -18,7 +18,7 @@ use {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// Ledger path.
+    /// Ledger path, where you created the snapshot.
     #[clap(long, env, parse(try_from_str = Args::ledger_path_parser))]
     ledger_path: PathBuf,
 
