@@ -1614,7 +1614,7 @@ mod tests {
             batch: PacketBatch::new(vec![packet0]),
             uuid: Uuid::new_v4(),
         };
-        bundle_account_locker.push(vec![bundle.clone()]);
+        bundle_account_locker.push(vec![bundle]);
         let locked_bundle = bundle_account_locker
             .pop(&bank, &HashSet::default())
             .unwrap();
