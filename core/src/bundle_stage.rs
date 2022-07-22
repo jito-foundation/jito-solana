@@ -1553,7 +1553,7 @@ mod tests {
 
     #[test]
     fn test_bundle_max_retries() {
-        solana_logger::setup();
+        solana_logger::setup_with_default("INFO");
 
         let GenesisConfigInfo {
             genesis_config,
@@ -1561,7 +1561,9 @@ mod tests {
             ..
         } = create_genesis_config(100_000_000);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-        bank.write_cost_tracker().unwrap().set_limits(1, 1, 1);
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(u64::MAX, u64::MAX, u64::MAX);
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(
@@ -1609,11 +1611,12 @@ mod tests {
         let _batch = bank.prepare_sanitized_batch(&sanitized_txs_1);
 
         // push and pop tx0
-        let packet0 = Packet::from_data(None, tx0).unwrap();
         let bundle = PacketBundle {
-            batch: PacketBatch::new(vec![packet0]),
+            batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
             uuid: Uuid::new_v4(),
         };
+        info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
+
         bundle_account_locker.push(vec![bundle]);
         let locked_bundle = bundle_account_locker
             .pop(&bank, &HashSet::default())
@@ -1629,6 +1632,7 @@ mod tests {
             &mut execute_and_commit_timings,
             &TEST_MAX_RETRY_DURATION,
         );
+        info!("test_bundle_max_retries result: {:?}", result);
         assert!(matches!(
             result,
             Err(BundleExecutionError::MaxRetriesExceeded(_))
