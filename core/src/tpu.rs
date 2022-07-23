@@ -172,7 +172,7 @@ impl Tpu {
                 transactions_quic_sockets,
                 keypair,
                 cluster_info.my_contact_info().tpu.ip(),
-                packet_sender,
+                packet_sender.clone(),
                 exit.clone(),
                 MAX_QUIC_CONNECTIONS_PER_PEER,
                 staked_nodes.clone(),
