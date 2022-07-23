@@ -1213,6 +1213,17 @@ pub fn main() {
                 .help("Use QUIC to send transactions."),
         )
         .arg(
+            Arg::with_name("disable_quic_servers")
+                .long("disable-quic-servers")
+                .takes_value(false)
+                .help("Disable QUIC TPU servers"),
+        )
+        .arg(
+            Arg::with_name("enable_quic_servers")
+                .hidden(true)
+                .long("enable-quic-servers")
+        )
+        .arg(
             Arg::with_name("tpu_connection_pool_size")
                 .long("tpu-connection-pool-size")
                 .takes_value(true)
@@ -2357,6 +2368,7 @@ pub fn main() {
     let accounts_shrink_optimize_total_space =
         value_t_or_exit!(matches, "accounts_shrink_optimize_total_space", bool);
     let tpu_use_quic = matches.is_present("tpu_use_quic");
+    let enable_quic_servers = !matches.is_present("disable_quic_servers");
     let tpu_connection_pool_size = value_t_or_exit!(matches, "tpu_connection_pool_size", usize);
 
     let shrink_ratio = value_t_or_exit!(matches, "accounts_shrink_ratio", f64);
@@ -2521,6 +2533,10 @@ pub fn main() {
             launch args to use --enable-extended-tx-metadata-storage and remove \
             --enable-cpi-and-log-storage"
         );
+    }
+
+    if matches.is_present("enable_quic_servers") {
+        warn!("--enable-quic-servers is now the default behavior. This flag is deprecated and can be removed from the launch args");
     }
 
     let rpc_bigtable_config = if matches.is_present("enable_rpc_bigtable_ledger_storage")
@@ -2703,6 +2719,7 @@ pub fn main() {
             log_messages_bytes_limit: value_of(&matches, "log_messages_bytes_limit"),
             ..RuntimeConfig::default()
         },
+        enable_quic_servers,
         relayer_address: value_of(&matches, "relayer_address").unwrap_or_default(),
         block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
         tip_manager_config,
