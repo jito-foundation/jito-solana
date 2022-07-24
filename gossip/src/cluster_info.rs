@@ -1848,14 +1848,11 @@ impl ClusterInfo {
                 })
                 .collect()
         });
-        info!("num requests: {:?}", requests.len());
-
         if !requests.is_empty() {
             self.stats
                 .pull_requests_count
                 .add_relaxed(requests.len() as u64);
             let response = self.handle_pull_requests(thread_pool, recycler, requests, stakes);
-            info!("response: {:?}", response);
             if !response.is_empty() {
                 self.stats
                     .packets_sent_pull_responses_count
@@ -2346,7 +2343,6 @@ impl ClusterInfo {
         let _st = ScopedTimer::from(&self.stats.process_gossip_packets_time);
         // Filter out values if the shred-versions are different.
         let self_shred_version = self.my_shred_version();
-
         let packets = if self_shred_version == 0 {
             packets
         } else {
@@ -2367,8 +2363,6 @@ impl ClusterInfo {
                     .collect()
             })
         };
-
-        info!("process_packets: {:?}", packets);
 
         // Check if there is a duplicate instance of
         // this node with more recent timestamp.
@@ -2442,7 +2436,6 @@ impl ClusterInfo {
         self.handle_batch_pull_responses(pull_responses, thread_pool, stakes, epoch_duration);
         self.trim_crds_table(CRDS_UNIQUE_PUBKEY_CAPACITY, stakes);
         self.handle_batch_pong_messages(pong_messages, Instant::now());
-        info!("handle_batch_pull_requests");
         self.handle_batch_pull_requests(
             pull_requests,
             thread_pool,
