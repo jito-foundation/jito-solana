@@ -14,4 +14,5 @@ RUST_LOG=INFO \
   --tip-payment-program-pubkey DThZmRNNXh7kvTQW9hXeGoWGPKktK8pgVAyoTLjH7UrT \
   --tip-distribution-program-pubkey FjrdANjvo76aCYQ4kf9FM1R8aESUcEE6F8V7qyoVUQcM \
   --commission-bps 0 \
-  --shred-receiver-address 0.0.0.0:13330
+  --shred-receiver-address 0.0.0.0:13330 \
+  --allow-private-addr # necessary for testing block engine on localhost
