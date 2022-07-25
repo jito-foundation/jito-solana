@@ -13,7 +13,7 @@ use {
         },
         fetch_stage::FetchStage,
         find_packet_sender_stake_stage::FindPacketSenderStakeStage,
-        relayer_stage::RelayerAndBlockEngineStage,
+        relayer_stage::{RelayerAndBlockEngineConfig, RelayerAndBlockEngineStage},
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
@@ -104,8 +104,7 @@ impl Tpu {
         connection_cache: &Arc<ConnectionCache>,
         keypair: &Keypair,
         enable_quic_servers: bool,
-        relayer_address: String,
-        block_engine_address: String,
+        relayer_config: RelayerAndBlockEngineConfig,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Option<SocketAddr>,
     ) -> Self {
@@ -219,8 +218,7 @@ impl Tpu {
 
         let relayer_stage = RelayerAndBlockEngineStage::new(
             cluster_info,
-            relayer_address,
-            block_engine_address,
+            relayer_config,
             verified_sender,
             bundle_sender,
             packet_intercept_receiver,

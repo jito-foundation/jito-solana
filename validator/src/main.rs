@@ -25,6 +25,7 @@ use {
     },
     solana_core::{
         ledger_cleanup_service::{DEFAULT_MAX_LEDGER_SHREDS, DEFAULT_MIN_MAX_LEDGER_SHREDS},
+        relayer_stage::RelayerAndBlockEngineConfig,
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tower_storage,
@@ -1785,6 +1786,18 @@ pub fn main() {
                 .help("Address of the block engine")
         )
         .arg(
+            Arg::with_name("trust_relayer_packets")
+                .long("trust-relayer-packets")
+                .takes_value(false)
+                .help("Skip signature verification on relayer packets. Not recommended unless the relayer is self-operated.")
+        )
+        .arg(
+            Arg::with_name("trust_block_engine_packets")
+                .long("trust-block-engine-packets")
+                .takes_value(false)
+                .help("Skip signature verification on block engine packets. Not recommended unless the relayer is self-operated.")
+        )
+        .arg(
             Arg::with_name("tip_payment_program_pubkey")
                 .long("tip-payment-program-pubkey")
                 .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
@@ -2575,6 +2588,13 @@ pub fn main() {
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
+    let relayer_config = RelayerAndBlockEngineConfig {
+        relayer_address: value_of(&matches, "relayer_address").unwrap_or_default(),
+        trust_relayer_packets: matches.is_present("trust_relayer_packets"),
+        block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
+        trust_block_engine_packets: matches.is_present("trust_block_engine_packets"),
+    };
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -2701,8 +2721,7 @@ pub fn main() {
             ..RuntimeConfig::default()
         },
         enable_quic_servers,
-        relayer_address: value_of(&matches, "relayer_address").unwrap_or_default(),
-        block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
+        relayer_config,
         tip_manager_config,
         shred_receiver_address: matches
             .value_of("shred_receiver_address")
