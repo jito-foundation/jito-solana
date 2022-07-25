@@ -1789,13 +1789,13 @@ pub fn main() {
             Arg::with_name("trust_relayer_packets")
                 .long("trust-relayer-packets")
                 .takes_value(false)
-                .help("Skip signature verification on relayer packets. Not recommended unless the relayer is self-operated.")
+                .help("Skip signature verification on relayer packets.Not recommended unless the relayer is trusted.")
         )
         .arg(
             Arg::with_name("trust_block_engine_packets")
                 .long("trust-block-engine-packets")
                 .takes_value(false)
-                .help("Skip signature verification on block engine packets. Not recommended unless the relayer is self-operated.")
+                .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
         )
         .arg(
             Arg::with_name("tip_payment_program_pubkey")
