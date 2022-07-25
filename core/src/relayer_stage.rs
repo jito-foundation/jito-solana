@@ -248,6 +248,7 @@ impl RelayerAndBlockEngineStage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_relayer_threads(
         relayer_address: String,
         trust_relayer_packets: bool,
