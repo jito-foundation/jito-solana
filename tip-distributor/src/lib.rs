@@ -120,6 +120,20 @@ impl TreeNode {
             .parse()
             .map_err(|_| Error::Base58DecodeError)?;
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
+            let validator_fee = calc_validator_fee(
+                tip_distribution_meta.total_tips,
+                tip_distribution_meta.validator_fee_bps,
+            );
+            let mut tree_nodes = vec![TreeNode {
+                claimant: validator_vote_account,
+                amount: validator_fee,
+            }];
+
+            let remaining_tips = tip_distribution_meta
+                .total_tips
+                .checked_sub(validator_fee)
+                .unwrap();
+
             // The theoretically smallest weight an account can have is  (1 / SOL_TOTAL_SUPPLY_IN_LAMPORTS)
             // where we round SOL_TOTAL_SUPPLY is rounded to 500_000_000. We use u64::MAX. This gives a reasonable
             // guarantee that everyone gets paid out regardless of weight, as long as some non-zero amount of
@@ -129,7 +143,7 @@ impl TreeNode {
 
             let total_delegated = BigDecimal::try_from(stake_meta.total_delegated as f64)
                 .expect("failed to convert total_delegated to BigDecimal");
-            let mut tree_nodes = stake_meta
+            tree_nodes.extend(stake_meta
                 .delegations
                 .iter()
                 .map(|delegation| {
@@ -153,7 +167,7 @@ impl TreeNode {
                     let truncated_weight = BigUint::from(truncated_weight);
 
                     let mut amount = truncated_weight
-                        .checked_mul(&BigUint::from(tip_distribution_meta.total_tips))
+                        .checked_mul(&BigUint::from(remaining_tips))
                         .unwrap();
 
                     if use_multiplier {
@@ -165,14 +179,7 @@ impl TreeNode {
                         amount: amount.to_u64().unwrap(),
                     })
                 })
-                .collect::<Result<Vec<TreeNode>, Error>>()?;
-            tree_nodes.push(TreeNode {
-                claimant: validator_vote_account,
-                amount: calc_validator_fee(
-                    tip_distribution_meta.total_tips,
-                    tip_distribution_meta.validator_fee_bps,
-                ),
-            });
+                .collect::<Result<Vec<TreeNode>, Error>>()?);
 
             let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
                 sum.checked_add(tree_node.amount).unwrap()
@@ -543,16 +550,16 @@ mod tests {
 
         let tree_nodes = vec![
             TreeNode {
+                claimant: validator_vote_account_0.parse().unwrap(),
+                amount: 19_001_221_110,
+            },
+            TreeNode {
                 claimant: stake_account_0.parse().unwrap(),
-                amount: 151_507,
+                amount: 149_992,
             },
             TreeNode {
                 claimant: stake_account_1.parse().unwrap(),
-                amount: 176_624,
-            },
-            TreeNode {
-                claimant: validator_vote_account_0.parse().unwrap(),
-                amount: 19_001_221_110,
+                amount: 174_858,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
@@ -570,16 +577,16 @@ mod tests {
 
         let tree_nodes = vec![
             TreeNode {
+                claimant: validator_vote_account_1.parse().unwrap(),
+                amount: 38_002_442_227,
+            },
+            TreeNode {
                 claimant: stake_account_2.parse().unwrap(),
-                amount: 166_327,
+                amount: 163_000,
             },
             TreeNode {
                 claimant: stake_account_3.parse().unwrap(),
-                amount: 519_145_817,
-            },
-            TreeNode {
-                claimant: validator_vote_account_1.parse().unwrap(),
-                amount: 38_002_442_227,
+                amount: 508_762_900,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
@@ -614,13 +621,7 @@ mod tests {
                     expected_gmt.tip_distribution_account,
                     actual_gmt.tip_distribution_account
                 );
-                assert_eq!(
-                    expected_gmt.merkle_tree.get_root().unwrap(),
-                    actual_gmt.merkle_tree.get_root().unwrap()
-                );
-
                 assert_eq!(expected_gmt.tree_nodes.len(), actual_gmt.tree_nodes.len());
-
                 expected_gmt
                     .tree_nodes
                     .iter()
@@ -632,6 +633,10 @@ mod tests {
                             .unwrap();
                         assert_eq!(expected_tree_node.amount, actual_tree_node.amount);
                     });
+                assert_eq!(
+                    expected_gmt.merkle_tree.get_root().unwrap(),
+                    actual_gmt.merkle_tree.get_root().unwrap()
+                );
             });
     }
 }
