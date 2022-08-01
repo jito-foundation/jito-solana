@@ -2,7 +2,7 @@
 
 use {
     anchor_lang::error::Error, serde::Deserialize, solana_program::pubkey::Pubkey,
-    solana_sdk::transaction::TransactionError, thiserror::Error,
+    solana_sdk::transaction::TransactionError, std::time::Duration, thiserror::Error,
 };
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -21,6 +21,9 @@ pub enum BundleExecutionError {
 
     #[error("Shutdown triggered")]
     Shutdown,
+
+    #[error("The time spent retrying bundles exceeded the allowed time {0:?}")]
+    MaxRetriesExceeded(Duration),
 }
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -2,12 +2,16 @@ pub mod merkle_root_generator_workflow;
 pub mod stake_meta_generator_workflow;
 
 use {
-    crate::merkle_root_generator_workflow::Error,
+    crate::{
+        merkle_root_generator_workflow::Error,
+        stake_meta_generator_workflow::Error::CheckedMathError,
+    },
     anchor_lang::AccountDeserialize,
     bigdecimal::{num_bigint::BigUint, BigDecimal},
     log::*,
     num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
     serde::{Deserialize, Serialize},
+    solana_client::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
     solana_runtime::bank::Bank,
     solana_sdk::{
@@ -116,6 +120,20 @@ impl TreeNode {
             .parse()
             .map_err(|_| Error::Base58DecodeError)?;
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
+            let validator_fee = calc_validator_fee(
+                tip_distribution_meta.total_tips,
+                tip_distribution_meta.validator_fee_bps,
+            );
+            let mut tree_nodes = vec![TreeNode {
+                claimant: validator_vote_account,
+                amount: validator_fee,
+            }];
+
+            let remaining_tips = tip_distribution_meta
+                .total_tips
+                .checked_sub(validator_fee)
+                .unwrap();
+
             // The theoretically smallest weight an account can have is  (1 / SOL_TOTAL_SUPPLY_IN_LAMPORTS)
             // where we round SOL_TOTAL_SUPPLY is rounded to 500_000_000. We use u64::MAX. This gives a reasonable
             // guarantee that everyone gets paid out regardless of weight, as long as some non-zero amount of
@@ -125,7 +143,7 @@ impl TreeNode {
 
             let total_delegated = BigDecimal::try_from(stake_meta.total_delegated as f64)
                 .expect("failed to convert total_delegated to BigDecimal");
-            let mut tree_nodes = stake_meta
+            tree_nodes.extend(stake_meta
                 .delegations
                 .iter()
                 .map(|delegation| {
@@ -149,7 +167,7 @@ impl TreeNode {
                     let truncated_weight = BigUint::from(truncated_weight);
 
                     let mut amount = truncated_weight
-                        .checked_mul(&BigUint::from(tip_distribution_meta.total_tips))
+                        .checked_mul(&BigUint::from(remaining_tips))
                         .unwrap();
 
                     if use_multiplier {
@@ -161,14 +179,7 @@ impl TreeNode {
                         amount: amount.to_u64().unwrap(),
                     })
                 })
-                .collect::<Result<Vec<TreeNode>, Error>>()?;
-            tree_nodes.push(TreeNode {
-                claimant: validator_vote_account,
-                amount: calc_validator_fee(
-                    tip_distribution_meta.total_tips,
-                    tip_distribution_meta.validator_fee_bps,
-                ),
-            });
+                .collect::<Result<Vec<TreeNode>, Error>>()?);
 
             let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
                 sum.checked_add(tree_node.amount).unwrap()
@@ -211,7 +222,7 @@ pub struct StakeMetaCollection {
     pub slot: Slot,
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct StakeMeta {
     /// The validator's base58 encoded vote account.
     pub validator_vote_account: String,
@@ -229,7 +240,7 @@ pub struct StakeMeta {
     pub commission: u8,
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct TipDistributionMeta {
     /// The account authorized to generate and upload a merkle_root for the validator.
     pub merkle_root_upload_authority: String,
@@ -245,7 +256,34 @@ pub struct TipDistributionMeta {
     pub validator_fee_bps: u16,
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq)]
+impl TipDistributionMeta {
+    fn from_tda_wrapper(
+        tda_wrapper: TipDistributionAccountWrapper,
+        // The amount that will be left remaining in the tda to maintain rent exemption status.
+        rent_exempt_amount: u64,
+    ) -> Result<Self, stake_meta_generator_workflow::Error> {
+        Ok(TipDistributionMeta {
+            tip_distribution_account: bs58::encode(tda_wrapper.tip_distribution_account_pubkey)
+                .into_string(),
+            total_tips: tda_wrapper
+                .account_data
+                .lamports()
+                .checked_sub(rent_exempt_amount)
+                .ok_or(CheckedMathError)?,
+            validator_fee_bps: tda_wrapper
+                .tip_distribution_account
+                .validator_commission_bps,
+            merkle_root_upload_authority: bs58::encode(
+                tda_wrapper
+                    .tip_distribution_account
+                    .merkle_root_upload_authority,
+            )
+            .into_string(),
+        })
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct Delegation {
     /// The stake account of interest base58 encoded.
     pub stake_account: String,
@@ -277,25 +315,29 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
-/// Fetches and deserializes the vote_pubkey's corresponding [TipDistributionAccount] from the accounts' DB.
-pub fn fetch_tip_distribution_account(
-    bank: &Arc<Bank>,
+pub trait AccountFetcher {
+    fn fetch_account(
+        &self,
+        pubkey: &Pubkey,
+    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error>;
+}
+
+/// Fetches and deserializes the vote_pubkey's corresponding [TipDistributionAccount].
+pub fn fetch_and_deserialize_tip_distribution_account(
+    account_fetcher: Arc<Box<dyn AccountFetcher>>,
     vote_pubkey: &Pubkey,
     tip_distribution_program_id: &Pubkey,
-) -> Result<Option<TipDistributionAccountWrapper>, anchor_lang::error::Error> {
-    let tip_distribution_account_pubkey = derive_tip_distribution_account_address(
-        tip_distribution_program_id,
-        vote_pubkey,
-        bank.epoch(),
-    )
-    .0;
+    epoch: Epoch,
+) -> Result<Option<TipDistributionAccountWrapper>, stake_meta_generator_workflow::Error> {
+    let tip_distribution_account_pubkey =
+        derive_tip_distribution_account_address(tip_distribution_program_id, vote_pubkey, epoch).0;
 
-    match bank.get_account(&tip_distribution_account_pubkey) {
+    match account_fetcher.fetch_account(&tip_distribution_account_pubkey)? {
         None => {
             warn!(
                 "TipDistributionAccount not found for vote_pubkey {}, epoch {}, tip_distribution_account_pubkey {}",
                 vote_pubkey,
-                bank.epoch(),
+                epoch,
                 tip_distribution_account_pubkey,
             );
             Ok(None)
@@ -307,6 +349,43 @@ pub fn fetch_tip_distribution_account(
             account_data,
             tip_distribution_account_pubkey,
         })),
+    }
+}
+
+struct BankAccountFetcher {
+    bank: Arc<Bank>,
+}
+
+impl AccountFetcher for BankAccountFetcher {
+    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from the accounts DB.
+    fn fetch_account(
+        &self,
+        pubkey: &Pubkey,
+    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
+        Ok(self.bank.get_account(pubkey))
+    }
+}
+
+struct RpcAccountFetcher {
+    rpc_client: RpcClient,
+}
+
+impl AccountFetcher for RpcAccountFetcher {
+    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from an RPC node.
+    fn fetch_account(
+        &self,
+        pubkey: &Pubkey,
+    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
+        match self
+            .rpc_client
+            .get_account_with_commitment(pubkey, self.rpc_client.commitment())
+        {
+            Ok(resp) => Ok(resp.value.map(|a| a.into())),
+            Err(e) => {
+                error!("error fetching account {}", e);
+                Err(e.into())
+            }
+        }
     }
 }
 
@@ -471,16 +550,16 @@ mod tests {
 
         let tree_nodes = vec![
             TreeNode {
+                claimant: validator_vote_account_0.parse().unwrap(),
+                amount: 19_001_221_110,
+            },
+            TreeNode {
                 claimant: stake_account_0.parse().unwrap(),
-                amount: 151_507,
+                amount: 149_992,
             },
             TreeNode {
                 claimant: stake_account_1.parse().unwrap(),
-                amount: 176_624,
-            },
-            TreeNode {
-                claimant: validator_vote_account_0.parse().unwrap(),
-                amount: 19_001_221_110,
+                amount: 174_858,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
@@ -498,16 +577,16 @@ mod tests {
 
         let tree_nodes = vec![
             TreeNode {
+                claimant: validator_vote_account_1.parse().unwrap(),
+                amount: 38_002_442_227,
+            },
+            TreeNode {
                 claimant: stake_account_2.parse().unwrap(),
-                amount: 166_327,
+                amount: 163_000,
             },
             TreeNode {
                 claimant: stake_account_3.parse().unwrap(),
-                amount: 519_145_817,
-            },
-            TreeNode {
-                claimant: validator_vote_account_1.parse().unwrap(),
-                amount: 38_002_442_227,
+                amount: 508_762_900,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
@@ -542,13 +621,7 @@ mod tests {
                     expected_gmt.tip_distribution_account,
                     actual_gmt.tip_distribution_account
                 );
-                assert_eq!(
-                    expected_gmt.merkle_tree.get_root().unwrap(),
-                    actual_gmt.merkle_tree.get_root().unwrap()
-                );
-
                 assert_eq!(expected_gmt.tree_nodes.len(), actual_gmt.tree_nodes.len());
-
                 expected_gmt
                     .tree_nodes
                     .iter()
@@ -560,6 +633,10 @@ mod tests {
                             .unwrap();
                         assert_eq!(expected_tree_node.amount, actual_tree_node.amount);
                     });
+                assert_eq!(
+                    expected_gmt.merkle_tree.get_root().unwrap(),
+                    actual_gmt.merkle_tree.get_root().unwrap()
+                );
             });
     }
 }

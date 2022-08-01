@@ -12,9 +12,8 @@ use {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// The path to the keypair used to sign the `upload_merkle_root` transactions.
-    /// This will skip uploading to accounts where `merkle_root_upload_authority`
-    /// does not match this keypair.
+    /// The path to the keypair used to sign and pay for the `upload_merkle_root` transactions.
+    /// This will skip uploading to accounts where `merkle_root_upload_authority` does not match this keypair.
     #[clap(long, env)]
     path_to_my_keypair: PathBuf,
 

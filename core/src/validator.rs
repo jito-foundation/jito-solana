@@ -11,6 +11,7 @@ use {
         consensus::{reconcile_blockstore_roots_with_external_source, ExternalRootSource, Tower},
         ledger_metric_report_service::LedgerMetricReportService,
         poh_timing_report_service::PohTimingReportService,
+        relayer_stage::RelayerAndBlockEngineConfig,
         rewards_recorder_service::{RewardsRecorderSender, RewardsRecorderService},
         sample_performance_service::SamplePerformanceService,
         serve_repair::ServeRepair,
@@ -178,8 +179,7 @@ pub struct ValidatorConfig {
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
     pub enable_quic_servers: bool,
-    pub relayer_address: String,
-    pub block_engine_address: String,
+    pub relayer_config: RelayerAndBlockEngineConfig,
     pub shred_receiver_address: Option<SocketAddr>,
     pub tip_manager_config: TipManagerConfig,
 }
@@ -243,9 +243,8 @@ impl Default for ValidatorConfig {
             wait_to_vote_slot: None,
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
-            enable_quic_servers: true,
-            relayer_address: String::new(),
-            block_engine_address: String::new(),
+            enable_quic_servers: false,
+            relayer_config: RelayerAndBlockEngineConfig::default(),
             shred_receiver_address: None,
             tip_manager_config: TipManagerConfig::default(),
         }
@@ -362,9 +361,6 @@ pub struct Validator {
     ledger_metric_report_service: LedgerMetricReportService,
     accounts_background_service: AccountsBackgroundService,
     accounts_hash_verifier: AccountsHashVerifier,
-    pub relayer_address: String,
-    pub block_engine_address: String,
-    pub shred_receiver_address: Option<SocketAddr>,
 }
 
 // in the distant future, get rid of ::new()/exit() and use Result properly...
@@ -1038,8 +1034,7 @@ impl Validator {
             &identity_keypair,
             config.runtime_config.log_messages_bytes_limit,
             config.enable_quic_servers,
-            config.relayer_address.clone(),
-            config.block_engine_address.clone(),
+            config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address,
         );
@@ -1084,9 +1079,6 @@ impl Validator {
             ledger_metric_report_service,
             accounts_background_service,
             accounts_hash_verifier,
-            relayer_address: config.relayer_address.clone(),
-            block_engine_address: config.block_engine_address.clone(),
-            shred_receiver_address: config.shred_receiver_address,
         }
     }
 

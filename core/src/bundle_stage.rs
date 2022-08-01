@@ -55,10 +55,12 @@ use {
             Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
-        time::Duration,
+        time::{Duration, Instant},
     },
     uuid::Uuid,
 };
+
+const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
 
 type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
 
@@ -96,6 +98,7 @@ impl BundleStage {
             exit,
             tip_manager,
             bundle_account_locker,
+            MAX_BUNDLE_RETRY_DURATION,
         )
     }
 
@@ -110,6 +113,7 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        max_bundle_retry_duration: Duration,
     ) -> Self {
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
@@ -129,6 +133,7 @@ impl BundleStage {
                     exit,
                     tip_manager,
                     bundle_account_locker,
+                    max_bundle_retry_duration,
                 );
             })
             .unwrap();
@@ -227,6 +232,7 @@ impl BundleStage {
         qos_service: &QosService,
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<()> {
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
@@ -260,6 +266,7 @@ impl BundleStage {
             gossip_vote_sender,
             bank_start,
             execute_and_commit_timings,
+            max_bundle_retry_duration,
         ) {
             Ok(commit_transaction_details) => {
                 // NOTE: Assumptions made on the QoS transaction costs:
@@ -301,6 +308,7 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
         let mut account_overrides = AccountOverrides {
             accounts: HashMap::with_capacity(20),
@@ -315,6 +323,7 @@ impl BundleStage {
         } = bank_start;
 
         let mut chunk_start = 0;
+        let start_time = Instant::now();
         while chunk_start != sanitized_bundle.transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
                 return Err(BundleExecutionError::PohMaxHeightError);
@@ -327,6 +336,12 @@ impl BundleStage {
             let chunk_end = std::cmp::min(sanitized_bundle.transactions.len(), chunk_start + 128);
             let chunk = &sanitized_bundle.transactions[chunk_start..chunk_end];
             let batch = bank.prepare_sequential_sanitized_batch_with_results(chunk, None);
+
+            // Ensures that bundle lock results only return either:
+            //  Ok(())
+            //  Err(TransactionError::AccountInUse)
+            //  Err(TransactionError::BundleNotContinuous)
+            // if unexpected failure case, the bundle can't be executed
             // NOTE: previous logging around batch here caused issues with
             // unit tests failing due to PoH hitting max height. Unknown why. Be advised.
             if let Some((e, _)) = check_bundle_lock_results(batch.lock_results()) {
@@ -359,8 +374,12 @@ impl BundleStage {
             );
             execute_and_commit_timings.load_execute_us = load_execute_time.as_us();
 
-            // Return error if executed and failed or didn't execute because of an unexpected reason
-            // (AlreadyProcessed, InsufficientFundsForFee, etc.)
+            // Return error if executed and failed or didn't execute because of an unexpected reason.
+            // The only acceptable reasons for not executing would be failure to lock errors from:
+            //  Ok(())
+            //  Err(TransactionError::AccountInUse)
+            //  Err(TransactionError::BundleNotContinuous)
+            // If there's another error (AlreadyProcessed, InsufficientFundsForFee, etc.), bail out
             if let Err((e, _)) = TransactionExecutionResult::check_bundle_execution_results(
                 load_and_execute_transactions_output
                     .execution_results
@@ -370,14 +389,21 @@ impl BundleStage {
                 return Err(e);
             }
 
-            // if none were executed, nothing to do.
-            // should only this is if AccountInUse due to a lock in BankingStage
+            // The errors have been checked above, now check to see if any were executed at all
+            // If none were executed, check to see if the bundle timed out and if so, return timeout
+            // error
             if !load_and_execute_transactions_output
                 .execution_results
                 .iter()
                 .any(|r| r.was_executed())
             {
-                warn!("none of the transactions executed, trying again");
+                warn!("none of the transactions were executed");
+                let bundle_execution_elapsed = start_time.elapsed();
+                if bundle_execution_elapsed >= *max_bundle_retry_duration {
+                    return Err(BundleExecutionError::MaxRetriesExceeded(
+                        bundle_execution_elapsed,
+                    ));
+                }
                 continue;
             }
 
@@ -435,12 +461,14 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
         let execution_results = Self::execute_bundle(
             sanitized_bundle,
             transaction_status_sender,
             bank_start,
             execute_and_commit_timings,
+            max_bundle_retry_duration,
         )?;
         // in order for bundle to succeed, it most have something to record + commit
         assert!(!execution_results.is_empty());
@@ -711,6 +739,7 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         gossip_vote_sender: &ReplayVoteSender,
         cluster_info: &Arc<ClusterInfo>,
+        max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<()> {
         let BankStart {
             working_bank: bank, ..
@@ -770,6 +799,7 @@ impl BundleStage {
                 qos_service,
                 bank_start,
                 execute_and_commit_timings,
+                max_bundle_retry_duration,
             )?;
             info!("successfully executed init txs");
         }
@@ -799,6 +829,7 @@ impl BundleStage {
                 qos_service,
                 bank_start,
                 execute_and_commit_timings,
+                max_bundle_retry_duration,
             )?;
         }
         Ok(())
@@ -818,6 +849,7 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         tip_manager: &TipManager,
+        max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<()> {
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         loop {
@@ -847,6 +879,7 @@ impl BundleStage {
                             &mut execute_and_commit_timings,
                             gossip_vote_sender,
                             cluster_info,
+                            max_bundle_retry_duration,
                         ) {
                             Ok(_) => {
                                 info!("successfully changed tip receiver");
@@ -869,6 +902,7 @@ impl BundleStage {
                         qos_service,
                         &bank_start,
                         &mut execute_and_commit_timings,
+                        max_bundle_retry_duration,
                     ) {
                         Ok(_) => {
                             bundle_account_locker
@@ -923,6 +957,7 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        max_bundle_retry_duration: Duration,
     ) {
         let recorder = poh_recorder.read().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
@@ -957,6 +992,7 @@ impl BundleStage {
                         &gossip_vote_sender,
                         &qos_service,
                         &tip_manager,
+                        &max_bundle_retry_duration,
                     ) {
                         Ok(_) => {
                             // keep going
@@ -1076,7 +1112,8 @@ mod tests {
             packet::Packet,
             poh_config::PohConfig,
             signature::{Keypair, Signer},
-            system_instruction, system_transaction,
+            system_instruction,
+            system_transaction::{self, transfer},
             transaction::{
                 Transaction,
                 TransactionError::{self, AccountNotFound},
@@ -1084,6 +1121,7 @@ mod tests {
         },
         std::{collections::HashSet, sync::atomic::Ordering},
     };
+    const TEST_MAX_RETRY_DURATION: Duration = Duration::from_millis(500);
 
     const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
@@ -1146,6 +1184,7 @@ mod tests {
             &qos_service,
             &bank_start,
             &mut execute_and_commit_timings,
+            &TEST_MAX_RETRY_DURATION,
         );
 
         // This is ugly, not really an option for testing but a test itself.
@@ -1508,6 +1547,97 @@ mod tests {
         // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_account_locker, &poh_recorder);
         // assert!(scheduled_bundles.is_ok());
         // assert_eq!(bundle_account_locker.lock().unwrap().num_bundles(), 0);
+        exit.store(true, Ordering::Relaxed);
+        poh_service.join().unwrap();
+    }
+
+    #[test]
+    fn test_bundle_max_retries() {
+        solana_logger::setup_with_default("INFO");
+
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(100_000_000);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(u64::MAX, u64::MAX, u64::MAX);
+
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Arc::new(
+            Blockstore::open(ledger_path.path())
+                .expect("Expected to be able to open database ledger"),
+        );
+        let poh_config = PohConfig {
+            // limit tick count to avoid clearing working_bank at
+            // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
+            target_tick_count: Some(bank.max_tick_height() - 1), // == 1, only enough for ticks, not txs
+            ..PohConfig::default()
+        };
+        let (exit, poh_recorder, poh_service, _entry_receiver) =
+            create_test_recorder(&bank, &blockstore, Some(poh_config), None);
+        let recorder = poh_recorder.read().unwrap().recorder();
+        let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
+        let cost_model = Arc::new(RwLock::new(CostModel::default()));
+        let qos_service = QosService::new(cost_model, 0);
+        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
+        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+
+        // Create two transfers
+        // 0. mint_keypair -> keypair0
+        // 1. keypair0 -> keypair 1
+        // Lock the accounts through the bank for tx1 and try to process tx0.
+        // It should timeout because BundleStage will continue to fail to get locks on keypair0.
+
+        let keypair0 = Keypair::new();
+        let keypair1 = Keypair::new();
+
+        let tx0 = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &keypair0.pubkey(),
+            100_000,
+            genesis_config.hash(),
+        ));
+
+        let tx1 = transfer(&keypair0, &keypair1.pubkey(), 50_000, genesis_config.hash());
+        let sanitized_txs_1 = vec![SanitizedTransaction::from_transaction_for_tests(tx1)];
+
+        let mut bundle_account_locker =
+            BundleAccountLocker::new(NUM_BUNDLES_PRE_LOCK, &Pubkey::new_unique());
+
+        // grab lock on tx1
+        let _batch = bank.prepare_sanitized_batch(&sanitized_txs_1);
+
+        // push and pop tx0
+        let bundle = PacketBundle {
+            batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
+            uuid: Uuid::new_v4(),
+        };
+        info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
+
+        bundle_account_locker.push(vec![bundle]);
+        let locked_bundle = bundle_account_locker
+            .pop(&bank, &HashSet::default())
+            .unwrap();
+
+        let result = BundleStage::update_qos_and_execute_record_commit_bundle(
+            locked_bundle.sanitized_bundle(),
+            &recorder,
+            &None,
+            &gossip_vote_sender,
+            &qos_service,
+            &bank_start,
+            &mut execute_and_commit_timings,
+            &TEST_MAX_RETRY_DURATION,
+        );
+        info!("test_bundle_max_retries result: {:?}", result);
+        assert!(matches!(
+            result,
+            Err(BundleExecutionError::MaxRetriesExceeded(_))
+        ));
+
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
     }

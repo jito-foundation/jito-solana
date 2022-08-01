@@ -67,6 +67,14 @@ const HEARTBEAT_TIMEOUT_MS: Duration = Duration::from_millis(1500); // Empirical
 const DISCONNECT_DELAY_SEC: Duration = Duration::from_secs(60);
 const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
 
+#[derive(Clone, Debug, Default)]
+pub struct RelayerAndBlockEngineConfig {
+    pub relayer_address: String,
+    pub trust_relayer_packets: bool,
+    pub block_engine_address: String,
+    pub trust_block_engine_packets: bool,
+}
+
 /// Intercepts requests and adds the necessary headers for auth.
 #[derive(Clone)]
 pub struct AuthInterceptor {
@@ -187,10 +195,11 @@ pub struct RelayerAndBlockEngineStage {
 }
 
 impl RelayerAndBlockEngineStage {
+    /// verified_packet_sender is the same channel verified packets are sent on.
+    /// packet_sender goes through the find sender stake and rest of the TPU
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
-        relayer_address: String,
-        block_engine_address: String,
+        relayer_config: RelayerAndBlockEngineConfig,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: Sender<Vec<PacketBundle>>,
         packet_intercept_receiver: Receiver<PacketBatch>,
@@ -199,11 +208,21 @@ impl RelayerAndBlockEngineStage {
     ) -> Self {
         let (tpu_proxy_heartbeat_sender, tpu_proxy_heartbeat_receiver) = unbounded();
 
+        let RelayerAndBlockEngineConfig {
+            relayer_address,
+            trust_relayer_packets,
+            block_engine_address,
+            trust_block_engine_packets,
+        } = relayer_config;
+
         let proxy_threads = Self::spawn_relayer_threads(
             relayer_address,
+            trust_relayer_packets,
             block_engine_address,
+            trust_block_engine_packets,
             cluster_info,
             verified_packet_sender,
+            packet_sender.clone(),
             tpu_proxy_heartbeat_sender.clone(),
             bundle_sender,
             exit.clone(),
@@ -229,11 +248,15 @@ impl RelayerAndBlockEngineStage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_relayer_threads(
         relayer_address: String,
+        trust_relayer_packets: bool,
         block_engine_address: String,
+        trust_block_engine_packets: bool,
         cluster_info: &Arc<ClusterInfo>,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        packet_sender: Sender<PacketBatch>,
         tpu_proxy_heartbeat_sender: Sender<HeartbeatEvent>,
         bundle_sender: Sender<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
@@ -244,6 +267,8 @@ impl RelayerAndBlockEngineStage {
             // the block engine heartbeat controls the TPU address
             vec![Self::start_block_engine_thread(
                 block_engine_address,
+                trust_block_engine_packets,
+                packet_sender,
                 verified_packet_sender,
                 Some(tpu_proxy_heartbeat_sender),
                 bundle_sender,
@@ -258,6 +283,8 @@ impl RelayerAndBlockEngineStage {
             vec![
                 Self::start_block_engine_thread(
                     block_engine_address,
+                    trust_block_engine_packets,
+                    packet_sender.clone(),
                     verified_packet_sender.clone(),
                     None, // connected to a relayer, the relayer will heartbeat to tpu
                     bundle_sender,
@@ -266,6 +293,8 @@ impl RelayerAndBlockEngineStage {
                 ),
                 Self::start_relayer_thread(
                     relayer_address,
+                    trust_relayer_packets,
+                    packet_sender,
                     verified_packet_sender,
                     Some(tpu_proxy_heartbeat_sender),
                     cluster_info.clone(),
@@ -280,6 +309,8 @@ impl RelayerAndBlockEngineStage {
     /// the block engine's IP address.
     fn start_block_engine_thread(
         address: String,
+        trust_block_engine_packets: bool,
+        packet_sender: Sender<PacketBatch>, // if !trust_block_engine_packets, use this sender for packets
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
         bundle_sender: Sender<Vec<PacketBundle>>,
@@ -330,6 +361,8 @@ impl RelayerAndBlockEngineStage {
                                         token,
                                         max_retries: 4,
                                     },
+                                    &trust_block_engine_packets,
+                                    &packet_sender,
                                     &verified_packet_sender,
                                     &tpu_proxy_heartbeat_sender,
                                     &bundle_sender,
@@ -358,6 +391,8 @@ impl RelayerAndBlockEngineStage {
 
     async fn start_block_engine_stream(
         mut client_wrapper: BlockEngineValidatorClientWrapper,
+        trust_block_engine_packets: &bool,
+        packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         bundle_sender: &Sender<Vec<PacketBundle>>,
@@ -399,6 +434,8 @@ impl RelayerAndBlockEngineStage {
             maybe_heartbeat_event,
             subscribe_packets_stream,
             subscribe_bundles_stream,
+            trust_block_engine_packets,
+            packet_sender,
             verified_packet_sender,
             bundle_sender,
             tpu_proxy_heartbeat_sender,
@@ -409,6 +446,8 @@ impl RelayerAndBlockEngineStage {
 
     async fn start_relayer_stream(
         mut client_wrapper: RelayerClientWrapper,
+        trust_relayer_packets: &bool,
+        packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         exit: &Arc<AtomicBool>,
@@ -443,6 +482,8 @@ impl RelayerAndBlockEngineStage {
         Self::stream_relayer_packets(
             heartbeat_event,
             subscribe_packets_stream,
+            trust_relayer_packets,
+            packet_sender,
             verified_packet_sender,
             tpu_proxy_heartbeat_sender,
             exit,
@@ -453,6 +494,8 @@ impl RelayerAndBlockEngineStage {
     async fn stream_relayer_packets(
         heartbeat_event: HeartbeatEvent,
         mut packet_stream: Streaming<relayer::SubscribePacketsResponse>,
+        trust_relayer_packets: &bool,
+        packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
         exit: &Arc<AtomicBool>,
@@ -469,7 +512,7 @@ impl RelayerAndBlockEngineStage {
 
             tokio::select! {
                 maybe_packets = packet_stream.message() => {
-                    Self::handle_relayer_packets(maybe_packets, &heartbeat_event, tpu_proxy_heartbeat_sender, verified_packet_sender, &mut last_heartbeat)?;
+                    Self::handle_relayer_packets(maybe_packets, &heartbeat_event, tpu_proxy_heartbeat_sender, trust_relayer_packets, packet_sender, verified_packet_sender, &mut last_heartbeat)?;
                 }
                 _ = heartbeat_check_tick.tick() => {
                     if last_heartbeat.elapsed() > Duration::from_millis(1_500) {
@@ -484,6 +527,8 @@ impl RelayerAndBlockEngineStage {
         maybe_heartbeat_event: Option<HeartbeatEvent>,
         mut packet_stream: Streaming<block_engine::SubscribePacketsResponse>,
         mut bundle_stream: Streaming<block_engine::SubscribeBundlesResponse>,
+        trust_block_engine_packets: &bool,
+        packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         bundle_sender: &Sender<Vec<PacketBundle>>,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
@@ -500,7 +545,7 @@ impl RelayerAndBlockEngineStage {
 
             tokio::select! {
                 maybe_packets = packet_stream.message() => {
-                    Self::handle_block_engine_packets(maybe_packets, &maybe_heartbeat_event, tpu_proxy_heartbeat_sender, verified_packet_sender, &mut last_heartbeat)?;
+                    Self::handle_block_engine_packets(maybe_packets, &maybe_heartbeat_event, tpu_proxy_heartbeat_sender, trust_block_engine_packets, packet_sender, verified_packet_sender, &mut last_heartbeat)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_sender)?;
@@ -549,6 +594,8 @@ impl RelayerAndBlockEngineStage {
         maybe_packets_response: result::Result<Option<relayer::SubscribePacketsResponse>, Status>,
         maybe_heartbeat_event: &HeartbeatEvent,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        trust_relayer_packets: &bool,
+        packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         last_heartbeat: &mut Instant,
     ) -> Result<()> {
@@ -563,9 +610,16 @@ impl RelayerAndBlockEngineStage {
                         .map(proto_packet_to_packet)
                         .collect(),
                 );
-                verified_packet_sender
-                    .send((vec![packet_batch], None))
-                    .map_err(|_| RelayerStageError::PacketForwardError)?;
+
+                if *trust_relayer_packets {
+                    verified_packet_sender
+                        .send((vec![packet_batch], None))
+                        .map_err(|_| RelayerStageError::PacketForwardError)?;
+                } else {
+                    packet_sender
+                        .send(packet_batch)
+                        .map_err(|_| RelayerStageError::PacketForwardError)?;
+                }
             }
             Some(relayer::subscribe_packets_response::Msg::Heartbeat(_)) => {
                 *last_heartbeat = Instant::now();
@@ -586,6 +640,8 @@ impl RelayerAndBlockEngineStage {
         >,
         maybe_heartbeat_event: &Option<HeartbeatEvent>,
         tpu_proxy_heartbeat_sender: &Option<Sender<HeartbeatEvent>>,
+        trust_block_engine_packets: &bool,
+        packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         last_heartbeat: &mut Instant,
     ) -> Result<()> {
@@ -600,9 +656,15 @@ impl RelayerAndBlockEngineStage {
                         .map(proto_packet_to_packet)
                         .collect(),
                 );
-                verified_packet_sender
-                    .send((vec![packet_batch], None))
-                    .map_err(|_| RelayerStageError::PacketForwardError)?;
+                if *trust_block_engine_packets {
+                    verified_packet_sender
+                        .send((vec![packet_batch], None))
+                        .map_err(|_| RelayerStageError::PacketForwardError)?;
+                } else {
+                    packet_sender
+                        .send(packet_batch)
+                        .map_err(|_| RelayerStageError::PacketForwardError)?;
+                }
             }
             Some(block_engine::subscribe_packets_response::Msg::Heartbeat(_)) => {
                 *last_heartbeat = Instant::now();
@@ -618,6 +680,8 @@ impl RelayerAndBlockEngineStage {
 
     fn start_relayer_thread(
         address: String,
+        trust_relayer_packets: bool,
+        packet_sender: Sender<PacketBatch>, // if !trust_relayer_packets, use this sender for packets
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
         cluster_info: Arc<ClusterInfo>,
@@ -653,6 +717,8 @@ impl RelayerAndBlockEngineStage {
                                 };
                                 match Self::start_relayer_stream(
                                     client_wrapper,
+                                    &trust_relayer_packets,
+                                    &packet_sender,
                                     &verified_packet_sender,
                                     &tpu_proxy_heartbeat_sender,
                                     &exit,
