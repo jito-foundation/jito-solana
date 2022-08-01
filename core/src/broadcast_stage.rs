@@ -154,7 +154,7 @@ trait BroadcastRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
-        shred_receiver_service: Option<SocketAddr>,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &Mutex<RecordReceiver>, blockstore: &Blockstore) -> Result<()>;
 }

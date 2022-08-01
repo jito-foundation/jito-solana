@@ -19,7 +19,7 @@ use {
         sigverify,
         snapshot_packager_service::SnapshotPackagerService,
         stats_reporter_service::StatsReporterService,
-        system_monitor_service::{verify_udp_stats_access, SystemMonitorService},
+        system_monitor_service::{verify_net_stats_access, SystemMonitorService},
         tip_manager::TipManagerConfig,
         tower_storage::TowerStorage,
         tpu::{Tpu, TpuSockets, DEFAULT_TPU_COALESCE_MS},
@@ -92,7 +92,7 @@ use {
         clock::Slot,
         epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
         exit::Exit,
-        genesis_config::{ClusterType, GenesisConfig},
+        genesis_config::GenesisConfig,
         hash::Hash,
         pubkey::Pubkey,
         shred_version::compute_shred_version,
@@ -400,8 +400,8 @@ impl Validator {
         warn!("vote account: {}", vote_account);
 
         if !config.no_os_network_stats_reporting {
-            verify_udp_stats_access().unwrap_or_else(|err| {
-                error!("Failed to access UDP stats: {}. Bypass check with --no-os-network-stats-reporting.", err);
+            verify_net_stats_access().unwrap_or_else(|err| {
+                error!("Failed to access Network stats: {}. Bypass check with --no-os-network-stats-reporting.", err);
                 abort();
             });
         }
@@ -766,7 +766,13 @@ impl Validator {
         let poh_recorder = Arc::new(RwLock::new(poh_recorder));
 
         let connection_cache = match use_quic {
-            true => Arc::new(ConnectionCache::new(tpu_connection_pool_size)),
+            true => {
+                let mut connection_cache = ConnectionCache::new(tpu_connection_pool_size);
+                connection_cache
+                    .update_client_certificate(&identity_keypair, node.info.gossip.ip())
+                    .expect("Failed to update QUIC client certificates");
+                Arc::new(connection_cache)
+            }
             false => Arc::new(ConnectionCache::with_udp(tpu_connection_pool_size)),
         };
 
@@ -990,21 +996,10 @@ impl Validator {
             block_metadata_notifier,
             config.wait_to_vote_slot,
             accounts_background_request_sender,
+            config.runtime_config.log_messages_bytes_limit,
             &connection_cache,
             config.shred_receiver_address,
         );
-
-        let enable_quic_servers = if genesis_config.cluster_type == ClusterType::MainnetBeta {
-            config.enable_quic_servers
-        } else {
-            if config.enable_quic_servers {
-                warn!(
-                    "ignoring --enable-quic-servers. QUIC is always enabled for cluster type: {:?}",
-                    genesis_config.cluster_type
-                );
-            }
-            true
-        };
 
         let tpu = Tpu::new(
             &cluster_info,
@@ -1037,7 +1032,8 @@ impl Validator {
             &cost_model,
             &connection_cache,
             &identity_keypair,
-            enable_quic_servers,
+            config.runtime_config.log_messages_bytes_limit,
+            config.enable_quic_servers,
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address,

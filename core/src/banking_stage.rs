@@ -9,7 +9,7 @@ use {
         leader_slot_banking_stage_timing_metrics::{
             LeaderExecuteAndCommitTimings, RecordTransactionsTimings,
         },
-        qos_service::{CommitTransactionDetails, QosService},
+        qos_service::QosService,
         sigverify::SigverifyTracerPacketStats,
         tracer_packet_stats::TracerPacketStats,
         unprocessed_packet_batches::{self, *},
@@ -113,6 +113,12 @@ struct RecordTransactionsSummary {
     result: Result<(), PohRecorderError>,
     // Index in the slot of the first transaction recorded
     starting_transaction_index: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommitTransactionDetails {
+    Committed { compute_units: u64 },
+    NotCommitted,
 }
 
 pub struct ExecuteAndCommitTransactionsOutput {
@@ -392,10 +398,11 @@ impl BankingStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
+        log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
+        bank_forks: Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
-        bank_forks: Arc<RwLock<BankForks>>,
     ) -> Self {
         Self::new_num_threads(
             cluster_info,
@@ -407,10 +414,11 @@ impl BankingStage {
             transaction_status_sender,
             gossip_vote_sender,
             cost_model,
+            log_messages_bytes_limit,
             connection_cache,
+            bank_forks,
             tip_accounts,
             bundle_account_locker,
-            bank_forks,
         )
     }
 
@@ -425,10 +433,11 @@ impl BankingStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: ReplayVoteSender,
         cost_model: Arc<RwLock<CostModel>>,
+        log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
+        bank_forks: Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
-        bank_forks: Arc<RwLock<BankForks>>,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -463,6 +472,7 @@ impl BankingStage {
                 let connection_cache = connection_cache.clone();
                 let tip_accounts = tip_accounts.clone();
                 let bundle_account_locker = bundle_account_locker.clone();
+
                 let bank_forks = bank_forks.clone();
                 Builder::new()
                     .name(format!("solana-banking-stage-tx-{}", i))
@@ -479,10 +489,11 @@ impl BankingStage {
                             gossip_vote_sender,
                             &data_budget,
                             cost_model,
+                            log_messages_bytes_limit,
                             connection_cache,
+                            &bank_forks,
                             tip_accounts,
                             bundle_account_locker,
-                            &bank_forks,
                         );
                     })
                     .unwrap()
@@ -529,6 +540,14 @@ impl BankingStage {
             result
         };
 
+        // Iterates buffered packets from high priority to low, places each packet into
+        // forwarding account buckets by calling `forward_packet_batches_by_accounts.add_packet()`.
+        // Iteration stops as soon as `add_packet()` returns false when a packet fails to fit into
+        // buckets, ignoring remaining lower priority packets that could fit.
+        // The motivation of this is during bot spamming, buffer is likely to be filled with
+        // transactions have higher priority and write to same account(s), other lower priority
+        // transactions will not make into buffer, therefore it shall exit as soon as first
+        // transaction failed to fit in forwarding buckets.
         buffered_packet_batches.iter_desc(filter_forwardable_packet);
 
         inc_new_counter_info!(
@@ -651,6 +670,7 @@ impl BankingStage {
         qos_service: &QosService,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         num_packets_to_process_per_iteration: usize,
+        log_messages_bytes_limit: Option<usize>,
         tip_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) {
@@ -660,13 +680,14 @@ impl BankingStage {
         let mut proc_start = Measure::start("consume_buffered_process");
         let mut reached_end_of_slot = false;
 
-        let mut retryable_packets = MinMaxHeap::with_capacity(buffered_packet_batches.capacity());
-        std::mem::swap(
-            &mut buffered_packet_batches.packet_priority_queue,
-            &mut retryable_packets,
-        );
-
-        let mut retryable_packets: MinMaxHeap<Rc<ImmutableDeserializedPacket>> = retryable_packets
+        let mut retryable_packets = {
+            let capacity = buffered_packet_batches.capacity();
+            std::mem::replace(
+                &mut buffered_packet_batches.packet_priority_queue,
+                MinMaxHeap::with_capacity(capacity),
+            )
+        };
+        let retryable_packets: MinMaxHeap<Rc<ImmutableDeserializedPacket>> = retryable_packets
             .drain_desc()
             .chunks(num_packets_to_process_per_iteration)
             .into_iter()
@@ -700,8 +721,9 @@ impl BankingStage {
                                     banking_stage_stats,
                                     qos_service,
                                     slot_metrics_tracker,
+log_messages_bytes_limit,
                                     tip_accounts,
-                                bundle_account_locker
+                                bundle_account_locker,
                                 ),
                             "process_packets_transactions",
                         );
@@ -721,18 +743,7 @@ impl BankingStage {
                         max_tx_ingestion_ns,
                     )
                     {
-                        let poh_recorder_lock_time = {
-                            let (_poh_recorder_locked, poh_recorder_lock_time) =
-                                measure!(poh_recorder.read().unwrap(), "poh_recorder.read");
-
-                            reached_end_of_slot = true;
-                            poh_recorder_lock_time
-                        };
-
-                        slot_metrics_tracker
-                            .increment_consume_buffered_packets_poh_recorder_lock_us(
-                                poh_recorder_lock_time.as_us(),
-                            );
+                        reached_end_of_slot = true;
                     }
 
                     // The difference between all transactions passed to execution and the ones that
@@ -783,26 +794,14 @@ impl BankingStage {
                 } else {
                     // mark as end-of-slot to avoid aggressively lock poh for the remaining for
                     // packet batches in buffer
-                    let poh_recorder_lock_time = {
-                        let (_poh_recorder_locked, poh_recorder_lock_time) =
-                            measure!(poh_recorder.read().unwrap(), "poh_recorder.read");
-
-                        reached_end_of_slot = true;
-                        poh_recorder_lock_time
-                    };
-                    slot_metrics_tracker.increment_consume_buffered_packets_poh_recorder_lock_us(
-                        poh_recorder_lock_time.as_us(),
-                    );
+                    reached_end_of_slot = true;
 
                     packets_to_process
                 }
             })
             .collect();
 
-        std::mem::swap(
-            &mut retryable_packets,
-            &mut buffered_packet_batches.packet_priority_queue,
-        );
+        buffered_packet_batches.packet_priority_queue = retryable_packets;
 
         if reached_end_of_slot {
             slot_metrics_tracker
@@ -886,11 +885,12 @@ impl BankingStage {
         data_budget: &DataBudget,
         qos_service: &QosService,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        log_messages_bytes_limit: Option<usize>,
         connection_cache: &ConnectionCache,
         tracer_packet_stats: &mut TracerPacketStats,
+        bank_forks: &Arc<RwLock<BankForks>>,
         tip_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
-        bank_forks: &Arc<RwLock<BankForks>>,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
             {
@@ -950,6 +950,7 @@ impl BankingStage {
                         qos_service,
                         slot_metrics_tracker,
                         UNPROCESSED_BUFFER_STEP_SIZE,
+                        log_messages_bytes_limit,
                         tip_accounts,
                         bundle_account_locker
                     ),
@@ -1108,10 +1109,11 @@ impl BankingStage {
         gossip_vote_sender: ReplayVoteSender,
         data_budget: &DataBudget,
         cost_model: Arc<RwLock<CostModel>>,
+        log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
+        bank_forks: &Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
-        bank_forks: &Arc<RwLock<BankForks>>,
     ) {
         let recorder = poh_recorder.read().unwrap().recorder();
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -1143,11 +1145,12 @@ impl BankingStage {
                         data_budget,
                         &qos_service,
                         &mut slot_metrics_tracker,
+                        log_messages_bytes_limit,
                         &connection_cache,
                         &mut tracer_packet_stats,
+                        bank_forks,
                         &tip_accounts,
                         &bundle_account_locker,
-                        bank_forks,
                     ),
                     "process_buffered_packets",
                 );
@@ -1258,6 +1261,7 @@ impl BankingStage {
         batch: &TransactionBatch,
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
+        log_messages_bytes_limit: Option<usize>,
     ) -> ExecuteAndCommitTransactionsOutput {
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let mut mint_decimals: HashMap<Pubkey, u8> = HashMap::new();
@@ -1295,6 +1299,7 @@ impl BankingStage {
                 transaction_status_sender.is_some(),
                 &mut execute_and_commit_timings.execute_timings,
                 None, // account_overrides
+                log_messages_bytes_limit
             ),
             "load_execute",
         );
@@ -1420,6 +1425,7 @@ impl BankingStage {
                         let post_balances = bank.collect_balances(batch);
                         let post_token_balances =
                             collect_token_balances(bank, batch, &mut mint_decimals, None);
+
                         let mut transaction_index = starting_transaction_index.unwrap_or_default();
                         let batch_transaction_indexes: Vec<_> = tx_results
                             .execution_results
@@ -1500,6 +1506,7 @@ impl BankingStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
+        log_messages_bytes_limit: Option<usize>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionBatchOutput {
         let mut cost_model_time = Measure::start("cost_model");
@@ -1545,6 +1552,7 @@ impl BankingStage {
                 &batch,
                 transaction_status_sender,
                 gossip_vote_sender,
+                log_messages_bytes_limit,
             );
 
         let mut unlock_time = Measure::start("unlock_time");
@@ -1701,6 +1709,7 @@ impl BankingStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
+        log_messages_bytes_limit: Option<usize>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
@@ -1733,6 +1742,7 @@ impl BankingStage {
                 transaction_status_sender.clone(),
                 gossip_vote_sender,
                 qos_service,
+                log_messages_bytes_limit,
                 bundle_account_locker,
             );
 
@@ -1919,6 +1929,7 @@ impl BankingStage {
         banking_stage_stats: &'a BankingStageStats,
         qos_service: &'a QosService,
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
+        log_messages_bytes_limit: Option<usize>,
         tip_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionsSummary {
@@ -1965,6 +1976,7 @@ impl BankingStage {
                 transaction_status_sender,
                 gossip_vote_sender,
                 qos_service,
+                log_messages_bytes_limit,
                 bundle_account_locker
             ),
             "process_transaction_time",
@@ -2323,10 +2335,11 @@ mod tests {
                 None,
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
+                None,
                 Arc::new(ConnectionCache::default()),
+                bank_forks,
                 HashSet::default(),
                 bundle_account_locker,
-                bank_forks,
             );
             drop(verified_sender);
             drop(gossip_verified_vote_sender);
@@ -2386,10 +2399,11 @@ mod tests {
                 None,
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
+                None,
                 Arc::new(ConnectionCache::default()),
+                bank_forks,
                 HashSet::default(),
                 bundle_account_locker,
-                bank_forks,
             );
             trace!("sending bank");
             drop(verified_sender);
@@ -2478,10 +2492,11 @@ mod tests {
                 None,
                 gossip_vote_sender,
                 Arc::new(RwLock::new(CostModel::default())),
+                None,
                 Arc::new(ConnectionCache::default()),
+                bank_forks,
                 HashSet::default(),
                 bundle_account_locker,
-                bank_forks,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -2649,10 +2664,11 @@ mod tests {
                     None,
                     gossip_vote_sender,
                     Arc::new(RwLock::new(CostModel::default())),
+                    None,
                     Arc::new(ConnectionCache::default()),
+                    bank_forks,
                     HashSet::default(),
                     bundle_account_locker,
-                    bank_forks,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -2978,6 +2994,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                None,
                 &bundle_account_locker,
             );
 
@@ -3042,6 +3059,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                None,
                 &bundle_account_locker,
             );
 
@@ -3134,6 +3152,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                None,
                 &bundle_account_locker,
             );
 
@@ -3234,6 +3253,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &qos_service,
+                None,
                 &bundle_account_locker,
             );
 
@@ -3274,6 +3294,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &qos_service,
+                None,
                 &bundle_account_locker,
             );
 
@@ -3301,7 +3322,7 @@ mod tests {
     }
 
     fn simulate_poh(
-        record_receiver: Receiver<Record>,
+        record_receiver: CrossbeamReceiver<Record>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
     ) -> JoinHandle<()> {
         let poh_recorder = poh_recorder.clone();
@@ -3378,6 +3399,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                None,
                 &bundle_account_locker,
             );
 
@@ -3552,6 +3574,7 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                None,
                 &bundle_account_locker,
             );
 
@@ -3626,6 +3649,7 @@ mod tests {
             None,
             &gossip_vote_sender,
             &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+            None,
             &bundle_account_locker,
         );
 
@@ -3858,6 +3882,7 @@ mod tests {
                 }),
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                None,
                 &bundle_account_locker,
             );
 
@@ -4028,6 +4053,7 @@ mod tests {
                 }),
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
+                None,
                 &bundle_account_locker,
             );
 
@@ -4157,6 +4183,7 @@ mod tests {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 num_conflicting_transactions,
+                None,
                 &HashSet::default(),
                 &bundle_account_locker,
             );
@@ -4179,6 +4206,7 @@ mod tests {
                     &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                     &mut LeaderSlotMetricsTracker::new(0),
                     num_packets_to_process_per_iteration,
+                    None,
                     &HashSet::default(),
                     &bundle_account_locker,
                 );
@@ -4261,6 +4289,7 @@ mod tests {
                         &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                         &mut LeaderSlotMetricsTracker::new(0),
                         num_packets_to_process_per_iteration,
+                        None,
                         &HashSet::default(),
                         &bundle_account_locker,
                     );

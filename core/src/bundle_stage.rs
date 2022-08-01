@@ -3,11 +3,11 @@
 //! can do its processing in parallel with signature verification on the GPU.
 use {
     crate::{
-        banking_stage::BatchedTransactionDetails,
+        banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
         bundle::PacketBundle,
         bundle_account_locker::BundleAccountLocker,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
-        qos_service::{CommitTransactionDetails, QosService},
+        qos_service::QosService,
         tip_manager::TipManager,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError},
@@ -311,8 +311,7 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
         let mut account_overrides = AccountOverrides {
-            slot_history: None,
-            cached_accounts_with_rent: HashMap::with_capacity(20),
+            accounts: HashMap::with_capacity(20),
         };
 
         let mut execution_results = Vec::new();
@@ -369,6 +368,7 @@ impl BundleStage {
                     transaction_status_sender.is_some(),
                     &mut execute_and_commit_timings.execute_timings,
                     Some(&account_overrides),
+                    None,
                 ),
                 "load_execute",
             );
@@ -620,7 +620,7 @@ impl BundleStage {
     ) {
         let accounts = bank.collect_accounts_to_store(txs, res, loaded);
         for (pubkey, data) in accounts {
-            cached_accounts.put(*pubkey, data.clone());
+            cached_accounts.set_account(pubkey, Some(data.clone()));
         }
     }
 

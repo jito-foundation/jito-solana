@@ -374,10 +374,11 @@ fn main() {
             None,
             replay_vote_sender,
             Arc::new(RwLock::new(CostModel::default())),
+            None,
             Arc::new(connection_cache),
+            bank_forks.clone(),
             HashSet::default(),
             bundle_account_locker,
-            bank_forks.clone(),
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 

@@ -137,7 +137,7 @@ all_test_steps() {
              ^ci/test-coverage.sh \
              ^scripts/coverage.sh \
       ; then
-    command_step coverage ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 50
+    command_step coverage ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 80
     wait_step
   else
     annotate --style info --context test-coverage \
@@ -152,7 +152,7 @@ all_test_steps() {
              ^ci/test-coverage.sh \
              ^scripts/coverage-in-disk.sh \
       ; then
-    command_step coverage-in-disk ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 50
+    command_step coverage-in-disk ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-coverage.sh" 80
     wait_step
   else
     annotate --style info --context test-coverage \
@@ -182,7 +182,7 @@ all_test_steps() {
     timeout_in_minutes: 35
     artifact_paths: "bpf-dumps.tar.bz2"
     agents:
-      - "queue=gcp"
+      queue: "gcp"
 EOF
   else
     annotate --style info --context test-stable-bpf \
@@ -203,16 +203,18 @@ EOF
              ^programs/ \
              ^sdk/ \
       ; then
-        annotate --style warning --context test-stable-perf  \
-                      "test-stable-perf is currently disabled because it requires GPUs (LB)"
-#    cat >> "$output_file" <<"EOF"
+
+annotate --style warning --context test-stable-perf  \
+  "test-stable-perf is currently disabled because it requires GPUs (LB)"
+#cat >> "$output_file" <<"EOF"
 #  - command: "ci/test-stable-perf.sh"
 #    name: "stable-perf"
 #    timeout_in_minutes: 20
 #    artifact_paths: "log-*.txt"
 #    agents:
-#      - "queue=cuda"
+#      queue: "cuda"
 #EOF
+
   else
     annotate --style info --context test-stable-perf \
       "Stable-perf skipped as no relevant files were modified"

@@ -3,7 +3,7 @@
 //! how transactions are included in blocks, and optimize those blocks.
 //!
 use {
-    crate::banking_stage::BatchedTransactionDetails,
+    crate::banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
     crossbeam_channel::{unbounded, Receiver, Sender},
     solana_measure::measure::Measure,
     solana_runtime::{
@@ -24,12 +24,6 @@ use {
         time::Duration,
     },
 };
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum CommitTransactionDetails {
-    Committed { compute_units: u64 },
-    NotCommitted,
-}
 
 pub enum QosMetrics {
     BlockBatchUpdate { bank: Arc<Bank> },
