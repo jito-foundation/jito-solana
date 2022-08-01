@@ -103,6 +103,12 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --skip-require-tower ]]; then
       maybeRequireTower=false
       shift
+    elif [[ $1 == --trust-relayer-packets ]]; then
+      args+=("$1")
+      shift
+    elif [[ $1 == --trust-block-engine-packets ]]; then
+      args+=("$1")
+      shift
     elif [[ $1 == --relayer-address ]]; then
       args+=("$1" "$2")
       shift 2
@@ -163,8 +169,6 @@ args+=(
   --no-os-network-limits-test
   --no-wait-for-vote-to-start-leader
   --full-rpc-api
-  --trust-relayer-packets
-  --trust-block-engine-packets
 )
 default_arg --gossip-port 8001
 default_arg --log -
