@@ -135,7 +135,7 @@ impl MerkleTree {
                     &mt.nodes[prev_level_start + prev_level_idx]
                 };
 
-                // verify uses sorted hashing
+                // tip-distribution verification uses sorted hashing
                 if sorted_hashes {
                     if lsib <= rsib {
                         let hash = hash_intermediate!(lsib, rsib);
@@ -144,6 +144,10 @@ impl MerkleTree {
                         let hash = hash_intermediate!(rsib, lsib);
                         mt.nodes.push(hash);
                     }
+                } else {
+                    // hashing for solana internals
+                    let hash = hash_intermediate!(lsib, rsib);
+                    mt.nodes.push(hash);
                 }
             }
             prev_level_start = level_start;
