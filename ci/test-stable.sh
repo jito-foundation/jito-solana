@@ -157,6 +157,11 @@ test-wasm)
   exit 0
   ;;
 test-docs)
+  echo "getting protoc"
+  echo "PROTOC: $PROTOC"
+  echo "PROTOC_INCLUDE: $PROTOC_INCLUDE"
+  command -v protoc
+  protoc --version
   _ "$cargo" stable test --jobs "$JOBS" --all --doc --exclude solana-local-cluster ${V:+--verbose} -- --nocapture
   exit 0
   ;;

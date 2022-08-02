@@ -1,4 +1,5 @@
 #![allow(clippy::integer_arithmetic)]
+
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
 use {
@@ -24,7 +25,9 @@ use {
     },
     solana_core::{
         ledger_cleanup_service::{DEFAULT_MAX_LEDGER_SHREDS, DEFAULT_MIN_MAX_LEDGER_SHREDS},
+        relayer_stage::RelayerAndBlockEngineConfig,
         system_monitor_service::SystemMonitorService,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tower_storage,
         tpu::DEFAULT_TPU_COALESCE_MS,
         validator::{is_snapshot_config_valid, Validator, ValidatorConfig, ValidatorStartProgress},
@@ -1775,6 +1778,74 @@ pub fn main() {
                 .hidden(true),
         )
         .arg(
+            Arg::with_name("relayer_address")
+                .long("relayer-address")
+                .value_name("relayer_address")
+                .takes_value(true)
+                .help("Address of the relayer")
+        )
+        .arg(
+            Arg::with_name("block_engine_address")
+                .long("block-engine-address")
+                .value_name("block_engine_address")
+                .takes_value(true)
+                .help("Address of the block engine")
+        )
+        .arg(
+            Arg::with_name("trust_relayer_packets")
+                .long("trust-relayer-packets")
+                .takes_value(false)
+                .help("Skip signature verification on relayer packets.Not recommended unless the relayer is trusted.")
+        )
+        .arg(
+            Arg::with_name("trust_block_engine_packets")
+                .long("trust-block-engine-packets")
+                .takes_value(false)
+                .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
+        )
+        .arg(
+            Arg::with_name("tip_payment_program_pubkey")
+                .long("tip-payment-program-pubkey")
+                .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-payment program")
+        )
+        .arg(
+            Arg::with_name("tip_distribution_program_pubkey")
+                .long("tip-distribution-program-pubkey")
+                .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-distribution program.")
+        )
+        .arg(
+            Arg::with_name("tip_distribution_account_payer")
+                .long("tip-distribution-account-payer")
+                .value_name("TIP_DISTRIBUTION_ACCOUNT_PAYER")
+                .takes_value(true)
+                .help("The payer of my tip distribution accounts.")
+        )
+        .arg(
+            Arg::with_name("merkle_root_upload_authority")
+                .long("merkle-root-upload-authority")
+                .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
+                .takes_value(true)
+                .help("The public key of the authorized merkle-root uploader.")
+        )
+        .arg(
+            Arg::with_name("commission_bps")
+                .long("commission-bps")
+                .value_name("COMMISSION_BPS")
+                .takes_value(true)
+                .help("The commission validator takes from tips expressed in basis points.")
+        )
+        .arg(
+            Arg::with_name("shred_receiver_address")
+                .long("shred-receiver-address")
+                .value_name("SHRED_RECEIVER_ADDRESS")
+                .takes_value(true)
+                .help("Shred receiver listening address")
+        )
+        .arg(
             Arg::with_name("log_messages_bytes_limit")
                 .long("log-messages-bytes-limit")
                 .takes_value(true)
@@ -2532,6 +2603,16 @@ pub fn main() {
     }
     let full_api = matches.is_present("full_rpc_api");
 
+    let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
+    let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
+
+    let relayer_config = RelayerAndBlockEngineConfig {
+        relayer_address: value_of(&matches, "relayer_address").unwrap_or_default(),
+        trust_relayer_packets: matches.is_present("trust_relayer_packets"),
+        block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
+        trust_block_engine_packets: matches.is_present("trust_block_engine_packets"),
+    };
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -2604,7 +2685,7 @@ pub fn main() {
                 Some(0)
             },
         },
-        voting_disabled: matches.is_present("no_voting") || restricted_repair_only_mode,
+        voting_disabled,
         wait_for_supermajority: value_t!(matches, "wait_for_supermajority", Slot).ok(),
         known_validators,
         repair_validators,
@@ -2659,6 +2740,11 @@ pub fn main() {
             ..RuntimeConfig::default()
         },
         enable_quic_servers,
+        relayer_config,
+        tip_manager_config,
+        shred_receiver_address: matches
+            .value_of("shred_receiver_address")
+            .map(|address| SocketAddr::from_str(address).expect("shred_receiver_address invalid")),
         ..ValidatorConfig::default()
     };
 
@@ -3148,5 +3234,60 @@ fn process_account_indexes(matches: &ArgMatches) -> AccountSecondaryIndexes {
     AccountSecondaryIndexes {
         keys,
         indexes: account_indexes,
+    }
+}
+
+fn tip_manager_config_from_matches(
+    matches: &ArgMatches,
+    voting_disabled: bool,
+) -> TipManagerConfig {
+    TipManagerConfig {
+        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
+            || {
+                if !voting_disabled {
+                    panic!("--tip-payment-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            },
+        ),
+        tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
+            .unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--tip-distribution-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+        tip_distribution_account_config: TipDistributionAccountConfig {
+            payer: {
+                let keypair =
+                    keypair_of(matches, "tip_distribution_account_payer").unwrap_or_else(|| {
+                        if !voting_disabled {
+                            panic!("--tip-distribution-account-payer argument required when validator is voting");
+                        }
+                        Keypair::new()
+                    });
+
+                Arc::new(keypair)
+            },
+            merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
+                .unwrap_or_else(|| {
+                    if !voting_disabled {
+                        panic!("--merkle-root-upload-authority argument required when validator is voting");
+                    }
+                    Pubkey::new_unique()
+                }),
+            vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--vote-account argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+            commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
+                if !voting_disabled {
+                    panic!("--commission-bps argument required when validator is voting");
+                }
+                0
+            }),
+        },
     }
 }

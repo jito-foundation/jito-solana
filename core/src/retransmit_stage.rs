@@ -31,7 +31,7 @@ use {
     std::{
         collections::HashMap,
         iter::repeat,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         ops::AddAssign,
         sync::{
             atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -179,6 +179,7 @@ fn retransmit(
     packet_hasher: &mut PacketHasher,
     max_slots: &MaxSlots,
     rpc_subscriptions: Option<&RpcSubscriptions>,
+    shred_receiver_addr: Option<SocketAddr>,
 ) -> Result<(), RecvTimeoutError> {
     const RECV_TIMEOUT: Duration = Duration::from_secs(1);
     let mut shreds = shreds_receiver.recv_timeout(RECV_TIMEOUT)?;
@@ -257,6 +258,7 @@ fn retransmit(
                     socket_addr_space,
                     &sockets[index % sockets.len()],
                     stats,
+                    shred_receiver_addr,
                 );
                 (key.slot(), root_distance, num_nodes)
             })
@@ -276,6 +278,7 @@ fn retransmit(
                         socket_addr_space,
                         &sockets[index % sockets.len()],
                         stats,
+                        shred_receiver_addr,
                     );
                     (key.slot(), root_distance, num_nodes)
                 })
@@ -299,10 +302,16 @@ fn retransmit_shred(
     socket_addr_space: &SocketAddrSpace,
     socket: &UdpSocket,
     stats: &RetransmitStats,
+    shred_receiver_addr: Option<SocketAddr>,
 ) -> (/*root_distance:*/ usize, /*num_nodes:*/ usize) {
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) =
-        cluster_nodes.get_retransmit_addrs(slot_leader, key, root_bank, DATA_PLANE_FANOUT);
+    let (root_distance, addrs) = cluster_nodes.maybe_extend_retransmit_addrs(
+        slot_leader,
+        key,
+        root_bank,
+        DATA_PLANE_FANOUT,
+        shred_receiver_addr,
+    );
     let addrs: Vec<_> = addrs
         .into_iter()
         .filter(|addr| ContactInfo::is_valid_address(addr, socket_addr_space))
@@ -352,6 +361,7 @@ pub fn retransmitter(
     shreds_receiver: Receiver<Vec</*shred:*/ Vec<u8>>>,
     max_slots: Arc<MaxSlots>,
     rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
+    shred_receiver_addr: Option<SocketAddr>,
 ) -> JoinHandle<()> {
     let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
         CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -384,6 +394,7 @@ pub fn retransmitter(
                 &mut packet_hasher,
                 &max_slots,
                 rpc_subscriptions.as_deref(),
+                shred_receiver_addr,
             ) {
                 Ok(()) => (),
                 Err(RecvTimeoutError::Timeout) => (),
@@ -406,6 +417,7 @@ impl RetransmitStage {
         retransmit_receiver: Receiver<Vec</*shred:*/ Vec<u8>>>,
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Self {
         let retransmit_thread_handle = retransmitter(
             retransmit_sockets,
@@ -415,6 +427,7 @@ impl RetransmitStage {
             retransmit_receiver,
             max_slots,
             rpc_subscriptions,
+            shred_receiver_addr,
         );
 
         Self {
@@ -445,6 +458,57 @@ impl AddAssign for RetransmitSlotStats {
             self.num_shreds_received[k] += num_shreds_received[k];
             self.num_shreds_sent[k] += num_shreds_sent[k];
         }
+    }
+}
+
+impl RetransmitSlotStats {
+    fn record(&mut self, now: u64, root_distance: usize, num_nodes: usize) {
+        self.outset = if self.outset == 0 {
+            now
+        } else {
+            self.outset.min(now)
+        };
+        self.asof = self.asof.max(now);
+        self.num_shreds_received[root_distance] += 1;
+        self.num_shreds_sent[root_distance] += num_nodes;
+    }
+
+    fn merge(mut acc: HashMap<Slot, Self>, other: HashMap<Slot, Self>) -> HashMap<Slot, Self> {
+        if acc.len() < other.len() {
+            return Self::merge(other, acc);
+        }
+        for (key, value) in other {
+            *acc.entry(key).or_default() += value;
+        }
+        acc
+    }
+
+    fn submit(&self, slot: Slot) {
+        let num_shreds: usize = self.num_shreds_received.iter().sum();
+        let num_nodes: usize = self.num_shreds_sent.iter().sum();
+        let elapsed_millis = self.asof.saturating_sub(self.outset);
+        datapoint_info!(
+            "retransmit-stage-slot-stats",
+            ("slot", slot, i64),
+            ("outset_timestamp", self.outset, i64),
+            ("elapsed_millis", elapsed_millis, i64),
+            ("num_shreds", num_shreds, i64),
+            ("num_nodes", num_nodes, i64),
+            ("num_shreds_received_root", self.num_shreds_received[0], i64),
+            (
+                "num_shreds_received_1st_layer",
+                self.num_shreds_received[1],
+                i64
+            ),
+            (
+                "num_shreds_received_2nd_layer",
+                self.num_shreds_received[2],
+                i64
+            ),
+            ("num_shreds_sent_root", self.num_shreds_sent[0], i64),
+            ("num_shreds_sent_1st_layer", self.num_shreds_sent[1], i64),
+            ("num_shreds_sent_2nd_layer", self.num_shreds_sent[2], i64),
+        );
     }
 }
 
@@ -508,57 +572,6 @@ impl RetransmitStats {
                 None => break,
             }
         }
-    }
-}
-
-impl RetransmitSlotStats {
-    fn record(&mut self, now: u64, root_distance: usize, num_nodes: usize) {
-        self.outset = if self.outset == 0 {
-            now
-        } else {
-            self.outset.min(now)
-        };
-        self.asof = self.asof.max(now);
-        self.num_shreds_received[root_distance] += 1;
-        self.num_shreds_sent[root_distance] += num_nodes;
-    }
-
-    fn merge(mut acc: HashMap<Slot, Self>, other: HashMap<Slot, Self>) -> HashMap<Slot, Self> {
-        if acc.len() < other.len() {
-            return Self::merge(other, acc);
-        }
-        for (key, value) in other {
-            *acc.entry(key).or_default() += value;
-        }
-        acc
-    }
-
-    fn submit(&self, slot: Slot) {
-        let num_shreds: usize = self.num_shreds_received.iter().sum();
-        let num_nodes: usize = self.num_shreds_sent.iter().sum();
-        let elapsed_millis = self.asof.saturating_sub(self.outset);
-        datapoint_info!(
-            "retransmit-stage-slot-stats",
-            ("slot", slot, i64),
-            ("outset_timestamp", self.outset, i64),
-            ("elapsed_millis", elapsed_millis, i64),
-            ("num_shreds", num_shreds, i64),
-            ("num_nodes", num_nodes, i64),
-            ("num_shreds_received_root", self.num_shreds_received[0], i64),
-            (
-                "num_shreds_received_1st_layer",
-                self.num_shreds_received[1],
-                i64
-            ),
-            (
-                "num_shreds_received_2nd_layer",
-                self.num_shreds_received[2],
-                i64
-            ),
-            ("num_shreds_sent_root", self.num_shreds_sent[0], i64),
-            ("num_shreds_sent_1st_layer", self.num_shreds_sent[1], i64),
-            ("num_shreds_sent_2nd_layer", self.num_shreds_sent[2], i64),
-        );
     }
 }
 

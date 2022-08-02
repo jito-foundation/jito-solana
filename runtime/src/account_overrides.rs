@@ -6,7 +6,12 @@ use {
 /// Encapsulates overridden accounts, typically used for transaction simulations
 #[derive(Default)]
 pub struct AccountOverrides {
-    accounts: HashMap<Pubkey, AccountSharedData>,
+    pub accounts: HashMap<Pubkey, AccountSharedData>,
+}
+
+pub enum AccountWithRentInfo {
+    Zero(AccountSharedData),
+    SubtractRent(AccountSharedData),
 }
 
 impl AccountOverrides {

@@ -11,6 +11,7 @@ use {
     solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::{BankingStage, BankingStageStats},
+        bundle_account_locker::BundleAccountLocker,
         leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         qos_service::QosService,
         unprocessed_packet_batches::*,
@@ -30,7 +31,7 @@ use {
         genesis_config::GenesisConfig,
         hash::Hash,
         message::Message,
-        pubkey,
+        pubkey::{self, Pubkey},
         signature::{Keypair, Signature, Signer},
         system_instruction, system_transaction,
         timing::{duration_as_us, timestamp},
@@ -38,7 +39,8 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
-        sync::{atomic::Ordering, Arc, RwLock},
+        collections::HashSet,
+        sync::{atomic::Ordering, Arc, Mutex, RwLock},
         time::{Duration, Instant},
     },
     test::Bencher,
@@ -48,8 +50,15 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
     let mut total = 0;
     let now = Instant::now();
     loop {
-        if let Ok((_bank, (entry, _tick_height))) = receiver.recv_timeout(Duration::new(1, 0)) {
-            total += entry.transactions.len();
+        if let Ok(WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        }) = receiver.recv_timeout(Duration::new(1, 0))
+        {
+            total += entries_ticks
+                .iter()
+                .map(|e| e.0.transactions.len())
+                .sum::<usize>();
         }
         if total >= ref_tx_count {
             break;
@@ -63,6 +72,7 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
 
 #[bench]
 fn bench_consume_buffered(bencher: &mut Bencher) {
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(100_000);
     let bank = Arc::new(Bank::new_for_benches(&genesis_config));
     let ledger_path = get_tmp_ledger_path!();
@@ -83,6 +93,12 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
         let mut transaction_buffer =
             UnprocessedPacketBatches::from_iter(batches.into_iter(), 2 * batches_len);
         let (s, _r) = unbounded();
+
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            NUM_BUNDLES_PRE_LOCK,
+            &Pubkey::new_unique(),
+        )));
+
         // This tests the performance of buffering packets.
         // If the packet buffers are copied, performance will be poor.
         bencher.iter(move || {
@@ -100,6 +116,8 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 &mut LeaderSlotMetricsTracker::new(0),
                 10,
                 None,
+                &HashSet::default(),
+                &bundle_account_locker,
             );
         });
 
@@ -153,6 +171,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
     //   a multiple of packet chunk duplicates to avoid races
     const CHUNKS: usize = 8;
     const PACKETS_PER_BATCH: usize = 192;
+    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
     let txes = PACKETS_PER_BATCH * num_threads * CHUNKS;
     let mint_total = 1_000_000_000_000;
     let GenesisConfigInfo {
@@ -224,6 +243,10 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+            NUM_BUNDLES_PRE_LOCK,
+            &Pubkey::new_unique(),
+        )));
         let _banking_stage = BankingStage::new(
             &cluster_info,
             &poh_recorder,
@@ -236,6 +259,8 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             None,
             Arc::new(ConnectionCache::default()),
             bank_forks,
+            HashSet::new(),
+            bundle_account_locker,
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 

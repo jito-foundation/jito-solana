@@ -103,6 +103,24 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --skip-require-tower ]]; then
       maybeRequireTower=false
       shift
+    elif [[ $1 == --relayer-address ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --block-engine-address ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --tip-payment-program-pubkey ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --tip-distribution-program-pubkey ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --commission-bps ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --shred-receiver-address ]]; then
+      args+=("$1" "$2")
+      shift 2
     elif [[ $1 = --log-messages-bytes-limit ]]; then
       args+=("$1" "$2")
       shift 2
@@ -111,15 +129,12 @@ while [[ -n $1 ]]; do
       $program --help
       exit 1
     fi
-  else
-    echo "Unknown argument: $1"
-    $program --help
-    exit 1
   fi
 done
 
 # These keypairs are created by ./setup.sh and included in the genesis config
 identity=$SOLANA_CONFIG_DIR/bootstrap-validator/identity.json
+tip_distribution_account_payer=$SOLANA_CONFIG_DIR/bootstrap-validator/identity.json
 vote_account="$SOLANA_CONFIG_DIR"/bootstrap-validator/vote-account.json
 
 ledger_dir="$SOLANA_CONFIG_DIR"/bootstrap-validator
@@ -141,6 +156,8 @@ args+=(
   --no-incremental-snapshots
   --identity "$identity"
   --vote-account "$vote_account"
+  --tip-distribution-account-payer "$tip_distribution_account_payer"
+  --merkle-root-upload-authority "$identity"
   --rpc-faucet-address 127.0.0.1:9900
   --no-poh-speed-test
   --no-os-network-limits-test
@@ -149,6 +166,9 @@ args+=(
 )
 default_arg --gossip-port 8001
 default_arg --log -
+default_arg --tip-payment-program-pubkey "DThZmRNNXh7kvTQW9hXeGoWGPKktK8pgVAyoTLjH7UrT"
+default_arg --tip-distribution-program-pubkey "FjrdANjvo76aCYQ4kf9FM1R8aESUcEE6F8V7qyoVUQcM"
+default_arg --commission-bps 0
 
 
 pid=

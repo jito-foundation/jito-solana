@@ -294,7 +294,7 @@ pub(crate) fn bank_from_streams<R>(
     verify_index: bool,
     accounts_db_config: Option<AccountsDbConfig>,
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
-) -> std::result::Result<Bank, Error>
+) -> Result<Bank, Error>
 where
     R: Read,
 {
@@ -496,7 +496,7 @@ fn reconstruct_bank_from_fields<E>(
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
 ) -> Result<Bank, Error>
 where
-    E: SerializableStorage + std::marker::Sync,
+    E: SerializableStorage + Sync,
 {
     let (accounts_db, reconstructed_accounts_db_info) = reconstruct_accountsdb_from_fields(
         snapshot_accounts_db_fields,
@@ -690,7 +690,7 @@ fn reconstruct_accountsdb_from_fields<E>(
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
 ) -> Result<(AccountsDb, ReconstructedAccountsDbInfo), Error>
 where
-    E: SerializableStorage + std::marker::Sync,
+    E: SerializableStorage + Sync,
 {
     let mut accounts_db = AccountsDb::new_with_config(
         account_paths.to_vec(),
