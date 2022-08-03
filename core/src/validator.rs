@@ -1037,7 +1037,6 @@ impl Validator {
             &identity_keypair,
             config.runtime_config.log_messages_bytes_limit,
             config.enable_quic_servers,
-            &staked_nodes,
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address,

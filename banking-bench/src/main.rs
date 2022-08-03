@@ -7,7 +7,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_client::connection_cache::{ConnectionCache, DEFAULT_TPU_CONNECTION_POOL_SIZE},
-    solana_core::{banking_stage::BankingStage, bundle_account_locker::BundleAccountLocker},
+    solana_core::{banking_stage::BankingStage, bundle_locker_sanitizer::BundleLockerSanitizer},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
         blockstore::Blockstore,
@@ -173,8 +173,6 @@ impl PacketsPerIteration {
 #[allow(clippy::cognitive_complexity)]
 fn main() {
     solana_logger::setup();
-
-    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
     let matches = Command::new(crate_name!())
         .about(crate_description!())
@@ -354,8 +352,7 @@ fn main() {
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            NUM_BUNDLES_PRE_LOCK,
+        let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             &Pubkey::new_unique(),
         )));
 

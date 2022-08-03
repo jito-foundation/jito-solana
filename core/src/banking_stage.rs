@@ -3,7 +3,7 @@
 //! can do its processing in parallel with signature verification on the GPU.
 use {
     crate::{
-        bundle_account_locker::BundleAccountLocker,
+        bundle_locker_sanitizer::BundleLockerSanitizer,
         forward_packet_batches_by_accounts::ForwardPacketBatchesByAccounts,
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
         leader_slot_banking_stage_timing_metrics::{
@@ -402,7 +402,7 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: Arc<Mutex<BundleLockerSanitizer>>,
     ) -> Self {
         Self::new_num_threads(
             cluster_info,
@@ -437,7 +437,7 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: Arc<Mutex<BundleLockerSanitizer>>,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -592,8 +592,7 @@ impl BankingStage {
         };
 
         const INTERVAL_MS: u64 = 100;
-        // 12 MB outbound limit per second
-        const MAX_BYTES_PER_SECOND: usize = 12_000_000;
+        const MAX_BYTES_PER_SECOND: usize = 10_000 * 1200;
         const MAX_BYTES_PER_INTERVAL: usize = MAX_BYTES_PER_SECOND * INTERVAL_MS as usize / 1000;
         const MAX_BYTES_BUDGET: usize = MAX_BYTES_PER_INTERVAL * 5;
         data_budget.update(INTERVAL_MS, |bytes| {
@@ -673,7 +672,7 @@ impl BankingStage {
         num_packets_to_process_per_iteration: usize,
         log_messages_bytes_limit: Option<usize>,
         tip_accounts: &HashSet<Pubkey>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &Arc<Mutex<BundleLockerSanitizer>>,
     ) {
         let mut rebuffered_packet_count = 0;
         let mut consumed_buffered_packets_count = 0;
@@ -891,7 +890,7 @@ log_messages_bytes_limit,
         tracer_packet_stats: &mut TracerPacketStats,
         bank_forks: &Arc<RwLock<BankForks>>,
         tip_accounts: &HashSet<Pubkey>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &Arc<Mutex<BundleLockerSanitizer>>,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
             {
@@ -1114,7 +1113,7 @@ log_messages_bytes_limit,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: &Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: Arc<Mutex<BundleLockerSanitizer>>,
     ) {
         let recorder = poh_recorder.read().unwrap().recorder();
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -1508,7 +1507,7 @@ log_messages_bytes_limit,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &Arc<Mutex<BundleLockerSanitizer>>,
     ) -> ProcessTransactionBatchOutput {
         let mut cost_model_time = Measure::start("cost_model");
 
@@ -1711,7 +1710,7 @@ log_messages_bytes_limit,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &Arc<Mutex<BundleLockerSanitizer>>,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
         let mut all_retryable_tx_indexes = vec![];
@@ -1932,7 +1931,7 @@ log_messages_bytes_limit,
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
         log_messages_bytes_limit: Option<usize>,
         tip_accounts: &HashSet<Pubkey>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &Arc<Mutex<BundleLockerSanitizer>>,
     ) -> ProcessTransactionsSummary {
         // Convert packets to transactions
         let ((transactions, transaction_to_packet_indexes), packet_conversion_time): (
@@ -2302,7 +2301,6 @@ mod tests {
 
     #[test]
     fn test_banking_stage_shutdown1() {
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
         let genesis_config = create_genesis_config(2).genesis_config;
         let bank = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
@@ -2322,8 +2320,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -2356,8 +2353,6 @@ mod tests {
     fn test_banking_stage_tick() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let GenesisConfigInfo {
             mut genesis_config, ..
         } = create_genesis_config(2);
@@ -2386,8 +2381,7 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -2448,8 +2442,6 @@ mod tests {
     fn test_banking_stage_entries_only() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -2480,8 +2472,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
             let banking_stage = BankingStage::new(
@@ -2588,8 +2579,6 @@ mod tests {
     fn test_banking_stage_entryfication() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         // In this attack we'll demonstrate that a verifier can interpret the ledger
         // differently if either the server doesn't signal the ledger to add an
         // Entry OR if the verifier tries to parallelize across multiple Entries.
@@ -2650,8 +2639,7 @@ mod tests {
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
 
-                let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                    NUM_BUNDLES_PRE_LOCK,
+                let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                     &Pubkey::new_unique(),
                 )));
 
@@ -2941,8 +2929,6 @@ mod tests {
     fn test_bank_process_and_record_transactions() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -2982,8 +2968,7 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -3047,8 +3032,7 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -3098,8 +3082,6 @@ mod tests {
     fn test_bank_process_and_record_transactions_all_unexecuted() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3140,8 +3122,7 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -3188,8 +3169,6 @@ mod tests {
     #[test]
     fn test_bank_process_and_record_transactions_cost_tracker() {
         solana_logger::setup();
-
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
         let GenesisConfigInfo {
             genesis_config,
@@ -3241,8 +3220,7 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -3347,8 +3325,6 @@ mod tests {
     fn test_bank_process_and_record_transactions_account_in_use() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3387,8 +3363,7 @@ mod tests {
             let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -3519,8 +3494,6 @@ mod tests {
     fn test_process_transactions_returns_unprocessed_txs() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3562,8 +3535,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -3610,8 +3582,6 @@ mod tests {
         bank: Arc<Bank>,
         transactions: Vec<Transaction>,
     ) -> ProcessTransactionsSummary {
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let transactions = sanitize_transactions(transactions);
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path())
@@ -3637,8 +3607,7 @@ mod tests {
 
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            NUM_BUNDLES_PRE_LOCK,
+        let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             &Pubkey::new_unique(),
         )));
 
@@ -3789,8 +3758,6 @@ mod tests {
     fn test_write_persist_transaction_status() {
         solana_logger::setup();
 
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
-
         let GenesisConfigInfo {
             mut genesis_config,
             mint_keypair,
@@ -3868,8 +3835,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -3951,8 +3917,6 @@ mod tests {
     #[test]
     fn test_write_persist_loaded_addresses() {
         solana_logger::setup();
-
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
         let GenesisConfigInfo {
             genesis_config,
@@ -4039,8 +4003,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -4144,7 +4107,6 @@ mod tests {
 
     #[test]
     fn test_consume_buffered_packets() {
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         {
             let (transactions, bank, poh_recorder, _entry_receiver, poh_simulator) =
@@ -4163,8 +4125,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                NUM_BUNDLES_PRE_LOCK,
+            let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                 &Pubkey::new_unique(),
             )));
 
@@ -4229,7 +4190,6 @@ mod tests {
 
     #[test]
     fn test_consume_buffered_packets_interrupted() {
-        const NUM_BUNDLES_PRE_LOCK: u64 = 4;
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         {
             let (continue_sender, continue_receiver) = unbounded();
@@ -4272,8 +4232,7 @@ mod tests {
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
 
-                    let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-                        NUM_BUNDLES_PRE_LOCK,
+                    let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
                         &Pubkey::new_unique(),
                     )));
 

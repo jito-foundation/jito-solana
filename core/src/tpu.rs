@@ -5,7 +5,7 @@ use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
-        bundle_account_locker::BundleAccountLocker,
+        bundle_locker_sanitizer::BundleLockerSanitizer,
         bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
@@ -49,8 +49,6 @@ pub const DEFAULT_TPU_COALESCE_MS: u64 = 5;
 
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_PEER: usize = 8;
-
-const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
@@ -105,7 +103,6 @@ impl Tpu {
         keypair: &Keypair,
         log_messages_bytes_limit: Option<usize>,
         enable_quic_servers: bool,
-        staked_nodes: &Arc<RwLock<StakedNodes>>,
         relayer_config: RelayerAndBlockEngineConfig,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Option<SocketAddr>,
@@ -137,6 +134,7 @@ impl Tpu {
             Some(bank_forks.read().unwrap().get_vote_only_mode_signal()),
         );
 
+        let staked_nodes = Arc::new(RwLock::new(StakedNodes::default()));
         let staked_nodes_updater_service = StakedNodesUpdaterService::new(
             exit.clone(),
             cluster_info.clone(),
@@ -190,7 +188,7 @@ impl Tpu {
                 forwarded_packet_sender,
                 exit.clone(),
                 MAX_QUIC_CONNECTIONS_PER_PEER,
-                staked_nodes.clone(),
+                staked_nodes,
                 MAX_STAKED_CONNECTIONS.saturating_add(MAX_UNSTAKED_CONNECTIONS),
                 0, // Prevent unstaked nodes from forwarding transactions
                 stats,
@@ -247,8 +245,7 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_manager_config);
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            NUM_BUNDLES_PRE_LOCK,
+        let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             &tip_manager.tip_payment_program_id(),
         )));
 
