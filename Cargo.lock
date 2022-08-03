@@ -4787,7 +4787,7 @@ dependencies = [
 
 [[package]]
 name = "solana-bench-batch-simulate-bundle"
-version = "1.11.4"
+version = "1.11.5"
 dependencies = [
  "clap 3.2.16",
  "env_logger",
