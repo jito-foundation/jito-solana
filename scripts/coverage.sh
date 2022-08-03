@@ -75,7 +75,7 @@ fi
   #JOBS=$(sysctl hw.memsize | awk '{printf "%.0f", ($2 / (4 * 1024**3))}')
 #fi
 
-NPROC=$(nproc)
+#NPROC=$(nproc)
 #JOBS=$((JOBS>NPROC ? NPROC : JOBS))
 JOBS=16
 
