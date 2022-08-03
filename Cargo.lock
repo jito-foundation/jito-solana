@@ -2343,7 +2343,7 @@ checksum = "112c678d4050afce233f4f2852bb2eb519230b3cf12f33585275537d7e41578d"
 
 [[package]]
 name = "jito-protos"
-version = "1.11.4"
+version = "1.11.5"
 dependencies = [
  "bytes",
  "prost 0.8.0",
@@ -7299,6 +7299,7 @@ name = "tip-distribution"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "solana-program 1.11.5",
 ]
 
 [[package]]

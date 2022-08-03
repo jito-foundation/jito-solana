@@ -32,7 +32,7 @@ futures-util = "0.3"
 histogram = "0.6.9"
 indexmap = "1.8.1"
 itertools = "0.10.3"
-jito-protos = { path = "../jito-protos", version = "=1.11.4" }
+jito-protos = { path = "../jito-protos", version = "=1.11.5" }
 lazy_static = "1.4.0"
 log = "0.4.17"
 lru = "0.7.7"
