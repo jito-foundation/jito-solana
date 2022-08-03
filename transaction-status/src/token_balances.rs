@@ -334,7 +334,12 @@ mod test {
 
         // TokenAccount is not owned by known spl-token program_id
         assert_eq!(
-            collect_token_balance_from_account(&bank, &other_account_pubkey, &mut mint_decimals),
+            collect_token_balance_from_account(
+                &bank,
+                &other_account_pubkey,
+                &mut mint_decimals,
+                None
+            ),
             None
         );
 
@@ -343,7 +348,8 @@ mod test {
             collect_token_balance_from_account(
                 &bank,
                 &other_mint_account_pubkey,
-                &mut mint_decimals
+                &mut mint_decimals,
+                None
             ),
             None
         );
@@ -493,13 +499,13 @@ mod test {
 
         // Account is not owned by spl_token (nor does it have TokenAccount state)
         assert_eq!(
-            collect_token_balance_from_account(&bank, &account_pubkey, &mut mint_decimals),
+            collect_token_balance_from_account(&bank, &account_pubkey, &mut mint_decimals, None),
             None
         );
 
         // Mint does not have TokenAccount state
         assert_eq!(
-            collect_token_balance_from_account(&bank, &mint_pubkey, &mut mint_decimals),
+            collect_token_balance_from_account(&bank, &mint_pubkey, &mut mint_decimals, None),
             None
         );
 
@@ -508,7 +514,8 @@ mod test {
             collect_token_balance_from_account(
                 &bank,
                 &spl_token_account_pubkey,
-                &mut mint_decimals
+                &mut mint_decimals,
+                None
             ),
             Some(TokenBalanceData {
                 mint: mint_pubkey.to_string(),
