@@ -975,6 +975,11 @@ pub fn main() {
                 .help("Disable reporting of OS CPU statistics.")
         )
         .arg(
+            Arg::with_name("no_os_disk_stats_reporting")
+                .long("no-os-disk-stats-reporting")
+                .help("Disable reporting of OS disk statistics.")
+        )
+        .arg(
             Arg::with_name("accounts-hash-interval-slots")
                 .long("accounts-hash-interval-slots")
                 .value_name("NUMBER")
@@ -1211,7 +1216,15 @@ pub fn main() {
             Arg::with_name("tpu_use_quic")
                 .long("tpu-use-quic")
                 .takes_value(false)
+                .hidden(true)
+                .conflicts_with("tpu_disable_quic")
                 .help("Use QUIC to send transactions."),
+        )
+        .arg(
+            Arg::with_name("tpu_disable_quic")
+                .long("tpu-disable-quic")
+                .takes_value(false)
+                .help("Do not use QUIC to send transactions."),
         )
         .arg(
             Arg::with_name("disable_quic_servers")
@@ -2380,7 +2393,7 @@ pub fn main() {
     let restricted_repair_only_mode = matches.is_present("restricted_repair_only_mode");
     let accounts_shrink_optimize_total_space =
         value_t_or_exit!(matches, "accounts_shrink_optimize_total_space", bool);
-    let tpu_use_quic = matches.is_present("tpu_use_quic");
+    let tpu_use_quic = !matches.is_present("tpu_disable_quic");
     let enable_quic_servers = !matches.is_present("disable_quic_servers");
     let tpu_connection_pool_size = value_t_or_exit!(matches, "tpu_connection_pool_size", usize);
 
@@ -2722,6 +2735,7 @@ pub fn main() {
         no_os_memory_stats_reporting: matches.is_present("no_os_memory_stats_reporting"),
         no_os_network_stats_reporting: matches.is_present("no_os_network_stats_reporting"),
         no_os_cpu_stats_reporting: matches.is_present("no_os_cpu_stats_reporting"),
+        no_os_disk_stats_reporting: matches.is_present("no_os_disk_stats_reporting"),
         poh_pinned_cpu_core: value_of(&matches, "poh_pinned_cpu_core")
             .unwrap_or(poh_service::DEFAULT_PINNED_CPU_CORE),
         poh_hashes_per_batch: value_of(&matches, "poh_hashes_per_batch")

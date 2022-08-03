@@ -24,6 +24,9 @@ pub enum BundleExecutionError {
 
     #[error("The time spent retrying bundles exceeded the allowed time {0:?}")]
     MaxRetriesExceeded(Duration),
+
+    #[error("Error locking bundle because the transaction is malformed")]
+    LockError,
 }
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
