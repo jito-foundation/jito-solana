@@ -4725,6 +4725,9 @@ impl Bank {
                     | TransactionError::InsufficientFundsForRent { .. } => {
                         error_counters.invalid_rent_paying_account += 1;
                     }
+                    TransactionError::InvalidAccountIndex => {
+                        error_counters.invalid_account_index += 1;
+                    }
                     _ => {
                         error_counters.instruction_error += 1;
                     }
