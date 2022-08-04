@@ -2343,7 +2343,7 @@ checksum = "6c8af84674fe1f223a982c933a0ee1086ac4d4052aa0fb8060c12c6ad838e754"
 
 [[package]]
 name = "jito-protos"
-version = "1.11.5"
+version = "1.11.6"
 dependencies = [
  "bytes",
  "prost 0.8.0",
