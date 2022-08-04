@@ -441,7 +441,6 @@ mod tests {
         );
 
         bundle_account_locker.unlock_bundle_accounts(&locked_bundle);
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -505,7 +504,6 @@ mod tests {
         );
 
         bundle_account_locker.unlock_bundle_accounts(&locked_bundle);
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -520,7 +518,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(1, &Pubkey::new_unique());
+        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -601,8 +599,7 @@ mod tests {
             HashSet::from([mint_keypair.pubkey(), kp2.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle_accounts(locked_bundle_2);
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
+        bundle_account_locker.unlock_bundle_accounts(&locked_bundle_2);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -634,16 +631,14 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // assert_eq!(bundle_account_locker.num_bundles(), 1);
 
         // fails to pop because bundle mentions consensus_accounts_cache
         let consensus_accounts_cache = HashSet::from([kp.pubkey()]);
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &consensus_accounts_cache)
-            .is_none());
+            .get_locked_bundle(packet_bundle, &bank, &consensus_accounts_cache)
+            .is_err());
 
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -676,14 +671,10 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
-
         // fails to pop because bundle it locks the same transaction twice
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -711,14 +702,10 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
-
         // fails to pop because bundle has bad blockhash
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -750,11 +737,8 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
-
         let locked_bundle = bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .unwrap();
 
         let results = bank
@@ -763,19 +747,17 @@ mod tests {
             ]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], Ok(()));
-        bundle_account_locker.unlock_bundle_accounts(locked_bundle);
+        bundle_account_locker.unlock_bundle_accounts(&locked_bundle);
 
         // try to process the same one again shall fail
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
         };
-        bundle_account_locker.push(vec![packet_bundle]);
 
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -821,15 +803,11 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
-
         // fails to pop because bundle mentions tip program
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
 
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -859,15 +837,11 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
-
         // fails to pop because bundle mentions the txV2 program
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
 
-        assert_eq!(bundle_account_locker.num_bundles(), 0);
         assert!(bundle_account_locker.read_locks().is_empty());
         assert!(bundle_account_locker.write_locks().is_empty());
     }
@@ -884,12 +858,10 @@ mod tests {
             batch: PacketBatch::new(vec![]),
             uuid: Uuid::new_v4(),
         };
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
         // fails to pop because empty bundle
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
     }
 
     #[test]
@@ -919,12 +891,10 @@ mod tests {
             batch: PacketBatch::new(packets.collect()),
             uuid: Uuid::new_v4(),
         };
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
         // fails to pop because too many packets in a bundle
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
     }
 
     #[test]
@@ -954,12 +924,11 @@ mod tests {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
         };
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
+
         // fails to pop because one of the packets is marked as discard
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
     }
 
     #[test]
@@ -995,12 +964,11 @@ mod tests {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
         };
-        bundle_account_locker.push(vec![packet_bundle]);
-        assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // assert_eq!(bundle_account_locker.num_bundles(), 1);
         // fails to pop because one of the packets is marked as discard
         assert!(bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
-            .is_none());
+            .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
+            .is_err());
     }
 
     // TODO (LB): test txv2 bundle

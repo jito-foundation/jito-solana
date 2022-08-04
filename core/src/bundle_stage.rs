@@ -1143,7 +1143,7 @@ mod tests {
     #[cfg(test)]
     fn test_single_bundle(
         genesis_config: GenesisConfig,
-        bundle: Vec<PacketBundle>,
+        bundle: PacketBundle,
         options: Option<Vec<TestOption>>,
     ) -> Result<(), BundleExecutionError> {
         solana_logger::setup();
@@ -1178,9 +1178,8 @@ mod tests {
         let mut bundle_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
-        bundle_locker.push(bundle.clone());
         let locked_bundle = bundle_locker
-            .get_locked_bundle(&bank, &HashSet::default())
+            .get_locked_bundle(bundle.clone(), &bank, &HashSet::default())
             .unwrap();
 
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(
@@ -1205,10 +1204,9 @@ mod tests {
                 .any(|option| matches!(option, AssertDuplicateInBundleDropped))
         {
             assert_eq!(results, Ok(()));
-            bundle_locker.push(bundle);
             assert!(bundle_locker
-                .get_locked_bundle(&bank, &HashSet::default())
-                .is_none());
+                .get_locked_bundle(bundle, &bank, &HashSet::default())
+                .is_ok());
         }
 
         // Transaction rolled back successfully if
@@ -1264,7 +1262,7 @@ mod tests {
     }
 
     #[cfg(test)]
-    fn setup_successful_tx() -> (GenesisConfig, Vec<PacketBundle>) {
+    fn setup_successful_tx() -> (GenesisConfig, PacketBundle) {
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -1279,11 +1277,13 @@ mod tests {
         let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
         let packet = Packet::from_data(None, tx).unwrap();
 
-        let bundle = vec![PacketBundle {
-            batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
-        }];
-        (genesis_config, bundle)
+        (
+            genesis_config,
+            PacketBundle {
+                batch: PacketBatch::new(vec![packet]),
+                uuid: Uuid::new_v4(),
+            },
+        )
     }
 
     #[test]
@@ -1306,10 +1306,10 @@ mod tests {
         let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
         let packet = Packet::from_data(None, tx).unwrap();
 
-        let bundle = vec![PacketBundle {
+        let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
-        }];
+        };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, Some(vec![LowComputeBudget])),
             Err(ExceedsCostModel)
@@ -1339,10 +1339,10 @@ mod tests {
             ),
         )
         .unwrap();
-        let bundle = vec![PacketBundle {
+        let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
-        }];
+        };
 
         assert_eq!(
             test_single_bundle(genesis_config, bundle, None),
@@ -1367,18 +1367,18 @@ mod tests {
             system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 1, Hash::default()),
         )
         .unwrap();
-        let bundle = vec![PacketBundle {
+        let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
-        }];
+        };
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
         let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
-        bundle_account_locker.push(bundle);
-        let locked_bundle = bundle_account_locker.get_locked_bundle(&bank, &HashSet::default());
+        let locked_bundle =
+            bundle_account_locker.get_locked_bundle(bundle, &bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle
-        assert!(locked_bundle.is_none());
+        assert!(locked_bundle.is_err());
     }
 
     #[test]
@@ -1401,10 +1401,10 @@ mod tests {
             system_transaction::transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()),
         )
         .unwrap();
-        let bundle = vec![PacketBundle {
+        let bundle = PacketBundle {
             batch: PacketBatch::new(vec![successful_packet, failed_packet]),
             uuid: Uuid::new_v4(),
-        }];
+        };
 
         assert_eq!(
             test_single_bundle(genesis_config, bundle, Some(vec![AssertZeroedCostModel])),
@@ -1427,10 +1427,10 @@ mod tests {
             system_transaction::transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()),
         )
         .unwrap();
-        let bundle = vec![PacketBundle {
+        let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
-        }];
+        };
 
         assert_eq!(
             test_single_bundle(genesis_config, bundle, None),
@@ -1452,18 +1452,18 @@ mod tests {
             system_transaction::transfer(&mint_keypair, &kp.pubkey(), 1, genesis_config.hash()),
         )
         .unwrap();
-        let bundle = vec![PacketBundle {
+        let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet.clone(), packet]),
             uuid: Uuid::new_v4(),
-        }];
+        };
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
         let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
-        bundle_account_locker.push(bundle);
-        let locked_bundle = bundle_account_locker.get_locked_bundle(&bank, &HashSet::default());
+        let locked_bundle =
+            bundle_account_locker.get_locked_bundle(bundle, &bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle due to duplicate transactions
-        assert!(locked_bundle.is_none());
+        assert!(locked_bundle.is_err());
     }
 
     #[test]
@@ -1482,10 +1482,10 @@ mod tests {
             system_transaction::transfer(&mint_keypair, &kp_b.pubkey(), 1, genesis_config.hash()),
         )
         .unwrap();
-        let bundle = vec![PacketBundle {
+        let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
-        }];
+        };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, None),
             Err(PohMaxHeightError)
@@ -1530,27 +1530,30 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
+        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             &Pubkey::new_unique(),
         )));
 
-        let scheduled_bundles = BundleStage::schedule_bundles_until_leader(
+        let mut unprocessed_bundles = VecDeque::new();
+
+        let maybe_bank_start = BundleStage::schedule_bundles_until_leader(
             &bundle_receiver,
-            &bundle_account_locker,
+            &mut unprocessed_bundles,
             &poh_recorder,
         );
-        assert!(scheduled_bundles.is_ok());
-        assert_eq!(bundle_account_locker.lock().unwrap().num_bundles(), 1);
-        let locked_bundle = bundle_account_locker
-            .lock()
-            .unwrap()
-            .get_locked_bundle(&bank, &HashSet::default());
-        assert!(locked_bundle.is_some());
+        assert!(maybe_bank_start.is_ok());
+        assert_eq!(unprocessed_bundles.len(), 1);
+        let locked_bundle = bundle_locker_sanitizer.lock().unwrap().get_locked_bundle(
+            unprocessed_bundles.pop_front().unwrap(),
+            &bank,
+            &HashSet::default(),
+        );
+        assert!(locked_bundle.is_ok());
         // TODO: the logic around working bank makes it difficult to test bundles are returned
         // when leader
-        // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_account_locker, &poh_recorder);
+        // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_locker_sanitizer, &poh_recorder);
         // assert!(scheduled_bundles.is_ok());
-        // assert_eq!(bundle_account_locker.lock().unwrap().num_bundles(), 0);
+        // assert_eq!(bundle_locker_sanitizer.lock().unwrap().num_bundles(), 0);
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
     }
@@ -1608,7 +1611,7 @@ mod tests {
         let tx1 = transfer(&keypair0, &keypair1.pubkey(), 50_000, genesis_config.hash());
         let sanitized_txs_1 = vec![SanitizedTransaction::from_transaction_for_tests(tx1)];
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         // grab lock on tx1
         let _batch = bank.prepare_sanitized_batch(&sanitized_txs_1);
@@ -1620,9 +1623,8 @@ mod tests {
         };
         info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
 
-        bundle_account_locker.push(vec![bundle]);
-        let locked_bundle = bundle_account_locker
-            .get_locked_bundle(&bank, &HashSet::default())
+        let locked_bundle = bundle_locker_sanitizer
+            .get_locked_bundle(bundle, &bank, &HashSet::default())
             .unwrap();
 
         let result = BundleStage::update_qos_and_execute_record_commit_bundle(
