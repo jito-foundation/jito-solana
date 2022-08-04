@@ -93,7 +93,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
             UnprocessedPacketBatches::from_iter(batches.into_iter(), 2 * batches_len);
         let (s, _r) = unbounded();
 
-        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
+        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
 
         // This tests the performance of buffering packets.
         // If the packet buffers are copied, performance will be poor.
@@ -238,7 +238,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
-        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
+        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
         let _banking_stage = BankingStage::new(
             &cluster_info,
             &poh_recorder,

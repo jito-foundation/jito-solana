@@ -18,20 +18,13 @@ pub enum BundleAccountLockerError {
 
 pub type Result<T> = result::Result<T, BundleAccountLockerError>;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct BundleAccountLocker {
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
 }
 
 impl BundleAccountLocker {
-    pub fn new() -> Self {
-        BundleAccountLocker {
-            read_locks: HashMap::with_capacity(100),
-            write_locks: HashMap::with_capacity(100),
-        }
-    }
-
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleLockerSanitizer
     pub fn read_locks(&self) -> HashSet<Pubkey> {

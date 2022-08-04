@@ -1177,7 +1177,7 @@ mod tests {
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
         let sanitized_bundle = bundle_sanitizer
-            .get_sanitized_bundle(&bundle.clone(), &bank, &HashSet::default())
+            .get_sanitized_bundle(&bundle, &bank, &HashSet::default())
             .unwrap();
 
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(

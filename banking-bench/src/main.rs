@@ -351,7 +351,7 @@ fn main() {
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
 
-        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
+        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
 
         let connection_cache = match tpu_use_quic {
             true => ConnectionCache::new(DEFAULT_TPU_CONNECTION_POOL_SIZE),
