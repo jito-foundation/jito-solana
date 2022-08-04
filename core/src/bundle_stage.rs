@@ -667,9 +667,12 @@ impl BundleStage {
             drop(r_poh_recorder);
 
             if is_leader_now && !unprocessed_bundles.is_empty() {
+                // if leader now and have bundles to process, break out + process them
                 unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
                 return Ok(working_bank_start.unwrap().clone());
             } else if let Ok(bundles) = bundle_receiver.recv() {
+                // otherwise wait for a bundle to arrive and add to unprocessed bundles only if
+                // leader now or soon
                 if is_leader_now || would_be_leader_soon {
                     unprocessed_bundles.extend(bundles);
                 }
@@ -833,6 +836,7 @@ impl BundleStage {
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
         bundle_sanitizer: &BundleSanitizer,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
+        locked_bundles: &mut VecDeque<(PacketBundle, SanitizedBundle)>,
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bank_start: BankStart,
         consensus_accounts_cache: &HashSet<Pubkey>,
@@ -846,8 +850,6 @@ impl BundleStage {
         num_bundles_prelock: &usize,
     ) -> BundleExecutionResult<()> {
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-        let mut locked_bundles: VecDeque<SanitizedBundle> =
-            VecDeque::with_capacity(*num_bundles_prelock + 1);
 
         loop {
             // ensure locked_bundles contains at least num_bundles_prelock bundles so bundles
@@ -865,9 +867,13 @@ impl BundleStage {
                 ) {
                     Ok(sanitized_bundle) => {
                         let mut bundle_account_locker_l = bundle_account_locker.lock().unwrap();
+                        info!("read locks 0: {:?}", bundle_account_locker_l.read_locks());
+                        info!("write locks 0: {:?}", bundle_account_locker_l.write_locks());
                         match bundle_account_locker_l.lock_bundle_accounts(&sanitized_bundle) {
                             Ok(_) => {
-                                locked_bundles.push_back(sanitized_bundle);
+                                info!("read locks 1: {:?}", bundle_account_locker_l.read_locks());
+                                info!("write locks 1: {:?}", bundle_account_locker_l.write_locks());
+                                locked_bundles.push_back((packet_bundle, sanitized_bundle));
                             }
                             Err(e) => {
                                 error!("error locking bundle account: {:?}", e);
@@ -880,7 +886,7 @@ impl BundleStage {
                 }
             }
 
-            if let Some(sanitized_bundle) = locked_bundles.pop_front() {
+            if let Some((packet_bundle, sanitized_bundle)) = locked_bundles.pop_front() {
                 let result = Self::handle_tip_and_execute_record_commit_bundle(
                     &sanitized_bundle,
                     tip_manager,
@@ -903,7 +909,9 @@ impl BundleStage {
                     Ok(_) => {}
                     Err(BundleExecutionError::PohMaxHeightError) => {
                         warn!("poh max height reached uuid: {:?}", sanitized_bundle.uuid);
-                        // TODO: need to break here and push the packet batches back onto the heap
+                        // push back on the front to be rescheduled
+                        locked_bundles.push_front((packet_bundle, sanitized_bundle));
+                        return Err(BundleExecutionError::PohMaxHeightError);
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
                         warn!("tx failure uuid: {:?} e: {:?}", sanitized_bundle.uuid, e);
@@ -935,6 +943,8 @@ impl BundleStage {
     }
 
     /// Updates consensus-related accounts on epoch boundaries
+    /// Bundles must not contain any consensus related accounts in order to prevent starvation
+    /// of voting related transactions
     fn maybe_update_consensus_cache(
         bank: &Arc<Bank>,
         consensus_accounts_cache: &mut HashSet<Pubkey>,
@@ -968,6 +978,8 @@ impl BundleStage {
         let mut last_consensus_update = Epoch::default();
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
+        let mut locked_bundles: VecDeque<(PacketBundle, SanitizedBundle)> =
+            VecDeque::with_capacity(num_bundles_prelock + 1);
 
         let bundle_sanitizer = BundleSanitizer::new(&tip_manager.tip_payment_program_id());
 
@@ -992,6 +1004,7 @@ impl BundleStage {
                         &bundle_account_locker,
                         &bundle_sanitizer,
                         &mut unprocessed_bundles,
+                        &mut locked_bundles,
                         &bundle_receiver,
                         bank_start,
                         &consensus_accounts_cache,
