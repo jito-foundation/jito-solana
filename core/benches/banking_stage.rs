@@ -11,7 +11,7 @@ use {
     solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::{BankingStage, BankingStageStats},
-        bundle_sanitizer::BundleSanitizer,
+        bundle_account_locker::BundleAccountLocker,
         leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         qos_service::QosService,
         unprocessed_packet_batches::*,
@@ -31,7 +31,7 @@ use {
         genesis_config::GenesisConfig,
         hash::Hash,
         message::Message,
-        pubkey::{self, Pubkey},
+        pubkey::{self},
         signature::{Keypair, Signature, Signer},
         system_instruction, system_transaction,
         timing::{duration_as_us, timestamp},
@@ -72,7 +72,6 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
 
 #[bench]
 fn bench_consume_buffered(bencher: &mut Bencher) {
-    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(100_000);
     let bank = Arc::new(Bank::new_for_benches(&genesis_config));
     let ledger_path = get_tmp_ledger_path!();
@@ -94,8 +93,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
             UnprocessedPacketBatches::from_iter(batches.into_iter(), 2 * batches_len);
         let (s, _r) = unbounded();
 
-        let bundle_locker_sanitizer =
-            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
         // This tests the performance of buffering packets.
         // If the packet buffers are copied, performance will be poor.
@@ -115,7 +113,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 10,
                 None,
                 &HashSet::default(),
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
         });
 
@@ -169,7 +167,6 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
     //   a multiple of packet chunk duplicates to avoid races
     const CHUNKS: usize = 8;
     const PACKETS_PER_BATCH: usize = 192;
-    const NUM_BUNDLES_PRE_LOCK: u64 = 4;
     let txes = PACKETS_PER_BATCH * num_threads * CHUNKS;
     let mint_total = 1_000_000_000_000;
     let GenesisConfigInfo {
@@ -241,8 +238,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
-        let bundle_locker_sanitizer =
-            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
         let _banking_stage = BankingStage::new(
             &cluster_info,
             &poh_recorder,
@@ -256,7 +252,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             Arc::new(ConnectionCache::default()),
             bank_forks,
             HashSet::new(),
-            bundle_locker_sanitizer,
+            bundle_locker,
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 
