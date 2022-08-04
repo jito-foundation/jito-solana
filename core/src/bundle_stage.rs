@@ -1204,7 +1204,7 @@ mod tests {
             assert_eq!(results, Ok(()));
             assert!(bundle_sanitizer
                 .get_sanitized_bundle(&bundle, &bank, &HashSet::default())
-                .is_ok());
+                .is_err());
         }
 
         // Transaction rolled back successfully if
