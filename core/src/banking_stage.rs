@@ -2324,8 +2324,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2340,7 +2339,7 @@ mod tests {
                 Arc::new(ConnectionCache::default()),
                 bank_forks,
                 HashSet::default(),
-                bundle_locker_sanitizer,
+                bundle_locker,
             );
             drop(verified_sender);
             drop(gossip_verified_vote_sender);
@@ -2384,8 +2383,7 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2400,7 +2398,7 @@ mod tests {
                 Arc::new(ConnectionCache::default()),
                 bank_forks,
                 HashSet::default(),
-                bundle_locker_sanitizer,
+                bundle_locker,
             );
             trace!("sending bank");
             drop(verified_sender);
@@ -2474,8 +2472,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2489,7 +2486,7 @@ mod tests {
                 Arc::new(ConnectionCache::default()),
                 bank_forks,
                 HashSet::default(),
-                bundle_locker_sanitizer,
+                bundle_locker,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -2640,8 +2637,7 @@ mod tests {
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
 
-                let bundle_locker_sanitizer =
-                    Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+                let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
@@ -2657,7 +2653,7 @@ mod tests {
                     Arc::new(ConnectionCache::default()),
                     bank_forks,
                     HashSet::default(),
-                    bundle_locker_sanitizer,
+                    bundle_locker,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -2968,8 +2964,7 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -2980,7 +2975,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3031,8 +3026,7 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3043,7 +3037,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3120,8 +3114,7 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3132,7 +3125,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3217,8 +3210,7 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3229,7 +3221,7 @@ mod tests {
                 &gossip_vote_sender,
                 &qos_service,
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3270,7 +3262,7 @@ mod tests {
                 &gossip_vote_sender,
                 &qos_service,
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3359,8 +3351,7 @@ mod tests {
             let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3371,7 +3362,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             poh_recorder
@@ -3530,8 +3521,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let process_transactions_summary = BankingStage::process_transactions(
                 &bank,
@@ -3542,7 +3532,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             let ProcessTransactionsSummary {
@@ -3601,8 +3591,7 @@ mod tests {
 
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-        let bundle_locker_sanitizer =
-            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
         let process_transactions_summary = BankingStage::process_transactions(
             &bank,
@@ -3613,7 +3602,7 @@ mod tests {
             &gossip_vote_sender,
             &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
             None,
-            &bundle_locker_sanitizer,
+            &bundle_locker,
         );
 
         poh_recorder
@@ -3828,8 +3817,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3842,7 +3830,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             transaction_status_service.join().unwrap();
@@ -3995,8 +3983,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -4009,7 +3996,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
 
             transaction_status_service.join().unwrap();
@@ -4116,8 +4103,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer =
-                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.read().unwrap().has_bank());
@@ -4137,7 +4123,7 @@ mod tests {
                 num_conflicting_transactions,
                 None,
                 &HashSet::default(),
-                &bundle_locker_sanitizer,
+                &bundle_locker,
             );
             assert_eq!(buffered_packet_batches.len(), num_conflicting_transactions);
             // When the poh recorder has a bank, should process all non conflicting buffered packets.
@@ -4160,7 +4146,7 @@ mod tests {
                     num_packets_to_process_per_iteration,
                     None,
                     &HashSet::default(),
-                    &bundle_locker_sanitizer,
+                    &bundle_locker,
                 );
                 if num_expected_unprocessed == 0 {
                     assert!(buffered_packet_batches.is_empty())
@@ -4222,8 +4208,7 @@ mod tests {
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
 
-                    let bundle_locker_sanitizer =
-                        Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+                    let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
                     BankingStage::consume_buffered_packets(
                         &Pubkey::default(),
@@ -4240,7 +4225,7 @@ mod tests {
                         num_packets_to_process_per_iteration,
                         None,
                         &HashSet::default(),
-                        &bundle_locker_sanitizer,
+                        &bundle_locker,
                     );
 
                     // Check everything is correct. All indexes after `interrupted_iteration`

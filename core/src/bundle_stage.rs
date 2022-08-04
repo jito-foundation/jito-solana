@@ -1115,7 +1115,6 @@ mod tests {
             },
             compute_budget::ComputeBudgetInstruction,
             genesis_config::GenesisConfig,
-            hash::Hash,
             instruction::InstructionError,
             message::Message,
             packet::Packet,
@@ -1174,15 +1173,15 @@ mod tests {
         let recorder = poh_recorder.read().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-        let mut bundle_locker = BundleSanitizer::new(&Pubkey::new_unique());
+        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
-        let locked_bundle = bundle_locker
-            .get_locked_bundle(bundle.clone(), &bank, &HashSet::default())
+        let sanitized_bundle = bundle_sanitizer
+            .get_sanitized_bundle(&bundle.clone(), &bank, &HashSet::default())
             .unwrap();
 
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(
-            locked_bundle.sanitized_bundle(),
+            &sanitized_bundle,
             &recorder,
             &None,
             &gossip_vote_sender,
@@ -1203,8 +1202,8 @@ mod tests {
                 .any(|option| matches!(option, AssertDuplicateInBundleDropped))
         {
             assert_eq!(results, Ok(()));
-            assert!(bundle_locker
-                .get_locked_bundle(bundle, &bank, &HashSet::default())
+            assert!(bundle_sanitizer
+                .get_sanitized_bundle(&bundle, &bank, &HashSet::default())
                 .is_ok());
         }
 
@@ -1353,34 +1352,6 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_blockhash() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config(4);
-
-        let kp_a = Keypair::new();
-        let packet = Packet::from_data(
-            None,
-            system_transaction::transfer(&mint_keypair, &kp_a.pubkey(), 1, Hash::default()),
-        )
-        .unwrap();
-        let bundle = PacketBundle {
-            batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
-        };
-        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
-        let locked_bundle =
-            bundle_locker_sanitizer.get_locked_bundle(bundle, &bank, &HashSet::default());
-
-        // bundle is dropped by get_lockable_bundle->get_sanitized_bundle
-        assert!(locked_bundle.is_err());
-    }
-
-    #[test]
     fn test_qos_rollback() {
         let GenesisConfigInfo {
             genesis_config,
@@ -1435,34 +1406,6 @@ mod tests {
             test_single_bundle(genesis_config, bundle, None),
             Err(TransactionFailure(AccountNotFound))
         );
-    }
-
-    #[test]
-    fn test_tx_duplicates_fail() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config(4);
-
-        let kp = Keypair::new();
-        let packet = Packet::from_data(
-            None,
-            system_transaction::transfer(&mint_keypair, &kp.pubkey(), 1, genesis_config.hash()),
-        )
-        .unwrap();
-        let bundle = PacketBundle {
-            batch: PacketBatch::new(vec![packet.clone(), packet]),
-            uuid: Uuid::new_v4(),
-        };
-        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
-        let locked_bundle =
-            bundle_locker_sanitizer.get_locked_bundle(bundle, &bank, &HashSet::default());
-
-        // bundle is dropped by get_lockable_bundle->get_sanitized_bundle due to duplicate transactions
-        assert!(locked_bundle.is_err());
     }
 
     #[test]
@@ -1541,12 +1484,15 @@ mod tests {
         );
         assert!(maybe_bank_start.is_ok());
         assert_eq!(unprocessed_bundles.len(), 1);
-        let locked_bundle = bundle_locker_sanitizer.lock().unwrap().get_locked_bundle(
-            unprocessed_bundles.pop_front().unwrap(),
-            &bank,
-            &HashSet::default(),
-        );
-        assert!(locked_bundle.is_ok());
+        let sanitized_bundle = bundle_locker_sanitizer
+            .lock()
+            .unwrap()
+            .get_sanitized_bundle(
+                &unprocessed_bundles.pop_front().unwrap(),
+                &bank,
+                &HashSet::default(),
+            );
+        assert!(sanitized_bundle.is_ok());
         // TODO: the logic around working bank makes it difficult to test bundles are returned
         // when leader
         // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_locker_sanitizer, &poh_recorder);
@@ -1609,7 +1555,7 @@ mod tests {
         let tx1 = transfer(&keypair0, &keypair1.pubkey(), 50_000, genesis_config.hash());
         let sanitized_txs_1 = vec![SanitizedTransaction::from_transaction_for_tests(tx1)];
 
-        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
+        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         // grab lock on tx1
         let _batch = bank.prepare_sanitized_batch(&sanitized_txs_1);
@@ -1621,12 +1567,12 @@ mod tests {
         };
         info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
 
-        let locked_bundle = bundle_locker_sanitizer
-            .get_locked_bundle(bundle, &bank, &HashSet::default())
+        let sanitized_bundle = bundle_sanitizer
+            .get_sanitized_bundle(&bundle, &bank, &HashSet::default())
             .unwrap();
 
         let result = BundleStage::update_qos_and_execute_record_commit_bundle(
-            locked_bundle.sanitized_bundle(),
+            &sanitized_bundle,
             &recorder,
             &None,
             &gossip_vote_sender,
