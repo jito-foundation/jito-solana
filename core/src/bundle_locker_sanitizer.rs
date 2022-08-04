@@ -203,7 +203,7 @@ impl BundleLockerSanitizer {
         let (read_locks, write_locks) = Self::get_read_write_locks(&sanitized_bundle)?;
 
         Ok(LockedBundle::new(
-            packet_bundle.clone(),
+            packet_bundle,
             sanitized_bundle,
             read_locks,
             write_locks,

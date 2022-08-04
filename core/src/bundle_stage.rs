@@ -668,11 +668,9 @@ impl BundleStage {
             if is_leader_now && !unprocessed_bundles.is_empty() {
                 unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
                 return Ok(working_bank_start.unwrap().clone());
-            } else {
-                if let Ok(bundles) = bundle_receiver.recv() {
-                    if is_leader_now || would_be_leader_soon {
-                        unprocessed_bundles.extend(bundles);
-                    }
+            } else if let Ok(bundles) = bundle_receiver.recv() {
+                if is_leader_now || would_be_leader_soon {
+                    unprocessed_bundles.extend(bundles);
                 }
             }
         }
@@ -786,6 +784,7 @@ impl BundleStage {
     }
 
     /// Handles tip account management and executing, recording, and committing bundles
+    #[allow(clippy::too_many_arguments)]
     fn handle_tip_and_execute_record_commit_bundle(
         locked_bundle: &LockedBundle,
         tip_manager: &TipManager,
@@ -803,7 +802,7 @@ impl BundleStage {
         if Self::bundle_touches_tip_pdas(&locked_bundle.sanitized_bundle().transactions, &tip_pdas)
         {
             let _ = Self::maybe_initialize_and_change_tip_receiver(
-                &bank_start,
+                bank_start,
                 tip_manager,
                 qos_service,
                 recorder,
@@ -821,7 +820,7 @@ impl BundleStage {
             transaction_status_sender,
             gossip_vote_sender,
             qos_service,
-            &bank_start,
+            bank_start,
             execute_and_commit_timings,
             max_bundle_retry_duration,
         )
@@ -860,7 +859,7 @@ impl BundleStage {
                 let maybe_locked_bundle = bundle_account_locker.lock().unwrap().get_locked_bundle(
                     unprocessed_bundles.pop_front().unwrap(),
                     &bank_start.working_bank,
-                    &consensus_accounts_cache,
+                    consensus_accounts_cache,
                 );
                 match maybe_locked_bundle {
                     Ok(locked_bundle) => {
@@ -1646,4 +1645,6 @@ mod tests {
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
     }
+
+    // TODO (LB): add TX v2 test here
 }
