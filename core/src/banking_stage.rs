@@ -401,7 +401,7 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
-        tip_accounts: HashSet<Pubkey>,
+        blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) -> Self {
         Self::new_num_threads(
@@ -417,14 +417,11 @@ impl BankingStage {
             log_messages_bytes_limit,
             connection_cache,
             bank_forks,
-            tip_accounts,
+            blacklisted_accounts,
             bundle_account_locker,
         )
     }
 
-    // TODO LB asdjf;klasjhfdjkasbf;ajsr;je;qiojrh
-    // fsajdfash;fjs
-    // Make sure tip program is disabled here!!!
     #[allow(clippy::too_many_arguments)]
     pub fn new_num_threads(
         cluster_info: &Arc<ClusterInfo>,
@@ -439,7 +436,7 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
-        tip_accounts: HashSet<Pubkey>,
+        blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
@@ -473,7 +470,7 @@ impl BankingStage {
                 let data_budget = data_budget.clone();
                 let cost_model = cost_model.clone();
                 let connection_cache = connection_cache.clone();
-                let tip_accounts = tip_accounts.clone();
+                let blacklisted_accounts = blacklisted_accounts.clone();
                 let bundle_account_locker = bundle_account_locker.clone();
 
                 let bank_forks = bank_forks.clone();
@@ -495,7 +492,7 @@ impl BankingStage {
                             log_messages_bytes_limit,
                             connection_cache,
                             &bank_forks,
-                            tip_accounts,
+                            blacklisted_accounts,
                             bundle_account_locker,
                         );
                     })
@@ -674,7 +671,7 @@ impl BankingStage {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         num_packets_to_process_per_iteration: usize,
         log_messages_bytes_limit: Option<usize>,
-        tip_accounts: &HashSet<Pubkey>,
+        blacklisted_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) {
         let mut rebuffered_packet_count = 0;
@@ -725,7 +722,7 @@ impl BankingStage {
                                     qos_service,
                                     slot_metrics_tracker,
                                     log_messages_bytes_limit,
-                                    tip_accounts,
+                                    blacklisted_accounts,
                                     bundle_account_locker,
                                 ),
                             "process_packets_transactions",
@@ -892,7 +889,7 @@ impl BankingStage {
         connection_cache: &ConnectionCache,
         tracer_packet_stats: &mut TracerPacketStats,
         bank_forks: &Arc<RwLock<BankForks>>,
-        tip_accounts: &HashSet<Pubkey>,
+        blacklisted_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
@@ -954,7 +951,7 @@ impl BankingStage {
                         slot_metrics_tracker,
                         UNPROCESSED_BUFFER_STEP_SIZE,
                         log_messages_bytes_limit,
-                        tip_accounts,
+                        blacklisted_accounts,
                         bundle_account_locker
                     ),
                     "consume_buffered_packets",
@@ -1115,7 +1112,7 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: &Arc<RwLock<BankForks>>,
-        tip_accounts: HashSet<Pubkey>,
+        blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) {
         let recorder = poh_recorder.read().unwrap().recorder();
@@ -1152,7 +1149,7 @@ impl BankingStage {
                         &connection_cache,
                         &mut tracer_packet_stats,
                         bank_forks,
-                        &tip_accounts,
+                        &blacklisted_accounts,
                         &bundle_account_locker,
                     ),
                     "process_buffered_packets",
@@ -1937,7 +1934,7 @@ impl BankingStage {
         qos_service: &'a QosService,
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
         log_messages_bytes_limit: Option<usize>,
-        tip_accounts: &HashSet<Pubkey>,
+        blacklisted_accounts: &HashSet<Pubkey>,
         bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
     ) -> ProcessTransactionsSummary {
         // Convert packets to transactions
@@ -1958,7 +1955,7 @@ impl BankingStage {
                         !tx.message()
                             .account_keys()
                             .iter()
-                            .any(|acc| tip_accounts.contains(acc))
+                            .any(|acc| blacklisted_accounts.contains(acc))
                     })
                     .map(|transaction| (transaction, i))
                 })
