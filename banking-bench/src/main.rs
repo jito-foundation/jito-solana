@@ -7,7 +7,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_client::connection_cache::{ConnectionCache, DEFAULT_TPU_CONNECTION_POOL_SIZE},
-    solana_core::{banking_stage::BankingStage, bundle_locker_sanitizer::BundleLockerSanitizer},
+    solana_core::{banking_stage::BankingStage, bundle_sanitizer::BundleSanitizer},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
         blockstore::Blockstore,
@@ -352,9 +352,8 @@ fn main() {
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
 
-        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-            &Pubkey::new_unique(),
-        )));
+        let bundle_locker_sanitizer =
+            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
         let connection_cache = match tpu_use_quic {
             true => ConnectionCache::new(DEFAULT_TPU_CONNECTION_POOL_SIZE),

@@ -5,7 +5,7 @@ use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
         bundle::PacketBundle,
-        bundle_locker_sanitizer::{BundleLockerSanitizer, LockedBundle},
+        bundle_sanitizer::{BundleSanitizer, LockedBundle},
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
         tip_manager::TipManager,
@@ -86,7 +86,7 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
     ) -> Self {
         const NUM_BUNDLES_PRELOCK: usize = 3;
 
@@ -115,7 +115,7 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
         max_bundle_retry_duration: Duration,
         num_bundles_prelock: usize,
     ) -> Self {
@@ -830,7 +830,7 @@ impl BundleStage {
     /// is finished.
     #[allow(clippy::too_many_arguments)]
     fn execute_bundles_until_empty_or_end_of_slot(
-        bundle_locker_sanitizer: &Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: &Arc<Mutex<BundleSanitizer>>,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bank_start: BankStart,
@@ -960,7 +960,7 @@ impl BundleStage {
         cost_model: Arc<RwLock<CostModel>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
         max_bundle_retry_duration: Duration,
         num_bundles_prelock: usize,
     ) {
@@ -1175,7 +1175,7 @@ mod tests {
         let recorder = poh_recorder.read().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-        let mut bundle_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker = BundleSanitizer::new(&Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
         let locked_bundle = bundle_locker
@@ -1373,7 +1373,7 @@ mod tests {
         };
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
         let locked_bundle =
             bundle_locker_sanitizer.get_locked_bundle(bundle, &bank, &HashSet::default());
 
@@ -1458,7 +1458,7 @@ mod tests {
         };
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
         let locked_bundle =
             bundle_locker_sanitizer.get_locked_bundle(bundle, &bank, &HashSet::default());
 
@@ -1530,9 +1530,8 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-            &Pubkey::new_unique(),
-        )));
+        let bundle_locker_sanitizer =
+            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
         let mut unprocessed_bundles = VecDeque::new();
 
@@ -1611,7 +1610,7 @@ mod tests {
         let tx1 = transfer(&keypair0, &keypair1.pubkey(), 50_000, genesis_config.hash());
         let sanitized_txs_1 = vec![SanitizedTransaction::from_transaction_for_tests(tx1)];
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         // grab lock on tx1
         let _batch = bank.prepare_sanitized_batch(&sanitized_txs_1);

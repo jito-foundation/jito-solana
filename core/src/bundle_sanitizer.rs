@@ -1,3 +1,4 @@
+///! Turns packets into SanitizedTransactions and ensure they pass sanity checks
 use {
     crate::{
         bundle::PacketBundle,
@@ -11,13 +12,10 @@ use {
         feature_set::FeatureSet,
         pubkey::Pubkey,
         signature::Signature,
-        transaction::{AddressLoader, SanitizedTransaction, TransactionAccountLocks},
+        transaction::{AddressLoader, SanitizedTransaction},
     },
     std::{
-        collections::{
-            hash_map::{Entry, RandomState},
-            HashMap, HashSet,
-        },
+        collections::{hash_map::RandomState, HashSet},
         iter::repeat,
         sync::Arc,
     },
@@ -47,219 +45,20 @@ pub enum BundleSchedulerError {
 
 pub type Result<T> = std::result::Result<T, BundleSchedulerError>;
 
-#[derive(Debug, Clone)]
-pub struct LockedBundle {
-    packet_bundle: PacketBundle,
-    sanitized_bundle: SanitizedBundle,
-    read_locks: HashMap<Pubkey, u64>,
-    write_locks: HashMap<Pubkey, u64>,
-}
-
-impl LockedBundle {
-    pub fn new(
-        packet_bundle: PacketBundle,
-        sanitized_bundle: SanitizedBundle,
-        read_locks: HashMap<Pubkey, u64>,
-        write_locks: HashMap<Pubkey, u64>,
-    ) -> LockedBundle {
-        LockedBundle {
-            packet_bundle,
-            sanitized_bundle,
-            read_locks,
-            write_locks,
-        }
-    }
-
-    pub fn packet_bundle_mut(&mut self) -> &mut PacketBundle {
-        &mut self.packet_bundle
-    }
-
-    pub fn packet_bundle(&self) -> &PacketBundle {
-        &self.packet_bundle
-    }
-
-    pub fn sanitized_bundle(&self) -> &SanitizedBundle {
-        &self.sanitized_bundle
-    }
-
-    pub fn read_locks(&self) -> &HashMap<Pubkey, u64> {
-        &self.read_locks
-    }
-
-    pub fn write_locks(&self) -> &HashMap<Pubkey, u64> {
-        &self.write_locks
-    }
-}
-
 #[derive(Clone)]
-pub struct BundleLockerSanitizer {
+pub struct BundleSanitizer {
     blacklisted_accounts: HashSet<Pubkey>,
-
-    // mutable state
-    read_locks: HashMap<Pubkey, u64>,
-    write_locks: HashMap<Pubkey, u64>,
 }
 
-/// This class has two functions:
-/// - A bundle-level AccountsLocks that holds locks for all accounts in all transactions within a bundle.
-///   This ensures that there aren't any race conditions between BankingStage and BundleStage on read/write accounts.
-/// - A bundle sanitizer. It runs sanitization checks on Bundles and returns sanitization error.
-impl BundleLockerSanitizer {
-    // A larger num_bundle_batches_prelock means BankingStage may get blocked waiting for bundle to
-    // execute. A smaller num_bundle_batches_prelock means BundleStage may get blocked waiting for
-    // AccountInUse to disappear before execution.
-    pub fn new(tip_program_id: &Pubkey) -> BundleLockerSanitizer {
-        BundleLockerSanitizer {
-            read_locks: HashMap::with_capacity(100),
-            write_locks: HashMap::with_capacity(100),
+impl BundleSanitizer {
+    pub fn new(tip_program_id: &Pubkey) -> BundleSanitizer {
+        BundleSanitizer {
             blacklisted_accounts: HashSet::from([
-                // TODO (LB):
-                //  previously didn't allow txv2 program. however, when loading lookup tables one
-                //  can only reference accounts from previous slots, not within the same slot.
-                // need to prevent a bundle from changing the tip_receiver unexpectedly and stealing
+                // prevent bundles from changing the tip_receiver unexpectedly and stealing
                 // all of the MEV profits from a validator and stakers.
                 *tip_program_id,
             ]),
         }
-    }
-
-    /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleLockerSanitizer
-    pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.read_locks.keys().cloned().collect()
-    }
-
-    /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleLockerSanitizer
-    pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.write_locks.keys().cloned().collect()
-    }
-
-    pub fn clear(&mut self) {
-        self.read_locks.clear();
-        self.write_locks.clear();
-    }
-
-    /// Performs sanity checks, locks a bundle, and returns it
-    pub fn get_locked_bundle(
-        &mut self,
-        packet_bundle: PacketBundle,
-        bank: &Arc<Bank>,
-        consensus_accounts_cache: &HashSet<Pubkey>,
-    ) -> Result<LockedBundle> {
-        match Self::get_lockable_bundle(
-            packet_bundle,
-            bank,
-            &self.blacklisted_accounts,
-            consensus_accounts_cache,
-        ) {
-            Ok(locked_bundle) => {
-                self.lock_bundle_accounts(&locked_bundle);
-                Ok(locked_bundle)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// unlocks any pre-locked accounts in this bundle
-    /// the caller is responsible for ensuring the LockedBundle passed in here was returned from
-    /// BundleScheduler::pop as an already-scheduled bundle.
-    pub fn unlock_bundle_accounts(&mut self, locked_bundle: &LockedBundle) {
-        for (acc, count) in locked_bundle.read_locks() {
-            if let Entry::Occupied(mut entry) = self.read_locks.entry(*acc) {
-                let val = entry.get_mut();
-                *val = val.saturating_sub(*count);
-                if entry.get() == &0 {
-                    let _ = entry.remove();
-                }
-            }
-        }
-        for (acc, count) in locked_bundle.write_locks() {
-            if let Entry::Occupied(mut entry) = self.write_locks.entry(*acc) {
-                let val = entry.get_mut();
-                *val = val.saturating_sub(*count);
-                if entry.get() == &0 {
-                    let _ = entry.remove();
-                }
-            }
-        }
-
-        debug!("unlock read locks: {:?}", self.read_locks);
-        debug!("unlock write locks: {:?}", self.write_locks);
-    }
-
-    fn get_lockable_bundle(
-        packet_bundle: PacketBundle,
-        bank: &Arc<Bank>,
-        blacklisted_accounts: &HashSet<Pubkey>,
-        consensus_accounts_cache: &HashSet<Pubkey>,
-    ) -> Result<LockedBundle> {
-        let sanitized_bundle = Self::get_sanitized_bundle(
-            &packet_bundle,
-            bank,
-            blacklisted_accounts,
-            consensus_accounts_cache,
-        )?;
-        let (read_locks, write_locks) = Self::get_read_write_locks(&sanitized_bundle)?;
-
-        Ok(LockedBundle::new(
-            packet_bundle,
-            sanitized_bundle,
-            read_locks,
-            write_locks,
-        ))
-    }
-
-    fn lock_bundle_accounts(&mut self, locked_bundle: &LockedBundle) {
-        for (acc, count) in locked_bundle.read_locks() {
-            *self.read_locks.entry(*acc).or_insert(0) += count;
-        }
-        for (acc, count) in locked_bundle.write_locks() {
-            *self.write_locks.entry(*acc).or_insert(0) += count;
-        }
-
-        debug!("lock read locks: {:?}", self.read_locks);
-        debug!("lock write locks: {:?}", self.write_locks);
-    }
-
-    /// Returns the read and write locks for this bundle
-    /// Each lock type contains a HashMap which maps Pubkey to number of locks held
-    fn get_read_write_locks(
-        bundle: &SanitizedBundle,
-    ) -> Result<(HashMap<Pubkey, u64>, HashMap<Pubkey, u64>)> {
-        let transaction_locks: Vec<TransactionAccountLocks> = bundle
-            .transactions
-            .iter()
-            .filter_map(|tx| tx.get_account_locks().ok())
-            .collect();
-
-        if transaction_locks.len() != bundle.transactions.len() {
-            return Err(BundleSchedulerError::LockingError(bundle.uuid));
-        }
-
-        let bundle_read_locks = transaction_locks
-            .iter()
-            .flat_map(|tx| tx.readonly.iter().map(|a| **a));
-        let bundle_read_locks =
-            bundle_read_locks
-                .into_iter()
-                .fold(HashMap::new(), |mut map, acc| {
-                    *map.entry(acc).or_insert(0) += 1;
-                    map
-                });
-
-        let bundle_write_locks = transaction_locks
-            .iter()
-            .flat_map(|tx| tx.writable.iter().map(|a| **a));
-        let bundle_write_locks =
-            bundle_write_locks
-                .into_iter()
-                .fold(HashMap::new(), |mut map, acc| {
-                    *map.entry(acc).or_insert(0) += 1;
-                    map
-                });
-
-        Ok((bundle_read_locks, bundle_write_locks))
     }
 
     /// An invalid bundle contains one of the following:
@@ -271,7 +70,7 @@ impl BundleLockerSanitizer {
     ///  Contains a packet that failed to serialize to a transaction.
     ///  Contains duplicate transactions within the same bundle.
     ///  Contains a transaction that was already processed or one with an invalid blockhash.
-    fn get_sanitized_bundle(
+    pub fn get_sanitized_bundle(
         bundle: &PacketBundle,
         bank: &Arc<Bank>,
         blacklisted_accounts: &HashSet<Pubkey>,
@@ -379,7 +178,7 @@ mod tests {
     use {
         crate::{
             bundle::PacketBundle,
-            bundle_locker_sanitizer::{BundleLockerSanitizer, MAX_PACKETS_PER_BUNDLE},
+            bundle_sanitizer::{BundleSanitizer, MAX_PACKETS_PER_BUNDLE},
             tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
         solana_address_lookup_table_program::instruction::create_lookup_table,
@@ -410,7 +209,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -460,7 +259,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -523,7 +322,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -619,7 +418,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -658,7 +457,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -694,7 +493,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -725,7 +524,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -785,7 +584,7 @@ mod tests {
         });
 
         let mut bundle_locker_sanitizer =
-            BundleLockerSanitizer::new(&tip_manager.tip_payment_program_id());
+            BundleSanitizer::new(&tip_manager.tip_payment_program_id());
 
         let kp = Keypair::new();
         let tx =
@@ -823,7 +622,7 @@ mod tests {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
         let tx =
@@ -857,7 +656,7 @@ mod tests {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![]),
@@ -879,7 +678,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -912,7 +711,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -946,7 +745,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
         let kp = Keypair::new();
 
         let mut tx = VersionedTransaction::from(transfer(

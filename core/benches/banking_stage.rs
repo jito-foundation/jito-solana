@@ -11,7 +11,7 @@ use {
     solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::{BankingStage, BankingStageStats},
-        bundle_locker_sanitizer::BundleLockerSanitizer,
+        bundle_sanitizer::BundleSanitizer,
         leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         qos_service::QosService,
         unprocessed_packet_batches::*,
@@ -94,9 +94,8 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
             UnprocessedPacketBatches::from_iter(batches.into_iter(), 2 * batches_len);
         let (s, _r) = unbounded();
 
-        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-            &Pubkey::new_unique(),
-        )));
+        let bundle_locker_sanitizer =
+            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
         // This tests the performance of buffering packets.
         // If the packet buffers are copied, performance will be poor.
@@ -242,9 +241,8 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
-        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-            &Pubkey::new_unique(),
-        )));
+        let bundle_locker_sanitizer =
+            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
         let _banking_stage = BankingStage::new(
             &cluster_info,
             &poh_recorder,

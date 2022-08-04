@@ -5,7 +5,7 @@ use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
-        bundle_locker_sanitizer::BundleLockerSanitizer,
+        bundle_sanitizer::BundleSanitizer,
         bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
@@ -245,7 +245,7 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_manager_config);
 
-        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
+        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleSanitizer::new(
             &tip_manager.tip_payment_program_id(),
         )));
 

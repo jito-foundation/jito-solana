@@ -3,7 +3,7 @@
 //! can do its processing in parallel with signature verification on the GPU.
 use {
     crate::{
-        bundle_locker_sanitizer::BundleLockerSanitizer,
+        bundle_sanitizer::BundleSanitizer,
         forward_packet_batches_by_accounts::ForwardPacketBatchesByAccounts,
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
         leader_slot_banking_stage_timing_metrics::{
@@ -402,7 +402,7 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
-        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
     ) -> Self {
         Self::new_num_threads(
             cluster_info,
@@ -437,7 +437,7 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
-        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -672,7 +672,7 @@ impl BankingStage {
         num_packets_to_process_per_iteration: usize,
         log_messages_bytes_limit: Option<usize>,
         tip_accounts: &HashSet<Pubkey>,
-        bundle_locker_sanitizer: &Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: &Arc<Mutex<BundleSanitizer>>,
     ) {
         let mut rebuffered_packet_count = 0;
         let mut consumed_buffered_packets_count = 0;
@@ -890,7 +890,7 @@ log_messages_bytes_limit,
         tracer_packet_stats: &mut TracerPacketStats,
         bank_forks: &Arc<RwLock<BankForks>>,
         tip_accounts: &HashSet<Pubkey>,
-        bundle_locker_sanitizer: &Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: &Arc<Mutex<BundleSanitizer>>,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
             {
@@ -1113,7 +1113,7 @@ log_messages_bytes_limit,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: &Arc<RwLock<BankForks>>,
         tip_accounts: HashSet<Pubkey>,
-        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
     ) {
         let recorder = poh_recorder.read().unwrap().recorder();
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -1507,7 +1507,7 @@ log_messages_bytes_limit,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
-        bundle_locker_sanitizer: &Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: &Arc<Mutex<BundleSanitizer>>,
     ) -> ProcessTransactionBatchOutput {
         let mut cost_model_time = Measure::start("cost_model");
 
@@ -1710,7 +1710,7 @@ log_messages_bytes_limit,
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
-        bundle_locker_sanitizer: &Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: &Arc<Mutex<BundleSanitizer>>,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
         let mut all_retryable_tx_indexes = vec![];
@@ -1931,7 +1931,7 @@ log_messages_bytes_limit,
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
         log_messages_bytes_limit: Option<usize>,
         tip_accounts: &HashSet<Pubkey>,
-        bundle_locker_sanitizer: &Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: &Arc<Mutex<BundleSanitizer>>,
     ) -> ProcessTransactionsSummary {
         // Convert packets to transactions
         let ((transactions, transaction_to_packet_indexes), packet_conversion_time): (
@@ -2320,9 +2320,8 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2381,9 +2380,8 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2472,9 +2470,8 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2639,9 +2636,8 @@ mod tests {
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
 
-                let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                    &Pubkey::new_unique(),
-                )));
+                let bundle_locker_sanitizer =
+                    Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
@@ -2968,9 +2964,8 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3032,9 +3027,8 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3122,9 +3116,8 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3220,9 +3213,8 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3363,9 +3355,8 @@ mod tests {
             let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3535,9 +3526,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let process_transactions_summary = BankingStage::process_transactions(
                 &bank,
@@ -3607,9 +3597,8 @@ mod tests {
 
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-            &Pubkey::new_unique(),
-        )));
+        let bundle_locker_sanitizer =
+            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
         let process_transactions_summary = BankingStage::process_transactions(
             &bank,
@@ -3835,9 +3824,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -4003,9 +3991,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -4125,9 +4112,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                &Pubkey::new_unique(),
-            )));
+            let bundle_locker_sanitizer =
+                Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.read().unwrap().has_bank());
@@ -4232,9 +4218,8 @@ mod tests {
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
 
-                    let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-                        &Pubkey::new_unique(),
-                    )));
+                    let bundle_locker_sanitizer =
+                        Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
 
                     BankingStage::consume_buffered_packets(
                         &Pubkey::default(),
