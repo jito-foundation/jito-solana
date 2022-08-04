@@ -131,7 +131,108 @@ impl BundleAccountLocker {
 
 #[cfg(test)]
 mod tests {
+    use {
+        crate::{
+            bundle::PacketBundle, bundle_account_locker::BundleAccountLocker,
+            bundle_sanitizer::BundleSanitizer,
+        },
+        solana_ledger::genesis_utils::create_genesis_config,
+        solana_perf::packet::PacketBatch,
+        solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
+        solana_sdk::{
+            packet::Packet, pubkey::Pubkey, signature::Signer, signer::keypair::Keypair,
+            system_program, system_transaction::transfer, transaction::VersionedTransaction,
+        },
+        std::{collections::HashSet, sync::Arc},
+        uuid::Uuid,
+    };
 
     #[test]
-    fn test_foo() {}
+    fn test_simple_lock_bundles() {
+        solana_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(2);
+        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+
+        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
+
+        let mut bundle_account_locker = BundleAccountLocker::default();
+
+        let kp0 = Keypair::new();
+        let kp1 = Keypair::new();
+
+        let tx0 = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp0.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let tx1 = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp1.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+
+        let packet_bundle0 = PacketBundle {
+            batch: PacketBatch::new(vec![Packet::from_data(None, &tx0).unwrap()]),
+            uuid: Uuid::new_v4(),
+        };
+        let packet_bundle1 = PacketBundle {
+            batch: PacketBatch::new(vec![Packet::from_data(None, &tx1).unwrap()]),
+            uuid: Uuid::new_v4(),
+        };
+
+        let sanitized_bundle0 = bundle_sanitizer
+            .get_sanitized_bundle(&packet_bundle0, &bank, &HashSet::default())
+            .unwrap();
+        let sanitized_bundle1 = bundle_sanitizer
+            .get_sanitized_bundle(&packet_bundle1, &bank, &HashSet::default())
+            .unwrap();
+
+        bundle_account_locker
+            .lock_bundle_accounts(&sanitized_bundle0)
+            .unwrap();
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey()])
+        );
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from_iter([system_program::id()])
+        );
+
+        bundle_account_locker
+            .lock_bundle_accounts(&sanitized_bundle1)
+            .unwrap();
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey(), kp1.pubkey()])
+        );
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from_iter([system_program::id()])
+        );
+
+        bundle_account_locker
+            .unlock_bundle_accounts(&sanitized_bundle0)
+            .unwrap();
+        assert_eq!(
+            bundle_account_locker.write_locks(),
+            HashSet::from_iter([mint_keypair.pubkey(), kp1.pubkey()])
+        );
+        assert_eq!(
+            bundle_account_locker.read_locks(),
+            HashSet::from_iter([system_program::id()])
+        );
+
+        bundle_account_locker
+            .unlock_bundle_accounts(&sanitized_bundle1)
+            .unwrap();
+        assert!(bundle_account_locker.write_locks().is_empty());
+        assert!(bundle_account_locker.read_locks().is_empty());
+    }
 }
