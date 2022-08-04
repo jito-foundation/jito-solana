@@ -1,5 +1,14 @@
 ///! Handles pre-locking bundles accounts so that accounts bundles touch can be reserved ahead
-/// of time for execution
+/// of time for execution. Also, ensures that ALL accounts mentioned across a bundle are locked
+/// to avoid race conditions between BundleStage and banking stage.
+///
+/// For instance, imagine a bundle with three transactions and the set of accounts for each transaction
+/// is: {{A, B}, {B, C}, {C, D}}. We need to lock A, B, and C even though only one is executed at a time.
+/// Imagine BundleStage is in the middle of processing {C, D} and we didn't have a lock on accounts {A, B, C}.
+/// In this situation, there's a chance that BankingStage can process a transaction containing A or B
+/// and commit the results before the bundle completes. By the time the bundle commits the new account
+/// state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
+/// replayed improperly and that leader would have produced an invalid block.
 use {
     solana_sdk::{
         bundle::sanitized::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks,
