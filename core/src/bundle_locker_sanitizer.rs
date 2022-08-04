@@ -124,13 +124,13 @@ impl BundleLockerSanitizer {
     }
 
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleAccountLocker
+    /// doesn't lock anything currently locked in the BundleLockerSanitizer
     pub fn read_locks(&self) -> HashSet<Pubkey> {
         self.read_locks.keys().cloned().collect()
     }
 
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleAccountLocker
+    /// doesn't lock anything currently locked in the BundleLockerSanitizer
     pub fn write_locks(&self) -> HashSet<Pubkey> {
         self.write_locks.keys().cloned().collect()
     }
@@ -410,7 +410,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -427,7 +427,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let locked_bundle = bundle_account_locker
+        let locked_bundle = bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .unwrap();
         assert_eq!(locked_bundle.sanitized_bundle.transactions.len(), 1);
@@ -437,17 +437,17 @@ mod tests {
         );
 
         assert_eq!(
-            bundle_account_locker.read_locks(),
+            bundle_locker_sanitizer.read_locks(),
             HashSet::from([system_program::id()])
         );
         assert_eq!(
-            bundle_account_locker.write_locks(),
+            bundle_locker_sanitizer.write_locks(),
             HashSet::from([mint_keypair.pubkey(), kp.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle_accounts(&locked_bundle);
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        bundle_locker_sanitizer.unlock_bundle_accounts(&locked_bundle);
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -460,7 +460,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -486,7 +486,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let locked_bundle = bundle_account_locker
+        let locked_bundle = bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .unwrap();
         assert_eq!(locked_bundle.sanitized_bundle.transactions.len(), 2);
@@ -500,17 +500,17 @@ mod tests {
         );
 
         assert_eq!(
-            bundle_account_locker.read_locks(),
+            bundle_locker_sanitizer.read_locks(),
             HashSet::from([system_program::id()])
         );
         assert_eq!(
-            bundle_account_locker.write_locks(),
+            bundle_locker_sanitizer.write_locks(),
             HashSet::from([mint_keypair.pubkey(), kp1.pubkey(), kp2.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle_accounts(&locked_bundle);
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        bundle_locker_sanitizer.unlock_bundle_accounts(&locked_bundle);
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -523,7 +523,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp1 = Keypair::new();
         let kp2 = Keypair::new();
@@ -554,10 +554,10 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let locked_bundle_1 = bundle_account_locker
+        let locked_bundle_1 = bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle_1, &bank, &HashSet::default())
             .unwrap();
-        let locked_bundle_2 = bundle_account_locker
+        let locked_bundle_2 = bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle_2, &bank, &HashSet::default())
             .unwrap();
         assert_eq!(locked_bundle_1.sanitized_bundle.transactions.len(), 1);
@@ -567,24 +567,24 @@ mod tests {
         );
 
         assert_eq!(
-            bundle_account_locker.read_locks(),
+            bundle_locker_sanitizer.read_locks(),
             HashSet::from([system_program::id()])
         );
         // pre-lock is being used, so kp2 in packet_bundle_2 is locked ahead of time
         assert_eq!(
-            bundle_account_locker.write_locks(),
+            bundle_locker_sanitizer.write_locks(),
             HashSet::from([mint_keypair.pubkey(), kp1.pubkey(), kp2.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle_accounts(&locked_bundle_1);
+        bundle_locker_sanitizer.unlock_bundle_accounts(&locked_bundle_1);
 
         // packet_bundle_1 is unlocked, so the lock should just contain contents for packet_bundle_2
         assert_eq!(
-            bundle_account_locker.read_locks(),
+            bundle_locker_sanitizer.read_locks(),
             HashSet::from([system_program::id()])
         );
         assert_eq!(
-            bundle_account_locker.write_locks(),
+            bundle_locker_sanitizer.write_locks(),
             HashSet::from([mint_keypair.pubkey(), kp2.pubkey()])
         );
 
@@ -596,17 +596,17 @@ mod tests {
 
         // locks shall just be for packet_bundle_2
         assert_eq!(
-            bundle_account_locker.read_locks(),
+            bundle_locker_sanitizer.read_locks(),
             HashSet::from([system_program::id()])
         );
         assert_eq!(
-            bundle_account_locker.write_locks(),
+            bundle_locker_sanitizer.write_locks(),
             HashSet::from([mint_keypair.pubkey(), kp2.pubkey()])
         );
 
-        bundle_account_locker.unlock_bundle_accounts(&locked_bundle_2);
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        bundle_locker_sanitizer.unlock_bundle_accounts(&locked_bundle_2);
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -619,7 +619,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -636,16 +636,16 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        // assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // assert_eq!(bundle_locker_sanitizer.num_bundles(), 1);
 
         // fails to pop because bundle mentions consensus_accounts_cache
         let consensus_accounts_cache = HashSet::from([kp.pubkey()]);
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &consensus_accounts_cache)
             .is_err());
 
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -658,7 +658,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -677,11 +677,11 @@ mod tests {
         };
 
         // fails to pop because bundle it locks the same transaction twice
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -694,7 +694,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -708,11 +708,11 @@ mod tests {
         };
 
         // fails to pop because bundle has bad blockhash
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -725,7 +725,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -742,7 +742,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let locked_bundle = bundle_account_locker
+        let locked_bundle = bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .unwrap();
 
@@ -752,7 +752,7 @@ mod tests {
             ]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], Ok(()));
-        bundle_account_locker.unlock_bundle_accounts(&locked_bundle);
+        bundle_locker_sanitizer.unlock_bundle_accounts(&locked_bundle);
 
         // try to process the same one again shall fail
         let packet_bundle = PacketBundle {
@@ -760,11 +760,11 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -784,7 +784,7 @@ mod tests {
             },
         });
 
-        let mut bundle_account_locker =
+        let mut bundle_locker_sanitizer =
             BundleLockerSanitizer::new(&tip_manager.tip_payment_program_id());
 
         let kp = Keypair::new();
@@ -809,12 +809,12 @@ mod tests {
         };
 
         // fails to pop because bundle mentions tip program
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
 
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -823,7 +823,7 @@ mod tests {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
         let tx =
@@ -843,12 +843,12 @@ mod tests {
         };
 
         // fails to pop because bundle mentions the txV2 program
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
 
-        assert!(bundle_account_locker.read_locks().is_empty());
-        assert!(bundle_account_locker.write_locks().is_empty());
+        assert!(bundle_locker_sanitizer.read_locks().is_empty());
+        assert!(bundle_locker_sanitizer.write_locks().is_empty());
     }
 
     #[test]
@@ -857,14 +857,14 @@ mod tests {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![]),
             uuid: Uuid::new_v4(),
         };
         // fails to pop because empty bundle
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
     }
@@ -879,7 +879,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -897,7 +897,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
         // fails to pop because too many packets in a bundle
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
     }
@@ -912,7 +912,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -931,7 +931,7 @@ mod tests {
         };
 
         // fails to pop because one of the packets is marked as discard
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
     }
@@ -946,7 +946,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
         let kp = Keypair::new();
 
         let mut tx = VersionedTransaction::from(transfer(
@@ -969,9 +969,9 @@ mod tests {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
         };
-        // assert_eq!(bundle_account_locker.num_bundles(), 1);
+        // assert_eq!(bundle_locker_sanitizer.num_bundles(), 1);
         // fails to pop because one of the packets is marked as discard
-        assert!(bundle_account_locker
+        assert!(bundle_locker_sanitizer
             .get_locked_bundle(packet_bundle, &bank, &HashSet::default())
             .is_err());
     }

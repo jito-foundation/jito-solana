@@ -86,7 +86,7 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_account_locker: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
     ) -> Self {
         const NUM_BUNDLES_PRELOCK: usize = 3;
 
@@ -99,7 +99,7 @@ impl BundleStage {
             bundle_receiver,
             exit,
             tip_manager,
-            bundle_account_locker,
+            bundle_locker_sanitizer,
             MAX_BUNDLE_RETRY_DURATION,
             NUM_BUNDLES_PRELOCK,
         )
@@ -115,7 +115,7 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_account_locker: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
         max_bundle_retry_duration: Duration,
         num_bundles_prelock: usize,
     ) -> Self {
@@ -136,7 +136,7 @@ impl BundleStage {
                     cost_model,
                     exit,
                     tip_manager,
-                    bundle_account_locker,
+                    bundle_locker_sanitizer,
                     max_bundle_retry_duration,
                     num_bundles_prelock,
                 );
@@ -490,7 +490,7 @@ impl BundleStage {
     }
 
     /// Records the entire bundle to PoH and if successful, commits all transactions to the Bank
-    /// Note that the BundleAccountLocker still has a lock on these accounts in the bank
+    /// Note that the BundleLockerSanitizer still has a lock on these accounts in the bank
     fn record_commit_bundle(
         execution_results: Vec<AllExecutionResults>,
         bank: &Arc<Bank>,
@@ -647,7 +647,7 @@ impl BundleStage {
     }
 
     /// Schedules bundles until the validator is a leader, at which point it returns a bank and
-    /// bundle_account_locker with >= 1 bundle to be executed
+    /// bundle_locker_sanitizer with >= 1 bundle to be executed
     fn schedule_bundles_until_leader(
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
@@ -830,7 +830,7 @@ impl BundleStage {
     /// is finished.
     #[allow(clippy::too_many_arguments)]
     fn execute_bundles_until_empty_or_end_of_slot(
-        bundle_account_locker: &Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: &Arc<Mutex<BundleLockerSanitizer>>,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bank_start: BankStart,
@@ -856,11 +856,12 @@ impl BundleStage {
             // processing
             unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
             while locked_bundles.len() <= *num_bundles_prelock && !unprocessed_bundles.is_empty() {
-                let maybe_locked_bundle = bundle_account_locker.lock().unwrap().get_locked_bundle(
-                    unprocessed_bundles.pop_front().unwrap(),
-                    &bank_start.working_bank,
-                    consensus_accounts_cache,
-                );
+                let maybe_locked_bundle =
+                    bundle_locker_sanitizer.lock().unwrap().get_locked_bundle(
+                        unprocessed_bundles.pop_front().unwrap(),
+                        &bank_start.working_bank,
+                        consensus_accounts_cache,
+                    );
                 match maybe_locked_bundle {
                     Ok(locked_bundle) => {
                         locked_bundles.push_back(locked_bundle);
@@ -885,7 +886,7 @@ impl BundleStage {
                     &mut execute_and_commit_timings,
                 );
 
-                bundle_account_locker
+                bundle_locker_sanitizer
                     .lock()
                     .unwrap()
                     .unlock_bundle_accounts(&locked_bundle);
@@ -959,7 +960,7 @@ impl BundleStage {
         cost_model: Arc<RwLock<CostModel>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_account_locker: Arc<Mutex<BundleLockerSanitizer>>,
+        bundle_locker_sanitizer: Arc<Mutex<BundleLockerSanitizer>>,
         max_bundle_retry_duration: Duration,
         num_bundles_prelock: usize,
     ) {
@@ -989,7 +990,7 @@ impl BundleStage {
                     );
 
                     match Self::execute_bundles_until_empty_or_end_of_slot(
-                        &bundle_account_locker,
+                        &bundle_locker_sanitizer,
                         &mut unprocessed_bundles,
                         &bundle_receiver,
                         bank_start,
@@ -1372,9 +1373,9 @@ mod tests {
         };
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
         let locked_bundle =
-            bundle_account_locker.get_locked_bundle(bundle, &bank, &HashSet::default());
+            bundle_locker_sanitizer.get_locked_bundle(bundle, &bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle
         assert!(locked_bundle.is_err());
@@ -1457,9 +1458,9 @@ mod tests {
         };
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleLockerSanitizer::new(&Pubkey::new_unique());
+        let mut bundle_locker_sanitizer = BundleLockerSanitizer::new(&Pubkey::new_unique());
         let locked_bundle =
-            bundle_account_locker.get_locked_bundle(bundle, &bank, &HashSet::default());
+            bundle_locker_sanitizer.get_locked_bundle(bundle, &bank, &HashSet::default());
 
         // bundle is dropped by get_lockable_bundle->get_sanitized_bundle due to duplicate transactions
         assert!(locked_bundle.is_err());

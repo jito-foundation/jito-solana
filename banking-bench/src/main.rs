@@ -352,7 +352,7 @@ fn main() {
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
+        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             &Pubkey::new_unique(),
         )));
 
@@ -375,7 +375,7 @@ fn main() {
             Arc::new(connection_cache),
             bank_forks.clone(),
             HashSet::default(),
-            bundle_account_locker,
+            bundle_locker_sanitizer,
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 

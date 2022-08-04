@@ -245,7 +245,7 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_manager_config);
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleLockerSanitizer::new(
+        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             &tip_manager.tip_payment_program_id(),
         )));
 
@@ -270,7 +270,7 @@ impl Tpu {
             connection_cache.clone(),
             bank_forks.clone(),
             tip_accounts,
-            bundle_account_locker.clone(),
+            bundle_locker_sanitizer.clone(),
         );
 
         let bundle_stage = BundleStage::new(
@@ -282,7 +282,7 @@ impl Tpu {
             bundle_receiver,
             exit.clone(),
             tip_manager,
-            bundle_account_locker,
+            bundle_locker_sanitizer,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(

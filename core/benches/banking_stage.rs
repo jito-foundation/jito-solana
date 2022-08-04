@@ -11,7 +11,7 @@ use {
     solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::{BankingStage, BankingStageStats},
-        bundle_account_locker::BundleAccountLocker,
+        bundle_locker_sanitizer::BundleLockerSanitizer,
         leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         qos_service::QosService,
         unprocessed_packet_batches::*,
@@ -94,8 +94,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
             UnprocessedPacketBatches::from_iter(batches.into_iter(), 2 * batches_len);
         let (s, _r) = unbounded();
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            NUM_BUNDLES_PRE_LOCK,
+        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             &Pubkey::new_unique(),
         )));
 
@@ -117,7 +116,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 10,
                 None,
                 &HashSet::default(),
-                &bundle_account_locker,
+                &bundle_locker_sanitizer,
             );
         });
 
@@ -243,7 +242,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         );
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
+        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
             NUM_BUNDLES_PRE_LOCK,
             &Pubkey::new_unique(),
         )));
@@ -260,7 +259,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             Arc::new(ConnectionCache::default()),
             bank_forks,
             HashSet::new(),
-            bundle_account_locker,
+            bundle_locker_sanitizer,
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 
