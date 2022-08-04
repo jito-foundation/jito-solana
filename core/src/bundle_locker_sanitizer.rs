@@ -351,6 +351,11 @@ impl BundleLockerSanitizer {
     // This function deserializes packets into transactions, computes the blake3 hash of transaction
     // messages, and verifies secp256k1 instructions. A list of sanitized transactions are returned
     // with their packet indexes.
+    // NOTES on tx v2:
+    // - tx v2 can only load addresses set in previous slots
+    // - tx v2 can't reorg indices in a lookup table
+    // - tx v2 transaction loading fails if it tries to access an invalid index (either doesn't exist
+    //   or exists but was set in the current slot
     #[allow(clippy::needless_collect)]
     fn transaction_from_deserialized_packet(
         deserialized_packet: &ImmutableDeserializedPacket,
