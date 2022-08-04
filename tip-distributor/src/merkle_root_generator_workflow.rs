@@ -194,7 +194,11 @@ fn upload_roots(
         })
         .collect::<Vec<Transaction>>();
 
-    execute_transactions(rpc_client, txs);
+    if !txs.is_empty() {
+        execute_transactions(rpc_client, txs);
+    } else {
+        error!("No transactions to execute, use --force-upload-root to reupload roots");
+    }
 }
 
 fn execute_transactions(rpc_client: Arc<RpcClient>, txs: Vec<Transaction>) {
@@ -204,6 +208,8 @@ fn execute_transactions(rpc_client: Arc<RpcClient>, txs: Vec<Transaction>) {
     let rt = Builder::new_multi_thread()
         .worker_threads(txs.len().min(20))
         .thread_name("execute_transactions")
+        .enable_time()
+        .enable_io()
         .build()
         .unwrap();
 
@@ -220,7 +226,10 @@ fn execute_transactions(rpc_client: Arc<RpcClient>, txs: Vec<Transaction>) {
                         tx.signatures[0], e
                     );
                 } else {
-                    info!("successfully sent transaction");
+                    info!(
+                        "successfully sent transaction: [signature={}]",
+                        tx.signatures[0]
+                    );
                 }
             })
         })

@@ -18,7 +18,7 @@ use {
         account::{AccountSharedData, ReadableAccount},
         bs58,
         clock::Slot,
-        keccak::{Hash, Hasher as Keccak256Hasher},
+        hash::{Hash, Hasher},
         pubkey::Pubkey,
         stake_history::Epoch,
     },
@@ -29,7 +29,7 @@ use {
     tip_distribution::state::TipDistributionAccount,
 };
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct GeneratedMerkleTreeCollection {
     pub generated_merkle_trees: Vec<GeneratedMerkleTree>,
     pub bank_hash: String,
@@ -37,10 +37,10 @@ pub struct GeneratedMerkleTreeCollection {
     pub slot: Slot,
 }
 
-#[derive(Eq, Debug, Hash, PartialEq, Serialize)]
+#[derive(Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]
 pub struct GeneratedMerkleTree {
     pub tip_distribution_account: Pubkey,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing, skip_deserializing)]
     pub merkle_tree: MerkleTree,
     pub tree_nodes: Vec<TreeNode>,
     pub max_total_claim: u64,
@@ -68,7 +68,7 @@ impl GeneratedMerkleTreeCollection {
             })
             .filter_map(|stake_meta| {
                 // Build the tree
-                let tree_nodes = match TreeNode::vec_from_stake_meta(&stake_meta) {
+                let mut tree_nodes = match TreeNode::vec_from_stake_meta(&stake_meta) {
                     Err(e) => return Some(Err(e)),
                     Ok(maybe_tree_nodes) => maybe_tree_nodes,
                 }?;
@@ -85,10 +85,17 @@ impl GeneratedMerkleTreeCollection {
                         Ok(tip_distribution_account) => tip_distribution_account,
                     };
 
+                let merkle_tree = MerkleTree::new(&hashed_nodes[..], true);
+                let max_num_nodes = tree_nodes.len() as u64;
+
+                for (i, tree_node) in tree_nodes.iter_mut().enumerate() {
+                    tree_node.proof = Some(get_proof(&merkle_tree, i));
+                }
+
                 Some(Ok(GeneratedMerkleTree {
-                    max_num_nodes: tree_nodes.len() as u64,
+                    max_num_nodes,
                     tip_distribution_account,
-                    merkle_tree: MerkleTree::new(&hashed_nodes[..]),
+                    merkle_tree,
                     tree_nodes,
                     max_total_claim: tip_distribution_meta.total_tips,
                 }))
@@ -104,13 +111,31 @@ impl GeneratedMerkleTreeCollection {
     }
 }
 
-#[derive(Eq, Debug, Hash, PartialEq, Serialize)]
+pub fn get_proof(merkle_tree: &MerkleTree, i: usize) -> Vec<[u8; 32]> {
+    let mut proof = Vec::new();
+    let path = merkle_tree.find_path(i).expect("path to index");
+    for branch in path.get_proof_entries() {
+        if let Some(hash) = branch.get_left_sibling() {
+            proof.push(hash.to_bytes());
+        } else if let Some(hash) = branch.get_right_sibling() {
+            proof.push(hash.to_bytes());
+        } else {
+            panic!("expected some hash at each level of the tree");
+        }
+    }
+    proof
+}
+
+#[derive(Clone, Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]
 pub struct TreeNode {
     /// The account entitled to redeem.
     pub claimant: Pubkey,
 
     /// The amount this account is entitled to.
     pub amount: u64,
+
+    /// The proof associated with this TreeNode
+    pub proof: Option<Vec<[u8; 32]>>,
 }
 
 impl TreeNode {
@@ -127,6 +152,7 @@ impl TreeNode {
             let mut tree_nodes = vec![TreeNode {
                 claimant: validator_vote_account,
                 amount: validator_fee,
+                proof: None,
             }];
 
             let remaining_tips = tip_distribution_meta
@@ -177,6 +203,7 @@ impl TreeNode {
                     Ok(TreeNode {
                         claimant: delegation.stake_account.parse().map_err(|_| Error::Base58DecodeError)?,
                         amount: amount.to_u64().unwrap(),
+                        proof: None
                     })
                 })
                 .collect::<Result<Vec<TreeNode>, Error>>()?);
@@ -193,13 +220,9 @@ impl TreeNode {
     }
 
     fn hash(&self) -> Hash {
-        let mut hasher = Keccak256Hasher::default();
-        let prefix = &[0x00u8];
-
-        hasher.hash(prefix);
+        let mut hasher = Hasher::default();
         hasher.hash(self.claimant.as_ref());
         hasher.hash(self.amount.to_le_bytes().as_ref());
-
         hasher.result()
     }
 }
@@ -455,7 +478,42 @@ mod math {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, solana_sdk::bs58};
+    use {super::*, solana_sdk::bs58, tip_distribution::merkle_proof};
+
+    #[test]
+    fn test_merkle_tree_verify() {
+        // Create the merkle tree and proofs
+        let acct_0 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
+        let acct_1 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
+
+        let tree_nodes = vec![
+            TreeNode {
+                claimant: acct_0.parse().unwrap(),
+                amount: 151_507,
+                proof: None,
+            },
+            TreeNode {
+                claimant: acct_1.parse().unwrap(),
+                amount: 176_624,
+                proof: None,
+            },
+        ];
+
+        // First the nodes are hashed and merkle tree constructed
+        let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
+        let mk = MerkleTree::new(&hashed_nodes[..], true);
+        let root = mk.get_root().expect("to have valid root").to_bytes();
+
+        // verify first node
+        let node = solana_program::hash::hashv(&[&[0u8], &hashed_nodes[0]]);
+        let proof = get_proof(&mk, 0);
+        assert!(merkle_proof::verify(proof, root, node.to_bytes()));
+
+        // verify second node
+        let node = solana_program::hash::hashv(&[&[0u8], &hashed_nodes[1]]);
+        let proof = get_proof(&mk, 1);
+        assert!(merkle_proof::verify(proof, root, node.to_bytes()));
+    }
 
     #[test]
     fn test_new_from_stake_meta_collection_happy_path() {
@@ -552,20 +610,23 @@ mod tests {
             TreeNode {
                 claimant: validator_vote_account_0.parse().unwrap(),
                 amount: 19_001_221_110,
+                proof: None,
             },
             TreeNode {
                 claimant: stake_account_0.parse().unwrap(),
                 amount: 149_992,
+                proof: None,
             },
             TreeNode {
                 claimant: stake_account_1.parse().unwrap(),
                 amount: 174_858,
+                proof: None,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
         let gmt_0 = GeneratedMerkleTree {
             tip_distribution_account: tda_0.parse().unwrap(),
-            merkle_tree: MerkleTree::new(&hashed_nodes[..]),
+            merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[0]
                 .clone()
@@ -579,20 +640,23 @@ mod tests {
             TreeNode {
                 claimant: validator_vote_account_1.parse().unwrap(),
                 amount: 38_002_442_227,
+                proof: None,
             },
             TreeNode {
                 claimant: stake_account_2.parse().unwrap(),
                 amount: 163_000,
+                proof: None,
             },
             TreeNode {
                 claimant: stake_account_3.parse().unwrap(),
                 amount: 508_762_900,
+                proof: None,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
         let gmt_1 = GeneratedMerkleTree {
             tip_distribution_account: tda_1.parse().unwrap(),
-            merkle_tree: MerkleTree::new(&hashed_nodes[..]),
+            merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[1]
                 .clone()
