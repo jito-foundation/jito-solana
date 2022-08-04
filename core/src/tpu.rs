@@ -254,10 +254,6 @@ impl Tpu {
         blacklisted_accounts.insert(tip_manager.tip_payment_config_pubkey());
         blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
         blacklisted_accounts.extend(tip_manager.get_tip_accounts());
-
-        // The tip payment program public key is blacklisted to prevent transactions getting processed in banking
-        // stage from stealing tips
-        let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
         let banking_stage = BankingStage::new(
             cluster_info,
             poh_recorder,
