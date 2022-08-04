@@ -243,7 +243,6 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         let cluster_info = Arc::new(cluster_info);
         let (s, _r) = unbounded();
         let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleLockerSanitizer::new(
-            NUM_BUNDLES_PRE_LOCK,
             &Pubkey::new_unique(),
         )));
         let _banking_stage = BankingStage::new(
