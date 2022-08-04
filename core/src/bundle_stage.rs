@@ -903,6 +903,7 @@ impl BundleStage {
                     Ok(_) => {}
                     Err(BundleExecutionError::PohMaxHeightError) => {
                         warn!("poh max height reached uuid: {:?}", sanitized_bundle.uuid);
+                        // TODO: need to break here and push the packet batches back onto the heap
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
                         warn!("tx failure uuid: {:?} e: {:?}", sanitized_bundle.uuid, e);
