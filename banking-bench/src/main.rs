@@ -7,7 +7,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_client::connection_cache::{ConnectionCache, DEFAULT_TPU_CONNECTION_POOL_SIZE},
-    solana_core::{banking_stage::BankingStage, bundle_sanitizer::BundleSanitizer},
+    solana_core::{banking_stage::BankingStage, bundle_account_locker::BundleAccountLocker},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
         blockstore::Blockstore,
@@ -24,7 +24,6 @@ use {
     },
     solana_sdk::{
         hash::Hash,
-        pubkey::Pubkey,
         signature::{Keypair, Signature},
         system_transaction,
         timing::{duration_as_us, timestamp},
@@ -352,8 +351,7 @@ fn main() {
         let cluster_info = Arc::new(cluster_info);
         let tpu_use_quic = matches.is_present("tpu_use_quic");
 
-        let bundle_locker_sanitizer =
-            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
         let connection_cache = match tpu_use_quic {
             true => ConnectionCache::new(DEFAULT_TPU_CONNECTION_POOL_SIZE),
@@ -374,7 +372,7 @@ fn main() {
             Arc::new(connection_cache),
             bank_forks.clone(),
             HashSet::default(),
-            bundle_locker_sanitizer,
+            bundle_locker,
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 

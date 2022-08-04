@@ -5,7 +5,8 @@ use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
         bundle::PacketBundle,
-        bundle_sanitizer::{BundleSanitizer, LockedBundle},
+        bundle_account_locker::BundleAccountLocker,
+        bundle_sanitizer::BundleSanitizer,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
         tip_manager::TipManager,
@@ -86,7 +87,7 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
+        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
     ) -> Self {
         const NUM_BUNDLES_PRELOCK: usize = 3;
 
@@ -99,7 +100,7 @@ impl BundleStage {
             bundle_receiver,
             exit,
             tip_manager,
-            bundle_locker_sanitizer,
+            bundle_account_locker,
             MAX_BUNDLE_RETRY_DURATION,
             NUM_BUNDLES_PRELOCK,
         )
@@ -115,7 +116,7 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
+        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
         max_bundle_retry_duration: Duration,
         num_bundles_prelock: usize,
     ) -> Self {
@@ -136,7 +137,7 @@ impl BundleStage {
                     cost_model,
                     exit,
                     tip_manager,
-                    bundle_locker_sanitizer,
+                    bundle_account_locker,
                     max_bundle_retry_duration,
                     num_bundles_prelock,
                 );
@@ -786,7 +787,7 @@ impl BundleStage {
     /// Handles tip account management and executing, recording, and committing bundles
     #[allow(clippy::too_many_arguments)]
     fn handle_tip_and_execute_record_commit_bundle(
-        locked_bundle: &LockedBundle,
+        sanitized_bundle: &SanitizedBundle,
         tip_manager: &TipManager,
         bank_start: &BankStart,
         qos_service: &QosService,
@@ -799,8 +800,7 @@ impl BundleStage {
     ) -> BundleExecutionResult<()> {
         let _lock = tip_manager.lock();
         let tip_pdas = tip_manager.get_tip_accounts();
-        if Self::bundle_touches_tip_pdas(&locked_bundle.sanitized_bundle().transactions, &tip_pdas)
-        {
+        if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas) {
             let _ = Self::maybe_initialize_and_change_tip_receiver(
                 bank_start,
                 tip_manager,
@@ -815,7 +815,7 @@ impl BundleStage {
             info!("successfully changed tip receiver");
         }
         Self::update_qos_and_execute_record_commit_bundle(
-            locked_bundle.sanitized_bundle(),
+            sanitized_bundle,
             recorder,
             transaction_status_sender,
             gossip_vote_sender,
@@ -830,7 +830,8 @@ impl BundleStage {
     /// is finished.
     #[allow(clippy::too_many_arguments)]
     fn execute_bundles_until_empty_or_end_of_slot(
-        bundle_locker_sanitizer: &Arc<Mutex<BundleSanitizer>>,
+        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_sanitizer: &BundleSanitizer,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bank_start: BankStart,
@@ -845,7 +846,7 @@ impl BundleStage {
         num_bundles_prelock: &usize,
     ) -> BundleExecutionResult<()> {
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-        let mut locked_bundles: VecDeque<LockedBundle> =
+        let mut locked_bundles: VecDeque<SanitizedBundle> =
             VecDeque::with_capacity(*num_bundles_prelock + 1);
 
         loop {
@@ -856,25 +857,32 @@ impl BundleStage {
             // processing
             unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
             while locked_bundles.len() <= *num_bundles_prelock && !unprocessed_bundles.is_empty() {
-                let maybe_locked_bundle =
-                    bundle_locker_sanitizer.lock().unwrap().get_locked_bundle(
-                        unprocessed_bundles.pop_front().unwrap(),
-                        &bank_start.working_bank,
-                        consensus_accounts_cache,
-                    );
-                match maybe_locked_bundle {
-                    Ok(locked_bundle) => {
-                        locked_bundles.push_back(locked_bundle);
+                let packet_bundle = unprocessed_bundles.pop_front().unwrap();
+                match bundle_sanitizer.get_sanitized_bundle(
+                    &packet_bundle,
+                    &bank_start.working_bank,
+                    consensus_accounts_cache,
+                ) {
+                    Ok(sanitized_bundle) => {
+                        let mut bundle_account_locker_l = bundle_account_locker.lock().unwrap();
+                        match bundle_account_locker_l.lock_bundle_accounts(&sanitized_bundle) {
+                            Ok(_) => {
+                                locked_bundles.push_back(sanitized_bundle);
+                            }
+                            Err(e) => {
+                                error!("error locking bundle account: {:?}", e);
+                            }
+                        }
                     }
                     Err(e) => {
-                        error!("error preparing and locking bundle: {:?}", e);
+                        error!("sanitizing bundle error: {:?}", e);
                     }
                 }
             }
 
-            if let Some(locked_bundle) = locked_bundles.pop_front() {
+            if let Some(sanitized_bundle) = locked_bundles.pop_front() {
                 let result = Self::handle_tip_and_execute_record_commit_bundle(
-                    &locked_bundle,
+                    &sanitized_bundle,
                     tip_manager,
                     &bank_start,
                     qos_service,
@@ -886,37 +894,26 @@ impl BundleStage {
                     &mut execute_and_commit_timings,
                 );
 
-                bundle_locker_sanitizer
+                let _ = bundle_account_locker
                     .lock()
                     .unwrap()
-                    .unlock_bundle_accounts(&locked_bundle);
+                    .unlock_bundle_accounts(&sanitized_bundle);
 
                 match result {
                     Ok(_) => {}
                     Err(BundleExecutionError::PohMaxHeightError) => {
-                        warn!(
-                            "poh max height reached uuid: {:?}",
-                            locked_bundle.packet_bundle().uuid
-                        );
+                        warn!("poh max height reached uuid: {:?}", sanitized_bundle.uuid);
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
-                        warn!(
-                            "tx failure uuid: {:?} e: {:?}",
-                            locked_bundle.packet_bundle().uuid,
-                            e
-                        );
+                        warn!("tx failure uuid: {:?} e: {:?}", sanitized_bundle.uuid, e);
                     }
                     Err(BundleExecutionError::ExceedsCostModel) => {
-                        warn!(
-                            "tx exceeds cost model uuid: {:?}",
-                            locked_bundle.packet_bundle().uuid,
-                        );
+                        warn!("tx exceeds cost model uuid: {:?}", sanitized_bundle.uuid,);
                     }
                     Err(BundleExecutionError::TipError(e)) => {
                         warn!(
                             "tx fails from tip error uuid: {:?} error: {:?}",
-                            locked_bundle.packet_bundle().uuid,
-                            e
+                            sanitized_bundle.uuid, e
                         );
                     }
                     Err(BundleExecutionError::Shutdown) => {
@@ -925,8 +922,7 @@ impl BundleStage {
                     Err(BundleExecutionError::MaxRetriesExceeded(dur)) => {
                         warn!(
                             "tx exceeded max execution duration uuid: {:?} dur: {:?}",
-                            locked_bundle.packet_bundle().uuid,
-                            dur
+                            sanitized_bundle.uuid, dur
                         );
                     }
                 }
@@ -960,7 +956,7 @@ impl BundleStage {
         cost_model: Arc<RwLock<CostModel>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_locker_sanitizer: Arc<Mutex<BundleSanitizer>>,
+        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
         max_bundle_retry_duration: Duration,
         num_bundles_prelock: usize,
     ) {
@@ -971,6 +967,8 @@ impl BundleStage {
         let mut last_consensus_update = Epoch::default();
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
+
+        let bundle_sanitizer = BundleSanitizer::new(&tip_manager.tip_payment_program_id());
 
         loop {
             if exit.load(Ordering::Relaxed) {
@@ -990,7 +988,8 @@ impl BundleStage {
                     );
 
                     match Self::execute_bundles_until_empty_or_end_of_slot(
-                        &bundle_locker_sanitizer,
+                        &bundle_account_locker,
+                        &bundle_sanitizer,
                         &mut unprocessed_bundles,
                         &bundle_receiver,
                         bank_start,

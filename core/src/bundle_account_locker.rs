@@ -11,6 +11,7 @@ use {
     uuid::Uuid,
 };
 
+#[derive(Debug)]
 pub enum BundleAccountLockerError {
     LockingError(Uuid),
 }

@@ -26,9 +26,7 @@ use {
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
 #[derive(Error, Debug, PartialEq, Eq, Clone)]
-pub enum BundleSchedulerError {
-    #[error("Bundle locking error uuid: {0}")]
-    LockingError(Uuid),
+pub enum BundleSanitizerError {
     #[error("Bundle contains a transaction that failed to serialize: {0}")]
     FailedToSerializeTransaction(Uuid),
     #[error("Bundle contains a duplicate transaction: {0}")]
@@ -43,7 +41,7 @@ pub enum BundleSchedulerError {
     BlacklistedAccount(Uuid),
 }
 
-pub type Result<T> = std::result::Result<T, BundleSchedulerError>;
+pub type Result<T> = std::result::Result<T, BundleSanitizerError>;
 
 #[derive(Clone)]
 pub struct BundleSanitizer {
@@ -71,13 +69,13 @@ impl BundleSanitizer {
     ///  Contains duplicate transactions within the same bundle.
     ///  Contains a transaction that was already processed or one with an invalid blockhash.
     pub fn get_sanitized_bundle(
+        &self,
         bundle: &PacketBundle,
         bank: &Arc<Bank>,
-        blacklisted_accounts: &HashSet<Pubkey>,
         consensus_accounts_cache: &HashSet<Pubkey>,
     ) -> Result<SanitizedBundle> {
         if bank.vote_only_bank() {
-            return Err(BundleSchedulerError::VoteOnlyMode(bundle.uuid));
+            return Err(BundleSanitizerError::VoteOnlyMode(bundle.uuid));
         }
 
         if bundle.batch.is_empty()
@@ -88,7 +86,7 @@ impl BundleSanitizer {
                 .iter()
                 .any(|p| !verify_packet(&mut p.clone(), false))
         {
-            return Err(BundleSchedulerError::FailedPacketBatchPreCheck(bundle.uuid));
+            return Err(BundleSanitizerError::FailedPacketBatchPreCheck(bundle.uuid));
         }
 
         let packet_indexes: Vec<usize> = (0..bundle.batch.len()).collect();
@@ -109,22 +107,22 @@ impl BundleSanitizer {
         let contains_blacklisted_account = transactions.iter().any(|tx| {
             let accounts = tx.message.account_keys();
             accounts.iter().any(|acc| {
-                blacklisted_accounts.contains(acc) || consensus_accounts_cache.contains(acc)
+                self.blacklisted_accounts.contains(acc) || consensus_accounts_cache.contains(acc)
             })
         });
 
         if contains_blacklisted_account {
-            return Err(BundleSchedulerError::BlacklistedAccount(bundle.uuid));
+            return Err(BundleSanitizerError::BlacklistedAccount(bundle.uuid));
         }
 
         if transactions.is_empty() || bundle.batch.len() != transactions.len() {
-            return Err(BundleSchedulerError::FailedToSerializeTransaction(
+            return Err(BundleSanitizerError::FailedToSerializeTransaction(
                 bundle.uuid,
             ));
         }
 
         if unique_signatures.len() != transactions.len() {
-            return Err(BundleSchedulerError::DuplicateTransaction(bundle.uuid));
+            return Err(BundleSanitizerError::DuplicateTransaction(bundle.uuid));
         }
 
         // checks for already-processed transaction or expired/invalid blockhash
@@ -138,7 +136,7 @@ impl BundleSanitizer {
         );
         if let Some(failure) = check_results.iter().find(|r| r.0.is_err()) {
             error!("failed: {:?}", failure);
-            return Err(BundleSchedulerError::FailedCheckResults(bundle.uuid));
+            return Err(BundleSanitizerError::FailedCheckResults(bundle.uuid));
         }
 
         Ok(SanitizedBundle {

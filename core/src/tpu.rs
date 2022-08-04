@@ -5,7 +5,7 @@ use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
-        bundle_sanitizer::BundleSanitizer,
+        bundle_account_locker::BundleAccountLocker,
         bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
@@ -245,9 +245,7 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_manager_config);
 
-        let bundle_locker_sanitizer = Arc::new(Mutex::new(BundleSanitizer::new(
-            &tip_manager.tip_payment_program_id(),
-        )));
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new()));
 
         // tip accounts can't be used in BankingStage. This makes handling race conditions
         // for tip-related things in BundleStage easier.
@@ -270,7 +268,7 @@ impl Tpu {
             connection_cache.clone(),
             bank_forks.clone(),
             tip_accounts,
-            bundle_locker_sanitizer.clone(),
+            bundle_account_locker.clone(),
         );
 
         let bundle_stage = BundleStage::new(
@@ -282,7 +280,7 @@ impl Tpu {
             bundle_receiver,
             exit.clone(),
             tip_manager,
-            bundle_locker_sanitizer,
+            bundle_account_locker,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
