@@ -457,7 +457,7 @@ mod tests {
         // fails to pop because bundle mentions the txV2 program
         assert!(bundle_sanitizer
             .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+            .is_ok());
     }
 
     #[test]
