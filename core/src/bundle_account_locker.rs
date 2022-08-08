@@ -1,6 +1,6 @@
-///! Handles pre-locking bundles accounts so that accounts bundles touch can be reserved ahead
+///! Handles pre-locking bundle accounts so that accounts bundles touch can be reserved ahead
 /// of time for execution. Also, ensures that ALL accounts mentioned across a bundle are locked
-/// to avoid race conditions between BundleStage and banking stage.
+/// to avoid race conditions between BundleStage and BankingStage.
 ///
 /// For instance, imagine a bundle with three transactions and the set of accounts for each transaction
 /// is: {{A, B}, {B, C}, {C, D}}. We need to lock A, B, and C even though only one is executed at a time.
@@ -35,13 +35,13 @@ pub struct BundleAccountLocker {
 
 impl BundleAccountLocker {
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleLockerSanitizer
+    /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn read_locks(&self) -> HashSet<Pubkey> {
         self.read_locks.keys().cloned().collect()
     }
 
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleLockerSanitizer
+    /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn write_locks(&self) -> HashSet<Pubkey> {
         self.write_locks.keys().cloned().collect()
     }

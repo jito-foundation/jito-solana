@@ -491,7 +491,7 @@ impl BundleStage {
     }
 
     /// Records the entire bundle to PoH and if successful, commits all transactions to the Bank
-    /// Note that the BundleLockerSanitizer still has a lock on these accounts in the bank
+    /// Note that the BundleAccountLocker still has a lock on these accounts in the bank
     fn record_commit_bundle(
         execution_results: Vec<AllExecutionResults>,
         bank: &Arc<Bank>,
@@ -867,12 +867,8 @@ impl BundleStage {
                 ) {
                     Ok(sanitized_bundle) => {
                         let mut bundle_account_locker_l = bundle_account_locker.lock().unwrap();
-                        info!("read locks 0: {:?}", bundle_account_locker_l.read_locks());
-                        info!("write locks 0: {:?}", bundle_account_locker_l.write_locks());
                         match bundle_account_locker_l.lock_bundle_accounts(&sanitized_bundle) {
                             Ok(_) => {
-                                info!("read locks 1: {:?}", bundle_account_locker_l.read_locks());
-                                info!("write locks 1: {:?}", bundle_account_locker_l.write_locks());
                                 locked_bundles.push_back((packet_bundle, sanitized_bundle));
                             }
                             Err(e) => {
