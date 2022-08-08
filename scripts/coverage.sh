@@ -77,7 +77,7 @@ fi
 
 #NPROC=$(nproc)
 #JOBS=$((JOBS>NPROC ? NPROC : JOBS))
-JOBS=16
+JOBS=32
 
 RUST_LOG=solana=trace _ "$cargo" nightly test --jobs "$JOBS" --target-dir target/cov --no-run "${packages[@]}"
 if RUST_LOG=solana=trace _ "$cargo" nightly test --jobs "$JOBS" --target-dir target/cov "${packages[@]}" 2> target/cov/coverage-stderr.log; then
