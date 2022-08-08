@@ -13,7 +13,10 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError},
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
-    solana_ledger::blockstore_processor::TransactionStatusSender,
+    solana_ledger::{
+        blockstore_processor::TransactionStatusSender,
+        token_balances::{collect_balances_with_cache, collect_token_balances},
+    },
     solana_measure::measure,
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
@@ -45,8 +48,7 @@ use {
         transaction::{self, SanitizedTransaction, TransactionError, VersionedTransaction},
     },
     solana_transaction_status::token_balances::{
-        collect_balances_with_cache, collect_token_balances, TransactionTokenBalances,
-        TransactionTokenBalancesSet,
+        TransactionTokenBalances, TransactionTokenBalancesSet,
     },
     std::{
         collections::{HashMap, HashSet},
