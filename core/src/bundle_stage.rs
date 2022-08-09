@@ -851,9 +851,9 @@ impl BundleStage {
                     Err(BundleExecutionError::PohMaxHeightError)
                 } else {
                     Self::handle_tip_and_execute_record_commit_bundle(
-                        &locked_bundle.sanitized_bundle(),
+                        locked_bundle.sanitized_bundle(),
                         tip_manager,
-                        &bank_start,
+                        bank_start,
                         qos_service,
                         recorder,
                         transaction_status_sender,
