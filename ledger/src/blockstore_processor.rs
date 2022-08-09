@@ -280,6 +280,7 @@ fn execute_batches_internal(
     tx_costs: &[u64],
     log_messages_bytes_limit: Option<usize>,
 ) -> Result<ExecuteBatchesInternalMetrics> {
+    assert!(!batches.is_empty());
     inc_new_counter_debug!("bank-par_execute_entries-count", batches.len());
     let execution_timings_per_thread: Mutex<HashMap<usize, ThreadExecuteTimings>> =
         Mutex::new(HashMap::new());
@@ -383,6 +384,10 @@ fn execute_batches(
     cost_model: &CostModel,
     log_messages_bytes_limit: Option<usize>,
 ) -> Result<()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+
     let ((lock_results, sanitized_txs), transaction_indexes): ((Vec<_>, Vec<_>), Vec<_>) = batches
         .iter()
         .flat_map(|batch| {
@@ -450,11 +455,10 @@ fn execute_batches(
             });
         &tx_batches[..]
     } else {
-        match batches.len() {
-            // Ensure that the total cost attributed to this batch is essentially correct
-            0 => tx_batch_costs = Vec::new(),
-            n => tx_batch_costs = vec![total_cost_without_bpf / (n as u64); n],
-        }
+        // Ensure that the total cost attributed to this batch is essentially correct
+        // batches.is_empty() check at top of function ensures that n > 0 for following divide
+        let n = batches.len();
+        tx_batch_costs = vec![total_cost_without_bpf / (n as u64); n];
         batches
     };
 
@@ -744,8 +748,9 @@ pub(crate) fn process_blockstore_for_bank_0(
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
 ) -> Arc<RwLock<BankForks>> {
     // Setup bank for slot 0
-    let mut bank0 = Bank::new_with_paths(
+    let bank0 = Bank::new_with_paths(
         genesis_config,
+        Arc::new(opts.runtime_config.clone()),
         account_paths,
         opts.debug_keys.clone(),
         Some(&crate::builtins::get(opts.runtime_config.bpf_jit)),
@@ -756,7 +761,6 @@ pub(crate) fn process_blockstore_for_bank_0(
         opts.accounts_db_config.clone(),
         accounts_update_notifier,
     );
-    bank0.set_compute_budget(opts.runtime_config.compute_budget);
     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank0)));
 
     info!("Processing ledger for slot 0...");
@@ -3605,14 +3609,11 @@ pub mod tests {
     ) -> EpochSchedule {
         let bank = Bank::new_with_paths_for_tests(
             genesis_config,
+            Arc::<RuntimeConfig>::default(),
             account_paths,
-            None,
-            None,
             AccountSecondaryIndexes::default(),
             false,
             AccountShrinkThreshold::default(),
-            false,
-            None,
         );
         *bank.epoch_schedule()
     }

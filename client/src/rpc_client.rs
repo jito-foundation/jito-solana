@@ -43,7 +43,7 @@ use {
         EncodedConfirmedBlock, EncodedConfirmedTransactionWithStatusMeta, TransactionStatus,
         UiConfirmedBlock, UiTransactionEncoding,
     },
-    std::{net::SocketAddr, str::FromStr, time::Duration},
+    std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration},
 };
 
 #[derive(Default)]
@@ -152,7 +152,7 @@ pub struct GetConfirmedSignaturesForAddress2Config {
 /// [`ClientErrorKind`]: crate::client_error::ClientErrorKind
 /// [`ClientErrorKind::Reqwest`]: crate::client_error::ClientErrorKind::Reqwest
 pub struct RpcClient {
-    rpc_client: nonblocking::rpc_client::RpcClient,
+    rpc_client: Arc<nonblocking::rpc_client::RpcClient>,
     runtime: Option<tokio::runtime::Runtime>,
 }
 
@@ -174,7 +174,9 @@ impl RpcClient {
         config: RpcClientConfig,
     ) -> Self {
         Self {
-            rpc_client: nonblocking::rpc_client::RpcClient::new_sender(sender, config),
+            rpc_client: Arc::new(nonblocking::rpc_client::RpcClient::new_sender(
+                sender, config,
+            )),
             runtime: Some(
                 tokio::runtime::Builder::new_current_thread()
                     .thread_name("rpc-client")
@@ -538,7 +540,7 @@ impl RpcClient {
 
     /// Get the configured url of the client's sender
     pub fn url(&self) -> String {
-        self.rpc_client.url()
+        (self.rpc_client.as_ref()).url()
     }
 
     /// Get the configured default [commitment level][cl].
@@ -557,7 +559,7 @@ impl RpcClient {
     /// explicitly provide a [`CommitmentConfig`], like
     /// [`RpcClient::confirm_transaction_with_commitment`].
     pub fn commitment(&self) -> CommitmentConfig {
-        self.rpc_client.commitment()
+        (self.rpc_client.as_ref()).commitment()
     }
 
     /// Submit a transaction and wait for confirmation.
@@ -625,7 +627,7 @@ impl RpcClient {
         &self,
         transaction: &Transaction,
     ) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.send_and_confirm_transaction(transaction))
+        self.invoke((self.rpc_client.as_ref()).send_and_confirm_transaction(transaction))
     }
 
     pub fn send_and_confirm_transaction_with_spinner(
@@ -633,8 +635,7 @@ impl RpcClient {
         transaction: &Transaction,
     ) -> ClientResult<Signature> {
         self.invoke(
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner(transaction),
+            (self.rpc_client.as_ref()).send_and_confirm_transaction_with_spinner(transaction),
         )
     }
 
@@ -644,7 +645,7 @@ impl RpcClient {
         commitment: CommitmentConfig,
     ) -> ClientResult<Signature> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .send_and_confirm_transaction_with_spinner_and_commitment(transaction, commitment),
         )
     }
@@ -656,12 +657,11 @@ impl RpcClient {
         config: RpcSendTransactionConfig,
     ) -> ClientResult<Signature> {
         self.invoke(
-            self.rpc_client
-                .send_and_confirm_transaction_with_spinner_and_config(
-                    transaction,
-                    commitment,
-                    config,
-                ),
+            (self.rpc_client.as_ref()).send_and_confirm_transaction_with_spinner_and_config(
+                transaction,
+                commitment,
+                config,
+            ),
         )
     }
 
@@ -736,7 +736,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn send_transaction(&self, transaction: &Transaction) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.send_transaction(transaction))
+        self.invoke((self.rpc_client.as_ref()).send_transaction(transaction))
     }
 
     /// Submits a signed transaction to the network.
@@ -823,17 +823,14 @@ impl RpcClient {
         transaction: &Transaction,
         config: RpcSendTransactionConfig,
     ) -> ClientResult<Signature> {
-        self.invoke(
-            self.rpc_client
-                .send_transaction_with_config(transaction, config),
-        )
+        self.invoke((self.rpc_client.as_ref()).send_transaction_with_config(transaction, config))
     }
 
     pub fn send<T>(&self, request: RpcRequest, params: Value) -> ClientResult<T>
     where
         T: serde::de::DeserializeOwned,
     {
-        self.invoke(self.rpc_client.send(request, params))
+        self.invoke((self.rpc_client.as_ref()).send(request, params))
     }
 
     /// Check the confirmation status of a transaction.
@@ -889,7 +886,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn confirm_transaction(&self, signature: &Signature) -> ClientResult<bool> {
-        self.invoke(self.rpc_client.confirm_transaction(signature))
+        self.invoke((self.rpc_client.as_ref()).confirm_transaction(signature))
     }
 
     /// Check the confirmation status of a transaction.
@@ -952,7 +949,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<bool> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .confirm_transaction_with_commitment(signature, commitment_config),
         )
     }
@@ -963,7 +960,7 @@ impl RpcClient {
         recent_blockhash: &Hash,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<()> {
-        self.invoke(self.rpc_client.confirm_transaction_with_spinner(
+        self.invoke((self.rpc_client.as_ref()).confirm_transaction_with_spinner(
             signature,
             recent_blockhash,
             commitment_config,
@@ -1028,7 +1025,7 @@ impl RpcClient {
         &self,
         transaction: &Transaction,
     ) -> RpcResult<RpcSimulateTransactionResult> {
-        self.invoke(self.rpc_client.simulate_transaction(transaction))
+        self.invoke((self.rpc_client.as_ref()).simulate_transaction(transaction))
     }
 
     /// Simulates sending a transaction.
@@ -1107,8 +1104,7 @@ impl RpcClient {
         config: RpcSimulateTransactionConfig,
     ) -> RpcResult<RpcSimulateTransactionResult> {
         self.invoke(
-            self.rpc_client
-                .simulate_transaction_with_config(transaction, config),
+            (self.rpc_client.as_ref()).simulate_transaction_with_config(transaction, config),
         )
     }
 
@@ -1164,7 +1160,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_highest_snapshot_slot(&self) -> ClientResult<RpcSnapshotSlotInfo> {
-        self.invoke(self.rpc_client.get_highest_snapshot_slot())
+        self.invoke((self.rpc_client.as_ref()).get_highest_snapshot_slot())
     }
 
     #[deprecated(
@@ -1173,7 +1169,7 @@ impl RpcClient {
     )]
     #[allow(deprecated)]
     pub fn get_snapshot_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_snapshot_slot())
+        self.invoke((self.rpc_client.as_ref()).get_snapshot_slot())
     }
 
     /// Check if a transaction has been processed with the default [commitment level][cl].
@@ -1234,7 +1230,7 @@ impl RpcClient {
         &self,
         signature: &Signature,
     ) -> ClientResult<Option<transaction::Result<()>>> {
-        self.invoke(self.rpc_client.get_signature_status(signature))
+        self.invoke((self.rpc_client.as_ref()).get_signature_status(signature))
     }
 
     /// Gets the statuses of a list of transaction signatures.
@@ -1312,7 +1308,7 @@ impl RpcClient {
         &self,
         signatures: &[Signature],
     ) -> RpcResult<Vec<Option<TransactionStatus>>> {
-        self.invoke(self.rpc_client.get_signature_statuses(signatures))
+        self.invoke((self.rpc_client.as_ref()).get_signature_statuses(signatures))
     }
 
     /// Gets the statuses of a list of transaction signatures.
@@ -1380,10 +1376,7 @@ impl RpcClient {
         &self,
         signatures: &[Signature],
     ) -> RpcResult<Vec<Option<TransactionStatus>>> {
-        self.invoke(
-            self.rpc_client
-                .get_signature_statuses_with_history(signatures),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_signature_statuses_with_history(signatures))
     }
 
     /// Check if a transaction has been processed with the given [commitment level][cl].
@@ -1450,7 +1443,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Option<transaction::Result<()>>> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .get_signature_status_with_commitment(signature, commitment_config),
         )
     }
@@ -1518,12 +1511,11 @@ impl RpcClient {
         search_transaction_history: bool,
     ) -> ClientResult<Option<transaction::Result<()>>> {
         self.invoke(
-            self.rpc_client
-                .get_signature_status_with_commitment_and_history(
-                    signature,
-                    commitment_config,
-                    search_transaction_history,
-                ),
+            (self.rpc_client.as_ref()).get_signature_status_with_commitment_and_history(
+                signature,
+                commitment_config,
+                search_transaction_history,
+            ),
         )
     }
 
@@ -1549,7 +1541,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_slot())
+        self.invoke((self.rpc_client.as_ref()).get_slot())
     }
 
     /// Returns the slot that has reached the given [commitment level][cl].
@@ -1579,7 +1571,7 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_slot_with_commitment(commitment_config))
+        self.invoke((self.rpc_client.as_ref()).get_slot_with_commitment(commitment_config))
     }
 
     /// Returns the block height that has reached the configured [commitment level][cl].
@@ -1604,7 +1596,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block_height(&self) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_block_height())
+        self.invoke((self.rpc_client.as_ref()).get_block_height())
     }
 
     /// Returns the block height that has reached the given [commitment level][cl].
@@ -1636,10 +1628,7 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<u64> {
-        self.invoke(
-            self.rpc_client
-                .get_block_height_with_commitment(commitment_config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_block_height_with_commitment(commitment_config))
     }
 
     /// Returns the slot leaders for a given slot range.
@@ -1665,7 +1654,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_slot_leaders(&self, start_slot: Slot, limit: u64) -> ClientResult<Vec<Pubkey>> {
-        self.invoke(self.rpc_client.get_slot_leaders(start_slot, limit))
+        self.invoke((self.rpc_client.as_ref()).get_slot_leaders(start_slot, limit))
     }
 
     /// Get block production for the current epoch.
@@ -1688,7 +1677,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block_production(&self) -> RpcResult<RpcBlockProduction> {
-        self.invoke(self.rpc_client.get_block_production())
+        self.invoke((self.rpc_client.as_ref()).get_block_production())
     }
 
     /// Get block production for the current or previous epoch.
@@ -1736,7 +1725,7 @@ impl RpcClient {
         &self,
         config: RpcBlockProductionConfig,
     ) -> RpcResult<RpcBlockProduction> {
-        self.invoke(self.rpc_client.get_block_production_with_config(config))
+        self.invoke((self.rpc_client.as_ref()).get_block_production_with_config(config))
     }
 
     /// Returns epoch activation information for a stake account.
@@ -1815,7 +1804,7 @@ impl RpcClient {
         stake_account: Pubkey,
         epoch: Option<Epoch>,
     ) -> ClientResult<RpcStakeActivation> {
-        self.invoke(self.rpc_client.get_stake_activation(stake_account, epoch))
+        self.invoke((self.rpc_client.as_ref()).get_stake_activation(stake_account, epoch))
     }
 
     /// Returns information about the current supply.
@@ -1842,7 +1831,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn supply(&self) -> RpcResult<RpcSupply> {
-        self.invoke(self.rpc_client.supply())
+        self.invoke((self.rpc_client.as_ref()).supply())
     }
 
     /// Returns information about the current supply.
@@ -1872,7 +1861,7 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<RpcSupply> {
-        self.invoke(self.rpc_client.supply_with_commitment(commitment_config))
+        self.invoke((self.rpc_client.as_ref()).supply_with_commitment(commitment_config))
     }
 
     /// Returns the 20 largest accounts, by lamport balance.
@@ -1909,7 +1898,7 @@ impl RpcClient {
         &self,
         config: RpcLargestAccountsConfig,
     ) -> RpcResult<Vec<RpcAccountBalance>> {
-        self.invoke(self.rpc_client.get_largest_accounts_with_config(config))
+        self.invoke((self.rpc_client.as_ref()).get_largest_accounts_with_config(config))
     }
 
     /// Returns the account info and associated stake for all the voting accounts
@@ -1936,7 +1925,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_vote_accounts(&self) -> ClientResult<RpcVoteAccountStatus> {
-        self.invoke(self.rpc_client.get_vote_accounts())
+        self.invoke((self.rpc_client.as_ref()).get_vote_accounts())
     }
 
     /// Returns the account info and associated stake for all the voting accounts
@@ -1969,10 +1958,7 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<RpcVoteAccountStatus> {
-        self.invoke(
-            self.rpc_client
-                .get_vote_accounts_with_commitment(commitment_config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_vote_accounts_with_commitment(commitment_config))
     }
 
     /// Returns the account info and associated stake for all the voting accounts
@@ -2018,7 +2004,7 @@ impl RpcClient {
         &self,
         config: RpcGetVoteAccountsConfig,
     ) -> ClientResult<RpcVoteAccountStatus> {
-        self.invoke(self.rpc_client.get_vote_accounts_with_config(config))
+        self.invoke((self.rpc_client.as_ref()).get_vote_accounts_with_config(config))
     }
 
     pub fn wait_for_max_stake(
@@ -2026,10 +2012,7 @@ impl RpcClient {
         commitment: CommitmentConfig,
         max_stake_percent: f32,
     ) -> ClientResult<()> {
-        self.invoke(
-            self.rpc_client
-                .wait_for_max_stake(commitment, max_stake_percent),
-        )
+        self.invoke((self.rpc_client.as_ref()).wait_for_max_stake(commitment, max_stake_percent))
     }
 
     /// Returns information about all the nodes participating in the cluster.
@@ -2053,7 +2036,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_cluster_nodes(&self) -> ClientResult<Vec<RpcContactInfo>> {
-        self.invoke(self.rpc_client.get_cluster_nodes())
+        self.invoke((self.rpc_client.as_ref()).get_cluster_nodes())
     }
 
     /// Returns identity and transaction information about a confirmed block in the ledger.
@@ -2085,7 +2068,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block(&self, slot: Slot) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(self.rpc_client.get_block(slot))
+        self.invoke((self.rpc_client.as_ref()).get_block(slot))
     }
 
     /// Returns identity and transaction information about a confirmed block in the ledger.
@@ -2118,7 +2101,7 @@ impl RpcClient {
         slot: Slot,
         encoding: UiTransactionEncoding,
     ) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(self.rpc_client.get_block_with_encoding(slot, encoding))
+        self.invoke((self.rpc_client.as_ref()).get_block_with_encoding(slot, encoding))
     }
 
     /// Returns identity and transaction information about a confirmed block in the ledger.
@@ -2161,13 +2144,13 @@ impl RpcClient {
         slot: Slot,
         config: RpcBlockConfig,
     ) -> ClientResult<UiConfirmedBlock> {
-        self.invoke(self.rpc_client.get_block_with_config(slot, config))
+        self.invoke((self.rpc_client.as_ref()).get_block_with_config(slot, config))
     }
 
     #[deprecated(since = "1.7.0", note = "Please use RpcClient::get_block() instead")]
     #[allow(deprecated)]
     pub fn get_confirmed_block(&self, slot: Slot) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(self.rpc_client.get_confirmed_block(slot))
+        self.invoke((self.rpc_client.as_ref()).get_confirmed_block(slot))
     }
 
     #[deprecated(
@@ -2180,10 +2163,7 @@ impl RpcClient {
         slot: Slot,
         encoding: UiTransactionEncoding,
     ) -> ClientResult<EncodedConfirmedBlock> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_block_with_encoding(slot, encoding),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_confirmed_block_with_encoding(slot, encoding))
     }
 
     #[deprecated(
@@ -2196,10 +2176,7 @@ impl RpcClient {
         slot: Slot,
         config: RpcConfirmedBlockConfig,
     ) -> ClientResult<UiConfirmedBlock> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_block_with_config(slot, config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_confirmed_block_with_config(slot, config))
     }
 
     /// Returns a list of finalized blocks between two slots.
@@ -2248,7 +2225,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_blocks(&self, start_slot: Slot, end_slot: Option<Slot>) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks(start_slot, end_slot))
+        self.invoke((self.rpc_client.as_ref()).get_blocks(start_slot, end_slot))
     }
 
     /// Returns a list of confirmed blocks between two slots.
@@ -2313,7 +2290,7 @@ impl RpcClient {
         end_slot: Option<Slot>,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks_with_commitment(
+        self.invoke((self.rpc_client.as_ref()).get_blocks_with_commitment(
             start_slot,
             end_slot,
             commitment_config,
@@ -2355,7 +2332,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_blocks_with_limit(&self, start_slot: Slot, limit: usize) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks_with_limit(start_slot, limit))
+        self.invoke((self.rpc_client.as_ref()).get_blocks_with_limit(start_slot, limit))
     }
 
     /// Returns a list of confirmed blocks starting at the given slot.
@@ -2405,11 +2382,13 @@ impl RpcClient {
         limit: usize,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_blocks_with_limit_and_commitment(
-            start_slot,
-            limit,
-            commitment_config,
-        ))
+        self.invoke(
+            (self.rpc_client.as_ref()).get_blocks_with_limit_and_commitment(
+                start_slot,
+                limit,
+                commitment_config,
+            ),
+        )
     }
 
     #[deprecated(since = "1.7.0", note = "Please use RpcClient::get_blocks() instead")]
@@ -2419,7 +2398,7 @@ impl RpcClient {
         start_slot: Slot,
         end_slot: Option<Slot>,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_confirmed_blocks(start_slot, end_slot))
+        self.invoke((self.rpc_client.as_ref()).get_confirmed_blocks(start_slot, end_slot))
     }
 
     #[deprecated(
@@ -2433,11 +2412,13 @@ impl RpcClient {
         end_slot: Option<Slot>,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(self.rpc_client.get_confirmed_blocks_with_commitment(
-            start_slot,
-            end_slot,
-            commitment_config,
-        ))
+        self.invoke(
+            (self.rpc_client.as_ref()).get_confirmed_blocks_with_commitment(
+                start_slot,
+                end_slot,
+                commitment_config,
+            ),
+        )
     }
 
     #[deprecated(
@@ -2450,10 +2431,7 @@ impl RpcClient {
         start_slot: Slot,
         limit: usize,
     ) -> ClientResult<Vec<Slot>> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_blocks_with_limit(start_slot, limit),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_confirmed_blocks_with_limit(start_slot, limit))
     }
 
     #[deprecated(
@@ -2468,12 +2446,11 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Vec<Slot>> {
         self.invoke(
-            self.rpc_client
-                .get_confirmed_blocks_with_limit_and_commitment(
-                    start_slot,
-                    limit,
-                    commitment_config,
-                ),
+            (self.rpc_client.as_ref()).get_confirmed_blocks_with_limit_and_commitment(
+                start_slot,
+                limit,
+                commitment_config,
+            ),
         )
     }
 
@@ -2518,7 +2495,7 @@ impl RpcClient {
         &self,
         address: &Pubkey,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
-        self.invoke(self.rpc_client.get_signatures_for_address(address))
+        self.invoke((self.rpc_client.as_ref()).get_signatures_for_address(address))
     }
 
     /// Get confirmed signatures for transactions involving an address.
@@ -2579,8 +2556,7 @@ impl RpcClient {
         config: GetConfirmedSignaturesForAddress2Config,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
         self.invoke(
-            self.rpc_client
-                .get_signatures_for_address_with_config(address, config),
+            (self.rpc_client.as_ref()).get_signatures_for_address_with_config(address, config),
         )
     }
 
@@ -2593,10 +2569,7 @@ impl RpcClient {
         &self,
         address: &Pubkey,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_signatures_for_address2(address),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_confirmed_signatures_for_address2(address))
     }
 
     #[deprecated(
@@ -2610,7 +2583,7 @@ impl RpcClient {
         config: GetConfirmedSignaturesForAddress2Config,
     ) -> ClientResult<Vec<RpcConfirmedTransactionStatusWithSignature>> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .get_confirmed_signatures_for_address2_with_config(address, config),
         )
     }
@@ -2663,7 +2636,7 @@ impl RpcClient {
         signature: &Signature,
         encoding: UiTransactionEncoding,
     ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
-        self.invoke(self.rpc_client.get_transaction(signature, encoding))
+        self.invoke((self.rpc_client.as_ref()).get_transaction(signature, encoding))
     }
 
     /// Returns transaction details for a confirmed transaction.
@@ -2724,10 +2697,7 @@ impl RpcClient {
         signature: &Signature,
         config: RpcTransactionConfig,
     ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
-        self.invoke(
-            self.rpc_client
-                .get_transaction_with_config(signature, config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_transaction_with_config(signature, config))
     }
 
     #[deprecated(
@@ -2740,10 +2710,7 @@ impl RpcClient {
         signature: &Signature,
         encoding: UiTransactionEncoding,
     ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
-        self.invoke(
-            self.rpc_client
-                .get_confirmed_transaction(signature, encoding),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_confirmed_transaction(signature, encoding))
     }
 
     #[deprecated(
@@ -2757,8 +2724,7 @@ impl RpcClient {
         config: RpcConfirmedTransactionConfig,
     ) -> ClientResult<EncodedConfirmedTransactionWithStatusMeta> {
         self.invoke(
-            self.rpc_client
-                .get_confirmed_transaction_with_config(signature, config),
+            (self.rpc_client.as_ref()).get_confirmed_transaction_with_config(signature, config),
         )
     }
 
@@ -2784,7 +2750,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_block_time(&self, slot: Slot) -> ClientResult<UnixTimestamp> {
-        self.invoke(self.rpc_client.get_block_time(slot))
+        self.invoke((self.rpc_client.as_ref()).get_block_time(slot))
     }
 
     /// Returns information about the current epoch.
@@ -2811,7 +2777,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_epoch_info(&self) -> ClientResult<EpochInfo> {
-        self.invoke(self.rpc_client.get_epoch_info())
+        self.invoke((self.rpc_client.as_ref()).get_epoch_info())
     }
 
     /// Returns information about the current epoch.
@@ -2841,10 +2807,7 @@ impl RpcClient {
         &self,
         commitment_config: CommitmentConfig,
     ) -> ClientResult<EpochInfo> {
-        self.invoke(
-            self.rpc_client
-                .get_epoch_info_with_commitment(commitment_config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_epoch_info_with_commitment(commitment_config))
     }
 
     /// Returns the leader schedule for an epoch.
@@ -2878,7 +2841,7 @@ impl RpcClient {
         &self,
         slot: Option<Slot>,
     ) -> ClientResult<Option<RpcLeaderSchedule>> {
-        self.invoke(self.rpc_client.get_leader_schedule(slot))
+        self.invoke((self.rpc_client.as_ref()).get_leader_schedule(slot))
     }
 
     /// Returns the leader schedule for an epoch.
@@ -2912,8 +2875,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> ClientResult<Option<RpcLeaderSchedule>> {
         self.invoke(
-            self.rpc_client
-                .get_leader_schedule_with_commitment(slot, commitment_config),
+            (self.rpc_client.as_ref()).get_leader_schedule_with_commitment(slot, commitment_config),
         )
     }
 
@@ -2952,10 +2914,7 @@ impl RpcClient {
         slot: Option<Slot>,
         config: RpcLeaderScheduleConfig,
     ) -> ClientResult<Option<RpcLeaderSchedule>> {
-        self.invoke(
-            self.rpc_client
-                .get_leader_schedule_with_config(slot, config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_leader_schedule_with_config(slot, config))
     }
 
     /// Returns epoch schedule information from this cluster's genesis config.
@@ -2978,7 +2937,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_epoch_schedule(&self) -> ClientResult<EpochSchedule> {
-        self.invoke(self.rpc_client.get_epoch_schedule())
+        self.invoke((self.rpc_client.as_ref()).get_epoch_schedule())
     }
 
     /// Returns a list of recent performance samples, in reverse slot order.
@@ -3010,7 +2969,7 @@ impl RpcClient {
         &self,
         limit: Option<usize>,
     ) -> ClientResult<Vec<RpcPerfSample>> {
-        self.invoke(self.rpc_client.get_recent_performance_samples(limit))
+        self.invoke((self.rpc_client.as_ref()).get_recent_performance_samples(limit))
     }
 
     /// Returns the identity pubkey for the current node.
@@ -3033,7 +2992,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_identity(&self) -> ClientResult<Pubkey> {
-        self.invoke(self.rpc_client.get_identity())
+        self.invoke((self.rpc_client.as_ref()).get_identity())
     }
 
     /// Returns the current inflation governor.
@@ -3062,7 +3021,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_inflation_governor(&self) -> ClientResult<RpcInflationGovernor> {
-        self.invoke(self.rpc_client.get_inflation_governor())
+        self.invoke((self.rpc_client.as_ref()).get_inflation_governor())
     }
 
     /// Returns the specific inflation values for the current epoch.
@@ -3085,7 +3044,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_inflation_rate(&self) -> ClientResult<RpcInflationRate> {
-        self.invoke(self.rpc_client.get_inflation_rate())
+        self.invoke((self.rpc_client.as_ref()).get_inflation_rate())
     }
 
     /// Returns the inflation reward for a list of addresses for an epoch.
@@ -3125,7 +3084,7 @@ impl RpcClient {
         addresses: &[Pubkey],
         epoch: Option<Epoch>,
     ) -> ClientResult<Vec<Option<RpcInflationReward>>> {
-        self.invoke(self.rpc_client.get_inflation_reward(addresses, epoch))
+        self.invoke((self.rpc_client.as_ref()).get_inflation_reward(addresses, epoch))
     }
 
     /// Returns the current solana version running on the node.
@@ -3152,7 +3111,7 @@ impl RpcClient {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn get_version(&self) -> ClientResult<RpcVersionInfo> {
-        self.invoke(self.rpc_client.get_version())
+        self.invoke((self.rpc_client.as_ref()).get_version())
     }
 
     /// Returns the lowest slot that the node has information about in its ledger.
@@ -3179,7 +3138,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn minimum_ledger_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.minimum_ledger_slot())
+        self.invoke((self.rpc_client.as_ref()).minimum_ledger_slot())
     }
 
     /// Returns all information associated with the account of the provided pubkey.
@@ -3227,7 +3186,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_account(&self, pubkey: &Pubkey) -> ClientResult<Account> {
-        self.invoke(self.rpc_client.get_account(pubkey))
+        self.invoke((self.rpc_client.as_ref()).get_account(pubkey))
     }
 
     /// Returns all information associated with the account of the provided pubkey.
@@ -3275,8 +3234,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Option<Account>> {
         self.invoke(
-            self.rpc_client
-                .get_account_with_commitment(pubkey, commitment_config),
+            (self.rpc_client.as_ref()).get_account_with_commitment(pubkey, commitment_config),
         )
     }
 
@@ -3331,7 +3289,7 @@ impl RpcClient {
         pubkey: &Pubkey,
         config: RpcAccountInfoConfig,
     ) -> RpcResult<Option<Account>> {
-        self.invoke(self.rpc_client.get_account_with_config(pubkey, config))
+        self.invoke((self.rpc_client.as_ref()).get_account_with_config(pubkey, config))
     }
 
     /// Get the max slot seen from retransmit stage.
@@ -3354,7 +3312,7 @@ impl RpcClient {
     /// let slot = rpc_client.get_max_retransmit_slot()?;
     /// # Ok::<(), ClientError>(())
     pub fn get_max_retransmit_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_max_retransmit_slot())
+        self.invoke((self.rpc_client.as_ref()).get_max_retransmit_slot())
     }
 
     /// Get the max slot seen from after [shred](https://docs.solana.com/terminology#shred) insert.
@@ -3377,7 +3335,7 @@ impl RpcClient {
     /// let slot = rpc_client.get_max_shred_insert_slot()?;
     /// # Ok::<(), ClientError>(())
     pub fn get_max_shred_insert_slot(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_max_shred_insert_slot())
+        self.invoke((self.rpc_client.as_ref()).get_max_shred_insert_slot())
     }
 
     /// Returns the account information for a list of pubkeys.
@@ -3411,7 +3369,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_multiple_accounts(&self, pubkeys: &[Pubkey]) -> ClientResult<Vec<Option<Account>>> {
-        self.invoke(self.rpc_client.get_multiple_accounts(pubkeys))
+        self.invoke((self.rpc_client.as_ref()).get_multiple_accounts(pubkeys))
     }
 
     /// Returns the account information for a list of pubkeys.
@@ -3451,7 +3409,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Vec<Option<Account>>> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .get_multiple_accounts_with_commitment(pubkeys, commitment_config),
         )
     }
@@ -3499,10 +3457,7 @@ impl RpcClient {
         pubkeys: &[Pubkey],
         config: RpcAccountInfoConfig,
     ) -> RpcResult<Vec<Option<Account>>> {
-        self.invoke(
-            self.rpc_client
-                .get_multiple_accounts_with_config(pubkeys, config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_multiple_accounts_with_config(pubkeys, config))
     }
 
     /// Gets the raw data associated with an account.
@@ -3539,7 +3494,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_account_data(&self, pubkey: &Pubkey) -> ClientResult<Vec<u8>> {
-        self.invoke(self.rpc_client.get_account_data(pubkey))
+        self.invoke((self.rpc_client.as_ref()).get_account_data(pubkey))
     }
 
     /// Returns minimum balance required to make an account with specified data length rent exempt.
@@ -3564,10 +3519,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_minimum_balance_for_rent_exemption(&self, data_len: usize) -> ClientResult<u64> {
-        self.invoke(
-            self.rpc_client
-                .get_minimum_balance_for_rent_exemption(data_len),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_minimum_balance_for_rent_exemption(data_len))
     }
 
     /// Request the balance of the provided account pubkey.
@@ -3599,7 +3551,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_balance(&self, pubkey: &Pubkey) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_balance(pubkey))
+        self.invoke((self.rpc_client.as_ref()).get_balance(pubkey))
     }
 
     /// Request the balance of the provided account pubkey.
@@ -3637,8 +3589,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<u64> {
         self.invoke(
-            self.rpc_client
-                .get_balance_with_commitment(pubkey, commitment_config),
+            (self.rpc_client.as_ref()).get_balance_with_commitment(pubkey, commitment_config),
         )
     }
 
@@ -3672,7 +3623,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_program_accounts(&self, pubkey: &Pubkey) -> ClientResult<Vec<(Pubkey, Account)>> {
-        self.invoke(self.rpc_client.get_program_accounts(pubkey))
+        self.invoke((self.rpc_client.as_ref()).get_program_accounts(pubkey))
     }
 
     /// Returns all accounts owned by the provided program pubkey.
@@ -3736,10 +3687,7 @@ impl RpcClient {
         pubkey: &Pubkey,
         config: RpcProgramAccountsConfig,
     ) -> ClientResult<Vec<(Pubkey, Account)>> {
-        self.invoke(
-            self.rpc_client
-                .get_program_accounts_with_config(pubkey, config),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_program_accounts_with_config(pubkey, config))
     }
 
     /// Returns the stake minimum delegation, in lamports.
@@ -3762,7 +3710,7 @@ impl RpcClient {
     /// # Ok::<(), ClientError>(())
     /// ```
     pub fn get_stake_minimum_delegation(&self) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_stake_minimum_delegation())
+        self.invoke((self.rpc_client.as_ref()).get_stake_minimum_delegation())
     }
 
     /// Returns the stake minimum delegation, in lamports, based on the commitment level.
@@ -3798,7 +3746,7 @@ impl RpcClient {
 
     /// Request the transaction count.
     pub fn get_transaction_count(&self) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_transaction_count())
+        self.invoke((self.rpc_client.as_ref()).get_transaction_count())
     }
 
     pub fn get_transaction_count_with_commitment(
@@ -3806,8 +3754,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> ClientResult<u64> {
         self.invoke(
-            self.rpc_client
-                .get_transaction_count_with_commitment(commitment_config),
+            (self.rpc_client.as_ref()).get_transaction_count_with_commitment(commitment_config),
         )
     }
 
@@ -3817,7 +3764,7 @@ impl RpcClient {
     )]
     #[allow(deprecated)]
     pub fn get_fees(&self) -> ClientResult<Fees> {
-        self.invoke(self.rpc_client.get_fees())
+        self.invoke((self.rpc_client.as_ref()).get_fees())
     }
 
     #[deprecated(
@@ -3826,13 +3773,13 @@ impl RpcClient {
     )]
     #[allow(deprecated)]
     pub fn get_fees_with_commitment(&self, commitment_config: CommitmentConfig) -> RpcResult<Fees> {
-        self.invoke(self.rpc_client.get_fees_with_commitment(commitment_config))
+        self.invoke((self.rpc_client.as_ref()).get_fees_with_commitment(commitment_config))
     }
 
     #[deprecated(since = "1.9.0", note = "Please use `get_latest_blockhash` instead")]
     #[allow(deprecated)]
     pub fn get_recent_blockhash(&self) -> ClientResult<(Hash, FeeCalculator)> {
-        self.invoke(self.rpc_client.get_recent_blockhash())
+        self.invoke((self.rpc_client.as_ref()).get_recent_blockhash())
     }
 
     #[deprecated(
@@ -3845,8 +3792,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<(Hash, FeeCalculator, Slot)> {
         self.invoke(
-            self.rpc_client
-                .get_recent_blockhash_with_commitment(commitment_config),
+            (self.rpc_client.as_ref()).get_recent_blockhash_with_commitment(commitment_config),
         )
     }
 
@@ -3856,7 +3802,7 @@ impl RpcClient {
         &self,
         blockhash: &Hash,
     ) -> ClientResult<Option<FeeCalculator>> {
-        self.invoke(self.rpc_client.get_fee_calculator_for_blockhash(blockhash))
+        self.invoke((self.rpc_client.as_ref()).get_fee_calculator_for_blockhash(blockhash))
     }
 
     #[deprecated(
@@ -3870,7 +3816,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Option<FeeCalculator>> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .get_fee_calculator_for_blockhash_with_commitment(blockhash, commitment_config),
         )
     }
@@ -3881,7 +3827,7 @@ impl RpcClient {
     )]
     #[allow(deprecated)]
     pub fn get_fee_rate_governor(&self) -> RpcResult<FeeRateGovernor> {
-        self.invoke(self.rpc_client.get_fee_rate_governor())
+        self.invoke((self.rpc_client.as_ref()).get_fee_rate_governor())
     }
 
     #[deprecated(
@@ -3890,23 +3836,23 @@ impl RpcClient {
     )]
     #[allow(deprecated)]
     pub fn get_new_blockhash(&self, blockhash: &Hash) -> ClientResult<(Hash, FeeCalculator)> {
-        self.invoke(self.rpc_client.get_new_blockhash(blockhash))
+        self.invoke((self.rpc_client.as_ref()).get_new_blockhash(blockhash))
     }
 
     pub fn get_first_available_block(&self) -> ClientResult<Slot> {
-        self.invoke(self.rpc_client.get_first_available_block())
+        self.invoke((self.rpc_client.as_ref()).get_first_available_block())
     }
 
     pub fn get_genesis_hash(&self) -> ClientResult<Hash> {
-        self.invoke(self.rpc_client.get_genesis_hash())
+        self.invoke((self.rpc_client.as_ref()).get_genesis_hash())
     }
 
     pub fn get_health(&self) -> ClientResult<()> {
-        self.invoke(self.rpc_client.get_health())
+        self.invoke((self.rpc_client.as_ref()).get_health())
     }
 
     pub fn get_token_account(&self, pubkey: &Pubkey) -> ClientResult<Option<UiTokenAccount>> {
-        self.invoke(self.rpc_client.get_token_account(pubkey))
+        self.invoke((self.rpc_client.as_ref()).get_token_account(pubkey))
     }
 
     pub fn get_token_account_with_commitment(
@@ -3915,13 +3861,12 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Option<UiTokenAccount>> {
         self.invoke(
-            self.rpc_client
-                .get_token_account_with_commitment(pubkey, commitment_config),
+            (self.rpc_client.as_ref()).get_token_account_with_commitment(pubkey, commitment_config),
         )
     }
 
     pub fn get_token_account_balance(&self, pubkey: &Pubkey) -> ClientResult<UiTokenAmount> {
-        self.invoke(self.rpc_client.get_token_account_balance(pubkey))
+        self.invoke((self.rpc_client.as_ref()).get_token_account_balance(pubkey))
     }
 
     pub fn get_token_account_balance_with_commitment(
@@ -3930,7 +3875,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<UiTokenAmount> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .get_token_account_balance_with_commitment(pubkey, commitment_config),
         )
     }
@@ -3941,7 +3886,7 @@ impl RpcClient {
         token_account_filter: TokenAccountsFilter,
     ) -> ClientResult<Vec<RpcKeyedAccount>> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .get_token_accounts_by_delegate(delegate, token_account_filter),
         )
     }
@@ -3953,12 +3898,11 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Vec<RpcKeyedAccount>> {
         self.invoke(
-            self.rpc_client
-                .get_token_accounts_by_delegate_with_commitment(
-                    delegate,
-                    token_account_filter,
-                    commitment_config,
-                ),
+            (self.rpc_client.as_ref()).get_token_accounts_by_delegate_with_commitment(
+                delegate,
+                token_account_filter,
+                commitment_config,
+            ),
         )
     }
 
@@ -3968,8 +3912,7 @@ impl RpcClient {
         token_account_filter: TokenAccountsFilter,
     ) -> ClientResult<Vec<RpcKeyedAccount>> {
         self.invoke(
-            self.rpc_client
-                .get_token_accounts_by_owner(owner, token_account_filter),
+            (self.rpc_client.as_ref()).get_token_accounts_by_owner(owner, token_account_filter),
         )
     }
 
@@ -3979,15 +3922,17 @@ impl RpcClient {
         token_account_filter: TokenAccountsFilter,
         commitment_config: CommitmentConfig,
     ) -> RpcResult<Vec<RpcKeyedAccount>> {
-        self.invoke(self.rpc_client.get_token_accounts_by_owner_with_commitment(
-            owner,
-            token_account_filter,
-            commitment_config,
-        ))
+        self.invoke(
+            (self.rpc_client.as_ref()).get_token_accounts_by_owner_with_commitment(
+                owner,
+                token_account_filter,
+                commitment_config,
+            ),
+        )
     }
 
     pub fn get_token_supply(&self, mint: &Pubkey) -> ClientResult<UiTokenAmount> {
-        self.invoke(self.rpc_client.get_token_supply(mint))
+        self.invoke((self.rpc_client.as_ref()).get_token_supply(mint))
     }
 
     pub fn get_token_supply_with_commitment(
@@ -3996,13 +3941,12 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> RpcResult<UiTokenAmount> {
         self.invoke(
-            self.rpc_client
-                .get_token_supply_with_commitment(mint, commitment_config),
+            (self.rpc_client.as_ref()).get_token_supply_with_commitment(mint, commitment_config),
         )
     }
 
     pub fn request_airdrop(&self, pubkey: &Pubkey, lamports: u64) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.request_airdrop(pubkey, lamports))
+        self.invoke((self.rpc_client.as_ref()).request_airdrop(pubkey, lamports))
     }
 
     pub fn request_airdrop_with_blockhash(
@@ -4011,7 +3955,7 @@ impl RpcClient {
         lamports: u64,
         recent_blockhash: &Hash,
     ) -> ClientResult<Signature> {
-        self.invoke(self.rpc_client.request_airdrop_with_blockhash(
+        self.invoke((self.rpc_client.as_ref()).request_airdrop_with_blockhash(
             pubkey,
             lamports,
             recent_blockhash,
@@ -4025,8 +3969,7 @@ impl RpcClient {
         config: RpcRequestAirdropConfig,
     ) -> ClientResult<Signature> {
         self.invoke(
-            self.rpc_client
-                .request_airdrop_with_config(pubkey, lamports, config),
+            (self.rpc_client.as_ref()).request_airdrop_with_config(pubkey, lamports, config),
         )
     }
 
@@ -4036,8 +3979,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> ClientResult<u64> {
         self.invoke(
-            self.rpc_client
-                .poll_get_balance_with_commitment(pubkey, commitment_config),
+            (self.rpc_client.as_ref()).poll_get_balance_with_commitment(pubkey, commitment_config),
         )
     }
 
@@ -4047,7 +3989,7 @@ impl RpcClient {
         expected_balance: Option<u64>,
         commitment_config: CommitmentConfig,
     ) -> Option<u64> {
-        self.invoke(self.rpc_client.wait_for_balance_with_commitment(
+        self.invoke((self.rpc_client.as_ref()).wait_for_balance_with_commitment(
             pubkey,
             expected_balance,
             commitment_config,
@@ -4057,7 +3999,7 @@ impl RpcClient {
 
     /// Poll the server to confirm a transaction.
     pub fn poll_for_signature(&self, signature: &Signature) -> ClientResult<()> {
-        self.invoke(self.rpc_client.poll_for_signature(signature))
+        self.invoke((self.rpc_client.as_ref()).poll_for_signature(signature))
     }
 
     /// Poll the server to confirm a transaction.
@@ -4067,7 +4009,7 @@ impl RpcClient {
         commitment_config: CommitmentConfig,
     ) -> ClientResult<()> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .poll_for_signature_with_commitment(signature, commitment_config),
         )
     }
@@ -4079,7 +4021,7 @@ impl RpcClient {
         min_confirmed_blocks: usize,
     ) -> ClientResult<usize> {
         self.invoke(
-            self.rpc_client
+            (self.rpc_client.as_ref())
                 .poll_for_signature_confirmation(signature, min_confirmed_blocks),
         )
     }
@@ -4089,13 +4031,12 @@ impl RpcClient {
         signature: &Signature,
     ) -> ClientResult<usize> {
         self.invoke(
-            self.rpc_client
-                .get_num_blocks_since_signature_confirmation(signature),
+            (self.rpc_client.as_ref()).get_num_blocks_since_signature_confirmation(signature),
         )
     }
 
     pub fn get_latest_blockhash(&self) -> ClientResult<Hash> {
-        self.invoke(self.rpc_client.get_latest_blockhash())
+        self.invoke((self.rpc_client.as_ref()).get_latest_blockhash())
     }
 
     #[allow(deprecated)]
@@ -4103,10 +4044,7 @@ impl RpcClient {
         &self,
         commitment: CommitmentConfig,
     ) -> ClientResult<(Hash, u64)> {
-        self.invoke(
-            self.rpc_client
-                .get_latest_blockhash_with_commitment(commitment),
-        )
+        self.invoke((self.rpc_client.as_ref()).get_latest_blockhash_with_commitment(commitment))
     }
 
     #[allow(deprecated)]
@@ -4115,20 +4053,20 @@ impl RpcClient {
         blockhash: &Hash,
         commitment: CommitmentConfig,
     ) -> ClientResult<bool> {
-        self.invoke(self.rpc_client.is_blockhash_valid(blockhash, commitment))
+        self.invoke((self.rpc_client.as_ref()).is_blockhash_valid(blockhash, commitment))
     }
 
     #[allow(deprecated)]
     pub fn get_fee_for_message(&self, message: &Message) -> ClientResult<u64> {
-        self.invoke(self.rpc_client.get_fee_for_message(message))
+        self.invoke((self.rpc_client.as_ref()).get_fee_for_message(message))
     }
 
     pub fn get_new_latest_blockhash(&self, blockhash: &Hash) -> ClientResult<Hash> {
-        self.invoke(self.rpc_client.get_new_latest_blockhash(blockhash))
+        self.invoke((self.rpc_client.as_ref()).get_new_latest_blockhash(blockhash))
     }
 
     pub fn get_transport_stats(&self) -> RpcTransportStats {
-        self.rpc_client.get_transport_stats()
+        (self.rpc_client.as_ref()).get_transport_stats()
     }
 
     fn invoke<T, F: std::future::Future<Output = ClientResult<T>>>(&self, f: F) -> ClientResult<T> {
@@ -4136,6 +4074,14 @@ impl RpcClient {
         // `block_in_place()` only panics if called from a current_thread runtime, which is the
         // lesser evil.
         tokio::task::block_in_place(move || self.runtime.as_ref().expect("runtime").block_on(f))
+    }
+
+    pub(crate) fn get_inner_client(&self) -> &Arc<nonblocking::rpc_client::RpcClient> {
+        &self.rpc_client
+    }
+
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Runtime {
+        self.runtime.as_ref().expect("runtime")
     }
 }
 
