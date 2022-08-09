@@ -691,7 +691,7 @@ impl BundleStage {
                 }
             }
         }
-        return Err(BundleExecutionError::Shutdown);
+        Err(BundleExecutionError::Shutdown)
     }
 
     /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then
