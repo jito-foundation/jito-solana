@@ -14,10 +14,7 @@ use {
     solana_sdk::{
         bundle::sanitized::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks,
     },
-    std::{
-        collections::{hash_map::Entry, HashMap, HashSet},
-        result,
-    },
+    std::collections::{hash_map::Entry, HashMap, HashSet},
 };
 
 #[derive(Debug)]
@@ -25,7 +22,7 @@ pub enum BundleAccountLockerError {
     LockingError,
 }
 
-pub type Result<T> = result::Result<T, BundleAccountLockerError>;
+pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
 
 pub struct LockedBundle<'a, 'b> {
     bundle_account_locker: &'a BundleAccountLocker,
@@ -139,7 +136,7 @@ impl BundleAccountLocker {
     pub fn prepare_locked_bundle<'a, 'b>(
         &'a self,
         sanitized_bundle: &'b SanitizedBundle,
-    ) -> Result<LockedBundle<'a, 'b>> {
+    ) -> BundleAccountLockerResult<LockedBundle<'a, 'b>> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
 
         self.account_locks.lock_accounts(read_locks, write_locks);
@@ -147,7 +144,10 @@ impl BundleAccountLocker {
     }
 
     /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
-    fn unlock_bundle_accounts(&self, sanitized_bundle: &SanitizedBundle) -> Result<()> {
+    fn unlock_bundle_accounts(
+        &self,
+        sanitized_bundle: &SanitizedBundle,
+    ) -> BundleAccountLockerResult<()> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
 
         self.account_locks.unlock_accounts(read_locks, write_locks);
@@ -158,7 +158,7 @@ impl BundleAccountLocker {
     /// Each lock type contains a HashMap which maps Pubkey to number of locks held
     fn get_read_write_locks(
         bundle: &SanitizedBundle,
-    ) -> Result<(HashMap<Pubkey, u64>, HashMap<Pubkey, u64>)> {
+    ) -> BundleAccountLockerResult<(HashMap<Pubkey, u64>, HashMap<Pubkey, u64>)> {
         let transaction_locks: Vec<TransactionAccountLocks> = bundle
             .transactions
             .iter()
@@ -249,15 +249,15 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let (packet_bundle0, sanitized_bundle0) = get_sanitized_bundle(
-            packet_bundle0,
+        let sanitized_bundle0 = get_sanitized_bundle(
+            &packet_bundle0,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
         )
         .expect("sanitize bundle 0");
-        let (packet_bundle1, sanitized_bundle1) = get_sanitized_bundle(
-            packet_bundle1,
+        let sanitized_bundle1 = get_sanitized_bundle(
+            &packet_bundle1,
             &bank,
             &HashSet::default(),
             &HashSet::default(),

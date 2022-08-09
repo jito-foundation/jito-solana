@@ -41,7 +41,7 @@ pub enum BundleSanitizerError {
     BlacklistedAccount(Uuid),
 }
 
-pub type Result<T> = std::result::Result<T, BundleSanitizerError>;
+pub type BundleSanitizationResult<T> = Result<T, BundleSanitizerError>;
 
 /// An invalid bundle contains one of the following:
 ///  No packets.
@@ -55,11 +55,11 @@ pub type Result<T> = std::result::Result<T, BundleSanitizerError>;
 /// NOTE: bundles need to be sanitized for a given bank. For instance, a bundle sanitized
 /// on bank n-1 will be valid for all of bank n-1, and may or may not be valid for bank n
 pub fn get_sanitized_bundle(
-    packet_bundle: PacketBundle,
+    packet_bundle: &PacketBundle,
     bank: &Arc<Bank>,
     consensus_accounts_cache: &HashSet<Pubkey>,
     blacklisted_accounts: &HashSet<Pubkey>,
-) -> Result<(PacketBundle, SanitizedBundle)> {
+) -> BundleSanitizationResult<SanitizedBundle> {
     if bank.vote_only_bank() {
         return Err(BundleSanitizerError::VoteOnlyMode(packet_bundle.uuid));
     }
@@ -129,7 +129,7 @@ pub fn get_sanitized_bundle(
         return Err(BundleSanitizerError::FailedCheckResults(packet_bundle.uuid));
     }
 
-    Ok((packet_bundle, SanitizedBundle { transactions }))
+    Ok(SanitizedBundle { transactions })
 }
 
 // This function deserializes packets into transactions, computes the blake3 hash of transaction
@@ -207,8 +207,8 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let (packet_bundle, sanitized_bundle) = get_sanitized_bundle(
-            packet_bundle,
+        let sanitized_bundle = get_sanitized_bundle(
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -248,7 +248,7 @@ mod tests {
 
         let consensus_accounts_cache = HashSet::from([kp.pubkey()]);
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &consensus_accounts_cache,
             &HashSet::default(),
@@ -284,7 +284,7 @@ mod tests {
 
         // fails to pop because bundle it locks the same transaction twice
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -315,7 +315,7 @@ mod tests {
 
         // fails to pop because bundle has bad blockhash
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -349,7 +349,7 @@ mod tests {
         };
 
         let (_, sanitized_bundle) = get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -373,7 +373,7 @@ mod tests {
         };
 
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -421,7 +421,7 @@ mod tests {
 
         // fails to pop because bundle mentions tip program
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::from_iter([tip_manager.tip_payment_program_id()]),
@@ -453,7 +453,7 @@ mod tests {
         };
 
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -473,7 +473,7 @@ mod tests {
         };
         // fails to pop because empty bundle
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -508,7 +508,7 @@ mod tests {
         };
         // fails to pop because too many packets in a bundle
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -544,7 +544,7 @@ mod tests {
 
         // fails to pop because one of the packets is marked as discard
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
@@ -585,7 +585,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
         assert!(get_sanitized_bundle(
-            packet_bundle,
+            &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),

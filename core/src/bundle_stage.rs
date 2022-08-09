@@ -4,7 +4,7 @@
 use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
-        bundle_account_locker::{BundleAccountLocker, LockedBundle},
+        bundle_account_locker::{BundleAccountLocker, BundleAccountLockerResult, LockedBundle},
         bundle_sanitizer::get_sanitized_bundle,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         packet_bundle::PacketBundle,
@@ -787,8 +787,9 @@ impl BundleStage {
         )
     }
 
-    /// Executes as many bundles as possible until there's no more bundles to execute or the slot
-    /// is finished.
+    /// Execute all unprocessed bundles until no more left or POH max tick height is reached.
+    /// For any bundles that didn't execute due to POH max tick height reached, add them
+    /// back onto the front of unprocessed_bundles in reverse order to preserve original ordering
     #[allow(clippy::too_many_arguments)]
     fn execute_bundles_until_empty_or_end_of_slot(
         bundle_account_locker: &mut BundleAccountLocker,
@@ -811,64 +812,70 @@ impl BundleStage {
             .drain(..)
             .into_iter()
             .filter_map(|packet_bundle| {
-                get_sanitized_bundle(
-                    packet_bundle,
+                match get_sanitized_bundle(
+                    &packet_bundle,
                     &bank_start.working_bank,
                     consensus_accounts_cache,
                     blacklisted_accounts,
-                )
-                .ok()
-            })
-            .collect();
-        let locked_bundles: Vec<(usize, LockedBundle)> = sanitized_bundles
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, (_, sanitized_bundle))| {
-                let locked_bundle = bundle_account_locker
-                    .prepare_locked_bundle(sanitized_bundle)
-                    .ok()?;
-                Some((idx, locked_bundle))
+                ) {
+                    Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
+                    Err(e) => {
+                        warn!(
+                            "failed to sanitize bundle uuid: {:?} error: {:?}",
+                            packet_bundle.uuid, e
+                        );
+                        None
+                    }
+                }
             })
             .collect();
 
-        let execution_results: Vec<(usize, BundleExecutionResult<()>)> = locked_bundles
+        // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
+        // BankingStage can't lock them
+        let locked_bundles: Vec<BundleAccountLockerResult<LockedBundle>> = sanitized_bundles
+            .iter()
+            .map(|(_, sanitized_bundle)| {
+                bundle_account_locker.prepare_locked_bundle(sanitized_bundle)
+            })
+            .collect();
+
+        let execution_results: Vec<BundleExecutionResult<()>> = locked_bundles
             .into_iter()
-            .map(|(idx, locked_bundle)| {
+            .map(|maybe_locked_bundle| {
+                let locked_bundle =
+                    maybe_locked_bundle.map_err(|_| BundleExecutionError::LockError)?;
                 if Bank::should_bank_still_be_processing_txs(
                     &bank_start.bank_creation_time,
                     bank_start.working_bank.ns_per_slot,
                 ) {
-                    (idx, Err(BundleExecutionError::PohMaxHeightError))
+                    Err(BundleExecutionError::PohMaxHeightError)
                 } else {
-                    (
-                        idx,
-                        Self::handle_tip_and_execute_record_commit_bundle(
-                            &locked_bundle.sanitized_bundle(),
-                            tip_manager,
-                            &bank_start,
-                            qos_service,
-                            recorder,
-                            transaction_status_sender,
-                            gossip_vote_sender,
-                            cluster_info,
-                            max_bundle_retry_duration,
-                            execute_and_commit_timings,
-                        ),
+                    Self::handle_tip_and_execute_record_commit_bundle(
+                        &locked_bundle.sanitized_bundle(),
+                        tip_manager,
+                        &bank_start,
+                        qos_service,
+                        recorder,
+                        transaction_status_sender,
+                        gossip_vote_sender,
+                        cluster_info,
+                        max_bundle_retry_duration,
+                        execute_and_commit_timings,
                     )
                 }
             })
             .collect();
 
-        // push any packets that failed to execute due to PohMaxHeightError onto front of
-        // unprocessed_bundles in reverse order to preserve original ordering
-        // they'll be re-sanitized, re-locked, and retried on the next iteration
         execution_results
-            .iter()
+            .into_iter()
+            .zip(sanitized_bundles.into_iter())
             .rev()
-            .for_each(|(packet_idx, exec_result)| {
-                if matches!(exec_result, Err(BundleExecutionError::PohMaxHeightError)) {
-                    // TODO (LB): don't clone?
-                    unprocessed_bundles.push_front(sanitized_bundles[*packet_idx].0.clone());
+            .for_each(|(bundle_execution_result, (packet_bundle, _))| {
+                if matches!(
+                    bundle_execution_result,
+                    Err(BundleExecutionError::PohMaxHeightError)
+                ) {
+                    unprocessed_bundles.push_front(packet_bundle);
                 }
             });
 
@@ -1140,13 +1147,8 @@ mod tests {
         let qos_service = QosService::new(cost_model, 0);
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
-        let (_, sanitized_bundle) = get_sanitized_bundle(
-            bundle.clone(),
-            &bank,
-            &HashSet::default(),
-            &HashSet::default(),
-        )
-        .unwrap();
+        let sanitized_bundle =
+            get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
 
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
@@ -1171,7 +1173,7 @@ mod tests {
         {
             assert_eq!(results, Ok(()));
             assert!(
-                get_sanitized_bundle(bundle, &bank, &HashSet::default(), &HashSet::default())
+                get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default())
                     .is_err()
             );
         }
@@ -1403,71 +1405,6 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn test_schedule_bundles_until_leader() {
-    //     solana_logger::setup();
-    //     let (bundle_sender, bundle_receiver) = unbounded();
-    //     let GenesisConfigInfo {
-    //         genesis_config,
-    //         mint_keypair,
-    //         ..
-    //     } = create_genesis_config(5);
-    //
-    //     let kp_a = Keypair::new();
-    //     let kp_b = Keypair::new();
-    //     let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
-    //     let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
-    //     let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
-    //     let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
-    //     let packet = Packet::from_data(None, tx).unwrap();
-    //
-    //     let bundle = vec![PacketBundle {
-    //         batch: PacketBatch::new(vec![packet]),
-    //         uuid: Uuid::new_v4(),
-    //     }];
-    //     assert!(bundle_sender.send(bundle).is_ok());
-    //
-    //     let ledger_path = get_tmp_ledger_path_auto_delete!();
-    //     let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-    //     let blockstore = Arc::new(
-    //         Blockstore::open(ledger_path.path())
-    //             .expect("Expected to be able to open database ledger"),
-    //     );
-    //     let poh_config = PohConfig {
-    //         // limit tick count to avoid clearing working_bank at
-    //         // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
-    //         target_tick_count: Some(bank.max_tick_height() - 1), // == 1, only enough for ticks, not txs
-    //         ..PohConfig::default()
-    //     };
-    //     let (exit, poh_recorder, poh_service, _entry_receiver) =
-    //         create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-    //     let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
-    //
-    //     let mut unprocessed_bundles = VecDeque::new();
-    //
-    //     let maybe_bank_start = BundleStage::schedule_bundles_until_leader(
-    //         &bundle_receiver,
-    //         &mut unprocessed_bundles,
-    //         &poh_recorder,
-    //         &bundle_account_locker,
-    //     );
-    //     assert!(maybe_bank_start.is_ok());
-    //     assert_eq!(unprocessed_bundles.len(), 1);
-    //     let sanitized_bundle = bundle_sanitizer.get_sanitized_bundle(
-    //         &unprocessed_bundles.pop_front().unwrap(),
-    //         &bank,
-    //         &HashSet::default(),
-    //     );
-    //     assert!(sanitized_bundle.is_ok());
-    //     // TODO: the logic around working bank makes it difficult to test bundles are returned
-    //     // when leader
-    //     // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_locker_sanitizer, &poh_recorder);
-    //     // assert!(scheduled_bundles.is_ok());
-    //     // assert_eq!(bundle_locker_sanitizer.lock().unwrap().num_bundles(), 0);
-    //     exit.store(true, Ordering::Relaxed);
-    //     poh_service.join().unwrap();
-    // }
-
     #[test]
     fn test_bundle_max_retries() {
         solana_logger::setup_with_default("INFO");
@@ -1531,8 +1468,8 @@ mod tests {
         };
         info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
 
-        let (_, sanitized_bundle) =
-            get_sanitized_bundle(bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
+        let sanitized_bundle =
+            get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
 
         let result = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
