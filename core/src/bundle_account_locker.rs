@@ -142,14 +142,9 @@ impl BundleAccountLocker {
         self.account_locks.write_locks()
     }
 
-    pub fn unlock_bundle_accounts(&self, sanitized_bundle: &SanitizedBundle) -> Result<()> {
-        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
-
-        self.account_locks.unlock_accounts(read_locks, write_locks);
-        Ok(())
-    }
-
-    pub fn lock_bundle_accounts<'a, 'b>(
+    /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
+    /// When a LockedBundle is dropped, the accounts are automatically unlocked
+    pub fn prepare_locked_bundle<'a, 'b>(
         &'a self,
         sanitized_bundle: &'b SanitizedBundle,
     ) -> Result<LockedBundle<'a, 'b>> {
@@ -157,6 +152,14 @@ impl BundleAccountLocker {
 
         self.account_locks.lock_accounts(read_locks, write_locks);
         Ok(LockedBundle::new(self, sanitized_bundle))
+    }
+
+    /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
+    fn unlock_bundle_accounts(&self, sanitized_bundle: &SanitizedBundle) -> Result<()> {
+        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
+
+        self.account_locks.unlock_accounts(read_locks, write_locks);
+        Ok(())
     }
 
     /// Returns the read and write locks for this bundle
@@ -204,7 +207,7 @@ impl BundleAccountLocker {
 mod tests {
     use {
         crate::{
-            bundle_account_locker::BundleAccountLocker, bundle_sanitizer::BundleSanitizer,
+            bundle_account_locker::BundleAccountLocker, bundle_sanitizer::get_sanitized_bundle,
             packet_bundle::PacketBundle,
         },
         solana_ledger::genesis_utils::create_genesis_config,
@@ -220,15 +223,12 @@ mod tests {
 
     #[test]
     fn test_simple_lock_bundles() {
-        solana_logger::setup();
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
             ..
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let mut bundle_account_locker = BundleAccountLocker::default();
 
@@ -257,16 +257,25 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let sanitized_bundle0 = bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle0, &bank, &HashSet::default())
-            .unwrap();
-        let sanitized_bundle1 = bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle1, &bank, &HashSet::default())
+        let (packet_bundle0, sanitized_bundle0) = get_sanitized_bundle(
+            packet_bundle0,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .expect("sanitize bundle 0");
+        let (packet_bundle1, sanitized_bundle1) = get_sanitized_bundle(
+            packet_bundle1,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .expect("sanitize bundle 1");
+
+        let locked_bundle0 = bundle_account_locker
+            .prepare_locked_bundle(&sanitized_bundle0)
             .unwrap();
 
-        bundle_account_locker
-            .lock_bundle_accounts(&sanitized_bundle0)
-            .unwrap();
         assert_eq!(
             bundle_account_locker.write_locks(),
             HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey()])
@@ -276,8 +285,8 @@ mod tests {
             HashSet::from_iter([system_program::id()])
         );
 
-        bundle_account_locker
-            .lock_bundle_accounts(&sanitized_bundle1)
+        let locked_bundle1 = bundle_account_locker
+            .prepare_locked_bundle(&sanitized_bundle1)
             .unwrap();
         assert_eq!(
             bundle_account_locker.write_locks(),
@@ -288,9 +297,7 @@ mod tests {
             HashSet::from_iter([system_program::id()])
         );
 
-        bundle_account_locker
-            .unlock_bundle_accounts(&sanitized_bundle0)
-            .unwrap();
+        drop(locked_bundle0);
         assert_eq!(
             bundle_account_locker.write_locks(),
             HashSet::from_iter([mint_keypair.pubkey(), kp1.pubkey()])
@@ -300,10 +307,11 @@ mod tests {
             HashSet::from_iter([system_program::id()])
         );
 
-        bundle_account_locker
-            .unlock_bundle_accounts(&sanitized_bundle1)
-            .unwrap();
+        drop(locked_bundle1);
         assert!(bundle_account_locker.write_locks().is_empty());
         assert!(bundle_account_locker.read_locks().is_empty());
     }
+
+    #[test]
+    fn test_drop_unlocks_vector() {}
 }

@@ -2323,7 +2323,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2382,7 +2382,7 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let banking_stage = BankingStage::new(
                 &cluster_info,
@@ -2471,7 +2471,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2636,7 +2636,7 @@ mod tests {
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
 
-                let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+                let bundle_locker = BundleAccountLocker::default();
 
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
@@ -2963,7 +2963,7 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3025,7 +3025,7 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3113,7 +3113,7 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3209,7 +3209,7 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3350,7 +3350,7 @@ mod tests {
             let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3520,7 +3520,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let process_transactions_summary = BankingStage::process_transactions(
                 &bank,
@@ -3590,7 +3590,7 @@ mod tests {
 
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-        let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+        let bundle_locker = BundleAccountLocker::default();
 
         let process_transactions_summary = BankingStage::process_transactions(
             &bank,
@@ -3816,7 +3816,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3982,7 +3982,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
@@ -4102,7 +4102,7 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
-            let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+            let bundle_locker = BundleAccountLocker::default();
 
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.read().unwrap().has_bank());
@@ -4207,7 +4207,7 @@ mod tests {
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
 
-                    let bundle_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+                    let bundle_locker = BundleAccountLocker::default();
 
                     BankingStage::consume_buffered_packets(
                         &Pubkey::default(),
@@ -4621,4 +4621,7 @@ mod tests {
         BankingStage::filter_processed_packets(retryable_indexes.iter(), f);
         assert_eq!(non_retryable_indexes, vec![(0, 1), (4, 5), (6, 8)]);
     }
+
+    // TODO (LB): test that banking stage doesn't process packets that contain accounts
+    // in BundleAccountLocker
 }

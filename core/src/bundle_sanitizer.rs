@@ -161,7 +161,7 @@ fn transaction_from_deserialized_packet(
 mod tests {
     use {
         crate::{
-            bundle_sanitizer::{BundleSanitizer, MAX_PACKETS_PER_BUNDLE},
+            bundle_sanitizer::{get_sanitized_bundle, MAX_PACKETS_PER_BUNDLE},
             packet_bundle::PacketBundle,
             tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
@@ -192,8 +192,6 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
-
         let kp = Keypair::new();
 
         let tx = VersionedTransaction::from(transfer(
@@ -209,9 +207,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let sanitized_bundle = bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .unwrap();
+        let (packet_bundle, sanitized_bundle) = get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .unwrap();
         assert_eq!(sanitized_bundle.transactions.len(), 1);
         assert_eq!(
             sanitized_bundle.transactions[0].signature(),
@@ -229,8 +231,6 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
-
         let kp = Keypair::new();
 
         let tx = VersionedTransaction::from(transfer(
@@ -247,9 +247,13 @@ mod tests {
         };
 
         let consensus_accounts_cache = HashSet::from([kp.pubkey()]);
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &consensus_accounts_cache)
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &consensus_accounts_cache,
+            &HashSet::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -261,8 +265,6 @@ mod tests {
             ..
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -281,9 +283,13 @@ mod tests {
         };
 
         // fails to pop because bundle it locks the same transaction twice
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -295,8 +301,6 @@ mod tests {
             ..
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -310,9 +314,13 @@ mod tests {
         };
 
         // fails to pop because bundle has bad blockhash
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -324,8 +332,6 @@ mod tests {
             ..
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -342,9 +348,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let sanitized_bundle = bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .unwrap();
+        let (_, sanitized_bundle) = get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .unwrap();
 
         let results = bank.process_entry_transactions(
             sanitized_bundle
@@ -362,9 +372,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -383,8 +397,6 @@ mod tests {
                 commission_bps: 0,
             },
         });
-
-        let bundle_sanitizer = BundleSanitizer::new(&tip_manager.tip_payment_program_id());
 
         let kp = Keypair::new();
         let tx =
@@ -408,9 +420,13 @@ mod tests {
         };
 
         // fails to pop because bundle mentions tip program
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::from_iter([tip_manager.tip_payment_program_id()]),
+        )
+        .is_err());
     }
 
     #[test]
@@ -418,8 +434,6 @@ mod tests {
         solana_logger::setup();
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
         let tx =
@@ -438,14 +452,14 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        // fails to pop because bundle mentions the txV2 program
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_ok());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_ok());
     }
-
-    #[test]
-    fn test_txv2_sanitized_bundle_bad_index() {}
 
     #[test]
     fn test_fails_to_sanitize_empty_bundle() {
@@ -453,16 +467,18 @@ mod tests {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
-
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![]),
             uuid: Uuid::new_v4(),
         };
         // fails to pop because empty bundle
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -474,8 +490,6 @@ mod tests {
             ..
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -493,9 +507,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
         // fails to pop because too many packets in a bundle
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -507,8 +525,6 @@ mod tests {
             ..
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
 
         let kp = Keypair::new();
 
@@ -527,9 +543,13 @@ mod tests {
         };
 
         // fails to pop because one of the packets is marked as discard
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -542,7 +562,6 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
         let kp = Keypair::new();
 
         let mut tx = VersionedTransaction::from(transfer(
@@ -565,10 +584,12 @@ mod tests {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
         };
-        // assert_eq!(bundle_sanitizer.num_bundles(), 1);
-        // fails to pop because one of the packets is marked as discard
-        assert!(bundle_sanitizer
-            .get_sanitized_bundle(&packet_bundle, &bank, &HashSet::default())
-            .is_err());
+        assert!(get_sanitized_bundle(
+            packet_bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .is_err());
     }
 }

@@ -807,6 +807,8 @@ impl BundleStage {
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<()> {
+        // Drain all unprocessed bundles, turn to sanitized_bundles, lock them all, then process
+        // until max proof-of-history tick
         let mut bundles_to_process: VecDeque<PacketBundle> =
             unprocessed_bundles.drain(..).collect();
         let sanitized_bundles: VecDeque<(PacketBundle, SanitizedBundle)> = bundles_to_process
@@ -821,42 +823,22 @@ impl BundleStage {
                 .ok()
             })
             .collect();
-        let mut locked_bundles: Vec<(usize, LockedBundle)> =
-            Vec::with_capacity(sanitized_bundles.len());
-        for (idx, (_, sanitized_bundle)) in sanitized_bundles.iter().enumerate() {
-            if let Ok(locked_bundle) = bundle_account_locker.lock_bundle_accounts(sanitized_bundle)
-            {
-                locked_bundles.push((idx, locked_bundle));
-            }
-        }
+        let mut locked_bundles: Vec<(usize, LockedBundle)> = sanitized_bundles
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, (_, sanitized_bundle))| {
+                let locked_bundle = bundle_account_locker
+                    .prepare_locked_bundle(sanitized_bundle)
+                    .ok()?;
+                Some((idx, locked_bundle))
+            })
+            .collect();
+
+        // for (idx, locked_bundle) in locked_bundles {
+        //
+        // }
 
         Ok(())
-
-        // loop {
-        // while locked_bundles.len() <= *num_bundles_prelock && !unprocessed_bundles.is_empty() {
-        //     let packet_bundle = unprocessed_bundles.pop_front().unwrap();
-        //     match bundle_sanitizer.get_sanitized_bundle(
-        //         &packet_bundle,
-        //         &bank_start.working_bank,
-        //         consensus_accounts_cache,
-        //     ) {
-        //         Ok(sanitized_bundle) => {
-        //             match bundle_account_locker
-        //                 .lock_bundle_accounts(&packet_bundle, &sanitized_bundle)
-        //             {
-        //                 Ok(locked_bundle) => {
-        //                     locked_bundles.push_back(locked_bundle);
-        //                 }
-        //                 Err(e) => {
-        //                     error!("error locking bundle account: {:?}", e);
-        //                 }
-        //             }
-        //         }
-        //         Err(e) => {
-        //             error!("sanitizing bundle error: {:?}", e);
-        //         }
-        //     }
-        // }
 
         //     if let Some(locked_bundle) = locked_bundles.pop_front() {
         //         let result = Self::handle_tip_and_execute_record_commit_bundle(
@@ -1166,12 +1148,15 @@ mod tests {
         let recorder = poh_recorder.read().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
-        let sanitized_bundle = bundle_sanitizer
-            .get_sanitized_bundle(&bundle, &bank, &HashSet::default())
-            .unwrap();
+        let (_, sanitized_bundle) = get_sanitized_bundle(
+            bundle.clone(),
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+        )
+        .unwrap();
 
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
@@ -1195,9 +1180,10 @@ mod tests {
                 .any(|option| matches!(option, AssertDuplicateInBundleDropped))
         {
             assert_eq!(results, Ok(()));
-            assert!(bundle_sanitizer
-                .get_sanitized_bundle(&bundle, &bank, &HashSet::default())
-                .is_err());
+            assert!(
+                get_sanitized_bundle(bundle, &bank, &HashSet::default(), &HashSet::default())
+                    .is_err()
+            );
         }
 
         // Transaction rolled back successfully if
@@ -1427,71 +1413,70 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_schedule_bundles_until_leader() {
-        solana_logger::setup();
-        let (bundle_sender, bundle_receiver) = unbounded();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config(5);
-
-        let kp_a = Keypair::new();
-        let kp_b = Keypair::new();
-        let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
-        let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
-        let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
-        let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
-        let packet = Packet::from_data(None, tx).unwrap();
-
-        let bundle = vec![PacketBundle {
-            batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
-        }];
-        assert!(bundle_sender.send(bundle).is_ok());
-
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
-        let blockstore = Arc::new(
-            Blockstore::open(ledger_path.path())
-                .expect("Expected to be able to open database ledger"),
-        );
-        let poh_config = PohConfig {
-            // limit tick count to avoid clearing working_bank at
-            // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
-            target_tick_count: Some(bank.max_tick_height() - 1), // == 1, only enough for ticks, not txs
-            ..PohConfig::default()
-        };
-        let (exit, poh_recorder, poh_service, _entry_receiver) =
-            create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
-
-        let mut unprocessed_bundles = VecDeque::new();
-
-        let maybe_bank_start = BundleStage::schedule_bundles_until_leader(
-            &bundle_receiver,
-            &mut unprocessed_bundles,
-            &poh_recorder,
-            &bundle_account_locker,
-        );
-        assert!(maybe_bank_start.is_ok());
-        assert_eq!(unprocessed_bundles.len(), 1);
-        let sanitized_bundle = bundle_sanitizer.get_sanitized_bundle(
-            &unprocessed_bundles.pop_front().unwrap(),
-            &bank,
-            &HashSet::default(),
-        );
-        assert!(sanitized_bundle.is_ok());
-        // TODO: the logic around working bank makes it difficult to test bundles are returned
-        // when leader
-        // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_locker_sanitizer, &poh_recorder);
-        // assert!(scheduled_bundles.is_ok());
-        // assert_eq!(bundle_locker_sanitizer.lock().unwrap().num_bundles(), 0);
-        exit.store(true, Ordering::Relaxed);
-        poh_service.join().unwrap();
-    }
+    // #[test]
+    // fn test_schedule_bundles_until_leader() {
+    //     solana_logger::setup();
+    //     let (bundle_sender, bundle_receiver) = unbounded();
+    //     let GenesisConfigInfo {
+    //         genesis_config,
+    //         mint_keypair,
+    //         ..
+    //     } = create_genesis_config(5);
+    //
+    //     let kp_a = Keypair::new();
+    //     let kp_b = Keypair::new();
+    //     let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
+    //     let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
+    //     let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
+    //     let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
+    //     let packet = Packet::from_data(None, tx).unwrap();
+    //
+    //     let bundle = vec![PacketBundle {
+    //         batch: PacketBatch::new(vec![packet]),
+    //         uuid: Uuid::new_v4(),
+    //     }];
+    //     assert!(bundle_sender.send(bundle).is_ok());
+    //
+    //     let ledger_path = get_tmp_ledger_path_auto_delete!();
+    //     let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
+    //     let blockstore = Arc::new(
+    //         Blockstore::open(ledger_path.path())
+    //             .expect("Expected to be able to open database ledger"),
+    //     );
+    //     let poh_config = PohConfig {
+    //         // limit tick count to avoid clearing working_bank at
+    //         // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
+    //         target_tick_count: Some(bank.max_tick_height() - 1), // == 1, only enough for ticks, not txs
+    //         ..PohConfig::default()
+    //     };
+    //     let (exit, poh_recorder, poh_service, _entry_receiver) =
+    //         create_test_recorder(&bank, &blockstore, Some(poh_config), None);
+    //     let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+    //
+    //     let mut unprocessed_bundles = VecDeque::new();
+    //
+    //     let maybe_bank_start = BundleStage::schedule_bundles_until_leader(
+    //         &bundle_receiver,
+    //         &mut unprocessed_bundles,
+    //         &poh_recorder,
+    //         &bundle_account_locker,
+    //     );
+    //     assert!(maybe_bank_start.is_ok());
+    //     assert_eq!(unprocessed_bundles.len(), 1);
+    //     let sanitized_bundle = bundle_sanitizer.get_sanitized_bundle(
+    //         &unprocessed_bundles.pop_front().unwrap(),
+    //         &bank,
+    //         &HashSet::default(),
+    //     );
+    //     assert!(sanitized_bundle.is_ok());
+    //     // TODO: the logic around working bank makes it difficult to test bundles are returned
+    //     // when leader
+    //     // let scheduled_bundles = BundleStage::schedule_bundles_until_leader(&bundle_receiver, &bundle_locker_sanitizer, &poh_recorder);
+    //     // assert!(scheduled_bundles.is_ok());
+    //     // assert_eq!(bundle_locker_sanitizer.lock().unwrap().num_bundles(), 0);
+    //     exit.store(true, Ordering::Relaxed);
+    //     poh_service.join().unwrap();
+    // }
 
     #[test]
     fn test_bundle_max_retries() {
@@ -1546,8 +1531,6 @@ mod tests {
         let tx1 = transfer(&keypair0, &keypair1.pubkey(), 50_000, genesis_config.hash());
         let sanitized_txs_1 = vec![SanitizedTransaction::from_transaction_for_tests(tx1)];
 
-        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
-
         // grab lock on tx1
         let _batch = bank.prepare_sanitized_batch(&sanitized_txs_1);
 
@@ -1558,9 +1541,8 @@ mod tests {
         };
         info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
 
-        let sanitized_bundle = bundle_sanitizer
-            .get_sanitized_bundle(&bundle, &bank, &HashSet::default())
-            .unwrap();
+        let (_, sanitized_bundle) =
+            get_sanitized_bundle(bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
 
         let result = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
@@ -1581,6 +1563,4 @@ mod tests {
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
     }
-
-    // TODO (LB): add TX v2 test here
 }
