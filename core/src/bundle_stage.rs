@@ -55,12 +55,11 @@ use {
         collections::{HashMap, HashSet, VecDeque},
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
-    uuid::Uuid,
 };
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
@@ -796,7 +795,6 @@ impl BundleStage {
         bundle_account_locker: &mut BundleAccountLocker,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
         blacklisted_accounts: &HashSet<Pubkey>,
-        bundle_receiver: &Receiver<Vec<PacketBundle>>,
         bank_start: &BankStart,
         consensus_accounts_cache: &HashSet<Pubkey>,
         cluster_info: &Arc<ClusterInfo>,
@@ -806,12 +804,12 @@ impl BundleStage {
         qos_service: &QosService,
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
+        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
     ) -> BundleExecutionResult<()> {
         // Drain all unprocessed bundles, turn to sanitized_bundles, lock them all, then process
         // until max proof-of-history tick
-        let mut bundles_to_process: VecDeque<PacketBundle> =
-            unprocessed_bundles.drain(..).collect();
-        let sanitized_bundles: VecDeque<(PacketBundle, SanitizedBundle)> = bundles_to_process
+        let sanitized_bundles: VecDeque<(PacketBundle, SanitizedBundle)> = unprocessed_bundles
+            .drain(..)
             .into_iter()
             .filter_map(|packet_bundle| {
                 get_sanitized_bundle(
@@ -823,7 +821,7 @@ impl BundleStage {
                 .ok()
             })
             .collect();
-        let mut locked_bundles: Vec<(usize, LockedBundle)> = sanitized_bundles
+        let locked_bundles: Vec<(usize, LockedBundle)> = sanitized_bundles
             .iter()
             .enumerate()
             .filter_map(|(idx, (_, sanitized_bundle))| {
@@ -834,60 +832,37 @@ impl BundleStage {
             })
             .collect();
 
-        // for (idx, locked_bundle) in locked_bundles {
-        //
-        // }
+        let execution_results: Vec<(usize, BundleExecutionResult<()>)> = locked_bundles
+            .into_iter()
+            .map(|(idx, locked_bundle)| {
+                if Bank::should_bank_still_be_processing_txs(
+                    &bank_start.bank_creation_time,
+                    bank_start.working_bank.ns_per_slot,
+                ) {
+                    (idx, Err(BundleExecutionError::PohMaxHeightError))
+                } else {
+                    (
+                        idx,
+                        Self::handle_tip_and_execute_record_commit_bundle(
+                            &locked_bundle.sanitized_bundle(),
+                            tip_manager,
+                            &bank_start,
+                            qos_service,
+                            recorder,
+                            transaction_status_sender,
+                            gossip_vote_sender,
+                            cluster_info,
+                            max_bundle_retry_duration,
+                            execute_and_commit_timings,
+                        ),
+                    )
+                }
+            })
+            .collect();
+
+        // add back anything that failed onto the unprocessed_bundles deque
 
         Ok(())
-
-        //     if let Some(locked_bundle) = locked_bundles.pop_front() {
-        //         let result = Self::handle_tip_and_execute_record_commit_bundle(
-        //             &locked_bundle.sanitized_bundle(),
-        //             tip_manager,
-        //             &bank_start,
-        //             qos_service,
-        //             recorder,
-        //             transaction_status_sender,
-        //             gossip_vote_sender,
-        //             cluster_info,
-        //             max_bundle_retry_duration,
-        //             &mut execute_and_commit_timings,
-        //         );
-        //
-        //         match result {
-        //             Ok(_) => {}
-        //             Err(BundleExecutionError::PohMaxHeightError) => {
-        //                 // warn!("poh max height reached uuid: {:?}", sanitized_bundle.uuid);
-        //                 // push back on the front to be rescheduled
-        //                 locked_bundles.push_front(locked_bundle);
-        //                 return Err(BundleExecutionError::PohMaxHeightError);
-        //             }
-        //             Err(BundleExecutionError::TransactionFailure(e)) => {
-        //                 // warn!("tx failure uuid: {:?} e: {:?}", sanitized_bundle.uuid, e);
-        //             }
-        //             Err(BundleExecutionError::ExceedsCostModel) => {
-        //                 // warn!("tx exceeds cost model uuid: {:?}", sanitized_bundle.uuid,);
-        //             }
-        //             Err(BundleExecutionError::TipError(e)) => {
-        //                 // warn!(
-        //                 //     "tx fails from tip error uuid: {:?} error: {:?}",
-        //                 //     sanitized_bundle.uuid, e
-        //                 // );
-        //             }
-        //             Err(BundleExecutionError::Shutdown) => {
-        //                 return Err(BundleExecutionError::Shutdown);
-        //             }
-        //             Err(BundleExecutionError::MaxRetriesExceeded(dur)) => {
-        //                 // warn!(
-        //                 //     "tx exceeded max execution duration uuid: {:?} dur: {:?}",
-        //                 //     sanitized_bundle.uuid, dur
-        //                 // );
-        //             }
-        //         }
-        //     } else {
-        //         break;
-        //     }
-        // }
     }
 
     /// Updates consensus-related accounts on epoch boundaries
@@ -923,9 +898,14 @@ impl BundleStage {
         let recorder = poh_recorder.read().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
+        // Bundles can't mention any accounts related to consensus
         let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
         let mut last_consensus_update = Epoch::default();
 
+        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
+
+        // Bundles can't mention the tip payment program to ensure that a malicious entity doesn't
+        // steal tips mid-slot
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
@@ -953,7 +933,6 @@ impl BundleStage {
                                 &mut bundle_account_locker,
                                 &mut unprocessed_bundles,
                                 &blacklisted_accounts,
-                                &bundle_receiver,
                                 bank_start,
                                 &consensus_accounts_cache,
                                 &cluster_info,
@@ -963,6 +942,7 @@ impl BundleStage {
                                 &qos_service,
                                 &tip_manager,
                                 &max_bundle_retry_duration,
+                                &mut execute_and_commit_timings,
                             ) {
                                 Ok(_) => {
                                     // keep going

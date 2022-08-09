@@ -69,7 +69,7 @@ use {
         rc::Rc,
         sync::{
             atomic::{AtomicU64, AtomicUsize, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},

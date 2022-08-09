@@ -1,11 +1,3 @@
-use {
-    crate::packet_bundle::PacketBundle,
-    solana_sdk::loader_instruction::write,
-    std::{
-        borrow::BorrowMut,
-        sync::{Arc, Mutex},
-    },
-};
 ///! Handles pre-locking bundle accounts so that accounts bundles touch can be reserved ahead
 /// of time for execution. Also, ensures that ALL accounts mentioned across a bundle are locked
 /// to avoid race conditions between BundleStage and BankingStage.
@@ -17,6 +9,7 @@ use {
 /// and commit the results before the bundle completes. By the time the bundle commits the new account
 /// state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 /// replayed improperly and that leader would have produced an invalid block.
+use std::sync::{Arc, Mutex};
 use {
     solana_sdk::{
         bundle::sanitized::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks,
@@ -25,7 +18,6 @@ use {
         collections::{hash_map::Entry, HashMap, HashSet},
         result,
     },
-    uuid::Uuid,
 };
 
 #[derive(Debug)]
@@ -311,7 +303,4 @@ mod tests {
         assert!(bundle_account_locker.write_locks().is_empty());
         assert!(bundle_account_locker.read_locks().is_empty());
     }
-
-    #[test]
-    fn test_drop_unlocks_vector() {}
 }

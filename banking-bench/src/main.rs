@@ -32,7 +32,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     std::{
         collections::HashSet,
-        sync::{atomic::Ordering, Arc, Mutex, RwLock},
+        sync::{atomic::Ordering, Arc, RwLock},
         thread::sleep,
         time::{Duration, Instant},
     },

@@ -41,7 +41,7 @@ use {
     std::{
         collections::HashSet,
         net::{SocketAddr, UdpSocket},
-        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         thread,
     },
 };
