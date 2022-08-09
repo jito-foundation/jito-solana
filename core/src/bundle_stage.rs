@@ -474,7 +474,6 @@ impl BundleStage {
         )?;
         // in order for bundle to succeed, it most have something to record + commit
         assert!(!execution_results.is_empty());
-        // TODO: do we really want assertions in production code?
 
         Self::record_commit_bundle(
             execution_results,
@@ -860,7 +859,18 @@ impl BundleStage {
             })
             .collect();
 
-        // add back anything that failed onto the unprocessed_bundles deque
+        // push any packets that failed to execute due to PohMaxHeightError onto front of
+        // unprocessed_bundles in reverse order to preserve original ordering
+        // they'll be re-sanitized, re-locked, and retried on the next iteration
+        execution_results
+            .iter()
+            .rev()
+            .for_each(|(packet_idx, exec_result)| {
+                if matches!(exec_result, Err(BundleExecutionError::PohMaxHeightError)) {
+                    // TODO (LB): don't clone?
+                    unprocessed_bundles.push_front(sanitized_bundles[*packet_idx].0.clone());
+                }
+            });
 
         Ok(())
     }
