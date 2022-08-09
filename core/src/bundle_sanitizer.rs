@@ -1,7 +1,7 @@
 ///! Turns packets into SanitizedTransactions and ensure they pass sanity checks
 use {
     crate::{
-        bundle::PacketBundle,
+        packet_bundle::PacketBundle,
         unprocessed_packet_batches::{deserialize_packets, ImmutableDeserializedPacket},
     },
     solana_perf::sigverify::verify_packet,
@@ -43,142 +43,126 @@ pub enum BundleSanitizerError {
 
 pub type Result<T> = std::result::Result<T, BundleSanitizerError>;
 
-#[derive(Clone)]
-pub struct BundleSanitizer {
-    blacklisted_accounts: HashSet<Pubkey>,
+/// An invalid bundle contains one of the following:
+///  No packets.
+///  Too many packets.
+///  Packets marked for discard (not sure why someone would do this)
+///  One of the packets fails signature verification.
+///  Mentions an account in consensus or blacklisted accounts.
+///  Contains a packet that failed to serialize to a transaction.
+///  Contains duplicate transactions within the same bundle.
+///  Contains a transaction that was already processed or one with an invalid blockhash.
+/// NOTE: bundles need to be sanitized for a given bank. For instance, a bundle sanitized
+/// on bank n-1 will be valid for all of bank n-1, and may or may not be valid for bank n
+pub fn get_sanitized_bundle(
+    packet_bundle: PacketBundle,
+    bank: &Arc<Bank>,
+    consensus_accounts_cache: &HashSet<Pubkey>,
+    blacklisted_accounts: &HashSet<Pubkey>,
+) -> Result<(PacketBundle, SanitizedBundle)> {
+    if bank.vote_only_bank() {
+        return Err(BundleSanitizerError::VoteOnlyMode(packet_bundle.uuid));
+    }
+
+    if packet_bundle.batch.is_empty()
+        || packet_bundle.batch.len() > MAX_PACKETS_PER_BUNDLE
+        || packet_bundle.batch.iter().any(|p| p.meta.discard())
+        || packet_bundle
+            .batch
+            .iter()
+            .any(|p| !verify_packet(&mut p.clone(), false))
+    {
+        return Err(BundleSanitizerError::FailedPacketBatchPreCheck(
+            packet_bundle.uuid,
+        ));
+    }
+
+    let packet_indexes = (0..packet_bundle.batch.len()).collect::<Vec<usize>>();
+    let deserialized_packets = deserialize_packets(&packet_bundle.batch, &packet_indexes);
+    let transactions: Vec<SanitizedTransaction> = deserialized_packets
+        .filter_map(|p| {
+            let immutable_packet = p.immutable_section().clone();
+            transaction_from_deserialized_packet(
+                &immutable_packet,
+                &bank.feature_set,
+                bank.as_ref(),
+            )
+        })
+        .collect();
+
+    let unique_signatures: HashSet<&Signature, RandomState> =
+        HashSet::from_iter(transactions.iter().map(|tx| tx.signature()));
+    let contains_blacklisted_account = transactions.iter().any(|tx| {
+        let accounts = tx.message.account_keys();
+        accounts
+            .iter()
+            .any(|acc| blacklisted_accounts.contains(acc) || consensus_accounts_cache.contains(acc))
+    });
+
+    if contains_blacklisted_account {
+        return Err(BundleSanitizerError::BlacklistedAccount(packet_bundle.uuid));
+    }
+
+    if transactions.is_empty() || packet_bundle.batch.len() != transactions.len() {
+        return Err(BundleSanitizerError::FailedToSerializeTransaction(
+            packet_bundle.uuid,
+        ));
+    }
+
+    if unique_signatures.len() != transactions.len() {
+        return Err(BundleSanitizerError::DuplicateTransaction(
+            packet_bundle.uuid,
+        ));
+    }
+
+    // checks for already-processed transaction or expired/invalid blockhash
+    let lock_results: Vec<_> = repeat(Ok(())).take(transactions.len()).collect();
+    let mut metrics = TransactionErrorMetrics::default();
+    let check_results = bank.check_transactions(
+        &transactions,
+        &lock_results,
+        MAX_PROCESSING_AGE,
+        &mut metrics,
+    );
+    if let Some(failure) = check_results.iter().find(|r| r.0.is_err()) {
+        warn!("bundle check failure: {:?}", failure);
+        return Err(BundleSanitizerError::FailedCheckResults(packet_bundle.uuid));
+    }
+
+    Ok((packet_bundle, SanitizedBundle { transactions }))
 }
 
-impl BundleSanitizer {
-    pub fn new(tip_program_id: &Pubkey) -> BundleSanitizer {
-        BundleSanitizer {
-            blacklisted_accounts: HashSet::from([
-                // prevent bundles from changing the tip_receiver unexpectedly and stealing
-                // all of the MEV profits from a validator and stakers.
-                *tip_program_id,
-            ]),
-        }
-    }
-
-    /// An invalid bundle contains one of the following:
-    ///  No packets.
-    ///  Too many packets.
-    ///  Packets marked for discard (not sure why someone would do this)
-    ///  One of the packets fails signature verification.
-    ///  Mentions an account in consensus or blacklisted accounts.
-    ///  Contains a packet that failed to serialize to a transaction.
-    ///  Contains duplicate transactions within the same bundle.
-    ///  Contains a transaction that was already processed or one with an invalid blockhash.
-    /// NOTE: bundles need to be sanitized for a given bank. For instance, a bundle sanitized
-    /// on bank n-1 will be valid for all of bank n-1, and may or may not be valid for bank n
-    pub fn get_sanitized_bundle(
-        &self,
-        bundle: &PacketBundle,
-        bank: &Arc<Bank>,
-        consensus_accounts_cache: &HashSet<Pubkey>,
-    ) -> Result<SanitizedBundle> {
-        if bank.vote_only_bank() {
-            return Err(BundleSanitizerError::VoteOnlyMode(bundle.uuid));
-        }
-
-        if bundle.batch.is_empty()
-            || bundle.batch.len() > MAX_PACKETS_PER_BUNDLE
-            || bundle.batch.iter().any(|p| p.meta.discard())
-            || bundle
-                .batch
-                .iter()
-                .any(|p| !verify_packet(&mut p.clone(), false))
-        {
-            return Err(BundleSanitizerError::FailedPacketBatchPreCheck(bundle.uuid));
-        }
-
-        let packet_indexes = (0..bundle.batch.len()).collect::<Vec<usize>>();
-        let deserialized_packets = deserialize_packets(&bundle.batch, &packet_indexes);
-        let transactions: Vec<SanitizedTransaction> = deserialized_packets
-            .filter_map(|p| {
-                let immutable_packet = p.immutable_section().clone();
-                Self::transaction_from_deserialized_packet(
-                    &immutable_packet,
-                    &bank.feature_set,
-                    bank.as_ref(),
-                )
-            })
-            .collect();
-
-        let unique_signatures: HashSet<&Signature, RandomState> =
-            HashSet::from_iter(transactions.iter().map(|tx| tx.signature()));
-        let contains_blacklisted_account = transactions.iter().any(|tx| {
-            let accounts = tx.message.account_keys();
-            accounts.iter().any(|acc| {
-                self.blacklisted_accounts.contains(acc) || consensus_accounts_cache.contains(acc)
-            })
-        });
-
-        if contains_blacklisted_account {
-            return Err(BundleSanitizerError::BlacklistedAccount(bundle.uuid));
-        }
-
-        if transactions.is_empty() || bundle.batch.len() != transactions.len() {
-            return Err(BundleSanitizerError::FailedToSerializeTransaction(
-                bundle.uuid,
-            ));
-        }
-
-        if unique_signatures.len() != transactions.len() {
-            return Err(BundleSanitizerError::DuplicateTransaction(bundle.uuid));
-        }
-
-        // checks for already-processed transaction or expired/invalid blockhash
-        let lock_results: Vec<_> = repeat(Ok(())).take(transactions.len()).collect();
-        let mut metrics = TransactionErrorMetrics::default();
-        let check_results = bank.check_transactions(
-            &transactions,
-            &lock_results,
-            MAX_PROCESSING_AGE,
-            &mut metrics,
-        );
-        if let Some(failure) = check_results.iter().find(|r| r.0.is_err()) {
-            warn!("bundle check failure: {:?}", failure);
-            return Err(BundleSanitizerError::FailedCheckResults(bundle.uuid));
-        }
-
-        Ok(SanitizedBundle {
-            transactions,
-            uuid: bundle.uuid,
-        })
-    }
-
-    // This function deserializes packets into transactions, computes the blake3 hash of transaction
-    // messages, and verifies secp256k1 instructions. A list of sanitized transactions are returned
-    // with their packet indexes.
-    // NOTES on tx v2:
-    // - tx v2 can only load addresses set in previous slots
-    // - tx v2 can't reorg indices in a lookup table
-    // - tx v2 transaction loading fails if it tries to access an invalid index (either doesn't exist
-    //   or exists but was set in the current slot
-    #[allow(clippy::needless_collect)]
-    fn transaction_from_deserialized_packet(
-        deserialized_packet: &ImmutableDeserializedPacket,
-        feature_set: &Arc<FeatureSet>,
-        address_loader: impl AddressLoader,
-    ) -> Option<SanitizedTransaction> {
-        let tx = SanitizedTransaction::try_new(
-            deserialized_packet.transaction().clone(),
-            *deserialized_packet.message_hash(),
-            deserialized_packet.is_simple_vote(),
-            address_loader,
-        )
-        .ok()?;
-        tx.verify_precompiles(feature_set).ok()?;
-        Some(tx)
-    }
+// This function deserializes packets into transactions, computes the blake3 hash of transaction
+// messages, and verifies secp256k1 instructions. A list of sanitized transactions are returned
+// with their packet indexes.
+// NOTES on tx v2:
+// - tx v2 can only load addresses set in previous slots
+// - tx v2 can't reorg indices in a lookup table
+// - tx v2 transaction loading fails if it tries to access an invalid index (either doesn't exist
+//   or exists but was set in the current slot
+#[allow(clippy::needless_collect)]
+fn transaction_from_deserialized_packet(
+    deserialized_packet: &ImmutableDeserializedPacket,
+    feature_set: &Arc<FeatureSet>,
+    address_loader: impl AddressLoader,
+) -> Option<SanitizedTransaction> {
+    let tx = SanitizedTransaction::try_new(
+        deserialized_packet.transaction().clone(),
+        *deserialized_packet.message_hash(),
+        deserialized_packet.is_simple_vote(),
+        address_loader,
+    )
+    .ok()?;
+    tx.verify_precompiles(feature_set).ok()?;
+    Some(tx)
 }
 
 #[cfg(test)]
 mod tests {
     use {
         crate::{
-            bundle::PacketBundle,
             bundle_sanitizer::{BundleSanitizer, MAX_PACKETS_PER_BUNDLE},
+            packet_bundle::PacketBundle,
             tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
         solana_address_lookup_table_program::instruction::create_lookup_table,

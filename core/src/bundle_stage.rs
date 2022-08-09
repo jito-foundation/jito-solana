@@ -4,14 +4,14 @@
 use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
-        bundle::PacketBundle,
-        bundle_account_locker::BundleAccountLocker,
-        bundle_sanitizer::BundleSanitizer,
+        bundle_account_locker::{BundleAccountLocker, LockedBundle},
+        bundle_sanitizer::get_sanitized_bundle,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
+        packet_bundle::PacketBundle,
         qos_service::QosService,
         tip_manager::TipManager,
     },
-    crossbeam_channel::Receiver,
+    crossbeam_channel::{Receiver, RecvError},
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
@@ -89,10 +89,8 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
-        const NUM_BUNDLES_PRELOCK: usize = 3;
-
         Self::start_bundle_thread(
             cluster_info,
             poh_recorder,
@@ -104,7 +102,6 @@ impl BundleStage {
             tip_manager,
             bundle_account_locker,
             MAX_BUNDLE_RETRY_DURATION,
-            NUM_BUNDLES_PRELOCK,
         )
     }
 
@@ -118,9 +115,8 @@ impl BundleStage {
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
-        num_bundles_prelock: usize,
     ) -> Self {
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
@@ -141,7 +137,6 @@ impl BundleStage {
                     tip_manager,
                     bundle_account_locker,
                     max_bundle_retry_duration,
-                    num_bundles_prelock,
                 );
             })
             .unwrap();
@@ -649,51 +644,6 @@ impl BundleStage {
         }
     }
 
-    /// Schedules bundles until the validator is a leader, at which point it returns a bank and
-    /// bundle_locker_sanitizer with >= 1 bundle to be executed
-    fn schedule_bundles_until_leader(
-        bundle_receiver: &Receiver<Vec<PacketBundle>>,
-        unprocessed_bundles: &mut VecDeque<PacketBundle>,
-        poh_recorder: &Arc<RwLock<PohRecorder>>,
-    ) -> BundleExecutionResult<BankStart> {
-        // drop bundles if not within this slot range
-        const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
-        while let Ok(bundles) = bundle_receiver.recv() {
-            let r_poh_recorder = poh_recorder.read().unwrap();
-            let poh_recorder_bank = r_poh_recorder.get_poh_recorder_bank();
-            let working_bank_start = poh_recorder_bank.working_bank_start();
-            let would_be_leader_soon =
-                r_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
-            let is_leader_now =
-                PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_some();
-            drop(r_poh_recorder);
-
-            match (is_leader_now, would_be_leader_soon) {
-                // leader now, insert new read bundles + as many as can read then return bank
-                (true, _) => {
-                    unprocessed_bundles.extend(bundles);
-                    unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
-                    return Ok(working_bank_start.unwrap().clone());
-                }
-                // leader soon, insert new read bundles
-                (false, true) => {
-                    unprocessed_bundles.extend(bundles);
-                    unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
-                }
-                // not leader now and not soon, clear bundles
-                (false, false) => {
-                    let new_dropped_bundles: Vec<_> = bundles.iter().map(|p| p.uuid).collect();
-                    let old_dropped_bundles: Vec<_> =
-                        unprocessed_bundles.iter().map(|p| p.uuid).collect();
-                    unprocessed_bundles.clear();
-                    info!("dropping new bundles: {:?}", new_dropped_bundles);
-                    info!("dropping old bundles: {:?}", old_dropped_bundles);
-                }
-            }
-        }
-        Err(BundleExecutionError::Shutdown)
-    }
-
     /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then
     /// sets the tip_receiver if needed and executes them as a bundle.
     fn maybe_initialize_and_change_tip_receiver(
@@ -755,10 +705,7 @@ impl BundleStage {
         if !transactions.is_empty() {
             info!("executing init txs");
             Self::update_qos_and_execute_record_commit_bundle(
-                &SanitizedBundle {
-                    transactions,
-                    uuid: Uuid::new_v4(),
-                },
+                &SanitizedBundle { transactions },
                 recorder,
                 transaction_status_sender,
                 gossip_vote_sender,
@@ -784,7 +731,6 @@ impl BundleStage {
                     bank,
                     &cluster_info.keypair(),
                 )?],
-                uuid: Uuid::new_v4(),
             };
 
             Self::update_qos_and_execute_record_commit_bundle(
@@ -847,12 +793,11 @@ impl BundleStage {
     /// is finished.
     #[allow(clippy::too_many_arguments)]
     fn execute_bundles_until_empty_or_end_of_slot(
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
-        bundle_sanitizer: &BundleSanitizer,
+        bundle_account_locker: &mut BundleAccountLocker,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
-        locked_bundles: &mut VecDeque<(PacketBundle, SanitizedBundle)>,
+        blacklisted_accounts: &HashSet<Pubkey>,
         bundle_receiver: &Receiver<Vec<PacketBundle>>,
-        bank_start: BankStart,
+        bank_start: &BankStart,
         consensus_accounts_cache: &HashSet<Pubkey>,
         cluster_info: &Arc<ClusterInfo>,
         recorder: &TransactionRecorder,
@@ -861,97 +806,106 @@ impl BundleStage {
         qos_service: &QosService,
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
-        num_bundles_prelock: &usize,
     ) -> BundleExecutionResult<()> {
-        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-
-        loop {
-            // ensure locked_bundles contains at least num_bundles_prelock bundles so bundles
-            // tradeoff here to be made with respect to how many bundles are prelocked.
-            // too many locks and bundle_stage will rip, but may also starve banking stage for too
-            // long. too few locks and bundle_stage might starve waiting for banking stage to finish
-            // processing
-            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
-            while locked_bundles.len() <= *num_bundles_prelock && !unprocessed_bundles.is_empty() {
-                let packet_bundle = unprocessed_bundles.pop_front().unwrap();
-                match bundle_sanitizer.get_sanitized_bundle(
-                    &packet_bundle,
+        let mut bundles_to_process: VecDeque<PacketBundle> =
+            unprocessed_bundles.drain(..).collect();
+        let sanitized_bundles: VecDeque<(PacketBundle, SanitizedBundle)> = bundles_to_process
+            .into_iter()
+            .filter_map(|packet_bundle| {
+                get_sanitized_bundle(
+                    packet_bundle,
                     &bank_start.working_bank,
                     consensus_accounts_cache,
-                ) {
-                    Ok(sanitized_bundle) => {
-                        let mut bundle_account_locker_l = bundle_account_locker.lock().unwrap();
-                        match bundle_account_locker_l.lock_bundle_accounts(&sanitized_bundle) {
-                            Ok(_) => {
-                                locked_bundles.push_back((packet_bundle, sanitized_bundle));
-                            }
-                            Err(e) => {
-                                error!("error locking bundle account: {:?}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("sanitizing bundle error: {:?}", e);
-                    }
-                }
-            }
-
-            if let Some((packet_bundle, sanitized_bundle)) = locked_bundles.pop_front() {
-                let result = Self::handle_tip_and_execute_record_commit_bundle(
-                    &sanitized_bundle,
-                    tip_manager,
-                    &bank_start,
-                    qos_service,
-                    recorder,
-                    transaction_status_sender,
-                    gossip_vote_sender,
-                    cluster_info,
-                    max_bundle_retry_duration,
-                    &mut execute_and_commit_timings,
-                );
-
-                let _ = bundle_account_locker
-                    .lock()
-                    .unwrap()
-                    .unlock_bundle_accounts(&sanitized_bundle);
-
-                match result {
-                    Ok(_) => {}
-                    Err(BundleExecutionError::PohMaxHeightError) => {
-                        warn!("poh max height reached uuid: {:?}", sanitized_bundle.uuid);
-                        // push back on the front to be rescheduled
-                        // note that we already unlocked the bundle account above, so don't need to
-                        // worry about double locking here
-                        locked_bundles.push_front((packet_bundle, sanitized_bundle));
-                        return Err(BundleExecutionError::PohMaxHeightError);
-                    }
-                    Err(BundleExecutionError::TransactionFailure(e)) => {
-                        warn!("tx failure uuid: {:?} e: {:?}", sanitized_bundle.uuid, e);
-                    }
-                    Err(BundleExecutionError::ExceedsCostModel) => {
-                        warn!("tx exceeds cost model uuid: {:?}", sanitized_bundle.uuid,);
-                    }
-                    Err(BundleExecutionError::TipError(e)) => {
-                        warn!(
-                            "tx fails from tip error uuid: {:?} error: {:?}",
-                            sanitized_bundle.uuid, e
-                        );
-                    }
-                    Err(BundleExecutionError::Shutdown) => {
-                        return Err(BundleExecutionError::Shutdown);
-                    }
-                    Err(BundleExecutionError::MaxRetriesExceeded(dur)) => {
-                        warn!(
-                            "tx exceeded max execution duration uuid: {:?} dur: {:?}",
-                            sanitized_bundle.uuid, dur
-                        );
-                    }
-                }
-            } else {
-                break;
+                    blacklisted_accounts,
+                )
+                .ok()
+            })
+            .collect();
+        let mut locked_bundles: Vec<(usize, LockedBundle)> =
+            Vec::with_capacity(sanitized_bundles.len());
+        for (idx, (_, sanitized_bundle)) in sanitized_bundles.iter().enumerate() {
+            if let Ok(locked_bundle) = bundle_account_locker.lock_bundle_accounts(sanitized_bundle)
+            {
+                locked_bundles.push((idx, locked_bundle));
             }
         }
+
         Ok(())
+
+        // loop {
+        // while locked_bundles.len() <= *num_bundles_prelock && !unprocessed_bundles.is_empty() {
+        //     let packet_bundle = unprocessed_bundles.pop_front().unwrap();
+        //     match bundle_sanitizer.get_sanitized_bundle(
+        //         &packet_bundle,
+        //         &bank_start.working_bank,
+        //         consensus_accounts_cache,
+        //     ) {
+        //         Ok(sanitized_bundle) => {
+        //             match bundle_account_locker
+        //                 .lock_bundle_accounts(&packet_bundle, &sanitized_bundle)
+        //             {
+        //                 Ok(locked_bundle) => {
+        //                     locked_bundles.push_back(locked_bundle);
+        //                 }
+        //                 Err(e) => {
+        //                     error!("error locking bundle account: {:?}", e);
+        //                 }
+        //             }
+        //         }
+        //         Err(e) => {
+        //             error!("sanitizing bundle error: {:?}", e);
+        //         }
+        //     }
+        // }
+
+        //     if let Some(locked_bundle) = locked_bundles.pop_front() {
+        //         let result = Self::handle_tip_and_execute_record_commit_bundle(
+        //             &locked_bundle.sanitized_bundle(),
+        //             tip_manager,
+        //             &bank_start,
+        //             qos_service,
+        //             recorder,
+        //             transaction_status_sender,
+        //             gossip_vote_sender,
+        //             cluster_info,
+        //             max_bundle_retry_duration,
+        //             &mut execute_and_commit_timings,
+        //         );
+        //
+        //         match result {
+        //             Ok(_) => {}
+        //             Err(BundleExecutionError::PohMaxHeightError) => {
+        //                 // warn!("poh max height reached uuid: {:?}", sanitized_bundle.uuid);
+        //                 // push back on the front to be rescheduled
+        //                 locked_bundles.push_front(locked_bundle);
+        //                 return Err(BundleExecutionError::PohMaxHeightError);
+        //             }
+        //             Err(BundleExecutionError::TransactionFailure(e)) => {
+        //                 // warn!("tx failure uuid: {:?} e: {:?}", sanitized_bundle.uuid, e);
+        //             }
+        //             Err(BundleExecutionError::ExceedsCostModel) => {
+        //                 // warn!("tx exceeds cost model uuid: {:?}", sanitized_bundle.uuid,);
+        //             }
+        //             Err(BundleExecutionError::TipError(e)) => {
+        //                 // warn!(
+        //                 //     "tx fails from tip error uuid: {:?} error: {:?}",
+        //                 //     sanitized_bundle.uuid, e
+        //                 // );
+        //             }
+        //             Err(BundleExecutionError::Shutdown) => {
+        //                 return Err(BundleExecutionError::Shutdown);
+        //             }
+        //             Err(BundleExecutionError::MaxRetriesExceeded(dur)) => {
+        //                 // warn!(
+        //                 //     "tx exceeded max execution duration uuid: {:?} dur: {:?}",
+        //                 //     sanitized_bundle.uuid, dur
+        //                 // );
+        //             }
+        //         }
+        //     } else {
+        //         break;
+        //     }
+        // }
     }
 
     /// Updates consensus-related accounts on epoch boundaries
@@ -979,72 +933,85 @@ impl BundleStage {
         cost_model: Arc<RwLock<CostModel>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        mut bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
-        num_bundles_prelock: usize,
     ) {
+        const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
+
         let recorder = poh_recorder.read().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
         let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
         let mut last_consensus_update = Epoch::default();
 
+        let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
+
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
-        let mut locked_bundles: VecDeque<(PacketBundle, SanitizedBundle)> =
-            VecDeque::with_capacity(num_bundles_prelock + 1);
+        while !exit.load(Ordering::Relaxed) {
+            match bundle_receiver.recv() {
+                Ok(bundles) => {
+                    let r_poh_recorder = poh_recorder.read().unwrap();
+                    let poh_recorder_bank = r_poh_recorder.get_poh_recorder_bank();
+                    let working_bank_start = poh_recorder_bank.working_bank_start();
+                    let would_be_leader_soon = r_poh_recorder
+                        .would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
+                    drop(r_poh_recorder);
 
-        let bundle_sanitizer = BundleSanitizer::new(&tip_manager.tip_payment_program_id());
-
-        loop {
-            if exit.load(Ordering::Relaxed) {
-                break;
-            }
-
-            match Self::schedule_bundles_until_leader(
-                &bundle_receiver,
-                &mut unprocessed_bundles,
-                poh_recorder,
-            ) {
-                Ok(bank_start) => {
-                    Self::maybe_update_consensus_cache(
-                        &bank_start.working_bank,
-                        &mut consensus_accounts_cache,
-                        &mut last_consensus_update,
-                    );
-
-                    match Self::execute_bundles_until_empty_or_end_of_slot(
-                        &bundle_account_locker,
-                        &bundle_sanitizer,
-                        &mut unprocessed_bundles,
-                        &mut locked_bundles,
-                        &bundle_receiver,
-                        bank_start,
-                        &consensus_accounts_cache,
-                        &cluster_info,
-                        &recorder,
-                        &transaction_status_sender,
-                        &gossip_vote_sender,
-                        &qos_service,
-                        &tip_manager,
-                        &max_bundle_retry_duration,
-                        &num_bundles_prelock,
-                    ) {
-                        Ok(_) => {
-                            // keep going
+                    match (working_bank_start, would_be_leader_soon) {
+                        // leader now, insert new read bundles + as many as can read then return bank
+                        (Some(bank_start), _) => {
+                            unprocessed_bundles.extend(bundles);
+                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
+                            Self::maybe_update_consensus_cache(
+                                &bank_start.working_bank,
+                                &mut consensus_accounts_cache,
+                                &mut last_consensus_update,
+                            );
+                            match Self::execute_bundles_until_empty_or_end_of_slot(
+                                &mut bundle_account_locker,
+                                &mut unprocessed_bundles,
+                                &blacklisted_accounts,
+                                &bundle_receiver,
+                                bank_start,
+                                &consensus_accounts_cache,
+                                &cluster_info,
+                                &recorder,
+                                &transaction_status_sender,
+                                &gossip_vote_sender,
+                                &qos_service,
+                                &tip_manager,
+                                &max_bundle_retry_duration,
+                            ) {
+                                Ok(_) => {
+                                    // keep going
+                                }
+                                Err(BundleExecutionError::Shutdown) => {
+                                    return;
+                                }
+                                Err(e) => {
+                                    error!("error executing all bundles: {:?}", e);
+                                }
+                            }
                         }
-                        Err(BundleExecutionError::Shutdown) => {
-                            return;
+                        // leader soon, insert new read bundles
+                        (None, true) => {
+                            unprocessed_bundles.extend(bundles);
+                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
                         }
-                        Err(e) => {
-                            error!("error executing all bundles: {:?}", e);
+                        // not leader now and not soon, clear bundles
+                        (None, false) => {
+                            let new_dropped_bundles: Vec<_> =
+                                bundles.iter().map(|p| p.uuid).collect();
+                            let old_dropped_bundles: Vec<_> =
+                                unprocessed_bundles.iter().map(|p| p.uuid).collect();
+                            info!("dropping new bundles: {:?}", new_dropped_bundles);
+                            info!("dropping old bundles: {:?}", old_dropped_bundles);
                         }
                     }
                 }
-                Err(BundleExecutionError::Shutdown) => {
-                    return;
-                }
-                Err(e) => {
-                    error!("error scheduling bundles: {:?}", e);
+                Err(RecvError) => {
+                    error!("shutting down bundle_stage");
+                    break;
                 }
             }
         }
@@ -1498,8 +1465,8 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let bundle_locker_sanitizer =
-            Arc::new(Mutex::new(BundleSanitizer::new(&Pubkey::new_unique())));
+        let bundle_sanitizer = BundleSanitizer::new(&Pubkey::new_unique());
+        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
 
         let mut unprocessed_bundles = VecDeque::new();
 
@@ -1507,17 +1474,15 @@ mod tests {
             &bundle_receiver,
             &mut unprocessed_bundles,
             &poh_recorder,
+            &bundle_account_locker,
         );
         assert!(maybe_bank_start.is_ok());
         assert_eq!(unprocessed_bundles.len(), 1);
-        let sanitized_bundle = bundle_locker_sanitizer
-            .lock()
-            .unwrap()
-            .get_sanitized_bundle(
-                &unprocessed_bundles.pop_front().unwrap(),
-                &bank,
-                &HashSet::default(),
-            );
+        let sanitized_bundle = bundle_sanitizer.get_sanitized_bundle(
+            &unprocessed_bundles.pop_front().unwrap(),
+            &bank,
+            &HashSet::default(),
+        );
         assert!(sanitized_bundle.is_ok());
         // TODO: the logic around working bank makes it difficult to test bundles are returned
         // when leader

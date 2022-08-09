@@ -1,3 +1,11 @@
+use {
+    crate::packet_bundle::PacketBundle,
+    solana_sdk::loader_instruction::write,
+    std::{
+        borrow::BorrowMut,
+        sync::{Arc, Mutex},
+    },
+};
 ///! Handles pre-locking bundle accounts so that accounts bundles touch can be reserved ahead
 /// of time for execution. Also, ensures that ALL accounts mentioned across a bundle are locked
 /// to avoid race conditions between BundleStage and BankingStage.
@@ -22,70 +30,133 @@ use {
 
 #[derive(Debug)]
 pub enum BundleAccountLockerError {
-    LockingError(Uuid),
+    LockingError,
 }
 
 pub type Result<T> = result::Result<T, BundleAccountLockerError>;
 
+pub struct LockedBundle<'a, 'b> {
+    bundle_account_locker: &'a BundleAccountLocker,
+    sanitized_bundle: &'b SanitizedBundle,
+}
+
+impl<'a, 'b> LockedBundle<'a, 'b> {
+    pub fn new(
+        bundle_account_locker: &'a BundleAccountLocker,
+        sanitized_bundle: &'b SanitizedBundle,
+    ) -> Self {
+        Self {
+            bundle_account_locker,
+            sanitized_bundle,
+        }
+    }
+
+    pub fn sanitized_bundle(&self) -> &SanitizedBundle {
+        self.sanitized_bundle
+    }
+}
+
+// Automatically unlock bundle accounts when destructed
+impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
+    fn drop(&mut self) {
+        let _ = self
+            .bundle_account_locker
+            .unlock_bundle_accounts(self.sanitized_bundle);
+    }
+}
+
+#[derive(Default, Clone)]
+struct BundleAccountLocks {
+    read_locks: Arc<Mutex<HashMap<Pubkey, u64>>>,
+    write_locks: Arc<Mutex<HashMap<Pubkey, u64>>>,
+}
+
+impl BundleAccountLocks {
+    pub fn read_locks(&self) -> HashSet<Pubkey> {
+        self.read_locks.lock().unwrap().keys().cloned().collect()
+    }
+
+    pub fn write_locks(&self) -> HashSet<Pubkey> {
+        self.write_locks.lock().unwrap().keys().cloned().collect()
+    }
+
+    pub fn lock_accounts(
+        &self,
+        read_locks: HashMap<Pubkey, u64>,
+        write_locks: HashMap<Pubkey, u64>,
+    ) {
+        let mut read_locks_l = self.read_locks.lock().unwrap();
+        let mut write_locks_l = self.write_locks.lock().unwrap();
+        for (acc, count) in read_locks {
+            *read_locks_l.entry(acc).or_insert(0) += count;
+        }
+        for (acc, count) in write_locks {
+            *write_locks_l.entry(acc).or_insert(0) += count;
+        }
+    }
+
+    pub fn unlock_accounts(
+        &self,
+        read_locks: HashMap<Pubkey, u64>,
+        write_locks: HashMap<Pubkey, u64>,
+    ) {
+        let mut read_locks_l = self.read_locks.lock().unwrap();
+        let mut write_locks_l = self.write_locks.lock().unwrap();
+
+        for (acc, count) in read_locks {
+            if let Entry::Occupied(mut entry) = read_locks_l.entry(acc) {
+                let val = entry.get_mut();
+                *val = val.saturating_sub(count);
+                if entry.get() == &0 {
+                    let _ = entry.remove();
+                }
+            }
+        }
+        for (acc, count) in write_locks {
+            if let Entry::Occupied(mut entry) = write_locks_l.entry(acc) {
+                let val = entry.get_mut();
+                *val = val.saturating_sub(count);
+                if entry.get() == &0 {
+                    let _ = entry.remove();
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct BundleAccountLocker {
-    read_locks: HashMap<Pubkey, u64>,
-    write_locks: HashMap<Pubkey, u64>,
+    account_locks: BundleAccountLocks,
 }
 
 impl BundleAccountLocker {
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.read_locks.keys().cloned().collect()
+        self.account_locks.read_locks()
     }
 
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.write_locks.keys().cloned().collect()
+        self.account_locks.write_locks()
     }
 
-    pub fn unlock_bundle_accounts(&mut self, sanitized_bundle: &SanitizedBundle) -> Result<()> {
+    pub fn unlock_bundle_accounts(&self, sanitized_bundle: &SanitizedBundle) -> Result<()> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
-        for (acc, count) in read_locks {
-            if let Entry::Occupied(mut entry) = self.read_locks.entry(acc) {
-                let val = entry.get_mut();
-                *val = val.saturating_sub(count);
-                if entry.get() == &0 {
-                    let _ = entry.remove();
-                }
-            }
-        }
-        for (acc, count) in write_locks {
-            if let Entry::Occupied(mut entry) = self.write_locks.entry(acc) {
-                let val = entry.get_mut();
-                *val = val.saturating_sub(count);
-                if entry.get() == &0 {
-                    let _ = entry.remove();
-                }
-            }
-        }
 
-        debug!("unlock read locks: {:?}", self.read_locks);
-        debug!("unlock write locks: {:?}", self.write_locks);
-
+        self.account_locks.unlock_accounts(read_locks, write_locks);
         Ok(())
     }
 
-    pub fn lock_bundle_accounts(&mut self, sanitized_bundle: &SanitizedBundle) -> Result<()> {
+    pub fn lock_bundle_accounts<'a, 'b>(
+        &'a self,
+        sanitized_bundle: &'b SanitizedBundle,
+    ) -> Result<LockedBundle<'a, 'b>> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
-        for (acc, count) in read_locks {
-            *self.read_locks.entry(acc).or_insert(0) += count;
-        }
-        for (acc, count) in write_locks {
-            *self.write_locks.entry(acc).or_insert(0) += count;
-        }
 
-        debug!("lock read locks: {:?}", self.read_locks);
-        debug!("lock write locks: {:?}", self.write_locks);
-
-        Ok(())
+        self.account_locks.lock_accounts(read_locks, write_locks);
+        Ok(LockedBundle::new(self, sanitized_bundle))
     }
 
     /// Returns the read and write locks for this bundle
@@ -100,7 +171,7 @@ impl BundleAccountLocker {
             .collect();
 
         if transaction_locks.len() != bundle.transactions.len() {
-            return Err(BundleAccountLockerError::LockingError(bundle.uuid));
+            return Err(BundleAccountLockerError::LockingError);
         }
 
         let bundle_read_locks = transaction_locks
@@ -133,8 +204,8 @@ impl BundleAccountLocker {
 mod tests {
     use {
         crate::{
-            bundle::PacketBundle, bundle_account_locker::BundleAccountLocker,
-            bundle_sanitizer::BundleSanitizer,
+            bundle_account_locker::BundleAccountLocker, bundle_sanitizer::BundleSanitizer,
+            packet_bundle::PacketBundle,
         },
         solana_ledger::genesis_utils::create_genesis_config,
         solana_perf::packet::PacketBatch,

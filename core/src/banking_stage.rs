@@ -402,7 +402,7 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self::new_num_threads(
             cluster_info,
@@ -437,7 +437,7 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -673,7 +673,7 @@ impl BankingStage {
         num_packets_to_process_per_iteration: usize,
         log_messages_bytes_limit: Option<usize>,
         blacklisted_accounts: &HashSet<Pubkey>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &BundleAccountLocker,
     ) {
         let mut rebuffered_packet_count = 0;
         let mut consumed_buffered_packets_count = 0;
@@ -891,7 +891,7 @@ impl BankingStage {
         tracer_packet_stats: &mut TracerPacketStats,
         bank_forks: &Arc<RwLock<BankForks>>,
         blacklisted_accounts: &HashSet<Pubkey>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &BundleAccountLocker,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
             {
@@ -1114,7 +1114,7 @@ impl BankingStage {
         connection_cache: Arc<ConnectionCache>,
         bank_forks: &Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
-        bundle_account_locker: Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: BundleAccountLocker,
     ) {
         let recorder = poh_recorder.read().unwrap().recorder();
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -1508,7 +1508,7 @@ impl BankingStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionBatchOutput {
         let mut cost_model_time = Measure::start("cost_model");
 
@@ -1534,10 +1534,8 @@ impl BankingStage {
         // to ensure that avoid race conditions
         let mut lock_time = Measure::start("lock_time");
 
-        let bundle_account_locker_l = bundle_account_locker.lock().unwrap();
-        let read_locks = bundle_account_locker_l.read_locks();
-        let write_locks = bundle_account_locker_l.write_locks();
-        drop(bundle_account_locker_l);
+        let read_locks = bundle_account_locker.read_locks();
+        let write_locks = bundle_account_locker.write_locks();
 
         let batch = bank.prepare_sanitized_batch_with_results(
             txs,
@@ -1715,7 +1713,7 @@ impl BankingStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
         let mut all_retryable_tx_indexes = vec![];
@@ -1936,7 +1934,7 @@ impl BankingStage {
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
         log_messages_bytes_limit: Option<usize>,
         blacklisted_accounts: &HashSet<Pubkey>,
-        bundle_account_locker: &Arc<Mutex<BundleAccountLocker>>,
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionsSummary {
         // Convert packets to transactions
         let ((transactions, transaction_to_packet_indexes), packet_conversion_time): (

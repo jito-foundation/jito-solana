@@ -246,7 +246,7 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_manager_config);
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::default()));
+        let bundle_account_locker = BundleAccountLocker::default();
 
         // tip accounts can't be used in BankingStage to avoid someone from stealing tips mid-slot.
         // it also helps reduce surface area for potential account contention
