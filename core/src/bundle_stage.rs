@@ -658,7 +658,7 @@ impl BundleStage {
     ) -> BundleExecutionResult<BankStart> {
         // drop bundles if not within this slot range
         const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
-        loop {
+        while let Ok(bundles) = bundle_receiver.recv() {
             let r_poh_recorder = poh_recorder.read().unwrap();
             let poh_recorder_bank = r_poh_recorder.get_poh_recorder_bank();
             let working_bank_start = poh_recorder_bank.working_bank_start();
@@ -668,18 +668,30 @@ impl BundleStage {
                 PohRecorder::get_working_bank_if_not_expired(&working_bank_start).is_some();
             drop(r_poh_recorder);
 
-            if is_leader_now && !unprocessed_bundles.is_empty() {
-                // if leader now and have bundles to process, break out + process them
-                unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
-                return Ok(working_bank_start.unwrap().clone());
-            } else if let Ok(bundles) = bundle_receiver.recv() {
-                // otherwise wait for a bundle to arrive and add to unprocessed bundles only if
-                // leader now or soon
-                if is_leader_now || would_be_leader_soon {
+            match (is_leader_now, would_be_leader_soon) {
+                // leader now, insert new read bundles + as many as can read then return bank
+                (true, _) => {
                     unprocessed_bundles.extend(bundles);
+                    unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
+                    return Ok(working_bank_start.unwrap().clone());
+                }
+                // leader soon, insert new read bundles
+                (false, true) => {
+                    unprocessed_bundles.extend(bundles);
+                    unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
+                }
+                // not leader now and not soon, clear bundles
+                (false, false) => {
+                    let new_dropped_bundles: Vec<_> = bundles.iter().map(|p| p.uuid).collect();
+                    let old_dropped_bundles: Vec<_> =
+                        unprocessed_bundles.iter().map(|p| p.uuid).collect();
+                    unprocessed_bundles.clear();
+                    info!("dropping new bundles: {:?}", new_dropped_bundles);
+                    info!("dropping old bundles: {:?}", old_dropped_bundles);
                 }
             }
         }
+        return Err(BundleExecutionError::Shutdown);
     }
 
     /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then
@@ -908,6 +920,8 @@ impl BundleStage {
                     Err(BundleExecutionError::PohMaxHeightError) => {
                         warn!("poh max height reached uuid: {:?}", sanitized_bundle.uuid);
                         // push back on the front to be rescheduled
+                        // note that we already unlocked the bundle account above, so don't need to
+                        // worry about double locking here
                         locked_bundles.push_front((packet_bundle, sanitized_bundle));
                         return Err(BundleExecutionError::PohMaxHeightError);
                     }
