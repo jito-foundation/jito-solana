@@ -4,7 +4,7 @@
 use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
-        bundle_account_locker::{BundleAccountLocker, BundleAccountLockerResult, LockedBundle},
+        bundle_account_locker::BundleAccountLocker,
         bundle_sanitizer::get_sanitized_bundle,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         packet_bundle::PacketBundle,
@@ -832,50 +832,43 @@ impl BundleStage {
 
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
         // BankingStage can't lock them
-        let locked_bundles: Vec<BundleAccountLockerResult<LockedBundle>> = sanitized_bundles
-            .iter()
-            .map(|(_, sanitized_bundle)| {
-                bundle_account_locker.prepare_locked_bundle(sanitized_bundle)
-            })
-            .collect();
+        let locked_bundles = sanitized_bundles.iter().map(|(_, sanitized_bundle)| {
+            bundle_account_locker.prepare_locked_bundle(sanitized_bundle)
+        });
 
-        let execution_results: Vec<BundleExecutionResult<()>> = locked_bundles
-            .into_iter()
-            .map(|maybe_locked_bundle| {
-                let locked_bundle =
-                    maybe_locked_bundle.map_err(|_| BundleExecutionError::LockError)?;
-                if Bank::should_bank_still_be_processing_txs(
-                    &bank_start.bank_creation_time,
-                    bank_start.working_bank.ns_per_slot,
-                ) {
-                    Err(BundleExecutionError::PohMaxHeightError)
-                } else {
-                    Self::handle_tip_and_execute_record_commit_bundle(
-                        locked_bundle.sanitized_bundle(),
-                        tip_manager,
-                        bank_start,
-                        qos_service,
-                        recorder,
-                        transaction_status_sender,
-                        gossip_vote_sender,
-                        cluster_info,
-                        max_bundle_retry_duration,
-                        execute_and_commit_timings,
-                    )
-                }
-            })
-            .collect();
+        let execution_results = locked_bundles.into_iter().map(|maybe_locked_bundle| {
+            let locked_bundle = maybe_locked_bundle.map_err(|_| BundleExecutionError::LockError)?;
+            if Bank::should_bank_still_be_processing_txs(
+                &bank_start.bank_creation_time,
+                bank_start.working_bank.ns_per_slot,
+            ) {
+                Err(BundleExecutionError::PohMaxHeightError)
+            } else {
+                Self::handle_tip_and_execute_record_commit_bundle(
+                    locked_bundle.sanitized_bundle(),
+                    tip_manager,
+                    bank_start,
+                    qos_service,
+                    recorder,
+                    transaction_status_sender,
+                    gossip_vote_sender,
+                    cluster_info,
+                    max_bundle_retry_duration,
+                    execute_and_commit_timings,
+                )
+            }
+        });
 
         execution_results
             .into_iter()
-            .zip(sanitized_bundles.into_iter())
+            .zip(sanitized_bundles.iter())
             .rev()
             .for_each(|(bundle_execution_result, (packet_bundle, _))| {
                 if matches!(
                     bundle_execution_result,
                     Err(BundleExecutionError::PohMaxHeightError)
                 ) {
-                    unprocessed_bundles.push_front(packet_bundle);
+                    unprocessed_bundles.push_front(packet_bundle.clone());
                 }
             });
 
