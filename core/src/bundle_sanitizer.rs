@@ -348,7 +348,7 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
-        let (_, sanitized_bundle) = get_sanitized_bundle(
+        let sanitized_bundle = get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),

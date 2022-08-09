@@ -1100,6 +1100,7 @@ mod tests {
             },
         },
         std::{collections::HashSet, sync::atomic::Ordering},
+        uuid::Uuid,
     };
     const TEST_MAX_RETRY_DURATION: Duration = Duration::from_millis(500);
 

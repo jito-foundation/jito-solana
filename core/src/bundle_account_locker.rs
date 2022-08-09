@@ -206,8 +206,8 @@ mod tests {
         solana_perf::packet::PacketBatch,
         solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
         solana_sdk::{
-            packet::Packet, pubkey::Pubkey, signature::Signer, signer::keypair::Keypair,
-            system_program, system_transaction::transfer, transaction::VersionedTransaction,
+            packet::Packet, signature::Signer, signer::keypair::Keypair, system_program,
+            system_transaction::transfer, transaction::VersionedTransaction,
         },
         std::{collections::HashSet, sync::Arc},
         uuid::Uuid,
@@ -222,7 +222,7 @@ mod tests {
         } = create_genesis_config(2);
         let bank = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
 
-        let mut bundle_account_locker = BundleAccountLocker::default();
+        let bundle_account_locker = BundleAccountLocker::default();
 
         let kp0 = Keypair::new();
         let kp1 = Keypair::new();
