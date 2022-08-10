@@ -7317,6 +7317,7 @@ name = "tip-distribution"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "solana-program 1.11.6",
 ]
 
 [[package]]

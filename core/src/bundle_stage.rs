@@ -838,7 +838,7 @@ impl BundleStage {
 
         let execution_results = locked_bundles.into_iter().map(|maybe_locked_bundle| {
             let locked_bundle = maybe_locked_bundle.map_err(|_| BundleExecutionError::LockError)?;
-            if Bank::should_bank_still_be_processing_txs(
+            if !Bank::should_bank_still_be_processing_txs(
                 &bank_start.bank_creation_time,
                 bank_start.working_bank.ns_per_slot,
             ) {
