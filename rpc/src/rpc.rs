@@ -367,10 +367,9 @@ impl JsonRpcRequestProcessor {
             Arc::new(Keypair::new()),
             socket_addr_space,
         ));
-        let tpu_address = cluster_info.my_contact_info().tpu;
         let (sender, receiver) = unbounded();
         SendTransactionService::new::<NullTpuInfo>(
-            tpu_address,
+            cluster_info.clone(),
             &bank_forks,
             None,
             receiver,
