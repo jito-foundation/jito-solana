@@ -6715,7 +6715,7 @@ pub mod tests {
         );
         let connection_cache = Arc::new(ConnectionCache::default());
         SendTransactionService::new::<NullTpuInfo>(
-            cluster_info.my_contact_info().tpu,
+            cluster_info,
             &bank_forks,
             None,
             receiver,
@@ -6983,7 +6983,7 @@ pub mod tests {
         );
         let connection_cache = Arc::new(ConnectionCache::default());
         SendTransactionService::new::<NullTpuInfo>(
-            cluster_info.my_contact_info().tpu,
+            cluster_info,
             &bank_forks,
             None,
             receiver,
