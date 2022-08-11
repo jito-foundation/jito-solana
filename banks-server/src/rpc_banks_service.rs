@@ -114,7 +114,7 @@ impl RpcBanksService {
 mod tests {
     use {
         super::*,
-        solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
+        solana_gossip::contact_info::ContactInfo,
         solana_runtime::bank::Bank,
         solana_sdk::signature::Keypair,
         solana_streamer::socket::SocketAddrSpace,
