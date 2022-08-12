@@ -325,7 +325,7 @@ impl SendTransactionServiceStatsReport {
 const SEND_TRANSACTION_METRICS_REPORT_RATE_MS: u64 = 5000;
 
 impl SendTransactionService {
-    pub fn new<T: TpuInfo + std::marker::Send + Clone + 'static>(
+    pub fn new<T: TpuInfo + std::marker::Send + 'static>(
         cluster_info: Arc<ClusterInfo>,
         bank_forks: &Arc<RwLock<BankForks>>,
         leader_info: Option<T>,
@@ -349,7 +349,7 @@ impl SendTransactionService {
         )
     }
 
-    pub fn new_with_config<T: TpuInfo + std::marker::Send + Clone + 'static>(
+    pub fn new_with_config<T: TpuInfo + std::marker::Send + 'static>(
         cluster_info: Arc<ClusterInfo>,
         bank_forks: &Arc<RwLock<BankForks>>,
         leader_info: Option<T>,
@@ -452,7 +452,7 @@ impl SendTransactionService {
                         .sent_transactions
                         .fetch_add(transactions.len() as u64, Ordering::Relaxed);
                     let tpu_address = cluster_info.my_contact_info().tpu;
-                    let _result = Self::send_transactions_in_batch(
+                    Self::send_transactions_in_batch(
                         &tpu_address,
                         &mut transactions,
                         leader_info_provider.lock().unwrap().get_leader_info(),
@@ -807,7 +807,7 @@ mod test {
             Arc::new(Keypair::new()),
             SocketAddrSpace::new(false),
         ));
-        let send_transaction_service = SendTransactionService::new::<NullTpuInfo>(
+        let send_tranaction_service = SendTransactionService::new::<NullTpuInfo>(
             cluster_info,
             &bank_forks,
             None,
@@ -818,7 +818,7 @@ mod test {
         );
 
         drop(sender);
-        send_transaction_service.join().unwrap();
+        send_tranaction_service.join().unwrap();
     }
 
     #[test]

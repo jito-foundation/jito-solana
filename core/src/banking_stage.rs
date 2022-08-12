@@ -4014,6 +4014,7 @@ mod tests {
                     post_token_balances: Some(vec![]),
                     rewards: Some(vec![]),
                     loaded_addresses: sanitized_tx.get_loaded_addresses(),
+                    compute_units_consumed: Some(0),
                     ..TransactionStatusMeta::default()
                 }
             );
