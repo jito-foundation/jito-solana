@@ -23,8 +23,13 @@ use {
         backoff::BackoffStrategy, bundle::PacketBundle, proto_packet_to_packet,
         sigverify::SigverifyTracerPacketStats,
     },
+    chrono::Utc,
     crossbeam_channel::{select, tick, unbounded, Receiver, Sender},
     jito_protos::proto::{
+        auth::{
+            auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
+            GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
+        },
         block_engine::{self, block_engine_validator_client::BlockEngineValidatorClient},
         relayer::{self, relayer_client::RelayerClient},
     },
@@ -32,30 +37,30 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
-    solana_sdk::{hash::hash, signer::Signer},
+    solana_sdk::{signature::Keypair, signer::Signer},
     std::{
-        cell::RefCell,
         fs::File,
         io::Read,
         net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr},
-        rc::Rc,
         result,
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc,
+            Arc, Mutex,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime},
     },
     thiserror::Error,
-    tokio::time::{interval, sleep},
+    tokio::{
+        runtime::Runtime,
+        time::{interval, sleep},
+    },
     tonic::{
         codegen::InterceptedService,
-        metadata::MetadataValue,
         service::Interceptor,
         transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
-        Code, Status, Streaming,
+        Request, Status, Streaming,
     },
     uuid::Uuid,
 };
@@ -69,99 +74,34 @@ const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Default)]
 pub struct RelayerAndBlockEngineConfig {
+    pub auth_service_address: String,
     pub relayer_address: String,
     pub trust_relayer_packets: bool,
     pub block_engine_address: String,
     pub trust_block_engine_packets: bool,
 }
 
-/// Intercepts requests and adds the necessary headers for auth.
-#[derive(Clone)]
-pub struct AuthInterceptor {
-    cluster_info: Arc<ClusterInfo>,
-    token: Rc<RefCell<String>>,
+/// Adds the token to each requests' authorization header.
+struct AuthInterceptor {
+    /// The token added to each request header.
+    access_token: Arc<Mutex<Token>>,
 }
 
 impl AuthInterceptor {
-    pub(crate) fn new(cluster_info: Arc<ClusterInfo>, token: Rc<RefCell<String>>) -> Self {
-        AuthInterceptor {
-            cluster_info,
-            token,
-        }
-    }
-
-    pub(crate) fn should_retry(
-        status: &Status,
-        token: Rc<RefCell<String>>,
-        max_retries: usize,
-        n_retries: usize,
-    ) -> bool {
-        if max_retries == n_retries {
-            return false;
-        }
-
-        let mut token = token.borrow_mut();
-        if let Some(new_token) = Self::maybe_new_auth_token(status, &token) {
-            *token = new_token;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Checks to see if the server returned a token to be signed and if it does not equal the current
-    /// token then the new token is returned and authentication can be retried.
-    fn maybe_new_auth_token(status: &Status, current_token: &str) -> Option<String> {
-        if status.code() != Code::Unauthenticated {
-            return None;
-        }
-
-        let msg = status.message().split_whitespace().collect::<Vec<&str>>();
-        if msg.len() != 2 {
-            return None;
-        }
-
-        if msg[0] != "token:" {
-            return None;
-        }
-
-        if msg[1] != current_token {
-            Some(msg[1].to_string())
-        } else {
-            None
-        }
+    pub fn new(access_token: Arc<Mutex<Token>>) -> Self {
+        Self { access_token }
     }
 }
 
-impl Interceptor for AuthInterceptor {
-    fn call(
-        &mut self,
-        mut request: tonic::Request<()>,
-    ) -> result::Result<tonic::Request<()>, Status> {
-        // Prefix with pubkey and hash it in order to ensure BlockEngine doesn't have us sign a malicious transaction.
-        let token = format!(
-            "{}-{}",
-            self.cluster_info.keypair().pubkey(),
-            self.token.take(),
-        );
-        let hashed_token = hash(token.as_bytes());
+const AUTHORIZATION_HEADER: &str = "authorization";
+const BEARER: &str = "Bearer ";
 
-        request.metadata_mut().append_bin(
-            "public-key-bin",
-            MetadataValue::from_bytes(&self.cluster_info.keypair().pubkey().to_bytes()),
-        );
-        request.metadata_mut().append_bin(
-            "message-bin",
-            MetadataValue::from_bytes(hashed_token.to_bytes().as_slice()),
-        );
-        request.metadata_mut().append_bin(
-            "signature-bin",
-            MetadataValue::from_bytes(
-                self.cluster_info
-                    .keypair()
-                    .sign_message(hashed_token.to_bytes().as_slice())
-                    .as_ref(),
-            ),
+impl Interceptor for AuthInterceptor {
+    fn call(&mut self, mut request: Request<()>) -> result::Result<Request<()>, Status> {
+        let l_token = self.access_token.lock().unwrap();
+        request.metadata_mut().insert(
+            AUTHORIZATION_HEADER,
+            format!("{}{}", BEARER, l_token.value).parse().unwrap(),
         );
 
         Ok(request)
@@ -186,11 +126,14 @@ pub enum RelayerStageError {
     InvalidSocketAddress(#[from] AddrParseError),
     #[error("shutdown")]
     Shutdown,
+    #[error("invalid gRPC data: {0:?}")]
+    InvalidData(String),
 }
 
 pub struct RelayerAndBlockEngineStage {
     _heartbeat_sender: Sender<HeartbeatEvent>,
     relayer_threads: Vec<JoinHandle<()>>,
+    auth_thread: JoinHandle<()>,
     heartbeat_thread: JoinHandle<()>,
 }
 
@@ -209,18 +152,26 @@ impl RelayerAndBlockEngineStage {
         let (tpu_proxy_heartbeat_sender, tpu_proxy_heartbeat_receiver) = unbounded();
 
         let RelayerAndBlockEngineConfig {
+            auth_service_address,
             relayer_address,
             trust_relayer_packets,
             block_engine_address,
             trust_block_engine_packets,
         } = relayer_config;
 
+        let (access_token, auth_thread) = Self::spawn_auth_thread(
+            auth_service_address,
+            cluster_info.clone(),
+            Duration::from_secs(1),
+            exit.clone(),
+        );
+
         let proxy_threads = Self::spawn_relayer_threads(
             relayer_address,
+            access_token,
             trust_relayer_packets,
             block_engine_address,
             trust_block_engine_packets,
-            cluster_info,
             verified_packet_sender,
             packet_sender.clone(),
             tpu_proxy_heartbeat_sender.clone(),
@@ -244,17 +195,92 @@ impl RelayerAndBlockEngineStage {
             // on self, prevents it from being dropped
             _heartbeat_sender: tpu_proxy_heartbeat_sender,
             relayer_threads: proxy_threads,
+            auth_thread,
             heartbeat_thread,
         }
+    }
+
+    /// Spawns a thread responsible for keeping the access_token valid.
+    fn spawn_auth_thread(
+        auth_service_address: String,
+        cluster_info: Arc<ClusterInfo>,
+        retry_interval: Duration,
+        exit: Arc<AtomicBool>,
+    ) -> (Arc<Mutex<Token>> /* access_token */, JoinHandle<()>) {
+        let rt = Runtime::new().unwrap();
+
+        let (access_token, refresh_token) = {
+            let auth_service_address = auth_service_address.clone();
+            let cluster_info = cluster_info.clone();
+
+            rt.block_on(async move {
+                loop {
+                    let kp = cluster_info.keypair().clone();
+                    match AuthServiceClient::connect(auth_service_address.clone()).await {
+                        Ok(mut client) => match Self::generate_auth_tokens(&mut client, kp).await {
+                            Ok((access_token, refresh_token)) => {
+                                return (access_token, refresh_token)
+                            }
+                            Err(e) => {
+                                error!("error generating auth tokens: {:?}", e);
+                                sleep(retry_interval).await;
+                                continue;
+                            }
+                        },
+                        Err(e) => {
+                            error!("error connecting to auth service: {}", e);
+                            sleep(retry_interval).await;
+                            continue;
+                        }
+                    }
+                }
+            })
+        };
+
+        let access_token = Arc::new(Mutex::new(access_token));
+        (
+            access_token.clone(),
+            Builder::new()
+                .name("relayer-auth-thread".to_string())
+                .spawn(move || {
+                    rt.block_on(async move {
+                        loop {
+                            match AuthServiceClient::connect(auth_service_address.clone()).await {
+                                Ok(client) => {
+                                    if let Err(e) = Self::auth_refresh_loop(
+                                        client,
+                                        (access_token.clone(), refresh_token.clone()),
+                                        cluster_info.clone(),
+                                        Duration::from_secs(10),
+                                        exit.clone(),
+                                    )
+                                    .await
+                                    {
+                                        error!("auth_refresh_loop error: {:?}", e);
+                                        sleep(retry_interval).await;
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("error connecting to auth service: {}", e);
+                                    sleep(retry_interval).await;
+                                    continue;
+                                }
+                            }
+                        }
+                    })
+                })
+                .unwrap(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn spawn_relayer_threads(
         relayer_address: String,
+        access_token: Arc<Mutex<Token>>,
         trust_relayer_packets: bool,
         block_engine_address: String,
         trust_block_engine_packets: bool,
-        cluster_info: &Arc<ClusterInfo>,
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         packet_sender: Sender<PacketBatch>,
         tpu_proxy_heartbeat_sender: Sender<HeartbeatEvent>,
@@ -267,12 +293,12 @@ impl RelayerAndBlockEngineStage {
             // the block engine heartbeat controls the TPU address
             vec![Self::start_block_engine_thread(
                 block_engine_address,
+                access_token,
                 trust_block_engine_packets,
                 packet_sender,
                 verified_packet_sender,
                 Some(tpu_proxy_heartbeat_sender),
                 bundle_sender,
-                cluster_info.clone(),
                 exit,
             )]
         } else {
@@ -283,53 +309,216 @@ impl RelayerAndBlockEngineStage {
             vec![
                 Self::start_block_engine_thread(
                     block_engine_address,
+                    access_token.clone(),
                     trust_block_engine_packets,
                     packet_sender.clone(),
                     verified_packet_sender.clone(),
                     None, // connected to a relayer, the relayer will heartbeat to tpu
                     bundle_sender,
-                    cluster_info.clone(),
                     exit.clone(),
                 ),
                 Self::start_relayer_thread(
                     relayer_address,
+                    access_token,
                     trust_relayer_packets,
                     packet_sender,
                     verified_packet_sender,
                     Some(tpu_proxy_heartbeat_sender),
-                    cluster_info.clone(),
                     exit,
                 ),
             ]
         }
     }
 
+    /// Responsible for keeping generating and refreshing the access token.
+    async fn auth_refresh_loop(
+        mut auth_service_client: AuthServiceClient<Channel>,
+        (access_token, mut refresh_token): (Arc<Mutex<Token>>, Token),
+        cluster_info: Arc<ClusterInfo>,
+        sleep_interval: Duration,
+        exit: Arc<AtomicBool>,
+    ) -> Result<()> {
+        loop {
+            if exit.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let access_token_expiry = access_token
+                .lock()
+                .unwrap()
+                .expires_at_utc
+                .as_ref()
+                .unwrap()
+                .seconds;
+            let refresh_token_expiry = refresh_token.expires_at_utc.as_ref().unwrap().seconds;
+
+            let now = Utc::now().timestamp();
+            let should_refresh_access = access_token_expiry - now <= 300;
+            let should_generate_new_tokens = refresh_token_expiry - now <= 300;
+
+            match (should_refresh_access, should_generate_new_tokens) {
+                // Generate new tokens if the refresh_token is close to being expired.
+                (_, true) => {
+                    let kp = cluster_info.keypair().clone();
+                    match Self::generate_auth_tokens(&mut auth_service_client, kp).await {
+                        Ok((new_access_token, new_refresh_token)) => {
+                            *access_token.lock().unwrap() = new_access_token.clone();
+                            refresh_token = new_refresh_token;
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
+                }
+                // Invoke the refresh_access_token method if the access_token is close to being expired.
+                (true, _) => {
+                    match Self::refresh_access_token(
+                        &mut auth_service_client,
+                        refresh_token.clone(),
+                    )
+                    .await
+                    {
+                        Ok(new_access_token) => {
+                            *access_token.lock().unwrap() = new_access_token;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                // Sleep and do nothing if neither token is close to expired,
+                (false, false) => sleep(sleep_interval).await,
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Invokes the refresh_access_token gRPC method.
+    /// Returns a new access_token.
+    async fn refresh_access_token(
+        auth_service_client: &mut AuthServiceClient<Channel>,
+        refresh_token: Token,
+    ) -> Result<Token> {
+        match auth_service_client
+            .refresh_access_token(RefreshAccessTokenRequest {
+                refresh_token: refresh_token.value,
+            })
+            .await
+        {
+            Ok(resp) => Self::validate_token(resp.into_inner().access_token).map_err(|e| {
+                error!("invalid access_token");
+                e
+            }),
+            Err(e) => {
+                debug!("error refreshing access token: {}", e);
+                Err(RelayerStageError::GrpcError(e))
+            }
+        }
+    }
+
+    /// Generates an auth challenge then generates and returns validated auth tokens.
+    async fn generate_auth_tokens(
+        auth_service_client: &mut AuthServiceClient<Channel>,
+        // used to sign challenges
+        keypair: Arc<Keypair>,
+    ) -> Result<(
+        Token, /* access_token */
+        Token, /* refresh_token */
+    )> {
+        let challenge = match auth_service_client
+            .generate_auth_challenge(GenerateAuthChallengeRequest {
+                role: Role::Validator as i32,
+                pubkey: keypair.pubkey().as_ref().to_vec(),
+            })
+            .await
+        {
+            Ok(resp) => Ok(format!(
+                "{}-{}",
+                keypair.pubkey(),
+                resp.into_inner().challenge
+            )),
+            Err(e) => {
+                debug!("error generating auth challenge: {}", e);
+                Err(RelayerStageError::GrpcError(e))
+            }
+        }?;
+
+        let signed_challenge = keypair.sign_message(challenge.as_bytes()).as_ref().to_vec();
+        match auth_service_client
+            .generate_auth_tokens(GenerateAuthTokensRequest {
+                challenge,
+                client_pubkey: keypair.pubkey().as_ref().to_vec(),
+                signed_challenge,
+            })
+            .await
+        {
+            Ok(resp) => {
+                let inner = resp.into_inner();
+
+                let access_token = Self::validate_token(inner.access_token).map_err(|e| {
+                    error!("invalid access_token");
+                    e
+                })?;
+                let refresh_token = Self::validate_token(inner.refresh_token).map_err(|e| {
+                    error!("invalid access_token");
+                    e
+                })?;
+
+                Ok((access_token, refresh_token))
+            }
+            Err(e) => {
+                debug!("error generating auth tokens: {}", e);
+                Err(RelayerStageError::GrpcError(e))
+            }
+        }
+    }
+
+    /// An invalid token is one where any of its fields are None or the token itself is None.
+    /// Performs the necessary validations on the auth tokens before returning,
+    /// i.e. it is safe to call .unwrap() on the token fields from the call-site.
+    fn validate_token(maybe_token: Option<Token>) -> Result<Token> {
+        match maybe_token {
+            Some(token) => {
+                if token.expires_at_utc.is_none() {
+                    Err(RelayerStageError::InvalidData(
+                        "expires_at_utc field is null".to_string(),
+                    ))
+                } else {
+                    Ok(token)
+                }
+            }
+            None => Err(RelayerStageError::InvalidData(
+                "received a null token".to_string(),
+            )),
+        }
+    }
+
     /// Connects to the block engine.
     /// If tpu_proxy_heartbeat_sender is some, the block engine is also the relayer and will advertise
     /// the block engine's IP address.
+    #[allow(clippy::too_many_arguments)]
     fn start_block_engine_thread(
-        address: String,
+        block_engine_address: String,
+        access_token: Arc<Mutex<Token>>,
         trust_block_engine_packets: bool,
         packet_sender: Sender<PacketBatch>, // if !trust_block_engine_packets, use this sender for packets
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
         bundle_sender: Sender<Vec<PacketBundle>>,
-        cluster_info: Arc<ClusterInfo>,
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         Builder::new()
             .name("jito-block-engine-thread".into())
             .spawn(move || {
-                let endpoint = Endpoint::from_shared(address.clone());
+                let endpoint = Endpoint::from_shared(block_engine_address.clone());
 
-                if !address.contains("http") || endpoint.is_err() {
-                    error!("missing or malformed mev proxy address provided, exiting mev loop [address={}]", address);
+                if !block_engine_address.contains("http") || endpoint.is_err() {
+                    error!("missing or malformed mev proxy address provided, exiting mev loop [address={}]", block_engine_address);
                     datapoint_info!("block-engine-error", ("bad_proxy_addr", 1, i64));
                     return;
                 }
 
                 let mut endpoint = endpoint.unwrap();
-                if address.as_str().contains("https") {
+                if block_engine_address.as_str().contains("https") {
                     let mut buf = Vec::new();
                     File::open("/etc/ssl/certs/jito_ca.pem")
                         .unwrap()
@@ -350,17 +539,11 @@ impl RelayerAndBlockEngineStage {
                     .unwrap();
                 rt.block_on(async move {
                     let mut backoff = BackoffStrategy::new();
-
                     loop {
                         match endpoint.connect().await {
-                            Ok(channel) => {
-                                let token = Rc::new(RefCell::new(String::default()));
+                            Ok(channel)=> {
                                 match Self::start_block_engine_stream(
-                                    BlockEngineValidatorClientWrapper {
-                                        inner: BlockEngineValidatorClient::with_interceptor(channel, AuthInterceptor::new(cluster_info.clone(), token.clone())),
-                                        token,
-                                        max_retries: 4,
-                                    },
+                                    BlockEngineValidatorClient::with_interceptor(channel, AuthInterceptor::new(access_token.clone())),
                                     &trust_block_engine_packets,
                                     &packet_sender,
                                     &verified_packet_sender,
@@ -390,7 +573,7 @@ impl RelayerAndBlockEngineStage {
     }
 
     async fn start_block_engine_stream(
-        mut client_wrapper: BlockEngineValidatorClientWrapper,
+        mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
         trust_block_engine_packets: &bool,
         packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
@@ -401,9 +584,10 @@ impl RelayerAndBlockEngineStage {
     ) -> Result<()> {
         let maybe_heartbeat_event: Option<HeartbeatEvent> = if tpu_proxy_heartbeat_sender.is_some()
         {
-            let tpu_config = client_wrapper
+            let tpu_config = client
                 .get_tpu_configs(block_engine::GetTpuConfigsRequest {})
-                .await?;
+                .await?
+                .into_inner();
             let tpu_addr = tpu_config
                 .tpu
                 .ok_or_else(|| RelayerStageError::MissingTpuSocket("tpu".into()))?;
@@ -421,12 +605,14 @@ impl RelayerAndBlockEngineStage {
             None
         };
 
-        let subscribe_packets_stream = client_wrapper
+        let subscribe_packets_stream = client
             .subscribe_packets(block_engine::SubscribePacketsRequest {})
-            .await?;
-        let subscribe_bundles_stream = client_wrapper
+            .await?
+            .into_inner();
+        let subscribe_bundles_stream = client
             .subscribe_bundles(block_engine::SubscribeBundlesRequest {})
-            .await?;
+            .await?
+            .into_inner();
 
         backoff.reset();
 
@@ -445,7 +631,7 @@ impl RelayerAndBlockEngineStage {
     }
 
     async fn start_relayer_stream(
-        mut client_wrapper: RelayerClientWrapper,
+        mut client: RelayerClient<InterceptedService<Channel, AuthInterceptor>>,
         trust_relayer_packets: &bool,
         packet_sender: &Sender<PacketBatch>,
         verified_packet_sender: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
@@ -454,9 +640,10 @@ impl RelayerAndBlockEngineStage {
         backoff: &mut BackoffStrategy,
     ) -> Result<()> {
         let heartbeat_event: HeartbeatEvent = {
-            let tpu_config = client_wrapper
+            let tpu_config = client
                 .get_tpu_configs(relayer::GetTpuConfigsRequest {})
-                .await?;
+                .await?
+                .into_inner();
             let tpu_addr = tpu_config
                 .tpu
                 .ok_or_else(|| RelayerStageError::MissingTpuSocket("tpu".into()))?;
@@ -472,9 +659,10 @@ impl RelayerAndBlockEngineStage {
             (tpu_socket, tpu_forward_socket)
         };
 
-        let subscribe_packets_stream = client_wrapper
+        let subscribe_packets_stream = client
             .subscribe_packets(relayer::SubscribePacketsRequest {})
-            .await?;
+            .await?
+            .into_inner();
 
         // assume it's all good here
         backoff.reset();
@@ -545,6 +733,8 @@ impl RelayerAndBlockEngineStage {
 
             tokio::select! {
                 maybe_packets = packet_stream.message() => {
+                    let now = SystemTime::now();
+                    info!("packet received {:?}", now);
                     Self::handle_block_engine_packets(maybe_packets, &maybe_heartbeat_event, tpu_proxy_heartbeat_sender, trust_block_engine_packets, packet_sender, verified_packet_sender, &mut last_heartbeat)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
@@ -679,18 +869,18 @@ impl RelayerAndBlockEngineStage {
     }
 
     fn start_relayer_thread(
-        address: String,
+        relayer_address: String,
+        access_token: Arc<Mutex<Token>>,
         trust_relayer_packets: bool,
         packet_sender: Sender<PacketBatch>, // if !trust_relayer_packets, use this sender for packets
         verified_packet_sender: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         tpu_proxy_heartbeat_sender: Option<Sender<HeartbeatEvent>>,
-        cluster_info: Arc<ClusterInfo>,
         exit: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         Builder::new()
             .name("jito-relayer-thread".into())
             .spawn(move || {
-                if !address.contains("http") {
+                if !relayer_address.contains("http") {
                     info!("malformed or missing mev proxy address provided, exiting mev loop");
                     datapoint_info!("relayer-connection-error", ("bad_proxy_addr", 1, i64));
                     return;
@@ -703,20 +893,14 @@ impl RelayerAndBlockEngineStage {
                     let mut backoff = BackoffStrategy::new();
 
                     loop {
-                        let endpoint = Endpoint::from_shared(address.clone()).unwrap();
+                        let endpoint = Endpoint::from_shared(relayer_address.clone()).unwrap();
                         match endpoint.connect().await {
                             Ok(channel) => {
-                                let token = Rc::new(RefCell::new(String::default()));
-                                let client_wrapper = RelayerClientWrapper {
-                                    inner: RelayerClient::with_interceptor(
-                                        channel,
-                                        AuthInterceptor::new(cluster_info.clone(), token.clone()),
-                                    ),
-                                    token,
-                                    max_retries: 4,
-                                };
                                 match Self::start_relayer_stream(
-                                    client_wrapper,
+                                    RelayerClient::with_interceptor(
+                                        channel,
+                                        AuthInterceptor::new(access_token.clone()),
+                                    ),
                                     &trust_relayer_packets,
                                     &packet_sender,
                                     &verified_packet_sender,
@@ -856,142 +1040,8 @@ impl RelayerAndBlockEngineStage {
             t.join()?;
         }
         self.heartbeat_thread.join()?;
+        self.auth_thread.join()?;
+
         Ok(())
-    }
-}
-
-pub struct RelayerClientWrapper {
-    inner: RelayerClient<InterceptedService<Channel, AuthInterceptor>>,
-    token: Rc<RefCell<String>>,
-    max_retries: usize,
-}
-
-impl RelayerClientWrapper {
-    async fn get_tpu_configs(
-        &mut self,
-        req: relayer::GetTpuConfigsRequest,
-    ) -> Result<relayer::GetTpuConfigsResponse> {
-        let mut n_retries = 0;
-        loop {
-            return match self.inner.get_tpu_configs(req.clone()).await {
-                Ok(resp) => Ok(resp.into_inner()),
-                Err(status) => {
-                    if AuthInterceptor::should_retry(
-                        &status,
-                        self.token.clone(),
-                        self.max_retries,
-                        n_retries,
-                    ) {
-                        n_retries += 1;
-                        continue;
-                    }
-                    Err(status.into())
-                }
-            };
-        }
-    }
-
-    async fn subscribe_packets(
-        &mut self,
-        req: relayer::SubscribePacketsRequest,
-    ) -> Result<Streaming<relayer::SubscribePacketsResponse>> {
-        let mut n_retries = 0;
-        loop {
-            return match self.inner.subscribe_packets(req.clone()).await {
-                Ok(resp) => Ok(resp.into_inner()),
-                Err(status) => {
-                    if AuthInterceptor::should_retry(
-                        &status,
-                        self.token.clone(),
-                        self.max_retries,
-                        n_retries,
-                    ) {
-                        n_retries += 1;
-                        continue;
-                    }
-                    Err(status.into())
-                }
-            };
-        }
-    }
-}
-
-pub struct BlockEngineValidatorClientWrapper {
-    inner: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
-    token: Rc<RefCell<String>>,
-    max_retries: usize,
-}
-
-impl BlockEngineValidatorClientWrapper {
-    async fn get_tpu_configs(
-        &mut self,
-        req: block_engine::GetTpuConfigsRequest,
-    ) -> Result<block_engine::GetTpuConfigsResponse> {
-        let mut n_retries = 0;
-        loop {
-            return match self.inner.get_tpu_configs(req.clone()).await {
-                Ok(resp) => Ok(resp.into_inner()),
-                Err(status) => {
-                    if AuthInterceptor::should_retry(
-                        &status,
-                        self.token.clone(),
-                        self.max_retries,
-                        n_retries,
-                    ) {
-                        n_retries += 1;
-                        continue;
-                    }
-                    Err(status.into())
-                }
-            };
-        }
-    }
-
-    async fn subscribe_packets(
-        &mut self,
-        req: block_engine::SubscribePacketsRequest,
-    ) -> Result<Streaming<block_engine::SubscribePacketsResponse>> {
-        let mut n_retries = 0;
-        loop {
-            return match self.inner.subscribe_packets(req.clone()).await {
-                Ok(resp) => Ok(resp.into_inner()),
-                Err(status) => {
-                    if AuthInterceptor::should_retry(
-                        &status,
-                        self.token.clone(),
-                        self.max_retries,
-                        n_retries,
-                    ) {
-                        n_retries += 1;
-                        continue;
-                    }
-                    Err(status.into())
-                }
-            };
-        }
-    }
-
-    async fn subscribe_bundles(
-        &mut self,
-        req: block_engine::SubscribeBundlesRequest,
-    ) -> Result<Streaming<block_engine::SubscribeBundlesResponse>> {
-        let mut n_retries = 0;
-        loop {
-            return match self.inner.subscribe_bundles(req.clone()).await {
-                Ok(resp) => Ok(resp.into_inner()),
-                Err(status) => {
-                    if AuthInterceptor::should_retry(
-                        &status,
-                        self.token.clone(),
-                        self.max_retries,
-                        n_retries,
-                    ) {
-                        n_retries += 1;
-                        continue;
-                    }
-                    Err(status.into())
-                }
-            };
-        }
     }
 }

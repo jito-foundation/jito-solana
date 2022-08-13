@@ -92,6 +92,9 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --block-engine-address ]]; then
       args+=("$1" "$2")
       shift 2
+    elif [[ $1 == --block-engine-auth-service-address ]]; then
+      args+=("$1" "$2")
+      shift 2
     elif [[ $1 = --tip-distribution-account-payer ]]; then
       args+=("$1" "$2")
       shift 2
