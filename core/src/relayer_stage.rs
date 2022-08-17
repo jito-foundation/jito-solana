@@ -49,7 +49,7 @@ use {
             Arc, Mutex,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant, SystemTime},
+        time::{Duration, Instant},
     },
     thiserror::Error,
     tokio::{
@@ -74,10 +74,11 @@ const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Default)]
 pub struct RelayerAndBlockEngineConfig {
-    pub auth_service_address: String,
-    pub relayer_address: String,
-    pub trust_relayer_packets: bool,
     pub block_engine_address: String,
+    pub block_engine_auth_service_address: String,
+    pub relayer_address: String,
+    pub relayer_auth_service_address: String,
+    pub trust_relayer_packets: bool,
     pub trust_block_engine_packets: bool,
 }
 
@@ -93,15 +94,12 @@ impl AuthInterceptor {
     }
 }
 
-const AUTHORIZATION_HEADER: &str = "authorization";
-const BEARER: &str = "Bearer ";
-
 impl Interceptor for AuthInterceptor {
     fn call(&mut self, mut request: Request<()>) -> result::Result<Request<()>, Status> {
         let l_token = self.access_token.lock().unwrap();
         request.metadata_mut().insert(
-            AUTHORIZATION_HEADER,
-            format!("{}{}", BEARER, l_token.value).parse().unwrap(),
+            "authorization",
+            format!("Bearer {}", l_token.value).parse().unwrap(),
         );
 
         Ok(request)
@@ -132,9 +130,7 @@ pub enum RelayerStageError {
 
 pub struct RelayerAndBlockEngineStage {
     _heartbeat_sender: Sender<HeartbeatEvent>,
-    relayer_threads: Vec<JoinHandle<()>>,
-    auth_thread: JoinHandle<()>,
-    heartbeat_thread: JoinHandle<()>,
+    t_hdls: Vec<JoinHandle<()>>,
 }
 
 impl RelayerAndBlockEngineStage {
@@ -149,26 +145,37 @@ impl RelayerAndBlockEngineStage {
         packet_sender: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
     ) -> Self {
+        let mut t_hdls = vec![];
         let (tpu_proxy_heartbeat_sender, tpu_proxy_heartbeat_receiver) = unbounded();
 
         let RelayerAndBlockEngineConfig {
-            auth_service_address,
-            relayer_address,
-            trust_relayer_packets,
             block_engine_address,
+            block_engine_auth_service_address,
+            relayer_address,
+            relayer_auth_service_address,
+            trust_relayer_packets,
             trust_block_engine_packets,
         } = relayer_config;
 
-        let (access_token, auth_thread) = Self::spawn_auth_thread(
-            auth_service_address,
+        let (block_engine_access_token, t_hdl) = Self::spawn_auth_thread(
+            block_engine_auth_service_address,
             cluster_info.clone(),
             Duration::from_secs(1),
             exit.clone(),
         );
+        t_hdls.push(t_hdl);
 
-        let proxy_threads = Self::spawn_relayer_threads(
+        let (relayer_access_token, t_hdl) = Self::spawn_auth_thread(
+            relayer_auth_service_address,
+            cluster_info.clone(),
+            Duration::from_secs(1),
+            exit.clone(),
+        );
+        t_hdls.push(t_hdl);
+
+        t_hdls.extend(Self::spawn_relayer_threads(
             relayer_address,
-            access_token,
+            (block_engine_access_token, relayer_access_token),
             trust_relayer_packets,
             block_engine_address,
             trust_block_engine_packets,
@@ -177,26 +184,24 @@ impl RelayerAndBlockEngineStage {
             tpu_proxy_heartbeat_sender.clone(),
             bundle_sender,
             exit.clone(),
-        );
+        ));
 
         // This thread is responsible for connecting and disconnecting the fetch stage to prevent
         // circumventing TPU proxy.
-        let heartbeat_thread = Self::heartbeat_thread(
+        t_hdls.push(Self::heartbeat_thread(
             packet_intercept_receiver,
             packet_sender,
             tpu_proxy_heartbeat_receiver,
             cluster_info,
             exit,
-        );
+        ));
 
         Self {
             // if no validator interface address provided, sender side of the channel gets dropped
             // in heartbeat thread and causes packet forwarding to error. this reference
             // on self, prevents it from being dropped
             _heartbeat_sender: tpu_proxy_heartbeat_sender,
-            relayer_threads: proxy_threads,
-            auth_thread,
-            heartbeat_thread,
+            t_hdls,
         }
     }
 
@@ -215,18 +220,20 @@ impl RelayerAndBlockEngineStage {
 
             rt.block_on(async move {
                 loop {
-                    let kp = cluster_info.keypair().clone();
                     match AuthServiceClient::connect(auth_service_address.clone()).await {
-                        Ok(mut client) => match Self::generate_auth_tokens(&mut client, kp).await {
-                            Ok((access_token, refresh_token)) => {
-                                return (access_token, refresh_token)
+                        Ok(mut client) => {
+                            let kp = cluster_info.keypair().clone();
+                            match Self::generate_auth_tokens(&mut client, kp.as_ref()).await {
+                                Ok((access_token, refresh_token)) => {
+                                    return (access_token, refresh_token)
+                                }
+                                Err(e) => {
+                                    error!("error generating auth tokens: {:?}", e);
+                                    sleep(retry_interval).await;
+                                    continue;
+                                }
                             }
-                            Err(e) => {
-                                error!("error generating auth tokens: {:?}", e);
-                                sleep(retry_interval).await;
-                                continue;
-                            }
-                        },
+                        }
                         Err(e) => {
                             error!("error connecting to auth service: {}", e);
                             sleep(retry_interval).await;
@@ -241,10 +248,10 @@ impl RelayerAndBlockEngineStage {
         (
             access_token.clone(),
             Builder::new()
-                .name("relayer-auth-thread".to_string())
+                .name("auth-thread".to_string())
                 .spawn(move || {
                     rt.block_on(async move {
-                        loop {
+                        while !exit.load(Ordering::Relaxed) {
                             match AuthServiceClient::connect(auth_service_address.clone()).await {
                                 Ok(client) => {
                                     if let Err(e) = Self::auth_refresh_loop(
@@ -258,13 +265,11 @@ impl RelayerAndBlockEngineStage {
                                     {
                                         error!("auth_refresh_loop error: {:?}", e);
                                         sleep(retry_interval).await;
-                                        continue;
                                     }
                                 }
                                 Err(e) => {
                                     error!("error connecting to auth service: {}", e);
                                     sleep(retry_interval).await;
-                                    continue;
                                 }
                             }
                         }
@@ -277,7 +282,7 @@ impl RelayerAndBlockEngineStage {
     #[allow(clippy::too_many_arguments)]
     fn spawn_relayer_threads(
         relayer_address: String,
-        access_token: Arc<Mutex<Token>>,
+        (block_engine_access_token, relayer_access_token): (Arc<Mutex<Token>>, Arc<Mutex<Token>>),
         trust_relayer_packets: bool,
         block_engine_address: String,
         trust_block_engine_packets: bool,
@@ -293,7 +298,7 @@ impl RelayerAndBlockEngineStage {
             // the block engine heartbeat controls the TPU address
             vec![Self::start_block_engine_thread(
                 block_engine_address,
-                access_token,
+                block_engine_access_token,
                 trust_block_engine_packets,
                 packet_sender,
                 verified_packet_sender,
@@ -309,7 +314,7 @@ impl RelayerAndBlockEngineStage {
             vec![
                 Self::start_block_engine_thread(
                     block_engine_address,
-                    access_token.clone(),
+                    block_engine_access_token,
                     trust_block_engine_packets,
                     packet_sender.clone(),
                     verified_packet_sender.clone(),
@@ -319,7 +324,7 @@ impl RelayerAndBlockEngineStage {
                 ),
                 Self::start_relayer_thread(
                     relayer_address,
-                    access_token,
+                    relayer_access_token,
                     trust_relayer_packets,
                     packet_sender,
                     verified_packet_sender,
@@ -338,29 +343,41 @@ impl RelayerAndBlockEngineStage {
         sleep_interval: Duration,
         exit: Arc<AtomicBool>,
     ) -> Result<()> {
-        loop {
-            if exit.load(Ordering::Relaxed) {
-                break;
-            }
-
-            let access_token_expiry = access_token
+        while exit.load(Ordering::Relaxed) {
+            let access_token_expiry: i64 = access_token
                 .lock()
                 .unwrap()
                 .expires_at_utc
                 .as_ref()
                 .unwrap()
                 .seconds;
-            let refresh_token_expiry = refresh_token.expires_at_utc.as_ref().unwrap().seconds;
+            let refresh_token_expiry: i64 = refresh_token.expires_at_utc.as_ref().unwrap().seconds;
 
             let now = Utc::now().timestamp();
-            let should_refresh_access = access_token_expiry - now <= 300;
-            let should_generate_new_tokens = refresh_token_expiry - now <= 300;
+            let should_refresh_access = {
+                let delta = access_token_expiry.checked_sub(now);
+                if delta.is_none() {
+                    return Err(RelayerStageError::InvalidData(
+                        "Received invalid access_token expiration".to_string(),
+                    ));
+                }
+                delta.unwrap() <= 300
+            };
+            let should_generate_new_tokens = {
+                let delta = refresh_token_expiry.checked_sub(now);
+                if delta.is_none() {
+                    return Err(RelayerStageError::InvalidData(
+                        "Received invalid refresh_token expiration".to_string(),
+                    ));
+                }
+                delta.unwrap() <= 300
+            };
 
             match (should_refresh_access, should_generate_new_tokens) {
                 // Generate new tokens if the refresh_token is close to being expired.
                 (_, true) => {
                     let kp = cluster_info.keypair().clone();
-                    match Self::generate_auth_tokens(&mut auth_service_client, kp).await {
+                    match Self::generate_auth_tokens(&mut auth_service_client, kp.as_ref()).await {
                         Ok((new_access_token, new_refresh_token)) => {
                             *access_token.lock().unwrap() = new_access_token.clone();
                             refresh_token = new_refresh_token;
@@ -419,7 +436,7 @@ impl RelayerAndBlockEngineStage {
     async fn generate_auth_tokens(
         auth_service_client: &mut AuthServiceClient<Channel>,
         // used to sign challenges
-        keypair: Arc<Keypair>,
+        keypair: &Keypair,
     ) -> Result<(
         Token, /* access_token */
         Token, /* refresh_token */
@@ -733,8 +750,6 @@ impl RelayerAndBlockEngineStage {
 
             tokio::select! {
                 maybe_packets = packet_stream.message() => {
-                    let now = SystemTime::now();
-                    info!("packet received {:?}", now);
                     Self::handle_block_engine_packets(maybe_packets, &maybe_heartbeat_event, tpu_proxy_heartbeat_sender, trust_block_engine_packets, packet_sender, verified_packet_sender, &mut last_heartbeat)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
@@ -1036,12 +1051,9 @@ impl RelayerAndBlockEngineStage {
     }
 
     pub fn join(self) -> thread::Result<()> {
-        for t in self.relayer_threads {
+        for t in self.t_hdls {
             t.join()?;
         }
-        self.heartbeat_thread.join()?;
-        self.auth_thread.join()?;
-
         Ok(())
     }
 }
