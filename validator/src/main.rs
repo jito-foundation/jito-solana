@@ -1815,6 +1815,20 @@ pub fn main() {
                 .help("Address of the block engine")
         )
         .arg(
+            Arg::with_name("block_engine_auth_service_address")
+                .long("block-engine-auth-service-address")
+                .value_name("block_engine_auth_service_address")
+                .takes_value(true)
+                .help("Address of the block engine's authentication service.")
+        )
+        .arg(
+            Arg::with_name("relayer_auth_service_address")
+                .long("relayer-auth-service-address")
+                .value_name("relayer_auth_service_address")
+                .takes_value(true)
+                .help("Address of the block engine's authentication service.")
+        )
+        .arg(
             Arg::with_name("trust_relayer_packets")
                 .long("trust-relayer-packets")
                 .takes_value(false)
@@ -2630,9 +2644,13 @@ pub fn main() {
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
     let relayer_config = RelayerAndBlockEngineConfig {
+        block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
+        block_engine_auth_service_address: value_of(&matches, "block_engine_auth_service_address")
+            .unwrap_or_default(),
+        relayer_auth_service_address: value_of(&matches, "relayer_auth_service_address")
+            .unwrap_or_default(),
         relayer_address: value_of(&matches, "relayer_address").unwrap_or_default(),
         trust_relayer_packets: matches.is_present("trust_relayer_packets"),
-        block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
         trust_block_engine_packets: matches.is_present("trust_block_engine_packets"),
     };
 

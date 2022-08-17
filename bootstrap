@@ -8,6 +8,8 @@ RUST_LOG=INFO \
   --wait-for-supermajority 0 \
   --expected-bank-hash $bank_hash \
   --block-engine-address http://0.0.0.0:13333 \
+  --block-engine-auth-service-address http://0.0.0.0:14444 \
+  --relayer-auth-service-address http://0.0.0.0:11226 \
   --relayer-address http://0.0.0.0:11226 \
   --rpc-pubsub-enable-block-subscription \
   --enable-rpc-transaction-history \
