@@ -65,7 +65,7 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
-    relayer_stage: RelayerAndBlockEngineStage,
+    maybe_relayer_stage: Option<RelayerAndBlockEngineStage>,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -106,7 +106,7 @@ impl Tpu {
         log_messages_bytes_limit: Option<usize>,
         enable_quic_servers: bool,
         staked_nodes: &Arc<RwLock<StakedNodes>>,
-        relayer_config: RelayerAndBlockEngineConfig,
+        maybe_relayer_config: Option<RelayerAndBlockEngineConfig>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Option<SocketAddr>,
     ) -> Self {
@@ -217,15 +217,17 @@ impl Tpu {
 
         let (bundle_sender, bundle_receiver) = unbounded();
 
-        let relayer_stage = RelayerAndBlockEngineStage::new(
-            cluster_info,
-            relayer_config,
-            verified_sender,
-            bundle_sender,
-            packet_intercept_receiver,
-            packet_sender,
-            exit.clone(),
-        );
+        let maybe_relayer_stage = maybe_relayer_config.map(|relayer_config| {
+            RelayerAndBlockEngineStage::new(
+                cluster_info,
+                relayer_config,
+                verified_sender,
+                bundle_sender,
+                packet_intercept_receiver,
+                packet_sender,
+                exit.clone(),
+            )
+        });
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
             unbounded();
@@ -304,7 +306,7 @@ impl Tpu {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
-            relayer_stage,
+            maybe_relayer_stage,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -327,15 +329,19 @@ impl Tpu {
             self.find_packet_sender_stake_stage.join(),
             self.vote_find_packet_sender_stake_stage.join(),
             self.staked_nodes_updater_service.join(),
-            self.relayer_stage.join(),
             self.bundle_stage.join(),
         ];
+
         if let Some(tpu_quic_t) = self.tpu_quic_t {
             tpu_quic_t.join()?;
         }
         if let Some(tpu_forwards_quic_t) = self.tpu_forwards_quic_t {
             tpu_forwards_quic_t.join()?;
         }
+        if let Some(relayer_stage) = self.maybe_relayer_stage {
+            relayer_stage.join()?;
+        }
+
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
             result?;
