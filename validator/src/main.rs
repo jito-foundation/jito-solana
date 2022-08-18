@@ -2643,15 +2643,29 @@ pub fn main() {
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
-    let relayer_config = RelayerAndBlockEngineConfig {
-        block_engine_address: value_of(&matches, "block_engine_address").unwrap_or_default(),
-        block_engine_auth_service_address: value_of(&matches, "block_engine_auth_service_address")
-            .unwrap_or_default(),
-        relayer_auth_service_address: value_of(&matches, "relayer_auth_service_address")
-            .unwrap_or_default(),
-        relayer_address: value_of(&matches, "relayer_address").unwrap_or_default(),
-        trust_relayer_packets: matches.is_present("trust_relayer_packets"),
-        trust_block_engine_packets: matches.is_present("trust_block_engine_packets"),
+    let is_block_engine_enabled = matches.is_present("block_engine_address")
+        || matches.is_present("block_engine_auth_service_address")
+        || matches.is_present("relayer_auth_service_address")
+        || matches.is_present("relayer_address")
+        || matches.is_present("trust_relayer_packets")
+        || matches.is_present("trust_block_engine_packets");
+    let maybe_relayer_config = if is_block_engine_enabled {
+        Some(RelayerAndBlockEngineConfig {
+            block_engine_address: value_of(&matches, "block_engine_address").unwrap(),
+            block_engine_auth_service_address: value_of(
+                &matches,
+                "block_engine_auth_service_address",
+            )
+            .expect("expected block_engine_auth_service_address address to be provided"),
+            relayer_auth_service_address: value_of(&matches, "relayer_auth_service_address")
+                .expect("expected relayer_auth_service_address address to be provided"),
+            relayer_address: value_of(&matches, "relayer_address")
+                .expect("expected relayer_address to be provided"),
+            trust_relayer_packets: matches.is_present("trust_relayer_packets"),
+            trust_block_engine_packets: matches.is_present("trust_block_engine_packets"),
+        })
+    } else {
+        None
     };
 
     let mut validator_config = ValidatorConfig {
@@ -2787,7 +2801,7 @@ pub fn main() {
             ..RuntimeConfig::default()
         },
         enable_quic_servers,
-        relayer_config,
+        maybe_relayer_config,
         tip_manager_config,
         shred_receiver_address: matches
             .value_of("shred_receiver_address")
