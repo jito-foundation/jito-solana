@@ -96,10 +96,11 @@ impl AuthInterceptor {
 
 impl Interceptor for AuthInterceptor {
     fn call(&mut self, mut request: Request<()>) -> result::Result<Request<()>, Status> {
-        let l_token = self.access_token.lock().unwrap();
         request.metadata_mut().insert(
             "authorization",
-            format!("Bearer {}", l_token.value).parse().unwrap(),
+            format!("Bearer {}", self.access_token.lock().unwrap().value)
+                .parse()
+                .unwrap(),
         );
 
         Ok(request)
@@ -157,16 +158,20 @@ impl RelayerAndBlockEngineStage {
             trust_block_engine_packets,
         } = relayer_config;
 
-        let (block_engine_access_token, t_hdl) = Self::spawn_auth_thread(
+        let block_engine_access_token = Arc::new(Mutex::new(Token::default()));
+        let t_hdl = Self::spawn_auth_thread(
             block_engine_auth_service_address,
+            block_engine_access_token.clone(),
             cluster_info.clone(),
             Duration::from_secs(1),
             exit.clone(),
         );
         t_hdls.push(t_hdl);
 
-        let (relayer_access_token, t_hdl) = Self::spawn_auth_thread(
+        let relayer_access_token = Arc::new(Mutex::new(Token::default()));
+        let t_hdl = Self::spawn_auth_thread(
             relayer_auth_service_address,
+            relayer_access_token.clone(),
             cluster_info.clone(),
             Duration::from_secs(1),
             exit.clone(),
@@ -175,7 +180,8 @@ impl RelayerAndBlockEngineStage {
 
         t_hdls.extend(Self::spawn_relayer_threads(
             relayer_address,
-            (block_engine_access_token, relayer_access_token),
+            block_engine_access_token,
+            relayer_access_token,
             trust_relayer_packets,
             block_engine_address,
             trust_block_engine_packets,
@@ -208,81 +214,48 @@ impl RelayerAndBlockEngineStage {
     /// Spawns a thread responsible for keeping the access_token valid.
     fn spawn_auth_thread(
         auth_service_address: String,
+        access_token: Arc<Mutex<Token>>,
         cluster_info: Arc<ClusterInfo>,
         retry_interval: Duration,
         exit: Arc<AtomicBool>,
-    ) -> (Arc<Mutex<Token>> /* access_token */, JoinHandle<()>) {
-        let rt = Runtime::new().unwrap();
-
-        let (access_token, refresh_token) = {
-            let auth_service_address = auth_service_address.clone();
-            let cluster_info = cluster_info.clone();
-
-            rt.block_on(async move {
-                loop {
-                    match AuthServiceClient::connect(auth_service_address.clone()).await {
-                        Ok(mut client) => {
-                            let kp = cluster_info.keypair().clone();
-                            match Self::generate_auth_tokens(&mut client, kp.as_ref()).await {
-                                Ok((access_token, refresh_token)) => {
-                                    return (access_token, refresh_token)
-                                }
-                                Err(e) => {
-                                    error!("error generating auth tokens: {:?}", e);
+    ) -> JoinHandle<()> {
+        Builder::new()
+            .name("auth-thread".to_string())
+            .spawn(move || {
+                let rt = Runtime::new().unwrap();
+                rt.block_on(async move {
+                    while !exit.load(Ordering::Relaxed) {
+                        match AuthServiceClient::connect(auth_service_address.clone()).await {
+                            Ok(client) => {
+                                if let Err(e) = Self::auth_refresh_loop(
+                                    client,
+                                    (access_token.clone(), Token::default()),
+                                    cluster_info.clone(),
+                                    Duration::from_secs(10),
+                                    exit.clone(),
+                                )
+                                .await
+                                {
+                                    error!("auth_refresh_loop error: {:?}", e);
                                     sleep(retry_interval).await;
-                                    continue;
                                 }
                             }
-                        }
-                        Err(e) => {
-                            error!("error connecting to auth service: {}", e);
-                            sleep(retry_interval).await;
-                            continue;
+                            Err(e) => {
+                                error!("error connecting to auth service: {}", e);
+                                sleep(retry_interval).await;
+                            }
                         }
                     }
-                }
-            })
-        };
-
-        let access_token = Arc::new(Mutex::new(access_token));
-        (
-            access_token.clone(),
-            Builder::new()
-                .name("auth-thread".to_string())
-                .spawn(move || {
-                    rt.block_on(async move {
-                        while !exit.load(Ordering::Relaxed) {
-                            match AuthServiceClient::connect(auth_service_address.clone()).await {
-                                Ok(client) => {
-                                    if let Err(e) = Self::auth_refresh_loop(
-                                        client,
-                                        (access_token.clone(), refresh_token.clone()),
-                                        cluster_info.clone(),
-                                        Duration::from_secs(10),
-                                        exit.clone(),
-                                    )
-                                    .await
-                                    {
-                                        error!("auth_refresh_loop error: {:?}", e);
-                                        sleep(retry_interval).await;
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("error connecting to auth service: {}", e);
-                                    sleep(retry_interval).await;
-                                }
-                            }
-                        }
-                    })
                 })
-                .unwrap(),
-        )
+            })
+            .unwrap()
     }
 
     #[allow(clippy::too_many_arguments)]
     fn spawn_relayer_threads(
         relayer_address: String,
-        (block_engine_access_token, relayer_access_token): (Arc<Mutex<Token>>, Arc<Mutex<Token>>),
+        block_engine_access_token: Arc<Mutex<Token>>,
+        relayer_access_token: Arc<Mutex<Token>>,
         trust_relayer_packets: bool,
         block_engine_address: String,
         trust_block_engine_packets: bool,
@@ -343,15 +316,21 @@ impl RelayerAndBlockEngineStage {
         sleep_interval: Duration,
         exit: Arc<AtomicBool>,
     ) -> Result<()> {
-        while exit.load(Ordering::Relaxed) {
-            let access_token_expiry: i64 = access_token
-                .lock()
-                .unwrap()
-                .expires_at_utc
-                .as_ref()
-                .unwrap()
-                .seconds;
-            let refresh_token_expiry: i64 = refresh_token.expires_at_utc.as_ref().unwrap().seconds;
+        while !exit.load(Ordering::Relaxed) {
+            let access_token_expiry: i64 = {
+                if let Some(ts) = access_token.lock().unwrap().expires_at_utc.as_ref() {
+                    ts.seconds
+                } else {
+                    0
+                }
+            };
+            let refresh_token_expiry: i64 = {
+                if let Some(ts) = refresh_token.expires_at_utc.as_ref() {
+                    ts.seconds
+                } else {
+                    0
+                }
+            };
 
             let now = Utc::now().timestamp();
             let should_refresh_access = {
@@ -555,6 +534,10 @@ impl RelayerAndBlockEngineStage {
                     .build()
                     .unwrap();
                 rt.block_on(async move {
+                    while access_token.lock().unwrap().value.is_empty() {
+                        sleep(Duration::from_millis(500)).await;
+                    }
+
                     let mut backoff = BackoffStrategy::new();
                     loop {
                         match endpoint.connect().await {
@@ -905,6 +888,10 @@ impl RelayerAndBlockEngineStage {
                     .build()
                     .unwrap();
                 rt.block_on(async move {
+                    while access_token.lock().unwrap().value.is_empty() {
+                        sleep(Duration::from_millis(500)).await;
+                    }
+
                     let mut backoff = BackoffStrategy::new();
 
                     loop {
