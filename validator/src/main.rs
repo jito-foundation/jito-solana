@@ -25,7 +25,7 @@ use {
     },
     solana_core::{
         ledger_cleanup_service::{DEFAULT_MAX_LEDGER_SHREDS, DEFAULT_MIN_MAX_LEDGER_SHREDS},
-        relayer_stage::RelayerAndBlockEngineConfig,
+        proxy::BackendConfig,
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tower_storage,
@@ -87,6 +87,7 @@ use {
         collections::{HashSet, VecDeque},
         env,
         fs::{self, File},
+        io::Read,
         net::{IpAddr, SocketAddr},
         path::{Path, PathBuf},
         process::exit,
@@ -94,6 +95,7 @@ use {
         sync::{Arc, RwLock},
         time::{Duration, SystemTime},
     },
+    tonic::transport::{Certificate, ClientTlsConfig, Endpoint},
 };
 
 #[cfg(not(target_env = "msvc"))]
@@ -2717,28 +2719,57 @@ pub fn main() {
 
     let is_block_engine_enabled = matches.is_present("block_engine_address")
         || matches.is_present("block_engine_auth_service_address")
-        || matches.is_present("relayer_auth_service_address")
-        || matches.is_present("relayer_address")
-        || matches.is_present("trust_relayer_packets")
         || matches.is_present("trust_block_engine_packets");
-    let maybe_relayer_config = if is_block_engine_enabled {
-        Some(RelayerAndBlockEngineConfig {
-            block_engine_address: value_of(&matches, "block_engine_address").unwrap(),
-            block_engine_auth_service_address: value_of(
-                &matches,
-                "block_engine_auth_service_address",
+    let maybe_block_engine_config = is_block_engine_enabled.then(|| {
+        let addr: String = value_of(&matches, "block_engine_auth_service_address")
+            .expect("missing block-engine-auth-service-address");
+        let auth_service_endpoint =
+            Endpoint::from_shared(addr).expect("invalid block-engine-auth-service-address value");
+
+        let addr: String =
+            value_of(&matches, "block_engine_address").expect("missing block-engine-address");
+        let mut backend_endpoint =
+            Endpoint::from_shared(addr).expect("invalid block-engine-address value");
+
+        // TODO(seg): This is a temporary workaround while we get TLS and TLS termination sorted out.
+        let mut buf = Vec::new();
+        File::open("/etc/ssl/certs/jito_ca.pem")
+            .unwrap()
+            .read_to_end(&mut buf)
+            .unwrap();
+        backend_endpoint = backend_endpoint
+            .tls_config(
+                ClientTlsConfig::new()
+                    .domain_name("jito.wtf")
+                    .ca_certificate(Certificate::from_pem(buf)),
             )
-            .expect("expected block_engine_auth_service_address address to be provided"),
-            relayer_auth_service_address: value_of(&matches, "relayer_auth_service_address")
-                .expect("expected relayer_auth_service_address address to be provided"),
-            relayer_address: value_of(&matches, "relayer_address")
-                .expect("expected relayer_address to be provided"),
-            trust_relayer_packets: matches.is_present("trust_relayer_packets"),
-            trust_block_engine_packets: matches.is_present("trust_block_engine_packets"),
-        })
-    } else {
-        None
-    };
+            .unwrap();
+
+        BackendConfig {
+            auth_service_endpoint,
+            backend_endpoint,
+            trust_packets: matches.is_present("trust_block_engine_packets"),
+        }
+    });
+
+    let is_relayer_enabled = matches.is_present("relayer_auth_service_address")
+        || matches.is_present("relayer_address")
+        || matches.is_present("trust_relayer_packets");
+    let maybe_relayer_config = is_relayer_enabled.then(|| {
+        let addr: String = value_of(&matches, "relayer_auth_service_address")
+            .expect("missing relayer-auth-service-address");
+        let auth_service_endpoint =
+            Endpoint::from_shared(addr).expect("invalid relayer-auth-service-address value");
+
+        let addr: String = value_of(&matches, "relayer_address").expect("missing relayer-address");
+        let backend_endpoint = Endpoint::from_shared(addr).expect("invalid relayer-address value");
+
+        BackendConfig {
+            auth_service_endpoint,
+            backend_endpoint,
+            trust_packets: matches.is_present("trust_relayer_packets"),
+        }
+    });
 
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
@@ -2873,6 +2904,7 @@ pub fn main() {
             ..RuntimeConfig::default()
         },
         maybe_relayer_config,
+        maybe_block_engine_config,
         tip_manager_config,
         shred_receiver_address: matches
             .value_of("shred_receiver_address")

@@ -13,7 +13,10 @@ use {
         },
         fetch_stage::FetchStage,
         find_packet_sender_stake_stage::FindPacketSenderStakeStage,
-        relayer_stage::{RelayerAndBlockEngineConfig, RelayerAndBlockEngineStage},
+        proxy::{
+            block_engine_stage::BlockEngineStage, fetch_stage_manager::FetchStageManager,
+            relayer_stage::RelayerStage, BackendConfig,
+        },
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
@@ -64,7 +67,9 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
-    maybe_relayer_stage: Option<RelayerAndBlockEngineStage>,
+    maybe_relayer_stage: Option<RelayerStage>,
+    maybe_block_engine_stage: Option<BlockEngineStage>,
+    maybe_fetch_stage_manager: Option<FetchStageManager>,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -104,7 +109,8 @@ impl Tpu {
         keypair: &Keypair,
         log_messages_bytes_limit: Option<usize>,
         staked_nodes: &Arc<RwLock<StakedNodes>>,
-        maybe_relayer_config: Option<RelayerAndBlockEngineConfig>,
+        maybe_block_engine_config: Option<BackendConfig>,
+        maybe_relayer_config: Option<BackendConfig>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Option<SocketAddr>,
         shared_staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
@@ -211,19 +217,66 @@ impl Tpu {
             )
         };
 
-        let (bundle_sender, bundle_receiver) = unbounded();
+        let (heartbeat_tx, heartbeat_rx) = unbounded();
+        let maybe_fetch_stage_manager =
+            if maybe_block_engine_config.is_some() || maybe_relayer_config.is_some() {
+                Some(FetchStageManager::new(
+                    cluster_info.clone(),
+                    heartbeat_rx,
+                    packet_intercept_receiver,
+                    packet_sender.clone(),
+                    exit.clone(),
+                ))
+            } else {
+                None
+            };
 
-        let maybe_relayer_stage = maybe_relayer_config.map(|relayer_config| {
-            RelayerAndBlockEngineStage::new(
-                cluster_info,
-                relayer_config,
-                verified_sender,
-                bundle_sender,
-                packet_intercept_receiver,
-                packet_sender,
-                exit.clone(),
-            )
-        });
+        let (bundle_sender, bundle_receiver) = unbounded();
+        let maybe_proxy_stages = match (maybe_block_engine_config, maybe_relayer_config) {
+            (Some(block_engine_config), Some(relayer_config)) => (
+                Some(BlockEngineStage::new(
+                    block_engine_config,
+                    bundle_sender,
+                    cluster_info.clone(),
+                    None,
+                    packet_sender.clone(),
+                    verified_sender.clone(),
+                    exit.clone(),
+                )),
+                Some(RelayerStage::new(
+                    relayer_config,
+                    cluster_info.clone(),
+                    heartbeat_tx,
+                    packet_sender,
+                    verified_sender,
+                    exit.clone(),
+                )),
+            ),
+            (Some(block_engine_config), None) => (
+                Some(BlockEngineStage::new(
+                    block_engine_config,
+                    bundle_sender,
+                    cluster_info.clone(),
+                    Some(heartbeat_tx),
+                    packet_sender,
+                    verified_sender,
+                    exit.clone(),
+                )),
+                None,
+            ),
+            (None, Some(relayer_config)) => (
+                None,
+                Some(RelayerStage::new(
+                    relayer_config,
+                    cluster_info.clone(),
+                    heartbeat_tx,
+                    packet_sender,
+                    verified_sender,
+                    exit.clone(),
+                )),
+            ),
+            _ => (None, None),
+        };
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
             unbounded();
@@ -297,7 +350,9 @@ impl Tpu {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
-            maybe_relayer_stage,
+            maybe_block_engine_stage: maybe_proxy_stages.0,
+            maybe_relayer_stage: maybe_proxy_stages.1,
+            maybe_fetch_stage_manager,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -327,6 +382,12 @@ impl Tpu {
 
         if let Some(relayer_stage) = self.maybe_relayer_stage {
             relayer_stage.join()?;
+        }
+        if let Some(block_engine_stage) = self.maybe_block_engine_stage {
+            block_engine_stage.join()?;
+        }
+        if let Some(fetch_stage_manager) = self.maybe_fetch_stage_manager {
+            fetch_stage_manager.join()?;
         }
 
         let broadcast_result = self.broadcast_stage.join();

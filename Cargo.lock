@@ -6752,6 +6752,7 @@ dependencies = [
  "solana-vote-program",
  "symlink",
  "tikv-jemallocator",
+ "tonic 0.5.2",
 ]
 
 [[package]]
