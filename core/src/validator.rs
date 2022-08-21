@@ -177,7 +177,7 @@ pub struct ValidatorConfig {
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
     pub enable_quic_servers: bool,
-    pub relayer_config: RelayerAndBlockEngineConfig,
+    pub maybe_relayer_config: Option<RelayerAndBlockEngineConfig>,
     pub shred_receiver_address: Option<SocketAddr>,
     pub tip_manager_config: TipManagerConfig,
 }
@@ -243,7 +243,7 @@ impl Default for ValidatorConfig {
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
             enable_quic_servers: false,
-            relayer_config: RelayerAndBlockEngineConfig::default(),
+            maybe_relayer_config: None,
             shred_receiver_address: None,
             tip_manager_config: TipManagerConfig::default(),
         }
@@ -1037,7 +1037,8 @@ impl Validator {
             &identity_keypair,
             config.runtime_config.log_messages_bytes_limit,
             config.enable_quic_servers,
-            config.relayer_config.clone(),
+            &staked_nodes,
+            config.maybe_relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address,
         );

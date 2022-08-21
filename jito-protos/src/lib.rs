@@ -1,4 +1,8 @@
 pub mod proto {
+    pub mod auth {
+        tonic::include_proto!("auth");
+    }
+
     pub mod block_engine {
         tonic::include_proto!("block_engine");
     }
