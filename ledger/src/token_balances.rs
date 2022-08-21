@@ -37,35 +37,6 @@ fn get_mint_decimals(bank: &Bank, mint: &Pubkey) -> Option<u8> {
     }
 }
 
-pub fn collect_balances_with_cache(
-    bank: &Bank,
-    batch: &TransactionBatch,
-    account_overrides: Option<&AccountOverrides>,
-) -> TransactionTokenBalances {
-    let mut balances: TransactionTokenBalances = vec![];
-    // TODO (LB): complete
-    // for transaction in batch.sanitized_transactions() {
-    //     let mut transaction_balances: Vec<TransactionTokenBalance> = vec![];
-    //     for account_key in transaction.message().account_keys().iter() {
-    //         let balance = {
-    //             if let Some(account_override) =
-    //                 account_overrides.and_then(|overrides| overrides.get(account_key))
-    //             {
-    //                 account_override.lamports()
-    //             } else {
-    //                 bank.get_account(account_key)
-    //                     .map(|a| a.lamports())
-    //                     .unwrap_or(0)
-    //             }
-    //         };
-    //
-    //         transaction_balances.push(balance);
-    //     }
-    //     balances.push(transaction_balances);
-    // }
-    balances
-}
-
 pub fn collect_token_balances(
     bank: &Bank,
     batch: &TransactionBatch,

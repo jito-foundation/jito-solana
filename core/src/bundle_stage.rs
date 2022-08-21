@@ -15,8 +15,7 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
-        blockstore_processor::TransactionStatusSender,
-        token_balances::{collect_balances_with_cache, collect_token_balances},
+        blockstore_processor::TransactionStatusSender, token_balances::collect_token_balances,
     },
     solana_measure::measure,
     solana_poh::poh_recorder::{
@@ -632,15 +631,14 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         mint_decimals: &mut HashMap<Pubkey, u8>,
     ) -> (TransactionBalances, TransactionTokenBalances) {
-        (vec![], vec![])
-        // if transaction_status_sender.is_some() {
-        //     let balances = collect_balances_with_cache(bank, batch, Some(cached_accounts));
-        //     let token_balances =
-        //         collect_token_balances(bank, batch, mint_decimals, Some(cached_accounts));
-        //     (balances, token_balances)
-        // } else {
-        //     (vec![], vec![])
-        // }
+        if transaction_status_sender.is_some() {
+            let balances = bank.collect_balances_with_cache(batch, Some(cached_accounts));
+            let token_balances =
+                collect_token_balances(bank, batch, mint_decimals, Some(cached_accounts));
+            (balances, token_balances)
+        } else {
+            (vec![], vec![])
+        }
     }
 
     /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then

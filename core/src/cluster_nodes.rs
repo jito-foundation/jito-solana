@@ -123,22 +123,6 @@ impl ClusterNodes<BroadcastStage> {
 }
 
 impl ClusterNodes<RetransmitStage> {
-    pub fn maybe_extend_retransmit_addrs(
-        &self,
-        slot_leader: &Pubkey,
-        shred: &ShredId,
-        root_bank: &Bank,
-        fanout: usize,
-        shred_receiver_addr: Option<SocketAddr>,
-    ) -> (/*root_distance:*/ usize, Vec<SocketAddr>) {
-        let (root_distance, mut existing_addrs) =
-            self.get_retransmit_addrs(slot_leader, shred, root_bank, fanout);
-        if let Some(address) = shred_receiver_addr {
-            existing_addrs.extend(vec![address]);
-        }
-        (root_distance, existing_addrs)
-    }
-
     pub(crate) fn get_retransmit_addrs(
         &self,
         slot_leader: &Pubkey,

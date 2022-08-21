@@ -434,10 +434,16 @@ pub fn broadcast_shreds(
             update_peer_stats(&cluster_nodes, last_datapoint_submit);
             shreds.flat_map(move |shred| {
                 let node = cluster_nodes.get_broadcast_peer(&shred.id())?;
+                // TODO (LB): stick in shred_receiver_addr here
                 ContactInfo::is_valid_address(&node.tvu, socket_addr_space)
                     .then(|| (shred.payload(), node.tvu))
             })
         })
+        .chain(
+            shreds
+                .iter()
+                .filter_map(|s| Some((s.payload(), shred_receiver_addr?))),
+        )
         .collect();
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
