@@ -14,9 +14,9 @@ use {
     },
 };
 
-const HEARTBEAT_TIMEOUT_MS: Duration = Duration::from_millis(1500); // Empirically determined from load testing
-const DISCONNECT_DELAY_SEC: Duration = Duration::from_secs(60);
-const METRICS_CADENCE_SEC: Duration = Duration::from_secs(1);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(1500); // Empirically determined from load testing
+const DISCONNECT_DELAY: Duration = Duration::from_secs(60);
+const METRICS_CADENCE: Duration = Duration::from_secs(1);
 
 /// Manages switching between the validator's tpu ports and that of the proxy's.
 /// Switch-overs are triggered by late and missed heartbeats.    
@@ -75,8 +75,8 @@ impl FetchStageManager {
 
             let mut pending_disconnect_ts = Instant::now();
 
-            let heartbeat_tick = tick(HEARTBEAT_TIMEOUT_MS);
-            let metrics_tick = tick(METRICS_CADENCE_SEC);
+            let heartbeat_tick = tick(HEARTBEAT_TIMEOUT);
+            let metrics_tick = tick(METRICS_CADENCE);
             let mut packets_forwarded = 0;
             let mut heartbeats_received = 0;
             loop {
@@ -120,7 +120,7 @@ impl FetchStageManager {
                                 pending_disconnect_ts = Instant::now();
                                 pending_disconnect = true;
                             }
-                            if fetch_connected && pending_disconnect && pending_disconnect_ts.elapsed() > DISCONNECT_DELAY_SEC {
+                            if fetch_connected && pending_disconnect && pending_disconnect_ts.elapsed() > DISCONNECT_DELAY {
                                 info!("disconnecting fetch stage");
                                 fetch_connected = false;
                                 pending_disconnect = false;

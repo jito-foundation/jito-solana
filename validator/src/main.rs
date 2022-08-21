@@ -25,7 +25,7 @@ use {
     },
     solana_core::{
         ledger_cleanup_service::{DEFAULT_MAX_LEDGER_SHREDS, DEFAULT_MIN_MAX_LEDGER_SHREDS},
-        proxy::BackendConfig,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tower_storage,
@@ -87,7 +87,6 @@ use {
         collections::{HashSet, VecDeque},
         env,
         fs::{self, File},
-        io::Read,
         net::{IpAddr, SocketAddr},
         path::{Path, PathBuf},
         process::exit,
@@ -95,7 +94,7 @@ use {
         sync::{Arc, RwLock},
         time::{Duration, SystemTime},
     },
-    tonic::transport::{Certificate, ClientTlsConfig, Endpoint},
+    tonic::transport::Endpoint,
 };
 
 #[cfg(not(target_env = "msvc"))]
@@ -1849,12 +1848,24 @@ pub fn main() {
             Arg::with_name("trust_relayer_packets")
                 .long("trust-relayer-packets")
                 .takes_value(false)
-                .help("Skip signature verification on relayer packets.Not recommended unless the relayer is trusted.")
+                .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
+        )
+        .arg(
+            Arg::with_name("relayer_expected_heartbeat_interval_ms")
+                .long("relayer-expected-heartbeat-interval-ms")
+                .takes_value(true)
+                .help("Interval at which the Relayer is expected to send heartbeat messages.")
+        )
+        .arg(
+            Arg::with_name("relayer_max_failed_heartbeats")
+                .long("relayer-max-failed-heartbeats")
+                .takes_value(true)
+                .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
         )
         .arg(
             Arg::with_name("trust_block_engine_packets")
                 .long("trust-block-engine-packets")
-                .takes_value(false)
+                .takes_value(true)
                 .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
         )
         .arg(
@@ -2728,24 +2739,11 @@ pub fn main() {
 
         let addr: String =
             value_of(&matches, "block_engine_address").expect("missing block-engine-address");
-        let mut backend_endpoint =
-            Endpoint::from_shared(addr).expect("invalid block-engine-address value");
+        let backend_endpoint = Endpoint::from_shared(addr)
+            .expect("invalid block-engine-address value")
+            .tcp_keepalive(Some(Duration::from_secs(60)));
 
-        // TODO(seg): This is a temporary workaround while we get TLS and TLS termination sorted out.
-        let mut buf = Vec::new();
-        File::open("/etc/ssl/certs/jito_ca.pem")
-            .unwrap()
-            .read_to_end(&mut buf)
-            .unwrap();
-        backend_endpoint = backend_endpoint
-            .tls_config(
-                ClientTlsConfig::new()
-                    .domain_name("jito.wtf")
-                    .ca_certificate(Certificate::from_pem(buf)),
-            )
-            .unwrap();
-
-        BackendConfig {
+        BlockEngineConfig {
             auth_service_endpoint,
             backend_endpoint,
             trust_packets: matches.is_present("trust_block_engine_packets"),
@@ -2754,7 +2752,9 @@ pub fn main() {
 
     let is_relayer_enabled = matches.is_present("relayer_auth_service_address")
         || matches.is_present("relayer_address")
-        || matches.is_present("trust_relayer_packets");
+        || matches.is_present("trust_relayer_packets")
+        || matches.is_present("relayer_expected_heartbeat_interval_ms")
+        || matches.is_present("relayer_max_failed_heartbeats");
     let maybe_relayer_config = is_relayer_enabled.then(|| {
         let addr: String = value_of(&matches, "relayer_auth_service_address")
             .expect("missing relayer-auth-service-address");
@@ -2764,9 +2764,24 @@ pub fn main() {
         let addr: String = value_of(&matches, "relayer_address").expect("missing relayer-address");
         let backend_endpoint = Endpoint::from_shared(addr).expect("invalid relayer-address value");
 
-        BackendConfig {
+        let expected_heartbeat_interval_ms =
+            value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap_or(500);
+        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+
+        let max_failed_heartbeats =
+            value_of(&matches, "relayer_max_failed_heartbeats").unwrap_or(3);
+        assert!(
+            max_failed_heartbeats > 0,
+            "relayer-max-failed-heartbeats must be greater than zero"
+        );
+        let oldest_allowed_heartbeat =
+            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+
+        RelayerConfig {
             auth_service_endpoint,
             backend_endpoint,
+            expected_heartbeat_interval,
+            oldest_allowed_heartbeat,
             trust_packets: matches.is_present("trust_relayer_packets"),
         }
     });

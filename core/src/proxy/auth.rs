@@ -13,7 +13,7 @@ use {
         },
         time::Duration,
     },
-    tokio::{runtime::Runtime, time::sleep},
+    tokio::time::sleep,
     tonic::{service::Interceptor, transport::Channel, Request, Status},
 };
 
@@ -47,38 +47,35 @@ pub(crate) mod token_manager {
     use {super::*, crate::proxy::ProxyError, tonic::transport::Endpoint};
 
     /// Control loop responsible for making sure access and refresh tokens are updated.
-    pub(crate) fn auth_tokens_update_loop(
+    pub(crate) async fn auth_tokens_update_loop(
         auth_service_endpoint: Endpoint,
         access_token: Arc<Mutex<Token>>,
         cluster_info: Arc<ClusterInfo>,
         retry_interval: Duration,
         exit: Arc<AtomicBool>,
     ) {
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async move {
-            while !exit.load(Ordering::Relaxed) {
-                match auth_service_endpoint.connect().await {
-                    Ok(channel) => {
-                        if let Err(e) = auth_tokens_update_loop_helper(
-                            AuthServiceClient::new(channel),
-                            (access_token.clone(), Token::default()),
-                            cluster_info.clone(),
-                            Duration::from_secs(10),
-                            exit.clone(),
-                        )
-                        .await
-                        {
-                            error!("auth_refresh_loop error: {:?}", e);
-                            sleep(retry_interval).await;
-                        }
-                    }
-                    Err(e) => {
-                        error!("error connecting to auth service: {}", e);
+        while !exit.load(Ordering::Relaxed) {
+            match auth_service_endpoint.connect().await {
+                Ok(channel) => {
+                    if let Err(e) = auth_tokens_update_loop_helper(
+                        AuthServiceClient::new(channel),
+                        (access_token.clone(), Token::default()),
+                        cluster_info.clone(),
+                        Duration::from_secs(10),
+                        exit.clone(),
+                    )
+                    .await
+                    {
+                        error!("auth_refresh_loop error: {:?}", e);
                         sleep(retry_interval).await;
                     }
                 }
+                Err(e) => {
+                    error!("error connecting to auth service: {}", e);
+                    sleep(retry_interval).await;
+                }
             }
-        });
+        }
     }
 
     /// Responsible for keeping generating and refreshing the access token.
