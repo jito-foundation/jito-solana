@@ -39,8 +39,9 @@ use {
         streamer::StakedNodes,
     },
     std::{
+        collections::HashSet,
         net::{SocketAddr, UdpSocket},
-        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         thread,
     },
 };
@@ -49,8 +50,6 @@ pub const DEFAULT_TPU_COALESCE_MS: u64 = 5;
 
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_PEER: usize = 8;
-
-const NUM_BUNDLES_PRE_LOCK: u64 = 4;
 
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
@@ -249,19 +248,14 @@ impl Tpu {
 
         let tip_manager = TipManager::new(tip_manager_config);
 
-        let bundle_account_locker = Arc::new(Mutex::new(BundleAccountLocker::new(
-            NUM_BUNDLES_PRE_LOCK,
-            &tip_manager.tip_payment_program_id(),
-        )));
+        let bundle_account_locker = BundleAccountLocker::default();
 
-        // tip accounts can't be used in BankingStage. This makes handling race conditions
-        // for tip-related things in BundleStage easier.
-        // TODO (LB): once there's a unified scheduler, we should allow tips in BankingStage
-        //  and treat them w/ a priority similar to ComputeBudget::SetComputeUnitPrice
-        let mut tip_accounts = tip_manager.get_tip_accounts();
-        tip_accounts.insert(tip_manager.tip_payment_config_pubkey());
-        tip_accounts.insert(tip_manager.tip_payment_program_id());
-
+        // tip accounts can't be used in BankingStage to avoid someone from stealing tips mid-slot.
+        // it also helps reduce surface area for potential account contention
+        let mut blacklisted_accounts = HashSet::new();
+        blacklisted_accounts.insert(tip_manager.tip_payment_config_pubkey());
+        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
+        blacklisted_accounts.extend(tip_manager.get_tip_accounts());
         let banking_stage = BankingStage::new(
             cluster_info,
             poh_recorder,
@@ -274,7 +268,7 @@ impl Tpu {
             log_messages_bytes_limit,
             connection_cache.clone(),
             bank_forks.clone(),
-            tip_accounts,
+            blacklisted_accounts,
             bundle_account_locker.clone(),
         );
 

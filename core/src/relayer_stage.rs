@@ -20,7 +20,7 @@
 
 use {
     crate::{
-        backoff::BackoffStrategy, bundle::PacketBundle, proto_packet_to_packet,
+        backoff::BackoffStrategy, packet_bundle::PacketBundle, proto_packet_to_packet,
         sigverify::SigverifyTracerPacketStats,
     },
     chrono::Utc,
