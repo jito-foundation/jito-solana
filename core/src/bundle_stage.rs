@@ -632,14 +632,15 @@ impl BundleStage {
         transaction_status_sender: &Option<TransactionStatusSender>,
         mint_decimals: &mut HashMap<Pubkey, u8>,
     ) -> (TransactionBalances, TransactionTokenBalances) {
-        if transaction_status_sender.is_some() {
-            let balances = collect_balances_with_cache(batch, bank, Some(cached_accounts));
-            let token_balances =
-                collect_token_balances(bank, batch, mint_decimals, Some(cached_accounts));
-            (balances, token_balances)
-        } else {
-            (vec![], vec![])
-        }
+        (vec![], vec![])
+        // if transaction_status_sender.is_some() {
+        //     let balances = collect_balances_with_cache(bank, batch, Some(cached_accounts));
+        //     let token_balances =
+        //         collect_token_balances(bank, batch, mint_decimals, Some(cached_accounts));
+        //     (balances, token_balances)
+        // } else {
+        //     (vec![], vec![])
+        // }
     }
 
     /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then

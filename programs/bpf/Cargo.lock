@@ -494,9 +494,9 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.59.2"
+version = "0.60.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd2a9a458e8f4304c52c43ebb0cfbd520289f8379a52e329a38afda99bf8eb8"
+checksum = "062dddbc1ba4aca46de6338e2bf87771414c335f7b2f2036e8f3e9befebf88e6"
 dependencies = [
  "bitflags",
  "cexpr",
@@ -2326,9 +2326,9 @@ checksum = "292a948cd991e376cf75541fe5b97a1081d713c618b4f1b9500f8844e49eb565"
 
 [[package]]
 name = "librocksdb-sys"
-version = "0.6.1+6.28.2"
+version = "0.8.0+7.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81bc587013734dadb7cf23468e531aa120788b87243648be42e2d3a072186291"
+checksum = "611804e4666a25136fcc5f8cf425ab4d26c7f74ea245ffe92ea23b85b6420b5d"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -2657,14 +2657,16 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.24.2"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "195cdbc1741b8134346d515b3a56a1c94b0912758009cfd53f99ea0f57b065fc"
+checksum = "e322c04a9e3440c327fca7b6c8a63e6890a32fa2ad689db972425f07e0d22abb"
 dependencies = [
+ "autocfg",
  "bitflags",
  "cfg-if 1.0.0",
  "libc",
  "memoffset",
+ "pin-utils",
 ]
 
 [[package]]
@@ -3782,9 +3784,9 @@ dependencies = [
 
 [[package]]
 name = "rocksdb"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "620f4129485ff1a7128d184bc687470c21c7951b64779ebc9cfdad3dcd920290"
+checksum = "7e9562ea1d70c0cc63a34a22d977753b50cca91cc6b6527750463bd5dd8697bc"
 dependencies = [
  "libc",
  "librocksdb-sys",
@@ -4038,9 +4040,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.83"
+version = "1.0.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38dd04e3c8279e75b31ef29dbdceebfe5ad89f4d0937213c53f7d49d01b3d5a7"
+checksum = "d4f86b279ded49a29018bdf9c7436a9473296cef8d4a310614fa402854f48f5d"
 dependencies = [
  "itoa",
  "ryu",
@@ -4328,7 +4330,6 @@ dependencies = [
  "futures 0.3.23",
  "solana-banks-interface",
  "solana-client",
- "solana-gossip",
  "solana-runtime",
  "solana-sdk 1.12.0",
  "solana-send-transaction-service",
@@ -5865,6 +5866,7 @@ dependencies = [
  "percentage",
  "pkcs8",
  "quinn",
+ "quinn-proto",
  "rand 0.7.3",
  "rcgen",
  "rustls 0.20.6",
@@ -5961,8 +5963,10 @@ dependencies = [
  "log",
  "num_cpus",
  "rand 0.7.3",
+ "rayon",
  "serde",
  "serde_json",
+ "serde_yaml",
  "signal-hook",
  "solana-clap-utils",
  "solana-cli-config",
@@ -6020,6 +6024,7 @@ dependencies = [
  "solana-frozen-abi 1.12.0",
  "solana-frozen-abi-macro 1.12.0",
  "solana-metrics",
+ "solana-program 1.12.0",
  "solana-program-runtime",
  "solana-sdk 1.12.0",
  "thiserror",
@@ -6098,9 +6103,9 @@ dependencies = [
 
 [[package]]
 name = "solana_rbpf"
-version = "0.2.31"
+version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80a28c5dfe7e8af38daa39d6561c8e8b9ed7a2f900951ebe7362ad6348d36c73"
+checksum = "fe055100805e9069715acf73529ec563ad987a4d042da9defe9b7554560f2df4"
 dependencies = [
  "byteorder 1.4.3",
  "combine",
@@ -6178,9 +6183,9 @@ dependencies = [
 
 [[package]]
 name = "spl-token-2022"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0a97cbf60b91b610c846ccf8eecca96d92a24a19ffbf9fe06cd0c84e76ec45e"
+checksum = "e4c0ebca4740cc4c892aa31e07d0b4dc1a24cac4748376d4b34f8eb0fee9ff46"
 dependencies = [
  "arrayref",
  "bytemuck",

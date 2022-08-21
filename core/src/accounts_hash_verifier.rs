@@ -50,7 +50,7 @@ impl AccountsHashVerifier {
         let exit = exit.clone();
         let cluster_info = cluster_info.clone();
         let t_accounts_hash_verifier = Builder::new()
-            .name("solana-hash-accounts".to_string())
+            .name("solAcctHashVer".to_string())
             .spawn(move || {
                 let mut hashes = vec![];
                 loop {
@@ -190,6 +190,7 @@ impl AccountsHashVerifier {
             accounts_package.snapshot_links.path(),
             accounts_package.slot,
             &accounts_hash,
+            None,
         );
         datapoint_info!(
             "accounts_hash_verifier",

@@ -97,7 +97,7 @@ const MAX_CONCURRENT_FORKS_TO_REPLAY: usize = 4;
 lazy_static! {
     static ref PAR_THREAD_POOL: ThreadPool = rayon::ThreadPoolBuilder::new()
         .num_threads(MAX_CONCURRENT_FORKS_TO_REPLAY)
-        .thread_name(|ix| format!("replay_{}", ix))
+        .thread_name(|ix| format!("solReplay{:02}", ix))
         .build()
         .unwrap();
 }
@@ -397,9 +397,9 @@ impl ReplayStage {
         drop_bank_sender: Sender<Vec<Arc<Bank>>>,
         block_metadata_notifier: Option<BlockMetadataNotifierLock>,
         log_messages_bytes_limit: Option<usize>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let mut tower = if let Some(process_blockstore) = maybe_process_blockstore {
-            let tower = process_blockstore.process_to_create_tower();
+            let tower = process_blockstore.process_to_create_tower()?;
             info!("Tower state: {:?}", tower);
             tower
         } else {
@@ -436,7 +436,7 @@ impl ReplayStage {
 
         #[allow(clippy::cognitive_complexity)]
         let t_replay = Builder::new()
-            .name("solana-replay-stage".to_string())
+            .name("solReplayStage".to_string())
             .spawn(move || {
                 let verify_recyclers = VerifyRecyclers::default();
                 let _exit = Finalizer::new(exit.clone());
@@ -940,10 +940,10 @@ impl ReplayStage {
             })
             .unwrap();
 
-        Self {
+        Ok(Self {
             t_replay,
             commitment_service,
-        }
+        })
     }
 
     fn check_for_vote_only_mode(
@@ -3529,7 +3529,7 @@ pub(crate) mod tests {
         solana_streamer::socket::SocketAddrSpace,
         solana_transaction_status::VersionedTransactionWithStatusMeta,
         solana_vote_program::{
-            vote_state::{VoteState, VoteStateVersions},
+            vote_state::{self, VoteStateVersions},
             vote_transaction,
         },
         std::{
@@ -4220,10 +4220,10 @@ pub(crate) mod tests {
     fn test_replay_commitment_cache() {
         fn leader_vote(vote_slot: Slot, bank: &Arc<Bank>, pubkey: &Pubkey) {
             let mut leader_vote_account = bank.get_account(pubkey).unwrap();
-            let mut vote_state = VoteState::from(&leader_vote_account).unwrap();
-            vote_state.process_slot_vote_unchecked(vote_slot);
+            let mut vote_state = vote_state::from(&leader_vote_account).unwrap();
+            vote_state::process_slot_vote_unchecked(&mut vote_state, vote_slot);
             let versioned = VoteStateVersions::new_current(vote_state);
-            VoteState::to(&versioned, &mut leader_vote_account).unwrap();
+            vote_state::to(&versioned, &mut leader_vote_account).unwrap();
             bank.store_account(pubkey, &leader_vote_account);
         }
 

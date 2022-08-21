@@ -179,7 +179,7 @@ impl RpcClient {
             )),
             runtime: Some(
                 tokio::runtime::Builder::new_current_thread()
-                    .thread_name("rpc-client")
+                    .thread_name("solRpcClient")
                     .enable_io()
                     .enable_time()
                     .build()
@@ -1120,13 +1120,12 @@ impl RpcClient {
         bundles_and_configs: Vec<(VersionedBundle, RpcSimulateBundleConfig)>,
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         self.invoke(
-            self.rpc_client
-                .batch_simulate_bundle_with_config(bundles_and_configs),
+            (self.rpc_client.as_ref()).batch_simulate_bundle_with_config(bundles_and_configs),
         )
     }
 
     pub fn simulate_bundle(&self, bundle: &VersionedBundle) -> RpcResult<RpcSimulateBundleResult> {
-        self.invoke(self.rpc_client.simulate_bundle(bundle))
+        self.invoke((self.rpc_client.as_ref()).simulate_bundle(bundle))
     }
 
     pub fn simulate_bundle_with_config(
@@ -1134,7 +1133,7 @@ impl RpcClient {
         bundle: &VersionedBundle,
         config: RpcSimulateBundleConfig,
     ) -> RpcResult<RpcSimulateBundleResult> {
-        self.invoke(self.rpc_client.simulate_bundle_with_config(bundle, config))
+        self.invoke((self.rpc_client.as_ref()).simulate_bundle_with_config(bundle, config))
     }
 
     /// Returns the highest slot information that the node has snapshots for.
@@ -3928,6 +3927,24 @@ impl RpcClient {
                 token_account_filter,
                 commitment_config,
             ),
+        )
+    }
+
+    pub fn get_token_largest_accounts(
+        &self,
+        mint: &Pubkey,
+    ) -> ClientResult<Vec<RpcTokenAccountBalance>> {
+        self.invoke((self.rpc_client.as_ref()).get_token_largest_accounts(mint))
+    }
+
+    pub fn get_token_largest_accounts_with_commitment(
+        &self,
+        mint: &Pubkey,
+        commitment_config: CommitmentConfig,
+    ) -> RpcResult<Vec<RpcTokenAccountBalance>> {
+        self.invoke(
+            (self.rpc_client.as_ref())
+                .get_token_largest_accounts_with_commitment(mint, commitment_config),
         )
     }
 

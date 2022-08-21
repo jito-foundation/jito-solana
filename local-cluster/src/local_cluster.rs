@@ -49,7 +49,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_vote_program::{
         vote_instruction,
-        vote_state::{VoteInit, VoteState},
+        vote_state::{self, VoteInit},
     },
     std::{
         collections::HashMap,
@@ -280,7 +280,8 @@ impl LocalCluster {
             socket_addr_space,
             DEFAULT_TPU_USE_QUIC,
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
-        );
+        )
+        .expect("assume successful validator start");
 
         let mut validators = HashMap::new();
         let leader_info = ValidatorInfo {
@@ -424,7 +425,7 @@ impl LocalCluster {
         mut voting_keypair: Option<Arc<Keypair>>,
         socket_addr_space: SocketAddrSpace,
     ) -> Pubkey {
-        let (rpc, tpu) = self.entry_point_info.client_facing_addr();
+        let (rpc, tpu) = cluster_tests::get_client_facing_addr(&self.entry_point_info);
         let client = ThinClient::new(rpc, tpu, self.connection_cache.clone());
 
         // Must have enough tokens to fund vote account and set delegate
@@ -478,7 +479,8 @@ impl LocalCluster {
             socket_addr_space,
             DEFAULT_TPU_USE_QUIC,
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
-        );
+        )
+        .expect("assume successful validator start");
 
         let validator_pubkey = validator_keypair.pubkey();
         let validator_info = ClusterValidatorInfo::new(
@@ -510,7 +512,7 @@ impl LocalCluster {
     }
 
     pub fn transfer(&self, source_keypair: &Keypair, dest_pubkey: &Pubkey, lamports: u64) -> u64 {
-        let (rpc, tpu) = self.entry_point_info.client_facing_addr();
+        let (rpc, tpu) = cluster_tests::get_client_facing_addr(&self.entry_point_info);
         let client = ThinClient::new(rpc, tpu, self.connection_cache.clone());
         Self::transfer_with_client(&client, source_keypair, dest_pubkey, lamports)
     }
@@ -706,7 +708,7 @@ impl LocalCluster {
             (Ok(Some(stake_account)), Ok(Some(vote_account))) => {
                 match (
                     stake_state::stake_from(&stake_account),
-                    VoteState::from(&vote_account),
+                    vote_state::from(&vote_account),
                 ) {
                     (Some(stake_state), Some(vote_state)) => {
                         if stake_state.delegation.voter_pubkey != vote_account_pubkey
@@ -757,7 +759,7 @@ impl Cluster for LocalCluster {
 
     fn get_validator_client(&self, pubkey: &Pubkey) -> Option<ThinClient> {
         self.validators.get(pubkey).map(|f| {
-            let (rpc, tpu) = f.info.contact_info.client_facing_addr();
+            let (rpc, tpu) = cluster_tests::get_client_facing_addr(&f.info.contact_info);
             ThinClient::new(rpc, tpu, self.connection_cache.clone())
         })
     }
@@ -839,7 +841,8 @@ impl Cluster for LocalCluster {
             socket_addr_space,
             DEFAULT_TPU_USE_QUIC,
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
-        );
+        )
+        .expect("assume successful validator start");
         cluster_validator_info.validator = Some(restarted_node);
         cluster_validator_info
     }

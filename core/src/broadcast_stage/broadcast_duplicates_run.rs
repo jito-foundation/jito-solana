@@ -3,14 +3,14 @@ use {
     crate::cluster_nodes::ClusterNodesCache,
     itertools::Itertools,
     solana_entry::entry::Entry,
-    solana_gossip::cluster_info::DATA_PLANE_FANOUT,
+    solana_gossip::contact_info::ContactInfo,
     solana_ledger::shred::{ProcessShredsStats, Shredder},
     solana_sdk::{
         hash::Hash,
         signature::{Keypair, Signature, Signer},
         system_transaction,
     },
-    std::collections::HashSet,
+    std::{collections::HashSet, net::SocketAddr},
 };
 
 pub const MINIMUM_DUPLICATE_SLOT: Slot = 20;
@@ -271,12 +271,6 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             (bank_forks.root_bank(), bank_forks.working_bank())
         };
         let self_pubkey = cluster_info.id();
-        let nodes: Vec<_> = cluster_info
-            .all_peers()
-            .into_iter()
-            .map(|(node, _)| node)
-            .collect();
-
         // Create cluster partition.
         let cluster_partition: HashSet<Pubkey> = {
             let mut cumilative_stake = 0;
@@ -303,17 +297,8 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         let packets: Vec<_> = shreds
             .iter()
             .filter_map(|shred| {
-                let addr = cluster_nodes
-                    .get_broadcast_addrs(
-                        &shred.id(),
-                        &root_bank,
-                        DATA_PLANE_FANOUT,
-                        socket_addr_space,
-                    )
-                    .first()
-                    .copied()?;
-                let node = nodes.iter().find(|node| node.tvu == addr)?;
-                if !socket_addr_space.check(&node.tvu) {
+                let node = cluster_nodes.get_broadcast_peer(&shred.id())?;
+                if ContactInfo::is_valid_address(&node.tvu, socket_addr_space) {
                     return None;
                 }
                 if self
