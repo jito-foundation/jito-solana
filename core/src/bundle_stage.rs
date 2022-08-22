@@ -982,7 +982,7 @@ impl BundleStage {
                 }
                 Err(RecvError) => {
                     error!("shutting down bundle_stage");
-                    break;
+                    return;
                 }
             }
         }
