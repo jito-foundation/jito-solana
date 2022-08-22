@@ -433,6 +433,14 @@ impl Validator {
             info!("entrypoint: {:?}", cluster_entrypoint);
         }
 
+        if rayon::ThreadPoolBuilder::new()
+            .thread_name(|ix| format!("solRayonGlob{:02}", ix))
+            .build_global()
+            .is_err()
+        {
+            warn!("Rayon global thread pool already initialized");
+        }
+
         if solana_perf::perf_libs::api().is_some() {
             info!("Initializing sigverify, this could take a while...");
         } else {
@@ -2087,7 +2095,7 @@ fn move_and_async_delete_path(path: impl AsRef<Path> + Copy) {
     std::fs::rename(&path, &path_delete).unwrap();
 
     Builder::new()
-        .name("delete_path".to_string())
+        .name("solDeletePath".to_string())
         .spawn(move || {
             std::fs::remove_dir_all(&path_delete).unwrap();
             info!(

@@ -2218,6 +2218,10 @@ impl AccountsDb {
             .fetch_add(measure.as_us(), Ordering::Relaxed);
     }
 
+    /// increment store_counts to non-zero for all stores that can not be deleted.
+    /// a store cannot be deleted if:
+    /// 1. one of the pubkeys in the store has account info to a store whose store count is not going to zero
+    /// 2. a pubkey we were planning to remove is not removing all stores that contain the account
     fn calc_delete_dependencies(
         purges: &HashMap<Pubkey, (SlotList<AccountInfo>, RefCount)>,
         store_counts: &mut HashMap<AppendVecId, (usize, HashSet<Pubkey>)>,
@@ -2227,7 +2231,28 @@ impl AccountsDb {
         // then increment their storage count.
         let mut already_counted = HashSet::new();
         for (pubkey, (account_infos, ref_count_from_storage)) in purges.iter() {
-            let no_delete = if account_infos.len() as RefCount != *ref_count_from_storage {
+            if account_infos.len() as RefCount == *ref_count_from_storage {
+                let mut delete = true;
+                for (_slot, account_info) in account_infos {
+                    debug!(
+                        "calc_delete_dependencies()
+                        storage id: {},
+                        count len: {}",
+                        account_info.store_id(),
+                        store_counts.get(&account_info.store_id()).unwrap().0,
+                    );
+                    if store_counts.get(&account_info.store_id()).unwrap().0 != 0 {
+                        // one of the pubkeys in the store has account info to a store whose store count is not going to zero
+                        delete = false;
+                        break;
+                    }
+                }
+                if delete {
+                    // this pubkey can be deleted from all stores it is in
+                    continue;
+                }
+            } else {
+                // a pubkey we were planning to remove is not removing all stores that contain the account
                 debug!(
                     "calc_delete_dependencies(),
                     pubkey: {},
@@ -2239,45 +2264,29 @@ impl AccountsDb {
                     account_infos.len(),
                     ref_count_from_storage,
                 );
-                true
-            } else {
-                let mut no_delete = false;
-                for (_slot, account_info) in account_infos {
-                    debug!(
-                        "calc_delete_dependencies()
-                        storage id: {},
-                        count len: {}",
-                        account_info.store_id(),
-                        store_counts.get(&account_info.store_id()).unwrap().0,
-                    );
-                    if store_counts.get(&account_info.store_id()).unwrap().0 != 0 {
-                        no_delete = true;
-                        break;
-                    }
-                }
-                no_delete
-            };
-            if no_delete {
-                let mut pending_store_ids = HashSet::new();
-                for (_bank_id, account_info) in account_infos {
-                    if !already_counted.contains(&account_info.store_id()) {
-                        pending_store_ids.insert(account_info.store_id());
-                    }
-                }
-                while !pending_store_ids.is_empty() {
-                    let id = pending_store_ids.iter().next().cloned().unwrap();
-                    pending_store_ids.remove(&id);
-                    if !already_counted.insert(id) {
-                        continue;
-                    }
-                    store_counts.get_mut(&id).unwrap().0 += 1;
+            }
 
-                    let affected_pubkeys = &store_counts.get(&id).unwrap().1;
-                    for key in affected_pubkeys {
-                        for (_slot, account_info) in &purges.get(key).unwrap().0 {
-                            if !already_counted.contains(&account_info.store_id()) {
-                                pending_store_ids.insert(account_info.store_id());
-                            }
+            // increment store_counts to non-zero for all stores that can not be deleted.
+            let mut pending_store_ids = HashSet::new();
+            for (_slot, account_info) in account_infos {
+                if !already_counted.contains(&account_info.store_id()) {
+                    pending_store_ids.insert(account_info.store_id());
+                }
+            }
+            while !pending_store_ids.is_empty() {
+                let id = pending_store_ids.iter().next().cloned().unwrap();
+                pending_store_ids.remove(&id);
+                if !already_counted.insert(id) {
+                    continue;
+                }
+                // the point of all this code: increment the store count to non-zero
+                store_counts.get_mut(&id).unwrap().0 += 1;
+
+                let affected_pubkeys = &store_counts.get(&id).unwrap().1;
+                for key in affected_pubkeys {
+                    for (_slot, account_info) in &purges.get(key).unwrap().0 {
+                        if !already_counted.contains(&account_info.store_id()) {
+                            pending_store_ids.insert(account_info.store_id());
                         }
                     }
                 }
@@ -6163,7 +6172,7 @@ impl AccountsDb {
         AccountsHash::checked_cast_for_capitalization(balances.map(|b| b as u128).sum::<u128>())
     }
 
-    fn calculate_accounts_hash(
+    pub fn calculate_accounts_hash(
         &self,
         max_slot: Slot,
         config: &CalcAccountsHashConfig<'_>,
@@ -6671,20 +6680,18 @@ impl AccountsDb {
     }
 
     /// storages are sorted by slot and have range info.
-    /// if we know slots_per_epoch, then add all stores older than slots_per_epoch to dirty_stores so clean visits these slots
-    fn mark_old_slots_as_dirty(&self, storages: &SortedStorages, slots_per_epoch: Option<Slot>) {
-        if let Some(slots_per_epoch) = slots_per_epoch {
-            let max = storages.max_slot_inclusive();
-            let acceptable_straggler_slot_count = 100; // do nothing special for these old stores which will likely get cleaned up shortly
-            let sub = slots_per_epoch + acceptable_straggler_slot_count;
-            let in_epoch_range_start = max.saturating_sub(sub);
-            for (slot, storages) in storages.iter_range(..in_epoch_range_start) {
-                if let Some(storages) = storages {
-                    storages.iter().for_each(|store| {
-                        self.dirty_stores
-                            .insert((slot, store.append_vec_id()), store.clone());
-                    });
-                }
+    /// add all stores older than slots_per_epoch to dirty_stores so clean visits these slots
+    fn mark_old_slots_as_dirty(&self, storages: &SortedStorages, slots_per_epoch: Slot) {
+        let max = storages.max_slot_inclusive();
+        let acceptable_straggler_slot_count = 100; // do nothing special for these old stores which will likely get cleaned up shortly
+        let sub = slots_per_epoch + acceptable_straggler_slot_count;
+        let in_epoch_range_start = max.saturating_sub(sub);
+        for (slot, storages) in storages.iter_range(..in_epoch_range_start) {
+            if let Some(storages) = storages {
+                storages.iter().for_each(|store| {
+                    self.dirty_stores
+                        .insert((slot, store.append_vec_id()), store.clone());
+                });
             }
         }
     }
@@ -6923,7 +6930,7 @@ impl AccountsDb {
             "cannot accurately capture all data for debugging if accounts cache is being used"
         );
 
-        self.mark_old_slots_as_dirty(storages, Some(config.epoch_schedule.slots_per_epoch));
+        self.mark_old_slots_as_dirty(storages, config.epoch_schedule.slots_per_epoch);
 
         let (num_hash_scan_passes, bins_per_pass) = Self::bins_per_pass(self.num_hash_scan_passes);
         let use_bg_thread_pool = config.use_bg_thread_pool;
@@ -7590,17 +7597,15 @@ impl AccountsDb {
                 stores
                     .into_par_iter()
                     .map(|store| {
-                        let accounts = store.all_accounts();
                         let slot = store.slot();
-                        accounts
-                            .into_iter()
+                        store
+                            .accounts
+                            .account_iter()
                             .map(|account| (slot, account.meta.pubkey))
-                            .collect::<HashSet<(Slot, Pubkey)>>()
+                            .collect::<Vec<(Slot, Pubkey)>>()
                     })
-                    .reduce(HashSet::new, |mut reduced, store_pubkeys| {
-                        reduced.extend(store_pubkeys);
-                        reduced
-                    })
+                    .flatten()
+                    .collect::<HashSet<_>>()
             })
         };
         self.remove_dead_slots_metadata(

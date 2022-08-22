@@ -3131,7 +3131,7 @@ impl Bank {
         thread_pool: &ThreadPool,
         metrics: &mut RewardsMetrics,
         update_rewards_from_cached_accounts: bool,
-    ) -> f64 {
+    ) {
         let stake_history = self.stakes_cache.stakes().history().clone();
         let vote_with_stake_delegations_map = {
             let mut m = Measure::start("load_vote_and_stake_accounts_us");
@@ -3197,7 +3197,7 @@ impl Bank {
         metrics.calculate_points_us.fetch_add(m.as_us(), Relaxed);
 
         if points == 0 {
-            return 0.0;
+            return;
         }
 
         // pay according to point value
@@ -3282,20 +3282,8 @@ impl Bank {
         metrics.redeem_rewards_us += m.as_us();
 
         self.store_stake_accounts(&stake_rewards, metrics);
-        let mut vote_rewards = self.store_vote_accounts(vote_account_rewards, metrics);
-
-        let additional_reserve = stake_rewards.len() + vote_rewards.len();
-        {
-            let mut rewards = self.rewards.write().unwrap();
-            rewards.reserve(additional_reserve);
-            rewards.append(&mut vote_rewards);
-            stake_rewards
-                .into_iter()
-                .filter(|x| x.get_stake_reward() > 0)
-                .for_each(|x| rewards.push((x.stake_pubkey, x.stake_reward_info)));
-        }
-
-        point_value.rewards as f64 / point_value.points as f64
+        let vote_rewards = self.store_vote_accounts(vote_account_rewards, metrics);
+        self.update_reward_history(stake_rewards, vote_rewards);
     }
 
     fn store_stake_accounts(&self, stake_rewards: &[StakeReward], metrics: &mut RewardsMetrics) {
@@ -3348,6 +3336,21 @@ impl Bank {
         m.stop();
         metrics.store_vote_accounts_us.fetch_add(m.as_us(), Relaxed);
         vote_rewards
+    }
+
+    fn update_reward_history(
+        &self,
+        stake_rewards: Vec<StakeReward>,
+        mut vote_rewards: Vec<(Pubkey, RewardInfo)>,
+    ) {
+        let additional_reserve = stake_rewards.len() + vote_rewards.len();
+        let mut rewards = self.rewards.write().unwrap();
+        rewards.reserve(additional_reserve);
+        rewards.append(&mut vote_rewards);
+        stake_rewards
+            .into_iter()
+            .filter(|x| x.get_stake_reward() > 0)
+            .for_each(|x| rewards.push((x.stake_pubkey, x.stake_reward_info)));
     }
 
     fn update_recent_blockhashes_locked(&self, locked_blockhash_queue: &BlockhashQueue) {
@@ -7553,7 +7556,10 @@ impl Bank {
         let mut clean_time = Measure::start("clean");
         if !accounts_db_skip_shrink && self.slot() > 0 {
             info!("cleaning..");
-            self._clean_accounts(true, true, Some(last_full_snapshot_slot));
+            self.rc
+                .accounts
+                .accounts_db
+                .clean_accounts(None, true, Some(last_full_snapshot_slot));
         }
         clean_time.stop();
 
