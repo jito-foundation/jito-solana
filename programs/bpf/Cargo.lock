@@ -4040,9 +4040,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.84"
+version = "1.0.85"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4f86b279ded49a29018bdf9c7436a9473296cef8d4a310614fa402854f48f5d"
+checksum = "e55a28e3aaef9d5ce0506d0a14dbba8054ddc7e499ef522dd8b26859ec9d4a44"
 dependencies = [
  "itoa",
  "ryu",
@@ -4330,6 +4330,7 @@ dependencies = [
  "futures 0.3.23",
  "solana-banks-interface",
  "solana-client",
+ "solana-gossip",
  "solana-runtime",
  "solana-sdk 1.12.0",
  "solana-send-transaction-service",
