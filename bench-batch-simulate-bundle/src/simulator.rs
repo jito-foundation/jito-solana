@@ -113,7 +113,7 @@ impl Simulator {
             })
             .collect::<Vec<RpcSimulateBundleConfig>>();
 
-        return match rpc_client
+        match rpc_client
             .batch_simulate_bundle_with_config(bundles.into_iter().zip(configs).collect())
         {
             Ok(response) => {
@@ -144,6 +144,6 @@ impl Simulator {
                 error!("error from rpc {}", e);
                 None
             }
-        };
+        }
     }
 }
