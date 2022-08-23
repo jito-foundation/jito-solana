@@ -201,7 +201,7 @@ fn upload_roots(
     }
 }
 
-fn execute_transactions(rpc_client: Arc<RpcClient>, txs: Vec<Transaction>) {
+pub fn execute_transactions(rpc_client: Arc<RpcClient>, txs: Vec<Transaction>) {
     const DELAY: Duration = Duration::from_millis(500);
     const MAX_RETRIES: usize = 5;
 

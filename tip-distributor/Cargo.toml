@@ -36,3 +36,7 @@ path = "src/bin/stake-meta-generator.rs"
 [[bin]]
 name = "merkle-root-generator"
 path = "src/bin/merkle-root-generator.rs"
+
+[[bin]]
+name = "update-merkle-root-authority"
+path = "src/bin/update_merkle_root_authority.rs"
