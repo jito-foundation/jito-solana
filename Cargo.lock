@@ -185,6 +185,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "anchor-client"
+version = "0.24.2"
+dependencies = [
+ "anchor-lang",
+ "anyhow",
+ "regex",
+ "serde",
+ "solana-account-decoder",
+ "solana-client",
+ "solana-sdk 1.12.0",
+ "thiserror",
+ "url 2.2.2",
+]
+
+[[package]]
 name = "anchor-derive-accounts"
 version = "0.24.2"
 dependencies = [
@@ -6586,6 +6601,7 @@ dependencies = [
 name = "solana-tip-distributor"
 version = "1.12.0"
 dependencies = [
+ "anchor-client",
  "anchor-lang",
  "bigdecimal",
  "clap 3.2.17",
