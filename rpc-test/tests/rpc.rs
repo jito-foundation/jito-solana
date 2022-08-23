@@ -233,194 +233,195 @@ fn test_rpc_slot_updates() {
     }
 }
 
-// #[test]
-// fn test_rpc_subscriptions() {
-//     solana_logger::setup();
-//
-//     let alice = Keypair::new();
-//     let test_validator =
-//         TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
-//
-//     let transactions_socket = UdpSocket::bind("0.0.0.0:0").unwrap();
-//     transactions_socket.connect(test_validator.tpu()).unwrap();
-//
-//     let rpc_client = RpcClient::new(test_validator.rpc_url());
-//     let recent_blockhash = rpc_client.get_latest_blockhash().unwrap();
-//
-//     // Create transaction signatures to subscribe to
-//     let transfer_amount = Rent::default().minimum_balance(0);
-//     let transactions: Vec<Transaction> = (0..1000)
-//         .map(|_| {
-//             system_transaction::transfer(
-//                 &alice,
-//                 &solana_sdk::pubkey::new_rand(),
-//                 transfer_amount,
-//                 recent_blockhash,
-//             )
-//         })
-//         .collect();
-//     let mut signature_set: HashSet<Signature> =
-//         transactions.iter().map(|tx| tx.signatures[0]).collect();
-//     let account_set: HashSet<Pubkey> = transactions
-//         .iter()
-//         .map(|tx| tx.message.account_keys[1])
-//         .collect();
-//
-//     // Track when subscriptions are ready
-//     let (ready_sender, ready_receiver) = unbounded::<()>();
-//     // Track account notifications are received
-//     let (account_sender, account_receiver) = unbounded::<RpcResponse<UiAccount>>();
-//     // Track when status notifications are received
-//     let (status_sender, status_receiver) =
-//         unbounded::<(Signature, RpcResponse<RpcSignatureResult>)>();
-//
-//     // Create the pub sub runtime
-//     let rt = Runtime::new().unwrap();
-//     let rpc_pubsub_url = test_validator.rpc_pubsub_url();
-//     let signature_set_clone = signature_set.clone();
-//     rt.spawn(async move {
-//         let pubsub_client = Arc::new(PubsubClient::new(&rpc_pubsub_url).await.unwrap());
-//
-//         // Subscribe to signature notifications
-//         for signature in signature_set_clone {
-//             let status_sender = status_sender.clone();
-//             tokio::spawn({
-//                 let _pubsub_client = Arc::clone(&pubsub_client);
-//                 async move {
-//                     let (mut sig_notifications, sig_unsubscribe) = _pubsub_client
-//                         .signature_subscribe(
-//                             &signature,
-//                             Some(RpcSignatureSubscribeConfig {
-//                                 commitment: Some(CommitmentConfig::confirmed()),
-//                                 ..RpcSignatureSubscribeConfig::default()
-//                             }),
-//                         )
-//                         .await
-//                         .unwrap();
-//
-//                     let response = sig_notifications.next().await.unwrap();
-//                     status_sender.send((signature, response)).unwrap();
-//                     sig_unsubscribe().await;
-//                 }
-//             });
-//         }
-//
-//         // Subscribe to account notifications
-//         for pubkey in account_set {
-//             let account_sender = account_sender.clone();
-//             tokio::spawn({
-//                 let _pubsub_client = Arc::clone(&pubsub_client);
-//                 async move {
-//                     let (mut account_notifications, account_unsubscribe) = _pubsub_client
-//                         .account_subscribe(
-//                             &pubkey,
-//                             Some(RpcAccountInfoConfig {
-//                                 commitment: Some(CommitmentConfig::confirmed()),
-//                                 ..RpcAccountInfoConfig::default()
-//                             }),
-//                         )
-//                         .await
-//                         .unwrap();
-//
-//                     let response = account_notifications.next().await.unwrap();
-//                     account_sender.send(response).unwrap();
-//                     account_unsubscribe().await;
-//                 }
-//             });
-//         }
-//
-//         // Signal ready after the next slot notification
-//         tokio::spawn({
-//             let _pubsub_client = Arc::clone(&pubsub_client);
-//             async move {
-//                 let (mut slot_notifications, slot_unsubscribe) =
-//                     _pubsub_client.slot_subscribe().await.unwrap();
-//                 let _response = slot_notifications.next().await.unwrap();
-//                 ready_sender.send(()).unwrap();
-//                 slot_unsubscribe().await;
-//             }
-//         });
-//     });
-//
-//     // Wait for signature subscriptions
-//     ready_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
-//
-//     let rpc_client = RpcClient::new(test_validator.rpc_url());
-//     let mut mint_balance = rpc_client
-//         .get_balance_with_commitment(&alice.pubkey(), CommitmentConfig::processed())
-//         .unwrap()
-//         .value;
-//     assert!(mint_balance >= transactions.len() as u64);
-//
-//     // Send all transactions to tpu socket for processing
-//     transactions.iter().for_each(|tx| {
-//         transactions_socket
-//             .send(&bincode::serialize(&tx).unwrap())
-//             .unwrap();
-//     });
-//
-//     // Track mint balance to know when transactions have completed
-//     let now = Instant::now();
-//     let expected_mint_balance = mint_balance - (transfer_amount * transactions.len() as u64);
-//     while mint_balance != expected_mint_balance && now.elapsed() < Duration::from_secs(15) {
-//         mint_balance = rpc_client
-//             .get_balance_with_commitment(&alice.pubkey(), CommitmentConfig::processed())
-//             .unwrap()
-//             .value;
-//         sleep(Duration::from_millis(100));
-//     }
-//     if mint_balance != expected_mint_balance {
-//         error!("mint-check timeout. mint_balance {:?}", mint_balance);
-//     }
-//
-//     // Wait for all signature subscriptions
-//     /* Set a large 30-sec timeout here because the timing of the above tokio process is
-//      * highly non-deterministic.  The test was too flaky at 15-second timeout.  Debugging
-//      * show occasional multi-second delay which could come from multiple sources -- other
-//      * tokio tasks, tokio scheduler, OS scheduler.  The async nature makes it hard to
-//      * track down the origin of the delay.
-//      */
-//     let deadline = Instant::now() + Duration::from_secs(30);
-//     while !signature_set.is_empty() {
-//         let timeout = deadline.saturating_duration_since(Instant::now());
-//         match status_receiver.recv_timeout(timeout) {
-//             Ok((sig, result)) => {
-//                 if let RpcSignatureResult::ProcessedSignature(result) = result.value {
-//                     assert!(result.err.is_none());
-//                     assert!(signature_set.remove(&sig));
-//                 } else {
-//                     panic!("Unexpected result");
-//                 }
-//             }
-//             Err(_err) => {
-//                 panic!(
-//                     "recv_timeout, {}/{} signatures remaining",
-//                     signature_set.len(),
-//                     transactions.len()
-//                 );
-//             }
-//         }
-//     }
-//
-//     let deadline = Instant::now() + Duration::from_secs(10);
-//     let mut account_notifications = transactions.len();
-//     while account_notifications > 0 {
-//         let timeout = deadline.saturating_duration_since(Instant::now());
-//         match account_receiver.recv_timeout(timeout) {
-//             Ok(result) => {
-//                 assert_eq!(result.value.lamports, Rent::default().minimum_balance(0));
-//                 account_notifications -= 1;
-//             }
-//             Err(_err) => {
-//                 panic!(
-//                     "recv_timeout, {}/{} accounts remaining",
-//                     account_notifications,
-//                     transactions.len()
-//                 );
-//             }
-//         }
-//     }
-// }
+#[test]
+#[ignore] // TODO (LB): fix
+fn test_rpc_subscriptions() {
+    solana_logger::setup();
+
+    let alice = Keypair::new();
+    let test_validator =
+        TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
+
+    let transactions_socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+    transactions_socket.connect(test_validator.tpu()).unwrap();
+
+    let rpc_client = RpcClient::new(test_validator.rpc_url());
+    let recent_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    // Create transaction signatures to subscribe to
+    let transfer_amount = Rent::default().minimum_balance(0);
+    let transactions: Vec<Transaction> = (0..1000)
+        .map(|_| {
+            system_transaction::transfer(
+                &alice,
+                &solana_sdk::pubkey::new_rand(),
+                transfer_amount,
+                recent_blockhash,
+            )
+        })
+        .collect();
+    let mut signature_set: HashSet<Signature> =
+        transactions.iter().map(|tx| tx.signatures[0]).collect();
+    let account_set: HashSet<Pubkey> = transactions
+        .iter()
+        .map(|tx| tx.message.account_keys[1])
+        .collect();
+
+    // Track when subscriptions are ready
+    let (ready_sender, ready_receiver) = unbounded::<()>();
+    // Track account notifications are received
+    let (account_sender, account_receiver) = unbounded::<RpcResponse<UiAccount>>();
+    // Track when status notifications are received
+    let (status_sender, status_receiver) =
+        unbounded::<(Signature, RpcResponse<RpcSignatureResult>)>();
+
+    // Create the pub sub runtime
+    let rt = Runtime::new().unwrap();
+    let rpc_pubsub_url = test_validator.rpc_pubsub_url();
+    let signature_set_clone = signature_set.clone();
+    rt.spawn(async move {
+        let pubsub_client = Arc::new(PubsubClient::new(&rpc_pubsub_url).await.unwrap());
+
+        // Subscribe to signature notifications
+        for signature in signature_set_clone {
+            let status_sender = status_sender.clone();
+            tokio::spawn({
+                let _pubsub_client = Arc::clone(&pubsub_client);
+                async move {
+                    let (mut sig_notifications, sig_unsubscribe) = _pubsub_client
+                        .signature_subscribe(
+                            &signature,
+                            Some(RpcSignatureSubscribeConfig {
+                                commitment: Some(CommitmentConfig::confirmed()),
+                                ..RpcSignatureSubscribeConfig::default()
+                            }),
+                        )
+                        .await
+                        .unwrap();
+
+                    let response = sig_notifications.next().await.unwrap();
+                    status_sender.send((signature, response)).unwrap();
+                    sig_unsubscribe().await;
+                }
+            });
+        }
+
+        // Subscribe to account notifications
+        for pubkey in account_set {
+            let account_sender = account_sender.clone();
+            tokio::spawn({
+                let _pubsub_client = Arc::clone(&pubsub_client);
+                async move {
+                    let (mut account_notifications, account_unsubscribe) = _pubsub_client
+                        .account_subscribe(
+                            &pubkey,
+                            Some(RpcAccountInfoConfig {
+                                commitment: Some(CommitmentConfig::confirmed()),
+                                ..RpcAccountInfoConfig::default()
+                            }),
+                        )
+                        .await
+                        .unwrap();
+
+                    let response = account_notifications.next().await.unwrap();
+                    account_sender.send(response).unwrap();
+                    account_unsubscribe().await;
+                }
+            });
+        }
+
+        // Signal ready after the next slot notification
+        tokio::spawn({
+            let _pubsub_client = Arc::clone(&pubsub_client);
+            async move {
+                let (mut slot_notifications, slot_unsubscribe) =
+                    _pubsub_client.slot_subscribe().await.unwrap();
+                let _response = slot_notifications.next().await.unwrap();
+                ready_sender.send(()).unwrap();
+                slot_unsubscribe().await;
+            }
+        });
+    });
+
+    // Wait for signature subscriptions
+    ready_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    let rpc_client = RpcClient::new(test_validator.rpc_url());
+    let mut mint_balance = rpc_client
+        .get_balance_with_commitment(&alice.pubkey(), CommitmentConfig::processed())
+        .unwrap()
+        .value;
+    assert!(mint_balance >= transactions.len() as u64);
+
+    // Send all transactions to tpu socket for processing
+    transactions.iter().for_each(|tx| {
+        transactions_socket
+            .send(&bincode::serialize(&tx).unwrap())
+            .unwrap();
+    });
+
+    // Track mint balance to know when transactions have completed
+    let now = Instant::now();
+    let expected_mint_balance = mint_balance - (transfer_amount * transactions.len() as u64);
+    while mint_balance != expected_mint_balance && now.elapsed() < Duration::from_secs(15) {
+        mint_balance = rpc_client
+            .get_balance_with_commitment(&alice.pubkey(), CommitmentConfig::processed())
+            .unwrap()
+            .value;
+        sleep(Duration::from_millis(100));
+    }
+    if mint_balance != expected_mint_balance {
+        error!("mint-check timeout. mint_balance {:?}", mint_balance);
+    }
+
+    // Wait for all signature subscriptions
+    /* Set a large 30-sec timeout here because the timing of the above tokio process is
+     * highly non-deterministic.  The test was too flaky at 15-second timeout.  Debugging
+     * show occasional multi-second delay which could come from multiple sources -- other
+     * tokio tasks, tokio scheduler, OS scheduler.  The async nature makes it hard to
+     * track down the origin of the delay.
+     */
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !signature_set.is_empty() {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        match status_receiver.recv_timeout(timeout) {
+            Ok((sig, result)) => {
+                if let RpcSignatureResult::ProcessedSignature(result) = result.value {
+                    assert!(result.err.is_none());
+                    assert!(signature_set.remove(&sig));
+                } else {
+                    panic!("Unexpected result");
+                }
+            }
+            Err(_err) => {
+                panic!(
+                    "recv_timeout, {}/{} signatures remaining",
+                    signature_set.len(),
+                    transactions.len()
+                );
+            }
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut account_notifications = transactions.len();
+    while account_notifications > 0 {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        match account_receiver.recv_timeout(timeout) {
+            Ok(result) => {
+                assert_eq!(result.value.lamports, Rent::default().minimum_balance(0));
+                account_notifications -= 1;
+            }
+            Err(_err) => {
+                panic!(
+                    "recv_timeout, {}/{} accounts remaining",
+                    account_notifications,
+                    transactions.len()
+                );
+            }
+        }
+    }
+}
 
 fn run_tpu_send_transaction(tpu_use_quic: bool) {
     let mint_keypair = Keypair::new();
