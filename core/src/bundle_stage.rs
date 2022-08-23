@@ -761,7 +761,7 @@ impl BundleStage {
         let _lock = tip_manager.lock();
         let tip_pdas = tip_manager.get_tip_accounts();
         if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas) {
-            let _ = Self::maybe_initialize_and_change_tip_receiver(
+            Self::maybe_initialize_and_change_tip_receiver(
                 bank_start,
                 tip_manager,
                 qos_service,
@@ -1049,11 +1049,11 @@ impl BundleStage {
         bank_slot: Slot,
         mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
     ) -> BundleExecutionResult<Option<usize>> {
-        return match recorder.record(bank_slot, mixins_txs) {
+        match recorder.record(bank_slot, mixins_txs) {
             Ok(maybe_tx_index) => Ok(maybe_tx_index),
             Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
             Err(e) => panic!("Poh recorder returned unexpected error: {:?}", e),
-        };
+        }
     }
 }
 
