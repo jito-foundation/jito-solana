@@ -6,9 +6,7 @@ use {
     solana_measure::measure::Measure,
     solana_metrics::datapoint_debug,
     solana_runtime::{
-        account_overrides::AccountOverrides,
-        bank::{Bank, TransactionBalances},
-        transaction_batch::TransactionBatch,
+        account_overrides::AccountOverrides, bank::Bank, transaction_batch::TransactionBatch,
     },
     solana_sdk::{account::ReadableAccount, pubkey::Pubkey},
     solana_transaction_status::{
@@ -18,7 +16,7 @@ use {
         extension::StateWithExtensions,
         state::{Account as TokenAccount, Mint},
     },
-    std::{collections::HashMap, sync::Arc},
+    std::collections::HashMap,
 };
 
 fn get_mint_decimals(bank: &Bank, mint: &Pubkey) -> Option<u8> {
@@ -37,34 +35,6 @@ fn get_mint_decimals(bank: &Bank, mint: &Pubkey) -> Option<u8> {
 
         Some(decimals)
     }
-}
-
-pub fn collect_balances_with_cache(
-    batch: &TransactionBatch,
-    bank: &Arc<Bank>,
-    account_overrides: Option<&AccountOverrides>,
-) -> TransactionBalances {
-    let mut balances: TransactionBalances = vec![];
-    for transaction in batch.sanitized_transactions() {
-        let mut transaction_balances: Vec<u64> = vec![];
-        for account_key in transaction.message().account_keys().iter() {
-            let balance = {
-                if let Some(account_override) =
-                    account_overrides.and_then(|overrides| overrides.get(account_key))
-                {
-                    account_override.lamports()
-                } else {
-                    bank.get_account(account_key)
-                        .map(|a| a.lamports())
-                        .unwrap_or(0)
-                }
-            };
-
-            transaction_balances.push(balance);
-        }
-        balances.push(transaction_balances);
-    }
-    balances
 }
 
 pub fn collect_token_balances(

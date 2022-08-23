@@ -1125,6 +1125,7 @@ fn test_program_bpf_invoke_sanity() {
                 invoked_program_id.clone(),
                 invoked_program_id.clone(),
                 invoked_program_id.clone(),
+                invoked_program_id.clone(),
             ],
             Languages::Rust => vec![
                 system_program::id(),
@@ -1330,13 +1331,6 @@ fn test_program_bpf_invoke_sanity() {
                 invoked_program_id.clone(),
                 invoked_program_id.clone(),
             ],
-            None,
-        );
-
-        do_invoke_failure_test_local(
-            TEST_EXECUTABLE_LAMPORTS,
-            TransactionError::InstructionError(0, InstructionError::ExecutableLamportChange),
-            &[invoke_program_id.clone()],
             None,
         );
 
@@ -3804,7 +3798,6 @@ fn test_program_fees() {
         congestion_multiplier,
         &fee_structure,
         true,
-        true,
     );
     bank_client
         .send_and_confirm_message(&[&mint_keypair], message)
@@ -3825,7 +3818,6 @@ fn test_program_fees() {
         &sanitized_message,
         congestion_multiplier,
         &fee_structure,
-        true,
         true,
     );
     assert!(expected_normal_fee < expected_prioritized_fee);

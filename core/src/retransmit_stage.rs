@@ -305,13 +305,13 @@ fn retransmit_shred(
     shred_receiver_addr: Option<SocketAddr>,
 ) -> (/*root_distance:*/ usize, /*num_nodes:*/ usize) {
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) = cluster_nodes.maybe_extend_retransmit_addrs(
-        slot_leader,
-        key,
-        root_bank,
-        DATA_PLANE_FANOUT,
-        shred_receiver_addr,
-    );
+    let (root_distance, mut addrs) =
+        cluster_nodes.get_retransmit_addrs(slot_leader, key, root_bank, DATA_PLANE_FANOUT);
+
+    if let Some(addr) = shred_receiver_addr {
+        addrs.push(addr);
+    }
+
     let addrs: Vec<_> = addrs
         .into_iter()
         .filter(|addr| ContactInfo::is_valid_address(addr, socket_addr_space))
@@ -374,11 +374,11 @@ pub fn retransmitter(
     let num_threads = get_thread_count().min(8).max(sockets.len());
     let thread_pool = ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .thread_name(|i| format!("retransmit-{}", i))
+        .thread_name(|i| format!("solRetransmit{:02}", i))
         .build()
         .unwrap();
     Builder::new()
-        .name("solana-retransmitter".to_string())
+        .name("solRetransmittr".to_string())
         .spawn(move || loop {
             match retransmit(
                 &thread_pool,

@@ -1,10 +1,12 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
+
 use {
     crate::{
         bundle_account_locker::BundleAccountLocker,
         forward_packet_batches_by_accounts::ForwardPacketBatchesByAccounts,
+        immutable_deserialized_packet::ImmutableDeserializedPacket,
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
         leader_slot_banking_stage_timing_metrics::{
             LeaderExecuteAndCommitTimings, RecordTransactionsTimings,
@@ -475,7 +477,7 @@ impl BankingStage {
 
                 let bank_forks = bank_forks.clone();
                 Builder::new()
-                    .name(format!("solana-banking-stage-tx-{}", i))
+                    .name(format!("solBanknStgTx{:02}", i))
                     .spawn(move || {
                         Self::process_loop(
                             &verified_receiver,
@@ -1361,7 +1363,7 @@ impl BankingStage {
             );
 
             retryable_transaction_indexes.extend(execution_results.iter().enumerate().filter_map(
-                |(index, execution_result)| execution_result.was_executed().then(|| index),
+                |(index, execution_result)| execution_result.was_executed().then_some(index),
             ));
 
             return ExecuteAndCommitTransactionsOutput {
@@ -2051,25 +2053,25 @@ impl BankingStage {
         packet_count_upperbound: usize,
     ) -> Result<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>), RecvTimeoutError> {
         let start = Instant::now();
-        let mut aggregated_tracer_packet_stats_option: Option<SigverifyTracerPacketStats> = None;
-        let (mut packet_batches, new_tracer_packet_stats_option) =
+        let (mut packet_batches, mut aggregated_tracer_packet_stats_option) =
             verified_receiver.recv_timeout(recv_timeout)?;
 
-        if let Some(new_tracer_packet_stats) = &new_tracer_packet_stats_option {
-            if let Some(aggregated_tracer_packet_stats) = &mut aggregated_tracer_packet_stats_option
-            {
-                aggregated_tracer_packet_stats.aggregate(new_tracer_packet_stats);
-            } else {
-                aggregated_tracer_packet_stats_option = new_tracer_packet_stats_option;
-            }
-        }
-
         let mut num_packets_received: usize = packet_batches.iter().map(|batch| batch.len()).sum();
-        while let Ok((packet_batch, _tracer_packet_stats_option)) = verified_receiver.try_recv() {
+        while let Ok((packet_batch, tracer_packet_stats_option)) = verified_receiver.try_recv() {
             trace!("got more packet batches in banking stage");
             let (packets_received, packet_count_overflowed) = num_packets_received
                 .overflowing_add(packet_batch.iter().map(|batch| batch.len()).sum());
             packet_batches.extend(packet_batch);
+
+            if let Some(tracer_packet_stats) = &tracer_packet_stats_option {
+                if let Some(aggregated_tracer_packet_stats) =
+                    &mut aggregated_tracer_packet_stats_option
+                {
+                    aggregated_tracer_packet_stats.aggregate(tracer_packet_stats);
+                } else {
+                    aggregated_tracer_packet_stats_option = tracer_packet_stats_option;
+                }
+            }
 
             // Spend any leftover receive time budget to greedily receive more packet batches,
             // until the upperbound of the packet count is reached.
@@ -4264,6 +4266,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_forwarder_budget() {
         solana_logger::setup();
         // Create `PacketBatch` with 1 unprocessed packet
@@ -4351,6 +4354,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_handle_forwarding() {
         solana_logger::setup();
         // packets are deserialized upon receiving, failed packets will not be

@@ -162,7 +162,7 @@ impl BundleAccountLocker {
         let transaction_locks: Vec<TransactionAccountLocks> = bundle
             .transactions
             .iter()
-            .filter_map(|tx| tx.get_account_locks().ok())
+            .filter_map(|tx| tx.get_account_locks(64).ok()) // TODO (LB)
             .collect();
 
         if transaction_locks.len() != bundle.transactions.len() {

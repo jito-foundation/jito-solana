@@ -23,7 +23,7 @@ use {
         runtime_config::RuntimeConfig,
     },
     solana_sdk::{
-        account::{Account, AccountSharedData, ReadableAccount},
+        account::{Account, AccountSharedData},
         account_info::AccountInfo,
         clock::Slot,
         entrypoint::{deserialize, ProgramResult, SUCCESS},
@@ -40,7 +40,7 @@ use {
         signature::{Keypair, Signer},
         sysvar::{Sysvar, SysvarId},
     },
-    solana_vote_program::vote_state::{VoteState, VoteStateVersions},
+    solana_vote_program::vote_state::{self, VoteState, VoteStateVersions},
     std::{
         cell::RefCell,
         collections::{HashMap, HashSet},
@@ -291,23 +291,12 @@ impl solana_sdk::program_stubs::SyscallStubs for SyscallStubs {
                 }
                 _ => {}
             }
-            if borrowed_account.is_executable() != account_info.executable {
-                borrowed_account
-                    .set_executable(account_info.executable)
-                    .unwrap();
-            }
             // Change the owner at the end so that we are allowed to change the lamports and data before
             if borrowed_account.get_owner() != account_info.owner {
                 borrowed_account
                     .set_owner(account_info.owner.as_ref())
                     .unwrap();
             }
-            drop(borrowed_account);
-            let account = transaction_context
-                .get_account_at_index(instruction_account.index_in_transaction)
-                .unwrap()
-                .borrow();
-            assert_eq!(account.rent_epoch(), account_info.rent_epoch);
             if instruction_account.is_writable {
                 account_indices.push((instruction_account.index_in_caller, account_info_index));
             }
@@ -447,6 +436,7 @@ pub struct ProgramTest {
     prefer_bpf: bool,
     use_bpf_jit: bool,
     deactivate_feature_set: HashSet<Pubkey>,
+    transaction_account_lock_limit: Option<usize>,
 }
 
 impl Default for ProgramTest {
@@ -479,6 +469,7 @@ impl Default for ProgramTest {
             prefer_bpf,
             use_bpf_jit: false,
             deactivate_feature_set: HashSet::default(),
+            transaction_account_lock_limit: None,
         }
     }
 }
@@ -509,6 +500,11 @@ impl ProgramTest {
     /// Override the default maximum compute units
     pub fn set_compute_max_units(&mut self, compute_max_units: u64) {
         self.compute_max_units = Some(compute_max_units);
+    }
+
+    /// Override the default transaction account lock limit
+    pub fn set_transaction_account_lock_limit(&mut self, transaction_account_lock_limit: usize) {
+        self.transaction_account_lock_limit = Some(transaction_account_lock_limit);
     }
 
     /// Override the BPF compute budget
@@ -790,6 +786,7 @@ impl ProgramTest {
                     compute_unit_limit: max_units,
                     ..ComputeBudget::default()
                 }),
+                transaction_account_lock_limit: self.transaction_account_lock_limit,
                 ..RuntimeConfig::default()
             }),
         );
@@ -1065,14 +1062,14 @@ impl ProgramTestContext {
 
         // generate some vote activity for rewards
         let mut vote_account = bank.get_account(vote_account_address).unwrap();
-        let mut vote_state = VoteState::from(&vote_account).unwrap();
+        let mut vote_state = vote_state::from(&vote_account).unwrap();
 
         let epoch = bank.epoch();
         for _ in 0..number_of_credits {
             vote_state.increment_credits(epoch, 1);
         }
         let versioned = VoteStateVersions::new_current(vote_state);
-        VoteState::to(&versioned, &mut vote_account).unwrap();
+        vote_state::to(&versioned, &mut vote_account).unwrap();
         bank.store_account(vote_account_address, &vote_account);
     }
 

@@ -26,7 +26,7 @@ use {
         any::TypeId,
         cmp::Reverse,
         collections::HashMap,
-        iter::{once, repeat_with},
+        iter::repeat_with,
         marker::PhantomData,
         net::SocketAddr,
         ops::Deref,
@@ -114,98 +114,15 @@ impl ClusterNodes<BroadcastStage> {
         new_cluster_nodes(cluster_info, stakes)
     }
 
-    pub fn maybe_extend_broadcast_addrs(
-        &self,
-        shred: &ShredId,
-        root_bank: &Bank,
-        fanout: usize,
-        socket_addr_space: &SocketAddrSpace,
-        shred_receiver_addr: Option<SocketAddr>,
-    ) -> Vec<SocketAddr> {
-        let mut broadcast_addrs =
-            self.get_broadcast_addrs(shred, root_bank, fanout, socket_addr_space);
-        if let Some(extended_addr) = shred_receiver_addr {
-            broadcast_addrs.extend(vec![extended_addr]);
-        }
-        broadcast_addrs
-    }
-
-    pub(crate) fn get_broadcast_addrs(
-        &self,
-        shred: &ShredId,
-        root_bank: &Bank,
-        fanout: usize,
-        socket_addr_space: &SocketAddrSpace,
-    ) -> Vec<SocketAddr> {
-        const MAX_CONTACT_INFO_AGE: Duration = Duration::from_secs(2 * 60);
+    pub(crate) fn get_broadcast_peer(&self, shred: &ShredId) -> Option<&ContactInfo> {
         let shred_seed = shred.seed(&self.pubkey);
         let mut rng = ChaChaRng::from_seed(shred_seed);
-        let index = match self.weighted_shuffle.first(&mut rng) {
-            None => return Vec::default(),
-            Some(index) => index,
-        };
-        if let Some(node) = self.nodes[index].contact_info() {
-            let now = timestamp();
-            let age = Duration::from_millis(now.saturating_sub(node.wallclock));
-            if age < MAX_CONTACT_INFO_AGE
-                && ContactInfo::is_valid_address(&node.tvu, socket_addr_space)
-            {
-                return vec![node.tvu];
-            }
-        }
-        let mut rng = ChaChaRng::from_seed(shred_seed);
-        let nodes: Vec<&Node> = self
-            .weighted_shuffle
-            .clone()
-            .shuffle(&mut rng)
-            .map(|index| &self.nodes[index])
-            .collect();
-        if nodes.is_empty() {
-            return Vec::default();
-        }
-        if drop_redundant_turbine_path(shred.slot(), root_bank) {
-            let peers = once(nodes[0]).chain(get_retransmit_peers(fanout, 0, &nodes));
-            let addrs = peers.filter_map(Node::contact_info).map(|peer| peer.tvu);
-            return addrs
-                .filter(|addr| ContactInfo::is_valid_address(addr, socket_addr_space))
-                .collect();
-        }
-        let (neighbors, children) = compute_retransmit_peers(fanout, 0, &nodes);
-        neighbors[..1]
-            .iter()
-            .filter_map(|node| Some(node.contact_info()?.tvu))
-            .chain(
-                neighbors[1..]
-                    .iter()
-                    .filter_map(|node| Some(node.contact_info()?.tvu_forwards)),
-            )
-            .chain(
-                children
-                    .iter()
-                    .filter_map(|node| Some(node.contact_info()?.tvu)),
-            )
-            .filter(|addr| ContactInfo::is_valid_address(addr, socket_addr_space))
-            .collect()
+        let index = self.weighted_shuffle.first(&mut rng)?;
+        self.nodes[index].contact_info()
     }
 }
 
 impl ClusterNodes<RetransmitStage> {
-    pub fn maybe_extend_retransmit_addrs(
-        &self,
-        slot_leader: &Pubkey,
-        shred: &ShredId,
-        root_bank: &Bank,
-        fanout: usize,
-        shred_receiver_addr: Option<SocketAddr>,
-    ) -> (/*root_distance:*/ usize, Vec<SocketAddr>) {
-        let (root_distance, mut existing_addrs) =
-            self.get_retransmit_addrs(slot_leader, shred, root_bank, fanout);
-        if let Some(address) = shred_receiver_addr {
-            existing_addrs.extend(vec![address]);
-        }
-        (root_distance, existing_addrs)
-    }
-
     pub(crate) fn get_retransmit_addrs(
         &self,
         slot_leader: &Pubkey,

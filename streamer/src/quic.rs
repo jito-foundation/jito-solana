@@ -123,6 +123,8 @@ pub struct StreamStats {
     pub(crate) total_invalid_chunk_size: AtomicUsize,
     pub(crate) total_packets_allocated: AtomicUsize,
     pub(crate) total_chunks_received: AtomicUsize,
+    pub(crate) total_staked_chunks_received: AtomicUsize,
+    pub(crate) total_unstaked_chunks_received: AtomicUsize,
     pub(crate) total_packet_batch_send_err: AtomicUsize,
     pub(crate) total_packet_batches_sent: AtomicUsize,
     pub(crate) total_packet_batches_none: AtomicUsize,
@@ -253,6 +255,17 @@ impl StreamStats {
                 i64
             ),
             (
+                "staked_chunks_received",
+                self.total_staked_chunks_received.swap(0, Ordering::Relaxed),
+                i64
+            ),
+            (
+                "unstaked_chunks_received",
+                self.total_unstaked_chunks_received
+                    .swap(0, Ordering::Relaxed),
+                i64
+            ),
+            (
                 "packet_batch_send_error",
                 self.total_packet_batch_send_err.swap(0, Ordering::Relaxed),
                 i64
@@ -310,11 +323,14 @@ pub fn spawn_server(
             stats,
         )
     }?;
-    let handle = thread::spawn(move || {
-        if let Err(e) = runtime.block_on(task) {
-            warn!("error from runtime.block_on: {:?}", e);
-        }
-    });
+    let handle = thread::Builder::new()
+        .name("solQuicServer".into())
+        .spawn(move || {
+            if let Err(e) = runtime.block_on(task) {
+                warn!("error from runtime.block_on: {:?}", e);
+            }
+        })
+        .unwrap();
     Ok(handle)
 }
 

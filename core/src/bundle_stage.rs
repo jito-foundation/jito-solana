@@ -15,8 +15,7 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
-        blockstore_processor::TransactionStatusSender,
-        token_balances::{collect_balances_with_cache, collect_token_balances},
+        blockstore_processor::TransactionStatusSender, token_balances::collect_token_balances,
     },
     solana_measure::measure,
     solana_poh::poh_recorder::{
@@ -633,7 +632,7 @@ impl BundleStage {
         mint_decimals: &mut HashMap<Pubkey, u8>,
     ) -> (TransactionBalances, TransactionTokenBalances) {
         if transaction_status_sender.is_some() {
-            let balances = collect_balances_with_cache(batch, bank, Some(cached_accounts));
+            let balances = bank.collect_balances_with_cache(batch, Some(cached_accounts));
             let token_balances =
                 collect_token_balances(bank, batch, mint_decimals, Some(cached_accounts));
             (balances, token_balances)
@@ -762,7 +761,7 @@ impl BundleStage {
         let _lock = tip_manager.lock();
         let tip_pdas = tip_manager.get_tip_accounts();
         if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas) {
-            let _ = Self::maybe_initialize_and_change_tip_receiver(
+            Self::maybe_initialize_and_change_tip_receiver(
                 bank_start,
                 tip_manager,
                 qos_service,
@@ -983,7 +982,7 @@ impl BundleStage {
                 }
                 Err(RecvError) => {
                     error!("shutting down bundle_stage");
-                    break;
+                    return;
                 }
             }
         }
@@ -1050,11 +1049,11 @@ impl BundleStage {
         bank_slot: Slot,
         mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
     ) -> BundleExecutionResult<Option<usize>> {
-        return match recorder.record(bank_slot, mixins_txs) {
+        match recorder.record(bank_slot, mixins_txs) {
             Ok(maybe_tx_index) => Ok(maybe_tx_index),
             Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
             Err(e) => panic!("Poh recorder returned unexpected error: {:?}", e),
-        };
+        }
     }
 }
 

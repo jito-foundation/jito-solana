@@ -1,8 +1,8 @@
 ///! Turns packets into SanitizedTransactions and ensure they pass sanity checks
 use {
     crate::{
-        packet_bundle::PacketBundle,
-        unprocessed_packet_batches::{deserialize_packets, ImmutableDeserializedPacket},
+        immutable_deserialized_packet::ImmutableDeserializedPacket, packet_bundle::PacketBundle,
+        unprocessed_packet_batches::deserialize_packets,
     },
     solana_perf::sigverify::verify_packet,
     solana_runtime::{bank::Bank, transaction_error_metrics::TransactionErrorMetrics},

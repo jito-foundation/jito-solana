@@ -27,7 +27,7 @@ mod tests {
         let mut all_packets = vec![];
         let now = Instant::now();
         let mut total_packets: usize = 0;
-        while now.elapsed().as_secs() < 5 {
+        while now.elapsed().as_secs() < 10 {
             if let Ok(packets) = receiver.recv_timeout(Duration::from_secs(1)) {
                 total_packets = total_packets.saturating_add(packets.len());
                 all_packets.push(packets)
@@ -93,7 +93,7 @@ mod tests {
 
         // Send a full size packet with single byte writes.
         let num_bytes = PACKET_DATA_SIZE;
-        let num_expected_packets: usize = 4000;
+        let num_expected_packets: usize = 3000;
         let packets = vec![vec![0u8; PACKET_DATA_SIZE]; num_expected_packets];
 
         assert!(client.send_wire_transaction_batch_async(packets).is_ok());
@@ -138,7 +138,7 @@ mod tests {
 
         // Send a full size packet with single byte writes.
         let num_bytes = PACKET_DATA_SIZE;
-        let num_expected_packets: usize = 4000;
+        let num_expected_packets: usize = 3000;
         let packets = vec![vec![0u8; PACKET_DATA_SIZE]; num_expected_packets];
 
         assert!(client.send_wire_transaction_batch(&packets).await.is_ok());

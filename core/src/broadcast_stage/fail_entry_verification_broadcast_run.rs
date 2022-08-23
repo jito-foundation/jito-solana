@@ -3,7 +3,7 @@ use {
     crate::cluster_nodes::ClusterNodesCache,
     solana_ledger::shred::{ProcessShredsStats, Shredder},
     solana_sdk::{hash::Hash, signature::Keypair},
-    std::{thread::sleep, time::Duration},
+    std::{net::SocketAddr, thread::sleep, time::Duration},
 };
 
 pub const NUM_BAD_SLOTS: u64 = 10;
