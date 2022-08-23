@@ -5,7 +5,7 @@ use {
     solana_sdk::transaction::TransactionError, std::time::Duration, thiserror::Error,
 };
 
-#[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BundleExecutionError {
     #[error("PoH max height reached in the middle of a bundle.")]
     PohMaxHeightError,
@@ -29,7 +29,7 @@ pub enum BundleExecutionError {
     LockError,
 }
 
-#[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TipPaymentError {
     #[error("account is missing from bank: {0}")]
     AccountMissing(Pubkey),
