@@ -110,10 +110,8 @@ fn main() {
                     })
                 })
                 .collect();
-            let mut results = Vec::new();
             for t in tasks {
-                let r = t.await.expect("results fetched");
-                results.push(r);
+                t.await.expect("results fetched");
             }
         });
 
