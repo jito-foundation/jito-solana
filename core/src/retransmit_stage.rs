@@ -461,57 +461,6 @@ impl AddAssign for RetransmitSlotStats {
     }
 }
 
-impl RetransmitSlotStats {
-    fn record(&mut self, now: u64, root_distance: usize, num_nodes: usize) {
-        self.outset = if self.outset == 0 {
-            now
-        } else {
-            self.outset.min(now)
-        };
-        self.asof = self.asof.max(now);
-        self.num_shreds_received[root_distance] += 1;
-        self.num_shreds_sent[root_distance] += num_nodes;
-    }
-
-    fn merge(mut acc: HashMap<Slot, Self>, other: HashMap<Slot, Self>) -> HashMap<Slot, Self> {
-        if acc.len() < other.len() {
-            return Self::merge(other, acc);
-        }
-        for (key, value) in other {
-            *acc.entry(key).or_default() += value;
-        }
-        acc
-    }
-
-    fn submit(&self, slot: Slot) {
-        let num_shreds: usize = self.num_shreds_received.iter().sum();
-        let num_nodes: usize = self.num_shreds_sent.iter().sum();
-        let elapsed_millis = self.asof.saturating_sub(self.outset);
-        datapoint_info!(
-            "retransmit-stage-slot-stats",
-            ("slot", slot, i64),
-            ("outset_timestamp", self.outset, i64),
-            ("elapsed_millis", elapsed_millis, i64),
-            ("num_shreds", num_shreds, i64),
-            ("num_nodes", num_nodes, i64),
-            ("num_shreds_received_root", self.num_shreds_received[0], i64),
-            (
-                "num_shreds_received_1st_layer",
-                self.num_shreds_received[1],
-                i64
-            ),
-            (
-                "num_shreds_received_2nd_layer",
-                self.num_shreds_received[2],
-                i64
-            ),
-            ("num_shreds_sent_root", self.num_shreds_sent[0], i64),
-            ("num_shreds_sent_1st_layer", self.num_shreds_sent[1], i64),
-            ("num_shreds_sent_2nd_layer", self.num_shreds_sent[2], i64),
-        );
-    }
-}
-
 impl RetransmitStats {
     const SLOT_STATS_CACHE_CAPACITY: usize = 750;
 
@@ -572,6 +521,57 @@ impl RetransmitStats {
                 None => break,
             }
         }
+    }
+}
+
+impl RetransmitSlotStats {
+    fn record(&mut self, now: u64, root_distance: usize, num_nodes: usize) {
+        self.outset = if self.outset == 0 {
+            now
+        } else {
+            self.outset.min(now)
+        };
+        self.asof = self.asof.max(now);
+        self.num_shreds_received[root_distance] += 1;
+        self.num_shreds_sent[root_distance] += num_nodes;
+    }
+
+    fn merge(mut acc: HashMap<Slot, Self>, other: HashMap<Slot, Self>) -> HashMap<Slot, Self> {
+        if acc.len() < other.len() {
+            return Self::merge(other, acc);
+        }
+        for (key, value) in other {
+            *acc.entry(key).or_default() += value;
+        }
+        acc
+    }
+
+    fn submit(&self, slot: Slot) {
+        let num_shreds: usize = self.num_shreds_received.iter().sum();
+        let num_nodes: usize = self.num_shreds_sent.iter().sum();
+        let elapsed_millis = self.asof.saturating_sub(self.outset);
+        datapoint_info!(
+            "retransmit-stage-slot-stats",
+            ("slot", slot, i64),
+            ("outset_timestamp", self.outset, i64),
+            ("elapsed_millis", elapsed_millis, i64),
+            ("num_shreds", num_shreds, i64),
+            ("num_nodes", num_nodes, i64),
+            ("num_shreds_received_root", self.num_shreds_received[0], i64),
+            (
+                "num_shreds_received_1st_layer",
+                self.num_shreds_received[1],
+                i64
+            ),
+            (
+                "num_shreds_received_2nd_layer",
+                self.num_shreds_received[2],
+                i64
+            ),
+            ("num_shreds_sent_root", self.num_shreds_sent[0], i64),
+            ("num_shreds_sent_1st_layer", self.num_shreds_sent[1], i64),
+            ("num_shreds_sent_2nd_layer", self.num_shreds_sent[2], i64),
+        );
     }
 }
 

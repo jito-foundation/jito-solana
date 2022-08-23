@@ -311,9 +311,7 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
-        let mut account_overrides = AccountOverrides {
-            accounts: HashMap::with_capacity(20),
-        };
+        let mut account_overrides = AccountOverrides::default();
 
         let mut execution_results = Vec::new();
         let mut mint_decimals: HashMap<Pubkey, u8> = HashMap::new();

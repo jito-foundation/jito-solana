@@ -3307,7 +3307,7 @@ pub mod utils {
         sanitized_tx: &SanitizedTransaction,
     ) -> Result<Option<Vec<Pubkey>>, Error> {
         if let Some(config) = maybe_config {
-            if config.addresses.len() > sanitized_tx.message.account_keys().len() {
+            if config.addresses.len() > sanitized_tx.message().account_keys().len() {
                 return Err(Error::invalid_params(
                     "too many pre execution addresses requested",
                 ));
@@ -4713,7 +4713,6 @@ where
         info!("{}", err);
         return Err(Error::invalid_params(&err));
     }
-
     bincode::options()
         .with_limit(PACKET_DATA_SIZE as u64)
         .with_fixint_encoding()

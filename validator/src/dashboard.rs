@@ -275,11 +275,13 @@ fn get_validator_stats(
         Err(err) => {
             if let client_error::ClientErrorKind::RpcError(
                 rpc_request::RpcError::RpcResponseError {
+                    code: _,
+                    message: _,
                     data:
                         rpc_request::RpcResponseErrorData::NodeUnhealthy {
                             num_slots_behind: Some(num_slots_behind),
                         },
-                    ..
+                    request_id: _,
                 },
             ) = &err.kind
             {

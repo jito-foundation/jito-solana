@@ -426,23 +426,22 @@ pub fn broadcast_shreds(
     };
     let packets: Vec<_> = shreds
         .iter()
-        .group_by(|shred| shred.slot())
-        .into_iter()
-        .flat_map(|(slot, shreds)| {
-            let cluster_nodes =
-                cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
-            update_peer_stats(&cluster_nodes, last_datapoint_submit);
-            shreds.flat_map(move |shred| {
-                let node = cluster_nodes.get_broadcast_peer(&shred.id())?;
-                // TODO (LB): stick in shred_receiver_addr here
-                ContactInfo::is_valid_address(&node.tvu, socket_addr_space)
-                    .then(|| (shred.payload(), node.tvu))
-            })
-        })
+        .filter_map(|s| Some((s.payload(), shred_receiver_addr?)))
         .chain(
             shreds
                 .iter()
-                .filter_map(|s| Some((s.payload(), shred_receiver_addr?))),
+                .group_by(|shred| shred.slot())
+                .into_iter()
+                .flat_map(|(slot, shreds)| {
+                    let cluster_nodes =
+                        cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
+                    update_peer_stats(&cluster_nodes, last_datapoint_submit);
+                    shreds.flat_map(move |shred| {
+                        let node = cluster_nodes.get_broadcast_peer(&shred.id())?;
+                        ContactInfo::is_valid_address(&node.tvu, socket_addr_space)
+                            .then(|| (shred.payload(), node.tvu))
+                    })
+                }),
         )
         .collect();
     shred_select.stop();
