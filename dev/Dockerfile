@@ -48,10 +48,11 @@ RUN set -x \
  && rm -f $PROTOC_ZIP
 
 
-# Expects the solana repository is mounted at /solana
 WORKDIR /solana
 COPY . .
-RUN ls
+# Uses docker buildkit to cache the image.
+# /usr/local/cargo/git needed for crossbeam patch
 RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
-    cargo build --release
+    --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
+    cargo build --verbose --release --bin solana-validator && cp target/release/solana-validator ./solana-validator

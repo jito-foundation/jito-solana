@@ -9,6 +9,10 @@ DOCKER_BUILDKIT=1 docker build \
   -f dev/Dockerfile . \
   --progress=plain
 
-DOCKER_BUILDKIT=1 docker run \
-#  -v "$SCRIPT_DIR":/solana \
-  jitolabs/build-solana --progress=plain
+# Creates a temporary container, copies solana-validator built inside container there and
+# removes the temporary container.
+docker rm temp
+docker container create --name temp jitolabs/build-solana
+mkdir -p $SCRIPT_DIR/docker-output
+docker container cp temp:/solana/solana-validator $SCRIPT_DIR/docker-output/solana-validator
+docker rm temp
