@@ -33,14 +33,14 @@ pub struct RpcConfig {
 fn main() -> Result<(), Error> {
     // TODO: clap this and add solana config helpers
     let url = Cluster::Custom(
-        "http://100.120.60.15:8899".to_string(),
-        "wss://100.120.60.15:8899".to_string(),
+        "https://api.testnet.solana.com".to_string(),
+        "wss://api.testnet.solana.com".to_string(),
     );
 
     let rpc_client = RpcClient::new_with_commitment(url.clone(), CommitmentConfig::confirmed());
 
     let payer = read_keypair_file("/Users/edgarxi/.config/solana/id.json")
-        .expect("Example requires a keypair file");
+        .expect("cli command requires a keypair file");
 
     let client =
         Client::new_with_options(url, Rc::new(payer.clone()), CommitmentConfig::processed());
@@ -98,14 +98,14 @@ fn command_claim_all(
 
             let claim_seeds = [
                 ClaimStatus::SEED,
+                claimant.as_ref(), // ordering matters here lmao
                 tip_distribution_account.as_ref(),
-                claimant.as_ref(),
             ];
 
             let (claim_status, claim_bump) = Pubkey::find_program_address(&claim_seeds, &pid);
             let claim_args = ClaimArgs {
                 proof: node.clone().proof.unwrap(),
-                amount: node.clone().amount,
+                amount: node.clone().amount + 100,
                 bump: claim_bump,
             };
 
