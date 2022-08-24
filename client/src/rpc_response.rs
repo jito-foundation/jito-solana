@@ -373,7 +373,7 @@ pub struct RpcSimulateBundleResult {
     pub transaction_results: Vec<RpcSimulateBundleTransactionResult>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcVote {
     /// Vote account address, as base-58 encoded string
@@ -428,7 +428,7 @@ pub struct RpcSignatureConfirmation {
 }
 
 // TODO: consolidate with [RpcSimulateTransactionResult]
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateBundleTransactionResult {
     pub err: Option<TransactionError>,

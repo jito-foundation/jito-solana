@@ -530,8 +530,8 @@ impl RpcSolPubSubInternal for RpcSolPubSubImpl {
             return Err(Error::new(jsonrpc_core::ErrorCode::MethodNotFound));
         }
         let config = config.unwrap_or_default();
-        check_is_at_least_confirmed(config.commitment.unwrap_or_default())?;
-
+        let commitment = config.commitment.unwrap_or_default();
+        check_is_at_least_confirmed(commitment)?;
         let params = BlockSubscriptionParams {
             commitment: config.commitment.unwrap_or_default(),
             encoding: config.encoding.unwrap_or(UiTransactionEncoding::Base64),

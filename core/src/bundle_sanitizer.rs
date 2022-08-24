@@ -93,7 +93,7 @@ pub fn get_sanitized_bundle(
     let unique_signatures: HashSet<&Signature, RandomState> =
         HashSet::from_iter(transactions.iter().map(|tx| tx.signature()));
     let contains_blacklisted_account = transactions.iter().any(|tx| {
-        let accounts = tx.message.account_keys();
+        let accounts = tx.message().account_keys();
         accounts
             .iter()
             .any(|acc| blacklisted_accounts.contains(acc) || consensus_accounts_cache.contains(acc))

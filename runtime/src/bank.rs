@@ -40,7 +40,7 @@ use {
     crate::{
         account_overrides::AccountOverrides,
         accounts::{
-            AccountAddressFilter, Accounts, LoadedTransaction, PubkeyAccountSlot,
+            AccountAddressFilter, AccountLocks, Accounts, LoadedTransaction, PubkeyAccountSlot,
             TransactionLoadResult,
         },
         accounts_db::{
@@ -288,7 +288,6 @@ impl RentDebits {
 }
 
 pub type BankStatusCache = StatusCache<Result<()>>;
-
 #[frozen_abi(digest = "HbqqQzXjZZmiYmUzuTtuLpSkQmxZu5ugjHunda9sJk8t")]
 pub type BankSlotDelta = SlotDelta<Result<()>>;
 
@@ -598,7 +597,6 @@ pub struct BankRc {
     pub(crate) bank_id_generator: Arc<AtomicU64>,
 }
 
-use crate::accounts::AccountLocks;
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 use solana_frozen_abi::abi_example::AbiExample;
 
@@ -4454,11 +4452,6 @@ impl Bank {
         self.rc.accounts.accounts_db.set_shrink_paths(paths);
     }
 
-    pub fn separate_nonce_from_blockhash(&self) -> bool {
-        self.feature_set
-            .is_active(&feature_set::separate_nonce_from_blockhash::id())
-    }
-
     fn check_age<'a>(
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
@@ -5461,20 +5454,17 @@ impl Bank {
         res: &'a [TransactionExecutionResult],
         loaded: &'a mut [TransactionLoadResult],
     ) -> Vec<(&'a Pubkey, &'a AccountSharedData)> {
-        let (blockhash, lamports_per_signature) = self.last_blockhash_and_lamports_per_signature();
-        let durable_nonce = {
-            let separate_nonce_from_blockhash = self.separate_nonce_from_blockhash();
-            let durable_nonce = DurableNonce::from_blockhash(&blockhash);
-            (durable_nonce, separate_nonce_from_blockhash)
-        };
+        let (last_blockhash, lamports_per_signature) =
+            self.last_blockhash_and_lamports_per_signature();
+        let durable_nonce = DurableNonce::from_blockhash(&last_blockhash);
         Accounts::collect_accounts_to_store(
             txs,
             res,
             loaded,
             &self.rent_collector,
-            &(durable_nonce.0),
+            &durable_nonce,
             lamports_per_signature,
-            self.leave_nonce_on_success(),
+            self.preserve_rent_epoch_for_rent_exempt_accounts(),
         )
         .0
     }
@@ -6745,10 +6735,15 @@ impl Bank {
         self.process_transaction(&tx).map(|_| signature)
     }
 
+    pub fn read_balance(account: &AccountSharedData) -> u64 {
+        account.lamports()
+    }
     /// Each program would need to be able to introspect its own state
     /// this is hard-coded to the Budget language
     pub fn get_balance(&self, pubkey: &Pubkey) -> u64 {
-        self.get_account(pubkey).map(|a| a.lamports()).unwrap_or(0)
+        self.get_account(pubkey)
+            .map(|x| Self::read_balance(&x))
+            .unwrap_or(0)
     }
 
     /// Compute all the parents of the bank in order
@@ -7897,11 +7892,6 @@ impl Bank {
     pub fn credits_auto_rewind(&self) -> bool {
         self.feature_set
             .is_active(&feature_set::credits_auto_rewind::id())
-    }
-
-    pub fn leave_nonce_on_success(&self) -> bool {
-        self.feature_set
-            .is_active(&feature_set::leave_nonce_on_success::id())
     }
 
     pub fn send_to_tpu_vote_port_enabled(&self) -> bool {
@@ -14963,9 +14953,6 @@ pub(crate) mod tests {
             FeatureSet::all_enabled(),
         )
         .unwrap();
-        Arc::get_mut(&mut bank)
-            .unwrap()
-            .activate_feature(&feature_set::nonce_must_be_writable::id());
         let custodian_pubkey = custodian_keypair.pubkey();
         let nonce_pubkey = nonce_keypair.pubkey();
 
@@ -16147,41 +16134,40 @@ pub(crate) mod tests {
         bank.add_builtin_account("mock_program", &program_id, true);
     }
 
-    // broken in master
-    // #[test]
-    // fn test_add_precompiled_account() {
-    //     let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
-    //     activate_all_features(&mut genesis_config);
-    //
-    //     let slot = 123;
-    //     let program_id = solana_sdk::pubkey::new_rand();
-    //
-    //     let bank = Arc::new(Bank::new_from_parent(
-    //         &Arc::new(Bank::new_for_tests(&genesis_config)),
-    //         &Pubkey::default(),
-    //         slot,
-    //     ));
-    //     assert_eq!(bank.get_account_modified_slot(&program_id), None);
-    //
-    //     assert_capitalization_diff(
-    //         &bank,
-    //         || bank.add_precompiled_account(&program_id),
-    //         |old, new| {
-    //             assert_eq!(old + 1, new);
-    //         },
-    //     );
-    //
-    //     assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-    //
-    //     let bank = Arc::new(new_from_parent(&bank));
-    //     assert_capitalization_diff(
-    //         &bank,
-    //         || bank.add_precompiled_account(&program_id),
-    //         |old, new| assert_eq!(old, new),
-    //     );
-    //
-    //     assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
-    // }
+    #[test]
+    fn test_add_precompiled_account() {
+        let (mut genesis_config, _mint_keypair) = create_genesis_config(100_000);
+        activate_all_features(&mut genesis_config);
+
+        let slot = 123;
+        let program_id = solana_sdk::pubkey::new_rand();
+
+        let bank = Arc::new(Bank::new_from_parent(
+            &Arc::new(Bank::new_for_tests(&genesis_config)),
+            &Pubkey::default(),
+            slot,
+        ));
+        assert_eq!(bank.get_account_modified_slot(&program_id), None);
+
+        assert_capitalization_diff(
+            &bank,
+            || bank.add_precompiled_account(&program_id),
+            |old, new| {
+                assert_eq!(old + 1, new);
+            },
+        );
+
+        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
+
+        let bank = Arc::new(new_from_parent(&bank));
+        assert_capitalization_diff(
+            &bank,
+            || bank.add_precompiled_account(&program_id),
+            |old, new| assert_eq!(old, new),
+        );
+
+        assert_eq!(bank.get_account_modified_slot(&program_id).unwrap().1, slot);
+    }
 
     #[test]
     fn test_add_precompiled_account_inherited_cap_while_replacing() {

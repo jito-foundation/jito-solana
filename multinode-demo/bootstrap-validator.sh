@@ -141,6 +141,10 @@ while [[ -n $1 ]]; do
       $program --help
       exit 1
     fi
+  else
+    echo "Unknown argument: $1"
+    $program --help
+    exit 1
   fi
 done
 
