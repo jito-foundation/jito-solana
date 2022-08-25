@@ -140,7 +140,7 @@ fn execute_batch(
     let mut mint_decimals: HashMap<Pubkey, u8> = HashMap::new();
 
     let pre_token_balances = if record_token_balances {
-        collect_token_balances(bank, batch, &mut mint_decimals)
+        collect_token_balances(bank, batch, &mut mint_decimals, None)
     } else {
         vec![]
     };
@@ -174,7 +174,7 @@ fn execute_batch(
     if let Some(transaction_status_sender) = transaction_status_sender {
         let transactions = batch.sanitized_transactions().to_vec();
         let post_token_balances = if record_token_balances {
-            collect_token_balances(bank, batch, &mut mint_decimals)
+            collect_token_balances(bank, batch, &mut mint_decimals, None)
         } else {
             vec![]
         };

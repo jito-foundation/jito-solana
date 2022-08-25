@@ -887,12 +887,13 @@ pub fn bank_fields_from_snapshot_archives(
     incremental_snapshot_archives_dir: impl AsRef<Path>,
 ) -> Result<BankFieldsToDeserialize> {
     let full_snapshot_archive_info =
-        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir)
+        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir, None)
             .ok_or(SnapshotError::NoSnapshotArchives)?;
 
     let incremental_snapshot_archive_info = get_highest_incremental_snapshot_archive_info(
         &incremental_snapshot_archives_dir,
         full_snapshot_archive_info.slot(),
+        None,
     );
 
     let temp_dir = tempfile::Builder::new()
@@ -1022,18 +1023,20 @@ pub fn bank_from_latest_snapshot_archives(
     verify_index: bool,
     accounts_db_config: Option<AccountsDbConfig>,
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
+    halt_at_slot: Option<Slot>,
 ) -> Result<(
     Bank,
     FullSnapshotArchiveInfo,
     Option<IncrementalSnapshotArchiveInfo>,
 )> {
     let full_snapshot_archive_info =
-        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir)
+        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir, halt_at_slot)
             .ok_or(SnapshotError::NoSnapshotArchives)?;
 
     let incremental_snapshot_archive_info = get_highest_incremental_snapshot_archive_info(
         &incremental_snapshot_archives_dir,
         full_snapshot_archive_info.slot(),
+        halt_at_slot,
     );
 
     info!(
@@ -1390,8 +1393,9 @@ pub fn get_incremental_snapshot_archives(
 /// Get the highest slot of the full snapshot archives in a directory
 pub fn get_highest_full_snapshot_archive_slot(
     full_snapshot_archives_dir: impl AsRef<Path>,
+    halt_at_slot: Option<Slot>,
 ) -> Option<Slot> {
-    get_highest_full_snapshot_archive_info(full_snapshot_archives_dir)
+    get_highest_full_snapshot_archive_info(full_snapshot_archives_dir, halt_at_slot)
         .map(|full_snapshot_archive_info| full_snapshot_archive_info.slot())
 }
 
@@ -1400,10 +1404,12 @@ pub fn get_highest_full_snapshot_archive_slot(
 pub fn get_highest_incremental_snapshot_archive_slot(
     incremental_snapshot_archives_dir: impl AsRef<Path>,
     full_snapshot_slot: Slot,
+    halt_at_slot: Option<Slot>,
 ) -> Option<Slot> {
     get_highest_incremental_snapshot_archive_info(
         incremental_snapshot_archives_dir,
         full_snapshot_slot,
+        halt_at_slot,
     )
     .map(|incremental_snapshot_archive_info| incremental_snapshot_archive_info.slot())
 }
@@ -1411,8 +1417,13 @@ pub fn get_highest_incremental_snapshot_archive_slot(
 /// Get the path (and metadata) for the full snapshot archive with the highest slot in a directory
 pub fn get_highest_full_snapshot_archive_info(
     full_snapshot_archives_dir: impl AsRef<Path>,
+    halt_at_slot: Option<Slot>,
 ) -> Option<FullSnapshotArchiveInfo> {
     let mut full_snapshot_archives = get_full_snapshot_archives(full_snapshot_archives_dir);
+    if let Some(halt_at_slot) = halt_at_slot {
+        full_snapshot_archives
+            .retain(|archive| archive.snapshot_archive_info().slot <= halt_at_slot);
+    }
     full_snapshot_archives.sort_unstable();
     full_snapshot_archives.into_iter().rev().next()
 }
@@ -1422,6 +1433,7 @@ pub fn get_highest_full_snapshot_archive_info(
 pub fn get_highest_incremental_snapshot_archive_info(
     incremental_snapshot_archives_dir: impl AsRef<Path>,
     full_snapshot_slot: Slot,
+    halt_at_slot: Option<Slot>,
 ) -> Option<IncrementalSnapshotArchiveInfo> {
     // Since we want to filter down to only the incremental snapshot archives that have the same
     // full snapshot slot as the value passed in, perform the filtering before sorting to avoid
@@ -1433,6 +1445,9 @@ pub fn get_highest_incremental_snapshot_archive_info(
                 incremental_snapshot_archive_info.base_slot() == full_snapshot_slot
             })
             .collect::<Vec<_>>();
+    if let Some(halt_at_slot) = halt_at_slot {
+        incremental_snapshot_archives.retain(|archive| archive.slot() <= halt_at_slot);
+    }
     incremental_snapshot_archives.sort_unstable();
     incremental_snapshot_archives.into_iter().rev().next()
 }
@@ -2858,7 +2873,7 @@ mod tests {
         );
 
         assert_eq!(
-            get_highest_full_snapshot_archive_slot(full_snapshot_archives_dir.path()),
+            get_highest_full_snapshot_archive_slot(full_snapshot_archives_dir.path(), None),
             Some(max_slot - 1)
         );
     }
@@ -2885,7 +2900,8 @@ mod tests {
             assert_eq!(
                 get_highest_incremental_snapshot_archive_slot(
                     incremental_snapshot_archives_dir.path(),
-                    full_snapshot_slot
+                    full_snapshot_slot,
+                    None,
                 ),
                 Some(max_incremental_snapshot_slot - 1)
             );
@@ -2894,7 +2910,8 @@ mod tests {
         assert_eq!(
             get_highest_incremental_snapshot_archive_slot(
                 incremental_snapshot_archives_dir.path(),
-                max_full_snapshot_slot
+                max_full_snapshot_slot,
+                None,
             ),
             None
         );
@@ -3592,6 +3609,7 @@ mod tests {
             false,
             false,
             Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
+            None,
             None,
         )
         .unwrap();
