@@ -69,6 +69,11 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         use_snapshot_archives_at_startup: config.use_snapshot_archives_at_startup,
         wen_restart_proto_path: config.wen_restart_proto_path.clone(),
         unified_scheduler_handler_threads: config.unified_scheduler_handler_threads,
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_address: config.shred_receiver_address.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        preallocated_bundle_cost: config.preallocated_bundle_cost,
     }
 }
 

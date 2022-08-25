@@ -1,10 +1,12 @@
 #![allow(clippy::arithmetic_side_effects)]
+
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
 use {
     clap::{crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit, ArgMatches},
     console::style,
     crossbeam_channel::unbounded,
+    jsonrpc_server_utils::tokio::runtime::Runtime,
     log::*,
     rand::{seq::SliceRandom, thread_rng},
     solana_accounts_db::{
@@ -20,7 +22,9 @@ use {
     solana_core::{
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         system_monitor_service::SystemMonitorService,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tpu::DEFAULT_TPU_COALESCE,
         validator::{
             is_snapshot_config_valid, BlockProductionMethod, BlockVerificationMethod, Validator,
@@ -48,6 +52,10 @@ use {
         snapshot_bank_utils::DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
         snapshot_config::{SnapshotConfig, SnapshotUsage},
         snapshot_utils::{self, ArchiveFormat, SnapshotVersion},
+    },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service,
+        runtime_plugin_admin_rpc_service::RuntimePluginAdminRpcRequestMetadata,
     },
     solana_sdk::{
         clock::{Slot, DEFAULT_S_PER_SLOT},
@@ -78,7 +86,7 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{Arc, RwLock},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         time::{Duration, SystemTime},
     },
 };
@@ -470,6 +478,60 @@ pub fn main() {
 
     let operation = match matches.subcommand() {
         ("", _) | ("run", _) => Operation::Run,
+        ("set-block-engine-config", Some(subcommand_matches)) => {
+            let block_engine_url = value_t_or_exit!(subcommand_matches, "block_engine_url", String);
+            let trust_packets = subcommand_matches.is_present("trust_block_engine_packets");
+            let admin_client = admin_rpc_service::connect(&ledger_path);
+            admin_rpc_service::runtime()
+                .block_on(async move {
+                    admin_client
+                        .await?
+                        .set_block_engine_config(block_engine_url, trust_packets)
+                        .await
+                })
+                .unwrap_or_else(|err| {
+                    println!("set block engine config failed: {}", err);
+                    exit(1);
+                });
+            return;
+        }
+        ("set-relayer-config", Some(subcommand_matches)) => {
+            let relayer_url = value_t_or_exit!(subcommand_matches, "relayer_url", String);
+            let trust_packets = subcommand_matches.is_present("trust_relayer_packets");
+            let expected_heartbeat_interval_ms: u64 =
+                value_of(subcommand_matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+            let max_failed_heartbeats: u64 =
+                value_of(subcommand_matches, "relayer_max_failed_heartbeats").unwrap();
+            let admin_client = admin_rpc_service::connect(&ledger_path);
+            admin_rpc_service::runtime()
+                .block_on(async move {
+                    admin_client
+                        .await?
+                        .set_relayer_config(
+                            relayer_url,
+                            trust_packets,
+                            expected_heartbeat_interval_ms,
+                            max_failed_heartbeats,
+                        )
+                        .await
+                })
+                .unwrap_or_else(|err| {
+                    println!("set relayer config failed: {}", err);
+                    exit(1);
+                });
+            return;
+        }
+        ("set-shred-receiver-address", Some(subcommand_matches)) => {
+            let addr = value_t_or_exit!(subcommand_matches, "shred_receiver_address", String);
+            let admin_client = admin_rpc_service::connect(&ledger_path);
+            admin_rpc_service::runtime()
+                .block_on(async move { admin_client.await?.set_shred_receiver_address(addr).await })
+                .unwrap_or_else(|err| {
+                    println!("set shred receiver address failed: {}", err);
+                    exit(1);
+                });
+            return;
+        }
         ("authorized-voter", Some(authorized_voter_subcommand_matches)) => {
             match authorized_voter_subcommand_matches.subcommand() {
                 ("add", Some(subcommand_matches)) => {
@@ -605,6 +667,92 @@ pub fn main() {
                             admin_rpc_service::runtime()
                                 .block_on(async {
                                     admin_client
+                                        .await?
+                                        .reload_plugin(name.clone(), config.clone())
+                                        .await
+                                })
+                                .unwrap_or_else(|err| {
+                                    println!("Failed to reload plugin {name}: {err:?}");
+                                    exit(1);
+                                });
+                            println!("Successfully reloaded plugin: {name}");
+                        }
+                    }
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
+        ("runtime-plugin", Some(plugin_subcommand_matches)) => {
+            let runtime_plugin_rpc_client = runtime_plugin_admin_rpc_service::connect(&ledger_path);
+            let runtime = Runtime::new().unwrap();
+            match plugin_subcommand_matches.subcommand() {
+                ("list", _) => {
+                    let plugins = runtime
+                        .block_on(
+                            async move { runtime_plugin_rpc_client.await?.list_plugins().await },
+                        )
+                        .unwrap_or_else(|err| {
+                            println!("Failed to list plugins: {err}");
+                            exit(1);
+                        });
+                    if !plugins.is_empty() {
+                        println!("Currently the following plugins are loaded:");
+                        for (plugin, i) in plugins.into_iter().zip(1..) {
+                            println!("  {i}) {plugin}");
+                        }
+                    } else {
+                        println!("There are currently no plugins loaded");
+                    }
+                    return;
+                }
+                ("unload", Some(subcommand_matches)) => {
+                    if let Ok(name) = value_t!(subcommand_matches, "name", String) {
+                        runtime
+                            .block_on(async {
+                                runtime_plugin_rpc_client
+                                    .await?
+                                    .unload_plugin(name.clone())
+                                    .await
+                            })
+                            .unwrap_or_else(|err| {
+                                println!("Failed to unload plugin {name}: {err:?}");
+                                exit(1);
+                            });
+                        println!("Successfully unloaded plugin: {name}");
+                    }
+                    return;
+                }
+                ("load", Some(subcommand_matches)) => {
+                    if let Ok(config) = value_t!(subcommand_matches, "config", String) {
+                        let name = runtime
+                            .block_on(async {
+                                runtime_plugin_rpc_client
+                                    .await?
+                                    .load_plugin(config.clone())
+                                    .await
+                            })
+                            .unwrap_or_else(|err| {
+                                println!("Failed to load plugin {config}: {err:?}");
+                                exit(1);
+                            });
+                        println!("Successfully loaded plugin: {name}");
+                    }
+                    return;
+                }
+                ("reload", Some(subcommand_matches)) => {
+                    if let Ok(name) = value_t!(subcommand_matches, "name", String) {
+                        if let Ok(config) = value_t!(subcommand_matches, "config", String) {
+                            println!(
+                                "This command does not work as intended on some systems.\
+                                To correctly reload an existing plugin make sure to:\
+                                    1. Rename the new plugin binary file.\
+                                    2. Unload the previous version.\
+                                    3. Load the new, renamed binary using the 'Load' command."
+                            );
+                            runtime
+                                .block_on(async {
+                                    runtime_plugin_rpc_client
                                         .await?
                                         .reload_plugin(name.clone(), config.clone())
                                         .await
@@ -1310,6 +1458,44 @@ pub fn main() {
     }
     let full_api = matches.is_present("full_rpc_api");
 
+    let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
+    let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
+
+    let block_engine_config = BlockEngineConfig {
+        block_engine_url: if matches.is_present("block_engine_url") {
+            value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url")
+        } else {
+            "".to_string()
+        },
+        trust_packets: matches.is_present("trust_block_engine_packets"),
+    };
+
+    // Defaults are set in cli definition, safe to use unwrap() here
+    let expected_heartbeat_interval_ms: u64 =
+        value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+    assert!(
+        expected_heartbeat_interval_ms > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
+    let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats").unwrap();
+    assert!(
+        max_failed_heartbeats > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
+
+    let relayer_config = RelayerConfig {
+        relayer_url: if matches.is_present("relayer_url") {
+            value_of(&matches, "relayer_url").expect("couldn't parse relayer_url")
+        } else {
+            "".to_string()
+        },
+        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+        oldest_allowed_heartbeat: Duration::from_millis(
+            max_failed_heartbeats * expected_heartbeat_interval_ms,
+        ),
+        trust_packets: matches.is_present("trust_relayer_packets"),
+    };
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -1447,6 +1633,14 @@ pub fn main() {
             log_messages_bytes_limit: value_of(&matches, "log_messages_bytes_limit"),
             ..RuntimeConfig::default()
         },
+        relayer_config: Arc::new(Mutex::new(relayer_config)),
+        block_engine_config: Arc::new(Mutex::new(block_engine_config)),
+        tip_manager_config,
+        shred_receiver_address: Arc::new(RwLock::new(
+            matches
+                .value_of("shred_receiver_address")
+                .map(|addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid")),
+        )),
         staked_nodes_overrides: staked_nodes_overrides.clone(),
         replay_slots_concurrently: matches.is_present("replay_slots_concurrently"),
         use_snapshot_archives_at_startup: value_t_or_exit!(
@@ -1454,6 +1648,8 @@ pub fn main() {
             use_snapshot_archives_at_startup::cli::NAME,
             UseSnapshotArchivesAtStartup
         ),
+        preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
+            .expect("preallocated_bundle_cost set as default"),
         ..ValidatorConfig::default()
     };
 
@@ -1752,6 +1948,31 @@ pub fn main() {
         },
     );
 
+    let runtime_plugin_config_and_rpc_rx = {
+        let plugin_exit = Arc::new(AtomicBool::new(false));
+        let (rpc_request_sender, rpc_request_receiver) = unbounded();
+        solana_runtime_plugin::runtime_plugin_admin_rpc_service::run(
+            &ledger_path,
+            RuntimePluginAdminRpcRequestMetadata {
+                rpc_request_sender,
+                validator_exit: validator_config.validator_exit.clone(),
+            },
+            plugin_exit,
+        );
+
+        if matches.is_present("runtime_plugin_config") {
+            (
+                values_t_or_exit!(matches, "runtime_plugin_config", String)
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                rpc_request_receiver,
+            )
+        } else {
+            (vec![], rpc_request_receiver)
+        }
+    };
+
     let gossip_host: IpAddr = matches
         .value_of("gossip_host")
         .map(|gossip_host| {
@@ -1924,6 +2145,7 @@ pub fn main() {
         tpu_connection_pool_size,
         tpu_enable_udp,
         admin_service_post_init,
+        Some(runtime_plugin_config_and_rpc_rx),
     )
     .unwrap_or_else(|e| {
         error!("Failed to start validator: {:?}", e);
@@ -1987,5 +2209,49 @@ fn process_account_indexes(matches: &ArgMatches) -> AccountSecondaryIndexes {
     AccountSecondaryIndexes {
         keys,
         indexes: account_indexes,
+    }
+}
+
+fn tip_manager_config_from_matches(
+    matches: &ArgMatches,
+    voting_disabled: bool,
+) -> TipManagerConfig {
+    TipManagerConfig {
+        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
+            || {
+                if !voting_disabled {
+                    panic!("--tip-payment-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            },
+        ),
+        tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
+            .unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--tip-distribution-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+        tip_distribution_account_config: TipDistributionAccountConfig {
+            merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
+                .unwrap_or_else(|| {
+                    if !voting_disabled {
+                        panic!("--merkle-root-upload-authority argument required when validator is voting");
+                    }
+                    Pubkey::new_unique()
+                }),
+            vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--vote-account argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+            commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
+                if !voting_disabled {
+                    panic!("--commission-bps argument required when validator is voting");
+                }
+                0
+            }),
+        },
     }
 }
