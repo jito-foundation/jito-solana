@@ -315,6 +315,7 @@ impl BankingTracer {
     }
 }
 
+#[derive(Clone)]
 pub struct TracedSender {
     label: ChannelLabel,
     sender: Sender<BankingPacketBatch>,
