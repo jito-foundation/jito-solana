@@ -903,6 +903,7 @@ fn restore_from_snapshots_and_check_banks_are_equal(
         Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
         None,
         &Arc::default(),
+        None,
     )?;
 
     assert_eq!(bank, &deserialized_bank);
@@ -1095,6 +1096,7 @@ fn test_snapshots_with_background_services(
         Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
         None,
         &Arc::default(),
+        None,
     )
     .unwrap();
 

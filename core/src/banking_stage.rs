@@ -4,6 +4,7 @@
 
 use {
     crate::{
+        bundle_account_locker::BundleAccountLocker,
         forward_packet_batches_by_accounts::ForwardPacketBatchesByAccounts,
         immutable_deserialized_packet::ImmutableDeserializedPacket,
         leader_slot_banking_stage_metrics::{LeaderSlotMetricsTracker, ProcessTransactionsSummary},
@@ -65,7 +66,7 @@ use {
     solana_transaction_status::token_balances::TransactionTokenBalancesSet,
     std::{
         cmp,
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         env,
         net::{SocketAddr, UdpSocket},
         sync::{
@@ -403,6 +404,8 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self::new_num_threads(
             cluster_info,
@@ -417,6 +420,8 @@ impl BankingStage {
             log_messages_bytes_limit,
             connection_cache,
             bank_forks,
+            blacklisted_accounts,
+            bundle_account_locker,
         )
     }
 
@@ -434,6 +439,8 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -467,6 +474,9 @@ impl BankingStage {
                 let data_budget = data_budget.clone();
                 let cost_model = cost_model.clone();
                 let connection_cache = connection_cache.clone();
+                let blacklisted_accounts = blacklisted_accounts.clone();
+                let bundle_account_locker = bundle_account_locker.clone();
+
                 let bank_forks = bank_forks.clone();
                 Builder::new()
                     .name(format!("solBanknStgTx{:02}", i))
@@ -486,6 +496,8 @@ impl BankingStage {
                             log_messages_bytes_limit,
                             connection_cache,
                             &bank_forks,
+                            blacklisted_accounts,
+                            bundle_account_locker,
                         );
                     })
                     .unwrap()
@@ -604,12 +616,15 @@ impl BankingStage {
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         num_packets_to_process_per_iteration: usize,
         log_messages_bytes_limit: Option<usize>,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        bundle_account_locker: &BundleAccountLocker,
     ) {
         let mut rebuffered_packet_count = 0;
         let mut consumed_buffered_packets_count = 0;
         let buffered_packets_len = buffered_packet_batches.len();
         let mut proc_start = Measure::start("consume_buffered_process");
         let mut reached_end_of_slot = false;
+
         let mut retryable_packets = {
             let capacity = buffered_packet_batches.capacity();
             std::mem::replace(
@@ -651,7 +666,9 @@ impl BankingStage {
                                     banking_stage_stats,
                                     qos_service,
                                     slot_metrics_tracker,
-                                    log_messages_bytes_limit
+                                    log_messages_bytes_limit,
+                                    blacklisted_accounts,
+                                    bundle_account_locker,
                                 ),
                             "process_packets_transactions",
                         );
@@ -806,6 +823,8 @@ impl BankingStage {
         connection_cache: &ConnectionCache,
         tracer_packet_stats: &mut TracerPacketStats,
         bank_forks: &Arc<RwLock<BankForks>>,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        bundle_account_locker: &BundleAccountLocker,
     ) {
         let ((metrics_action, decision), make_decision_time) = measure!(
             {
@@ -865,7 +884,9 @@ impl BankingStage {
                         qos_service,
                         slot_metrics_tracker,
                         UNPROCESSED_BUFFER_STEP_SIZE,
-                        log_messages_bytes_limit
+                        log_messages_bytes_limit,
+                        blacklisted_accounts,
+                        bundle_account_locker
                     ),
                     "consume_buffered_packets",
                 );
@@ -1329,6 +1350,8 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: Arc<ConnectionCache>,
         bank_forks: &Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
     ) {
         let recorder = poh_recorder.read().unwrap().recorder();
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -1364,6 +1387,8 @@ impl BankingStage {
                         &connection_cache,
                         &mut tracer_packet_stats,
                         bank_forks,
+                        &blacklisted_accounts,
+                        &bundle_account_locker,
                     ),
                     "process_buffered_packets",
                 );
@@ -1435,8 +1460,10 @@ impl BankingStage {
             let (hash, hash_time) = measure!(hash_transactions(&transactions), "hash");
             record_transactions_timings.hash_us = hash_time.as_us();
 
-            let (res, poh_record_time) =
-                measure!(recorder.record(bank_slot, hash, transactions), "hash");
+            let (res, poh_record_time) = measure!(
+                recorder.record(bank_slot, vec![(hash, transactions)]),
+                "hash"
+            );
             record_transactions_timings.poh_record_us = poh_record_time.as_us();
 
             match res {
@@ -1490,7 +1517,7 @@ impl BankingStage {
                 };
 
                 let pre_token_balances = if transaction_status_sender.is_some() {
-                    collect_token_balances(bank, batch, &mut mint_decimals)
+                    collect_token_balances(bank, batch, &mut mint_decimals, None)
                 } else {
                     vec![]
                 };
@@ -1635,7 +1662,7 @@ impl BankingStage {
                         let txs = batch.sanitized_transactions().to_vec();
                         let post_balances = bank.collect_balances(batch);
                         let post_token_balances =
-                            collect_token_balances(bank, batch, &mut mint_decimals);
+                            collect_token_balances(bank, batch, &mut mint_decimals, None);
                         let mut transaction_index = starting_transaction_index.unwrap_or_default();
                         let batch_transaction_indexes: Vec<_> = tx_results
                             .execution_results
@@ -1716,6 +1743,7 @@ impl BankingStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionBatchOutput {
         let mut cost_model_time = Measure::start("cost_model");
 
@@ -1736,9 +1764,20 @@ impl BankingStage {
 
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
-        // same account state
+        // same account state.
         let mut lock_time = Measure::start("lock_time");
-        let batch = bank.prepare_sanitized_batch_with_results(txs, transactions_qos_results.iter());
+
+        let batch = {
+            // BundleStage locks ALL accounts in ALL transactions in a bundle to avoid race
+            // conditions with BankingStage
+            let account_locks = bundle_account_locker.account_locks();
+            bank.prepare_sanitized_batch_with_results(
+                txs,
+                transactions_qos_results.iter(),
+                &account_locks.read_locks(),
+                &account_locks.write_locks(),
+            )
+        };
         lock_time.stop();
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
@@ -1909,6 +1948,7 @@ impl BankingStage {
         gossip_vote_sender: &ReplayVoteSender,
         qos_service: &QosService,
         log_messages_bytes_limit: Option<usize>,
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
         let mut all_retryable_tx_indexes = vec![];
@@ -1941,6 +1981,7 @@ impl BankingStage {
                 gossip_vote_sender,
                 qos_service,
                 log_messages_bytes_limit,
+                bundle_account_locker,
             );
 
             let ProcessTransactionBatchOutput {
@@ -2136,6 +2177,8 @@ impl BankingStage {
         qos_service: &'a QosService,
         slot_metrics_tracker: &'a mut LeaderSlotMetricsTracker,
         log_messages_bytes_limit: Option<usize>,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionsSummary {
         // Convert packets to transactions
         let ((transactions, transaction_to_packet_indexes), packet_conversion_time): (
@@ -2151,6 +2194,12 @@ impl BankingStage {
                         bank.vote_only_bank(),
                         bank.as_ref(),
                     )
+                    .filter(|tx| {
+                        !tx.message()
+                            .account_keys()
+                            .iter()
+                            .any(|acc| blacklisted_accounts.contains(acc))
+                    })
                     .map(|transaction| (transaction, i))
                 })
                 .unzip(),
@@ -2175,6 +2224,7 @@ impl BankingStage {
                 gossip_vote_sender,
                 qos_service,
                 log_messages_bytes_limit,
+                bundle_account_locker
             ),
             "process_transaction_time",
         );
@@ -2396,7 +2446,7 @@ mod tests {
         super::*,
         crossbeam_channel::{unbounded, Receiver},
         solana_address_lookup_table_program::state::{AddressLookupTable, LookupTableMeta},
-        solana_entry::entry::{next_entry, next_versioned_entry, Entry, EntrySlice},
+        solana_entry::entry::{next_entry, next_versioned_entry, EntrySlice},
         solana_gossip::{cluster_info::Node, contact_info::ContactInfo},
         solana_ledger::{
             blockstore::{entries_to_test_shreds, Blockstore},
@@ -2466,6 +2516,8 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2478,6 +2530,8 @@ mod tests {
                 None,
                 Arc::new(ConnectionCache::default()),
                 bank_forks,
+                HashSet::default(),
+                bundle_locker,
             );
             drop(verified_sender);
             drop(gossip_verified_vote_sender);
@@ -2492,6 +2546,7 @@ mod tests {
     #[test]
     fn test_banking_stage_tick() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             mut genesis_config, ..
         } = create_genesis_config(2);
@@ -2520,6 +2575,8 @@ mod tests {
             let (verified_gossip_vote_sender, verified_gossip_vote_receiver) = unbounded();
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2532,6 +2589,8 @@ mod tests {
                 None,
                 Arc::new(ConnectionCache::default()),
                 bank_forks,
+                HashSet::default(),
+                bundle_locker,
             );
             trace!("sending bank");
             drop(verified_sender);
@@ -2544,7 +2603,12 @@ mod tests {
             trace!("getting entries");
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .map(|(_bank, (entry, _tick_height))| entry)
+                .flat_map(
+                    |WorkingBankEntry {
+                         bank: _,
+                         entries_ticks,
+                     }| entries_ticks.into_iter().map(|e| e.0),
+                )
                 .collect();
             trace!("done");
             assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
@@ -2569,6 +2633,7 @@ mod tests {
     #[test]
     fn test_banking_stage_entries_only() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -2599,6 +2664,7 @@ mod tests {
             let cluster_info = Arc::new(cluster_info);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
             let banking_stage = BankingStage::new(
                 &cluster_info,
                 &poh_recorder,
@@ -2611,6 +2677,8 @@ mod tests {
                 None,
                 Arc::new(ConnectionCache::default()),
                 bank_forks,
+                HashSet::default(),
+                bundle_locker,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -2662,9 +2730,14 @@ mod tests {
             bank.process_transaction(&fund_tx).unwrap();
             //receive entries + ticks
             loop {
-                let entries: Vec<Entry> = entry_receiver
+                let entries: Vec<_> = entry_receiver
                     .iter()
-                    .map(|(_bank, (entry, _tick_height))| entry)
+                    .flat_map(
+                        |WorkingBankEntry {
+                             bank: _,
+                             entries_ticks,
+                         }| entries_ticks.into_iter().map(|e| e.0),
+                    )
                     .collect();
 
                 assert!(entries.verify(&blockhash));
@@ -2695,6 +2768,7 @@ mod tests {
     #[test]
     fn test_banking_stage_entryfication() {
         solana_logger::setup();
+
         // In this attack we'll demonstrate that a verifier can interpret the ledger
         // differently if either the server doesn't signal the ledger to add an
         // Entry OR if the verifier tries to parallelize across multiple Entries.
@@ -2754,6 +2828,9 @@ mod tests {
                     create_test_recorder(&bank, &blockstore, Some(poh_config), None);
                 let cluster_info = new_test_cluster_info(Node::new_localhost().info);
                 let cluster_info = Arc::new(cluster_info);
+
+                let bundle_locker = BundleAccountLocker::default();
+
                 let _banking_stage = BankingStage::new_num_threads(
                     &cluster_info,
                     &poh_recorder,
@@ -2767,6 +2844,8 @@ mod tests {
                     None,
                     Arc::new(ConnectionCache::default()),
                     bank_forks,
+                    HashSet::default(),
+                    bundle_locker,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -2785,7 +2864,12 @@ mod tests {
             // check that the balance is what we expect.
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .map(|(_bank, (entry, _tick_height))| entry)
+                .flat_map(
+                    |WorkingBankEntry {
+                         bank: _,
+                         entries_ticks,
+                     }| entries_ticks.into_iter().map(|e| e.0),
+                )
                 .collect();
 
             let bank = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
@@ -2853,7 +2937,12 @@ mod tests {
             ];
 
             let _ = BankingStage::record_transactions(bank.slot(), txs.clone(), &recorder);
-            let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
+            let WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            } = entry_receiver.recv().unwrap();
+            assert_eq!(entries_ticks.len(), 1);
+            let entry = entries_ticks.get(0).unwrap().0.clone();
             assert_eq!(entry.transactions, txs);
 
             // Once bank is set to a new bank (setting bank.slot() + 1 in record_transactions),
@@ -2885,7 +2974,7 @@ mod tests {
                 Ok(()),
                 Err(TransactionError::BlockhashNotFound),
                 Ok(()),
-                Ok(())
+                Ok(()),
             ]
         );
 
@@ -2914,7 +3003,7 @@ mod tests {
                     (Ok(()), None),
                     (Ok(()), None),
                 ],
-                &[2, 4, 5, 9, 11, 13]
+                &[2, 4, 5, 9, 11, 13],
             ),
             [5, 11, 13]
         );
@@ -2929,7 +3018,7 @@ mod tests {
                     (Ok(()), None),
                     (Ok(()), None),
                 ],
-                &[1, 6, 7, 9, 31, 43]
+                &[1, 6, 7, 9, 31, 43],
             ),
             [1, 9, 31, 43]
         );
@@ -3027,6 +3116,7 @@ mod tests {
     #[test]
     fn test_bank_process_and_record_transactions() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3066,6 +3156,8 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3075,6 +3167,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3097,7 +3190,13 @@ mod tests {
 
             let mut done = false;
             // read entries until I find mine, might be ticks...
-            while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
+            while let Ok(WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            }) = entry_receiver.recv()
+            {
+                assert_eq!(entries_ticks.len(), 1);
+                let entry = entries_ticks.get(0).unwrap().0.clone();
                 if !entry.is_tick() {
                     trace!("got entry");
                     assert_eq!(entry.transactions.len(), transactions.len());
@@ -3119,6 +3218,8 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3128,6 +3229,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3163,6 +3265,7 @@ mod tests {
     #[test]
     fn test_bank_process_and_record_transactions_all_unexecuted() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3203,6 +3306,8 @@ mod tests {
             poh_recorder.write().unwrap().set_bank(&bank, false);
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3212,6 +3317,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3245,6 +3351,7 @@ mod tests {
     #[test]
     fn test_bank_process_and_record_transactions_cost_tracker() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3295,6 +3402,8 @@ mod tests {
                 genesis_config.hash(),
             )]);
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3304,6 +3413,7 @@ mod tests {
                 &gossip_vote_sender,
                 &qos_service,
                 None,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3344,6 +3454,7 @@ mod tests {
                 &gossip_vote_sender,
                 &qos_service,
                 None,
+                &bundle_locker,
             );
 
             let ExecuteAndCommitTransactionsOutput {
@@ -3393,6 +3504,7 @@ mod tests {
     #[test]
     fn test_bank_process_and_record_transactions_account_in_use() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3431,6 +3543,7 @@ mod tests {
             let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
+            let bundle_locker = BundleAccountLocker::default();
 
             let process_transactions_batch_output = BankingStage::process_and_record_transactions(
                 &bank,
@@ -3441,6 +3554,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
+                &bundle_locker,
             );
 
             poh_recorder
@@ -3607,6 +3721,7 @@ mod tests {
     #[test]
     fn test_process_transactions_returns_unprocessed_txs() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -3648,6 +3763,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let process_transactions_summary = BankingStage::process_transactions(
                 &bank,
                 &Instant::now(),
@@ -3657,6 +3774,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
+                &bundle_locker,
             );
 
             let ProcessTransactionsSummary {
@@ -3715,6 +3833,8 @@ mod tests {
 
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+        let bundle_locker = BundleAccountLocker::default();
+
         let process_transactions_summary = BankingStage::process_transactions(
             &bank,
             &Instant::now(),
@@ -3724,6 +3844,7 @@ mod tests {
             &gossip_vote_sender,
             &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
             None,
+            &bundle_locker,
         );
 
         poh_recorder
@@ -3797,6 +3918,7 @@ mod tests {
             (1..transactions_count - 1).collect::<Vec<usize>>()
         );
     }
+
     #[test]
     fn test_process_transactions_account_in_use() {
         solana_logger::setup();
@@ -3817,7 +3939,7 @@ mod tests {
                 &mint_keypair,
                 &Pubkey::new_unique(),
                 1,
-                genesis_config.hash()
+                genesis_config.hash(),
             );
             MAX_NUM_TRANSACTIONS_PER_BATCH
         ];
@@ -3859,6 +3981,7 @@ mod tests {
     #[test]
     fn test_write_persist_transaction_status() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             mut genesis_config,
             mint_keypair,
@@ -3943,6 +4066,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
                 &transactions,
@@ -3954,6 +4079,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
+                &bundle_locker,
             );
 
             transaction_status_service.join().unwrap();
@@ -4020,6 +4146,7 @@ mod tests {
     #[test]
     fn test_write_persist_loaded_addresses() {
         solana_logger::setup();
+
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
@@ -4112,6 +4239,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             let _ = BankingStage::process_and_record_transactions(
                 &bank,
                 &[sanitized_tx.clone()],
@@ -4123,6 +4252,7 @@ mod tests {
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 None,
+                &bundle_locker,
             );
 
             transaction_status_service.join().unwrap();
@@ -4230,6 +4360,8 @@ mod tests {
 
             let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
 
+            let bundle_locker = BundleAccountLocker::default();
+
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.read().unwrap().has_bank());
             let max_tx_processing_ns = std::u128::MAX;
@@ -4247,6 +4379,8 @@ mod tests {
                 &mut LeaderSlotMetricsTracker::new(0),
                 num_conflicting_transactions,
                 None,
+                &HashSet::default(),
+                &bundle_locker,
             );
             assert_eq!(buffered_packet_batches.len(), num_conflicting_transactions);
             // When the poh recorder has a bank, should process all non conflicting buffered packets.
@@ -4268,6 +4402,8 @@ mod tests {
                     &mut LeaderSlotMetricsTracker::new(0),
                     num_packets_to_process_per_iteration,
                     None,
+                    &HashSet::default(),
+                    &bundle_locker,
                 );
                 if num_expected_unprocessed == 0 {
                     assert!(buffered_packet_batches.is_empty())
@@ -4328,6 +4464,9 @@ mod tests {
                         .iter()
                         .map(|packet| *packet.immutable_section().message_hash())
                         .collect();
+
+                    let bundle_locker = BundleAccountLocker::default();
+
                     BankingStage::consume_buffered_packets(
                         &Pubkey::default(),
                         std::u128::MAX,
@@ -4342,6 +4481,8 @@ mod tests {
                         &mut LeaderSlotMetricsTracker::new(0),
                         num_packets_to_process_per_iteration,
                         None,
+                        &HashSet::default(),
+                        &bundle_locker,
                     );
 
                     // Check everything is correct. All indexes after `interrupted_iteration`
@@ -4740,4 +4881,7 @@ mod tests {
         BankingStage::filter_processed_packets(retryable_indexes.iter(), f);
         assert_eq!(non_retryable_indexes, vec![(0, 1), (4, 5), (6, 8)]);
     }
+
+    // TODO (LB): test that banking stage doesn't process packets that contain accounts
+    // in BundleAccountLocker
 }
