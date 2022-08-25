@@ -210,14 +210,16 @@ EOF
              ^programs/ \
              ^sdk/ \
       ; then
-    cat >> "$output_file" <<"EOF"
-  - command: "ci/test-stable-perf.sh"
-    name: "stable-perf"
-    timeout_in_minutes: 35
-    artifact_paths: "log-*.txt"
-    agents:
-      queue: "cuda"
-EOF
+    annotate --style warning \
+      "test-stable-perf is currently disabled because it requires GPUs (LB)"
+#    cat >> "$output_file" <<"EOF"
+#      - command: "ci/test-stable-perf.sh"
+#        name: "stable-perf"
+#        timeout_in_minutes: 35
+#        artifact_paths: "log-*.txt"
+#        agents:
+#          queue: "sol-private"
+#EOF
   else
     annotate --style info \
       "Stable-perf skipped as no relevant files were modified"
@@ -319,7 +321,7 @@ if [[ -n $BUILDKITE_TAG ]]; then
     "https://github.com/solana-labs/solana/releases/$BUILDKITE_TAG"
 
   # Jump directly to the secondary build to publish release artifacts quickly
-  trigger_secondary_step
+#  trigger_secondary_step
   exit 0
 fi
 
@@ -347,5 +349,5 @@ fi
 start_pipeline "Push pipeline for ${BUILDKITE_BRANCH:-?unknown branch?}"
 pull_or_push_steps
 wait_step
-trigger_secondary_step
+#trigger_secondary_step
 exit 0

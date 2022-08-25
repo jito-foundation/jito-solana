@@ -70,6 +70,7 @@ pub fn load_and_process_ledger(
     process_options: ProcessOptions,
     snapshot_archive_path: Option<PathBuf>,
     incremental_snapshot_archive_path: Option<PathBuf>,
+    ignore_halt_at_slot_for_snapshot_loading: bool,
 ) -> Result<(Arc<RwLock<BankForks>>, Option<StartingSnapshotHashes>), BlockstoreProcessorError> {
     let bank_snapshots_dir = blockstore
         .ledger_path()
@@ -79,6 +80,12 @@ pub fn load_and_process_ledger(
             "snapshot.ledger-tool"
         });
 
+    let snapshot_halt_at_slot = if ignore_halt_at_slot_for_snapshot_loading {
+        None
+    } else {
+        process_options.halt_at_slot
+    };
+
     let mut starting_slot = 0; // default start check with genesis
     let snapshot_config = if arg_matches.is_present("no_snapshot") {
         None
@@ -87,13 +94,15 @@ pub fn load_and_process_ledger(
             snapshot_archive_path.unwrap_or_else(|| blockstore.ledger_path().to_path_buf());
         let incremental_snapshot_archives_dir =
             incremental_snapshot_archive_path.unwrap_or_else(|| full_snapshot_archives_dir.clone());
-        if let Some(full_snapshot_slot) =
-            snapshot_utils::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir)
-        {
+        if let Some(full_snapshot_slot) = snapshot_utils::get_highest_full_snapshot_archive_slot(
+            &full_snapshot_archives_dir,
+            snapshot_halt_at_slot,
+        ) {
             let incremental_snapshot_slot =
                 snapshot_utils::get_highest_incremental_snapshot_archive_slot(
                     &incremental_snapshot_archives_dir,
                     full_snapshot_slot,
+                    snapshot_halt_at_slot,
                 )
                 .unwrap_or_default();
             starting_slot = std::cmp::max(full_snapshot_slot, incremental_snapshot_slot);
@@ -240,6 +249,7 @@ pub fn load_and_process_ledger(
             None, // Maybe support this later, though
             accounts_update_notifier,
             exit.clone(),
+            ignore_halt_at_slot_for_snapshot_loading,
         );
     let block_verification_method = value_t!(
         arg_matches,
