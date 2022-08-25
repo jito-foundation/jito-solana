@@ -65,6 +65,10 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         accounts_db_config: config.accounts_db_config.clone(),
         wait_to_vote_slot: config.wait_to_vote_slot,
         ledger_column_options: config.ledger_column_options.clone(),
+        maybe_relayer_config: config.maybe_relayer_config.clone(),
+        maybe_block_engine_config: config.maybe_block_engine_config.clone(),
+        shred_receiver_address: config.shred_receiver_address,
+        tip_manager_config: config.tip_manager_config.clone(),
     }
 }
 

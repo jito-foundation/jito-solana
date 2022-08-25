@@ -149,7 +149,7 @@ pub struct Stakes {
     vote_accounts: VoteAccounts,
 
     /// stake_delegations
-    stake_delegations: ImHashMap<Pubkey, Delegation>,
+    pub stake_delegations: ImHashMap<Pubkey, Delegation>,
 
     /// unused
     unused: u64,
@@ -318,7 +318,7 @@ impl Stakes {
         &self.vote_accounts
     }
 
-    pub(crate) fn stake_delegations(&self) -> &ImHashMap<Pubkey, Delegation> {
+    pub fn stake_delegations(&self) -> &ImHashMap<Pubkey, Delegation> {
         &self.stake_delegations
     }
 
