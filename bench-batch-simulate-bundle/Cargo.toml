@@ -1,0 +1,16 @@
+[package]
+name = "solana-bench-batch-simulate-bundle"
+version = "1.14.17"
+edition = "2021"
+publish = false
+
+[dependencies]
+clap = { version = "3.1.12", features = ["derive", "env"] }
+env_logger = "0.9.0"
+log = "0.4.17"
+num-traits = "0.2.15"
+rayon = "1.5.2"
+solana-client = { path = "../client" }
+solana-runtime = { path = "../runtime" }
+solana-sdk = { path = "../sdk" }
+solana-transaction-status = { path = "../transaction-status" }
