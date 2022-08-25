@@ -33,6 +33,10 @@ use {
         UiAccount, UiAccountData, UiAccountEncoding,
     },
     solana_rpc_client_api::{
+        bundles::{
+            RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
+            SimulationSlotConfig,
+        },
         client_error::{
             Error as ClientError, ErrorKind as ClientErrorKind, Result as ClientResult,
         },
@@ -43,6 +47,7 @@ use {
     },
     solana_sdk::{
         account::Account,
+        bundle::VersionedBundle,
         clock::{Epoch, Slot, UnixTimestamp, DEFAULT_MS_PER_SLOT},
         commitment_config::{CommitmentConfig, CommitmentLevel},
         epoch_info::EpochInfo,
@@ -51,7 +56,7 @@ use {
         hash::Hash,
         pubkey::Pubkey,
         signature::Signature,
-        transaction,
+        transaction::{self, VersionedTransaction},
     },
     solana_transaction_status::{
         EncodedConfirmedBlock, EncodedConfirmedTransactionWithStatusMeta, TransactionStatus,
@@ -970,6 +975,7 @@ impl RpcClient {
                     code,
                     message,
                     data,
+                    ..
                 }) = &err.kind
                 {
                     debug!("{} {}", code, message);
@@ -1408,6 +1414,113 @@ impl RpcClient {
         self.send(
             RpcRequest::SimulateTransaction,
             json!([serialized_encoded, config]),
+        )
+        .await
+    }
+
+    pub async fn batch_simulate_bundle(
+        &self,
+        bundles: &[VersionedBundle],
+    ) -> BatchRpcResult<RpcSimulateBundleResult> {
+        let configs = bundles
+            .iter()
+            .map(|b| RpcSimulateBundleConfig {
+                simulation_bank: Some(SimulationSlotConfig::Commitment(self.commitment())),
+                pre_execution_accounts_configs: vec![None; b.transactions.len()],
+                post_execution_accounts_configs: vec![None; b.transactions.len()],
+                ..RpcSimulateBundleConfig::default()
+            })
+            .collect::<Vec<RpcSimulateBundleConfig>>();
+
+        self.batch_simulate_bundle_with_config(bundles.iter().zip(configs).collect())
+            .await
+    }
+
+    pub async fn batch_simulate_bundle_with_config(
+        &self,
+        bundles_and_configs: Vec<(&VersionedBundle, RpcSimulateBundleConfig)>,
+    ) -> BatchRpcResult<RpcSimulateBundleResult> {
+        let mut params = vec![];
+        for (bundle, config) in bundles_and_configs {
+            let transaction_encoding = if let Some(encoding) = config.transaction_encoding {
+                encoding
+            } else {
+                self.default_cluster_transaction_encoding().await?
+            };
+
+            let simulation_bank = config.simulation_bank.unwrap_or_default();
+
+            let config = RpcSimulateBundleConfig {
+                transaction_encoding: Some(transaction_encoding),
+                simulation_bank: Some(simulation_bank),
+                ..config
+            };
+
+            let encoded_transactions = bundle
+                .transactions
+                .iter()
+                .map(|tx| serialize_and_encode::<VersionedTransaction>(tx, transaction_encoding))
+                .collect::<Result<Vec<String>, ClientError>>()?;
+            let rpc_bundle_request = RpcBundleRequest {
+                encoded_transactions,
+            };
+
+            params.push(json!([rpc_bundle_request, config]));
+        }
+
+        let requests_and_params = vec![RpcRequest::SimulateBundle; params.len()]
+            .into_iter()
+            .zip(params)
+            .collect();
+        self.send_batch(requests_and_params).await
+    }
+
+    pub async fn simulate_bundle(
+        &self,
+        bundle: &VersionedBundle,
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        self.simulate_bundle_with_config(
+            bundle,
+            RpcSimulateBundleConfig {
+                simulation_bank: Some(SimulationSlotConfig::Commitment(self.commitment())),
+                pre_execution_accounts_configs: vec![None; bundle.transactions.len()],
+                post_execution_accounts_configs: vec![None; bundle.transactions.len()],
+                ..RpcSimulateBundleConfig::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn simulate_bundle_with_config(
+        &self,
+        bundle: &VersionedBundle,
+        config: RpcSimulateBundleConfig,
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        let transaction_encoding = if let Some(enc) = config.transaction_encoding {
+            enc
+        } else {
+            self.default_cluster_transaction_encoding().await?
+        };
+        let simulation_bank = Some(config.simulation_bank.unwrap_or_default());
+
+        let encoded_transactions = bundle
+            .transactions
+            .iter()
+            .map(|tx| serialize_and_encode::<VersionedTransaction>(tx, transaction_encoding))
+            .collect::<ClientResult<Vec<String>>>()?;
+        let rpc_bundle_request = RpcBundleRequest {
+            encoded_transactions,
+        };
+
+        let config = RpcSimulateBundleConfig {
+            transaction_encoding: Some(transaction_encoding),
+            simulation_bank,
+            ..config
+        };
+
+        self.send(
+            RpcRequest::SimulateBundle,
+            json!([rpc_bundle_request, config]),
         )
         .await
     }
@@ -5369,6 +5482,22 @@ impl RpcClient {
             .map_err(|err| err.into_with_request(request))?;
         serde_json::from_value(response)
             .map_err(|err| ClientError::new_with_request(err.into(), request))
+    }
+
+    pub async fn send_batch<T>(
+        &self,
+        requests_and_params: Vec<(RpcRequest, Value)>,
+    ) -> ClientResult<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let response = self.sender.send_batch(requests_and_params).await?;
+        debug!("response: {:?}", response);
+
+        serde_json::from_value(response).map_err(|err| ClientError {
+            request: None,
+            kind: err.into(),
+        })
     }
 
     pub fn get_transport_stats(&self) -> RpcTransportStats {

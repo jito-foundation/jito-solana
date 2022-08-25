@@ -539,6 +539,10 @@ impl ClusterInfo {
         *self.entrypoints.write().unwrap() = entrypoints;
     }
 
+    pub fn set_my_contact_info(&self, my_contact_info: ContactInfo) {
+        *self.my_contact_info.write().unwrap() = my_contact_info;
+    }
+
     pub fn save_contact_info(&self) {
         let nodes = {
             let entrypoint_gossip_addrs = self

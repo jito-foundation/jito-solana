@@ -143,6 +143,7 @@ impl Tvu {
         repair_quic_endpoint_sender: AsyncSender<LocalRequest>,
         outstanding_repair_requests: Arc<RwLock<OutstandingShredRepairs>>,
         cluster_slots: Arc<ClusterSlots>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let TvuSockets {
             repair: repair_socket,
@@ -191,6 +192,7 @@ impl Tvu {
             retransmit_receiver,
             max_slots.clone(),
             Some(rpc_subscriptions.clone()),
+            shred_receiver_addr,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -506,6 +508,7 @@ pub mod tests {
             repair_quic_endpoint_sender,
             outstanding_repair_requests,
             cluster_slots,
+            Arc::new(RwLock::new(None)),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
