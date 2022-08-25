@@ -265,6 +265,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
+        _shred_receiver_addr: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()> {
         let (shreds, _) = receiver.lock().unwrap().recv()?;
         if shreds.is_empty() {

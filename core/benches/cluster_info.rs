@@ -79,6 +79,7 @@ fn broadcast_shreds_bench(bencher: &mut Bencher) {
             &cluster_info,
             &bank_forks,
             &SocketAddrSpace::Unspecified,
+            &None,
         )
         .unwrap();
     });
