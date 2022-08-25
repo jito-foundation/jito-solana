@@ -3,6 +3,7 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError},
     log::*,
     solana_client::{connection_cache::ConnectionCache, tpu_connection::TpuConnection},
+    solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure::Measure,
     solana_metrics::datapoint_warn,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
@@ -325,7 +326,7 @@ const SEND_TRANSACTION_METRICS_REPORT_RATE_MS: u64 = 5000;
 
 impl SendTransactionService {
     pub fn new<T: TpuInfo + std::marker::Send + 'static>(
-        tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         bank_forks: &Arc<RwLock<BankForks>>,
         leader_info: Option<T>,
         receiver: Receiver<TransactionInfo>,
@@ -340,7 +341,7 @@ impl SendTransactionService {
             ..Config::default()
         };
         Self::new_with_config(
-            tpu_address,
+            cluster_info,
             bank_forks,
             leader_info,
             receiver,
@@ -351,7 +352,7 @@ impl SendTransactionService {
     }
 
     pub fn new_with_config<T: TpuInfo + std::marker::Send + 'static>(
-        tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         bank_forks: &Arc<RwLock<BankForks>>,
         leader_info: Option<T>,
         receiver: Receiver<TransactionInfo>,
@@ -366,7 +367,7 @@ impl SendTransactionService {
         let leader_info_provider = Arc::new(Mutex::new(CurrentLeaderInfo::new(leader_info)));
 
         let receive_txn_thread = Self::receive_txn_thread(
-            tpu_address,
+            cluster_info.clone(),
             receiver,
             leader_info_provider.clone(),
             connection_cache.clone(),
@@ -377,7 +378,7 @@ impl SendTransactionService {
         );
 
         let retry_thread = Self::retry_thread(
-            tpu_address,
+            cluster_info,
             bank_forks.clone(),
             leader_info_provider,
             connection_cache.clone(),
@@ -395,7 +396,7 @@ impl SendTransactionService {
 
     /// Thread responsible for receiving transactions from RPC clients.
     fn receive_txn_thread<T: TpuInfo + std::marker::Send + 'static>(
-        tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         receiver: Receiver<TransactionInfo>,
         leader_info_provider: Arc<Mutex<CurrentLeaderInfo<T>>>,
         connection_cache: Arc<ConnectionCache>,
@@ -456,6 +457,7 @@ impl SendTransactionService {
                     stats
                         .sent_transactions
                         .fetch_add(transactions.len() as u64, Ordering::Relaxed);
+                    let tpu_address = cluster_info.my_contact_info().tpu;
                     Self::send_transactions_in_batch(
                         &tpu_address,
                         &mut transactions,
@@ -502,7 +504,7 @@ impl SendTransactionService {
 
     /// Thread responsible for retrying transactions
     fn retry_thread<T: TpuInfo + std::marker::Send + 'static>(
-        tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         bank_forks: Arc<RwLock<BankForks>>,
         leader_info_provider: Arc<Mutex<CurrentLeaderInfo<T>>>,
         connection_cache: Arc<ConnectionCache>,
@@ -538,7 +540,7 @@ impl SendTransactionService {
                             bank_forks.working_bank().clone(),
                         )
                     };
-
+                    let tpu_address = cluster_info.my_contact_info().tpu;
                     let _result = Self::process_transactions(
                         &working_bank,
                         &root_bank,
@@ -779,27 +781,40 @@ mod test {
         super::*,
         crate::tpu_info::NullTpuInfo,
         crossbeam_channel::{bounded, unbounded},
+        solana_gossip::legacy_contact_info::LegacyContactInfo as ContactInfo,
         solana_sdk::{
             account::AccountSharedData,
             genesis_config::create_genesis_config,
             nonce::{self, state::DurableNonce},
             pubkey::Pubkey,
-            signature::Signer,
+            signature::{Keypair, Signer},
             system_program, system_transaction,
         },
-        std::ops::Sub,
+        solana_streamer::socket::SocketAddrSpace,
+        std::{
+            net::{IpAddr, Ipv4Addr},
+            ops::Sub,
+        },
     };
 
     #[test]
     fn service_exit() {
-        let tpu_address = "127.0.0.1:0".parse().unwrap();
         let bank = Bank::default_for_tests();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
         let (sender, receiver) = unbounded();
 
         let connection_cache = Arc::new(ConnectionCache::default());
+        let contact_info = ContactInfo {
+            tpu: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+            ..ContactInfo::default()
+        };
+        let cluster_info: Arc<ClusterInfo> = Arc::new(ClusterInfo::new(
+            contact_info,
+            Arc::new(Keypair::new()),
+            SocketAddrSpace::new(false),
+        ));
         let send_tranaction_service = SendTransactionService::new::<NullTpuInfo>(
-            tpu_address,
+            cluster_info,
             &bank_forks,
             None,
             receiver,
@@ -815,7 +830,15 @@ mod test {
 
     #[test]
     fn validator_exit() {
-        let tpu_address = "127.0.0.1:0".parse().unwrap();
+        let contact_info = ContactInfo {
+            tpu: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+            ..ContactInfo::default()
+        };
+        let cluster_info: Arc<ClusterInfo> = Arc::new(ClusterInfo::new(
+            contact_info,
+            Arc::new(Keypair::new()),
+            SocketAddrSpace::new(false),
+        ));
         let bank = Bank::default_for_tests();
         let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
         let (sender, receiver) = bounded(0);
@@ -833,7 +856,7 @@ mod test {
         let exit = Arc::new(AtomicBool::new(false));
         let connection_cache = Arc::new(ConnectionCache::default());
         let _send_transaction_service = SendTransactionService::new::<NullTpuInfo>(
-            tpu_address,
+            cluster_info,
             &bank_forks,
             None,
             receiver,

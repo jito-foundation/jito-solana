@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+bank_hash=$(./target/release/solana-ledger-tool -l config/bootstrap-validator bank-hash)
+
+# NOTE: make sure tip-payment and tip-distribution program are deployed using the correct pubkeys
+RUST_LOG=INFO,solana_core::bundle_stage=DEBUG \
+	NDEBUG=1 ./multinode-demo/bootstrap-validator.sh  \
+  --wait-for-supermajority 0 \
+  --expected-bank-hash $bank_hash \
+  --block-engine-address http://127.0.0.1:1003 \
+  --block-engine-auth-service-address http://127.0.0.1:1005 \
+  --relayer-auth-service-address http://127.0.0.1:11226 \
+  --relayer-address http://127.0.0.1:11226 \
+  --rpc-pubsub-enable-block-subscription \
+  --enable-rpc-transaction-history \
+  --tip-payment-program-pubkey 6veFRUKJBNGMR58LEcKn5Bc6MR17WZF4rsgD4Lqq7fsU \
+  --tip-distribution-program-pubkey 3PX9z1qPj37eNZqH7e5fyaVDyG7ARqkjkYEe1a4xsBkA \
+  --commission-bps 0 \
+  --shred-receiver-address 127.0.0.1:1002 \
+  --allow-private-addr \
+  --trust-relayer-packets \
+  --trust-block-engine-packets

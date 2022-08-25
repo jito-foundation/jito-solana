@@ -4,6 +4,7 @@ use {
     crate::banks_server::start_tcp_server,
     futures::{future::FutureExt, pin_mut, prelude::stream::StreamExt, select},
     solana_client::connection_cache::ConnectionCache,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_runtime::{bank_forks::BankForks, commitment::BlockCommitmentCache},
     std::{
         net::SocketAddr,
@@ -27,7 +28,7 @@ pub struct RpcBanksService {
 /// Run the TCP service until `exit` is set to true
 async fn start_abortable_tcp_server(
     listen_addr: SocketAddr,
-    tpu_addr: SocketAddr,
+    cluster_info: Arc<ClusterInfo>,
     bank_forks: Arc<RwLock<BankForks>>,
     block_commitment_cache: Arc<RwLock<BlockCommitmentCache>>,
     connection_cache: Arc<ConnectionCache>,
@@ -35,7 +36,7 @@ async fn start_abortable_tcp_server(
 ) {
     let server = start_tcp_server(
         listen_addr,
-        tpu_addr,
+        cluster_info,
         bank_forks.clone(),
         block_commitment_cache.clone(),
         connection_cache,
@@ -59,7 +60,7 @@ async fn start_abortable_tcp_server(
 impl RpcBanksService {
     fn run(
         listen_addr: SocketAddr,
-        tpu_addr: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         bank_forks: Arc<RwLock<BankForks>>,
         block_commitment_cache: Arc<RwLock<BlockCommitmentCache>>,
         connection_cache: Arc<ConnectionCache>,
@@ -67,7 +68,7 @@ impl RpcBanksService {
     ) {
         let server = start_abortable_tcp_server(
             listen_addr,
-            tpu_addr,
+            cluster_info,
             bank_forks,
             block_commitment_cache,
             connection_cache,
@@ -78,7 +79,7 @@ impl RpcBanksService {
 
     pub fn new(
         listen_addr: SocketAddr,
-        tpu_addr: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         bank_forks: &Arc<RwLock<BankForks>>,
         block_commitment_cache: &Arc<RwLock<BlockCommitmentCache>>,
         connection_cache: &Arc<ConnectionCache>,
@@ -93,7 +94,7 @@ impl RpcBanksService {
             .spawn(move || {
                 Self::run(
                     listen_addr,
-                    tpu_addr,
+                    cluster_info,
                     bank_forks,
                     block_commitment_cache,
                     connection_cache,
@@ -112,7 +113,14 @@ impl RpcBanksService {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, solana_runtime::bank::Bank};
+    use {
+        super::*,
+        solana_gossip::legacy_contact_info::LegacyContactInfo as ContactInfo,
+        solana_runtime::bank::Bank,
+        solana_sdk::signature::Keypair,
+        solana_streamer::socket::SocketAddrSpace,
+        std::net::{IpAddr, Ipv4Addr},
+    };
 
     #[test]
     fn test_rpc_banks_server_exit() {
@@ -121,9 +129,18 @@ mod tests {
         let connection_cache = Arc::new(ConnectionCache::default());
         let exit = Arc::new(AtomicBool::new(false));
         let addr = "127.0.0.1:0".parse().unwrap();
+        let contact_info = ContactInfo {
+            tpu: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+            ..ContactInfo::default()
+        };
+        let cluster_info: Arc<ClusterInfo> = Arc::new(ClusterInfo::new(
+            contact_info,
+            Arc::new(Keypair::new()),
+            SocketAddrSpace::new(false),
+        ));
         let service = RpcBanksService::new(
             addr,
-            addr,
+            cluster_info,
             &bank_forks,
             &block_commitment_cache,
             &connection_cache,
