@@ -1,6 +1,6 @@
 use {
     crate::bank::Bank,
-    solana_sdk::transaction::{Result, SanitizedTransaction},
+    solana_sdk::transaction::{Result, SanitizedTransaction, TransactionError},
     std::borrow::Cow,
 };
 
@@ -45,6 +45,28 @@ impl<'a, 'b> TransactionBatch<'a, 'b> {
 
     pub fn needs_unlock(&self) -> bool {
         self.needs_unlock
+    }
+
+    /// Bundle locking failed if lock result returns something other than ok or AccountInUse
+    pub fn check_bundle_lock_results(&self) -> Option<(&SanitizedTransaction, &TransactionError)> {
+        self.sanitized_transactions()
+            .iter()
+            .zip(self.lock_results.iter())
+            .find(|(_, lock_result)| {
+                !matches!(lock_result, Ok(()) | Err(TransactionError::AccountInUse))
+            })
+            .map(|(transaction, lock_result)| {
+                (
+                    transaction,
+                    match lock_result {
+                        Ok(_) => {
+                            // safe here bc the above find will never return Ok
+                            unreachable!()
+                        }
+                        Err(lock_error) => lock_error,
+                    },
+                )
+            })
     }
 }
 
