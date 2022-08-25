@@ -65,6 +65,7 @@ pub fn load(
         entry_notification_sender,
         accounts_update_notifier,
         exit,
+        true,
     );
 
     blockstore_processor::process_blockstore_from_root(
@@ -92,6 +93,7 @@ pub fn load_bank_forks(
     entry_notification_sender: Option<&EntryNotifierSender>,
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
     exit: Arc<AtomicBool>,
+    ignore_halt_at_slot_for_snapshot_loading: bool,
 ) -> (
     Arc<RwLock<BankForks>>,
     LeaderScheduleCache,
@@ -105,8 +107,15 @@ pub fn load_bank_forks(
         fs::create_dir_all(&snapshot_config.bank_snapshots_dir)
             .expect("Couldn't create snapshot directory");
 
+        let halt_at_slot = if ignore_halt_at_slot_for_snapshot_loading {
+            None
+        } else {
+            process_options.halt_at_slot
+        };
+
         if snapshot_utils::get_highest_full_snapshot_archive_info(
             &snapshot_config.full_snapshot_archives_dir,
+            halt_at_slot,
         )
         .is_some()
         {
@@ -124,12 +133,19 @@ pub fn load_bank_forks(
     };
 
     let (bank_forks, starting_snapshot_hashes) = if snapshot_present {
+        let mut process_options = process_options.clone();
+        process_options.halt_at_slot = if ignore_halt_at_slot_for_snapshot_loading {
+            None
+        } else {
+            process_options.halt_at_slot
+        };
+
         bank_forks_from_snapshot(
             genesis_config,
             account_paths,
             shrink_paths,
             snapshot_config.as_ref().unwrap(),
-            process_options,
+            &process_options,
             accounts_update_notifier,
             exit,
         )
@@ -189,7 +205,7 @@ pub fn load_bank_forks(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn bank_forks_from_snapshot(
+pub fn bank_forks_from_snapshot(
     genesis_config: &GenesisConfig,
     account_paths: Vec<PathBuf>,
     shrink_paths: Option<Vec<PathBuf>>,
@@ -229,6 +245,7 @@ fn bank_forks_from_snapshot(
             process_options.accounts_db_config.clone(),
             accounts_update_notifier,
             exit,
+            process_options.halt_at_slot,
         )
         .expect("Load from snapshot failed");
 

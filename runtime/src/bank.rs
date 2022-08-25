@@ -259,6 +259,7 @@ pub struct BankRc {
     pub(crate) bank_id_generator: Arc<AtomicU64>,
 }
 
+use crate::accounts::AccountLocks;
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 use solana_frozen_abi::abi_example::AbiExample;
 
@@ -358,6 +359,7 @@ impl TransactionExecutionResult {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadAndExecuteTransactionsOutput {
     pub loaded_transactions: Vec<TransactionLoadResult>,
     // Vector of results indicating whether a transaction was executed or could not
@@ -399,6 +401,39 @@ impl DurableNonceFee {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BundleSimulationSummary {
+    // error and transaction signature responsible
+    Failed {
+        error: (), //BundleExecutionError,
+        tx_signature: Signature,
+    },
+    Succeeded,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountData {
+    pub pubkey: Pubkey,
+    pub data: AccountSharedData,
+}
+
+#[derive(Clone)]
+pub struct BundleSimulationResult {
+    /// Gives high level summary of bundle.
+    pub summary: (), //BundleSimulationSummary,
+    pub transaction_results: Vec<BundleTransactionSimulationResult>,
+}
+
+#[derive(Clone)]
+pub struct BundleTransactionSimulationResult {
+    pub result: Result<()>,
+    pub logs: TransactionLogMessages,
+    pub pre_execution_accounts: Option<Vec<AccountData>>,
+    pub post_execution_accounts: Option<Vec<AccountData>>,
+    pub return_data: Option<TransactionReturnData>,
+    pub units_consumed: u64,
+}
+
 pub struct TransactionSimulationResult {
     pub result: Result<()>,
     pub logs: TransactionLogMessages,
@@ -406,6 +441,7 @@ pub struct TransactionSimulationResult {
     pub units_consumed: u64,
     pub return_data: Option<TransactionReturnData>,
 }
+
 pub struct TransactionBalancesSet {
     pub pre_balances: TransactionBalances,
     pub post_balances: TransactionBalances,
@@ -1004,7 +1040,7 @@ pub struct Bank {
     inflation: Arc<RwLock<Inflation>>,
 
     /// cache of vote_account and stake_account state for this fork
-    stakes_cache: StakesCache,
+    pub stakes_cache: StakesCache,
 
     /// staked nodes on epoch boundaries, saved off when a bank.slot() is at
     ///   a leader schedule calculation boundary
@@ -3804,14 +3840,53 @@ impl Bank {
         &'a self,
         transactions: &'b [SanitizedTransaction],
         transaction_results: impl Iterator<Item = Result<()>>,
+        additional_read_locks: &HashSet<Pubkey>,
+        additional_write_locks: &HashSet<Pubkey>,
     ) -> TransactionBatch<'a, 'b> {
-        // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
         let lock_results = self.rc.accounts.lock_accounts_with_results(
             transactions.iter(),
             transaction_results,
             tx_account_lock_limit,
+            additional_read_locks,
+            additional_write_locks,
         );
+        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+    }
+
+    /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
+    /// limited packing status, where transactions will be locked sequentially until the first failure
+    pub fn prepare_sequential_sanitized_batch_with_results<'a, 'b>(
+        &'a self,
+        transactions: &'b [SanitizedTransaction],
+    ) -> TransactionBatch<'a, 'b> {
+        // this lock_results could be: Ok, AccountInUse, AccountLoadedTwice, or TooManyAccountLocks
+        let tx_account_lock_limit = self.get_transaction_account_lock_limit();
+        let lock_results = self
+            .rc
+            .accounts
+            .lock_accounts_sequential_with_results(transactions.iter(), tx_account_lock_limit);
+        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+    }
+
+    /// Prepare a locked transaction batch from a list of sanitized transactions for simulation.
+    /// This grabs as many sequential account locks that it can without a RW conflict. However,
+    /// it uses a temporary version of AccountLocks and not the Bank's account locks, so one can
+    /// use this during simulation on an unfrozen Bank without worrying about impacting the RW
+    /// lock usage in replay
+    pub fn prepare_sequential_sanitized_batch_with_results_for_simulation<'a, 'b>(
+        &'a self,
+        transactions: &'b [SanitizedTransaction],
+    ) -> TransactionBatch<'a, 'b> {
+        let tx_account_lock_limit = self.get_transaction_account_lock_limit();
+        let tx_account_locks_results: Vec<Result<_>> = transactions
+            .iter()
+            .map(|tx| tx.get_account_locks(tx_account_lock_limit))
+            .collect();
+
+        let mut account_locks = AccountLocks::default();
+        let lock_results =
+            Accounts::lock_accounts_sequential(&mut account_locks, tx_account_locks_results);
         TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
     }
 
@@ -3847,14 +3922,13 @@ impl Bank {
         transaction: SanitizedTransaction,
     ) -> TransactionSimulationResult {
         let account_keys = transaction.message().account_keys();
-        let number_of_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
         let batch = self.prepare_simulation_batch(transaction);
         let mut timings = ExecuteTimings::default();
 
         let LoadAndExecuteTransactionsOutput {
             loaded_transactions,
-            mut execution_results,
+            execution_results,
             ..
         } = self.load_and_execute_transactions(
             &batch,
@@ -3870,43 +3944,42 @@ impl Bank {
             None,
         );
 
-        let post_simulation_accounts = loaded_transactions
-            .into_iter()
-            .next()
-            .unwrap()
+        Self::build_transaction_simulation_result(&loaded_transactions[0], &execution_results[0])
+    }
+
+    fn build_transaction_simulation_result(
+        loaded_transaction_result: &TransactionLoadResult,
+        execution_result: &TransactionExecutionResult,
+    ) -> TransactionSimulationResult {
+        let (logs, return_data, units_consumed, result) = match execution_result {
+            TransactionExecutionResult::Executed { details, .. } => {
+                let log_messages = if let Some(ref log_messages) = details.log_messages {
+                    log_messages.clone()
+                } else {
+                    vec![]
+                };
+
+                (
+                    log_messages,
+                    details.return_data.as_ref().cloned(),
+                    details.executed_units,
+                    execution_result.flattened_result(),
+                )
+            }
+            TransactionExecutionResult::NotExecuted(_) => {
+                (vec![], None, 0, execution_result.flattened_result())
+            }
+        };
+
+        let post_simulation_accounts = loaded_transaction_result
             .0
+            .as_ref()
             .ok()
-            .map(|loaded_transaction| {
-                loaded_transaction
-                    .accounts
-                    .into_iter()
-                    .take(number_of_accounts)
-                    .collect::<Vec<_>>()
-            })
+            .map(|tx| tx.accounts.clone())
             .unwrap_or_default();
 
-        let units_consumed = timings
-            .details
-            .per_program_timings
-            .iter()
-            .fold(0, |acc: u64, (_, program_timing)| {
-                acc.saturating_add(program_timing.accumulated_units)
-            });
-
-        debug!("simulate_transaction: {:?}", timings);
-
-        let execution_result = execution_results.pop().unwrap();
-        let flattened_result = execution_result.flattened_result();
-        let (logs, return_data) = match execution_result {
-            TransactionExecutionResult::Executed { details, .. } => {
-                (details.log_messages, details.return_data)
-            }
-            TransactionExecutionResult::NotExecuted(_) => (None, None),
-        };
-        let logs = logs.unwrap_or_default();
-
         TransactionSimulationResult {
-            result: flattened_result,
+            result,
             logs,
             post_simulation_accounts,
             units_consumed,
@@ -4125,6 +4198,29 @@ impl Bank {
         } else {
             Ok(0)
         }
+    }
+
+    pub fn collect_balances_with_cache(
+        &self,
+        batch: &TransactionBatch,
+        account_overrides: Option<&AccountOverrides>,
+    ) -> TransactionBalances {
+        let mut balances: TransactionBalances = vec![];
+        for transaction in batch.sanitized_transactions() {
+            let mut transaction_balances: Vec<u64> = vec![];
+            for account_key in transaction.message().account_keys().iter() {
+                let balance = match account_overrides {
+                    None => self.get_balance(account_key),
+                    Some(overrides) => match overrides.get(account_key) {
+                        None => self.get_balance(account_key),
+                        Some(account_data) => account_data.lamports(),
+                    },
+                };
+                transaction_balances.push(balance);
+            }
+            balances.push(transaction_balances);
+        }
+        balances
     }
 
     pub fn load_program(&self, pubkey: &Pubkey) -> Result<Arc<LoadedProgram>> {
@@ -5166,6 +5262,26 @@ impl Bank {
             execution_results,
             rent_debits,
         }
+    }
+
+    pub fn collect_accounts_to_store<'a>(
+        &self,
+        txs: &'a [SanitizedTransaction],
+        res: &'a [TransactionExecutionResult],
+        loaded: &'a mut [TransactionLoadResult],
+    ) -> Vec<(&'a Pubkey, &'a AccountSharedData)> {
+        let (last_blockhash, lamports_per_signature) =
+            self.last_blockhash_and_lamports_per_signature();
+        let durable_nonce = DurableNonce::from_blockhash(&last_blockhash);
+        Accounts::collect_accounts_to_store(
+            txs,
+            res,
+            loaded,
+            &self.rent_collector,
+            &durable_nonce,
+            lamports_per_signature,
+        )
+        .0
     }
 
     // Distribute collected rent fees for this slot to staked validators (excluding stakers)

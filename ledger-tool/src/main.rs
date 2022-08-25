@@ -2208,6 +2208,7 @@ fn main() {
                     process_options,
                     snapshot_archive_path,
                     incremental_snapshot_archive_path,
+                    true,
                 ) {
                     Ok((bank_forks, ..)) => {
                         println!(
@@ -2300,6 +2301,7 @@ fn main() {
                     process_options,
                     snapshot_archive_path,
                     incremental_snapshot_archive_path,
+                    true,
                 ) {
                     Ok((bank_forks, ..)) => {
                         println!("{}", &bank_forks.read().unwrap().working_bank().hash());
@@ -2538,6 +2540,7 @@ fn main() {
                     process_options,
                     snapshot_archive_path,
                     incremental_snapshot_archive_path,
+                    true,
                 )
                 .unwrap_or_else(|err| {
                     eprintln!("Ledger verification failed: {err:?}");
@@ -2582,6 +2585,7 @@ fn main() {
                     process_options,
                     snapshot_archive_path,
                     incremental_snapshot_archive_path,
+                    true,
                 ) {
                     Ok((bank_forks, ..)) => {
                         let dot = graph_forks(&bank_forks.read().unwrap(), &graph_config);
@@ -2716,6 +2720,21 @@ fn main() {
                     exit(1);
                 }
 
+                if let Ok(metas) = blockstore.slot_meta_iterator(0) {
+                    let slots: Vec<_> = metas.map(|(slot, _)| slot).collect();
+                    if slots.is_empty() {
+                        eprintln!("Ledger is empty, can't create snapshot");
+                        exit(1);
+                    } else {
+                        let first = slots.first().unwrap();
+                        let last = slots.last().unwrap_or(first);
+                        if first > &snapshot_slot || &snapshot_slot > last {
+                            eprintln!("Slot {} is out of bounds of ledger [{}, {}], cannot create snapshot", &snapshot_slot, first, last);
+                            exit(1);
+                        }
+                    }
+                }
+
                 let ending_slot = if is_minimized {
                     let ending_slot = value_t_or_exit!(arg_matches, "ending_slot", Slot);
                     if ending_slot <= snapshot_slot {
@@ -2759,6 +2778,7 @@ fn main() {
                     },
                     snapshot_archive_path,
                     incremental_snapshot_archive_path,
+                    false, // want to load snapshots <= halt_at_slot
                 ) {
                     Ok((bank_forks, starting_snapshot_hashes)) => {
                         let mut bank = bank_forks
@@ -3123,6 +3143,7 @@ fn main() {
                     process_options,
                     snapshot_archive_path,
                     incremental_snapshot_archive_path,
+                    true,
                 )
                 .unwrap_or_else(|err| {
                     eprintln!("Failed to load ledger: {err:?}");
@@ -3212,6 +3233,7 @@ fn main() {
                     process_options,
                     snapshot_archive_path,
                     incremental_snapshot_archive_path,
+                    true,
                 ) {
                     Ok((bank_forks, ..)) => {
                         let bank_forks = bank_forks.read().unwrap();

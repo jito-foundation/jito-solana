@@ -14,6 +14,7 @@ pub mod ancestor_hashes_service;
 pub mod banking_stage;
 pub mod banking_trace;
 pub mod broadcast_stage;
+pub mod bundle_stage;
 pub mod cache_block_meta_service;
 pub mod cluster_info_vote_listener;
 pub mod cluster_nodes;
@@ -23,6 +24,7 @@ pub mod cluster_slots_service;
 pub mod commitment_service;
 pub mod completed_data_sets_service;
 pub mod consensus;
+pub mod consensus_cache_updater;
 pub mod cost_update_service;
 pub mod drop_bank_service;
 pub mod duplicate_repair_status;
@@ -31,6 +33,7 @@ pub mod fork_choice;
 pub mod forward_packet_batches_by_accounts;
 pub mod gen_keys;
 pub mod heaviest_subtree_fork_choice;
+pub mod immutable_deserialized_bundle;
 pub mod immutable_deserialized_packet;
 mod latest_unprocessed_votes;
 pub mod latest_validator_votes_for_frozen_banks;
@@ -42,11 +45,13 @@ pub mod multi_iterator_scanner;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
 pub mod outstanding_requests;
+pub mod packet_bundle;
 pub mod packet_deserializer;
 pub mod packet_threshold;
 pub mod poh_timing_report_service;
 pub mod poh_timing_reporter;
 pub mod progress_map;
+pub mod proxy;
 pub mod qos_service;
 pub mod read_write_account_set;
 pub mod repair_generic_traversal;
@@ -70,6 +75,7 @@ pub mod snapshot_packager_service;
 pub mod staked_nodes_updater_service;
 pub mod stats_reporter_service;
 pub mod system_monitor_service;
+pub mod tip_manager;
 mod tower1_14_11;
 mod tower1_7_14;
 pub mod tower_storage;
@@ -106,3 +112,41 @@ extern crate solana_frozen_abi_macro;
 #[cfg(test)]
 #[macro_use]
 extern crate matches;
+
+use {
+    solana_sdk::packet::{Meta, Packet, PacketFlags, PACKET_DATA_SIZE},
+    std::{
+        cmp::min,
+        net::{IpAddr, Ipv4Addr},
+    },
+};
+
+const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+
+// NOTE: last profiled at around 180ns
+pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> Packet {
+    let mut data = [0; PACKET_DATA_SIZE];
+    let copy_len = min(data.len(), p.data.len());
+    data[..copy_len].copy_from_slice(&p.data[..copy_len]);
+    let mut packet = Packet::new(data, Meta::default());
+    if let Some(meta) = p.meta {
+        packet.meta_mut().size = meta.size as usize;
+        packet.meta_mut().addr = meta.addr.parse().unwrap_or(UNKNOWN_IP);
+        packet.meta_mut().port = meta.port as u16;
+        if let Some(flags) = meta.flags {
+            if flags.simple_vote_tx {
+                packet.meta_mut().flags.insert(PacketFlags::SIMPLE_VOTE_TX);
+            }
+            if flags.forwarded {
+                packet.meta_mut().flags.insert(PacketFlags::FORWARDED);
+            }
+            if flags.tracer_packet {
+                packet.meta_mut().flags.insert(PacketFlags::TRACER_PACKET);
+            }
+            if flags.repair {
+                packet.meta_mut().flags.insert(PacketFlags::REPAIR);
+            }
+        }
+    }
+    packet
+}

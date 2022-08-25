@@ -9,15 +9,15 @@ use {
     },
     solana_core::{
         banking_stage::{committer::Committer, consumer::Consumer},
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         qos_service::QosService,
     },
-    solana_entry::entry::Entry,
     solana_ledger::{
         blockstore::Blockstore,
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
     },
     solana_poh::{
-        poh_recorder::{create_test_recorder, PohRecorder},
+        poh_recorder::{create_test_recorder, PohRecorder, WorkingBankEntry},
         poh_service::PohService,
     },
     solana_runtime::bank::Bank,
@@ -25,9 +25,12 @@ use {
         account::Account, signature::Keypair, signer::Signer, stake_history::Epoch, system_program,
         system_transaction, transaction::SanitizedTransaction,
     },
-    std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
+    std::{
+        collections::HashSet,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
+        },
     },
     tempfile::TempDir,
     test::Bencher,
@@ -79,7 +82,14 @@ fn create_consumer(poh_recorder: &RwLock<PohRecorder>) -> Consumer {
     let (replay_vote_sender, _replay_vote_receiver) = unbounded();
     let committer = Committer::new(None, replay_vote_sender, Arc::default());
     let transaction_recorder = poh_recorder.read().unwrap().new_recorder();
-    Consumer::new(committer, transaction_recorder, QosService::new(0), None)
+    Consumer::new(
+        committer,
+        transaction_recorder,
+        QosService::new(0),
+        None,
+        HashSet::default(),
+        BundleAccountLocker::default(),
+    )
 }
 
 struct BenchFrame {
@@ -88,7 +98,7 @@ struct BenchFrame {
     exit: Arc<AtomicBool>,
     poh_recorder: Arc<RwLock<PohRecorder>>,
     poh_service: PohService,
-    signal_receiver: Receiver<(Arc<Bank>, (Entry, u64))>,
+    signal_receiver: Receiver<WorkingBankEntry>,
 }
 
 fn setup() -> BenchFrame {
