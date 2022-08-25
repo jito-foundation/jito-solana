@@ -1,0 +1,14 @@
+[package]
+name = "jito-protos"
+version = "1.14.22"
+edition = "2021"
+publish = false
+
+[dependencies]
+bytes = "1.1.0"
+prost = "0.8.0"
+prost-types = "0.8.0"
+tonic = "0.5.2"
+
+[build-dependencies]
+tonic-build = "0.5.2"

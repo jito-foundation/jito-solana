@@ -12,6 +12,7 @@ use {
         consensus::{reconcile_blockstore_roots_with_external_source, ExternalRootSource, Tower},
         ledger_metric_report_service::LedgerMetricReportService,
         poh_timing_report_service::PohTimingReportService,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         rewards_recorder_service::{RewardsRecorderSender, RewardsRecorderService},
         sample_performance_service::SamplePerformanceService,
         serve_repair::ServeRepair,
@@ -20,6 +21,7 @@ use {
         snapshot_packager_service::SnapshotPackagerService,
         stats_reporter_service::StatsReporterService,
         system_monitor_service::{verify_net_stats_access, SystemMonitorService},
+        tip_manager::TipManagerConfig,
         tower_storage::TowerStorage,
         tpu::{Tpu, TpuSockets, DEFAULT_TPU_COALESCE_MS},
         tvu::{Tvu, TvuConfig, TvuSockets},
@@ -109,7 +111,7 @@ use {
         path::{Path, PathBuf},
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{sleep, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -178,6 +180,12 @@ pub struct ValidatorConfig {
     pub wait_to_vote_slot: Option<Slot>,
     pub ledger_column_options: LedgerColumnOptions,
     pub runtime_config: RuntimeConfig,
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    // Using Option inside RwLock is ugly, but only convenient way to allow toggle on/off
+    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub preallocated_bundle_cost: u64,
 }
 
 impl Default for ValidatorConfig {
@@ -241,6 +249,11 @@ impl Default for ValidatorConfig {
             wait_to_vote_slot: None,
             ledger_column_options: LedgerColumnOptions::default(),
             runtime_config: RuntimeConfig::default(),
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            shred_receiver_address: Arc::new(RwLock::new(None)),
+            tip_manager_config: TipManagerConfig::default(),
+            preallocated_bundle_cost: u64::default(),
         }
     }
 }
@@ -937,6 +950,9 @@ impl Validator {
             bank_forks: bank_forks.clone(),
             cluster_info: cluster_info.clone(),
             vote_account: *vote_account,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_address: config.shred_receiver_address.clone(),
         });
 
         let waited_for_supermajority = if let Ok(waited) = wait_for_supermajority(
@@ -1040,6 +1056,7 @@ impl Validator {
             config.runtime_config.log_messages_bytes_limit,
             &connection_cache,
             &prioritization_fee_cache,
+            config.shred_receiver_address.clone(),
         );
 
         let tpu = Tpu::new(
@@ -1075,13 +1092,22 @@ impl Validator {
             &identity_keypair,
             config.runtime_config.log_messages_bytes_limit,
             &staked_nodes,
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_address.clone(),
             tpu_enable_udp,
+            config.preallocated_bundle_cost,
         );
 
         datapoint_info!(
             "validator-new",
             ("id", id.to_string(), String),
-            ("version", solana_version::version!(), String)
+            (
+                "version",
+                format!("jito-{}", solana_version::version!()),
+                String
+            )
         );
 
         *start_progress.write().unwrap() = ValidatorStartProgress::Running;
@@ -2162,7 +2188,7 @@ mod tests {
             Arc::new(validator_keypair),
             &validator_ledger_path,
             &voting_keypair.pubkey(),
-            Arc::new(RwLock::new(vec![voting_keypair.clone()])),
+            Arc::new(RwLock::new(vec![voting_keypair])),
             vec![leader_node.info],
             &config,
             true, // should_check_duplicate_instance

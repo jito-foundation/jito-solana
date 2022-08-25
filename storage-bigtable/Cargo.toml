@@ -40,11 +40,11 @@ zstd = "0.11.2"
 # declare it here as well to activate the "vendored" feature that builds OpenSSL
 # statically...
 [target."cfg(not(windows))".dependencies]
-openssl = { version = "0.10", features = ["vendored"] }
+openssl = { version = "0.10.55", features = ["vendored"] }
 # ...except on Windows to avoid having to deal with getting CI past a build-time
 # Perl dependency
 [target."cfg(windows)".dependencies]
-openssl = { version = "0.10", features = [] }
+openssl = { version = "0.10.55", features = [] }
 
 [lib]
 crate-type = ["lib"]

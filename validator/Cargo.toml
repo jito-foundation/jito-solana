@@ -53,6 +53,7 @@ solana-test-validator = { path = "../test-validator", version = "=1.14.22" }
 solana-version = { path = "../version", version = "=1.14.22" }
 solana-vote-program = { path = "../programs/vote", version = "=1.14.22" }
 symlink = "0.1.0"
+tonic = { version = "0.5.2", features = ["tls", "tls-roots", "tls-webpki-roots"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 jemallocator = { package = "tikv-jemallocator", version = "0.4.1", features = ["unprefixed_malloc_on_supported_platforms"] }
