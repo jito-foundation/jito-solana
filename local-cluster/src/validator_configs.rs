@@ -72,6 +72,11 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         replay_forks_threads: config.replay_forks_threads,
         replay_transactions_threads: config.replay_transactions_threads,
         delay_leader_block_for_pending_fork: config.delay_leader_block_for_pending_fork,
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_address: config.shred_receiver_address.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        preallocated_bundle_cost: config.preallocated_bundle_cost,
     }
 }
 
