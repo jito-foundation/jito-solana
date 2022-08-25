@@ -25,6 +25,9 @@ ignores=(
   web3.js/examples
   web3.js/test
   node_modules
+  jito-programs
+  anchor
+  solana-accountsdb-connector
 )
 
 not_paths=()

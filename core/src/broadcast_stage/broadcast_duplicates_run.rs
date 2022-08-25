@@ -10,7 +10,7 @@ use {
         signature::{Keypair, Signature, Signer},
         system_transaction,
     },
-    std::collections::HashSet,
+    std::{collections::HashSet, net::SocketAddr},
 };
 
 pub const MINIMUM_DUPLICATE_SLOT: Slot = 20;
@@ -242,6 +242,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
+        _shred_receiver_addr: Option<SocketAddr>,
     ) -> Result<()> {
         let (shreds, _) = receiver.lock().unwrap().recv()?;
         if shreds.is_empty() {
