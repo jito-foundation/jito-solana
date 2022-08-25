@@ -3,6 +3,7 @@ use {
     serde::{Deserialize, Deserializer, Serialize, Serializer},
     solana_account_decoder::{parse_token::UiTokenAmount, UiAccount},
     solana_sdk::{
+        bundle::error::BundleExecutionError,
         clock::{Epoch, Slot, UnixTimestamp},
         fee_calculator::{FeeCalculator, FeeRateGovernor},
         hash::Hash,
@@ -36,12 +37,22 @@ impl<T> OptionalContext<T> {
     }
 }
 
+pub type BatchRpcResult<T> = client_error::Result<Vec<BatchResponse<T>>>;
 pub type RpcResult<T> = client_error::Result<Response<T>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcResponseContext {
     pub slot: Slot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<RpcApiVersion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRpcResponseContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<Slot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_version: Option<RpcApiVersion>,
 }
@@ -90,6 +101,12 @@ impl RpcResponseContext {
             api_version: Some(RpcApiVersion::default()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchResponse<T> {
+    pub id: u64,
+    pub result: Response<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +376,24 @@ pub struct RpcIdentity {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub enum RpcBundleSimulationSummary {
+    /// error and offending transaction signature
+    Failed {
+        error: BundleExecutionError,
+        tx_signature: String,
+    },
+    Succeeded,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleResult {
+    pub summary: RpcBundleSimulationSummary,
+    pub transaction_results: Vec<RpcSimulateBundleTransactionResult>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct RpcVote {
     /// Vote account address, as base-58 encoded string
     pub vote_pubkey: String,
@@ -411,7 +446,19 @@ pub struct RpcSignatureConfirmation {
     pub status: Result<()>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+// TODO: consolidate with [RpcSimulateTransactionResult]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcSimulateBundleTransactionResult {
+    pub err: Option<TransactionError>,
+    pub logs: Option<Vec<String>>,
+    pub pre_execution_accounts: Option<Vec<UiAccount>>,
+    pub post_execution_accounts: Option<Vec<UiAccount>>,
+    pub units_consumed: Option<u64>,
+    pub return_data: Option<UiTransactionReturnData>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateTransactionResult {
     pub err: Option<TransactionError>,
