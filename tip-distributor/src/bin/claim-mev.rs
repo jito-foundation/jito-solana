@@ -27,6 +27,7 @@ type Error = Box<dyn std::error::Error>;
 pub struct RpcConfig {
     pub rpc_client: RpcClient,
     pub fee_payer: Keypair,
+    pub dry_run: bool,
 }
 
 fn main() -> Result<(), Error> {
@@ -105,13 +106,14 @@ fn main() -> Result<(), Error> {
     let rpc_config = RpcConfig {
         rpc_client,
         fee_payer: fee_payer.clone(),
+        dry_run,
     };
 
     let merkle_tree_path =
         value_t!(matches, "merkle_tree", String).expect("merkle tree path not found!");
 
     let merkle_tree = load_merkle_tree(merkle_tree_path)?;
-    command_claim_all(&rpc_config, &fee_payer, &client, &merkle_tree, dry_run);
+    command_claim_all(&rpc_config, &fee_payer, &client, &merkle_tree);
     Ok(())
 }
 
@@ -124,7 +126,6 @@ fn get_latest_blockhash(client: &RpcClient) -> Result<Hash, Error> {
 fn checked_transaction_with_signers(
     config: &RpcConfig,
     instructions: &[Instruction],
-    dry_run: bool,
 ) -> Result<Transaction, Error> {
     let recent_blockhash = get_latest_blockhash(&config.rpc_client)?;
     let transaction = Transaction::new_signed_with_payer(
@@ -134,7 +135,7 @@ fn checked_transaction_with_signers(
         recent_blockhash,
     );
 
-    if dry_run {
+    if config.dry_run {
         let result = config.rpc_client.simulate_transaction(&transaction)?;
         println!("Simulate result: {:?}", result);
     } else {
@@ -151,7 +152,6 @@ fn command_claim_all(
     payer: &Keypair,
     client: &Client,
     merkle_tree: &GeneratedMerkleTreeCollection,
-    dry_run: bool,
 ) {
     let pid = Pubkey::from_str(TIP_DISTRIBUTION_PID).unwrap();
     let program = client.program(pid);
@@ -186,7 +186,7 @@ fn command_claim_all(
             };
 
             let ix = claim_ix(pid, claim_args, claim_accounts);
-            checked_transaction_with_signers(rpc_config, &[ix.clone()], dry_run).unwrap();
+            checked_transaction_with_signers(rpc_config, &[ix.clone()]).unwrap();
         }
     }
 }
