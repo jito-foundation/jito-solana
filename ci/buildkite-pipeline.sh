@@ -142,7 +142,7 @@ wait_step() {
 all_test_steps() {
   command_step checks1 ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-checks.sh" 20 check
   command_step checks2 ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-dev-context-only-utils.sh check-bins" 15 check
-  command_step checks3 ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-dev-context-only-utils.sh check-all-targets" 15 check
+  command_step checks3 ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-dev-context-only-utils.sh check-all-targets" 20 check
   wait_step
 
   # Full test suite
@@ -318,7 +318,7 @@ if [[ -n $BUILDKITE_TAG ]]; then
     "https://github.com/solana-labs/solana/releases/$BUILDKITE_TAG"
 
   # Jump directly to the secondary build to publish release artifacts quickly
-  trigger_secondary_step
+#  trigger_secondary_step
   exit 0
 fi
 
@@ -346,5 +346,5 @@ fi
 start_pipeline "Push pipeline for ${BUILDKITE_BRANCH:-?unknown branch?}"
 pull_or_push_steps
 wait_step
-trigger_secondary_step
+#trigger_secondary_step
 exit 0
