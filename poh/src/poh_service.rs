@@ -192,11 +192,12 @@ impl PohService {
         if let Ok(record) = record {
             if record
                 .sender
-                .send(poh_recorder.write().unwrap().record(
-                    record.slot,
-                    record.mixin,
-                    record.transactions,
-                ))
+                .send(
+                    poh_recorder
+                        .write()
+                        .unwrap()
+                        .record(record.slot, &record.mixins_txs),
+                )
                 .is_err()
             {
                 panic!("Error returning mixin hash");
@@ -255,11 +256,7 @@ impl PohService {
                 timing.total_lock_time_ns += lock_time.as_ns();
                 let mut record_time = Measure::start("record");
                 loop {
-                    let res = poh_recorder_l.record(
-                        record.slot,
-                        record.mixin,
-                        std::mem::take(&mut record.transactions),
-                    );
+                    let res = poh_recorder_l.record(record.slot, &record.mixins_txs);
                     // what do we do on failure here? Ignore for now.
                     let (_send_res, send_record_result_time) =
                         measure!(record.sender.send(res), "send_record_result");
@@ -381,6 +378,7 @@ impl PohService {
 mod tests {
     use {
         super::*,
+        crate::poh_recorder::WorkingBankEntry,
         rand::{thread_rng, Rng},
         solana_ledger::{
             blockstore::Blockstore,
@@ -460,11 +458,10 @@ mod tests {
                         loop {
                             // send some data
                             let mut time = Measure::start("record");
-                            let _ = poh_recorder.write().unwrap().record(
-                                bank_slot,
-                                h1,
-                                vec![tx.clone()],
-                            );
+                            let _ = poh_recorder
+                                .write()
+                                .unwrap()
+                                .record(bank_slot, &[(h1, vec![tx.clone()])]);
                             time.stop();
                             total_us += time.as_us();
                             total_times += 1;
@@ -509,7 +506,12 @@ mod tests {
 
             let time = Instant::now();
             while run_time != 0 || need_tick || need_entry || need_partial {
-                let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
+                let WorkingBankEntry {
+                    bank: _,
+                    entries_ticks,
+                } = entry_receiver.recv().unwrap();
+                assert_eq!(entries_ticks.len(), 0);
+                let entry = entries_ticks.get(0).unwrap().0.clone();
 
                 if entry.is_tick() {
                     num_ticks += 1;

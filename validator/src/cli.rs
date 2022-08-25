@@ -60,6 +60,10 @@ const MAX_SNAPSHOT_DOWNLOAD_ABORT: u32 = 5;
 // with less than 2 ticks per slot.
 const MINIMUM_TICKS_PER_SLOT: u64 = 2;
 
+const DEFAULT_PREALLOCATED_BUNDLE_COST: &str = "3000000";
+const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: &str = "500";
+const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: &str = "3";
+
 pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     return App::new(crate_name!()).about(crate_description!())
         .version(version)
@@ -69,6 +73,87 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
             Arg::with_name(SKIP_SEED_PHRASE_VALIDATION_ARG.name)
                 .long(SKIP_SEED_PHRASE_VALIDATION_ARG.long)
                 .help(SKIP_SEED_PHRASE_VALIDATION_ARG.help),
+        )
+        .arg(
+            Arg::with_name("block_engine_url")
+                .long("block-engine-url")
+                .help("Block engine url.  Set to empty string to disable block engine connection.")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("relayer_url")
+                .long("relayer-url")
+                .help("Relayer url. Set to empty string to disable relayer connection.")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("trust_relayer_packets")
+                .long("trust-relayer-packets")
+                .takes_value(false)
+                .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
+        )
+        .arg(
+            Arg::with_name("relayer_expected_heartbeat_interval_ms")
+                .long("relayer-expected-heartbeat-interval-ms")
+                .takes_value(true)
+                .help("Interval at which the Relayer is expected to send heartbeat messages.")
+                .default_value(DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS)
+        )
+        .arg(
+            Arg::with_name("relayer_max_failed_heartbeats")
+                .long("relayer-max-failed-heartbeats")
+                .takes_value(true)
+                .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
+                .default_value(DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS)
+        )
+        .arg(
+            Arg::with_name("trust_block_engine_packets")
+                .long("trust-block-engine-packets")
+                .takes_value(false)
+                .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
+        )
+        .arg(
+            Arg::with_name("tip_payment_program_pubkey")
+                .long("tip-payment-program-pubkey")
+                .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-payment program")
+        )
+        .arg(
+            Arg::with_name("tip_distribution_program_pubkey")
+                .long("tip-distribution-program-pubkey")
+                .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-distribution program.")
+        )
+        .arg(
+            Arg::with_name("merkle_root_upload_authority")
+                .long("merkle-root-upload-authority")
+                .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
+                .takes_value(true)
+                .help("The public key of the authorized merkle-root uploader.")
+        )
+        .arg(
+            Arg::with_name("commission_bps")
+                .long("commission-bps")
+                .value_name("COMMISSION_BPS")
+                .takes_value(true)
+                .help("The commission validator takes from tips expressed in basis points.")
+        )
+        .arg(
+            Arg::with_name("preallocated_bundle_cost")
+                .long("preallocated-bundle-cost")
+                .value_name("PREALLOCATED_BUNDLE_COST")
+                .takes_value(true)
+                .default_value(DEFAULT_PREALLOCATED_BUNDLE_COST)
+                .help("Number of CUs to allocate for bundles at beginning of slot.")
+        )
+        .arg(
+            Arg::with_name("shred_receiver_address")
+                .long("shred-receiver-address")
+                .value_name("SHRED_RECEIVER_ADDRESS")
+                .takes_value(true)
+                .help("Validator will forward all shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
         )
         .arg(
             Arg::with_name("identity")
@@ -1413,6 +1498,68 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         )
         .args(&get_deprecated_arguments())
         .after_help("The default subcommand is run")
+        .subcommand(
+            SubCommand::with_name("set-block-engine-config")
+                .about("Set configuration for connection to a block engine")
+                .arg(
+                    Arg::with_name("block_engine_url")
+                        .long("block-engine-url")
+                        .help("Block engine url.  Set to empty string to disable block engine connection.")
+                        .takes_value(true)
+                        .required(true)
+                )
+                .arg(
+                    Arg::with_name("trust_block_engine_packets")
+                        .long("trust-block-engine-packets")
+                        .takes_value(false)
+                        .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("set-relayer-config")
+                .about("Set configuration for connection to a relayer")
+                .arg(
+                    Arg::with_name("relayer_url")
+                        .long("relayer-url")
+                        .help("Relayer url. Set to empty string to disable relayer connection.")
+                        .takes_value(true)
+                        .required(true)
+                )
+                .arg(
+                    Arg::with_name("trust_relayer_packets")
+                        .long("trust-relayer-packets")
+                        .takes_value(false)
+                        .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
+                )
+                .arg(
+                    Arg::with_name("relayer_expected_heartbeat_interval_ms")
+                        .long("relayer-expected-heartbeat-interval-ms")
+                        .takes_value(true)
+                        .help("Interval at which the Relayer is expected to send heartbeat messages.")
+                        .required(false)
+                        .default_value(DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS)
+                )
+                .arg(
+                    Arg::with_name("relayer_max_failed_heartbeats")
+                        .long("relayer-max-failed-heartbeats")
+                        .takes_value(true)
+                        .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
+                        .required(false)
+                        .default_value(DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS)
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("set-shred-receiver-address")
+                .about("Changes shred receiver address")
+                .arg(
+                    Arg::with_name("shred_receiver_address")
+                        .long("shred-receiver-address")
+                        .value_name("SHRED_RECEIVER_ADDRESS")
+                        .takes_value(true)
+                        .help("Validator will forward all shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
+                        .required(true)
+                )
+        )
         .subcommand(
             SubCommand::with_name("exit")
                 .about("Send an exit request to the validator")
