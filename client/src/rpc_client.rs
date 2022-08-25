@@ -28,6 +28,7 @@ use {
     },
     solana_sdk::{
         account::Account,
+        bundle::VersionedBundle,
         clock::{Epoch, Slot, UnixTimestamp},
         commitment_config::CommitmentConfig,
         epoch_info::EpochInfo,
@@ -1149,6 +1150,35 @@ impl RpcClient {
             self.rpc_client
                 .simulate_transaction_with_config(transaction, config),
         )
+    }
+
+    pub fn batch_simulate_bundle(
+        &self,
+        bundles: &[VersionedBundle],
+    ) -> BatchRpcResult<RpcSimulateBundleResult> {
+        self.invoke(self.rpc_client.batch_simulate_bundle(bundles))
+    }
+
+    pub fn batch_simulate_bundle_with_config(
+        &self,
+        bundles_and_configs: Vec<(&VersionedBundle, RpcSimulateBundleConfig)>,
+    ) -> BatchRpcResult<RpcSimulateBundleResult> {
+        self.invoke(
+            self.rpc_client
+                .batch_simulate_bundle_with_config(bundles_and_configs),
+        )
+    }
+
+    pub fn simulate_bundle(&self, bundle: &VersionedBundle) -> RpcResult<RpcSimulateBundleResult> {
+        self.invoke(self.rpc_client.simulate_bundle(bundle))
+    }
+
+    pub fn simulate_bundle_with_config(
+        &self,
+        bundle: &VersionedBundle,
+        config: RpcSimulateBundleConfig,
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        self.invoke(self.rpc_client.simulate_bundle_with_config(bundle, config))
     }
 
     /// Returns the highest slot information that the node has snapshots for.
