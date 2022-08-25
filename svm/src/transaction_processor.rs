@@ -245,7 +245,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             environment
                 .rent_collector
                 .unwrap_or(&RentCollector::default()),
-            &mut error_metrics
+            &mut error_metrics,
         ));
 
         let mut program_cache_time = Measure::start("program_cache");
