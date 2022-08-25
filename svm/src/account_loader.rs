@@ -6,6 +6,7 @@ use {
         transaction_processing_callback::TransactionProcessingCallback,
     },
     itertools::Itertools,
+    log::info,
     solana_compute_budget::compute_budget_processor::{
         process_compute_budget_instructions, ComputeBudgetLimits,
     },
@@ -240,6 +241,10 @@ fn load_transaction_accounts<CB: TransactionProcessingCallback>(
                 } else if let Some(account_override) =
                     account_overrides.and_then(|overrides| overrides.get(key))
                 {
+                    info!(
+                        "loaded account from cache key: {:?} override: {:?}",
+                        key, account_override
+                    );
                     (account_override.data().len(), account_override.clone(), 0)
                 } else if let Some(program) = (!disable_account_loader_special_case
                     && !instruction_account
