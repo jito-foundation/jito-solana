@@ -785,6 +785,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
     let downloaded_full_snapshot_archive_info =
         snapshot_utils::get_highest_full_snapshot_archive_info(
             validator_snapshot_test_config.snapshot_archives_dir.path(),
+            None,
         )
         .unwrap();
     debug!(
@@ -821,6 +822,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
         snapshot_utils::get_highest_incremental_snapshot_archive_info(
             validator_snapshot_test_config.snapshot_archives_dir.path(),
             full_snapshot_archive_info.slot(),
+            None,
         )
         .unwrap();
     debug!(
@@ -940,6 +942,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
     let leader_full_snapshot_archive_info_for_comparison = {
         let validator_full_snapshot = snapshot_utils::get_highest_full_snapshot_archive_info(
             validator_snapshot_test_config.snapshot_archives_dir.path(),
+            None,
         )
         .unwrap();
 
@@ -982,6 +985,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
     let validator_full_snapshot_slot_at_startup =
         snapshot_utils::get_highest_full_snapshot_archive_slot(
             validator_snapshot_test_config.snapshot_archives_dir.path(),
+            None,
         )
         .unwrap();
 
@@ -1003,6 +1007,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
         if let Some(highest_full_snapshot_info) =
             snapshot_utils::get_highest_full_snapshot_archive_info(
                 validator_snapshot_test_config.snapshot_archives_dir.path(),
+                None,
             )
         {
             if highest_full_snapshot_info.slot() > validator_full_snapshot_slot_at_startup {
@@ -1010,6 +1015,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
                     snapshot_utils::get_highest_incremental_snapshot_archive_info(
                         validator_snapshot_test_config.snapshot_archives_dir.path(),
                         highest_full_snapshot_info.slot(),
+                        None,
                     )
                 {
                     info!("Success! Made new full and incremental snapshots!");
@@ -1195,7 +1201,7 @@ fn test_snapshots_blockstore_floor() {
 
     let archive_info = loop {
         let archive =
-            snapshot_utils::get_highest_full_snapshot_archive_info(&snapshot_archives_dir);
+            snapshot_utils::get_highest_full_snapshot_archive_info(&snapshot_archives_dir, None);
         if archive.is_some() {
             trace!("snapshot exists");
             break archive.unwrap();

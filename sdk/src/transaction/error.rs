@@ -149,6 +149,14 @@ pub enum TransactionError {
         "Transaction results in an account ({account_index}) without insufficient funds for rent"
     )]
     InsufficientFundsForRent { account_index: u8 },
+
+    /// Bundle is not continuous
+    #[error("Bundle is not continuous")]
+    BundleNotContinuous,
+
+    /// This error type should be used when a transaction in a bundle is not executed due to an earlier tx error.
+    #[error("Transaction did not execute.")]
+    SkippedExecution,
 }
 
 impl From<SanitizeError> for TransactionError {
