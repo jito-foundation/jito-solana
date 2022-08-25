@@ -1565,6 +1565,7 @@ fn main() {
                         process_options,
                         snapshot_archive_path,
                         incremental_snapshot_archive_path,
+                        true,
                     );
 
                     println!(
@@ -1590,6 +1591,7 @@ fn main() {
                         process_options,
                         snapshot_archive_path,
                         incremental_snapshot_archive_path,
+                        true,
                     );
                     println!("{}", &bank_forks.read().unwrap().working_bank().hash());
                 }
@@ -1625,6 +1627,7 @@ fn main() {
                         process_options,
                         snapshot_archive_path,
                         incremental_snapshot_archive_path,
+                        true,
                     );
 
                     if print_accounts_stats {
@@ -1667,6 +1670,7 @@ fn main() {
                         process_options,
                         snapshot_archive_path,
                         incremental_snapshot_archive_path,
+                        true,
                     );
 
                     let dot = graph_forks(&bank_forks.read().unwrap(), &graph_config);
@@ -1837,6 +1841,7 @@ fn main() {
                         process_options,
                         snapshot_archive_path,
                         incremental_snapshot_archive_path,
+                        false,
                     );
                     let mut bank = bank_forks
                         .read()
@@ -2205,6 +2210,7 @@ fn main() {
                         process_options,
                         snapshot_archive_path,
                         incremental_snapshot_archive_path,
+                        true,
                     );
 
                     let bank = bank_forks.read().unwrap().working_bank();
@@ -2286,6 +2292,7 @@ fn main() {
                         process_options,
                         snapshot_archive_path,
                         incremental_snapshot_archive_path,
+                        true,
                     );
                     let bank_forks = bank_forks.read().unwrap();
                     let slot = bank_forks.working_bank().slot();
