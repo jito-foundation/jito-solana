@@ -855,6 +855,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
         validator_snapshot_test_config
             .full_snapshot_archives_dir
             .path(),
+        None,
     )
     .unwrap();
     info!(
@@ -894,6 +895,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
                 .incremental_snapshot_archives_dir
                 .path(),
             full_snapshot_archive.slot(),
+            None,
         )
         .unwrap();
     info!(
@@ -1036,6 +1038,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
             validator_snapshot_test_config
                 .full_snapshot_archives_dir
                 .path(),
+            None,
         )
         .unwrap();
 
@@ -1102,6 +1105,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
             validator_snapshot_test_config
                 .full_snapshot_archives_dir
                 .path(),
+            None,
         )
         .unwrap();
 
@@ -1138,6 +1142,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
             validator_snapshot_test_config
                 .full_snapshot_archives_dir
                 .path(),
+            None,
         ) {
             if full_snapshot_slot >= validator_next_full_snapshot_slot {
                 if let Some(incremental_snapshot_slot) =
@@ -1146,6 +1151,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
                             .incremental_snapshot_archives_dir
                             .path(),
                         full_snapshot_slot,
+                        None,
                     )
                 {
                     if incremental_snapshot_slot >= validator_next_incremental_snapshot_slot {
@@ -1339,8 +1345,10 @@ fn test_snapshots_blockstore_floor() {
     trace!("Waiting for snapshot tar to be generated with slot",);
 
     let archive_info = loop {
-        let archive =
-            snapshot_utils::get_highest_full_snapshot_archive_info(full_snapshot_archives_dir);
+        let archive = snapshot_utils::get_highest_full_snapshot_archive_info(
+            full_snapshot_archives_dir,
+            None,
+        );
         if archive.is_some() {
             trace!("snapshot exists");
             break archive.unwrap();

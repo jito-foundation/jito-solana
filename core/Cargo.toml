@@ -14,6 +14,7 @@ edition = { workspace = true }
 codecov = { repository = "solana-labs/solana", branch = "master", service = "github" }
 
 [dependencies]
+anchor-lang = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
 bs58 = { workspace = true }
@@ -24,11 +25,16 @@ eager = { workspace = true }
 etcd-client = { workspace = true, features = ["tls"] }
 histogram = { workspace = true }
 itertools = { workspace = true }
+jito-protos = { workspace = true }
+jito-tip-distribution = { workspace = true }
+jito-tip-payment = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
 min-max-heap = { workspace = true }
 num_enum = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
@@ -37,6 +43,7 @@ serde = { workspace = true }
 serde_derive = { workspace = true }
 solana-address-lookup-table-program = { workspace = true }
 solana-bloom = { workspace = true }
+solana-bundle = { workspace = true }
 solana-client = { workspace = true }
 solana-entry = { workspace = true }
 solana-frozen-abi = { workspace = true }
@@ -67,6 +74,7 @@ sys-info = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "~1.14.1", features = ["full"] }
+tonic = { workspace = true }
 trees = { workspace = true }
 
 [dev-dependencies]
@@ -77,6 +85,7 @@ serde_json = { workspace = true }
 serial_test = { workspace = true }
 solana-logger = { workspace = true }
 solana-program-runtime = { workspace = true }
+solana-program-test = { workspace = true }
 solana-stake-program = { workspace = true }
 static_assertions = { workspace = true }
 systemstat = { workspace = true }
@@ -87,6 +96,7 @@ sysctl = { workspace = true }
 
 [build-dependencies]
 rustc_version = { workspace = true }
+tonic-build = { workspace = true }
 
 [[bench]]
 name = "banking_stage"
