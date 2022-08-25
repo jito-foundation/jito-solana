@@ -223,7 +223,7 @@ impl BigTableConnection {
             self.channel.clone(),
             move |mut req: Request<()>| {
                 if let Some(access_token) = &access_token {
-                    match MetadataValue::from_str(&access_token.get()) {
+                    match MetadataValue::try_from(&access_token.get()) {
                         Ok(authorization_header) => {
                             req.metadata_mut()
                                 .insert("authorization", authorization_header);
