@@ -150,6 +150,14 @@ pub enum TransactionError {
     )]
     InsufficientFundsForRent { account_index: u8 },
 
+    /// Bundle is not continuous
+    #[error("Bundle is not continuous")]
+    BundleNotContinuous,
+
+    /// This error type should be used when a transaction in a bundle is not executed due to an earlier tx error.
+    #[error("Transaction did not execute.")]
+    SkippedExecution,
+
     /// The total balance before the transaction does not equal the total balance after the transaction
     #[error("Sum of account balances before and after transaction do not match")]
     UnbalancedTransaction,

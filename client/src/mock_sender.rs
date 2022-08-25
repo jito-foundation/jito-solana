@@ -484,4 +484,11 @@ impl RpcSender for MockSender {
     fn url(&self) -> String {
         format!("MockSender: {}", self.url)
     }
+
+    async fn send_batch(
+        &self,
+        _requests_and_params: Vec<(RpcRequest, serde_json::Value)>,
+    ) -> Result<Value> {
+        todo!()
+    }
 }
