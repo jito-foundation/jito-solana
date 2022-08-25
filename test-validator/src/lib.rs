@@ -1025,6 +1025,7 @@ impl TestValidator {
             config.tpu_enable_udp,
             32, // max connections per IpAddr per minute for test
             config.admin_rpc_service_post_init.clone(),
+            None,
         )?);
 
         // Needed to avoid panics in `solana-responder-gossip` in tests that create a number of
