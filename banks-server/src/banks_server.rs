@@ -9,6 +9,7 @@ use {
         TransactionSimulationDetails, TransactionStatus,
     },
     solana_client::connection_cache::ConnectionCache,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_runtime::{
         bank::{Bank, TransactionSimulationResult},
         bank_forks::BankForks,
@@ -441,7 +442,7 @@ pub async fn start_local_server(
 
 pub async fn start_tcp_server(
     listen_addr: SocketAddr,
-    tpu_addr: SocketAddr,
+    cluster_info: Arc<ClusterInfo>,
     bank_forks: Arc<RwLock<BankForks>>,
     block_commitment_cache: Arc<RwLock<BlockCommitmentCache>>,
     connection_cache: Arc<ConnectionCache>,
@@ -466,7 +467,7 @@ pub async fn start_tcp_server(
             let (sender, receiver) = unbounded();
 
             SendTransactionService::new::<NullTpuInfo>(
-                tpu_addr,
+                cluster_info.clone(),
                 &bank_forks,
                 None,
                 receiver,
