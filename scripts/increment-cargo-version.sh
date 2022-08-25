@@ -25,6 +25,8 @@ ignores=(
   web3.js/examples
   web3.js/test
   node_modules
+  jito-programs
+  anchor
 )
 
 not_paths=()

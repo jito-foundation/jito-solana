@@ -837,6 +837,7 @@ mod tests {
             false,
             Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
             None,
+            None,
         )?;
 
         assert_eq!(bank, &deserialized_bank);
@@ -1015,6 +1016,7 @@ mod tests {
             false,
             false,
             Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
+            None,
             None,
         )
         .unwrap();

@@ -823,6 +823,11 @@ fn load_bank_forks(
         vec![non_primary_accounts_path]
     };
 
+    info!(
+        "load_bank_forks halt_at_slot: {:?}",
+        process_options.halt_at_slot
+    );
+
     let (accounts_package_sender, _) = unbounded();
     bank_forks_utils::load(
         genesis_config,
@@ -2332,6 +2337,7 @@ fn main() {
                         dev_halt_at_slot: Some(snapshot_slot),
                         new_hard_forks,
                         poh_verify: false,
+                        halt_at_slot: Some(snapshot_slot),
                         ..ProcessOptions::default()
                     },
                     snapshot_archive_path,
