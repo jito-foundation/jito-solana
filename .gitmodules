@@ -1,0 +1,12 @@
+[submodule "anchor"]
+	path = anchor
+	url = org-87542516@github.com:jito-foundation/anchor.git
+[submodule "jito-programs"]
+	path = jito-programs
+	url = org-87542516@github.com:jito-foundation/jito-programs.git
+[submodule "jito-protos/protos"]
+	path = jito-protos/protos
+	url = org-87542516@github.com:jito-labs/mev-protos-priv.git
+[submodule "solana-accountsdb-connector"]
+	path = solana-accountsdb-connector
+	url = org-87542516@github.com:jito-foundation/solana-accountsdb-connector.git
