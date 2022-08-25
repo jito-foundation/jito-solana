@@ -11,6 +11,7 @@ use {
     solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::{BankingStage, BankingStageStats},
+        bundle_account_locker::BundleAccountLocker,
         leader_slot_banking_stage_metrics::LeaderSlotMetricsTracker,
         qos_service::QosService,
         unprocessed_packet_batches::*,
@@ -38,6 +39,7 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
+        collections::HashSet,
         sync::{atomic::Ordering, Arc, RwLock},
         time::{Duration, Instant},
     },
@@ -48,8 +50,15 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
     let mut total = 0;
     let now = Instant::now();
     loop {
-        if let Ok((_bank, (entry, _tick_height))) = receiver.recv_timeout(Duration::new(1, 0)) {
-            total += entry.transactions.len();
+        if let Ok(WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        }) = receiver.recv_timeout(Duration::new(1, 0))
+        {
+            total += entries_ticks
+                .iter()
+                .map(|e| e.0.transactions.len())
+                .sum::<usize>();
         }
         if total >= ref_tx_count {
             break;
@@ -99,6 +108,8 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 None,
+                &HashSet::default(),
+                &BundleAccountLocker::default(),
             );
         });
 
@@ -235,6 +246,8 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
             None,
             Arc::new(ConnectionCache::default()),
             bank_forks,
+            HashSet::new(),
+            BundleAccountLocker::default(),
         );
         poh_recorder.write().unwrap().set_bank(&bank, false);
 
