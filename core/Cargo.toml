@@ -14,6 +14,7 @@ edition = { workspace = true }
 codecov = { repository = "solana-labs/solana", branch = "master", service = "github" }
 
 [dependencies]
+anchor-lang = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
 bs58 = { workspace = true }
@@ -26,12 +27,17 @@ etcd-client = { workspace = true, features = ["tls"] }
 futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
+jito-protos = { workspace = true }
+jito-tip-distribution = { workspace = true }
+jito-tip-payment = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
 min-max-heap = { workspace = true }
 num_enum = { workspace = true }
 prio-graph = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 quinn = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
@@ -44,6 +50,7 @@ serde_bytes = { workspace = true }
 serde_derive = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-bloom = { workspace = true }
+solana-bundle = { workspace = true }
 solana-client = { workspace = true }
 solana-cost-model = { workspace = true }
 solana-entry = { workspace = true }
@@ -63,6 +70,7 @@ solana-rayon-threadlimit = { workspace = true }
 solana-rpc = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-runtime = { workspace = true }
+solana-runtime-plugin = { workspace = true }
 solana-sdk = { workspace = true }
 solana-send-transaction-service = { workspace = true }
 solana-streamer = { workspace = true }
@@ -80,6 +88,7 @@ sys-info = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tonic = { workspace = true }
 trees = { workspace = true }
 
 [dev-dependencies]
@@ -88,11 +97,14 @@ fs_extra = { workspace = true }
 raptorq = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }
+solana-accounts-db = { workspace = true }
 # See order-crates-for-publishing.py for using this unusual `path = "."`
+solana-bundle = { workspace = true }
 solana-core = { path = ".", features = ["dev-context-only-utils"] }
 solana-logger = { workspace = true }
 solana-poh = { workspace = true, features = ["dev-context-only-utils"] }
 solana-program-runtime = { workspace = true }
+solana-program-test = { workspace = true }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
 solana-sdk = { workspace = true, features = ["dev-context-only-utils"] }
 solana-stake-program = { workspace = true }
@@ -105,6 +117,7 @@ sysctl = { workspace = true }
 
 [build-dependencies]
 rustc_version = { workspace = true }
+tonic-build = { workspace = true }
 
 [features]
 dev-context-only-utils = []
