@@ -273,6 +273,7 @@ fn get_validator_stats(
         Ok(()) => "ok".to_string(),
         Err(err) => {
             if let client_error::ErrorKind::RpcError(request::RpcError::RpcResponseError {
+                request_id: _,
                 code: _,
                 message: _,
                 data:
