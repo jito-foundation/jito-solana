@@ -817,12 +817,13 @@ fn get_highest_local_snapshot_hash(
     incremental_snapshot_archives_dir: impl AsRef<Path>,
     incremental_snapshot_fetch: bool,
 ) -> Option<(Slot, Hash)> {
-    snapshot_utils::get_highest_full_snapshot_archive_info(full_snapshot_archives_dir)
+    snapshot_utils::get_highest_full_snapshot_archive_info(full_snapshot_archives_dir, None)
         .and_then(|full_snapshot_info| {
             if incremental_snapshot_fetch {
                 snapshot_utils::get_highest_incremental_snapshot_archive_info(
                     incremental_snapshot_archives_dir,
                     full_snapshot_info.slot(),
+                    None,
                 )
                 .map(|incremental_snapshot_info| {
                     (
@@ -970,7 +971,11 @@ fn build_known_snapshot_hashes<'a>(
     }
 
     'to_next_node: for node in nodes {
-        let Some(SnapshotHash {full: full_snapshot_hash, incr: incremental_snapshot_hash}) = get_snapshot_hashes_for_node(node) else {
+        let Some(SnapshotHash {
+            full: full_snapshot_hash,
+            incr: incremental_snapshot_hash,
+        }) = get_snapshot_hashes_for_node(node)
+        else {
             continue 'to_next_node;
         };
 
