@@ -40,6 +40,7 @@ RUN set -x \
  && cargo install mdbook-linkcheck \
  && cargo install svgbob_cli \
  && cargo install wasm-pack \
+ && cargo install sccache \
  && rustc --version \
  && cargo --version \
  && curl -OL https://github.com/google/protobuf/releases/download/v$PROTOC_VERSION/$PROTOC_ZIP \
