@@ -24,6 +24,8 @@ ignores=(
   target
   web3.js/test
   node_modules
+  jito-programs
+  anchor
 )
 
 not_paths=()

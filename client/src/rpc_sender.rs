@@ -31,6 +31,10 @@ pub trait RpcSender {
         request: RpcRequest,
         params: serde_json::Value,
     ) -> Result<serde_json::Value>;
+    async fn send_batch(
+        &self,
+        requests_and_params: Vec<(RpcRequest, serde_json::Value)>,
+    ) -> Result<serde_json::Value>;
     fn get_transport_stats(&self) -> RpcTransportStats;
     fn url(&self) -> String;
 }

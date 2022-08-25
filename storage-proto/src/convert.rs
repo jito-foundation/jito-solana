@@ -774,6 +774,8 @@ impl TryFrom<tx_by_addr::TransactionError> for TransactionError {
             27 => TransactionError::InvalidRentPayingAccount,
             28 => TransactionError::WouldExceedMaxVoteCostLimit,
             29 => TransactionError::WouldExceedAccountDataTotalLimit,
+            32 => TransactionError::BundleNotContinuous,
+            33 => TransactionError::SkippedExecution,
             _ => return Err("Invalid TransactionError"),
         })
     }
@@ -876,6 +878,12 @@ impl From<TransactionError> for tx_by_addr::TransactionError {
                 }
                 TransactionError::InsufficientFundsForRent { .. } => {
                     tx_by_addr::TransactionErrorType::InsufficientFundsForRent
+                }
+                TransactionError::BundleNotContinuous => {
+                    tx_by_addr::TransactionErrorType::BundleNotContinuous
+                }
+                TransactionError::SkippedExecution => {
+                    tx_by_addr::TransactionErrorType::SkippedExecution
                 }
             } as i32,
             instruction_error: match transaction_error {
