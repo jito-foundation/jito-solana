@@ -17,8 +17,8 @@ edition = { workspace = true }
 program = []
 
 default = [
-  "borsh",
-  "full" # functionality that is not compatible or needed for on-chain programs
+    "borsh",
+    "full" # functionality that is not compatible or needed for on-chain programs
 ]
 full = [
     "byteorder",
@@ -36,15 +36,18 @@ full = [
 ]
 borsh = ["dep:borsh", "solana-program/borsh"]
 dev-context-only-utils = [
-  "qualifier_attr"
+    "qualifier_attr"
 ]
 frozen-abi = [
-  "dep:solana-frozen-abi",
-  "dep:solana-frozen-abi-macro",
-  "solana-program/frozen-abi",
+    "dep:solana-frozen-abi",
+    "dep:solana-frozen-abi-macro",
+    "solana-program/frozen-abi",
 ]
 
 [dependencies]
+anchor-lang = { workspace = true }
+assert_matches = { workspace = true, optional = true }
+base64 = { workspace = true }
 bincode = { workspace = true }
 bitflags = { workspace = true, features = ["serde"] }
 borsh = { workspace = true, optional = true }
@@ -60,7 +63,7 @@ ed25519-dalek = { workspace = true, optional = true }
 ed25519-dalek-bip32 = { workspace = true, optional = true }
 generic-array = { workspace = true, features = ["serde", "more_lengths"], optional = true }
 hmac = { workspace = true }
-itertools =  { workspace = true }
+itertools = { workspace = true }
 lazy_static = { workspace = true }
 libsecp256k1 = { workspace = true, optional = true, features = ["hmac"] }
 log = { workspace = true }

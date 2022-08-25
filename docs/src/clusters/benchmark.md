@@ -6,7 +6,7 @@ The Solana git repository contains all the scripts you might need to spin up you
 
 For all four variations, you'd need the latest Rust toolchain and the Solana source code:
 
-First, setup Rust, Cargo and system packages as described in the Solana [README](https://github.com/solana-labs/solana#1-install-rustc-cargo-and-rustfmt)
+First, setup Rust, Cargo and system packages as described in the Solana [README](https://github.com/jito-foundation/jito-solana#1-install-rustc-cargo-and-rustfmt)
 
 Now checkout the code from github:
 

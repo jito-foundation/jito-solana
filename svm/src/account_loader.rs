@@ -189,6 +189,15 @@ pub(crate) fn load_accounts<CB: TransactionProcessingCallback>(
         .collect()
 }
 
+fn create_new_account() -> AccountSharedData {
+    let mut default_account = AccountSharedData::default();
+    // All new accounts must be rent-exempt (enforced in Bank::execute_loaded_transaction).
+    // Currently, rent collection sets rent_epoch to u64::MAX, but initializing the account
+    // with this field already set would allow us to skip rent collection for these accounts.
+    default_account.set_rent_epoch(RENT_EXEMPT_RENT_EPOCH);
+    default_account
+}
+
 fn load_transaction_accounts<CB: TransactionProcessingCallback>(
     callbacks: &CB,
     message: &SanitizedMessage,
@@ -240,7 +249,12 @@ fn load_transaction_accounts<CB: TransactionProcessingCallback>(
                 } else if let Some(account_override) =
                     account_overrides.and_then(|overrides| overrides.get(key))
                 {
-                    (account_override.data().len(), account_override.clone(), 0)
+                    if account_override.lamports() == 0 {
+                        let default_account = create_new_account();
+                        (default_account.data().len(), default_account, 0)
+                    } else {
+                        (account_override.data().len(), account_override.clone(), 0)
+                    }
                 } else if let Some(program) = (!disable_account_loader_special_case
                     && !instruction_account
                     && !message.is_writable(i))
@@ -271,11 +285,7 @@ fn load_transaction_accounts<CB: TransactionProcessingCallback>(
                         })
                         .unwrap_or_else(|| {
                             account_found = false;
-                            let mut default_account = AccountSharedData::default();
-                            // All new accounts must be rent-exempt (enforced in Bank::execute_loaded_transaction).
-                            // Currently, rent collection sets rent_epoch to u64::MAX, but initializing the account
-                            // with this field already set would allow us to skip rent collection for these accounts.
-                            default_account.set_rent_epoch(RENT_EXEMPT_RENT_EPOCH);
+                            let default_account = create_new_account();
                             (default_account.data().len(), default_account, 0)
                         })
                 };

@@ -21,8 +21,10 @@ serde = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true }
 solana-account-decoder = { workspace = true }
+solana-bundle = { workspace = true }
 solana-inline-spl = { workspace = true }
 solana-sdk = { workspace = true }
+solana-svm = { workspace = true }
 solana-transaction-status = { workspace = true }
 solana-version = { workspace = true }
 thiserror = { workspace = true }

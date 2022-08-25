@@ -448,7 +448,7 @@ pub(crate) fn generate_snapshot(
     // snapshot to use as base, so the logic is more complicated. For now we always generate
     // an incremental snapshot.
     let mut directory = &snapshot_config.full_snapshot_archives_dir;
-    let Some(full_snapshot_slot) = get_highest_full_snapshot_archive_slot(directory) else {
+    let Some(full_snapshot_slot) = get_highest_full_snapshot_archive_slot(directory, None) else {
         return Err(WenRestartError::MissingFullSnapshot(
             snapshot_config
                 .full_snapshot_archives_dir
@@ -468,7 +468,7 @@ pub(crate) fn generate_snapshot(
     check_slot_smaller_than_intended_snapshot_slot(full_snapshot_slot, new_root_slot, directory)?;
     directory = &snapshot_config.incremental_snapshot_archives_dir;
     if let Some(incremental_snapshot_slot) =
-        get_highest_incremental_snapshot_archive_slot(directory, full_snapshot_slot)
+        get_highest_incremental_snapshot_archive_slot(directory, full_snapshot_slot, None)
     {
         check_slot_smaller_than_intended_snapshot_slot(
             incremental_snapshot_slot,

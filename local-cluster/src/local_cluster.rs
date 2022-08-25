@@ -339,6 +339,7 @@ impl LocalCluster {
             DEFAULT_TPU_ENABLE_UDP,
             32, // max connections per IpAddr per minute
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
 
@@ -541,6 +542,7 @@ impl LocalCluster {
             DEFAULT_TPU_ENABLE_UDP,
             32, // max connections per IpAddr per mintute
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
 
@@ -1087,6 +1089,7 @@ impl Cluster for LocalCluster {
             DEFAULT_TPU_ENABLE_UDP,
             32, // max connections per IpAddr per minute, use higher value because of tests
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         cluster_validator_info.validator = Some(restarted_node);

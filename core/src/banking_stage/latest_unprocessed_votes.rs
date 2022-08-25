@@ -134,7 +134,7 @@ impl LatestValidatorVotePacket {
 }
 
 #[derive(Default, Debug)]
-pub(crate) struct VoteBatchInsertionMetrics {
+pub struct VoteBatchInsertionMetrics {
     pub(crate) num_dropped_gossip: usize,
     pub(crate) num_dropped_tpu: usize,
 }

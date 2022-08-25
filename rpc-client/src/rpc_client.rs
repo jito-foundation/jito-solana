@@ -24,6 +24,7 @@ use {
         UiAccount, UiAccountEncoding,
     },
     solana_rpc_client_api::{
+        bundles::{RpcSimulateBundleConfig, RpcSimulateBundleResult},
         client_error::{Error as ClientError, ErrorKind, Result as ClientResult},
         config::{RpcAccountInfoConfig, *},
         request::{RpcRequest, TokenAccountsFilter},
@@ -31,6 +32,7 @@ use {
     },
     solana_sdk::{
         account::{Account, ReadableAccount},
+        bundle::VersionedBundle,
         clock::{Epoch, Slot, UnixTimestamp},
         commitment_config::CommitmentConfig,
         epoch_info::EpochInfo,
@@ -1144,6 +1146,18 @@ impl RpcClient {
         self.invoke(
             (self.rpc_client.as_ref()).simulate_transaction_with_config(transaction, config),
         )
+    }
+
+    pub fn simulate_bundle(&self, bundle: &VersionedBundle) -> RpcResult<RpcSimulateBundleResult> {
+        self.invoke((self.rpc_client.as_ref()).simulate_bundle(bundle))
+    }
+
+    pub fn simulate_bundle_with_config(
+        &self,
+        bundle: &VersionedBundle,
+        config: RpcSimulateBundleConfig,
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        self.invoke((self.rpc_client.as_ref()).simulate_bundle_with_config(bundle, config))
     }
 
     /// Returns the highest slot information that the node has snapshots for.
