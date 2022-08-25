@@ -1,5 +1,7 @@
 use {
-    crate::bank::Bank, core::ops::Deref, solana_sdk::transaction::Result,
+    crate::bank::Bank,
+    core::ops::Deref,
+    solana_sdk::transaction::{Result, SanitizedTransaction, TransactionError},
     solana_svm_transaction::svm_message::SVMMessage,
 };
 
@@ -93,6 +95,28 @@ impl<'a, 'b, Tx: SVMMessage> TransactionBatch<'a, 'b, Tx> {
         // not valid to update from err -> ok and the assertion above enforces
         // that validity constraint.
         self.lock_results = transaction_results;
+    }
+
+    /// Bundle locking failed if lock result returns something other than ok or AccountInUse
+    pub fn check_bundle_lock_results(&self) -> Option<(&SanitizedTransaction, &TransactionError)> {
+        self.sanitized_transactions()
+            .iter()
+            .zip(self.lock_results.iter())
+            .find(|(_, lock_result)| {
+                !matches!(lock_result, Ok(()) | Err(TransactionError::AccountInUse))
+            })
+            .map(|(transaction, lock_result)| {
+                (
+                    transaction,
+                    match lock_result {
+                        Ok(_) => {
+                            // safe here bc the above find will never return Ok
+                            unreachable!()
+                        }
+                        Err(lock_error) => lock_error,
+                    },
+                )
+            })
     }
 }
 

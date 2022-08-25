@@ -275,7 +275,8 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             environment
                 .rent_collector
                 .unwrap_or(&RentCollector::default()),
-            &mut error_metrics
+            &mut error_metrics,
+            config.account_overrides
         ));
 
         let (mut program_cache_for_tx_batch, program_cache_us) = measure_us!({
@@ -406,6 +407,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         fee_structure: &FeeStructure,
         rent_collector: &dyn SVMRentCollector,
         error_counters: &mut TransactionErrorMetrics,
+        account_overrides: Option<&AccountOverrides>,
     ) -> Vec<TransactionValidationResult> {
         sanitized_txs
             .iter()
@@ -422,6 +424,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                         fee_structure,
                         rent_collector,
                         error_counters,
+                        account_overrides,
                     )
                 })
             })
@@ -441,6 +444,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         fee_structure: &FeeStructure,
         rent_collector: &dyn SVMRentCollector,
         error_counters: &mut TransactionErrorMetrics,
+        account_overrides: Option<&AccountOverrides>,
     ) -> transaction::Result<ValidatedTransactionDetails> {
         let compute_budget_limits = process_compute_budget_instructions(
             message.program_instructions_iter(),
@@ -1970,6 +1974,7 @@ mod tests {
             &FeeStructure::default(),
             &rent_collector,
             &mut error_counters,
+            None,
         );
 
         let post_validation_fee_payer_account = {
@@ -2048,6 +2053,7 @@ mod tests {
             &FeeStructure::default(),
             &rent_collector,
             &mut error_counters,
+            None,
         );
 
         let post_validation_fee_payer_account = {
@@ -2099,6 +2105,7 @@ mod tests {
             &FeeStructure::default(),
             &RentCollector::default(),
             &mut error_counters,
+            None,
         );
 
         assert_eq!(error_counters.account_not_found, 1);
@@ -2133,6 +2140,7 @@ mod tests {
             &FeeStructure::default(),
             &RentCollector::default(),
             &mut error_counters,
+            None,
         );
 
         assert_eq!(error_counters.insufficient_funds, 1);
@@ -2171,6 +2179,7 @@ mod tests {
             &FeeStructure::default(),
             &rent_collector,
             &mut error_counters,
+            None,
         );
 
         assert_eq!(
@@ -2207,6 +2216,7 @@ mod tests {
             &FeeStructure::default(),
             &RentCollector::default(),
             &mut error_counters,
+            None,
         );
 
         assert_eq!(error_counters.invalid_account_for_fee, 1);
@@ -2239,6 +2249,7 @@ mod tests {
             &FeeStructure::default(),
             &RentCollector::default(),
             &mut error_counters,
+            None,
         );
 
         assert_eq!(error_counters.invalid_compute_budget, 1);
@@ -2306,6 +2317,7 @@ mod tests {
                 &FeeStructure::default(),
                 &rent_collector,
                 &mut error_counters,
+                None,
             );
 
             let post_validation_fee_payer_account = {
@@ -2368,6 +2380,7 @@ mod tests {
                 &FeeStructure::default(),
                 &rent_collector,
                 &mut error_counters,
+                None,
             );
 
             assert_eq!(error_counters.insufficient_funds, 1);

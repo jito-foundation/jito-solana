@@ -718,6 +718,7 @@ mod tests {
     use {
         super::*,
         crate::banking_stage::{
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
             committer::Committer,
             qos_service::QosService,
             scheduler_messages::{MaxAge, TransactionBatchId, TransactionId},
@@ -809,7 +810,14 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            HashSet::default(),
+            BundleAccountLocker::default(),
+        );
 
         let (consume_sender, consume_receiver) = unbounded();
         let (consumed_sender, consumed_receiver) = unbounded();

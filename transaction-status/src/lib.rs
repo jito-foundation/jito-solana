@@ -36,7 +36,7 @@ use {
         signature::Signature,
         transaction::{Transaction, TransactionError, TransactionVersion, VersionedTransaction},
     },
-    std::collections::HashSet,
+    std::{collections::HashMap, fmt},
     thiserror::Error,
 };
 
