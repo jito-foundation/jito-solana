@@ -38,6 +38,7 @@ full = [
 dev-context-only-utils = []
 
 [dependencies]
+anchor-lang = { workspace = true }
 assert_matches = { workspace = true, optional = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
