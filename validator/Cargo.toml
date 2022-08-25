@@ -64,6 +64,7 @@ solana-version = { workspace = true }
 solana-vote-program = { workspace = true }
 symlink = { workspace = true }
 thiserror = { workspace = true }
+tonic = { workspace = true, features = ["tls", "tls-roots", "tls-webpki-roots"] }
 
 [dev-dependencies]
 solana-account-decoder = { workspace = true }

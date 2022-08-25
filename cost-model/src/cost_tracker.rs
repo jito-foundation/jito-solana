@@ -108,6 +108,10 @@ impl CostTracker {
         self.vote_cost_limit = vote_cost_limit;
     }
 
+    pub fn set_block_cost_limit(&mut self, new_limit: u64) {
+        self.block_cost_limit = new_limit;
+    }
+
     pub fn try_add(&mut self, tx_cost: &TransactionCost) -> Result<u64, CostTrackerError> {
         self.would_fit(tx_cost)?;
         self.add_transaction_cost(tx_cost);
@@ -143,6 +147,10 @@ impl CostTracker {
 
     pub fn block_cost(&self) -> u64 {
         self.block_cost
+    }
+
+    pub fn block_cost_limit(&self) -> u64 {
+        self.block_cost_limit
     }
 
     pub fn transaction_count(&self) -> u64 {

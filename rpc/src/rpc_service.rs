@@ -255,6 +255,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                 let full_snapshot_archive_info =
                     snapshot_utils::get_highest_full_snapshot_archive_info(
                         &snapshot_config.full_snapshot_archives_dir,
+                        None,
                     );
                 let snapshot_archive_info =
                     if let Some(full_snapshot_archive_info) = full_snapshot_archive_info {
@@ -264,6 +265,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                             snapshot_utils::get_highest_incremental_snapshot_archive_info(
                                 &snapshot_config.incremental_snapshot_archives_dir,
                                 full_snapshot_archive_info.slot(),
+                                None,
                             )
                             .map(|incremental_snapshot_archive_info| {
                                 incremental_snapshot_archive_info
@@ -377,11 +379,6 @@ impl JsonRpcService {
             LARGEST_ACCOUNTS_CACHE_DURATION,
         )));
 
-        let tpu_address = cluster_info
-            .my_contact_info()
-            .tpu(connection_cache.protocol())
-            .map_err(|err| format!("{err}"))?;
-
         // sadly, some parts of our current rpc implemention block the jsonrpc's
         // _socket-listening_ event loop for too long, due to (blocking) long IO or intesive CPU,
         // causing no further processing of incoming requests and ultimatily innocent clients timing-out.
@@ -478,7 +475,7 @@ impl JsonRpcService {
         let leader_info =
             poh_recorder.map(|recorder| ClusterTpuInfo::new(cluster_info.clone(), recorder));
         let _send_transaction_service = Arc::new(SendTransactionService::new_with_config(
-            tpu_address,
+            cluster_info,
             &bank_forks,
             leader_info,
             receiver,

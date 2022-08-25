@@ -26,7 +26,7 @@ use {
         },
         transaction_context::TransactionReturnData,
     },
-    std::fmt,
+    std::{collections::HashMap, fmt},
     thiserror::Error,
 };
 
@@ -277,6 +277,13 @@ impl From<InnerInstructions> for UiInnerInstructions {
                 .collect(),
         }
     }
+}
+
+#[derive(Default)]
+pub struct PreBalanceInfo {
+    pub native: Vec<Vec<u64>>,
+    pub token: Vec<Vec<TransactionTokenBalance>>,
+    pub mint_decimals: HashMap<Pubkey, u8>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

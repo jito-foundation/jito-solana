@@ -22,6 +22,7 @@ use {
             BankingStage, BankingStageStats,
         },
         banking_trace::{BankingPacketBatch, BankingTracer},
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     solana_entry::entry::{next_hash, Entry},
     solana_gossip::cluster_info::{ClusterInfo, Node},
@@ -55,6 +56,7 @@ use {
         vote_state::VoteStateUpdate, vote_transaction::new_vote_state_update_transaction,
     },
     std::{
+        collections::HashSet,
         iter::repeat_with,
         sync::{atomic::Ordering, Arc},
         time::{Duration, Instant},
@@ -66,8 +68,15 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
     let mut total = 0;
     let now = Instant::now();
     loop {
-        if let Ok((_bank, (entry, _tick_height))) = receiver.recv_timeout(Duration::new(1, 0)) {
-            total += entry.transactions.len();
+        if let Ok(WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        }) = receiver.recv_timeout(Duration::new(1, 0))
+        {
+            total += entries_ticks
+                .iter()
+                .map(|e| e.0.transactions.len())
+                .sum::<usize>();
         }
         if total >= ref_tx_count {
             break;
