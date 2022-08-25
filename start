@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -eu
+
+SOLANA_CONFIG_DIR=./config
+
+mkdir -p $SOLANA_CONFIG_DIR
+NDEBUG=1 ./multinode-demo/setup.sh
+cargo run --release --bin solana-ledger-tool -- -l config/bootstrap-validator/ create-snapshot 0
+NDEBUG=1 ./multinode-demo/faucet.sh
