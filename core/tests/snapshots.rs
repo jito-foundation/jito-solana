@@ -540,6 +540,7 @@ fn test_concurrent_snapshot_packaging(
                 // Wait until the package has been archived by SnapshotPackagerService
                 while snapshot_utils::get_highest_full_snapshot_archive_slot(
                     &full_snapshot_archives_dir,
+                    None,
                 )
                 .is_none()
                 {
@@ -898,6 +899,7 @@ fn restore_from_snapshots_and_check_banks_are_equal(
         Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
         None,
         &Arc::default(),
+        None,
     )?;
     deserialized_bank.wait_for_initial_accounts_hash_verification_completed_for_tests();
 
@@ -1063,6 +1065,7 @@ fn test_snapshots_with_background_services(
                 &snapshot_test_config
                     .snapshot_config
                     .full_snapshot_archives_dir,
+                None,
             ) != Some(slot)
             {
                 assert!(
@@ -1081,6 +1084,7 @@ fn test_snapshots_with_background_services(
                     .snapshot_config
                     .incremental_snapshot_archives_dir,
                 last_full_snapshot_slot.unwrap(),
+                None,
             ) != Some(slot)
             {
                 assert!(
@@ -1118,6 +1122,7 @@ fn test_snapshots_with_background_services(
         Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
         None,
         &exit,
+        None,
     )
     .unwrap();
     deserialized_bank.wait_for_initial_accounts_hash_verification_completed_for_tests();
