@@ -30,6 +30,7 @@ members = [
     "geyser-plugin-manager",
     "gossip",
     "install",
+    "jito-protos",
     "keygen",
     "ledger",
     "ledger-tool",
@@ -80,6 +81,7 @@ members = [
     "streamer",
     "sys-tuner",
     "test-validator",
+    "tip-distributor",
     "tokens",
     "transaction-dos",
     "transaction-status",
@@ -91,6 +93,8 @@ members = [
 ]
 
 exclude = [
+    "anchor",
+    "jito-programs",
     "programs/bpf",
 ]
 

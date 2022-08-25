@@ -1,0 +1,51 @@
+[package]
+name = "solana-tip-distributor"
+version = "1.14.19"
+edition = "2021"
+license = "Apache-2.0"
+description = "Collection of binaries used to distribute MEV rewards to delegators and validators."
+
+[dependencies]
+anchor-lang = { path = "../anchor/lang" }
+clap = { version = "3", features = ["derive", "env"] }
+env_logger = "0.9.0"
+futures = "0.3.21"
+im = "15.1.0"
+itertools = "0.10.3"
+log = "0.4.17"
+num-traits = "0.2.15"
+serde = "1.0.137"
+serde_json = "1.0.81"
+solana-client = { path = "../client", version = "=1.14.19" }
+solana-genesis-utils = { path = "../genesis-utils", version = "=1.14.19" }
+solana-ledger = { path = "../ledger", version = "=1.14.19" }
+solana-merkle-tree = { path = "../merkle-tree", version = "=1.14.19" }
+solana-program = { path = "../sdk/program", version = "=1.14.19" }
+solana-rpc = { path = "../rpc", version = "=1.14.19" }
+solana-runtime = { path = "../runtime", version = "=1.14.19" }
+solana-sdk = { path = "../sdk", version = "=1.14.19" }
+solana-stake-program = { path = "../programs/stake", version = "=1.14.19" }
+thiserror = "1.0.31"
+tip-distribution = { path = "../jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
+tip-payment = { path = "../jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
+tokio = { version = "1.12.0", features = ["rt-multi-thread", "macros", "sync", "time", "full"] }
+
+[[bin]]
+name = "solana-stake-meta-generator"
+path = "src/bin/stake-meta-generator.rs"
+
+[[bin]]
+name = "solana-merkle-root-generator"
+path = "src/bin/merkle-root-generator.rs"
+
+[[bin]]
+name = "solana-merkle-root-uploader"
+path = "src/bin/merkle-root-uploader.rs"
+
+[[bin]]
+name = "solana-claim-mev-tips"
+path = "src/bin/claim-mev-tips.rs"
+
+[[bin]]
+name = "solana-reclaim-rent"
+path = "src/bin/reclaim-rent.rs"

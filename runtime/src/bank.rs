@@ -40,7 +40,7 @@ use {
     crate::{
         account_overrides::AccountOverrides,
         accounts::{
-            AccountAddressFilter, Accounts, LoadedTransaction, PubkeyAccountSlot,
+            AccountAddressFilter, AccountLocks, Accounts, LoadedTransaction, PubkeyAccountSlot,
             TransactionLoadResult,
         },
         accounts_db::{
@@ -96,6 +96,7 @@ use {
             AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
         },
         account_utils::StateMut,
+        bundle::{error::BundleExecutionError, utils::check_bundle_lock_results},
         clock::{
             BankId, Epoch, Slot, SlotCount, SlotIndex, UnixTimestamp, DEFAULT_TICKS_PER_SECOND,
             INITIAL_RENT_EPOCH, MAX_PROCESSING_AGE, MAX_TRANSACTION_FORWARDING_DELAY,
@@ -151,22 +152,25 @@ use {
     std::{
         borrow::Cow,
         cell::RefCell,
+        cmp::min,
         collections::{HashMap, HashSet},
         convert::{TryFrom, TryInto},
         fmt, mem,
         ops::{Deref, RangeInclusive},
         path::PathBuf,
         rc::Rc,
+        result,
         sync::{
             atomic::{
                 AtomicBool, AtomicI64, AtomicU64, AtomicUsize,
                 Ordering::{AcqRel, Acquire, Relaxed},
             },
-            Arc, LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard,
+            Arc, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
         },
         thread::Builder,
         time::{Duration, Instant},
     },
+    thiserror::Error,
 };
 
 /// params to `verify_bank_hash`
@@ -282,7 +286,7 @@ impl RentDebits {
 }
 
 pub type BankStatusCache = StatusCache<Result<()>>;
-#[frozen_abi(digest = "HEJXoycXvGT2pwMuKcUKzzbeemnqbfrUC4jHZx1ncaWv")]
+#[frozen_abi(digest = "HbqqQzXjZZmiYmUzuTtuLpSkQmxZu5ugjHunda9sJk8t")]
 pub type BankSlotDelta = SlotDelta<Result<()>>;
 
 // Eager rent collection repeats in cyclic manner.
@@ -421,8 +425,40 @@ impl TransactionExecutionResult {
             Self::NotExecuted(err) => Err(err.clone()),
         }
     }
+
+    /// Return an Error if a transaction was executed and reverted
+    /// NOTE: `execution_results` are zipped with `sanitized_txs` so it's expected a sanitized tx at
+    /// position i has a corresponding execution result at position i within the `execution_results`
+    /// slice  
+    pub fn check_bundle_execution_results<'a>(
+        execution_results: &[TransactionExecutionResult],
+        sanitized_txs: &'a [SanitizedTransaction],
+    ) -> result::Result<(), (BundleExecutionError, &'a Signature)> {
+        for (exec_results, sanitized_tx) in execution_results.iter().zip(sanitized_txs) {
+            match exec_results {
+                TransactionExecutionResult::Executed {
+                    details,
+                    executors: _,
+                } => {
+                    if let Err(e) = &details.status {
+                        return Err((e.clone().into(), sanitized_tx.signature()));
+                    }
+                }
+                TransactionExecutionResult::NotExecuted(e) => {
+                    if !matches!(
+                        e,
+                        TransactionError::AccountInUse | TransactionError::BundleNotContinuous
+                    ) {
+                        return Err((e.clone().into(), sanitized_tx.signature()));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
+#[derive(Debug)]
 pub struct LoadAndExecuteTransactionsOutput {
     pub loaded_transactions: Vec<TransactionLoadResult>,
     // Vector of results indicating whether a transaction was executed or could not
@@ -462,6 +498,45 @@ impl DurableNonceFee {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum BundleSimulationSummary {
+    // error and transaction signature responsible
+    Failed {
+        error: BundleExecutionError,
+        tx_signature: Signature,
+    },
+    Succeeded,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountData {
+    pub pubkey: Pubkey,
+    pub data: AccountSharedData,
+}
+
+#[derive(Clone)]
+pub struct BundleSimulationResult {
+    /// Gives high level summary of bundle.
+    pub summary: BundleSimulationSummary,
+    pub transaction_results: Vec<BundleTransactionSimulationResult>,
+}
+
+#[derive(Error, Debug)]
+pub enum SimulateBundleError {
+    #[error("account missing from bank: {0}")]
+    AccountNotFoundInBank(Pubkey),
+}
+
+#[derive(Clone)]
+pub struct BundleTransactionSimulationResult {
+    pub result: Result<()>,
+    pub logs: TransactionLogMessages,
+    pub pre_execution_accounts: Option<Vec<AccountData>>,
+    pub post_execution_accounts: Option<Vec<AccountData>>,
+    pub return_data: Option<TransactionReturnData>,
+    pub units_consumed: u64,
+}
+
 pub struct TransactionSimulationResult {
     pub result: Result<()>,
     pub logs: TransactionLogMessages,
@@ -469,6 +544,7 @@ pub struct TransactionSimulationResult {
     pub units_consumed: u64,
     pub return_data: Option<TransactionReturnData>,
 }
+
 pub struct TransactionBalancesSet {
     pub pre_balances: TransactionBalances,
     pub post_balances: TransactionBalances,
@@ -1022,7 +1098,7 @@ pub struct Bank {
     inflation: Arc<RwLock<Inflation>>,
 
     /// cache of vote_account and stake_account state for this fork
-    stakes_cache: StakesCache,
+    pub stakes_cache: StakesCache,
 
     /// staked nodes on epoch boundaries, saved off when a bank.slot() is at
     ///   a leader schedule calculation boundary
@@ -3717,12 +3793,32 @@ impl Bank {
         &'a self,
         transactions: &'b [SanitizedTransaction],
         transaction_results: impl Iterator<Item = &'b Result<()>>,
+        additional_read_locks: &HashSet<Pubkey>,
+        additional_write_locks: &HashSet<Pubkey>,
     ) -> TransactionBatch<'a, 'b> {
-        // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         let lock_results = self.rc.accounts.lock_accounts_with_results(
             transactions.iter(),
             transaction_results,
             self.get_transaction_account_lock_limit(),
+            additional_read_locks,
+            additional_write_locks,
+        );
+        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+    }
+
+    /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
+    /// limited packing status, where transactions will be locked sequentially until the first failure
+    pub fn prepare_sequential_sanitized_batch_with_results<'a, 'b>(
+        &'a self,
+        transactions: &'b [SanitizedTransaction],
+        // For use cases where you don't want to actually lock the accounts, for example when simulating.
+        account_locks_override: Option<Mutex<AccountLocks>>,
+    ) -> TransactionBatch<'a, 'b> {
+        // this lock_results could be: Ok, AccountInUse, BundleNotContinuous, AccountLoadedTwice, or TooManyAccountLocks
+        let lock_results = self.rc.accounts.lock_accounts_sequential_with_results(
+            transactions.iter(),
+            self.get_transaction_account_lock_limit(),
+            account_locks_override,
         );
         TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
     }
@@ -3739,6 +3835,238 @@ impl Bank {
             TransactionBatch::new(vec![lock_result], self, Cow::Owned(vec![transaction]));
         batch.set_needs_unlock(false);
         batch
+    }
+
+    /// Run bundles against a frozen bank without committing the results and return [BundleSimulationResult].
+    /// Client has the option to request pre/post execution results on a per-transaction basis.
+    ///
+    /// For example given:
+    ///
+    /// Bundle: [T0{A, B, C}, T1{D}, T2{E, A, C}, T3{D, F}]
+    /// Requested Pre-Execution Accounts: [None, [A, D], [B], [A, C, F]]
+    /// Requested Post-Execution Accounts: [None, [D], None, [A, B, F]]
+    ///
+    /// It is expected that the following is returned:
+    /// Returned Pre-Execution Accounts: [None, [T0(A), D], [T0(B)], [T0(T2(A)), T0(T2(C)), F]]
+    /// Returned Post-Execution Accounts: [None, [T1(D)], None, [T0(T2(A), T0(B), T3(F)]]
+    pub fn simulate_bundle(
+        &self,
+        bundle: Vec<SanitizedTransaction>,
+        pre_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
+        post_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
+    ) -> result::Result<BundleSimulationResult, SimulateBundleError> {
+        assert_eq!(pre_execution_accounts_requested.len(), bundle.len());
+        assert_eq!(post_execution_accounts_requested.len(), bundle.len());
+
+        // Used to cache account data in between batch execution iterations
+        let mut account_overrides = AccountOverrides::default();
+
+        let mut pre_execution_accounts_return_data =
+            Vec::with_capacity(pre_execution_accounts_requested.len());
+        let mut post_execution_accounts_return_data =
+            Vec::with_capacity(post_execution_accounts_requested.len());
+        let mut transaction_results = Vec::with_capacity(bundle.len());
+
+        let mut timings = ExecuteTimings::default();
+        let mut chunk_start = 0;
+        while chunk_start != bundle.len() {
+            let chunk_end = min(bundle.len(), chunk_start + 128);
+            let chunk = &bundle[chunk_start..chunk_end];
+
+            let account_locks_override = Mutex::new(AccountLocks::default());
+            let batch = self.prepare_sequential_sanitized_batch_with_results(
+                chunk,
+                Some(account_locks_override),
+            );
+
+            // check if any error
+            if let Some((error, failed_tx_idx)) = check_bundle_lock_results(batch.lock_results()) {
+                transaction_results.extend(vec![
+                    BundleTransactionSimulationResult {
+                        result: Err(TransactionError::SkippedExecution),
+                        logs: vec![],
+                        pre_execution_accounts: None,
+                        post_execution_accounts: None,
+                        return_data: None,
+                        units_consumed: 0,
+                    };
+                    bundle.len() - chunk_start
+                ]);
+
+                let mut res = transaction_results
+                    .get_mut(failed_tx_idx + chunk_start)
+                    .unwrap();
+                res.result = Err(error.clone());
+
+                let failed_tx = &batch.sanitized_transactions()[failed_tx_idx];
+                return Ok(BundleSimulationResult {
+                    summary: BundleSimulationSummary::Failed {
+                        error: error.into(),
+                        tx_signature: *failed_tx.signature(),
+                    },
+                    transaction_results,
+                });
+            }
+
+            // Set chunk_end to its true value i.e. the first occurrence of an acceptable lock error.
+            let chunk_end = match batch.lock_results().iter().position(|res| res.is_err()) {
+                Some(err_idx) => chunk_start + err_idx,
+                None => chunk_end,
+            };
+            // Load the accounts requested by caller for current chunk of transactions prior to executing.
+            let pre_execution_accounts = &pre_execution_accounts_requested[chunk_start..chunk_end];
+            for maybe_accounts in pre_execution_accounts {
+                if let Some(accounts) = maybe_accounts {
+                    let mut pre_accounts = Vec::with_capacity(accounts.len());
+
+                    for pubkey in accounts {
+                        let data = if let Some(data) = account_overrides.get(pubkey).cloned() {
+                            Ok(data)
+                        } else {
+                            self.get_account(pubkey)
+                                .ok_or(SimulateBundleError::AccountNotFoundInBank(*pubkey))
+                        }?;
+                        pre_accounts.push(AccountData {
+                            pubkey: *pubkey,
+                            data,
+                        });
+                    }
+
+                    pre_execution_accounts_return_data.push(Some(pre_accounts))
+                } else {
+                    pre_execution_accounts_return_data.push(None);
+                }
+            }
+
+            // Execute the transaction!
+            let LoadAndExecuteTransactionsOutput {
+                mut loaded_transactions,
+                execution_results,
+                ..
+            } = self.load_and_execute_transactions(
+                &batch,
+                // After simulation, transactions will need to be forwarded to the leader
+                // for processing. During forwarding, the transaction could expire if the
+                // delay is not accounted for.
+                MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+                false,
+                true,
+                true,
+                &mut timings,
+                Some(&account_overrides),
+                None,
+            );
+
+            // Load account data for successful txs in current batch and store them to the overrides/cache.
+            let post_loaded_accounts = self
+                .collect_accounts_to_store(
+                    batch.sanitized_transactions(),
+                    &execution_results,
+                    &mut loaded_transactions,
+                )
+                .into_iter()
+                .map(|(pubkey, data)| {
+                    account_overrides.set_account(pubkey, Some(data.clone()));
+                    (pubkey, data)
+                })
+                .collect::<HashMap<&Pubkey, &AccountSharedData>>();
+
+            // We know `transactions[chunk_start..chunk_end]` succeeded, so fetch the corresponding requested pubkeys.
+            // e.g. given Bundle: [T0{A, B}, T1{B, C}, T2{E, F}] and Post Execution Accounts: [None, [A, B], [E]]
+            //  where current chunk is (1..3) then we load up [[A, B], [E]]
+            let post_execution_accounts =
+                &post_execution_accounts_requested[chunk_start..chunk_end];
+            for maybe_accounts in post_execution_accounts {
+                if let Some(accounts) = maybe_accounts {
+                    let mut post_accounts = Vec::with_capacity(accounts.len());
+                    for pubkey in accounts {
+                        let maybe_data =
+                            if let Some(data) = post_loaded_accounts.get(pubkey).cloned() {
+                                Some(data.clone())
+                            } else {
+                                account_overrides.get(pubkey).cloned()
+                            };
+                        if let Some(data) = maybe_data {
+                            post_accounts.push(AccountData {
+                                pubkey: *pubkey,
+                                data: data.clone(),
+                            });
+                        }
+                    }
+
+                    post_execution_accounts_return_data.push(Some(post_accounts))
+                } else {
+                    post_execution_accounts_return_data.push(None);
+                }
+            }
+
+            let simulation_results = loaded_transactions.iter().zip(&execution_results[..]).map(
+                |(loaded_tx_result, exec_result)| {
+                    Self::build_transaction_simulation_result(loaded_tx_result, exec_result)
+                },
+            );
+
+            // save the transaction results
+            for (offset, tx_result) in simulation_results.enumerate() {
+                let position = offset + chunk_start;
+                if position == chunk_end {
+                    break;
+                }
+
+                transaction_results.push(BundleTransactionSimulationResult {
+                    result: tx_result.result,
+                    logs: tx_result.logs,
+                    pre_execution_accounts: pre_execution_accounts_return_data
+                        .get(position)
+                        .cloned()
+                        .unwrap_or_default(),
+                    post_execution_accounts: post_execution_accounts_return_data
+                        .get(position)
+                        .cloned()
+                        .unwrap_or_default(),
+                    return_data: tx_result.return_data,
+                    units_consumed: tx_result.units_consumed,
+                });
+            }
+
+            if let Err((error, tx_signature)) =
+                TransactionExecutionResult::check_bundle_execution_results(
+                    &execution_results[..],
+                    batch.sanitized_transactions(),
+                )
+            {
+                // fill the result of the vector with [SkippedExecution] if any txs left over
+                transaction_results.extend(vec![
+                    BundleTransactionSimulationResult {
+                        result: Err(TransactionError::SkippedExecution),
+                        logs: vec![],
+                        pre_execution_accounts: None,
+                        post_execution_accounts: None,
+                        return_data: None,
+                        units_consumed: 0,
+                    };
+                    bundle.len() - chunk_end
+                ]);
+
+                return Ok(BundleSimulationResult {
+                    summary: BundleSimulationSummary::Failed {
+                        error,
+                        tx_signature: *tx_signature,
+                    },
+                    transaction_results,
+                });
+            }
+
+            // Welcome to Rust & Solana where we optimize for performance over readability!
+            // Remember chunk_end was updated above based on whether or not there was the
+            // batch was not continuous.
+            chunk_start = chunk_end;
+        }
+
+        Ok(BundleSimulationResult {
+            summary: BundleSimulationSummary::Succeeded,
+            transaction_results,
+        })
     }
 
     /// Run transactions against a frozen bank without committing the results
@@ -3758,14 +4086,13 @@ impl Bank {
         transaction: SanitizedTransaction,
     ) -> TransactionSimulationResult {
         let account_keys = transaction.message().account_keys();
-        let number_of_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
         let batch = self.prepare_simulation_batch(transaction);
         let mut timings = ExecuteTimings::default();
 
         let LoadAndExecuteTransactionsOutput {
             loaded_transactions,
-            mut execution_results,
+            execution_results,
             ..
         } = self.load_and_execute_transactions(
             &batch,
@@ -3781,43 +4108,42 @@ impl Bank {
             None,
         );
 
-        let post_simulation_accounts = loaded_transactions
-            .into_iter()
-            .next()
-            .unwrap()
+        Self::build_transaction_simulation_result(&loaded_transactions[0], &execution_results[0])
+    }
+
+    fn build_transaction_simulation_result(
+        loaded_transaction_result: &TransactionLoadResult,
+        execution_result: &TransactionExecutionResult,
+    ) -> TransactionSimulationResult {
+        let (logs, return_data, units_consumed, result) = match execution_result {
+            TransactionExecutionResult::Executed { details, .. } => {
+                let log_messages = if let Some(ref log_messages) = details.log_messages {
+                    log_messages.clone()
+                } else {
+                    vec![]
+                };
+
+                (
+                    log_messages,
+                    details.return_data.as_ref().cloned(),
+                    details.executed_units,
+                    execution_result.flattened_result(),
+                )
+            }
+            TransactionExecutionResult::NotExecuted(_) => {
+                (vec![], None, 0, execution_result.flattened_result())
+            }
+        };
+
+        let post_simulation_accounts = loaded_transaction_result
             .0
+            .as_ref()
             .ok()
-            .map(|loaded_transaction| {
-                loaded_transaction
-                    .accounts
-                    .into_iter()
-                    .take(number_of_accounts)
-                    .collect::<Vec<_>>()
-            })
+            .map(|tx| tx.accounts.clone())
             .unwrap_or_default();
 
-        let units_consumed = timings
-            .details
-            .per_program_timings
-            .iter()
-            .fold(0, |acc: u64, (_, program_timing)| {
-                acc.saturating_add(program_timing.accumulated_units)
-            });
-
-        debug!("simulate_transaction: {:?}", timings);
-
-        let execution_result = execution_results.pop().unwrap();
-        let flattened_result = execution_result.flattened_result();
-        let (logs, return_data) = match execution_result {
-            TransactionExecutionResult::Executed { details, .. } => {
-                (details.log_messages, details.return_data)
-            }
-            TransactionExecutionResult::NotExecuted(_) => (None, None),
-        };
-        let logs = logs.unwrap_or_default();
-
         TransactionSimulationResult {
-            result: flattened_result,
+            result,
             logs,
             post_simulation_accounts,
             units_consumed,
@@ -3987,6 +4313,29 @@ impl Bank {
             let mut transaction_balances: Vec<u64> = vec![];
             for account_key in transaction.message().account_keys().iter() {
                 transaction_balances.push(self.get_balance(account_key));
+            }
+            balances.push(transaction_balances);
+        }
+        balances
+    }
+
+    pub fn collect_balances_with_cache(
+        &self,
+        batch: &TransactionBatch,
+        account_overrides: Option<&AccountOverrides>,
+    ) -> TransactionBalances {
+        let mut balances: TransactionBalances = vec![];
+        for transaction in batch.sanitized_transactions() {
+            let mut transaction_balances: Vec<u64> = vec![];
+            for account_key in transaction.message().account_keys().iter() {
+                let balance = match account_overrides {
+                    None => self.get_balance(account_key),
+                    Some(overrides) => match overrides.get(account_key) {
+                        None => self.get_balance(account_key),
+                        Some(account_data) => account_data.lamports(),
+                    },
+                };
+                transaction_balances.push(balance);
             }
             balances.push(transaction_balances);
         }
@@ -4889,6 +5238,27 @@ impl Bank {
             execution_results,
             rent_debits,
         }
+    }
+
+    pub fn collect_accounts_to_store<'a>(
+        &self,
+        txs: &'a [SanitizedTransaction],
+        res: &'a [TransactionExecutionResult],
+        loaded: &'a mut [TransactionLoadResult],
+    ) -> Vec<(&'a Pubkey, &'a AccountSharedData)> {
+        let (last_blockhash, lamports_per_signature) =
+            self.last_blockhash_and_lamports_per_signature();
+        let durable_nonce = DurableNonce::from_blockhash(&last_blockhash);
+        Accounts::collect_accounts_to_store(
+            txs,
+            res,
+            loaded,
+            &self.rent_collector,
+            &durable_nonce,
+            lamports_per_signature,
+            self.preserve_rent_epoch_for_rent_exempt_accounts(),
+        )
+        .0
     }
 
     // Distribute collected rent fees for this slot to staked validators (excluding stakers)
@@ -7917,6 +8287,127 @@ pub(crate) mod tests {
         }
     }
 
+    fn tx_factory(
+        readonly_accounts: Vec<Pubkey>,
+        mut writeable_accounts: Vec<Pubkey>,
+        signer_key_pair: Keypair,
+    ) -> Transaction {
+        if !writeable_accounts.contains(&signer_key_pair.pubkey()) {
+            writeable_accounts.insert(0, signer_key_pair.pubkey());
+        }
+        let num_readonly_unsigned_accounts = readonly_accounts.len() as u8;
+        writeable_accounts.extend(readonly_accounts);
+
+        let message = Message {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts,
+            },
+            account_keys: writeable_accounts,
+            recent_blockhash: Hash::default(),
+            instructions: vec![],
+        };
+        let signature = signer_key_pair.sign_message(&message.serialize()[..]);
+
+        Transaction {
+            signatures: vec![signature],
+            message,
+        }
+    }
+
+    #[test]
+    fn test_prepare_sequential_sanitized_batch_with_results_happy_path() {
+        let (genesis_config, _mint_keypair) = create_genesis_config(10);
+        let bank = Bank::new_for_tests(&genesis_config);
+
+        // 1. create a bundle of self-conflicting account accesses
+        // e.g. T0{write-a, write-b}, T1{write-a, read-b, read-c}, T2{read-c, write-d, write-e}, T3{read-e, write-f}
+        let a = Keypair::new();
+        let b = Keypair::new();
+        let c = Keypair::new();
+        let d = Keypair::new();
+        let e = Keypair::new();
+        let f = Keypair::new();
+
+        let tx_0 = tx_factory(
+            vec![],
+            vec![a.pubkey(), b.pubkey()],
+            Keypair::from_base58_string(&*a.to_base58_string()),
+        );
+        let tx_0 = SanitizedTransaction::from_transaction_for_tests(tx_0);
+
+        let tx_1 = tx_factory(vec![b.pubkey(), c.pubkey()], vec![a.pubkey()], a);
+        let tx_1 = SanitizedTransaction::from_transaction_for_tests(tx_1);
+
+        let tx_2 = tx_factory(vec![c.pubkey()], vec![d.pubkey(), e.pubkey()], d);
+        let tx_2 = SanitizedTransaction::from_transaction_for_tests(tx_2);
+
+        let tx_3 = tx_factory(vec![e.pubkey()], vec![f.pubkey()], f);
+        let tx_3 = SanitizedTransaction::from_transaction_for_tests(tx_3);
+
+        // 2. test batches are chunked correctly
+        let sanitized_txs = vec![tx_0, tx_1, tx_2, tx_3];
+
+        let expected_next_start = 1;
+        _test_prepare_sequential_sanitized_batch_with_results(
+            &bank,
+            &sanitized_txs,
+            0,
+            sanitized_txs.len(),
+            Some(expected_next_start),
+            1,
+        );
+
+        let new_start = expected_next_start;
+        let expected_next_start = 3;
+        _test_prepare_sequential_sanitized_batch_with_results(
+            &bank,
+            &sanitized_txs,
+            new_start,
+            sanitized_txs.len(),
+            Some(expected_next_start),
+            2,
+        );
+
+        let new_start = expected_next_start;
+        _test_prepare_sequential_sanitized_batch_with_results(
+            &bank,
+            &sanitized_txs,
+            new_start,
+            sanitized_txs.len(),
+            None,
+            1,
+        );
+    }
+
+    fn _test_prepare_sequential_sanitized_batch_with_results(
+        bank: &Bank,
+        sanitized_txs: &[SanitizedTransaction],
+        chunk_start: usize,
+        chunk_end: usize,
+        expected_next_start: Option<usize>,
+        expected_okays: usize,
+    ) {
+        let account_locks_override = Mutex::new(AccountLocks::default());
+        let chunk = &sanitized_txs[chunk_start..chunk_end];
+        let batch = bank
+            .prepare_sequential_sanitized_batch_with_results(chunk, Some(account_locks_override));
+
+        assert_eq!(
+            batch
+                .lock_results()
+                .iter()
+                .filter(|res| res.is_ok())
+                .count(),
+            expected_okays
+        );
+
+        let first_err_idx = batch.lock_results().iter().position(|res| res.is_err());
+        let actual_next_start = first_err_idx.map(|first_err_idx| first_err_idx + chunk_start);
+        assert_eq!(actual_next_start, expected_next_start);
+    }
+
     #[test]
     fn test_nonce_info() {
         let lamports_per_signature = 42;
@@ -8490,6 +8981,585 @@ pub(crate) mod tests {
             |old, new| assert_eq!(old + some_lamports, new),
         );
         assert_eq!(account, bank.get_account(&pubkey).unwrap());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_simulate_bundle_mismatched_lengths() {
+        let (genesis_config, _mint_keypair) = create_genesis_config(1_000_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        bank.freeze();
+
+        let _ = bank.simulate_bundle(vec![], vec![None], vec![None]);
+    }
+
+    fn setup_system_accounts(
+        pubkeys: Vec<Pubkey>,
+        lamports: u64,
+        bank: &Bank,
+    ) -> Vec<AccountSharedData> {
+        pubkeys
+            .iter()
+            .map(|pk| {
+                let data = AccountSharedData::new(lamports, 0, &system_program::id());
+                bank.store_account(pk, &data);
+                data
+            })
+            .collect::<Vec<_>>()
+    }
+
+    fn assert_transaction_results(
+        actual_results: Vec<Result<()>>,
+        expected_results: Vec<Result<()>>,
+    ) {
+        assert_eq!(actual_results.len(), expected_results.len());
+        for (i, (actual, expected)) in actual_results.iter().zip(expected_results).enumerate() {
+            assert_eq!(
+                actual,
+                &expected,
+                "{}",
+                format_args!("result at index {} did not match", i)
+            );
+        }
+    }
+
+    fn assert_simulate_bundle_correct_lamports(
+        actual_account_data: Vec<Option<Vec<AccountData>>>,
+        expected_lamports: Vec<Option<HashMap<Pubkey, u64>>>,
+    ) {
+        assert_eq!(actual_account_data.len(), expected_lamports.len());
+
+        for (i, maybe_actual) in actual_account_data.iter().enumerate() {
+            if let Some(expected) = expected_lamports[i].clone() {
+                assert!(maybe_actual.is_some());
+                let actual = maybe_actual.clone().unwrap();
+                assert_eq!(actual.len(), expected.keys().len());
+
+                for (pk, lamports) in expected {
+                    let account = actual.iter().find(|acc| acc.pubkey == pk).unwrap();
+                    assert_eq!(account.data.lamports(), lamports)
+                }
+            } else {
+                assert!(maybe_actual.is_none());
+            }
+        }
+    }
+
+    /// Tests with a bundle expected to fail due to `check_bundle_lock_results`. None of the transactions
+    /// should execute due to bad locking behaviour!
+    ///
+    /// Bundle: [T0{Faucet, A, B}, T1{Z, C}, T2{Z, C}, T3{Faucet, A, A, B}, T4{Faucet, C}]
+    /// Requested Pre-Execution Accounts: [[A, B], None, None, [A, B], [C]]
+    /// Requested Post-Execution Accounts: [[A], [C], None, [A, B], [C]]
+    ///
+    /// Expect the following:
+    /// Returned Pre-Execution Accounts: [None, None, None, None, None]
+    /// Returned Post-Execution Accounts: [None, None, None, None, None]
+    #[test]
+    fn test_simulate_bundle_with_bad_locks() {
+        let (genesis_config, faucet_keypair) = create_genesis_config(1_000_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let recent_blockhash = bank.confirmed_last_blockhash();
+
+        // Setup
+        let a = solana_sdk::pubkey::new_rand();
+        let b = solana_sdk::pubkey::new_rand();
+        let c = solana_sdk::pubkey::new_rand();
+        let z = Keypair::new();
+        let initial_lamports = 100_000;
+        let _ = setup_system_accounts(vec![a, b, c, z.pubkey()], initial_lamports, &bank);
+
+        bank.freeze();
+
+        let mut expected_pre_lamports_returned = vec![];
+        let mut expected_post_lamports_returned = vec![];
+
+        // Create the transactions
+        let to_lamports = &[(a, 100), (b, 1000)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_0 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        expected_post_lamports_returned.push(None);
+
+        let to_lamports = &[(c, 1)];
+        let ixs = system_instruction::transfer_many(&z.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&z.pubkey()));
+        let tx_1 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&z],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        expected_post_lamports_returned.push(None);
+
+        let to_lamports = &[(c, 42069)];
+        let ixs = system_instruction::transfer_many(&z.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&z.pubkey()));
+        let tx_2 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&z],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        expected_post_lamports_returned.push(None);
+
+        let message = Message {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                ..MessageHeader::default()
+            },
+            account_keys: vec![faucet_keypair.pubkey(), a, a],
+            ..Message::default()
+        };
+        let tx_3 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        expected_post_lamports_returned.push(None);
+
+        let to_lamports = &[(c, 3433)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_4 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        expected_post_lamports_returned.push(None);
+
+        // Create params
+        let pre_execution_accounts = vec![
+            Some(vec![a, b]),
+            None,
+            None,
+            Some(vec![a, b]),
+            Some(vec![c]),
+        ];
+        let post_execution_accounts = vec![
+            Some(vec![a]),
+            Some(vec![c]),
+            None,
+            Some(vec![a, b]),
+            Some(vec![c]),
+        ];
+        let bundle = vec![tx_0, tx_1, tx_2, tx_3.clone(), tx_4];
+
+        // Do it!
+        let result = bank
+            .simulate_bundle(
+                bundle.clone(),
+                pre_execution_accounts,
+                post_execution_accounts,
+            )
+            .unwrap();
+
+        // Basic assertions
+        assert_eq!(
+            result.summary,
+            BundleSimulationSummary::Failed {
+                error: BundleExecutionError::TransactionFailure(
+                    TransactionError::AccountLoadedTwice
+                ),
+                tx_signature: *tx_3.signature()
+            }
+        );
+        assert_eq!(result.transaction_results.len(), bundle.len());
+
+        let expected_reults = vec![
+            Err(TransactionError::SkippedExecution),
+            Err(TransactionError::SkippedExecution),
+            Err(TransactionError::SkippedExecution),
+            Err(TransactionError::AccountLoadedTwice),
+            Err(TransactionError::SkippedExecution),
+        ];
+        let actual_results = result
+            .transaction_results
+            .clone()
+            .into_iter()
+            .map(|res| res.result)
+            .collect::<Vec<Result<()>>>();
+        assert_transaction_results(actual_results, expected_reults);
+
+        let actual_pre_lamports = result
+            .transaction_results
+            .clone()
+            .into_iter()
+            .map(|res| res.pre_execution_accounts)
+            .collect::<Vec<Option<Vec<AccountData>>>>();
+        assert_simulate_bundle_correct_lamports(
+            actual_pre_lamports,
+            expected_pre_lamports_returned,
+        );
+
+        let actual_post_lamports = result
+            .transaction_results
+            .into_iter()
+            .map(|res| res.post_execution_accounts)
+            .collect::<Vec<Option<Vec<AccountData>>>>();
+        assert_simulate_bundle_correct_lamports(
+            actual_post_lamports,
+            expected_post_lamports_returned,
+        );
+    }
+
+    /// Tests with a bundle expected to fail due to failing transaction execution.
+    /// The first two txs are parallelize and both succeed. T3 fails execution causing
+    /// all txs in its chunk (T2 & T4) to fail with [TransactionError::SkippedExecution].
+    ///
+    /// Bundle: [T0{Faucet, A, B}, T1{Z, C}, T2{Faucet, C}, T3{Z, A, B}, T4{Faucet, C}]
+    /// Requested Pre-Execution Accounts: [[A, B], None, [C], [A, B], [C]]
+    /// Requested Post-Execution Accounts: [[A], [C], None, [A, B], [C]]
+    ///
+    /// Expect the following:
+    /// Returned Pre-Execution Accounts: [[A, B], None, [T1(C)], [T0(A), T0(B)], None]
+    /// Returned Post-Execution Accounts: [[T0(A)], [T1(C)], None, [T0(A), T0(B)], None]
+    #[test]
+    fn test_simulate_bundle_with_failing_tx() {
+        let (genesis_config, faucet_keypair) = create_genesis_config(1_000_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let recent_blockhash = bank.confirmed_last_blockhash();
+
+        // Setup
+        let a = solana_sdk::pubkey::new_rand();
+        let b = solana_sdk::pubkey::new_rand();
+        let c = solana_sdk::pubkey::new_rand();
+        let z = Keypair::new();
+        let initial_lamports = 100_000;
+        let (pre_a_data, pre_b_data, pre_c_data, pre_z_data) =
+            match &setup_system_accounts(vec![a, b, c, z.pubkey()], initial_lamports, &bank)[..] {
+                [pre_a_data, pre_b_data, pre_c_data, pre_z_data] => (
+                    pre_a_data.clone(),
+                    pre_b_data.clone(),
+                    pre_c_data.clone(),
+                    pre_z_data.clone(),
+                ),
+                _ => unreachable!(),
+            };
+
+        bank.freeze();
+
+        let mut expected_pre_lamports_returned = vec![];
+        let mut expected_post_lamports_returned = vec![];
+
+        // Create the transactions
+        let to_lamports = &[(a, 100), (b, 1000)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_0 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        let mut m = HashMap::new();
+        m.insert(a, pre_a_data.lamports());
+        m.insert(b, pre_b_data.lamports());
+        expected_pre_lamports_returned.push(Some(m));
+        let mut m = HashMap::new();
+        m.insert(a, pre_a_data.lamports() + 100);
+        expected_post_lamports_returned.push(Some(m));
+
+        let to_lamports = &[(c, 1)];
+        let ixs = system_instruction::transfer_many(&z.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&z.pubkey()));
+        let tx_1 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&z],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        let mut m = HashMap::new();
+        m.insert(c, pre_c_data.lamports() + 1);
+        expected_post_lamports_returned.push(Some(m));
+
+        let to_lamports = &[(c, 42069)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_2 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        let mut m = HashMap::new();
+        m.insert(c, pre_c_data.lamports() + 1);
+        expected_pre_lamports_returned.push(Some(m));
+        expected_post_lamports_returned.push(None);
+
+        let to_lamports = &[(c, pre_z_data.lamports() + 1000)];
+        let ixs = system_instruction::transfer_many(&z.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&z.pubkey()));
+        let tx_3 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&z],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        let mut m = HashMap::new();
+        m.insert(a, pre_a_data.lamports() + 100);
+        m.insert(b, pre_b_data.lamports() + 1000);
+        expected_pre_lamports_returned.push(Some(m));
+        let mut m = HashMap::new();
+        m.insert(a, pre_a_data.lamports() + 100);
+        m.insert(b, pre_b_data.lamports() + 1000);
+        expected_post_lamports_returned.push(Some(m));
+
+        let to_lamports = &[(c, 3433)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_4 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        expected_post_lamports_returned.push(None);
+
+        // Create params
+        let pre_execution_accounts = vec![
+            Some(vec![a, b]),
+            None,
+            Some(vec![c]),
+            Some(vec![a, b]),
+            Some(vec![c]),
+        ];
+        let post_execution_accounts = vec![
+            Some(vec![a]),
+            Some(vec![c]),
+            None,
+            Some(vec![a, b]),
+            Some(vec![c]),
+        ];
+        let bundle = vec![tx_0, tx_1, tx_2, tx_3.clone(), tx_4];
+
+        // Do it!
+        let result = bank
+            .simulate_bundle(
+                bundle.clone(),
+                pre_execution_accounts,
+                post_execution_accounts,
+            )
+            .unwrap();
+
+        // Basic assertions
+        assert_eq!(
+            result.summary,
+            BundleSimulationSummary::Failed {
+                error: BundleExecutionError::TransactionFailure(
+                    TransactionError::InstructionError(0, InstructionError::Custom(1))
+                ),
+                tx_signature: *tx_3.signature()
+            }
+        );
+        assert_eq!(result.transaction_results.len(), bundle.len());
+
+        let expected_reults = vec![
+            Ok(()),
+            Ok(()),
+            Ok(()),
+            Err(TransactionError::InstructionError(
+                0,
+                InstructionError::Custom(1),
+            )),
+            Err(TransactionError::SkippedExecution),
+        ];
+        let actual_results = result
+            .transaction_results
+            .clone()
+            .into_iter()
+            .map(|res| res.result)
+            .collect::<Vec<Result<()>>>();
+        assert_transaction_results(actual_results, expected_reults);
+
+        let actual_pre_lamports = result
+            .transaction_results
+            .clone()
+            .into_iter()
+            .map(|res| res.pre_execution_accounts)
+            .collect::<Vec<Option<Vec<AccountData>>>>();
+        assert_simulate_bundle_correct_lamports(
+            actual_pre_lamports,
+            expected_pre_lamports_returned,
+        );
+
+        let actual_post_lamports = result
+            .transaction_results
+            .into_iter()
+            .map(|res| res.post_execution_accounts)
+            .collect::<Vec<Option<Vec<AccountData>>>>();
+        assert_simulate_bundle_correct_lamports(
+            actual_post_lamports,
+            expected_post_lamports_returned,
+        );
+    }
+
+    /// Tests with a bundle expected to succeed, containing no parallelize chunks
+    ///
+    /// Bundle: [T0{Faucet, A, B, C}, T1{Faucet, D}, T2{Faucet, E, A, C}, T3{Faucet, D, F}]
+    /// Requested Pre-Execution Accounts: [None, [A, D], [B], [A, C, F]]
+    /// Requested Post-Execution Accounts: [None, [D], None, [A, B, F]]
+    ///
+    /// Expect the following:
+    /// Returned Pre-Execution Accounts: [None, [T0(A), D], [T0(B)], [T0(T2(A)), T0(T2(C)), F]]
+    /// Returned Post-Execution Accounts: [None, [T1(D)], None, [T0(T2(A), T0(B), T3(F)]]
+    #[test]
+    fn test_simulate_bundle_happy_path() {
+        let (genesis_config, faucet_keypair) = create_genesis_config(1_000_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let recent_blockhash = bank.confirmed_last_blockhash();
+
+        // Create some accounts and save them to the bank
+        let a = solana_sdk::pubkey::new_rand();
+        let b = solana_sdk::pubkey::new_rand();
+        let c = solana_sdk::pubkey::new_rand();
+        let d = solana_sdk::pubkey::new_rand();
+        let e = solana_sdk::pubkey::new_rand();
+        let f = solana_sdk::pubkey::new_rand();
+        let initial_lamports = 100_000;
+        let (pre_a_data, pre_b_data, pre_c_data, pre_d_data, pre_f_data) =
+            match &setup_system_accounts(vec![a, b, c, d, e, f], initial_lamports, &bank)[..] {
+                [pre_a_data, pre_b_data, pre_c_data, pre_d_data, _, pre_f_data] => (
+                    pre_a_data.clone(),
+                    pre_b_data.clone(),
+                    pre_c_data.clone(),
+                    pre_d_data.clone(),
+                    pre_f_data.clone(),
+                ),
+                _ => unreachable!(),
+            };
+
+        bank.freeze();
+
+        let mut expected_pre_lamports_returned = vec![];
+        let mut expected_post_lamports_returned = vec![];
+
+        // Create the transactions
+        let to_lamports = &[(a, 100), (b, 1000), (c, 200)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_0 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        expected_pre_lamports_returned.push(None);
+        expected_post_lamports_returned.push(None);
+
+        let to_lamports = &[(d, 343)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_1 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        let mut m = HashMap::new();
+        m.insert(a, pre_a_data.lamports() + 100);
+        m.insert(d, pre_d_data.lamports());
+        expected_pre_lamports_returned.push(Some(m));
+        let mut m = HashMap::new();
+        m.insert(d, pre_d_data.lamports() + 343);
+        expected_post_lamports_returned.push(Some(m));
+
+        let to_lamports = &[(e, 378), (a, 1002), (c, 200)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_2 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        let mut m = HashMap::new();
+        m.insert(b, pre_b_data.lamports() + 1000);
+        expected_pre_lamports_returned.push(Some(m));
+        expected_post_lamports_returned.push(None);
+
+        let to_lamports = &[(d, 378), (f, 1002)];
+        let ixs = system_instruction::transfer_many(&faucet_keypair.pubkey(), to_lamports);
+        let message = Message::new(&ixs[..], Some(&faucet_keypair.pubkey()));
+        let tx_3 = SanitizedTransaction::try_from_legacy_transaction(Transaction::new(
+            &[&faucet_keypair],
+            message,
+            recent_blockhash,
+        ))
+        .unwrap();
+        let mut m = HashMap::new();
+        m.insert(a, pre_a_data.lamports() + 100 + 1002);
+        m.insert(c, pre_c_data.lamports() + 200 + 200);
+        m.insert(f, pre_f_data.lamports());
+        expected_pre_lamports_returned.push(Some(m));
+        let mut m = HashMap::new();
+        m.insert(a, pre_a_data.lamports() + 100 + 1002);
+        m.insert(b, pre_b_data.lamports() + 1000);
+        m.insert(f, pre_f_data.lamports() + 1002);
+        expected_post_lamports_returned.push(Some(m));
+
+        // Create params
+        let pre_execution_accounts =
+            vec![None, Some(vec![a, d]), Some(vec![b]), Some(vec![a, c, f])];
+        let post_execution_accounts = vec![None, Some(vec![d]), None, Some(vec![a, b, f])];
+        let bundle = vec![tx_0, tx_1, tx_2, tx_3];
+
+        // Do it!
+        let result = bank
+            .simulate_bundle(
+                bundle.clone(),
+                pre_execution_accounts,
+                post_execution_accounts,
+            )
+            .unwrap();
+
+        // Basic assertions
+        assert_eq!(result.summary, BundleSimulationSummary::Succeeded);
+        assert_eq!(result.transaction_results.len(), bundle.len());
+
+        let expected_reults = vec![Ok(()), Ok(()), Ok(()), Ok(())];
+        let actual_results = result
+            .transaction_results
+            .clone()
+            .into_iter()
+            .map(|res| res.result)
+            .collect::<Vec<Result<()>>>();
+        assert_transaction_results(actual_results, expected_reults);
+
+        let actual_pre_lamports = result
+            .transaction_results
+            .clone()
+            .into_iter()
+            .map(|res| res.pre_execution_accounts)
+            .collect::<Vec<Option<Vec<AccountData>>>>();
+        assert_simulate_bundle_correct_lamports(
+            actual_pre_lamports,
+            expected_pre_lamports_returned,
+        );
+
+        let actual_post_lamports = result
+            .transaction_results
+            .into_iter()
+            .map(|res| res.post_execution_accounts)
+            .collect::<Vec<Option<Vec<AccountData>>>>();
+        assert_simulate_bundle_correct_lamports(
+            actual_post_lamports,
+            expected_post_lamports_returned,
+        );
     }
 
     #[test]
