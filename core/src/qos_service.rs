@@ -9,7 +9,7 @@ use {
     solana_runtime::{
         bank::Bank,
         cost_model::{CostModel, TransactionCost},
-        cost_tracker::CostTrackerError,
+        cost_tracker::{CostTracker, CostTrackerError},
     },
     solana_sdk::{
         clock::Slot,
@@ -126,22 +126,22 @@ impl QosService {
         &self,
         transactions: impl Iterator<Item = &'a SanitizedTransaction>,
         transactions_costs: impl Iterator<Item = &'a TransactionCost>,
-        bank: &Arc<Bank>,
+        slot: Slot,
+        cost_tracker: &mut CostTracker,
     ) -> (Vec<transaction::Result<()>>, usize) {
         let mut cost_tracking_time = Measure::start("cost_tracking_time");
-        let mut cost_tracker = bank.write_cost_tracker().unwrap();
         let mut num_included = 0;
         let select_results = transactions
             .zip(transactions_costs)
             .map(|(tx, cost)| match cost_tracker.try_add(cost) {
                 Ok(current_block_cost) => {
-                    debug!("slot {:?}, transaction {:?}, cost {:?}, fit into current block, current block cost {}", bank.slot(), tx, cost, current_block_cost);
+                    debug!("slot {:?}, transaction {:?}, cost {:?}, fit into current block, current block cost {}", slot, tx, cost, current_block_cost);
                     self.metrics.stats.selected_txs_count.fetch_add(1, Ordering::Relaxed);
                     num_included += 1;
                     Ok(())
                 },
                 Err(e) => {
-                    debug!("slot {:?}, transaction {:?}, cost {:?}, not fit into current block, '{:?}'", bank.slot(), tx, cost, e);
+                    debug!("slot {:?}, transaction {:?}, cost {:?}, not fit into current block, '{:?}'", slot, tx, cost, e);
                     match e {
                         CostTrackerError::WouldExceedBlockMaxLimit => {
                             Err(TransactionError::WouldExceedMaxBlockCostLimit)
@@ -219,7 +219,7 @@ impl QosService {
             );
     }
 
-    fn remove_transaction_costs<'a>(
+    pub fn remove_transaction_costs<'a>(
         transaction_costs: impl Iterator<Item = &'a TransactionCost>,
         transaction_qos_results: impl Iterator<Item = &'a transaction::Result<()>>,
         bank: &Arc<Bank>,
@@ -640,8 +640,12 @@ mod tests {
         bank.write_cost_tracker()
             .unwrap()
             .set_limits(cost_limit, cost_limit, cost_limit);
-        let (results, num_selected) =
-            qos_service.select_transactions_per_cost(txs.iter(), txs_costs.iter(), &bank);
+        let (results, num_selected) = qos_service.select_transactions_per_cost(
+            txs.iter(),
+            txs_costs.iter(),
+            bank.slot(),
+            &mut bank.write_cost_tracker().unwrap(),
+        );
         assert_eq!(num_selected, 2);
 
         // verify that first transfer tx and first vote are allowed
@@ -675,8 +679,12 @@ mod tests {
             let qos_service = QosService::new(Arc::new(RwLock::new(CostModel::default())), 1);
             let txs_costs = qos_service.compute_transaction_costs(txs.iter());
             let total_txs_cost: u64 = txs_costs.iter().map(|cost| cost.sum()).sum();
-            let (qos_results, _num_included) =
-                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.iter(), &bank);
+            let (qos_results, _num_included) = qos_service.select_transactions_per_cost(
+                txs.iter(),
+                txs_costs.iter(),
+                bank.slot(),
+                &mut bank.write_cost_tracker().unwrap(),
+            );
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -728,8 +736,12 @@ mod tests {
             let qos_service = QosService::new(Arc::new(RwLock::new(CostModel::default())), 1);
             let txs_costs = qos_service.compute_transaction_costs(txs.iter());
             let total_txs_cost: u64 = txs_costs.iter().map(|cost| cost.sum()).sum();
-            let (qos_results, _num_included) =
-                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.iter(), &bank);
+            let (qos_results, _num_included) = qos_service.select_transactions_per_cost(
+                txs.iter(),
+                txs_costs.iter(),
+                bank.slot(),
+                &mut bank.write_cost_tracker().unwrap(),
+            );
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -768,8 +780,12 @@ mod tests {
             let qos_service = QosService::new(Arc::new(RwLock::new(CostModel::default())), 1);
             let txs_costs = qos_service.compute_transaction_costs(txs.iter());
             let total_txs_cost: u64 = txs_costs.iter().map(|cost| cost.sum()).sum();
-            let (qos_results, _num_included) =
-                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.iter(), &bank);
+            let (qos_results, _num_included) = qos_service.select_transactions_per_cost(
+                txs.iter(),
+                txs_costs.iter(),
+                bank.slot(),
+                &mut bank.write_cost_tracker().unwrap(),
+            );
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()

@@ -65,6 +65,11 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         wait_to_vote_slot: config.wait_to_vote_slot,
         ledger_column_options: config.ledger_column_options.clone(),
         runtime_config: config.runtime_config.clone(),
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_address: config.shred_receiver_address.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        preallocated_bundle_cost: config.preallocated_bundle_cost,
     }
 }
 

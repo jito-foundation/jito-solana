@@ -275,6 +275,7 @@ fn get_validator_stats(
         Err(err) => {
             if let client_error::ClientErrorKind::RpcError(
                 rpc_request::RpcError::RpcResponseError {
+                    request_id: _,
                     code: _,
                     message: _,
                     data:

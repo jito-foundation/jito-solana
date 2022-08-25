@@ -120,7 +120,7 @@ pub fn init() {
 /// Returns true if the signatrue on the packet verifies.
 /// Caller must do packet.set_discard(true) if this returns false.
 #[must_use]
-fn verify_packet(packet: &mut Packet, reject_non_vote: bool) -> bool {
+pub fn verify_packet(packet: &mut Packet, reject_non_vote: bool) -> bool {
     // If this packet was already marked as discard, drop it
     if packet.meta.discard() {
         return false;
