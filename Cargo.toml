@@ -7,6 +7,8 @@ members = [
     "banks-client",
     "banks-interface",
     "banks-server",
+    "bench-batch-simulate-bundle",
+    "bench-get-confirmed-blocks-with-data",
     "bench-streamer",
     "bench-tps",
     "bloom",
@@ -30,6 +32,7 @@ members = [
     "geyser-plugin-manager",
     "gossip",
     "install",
+    "jito-protos",
     "keygen",
     "ledger",
     "ledger-tool",
@@ -78,6 +81,7 @@ members = [
     "streamer",
     "sys-tuner",
     "test-validator",
+    "tip-distributor",
     "tokens",
     "transaction-dos",
     "transaction-status",
@@ -89,6 +93,8 @@ members = [
 ]
 
 exclude = [
+    "anchor",
+    "jito-programs",
     "programs/bpf",
 ]
 

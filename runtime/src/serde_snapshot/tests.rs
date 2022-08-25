@@ -309,7 +309,7 @@ fn test_bank_serialize_style(
         full_snapshot_stream: &mut reader,
         incremental_snapshot_stream: None,
     };
-    let mut dbank = crate::serde_snapshot::bank_from_streams(
+    let mut dbank = bank_from_streams(
         serde_style,
         &mut snapshot_streams,
         &dbank_paths,
@@ -433,7 +433,7 @@ fn test_extra_fields_eof() {
     let copied_accounts = TempDir::new().unwrap();
     let unpacked_append_vec_map =
         copy_append_vecs(&bank.rc.accounts.accounts_db, copied_accounts.path()).unwrap();
-    let dbank = crate::serde_snapshot::bank_from_streams(
+    let dbank = bank_from_streams(
         SerdeStyle::Newer,
         &mut snapshot_streams,
         &dbank_paths,
@@ -556,7 +556,7 @@ fn test_blank_extra_fields() {
     let copied_accounts = TempDir::new().unwrap();
     let unpacked_append_vec_map =
         copy_append_vecs(&bank.rc.accounts.accounts_db, copied_accounts.path()).unwrap();
-    let dbank = crate::serde_snapshot::bank_from_streams(
+    let dbank = bank_from_streams(
         SerdeStyle::Newer,
         &mut snapshot_streams,
         &dbank_paths,

@@ -281,6 +281,7 @@ fn get_validator_stats(
                         rpc_request::RpcResponseErrorData::NodeUnhealthy {
                             num_slots_behind: Some(num_slots_behind),
                         },
+                    request_id: _,
                 },
             ) = &err.kind
             {
