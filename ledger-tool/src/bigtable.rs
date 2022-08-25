@@ -1380,6 +1380,7 @@ pub fn bigtable_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) {
                 blockstore.clone(),
                 process_options,
                 None,
+                true,
             );
 
             let bank = bank_forks.read().unwrap().working_bank();
