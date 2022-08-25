@@ -853,13 +853,15 @@ fn load_bank_forks(
             snapshot_archive_path.unwrap_or_else(|| blockstore.ledger_path().to_path_buf());
         let incremental_snapshot_archives_dir =
             incremental_snapshot_archive_path.unwrap_or_else(|| full_snapshot_archives_dir.clone());
-        if let Some(full_snapshot_slot) =
-            snapshot_utils::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir)
-        {
+        if let Some(full_snapshot_slot) = snapshot_utils::get_highest_full_snapshot_archive_slot(
+            &full_snapshot_archives_dir,
+            process_options.halt_at_slot,
+        ) {
             let incremental_snapshot_slot =
                 snapshot_utils::get_highest_incremental_snapshot_archive_slot(
                     &incremental_snapshot_archives_dir,
                     full_snapshot_slot,
+                    process_options.halt_at_slot,
                 )
                 .unwrap_or_default();
             starting_slot = std::cmp::max(full_snapshot_slot, incremental_snapshot_slot);
@@ -880,8 +882,8 @@ fn load_bank_forks(
         //  - This will not catch the case when loading from genesis without a full slot 0.
         if !blockstore.slot_range_connected(starting_slot, halt_slot) {
             eprintln!(
-                "Unable to load bank forks at slot {} due to disconnected blocks.",
-                halt_slot,
+                "Unable to load bank forks [start {} end {}] due to disconnected blocks.",
+                starting_slot, halt_slot,
             );
             exit(1);
         }
@@ -2729,6 +2731,21 @@ fn main() {
                     blockstore.meta(snapshot_slot).unwrap().is_some(),
                     "snapshot slot doesn't exist"
                 );
+
+                if let Ok(metas) = blockstore.slot_meta_iterator(0) {
+                    let slots: Vec<_> = metas.map(|(slot, _)| slot).collect();
+                    if slots.is_empty() {
+                        eprintln!("Ledger is empty, can't create snapshot");
+                        exit(1);
+                    } else {
+                        let first = slots.first().unwrap();
+                        let last = slots.last().unwrap_or(first);
+                        if first > &snapshot_slot || &snapshot_slot > last {
+                            eprintln!("Slot {} is out of bounds of ledger [{}, {}], cannot create snapshot", &snapshot_slot, first, last);
+                            exit(1);
+                        }
+                    }
+                }
 
                 let ending_slot = if is_minimized {
                     let ending_slot = value_t_or_exit!(arg_matches, "ending_slot", Slot);
