@@ -31,7 +31,6 @@ pub struct RpcConfig {
 }
 
 fn main() -> Result<(), Error> {
-    // TODO: clap this and add solana config helpers
     let matches = App::new(crate_name!())
         .arg({
             let arg = Arg::with_name("config_file")
@@ -123,7 +122,8 @@ fn get_latest_blockhash(client: &RpcClient) -> Result<Hash, Error> {
         .0)
 }
 
-fn checked_transaction_with_signers(
+/// Sends transaction payload, optionally simulating only
+fn send_transaction(
     config: &RpcConfig,
     instructions: &[Instruction],
 ) -> Result<Transaction, Error> {
@@ -147,6 +147,7 @@ fn checked_transaction_with_signers(
     Ok(transaction)
 }
 
+/// runs workflow to claim all MEV rewards given a Generated merkle tree collection
 fn command_claim_all(
     rpc_config: &RpcConfig,
     payer: &Keypair,
@@ -186,12 +187,11 @@ fn command_claim_all(
             };
 
             let ix = claim_ix(pid, claim_args, claim_accounts);
-            checked_transaction_with_signers(rpc_config, &[ix.clone()]).unwrap();
+            send_transaction(rpc_config, &[ix.clone()]).unwrap();
         }
     }
 }
 
-/// load merkle tree from a json filepath
 fn load_merkle_tree<P: AsRef<Path>>(path: P) -> Result<GeneratedMerkleTreeCollection, Error> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
