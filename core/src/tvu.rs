@@ -52,7 +52,7 @@ use {
     solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Keypair},
     std::{
         collections::HashSet,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, RwLock},
         thread::{self, JoinHandle},
     },
@@ -138,6 +138,7 @@ impl Tvu {
         connection_cache: &Arc<ConnectionCache>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
         banking_tracer: Arc<BankingTracer>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let TvuSockets {
             repair: repair_socket,
@@ -185,6 +186,7 @@ impl Tvu {
             retransmit_receiver,
             max_slots.clone(),
             Some(rpc_subscriptions.clone()),
+            shred_receiver_addr,
         );
 
         let cluster_slots = Arc::new(ClusterSlots::default());
@@ -483,6 +485,7 @@ pub mod tests {
             &Arc::new(ConnectionCache::new("connection_cache_test")),
             &ignored_prioritization_fee_cache,
             BankingTracer::new_disabled(),
+            Arc::new(RwLock::new(None)),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
