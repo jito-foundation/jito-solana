@@ -132,6 +132,7 @@ mod tests {
                 scheduler_messages::{TransactionBatchId, TransactionId},
                 tests::{create_slow_genesis_config, sanitize_transactions, simulate_poh},
             },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
             qos_service::QosService,
         },
         crossbeam_channel::unbounded,
@@ -149,6 +150,7 @@ mod tests {
             signature::Keypair, system_transaction,
         },
         std::{
+            collections::HashSet,
             sync::{atomic::AtomicBool, RwLock},
             thread::JoinHandle,
         },
@@ -206,7 +208,14 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            HashSet::default(),
+            BundleAccountLocker::default(),
+        );
 
         let (consume_sender, consume_receiver) = unbounded();
         let (consumed_sender, consumed_receiver) = unbounded();
