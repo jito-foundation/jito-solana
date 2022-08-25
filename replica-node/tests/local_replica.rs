@@ -62,7 +62,7 @@ fn wait_for_next_snapshot(
     );
     loop {
         if let Some(full_snapshot_archive_info) =
-            snapshot_utils::get_highest_full_snapshot_archive_info(snapshot_archives_dir)
+            snapshot_utils::get_highest_full_snapshot_archive_info(snapshot_archives_dir, None)
         {
             trace!(
                 "full snapshot for slot {} exists",

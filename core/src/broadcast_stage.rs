@@ -33,7 +33,7 @@ use {
     std::{
         collections::{HashMap, HashSet},
         iter::repeat,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, Mutex, RwLock,
@@ -84,6 +84,7 @@ impl BroadcastStageType {
         blockstore: Arc<Blockstore>,
         bank_forks: Arc<RwLock<BankForks>>,
         shred_version: u16,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> BroadcastStage {
         match self {
             BroadcastStageType::Standard => BroadcastStage::new(
@@ -95,6 +96,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 StandardBroadcastRun::new(shred_version),
+                shred_receiver_addr,
             ),
 
             BroadcastStageType::FailEntryVerification => BroadcastStage::new(
@@ -106,6 +108,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 FailEntryVerificationBroadcastRun::new(shred_version),
+                None,
             ),
 
             BroadcastStageType::BroadcastFakeShreds => BroadcastStage::new(
@@ -117,6 +120,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 BroadcastFakeShredsRun::new(0, shred_version),
+                None,
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -128,6 +132,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
+                None,
             ),
         }
     }
@@ -148,6 +153,7 @@ trait BroadcastRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &Mutex<RecordReceiver>, blockstore: &Blockstore) -> Result<()>;
 }
@@ -243,6 +249,7 @@ impl BroadcastStage {
         blockstore: Arc<Blockstore>,
         bank_forks: Arc<RwLock<BankForks>>,
         broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -277,8 +284,13 @@ impl BroadcastStage {
             let t = Builder::new()
                 .name("solana-broadcaster-transmit".to_string())
                 .spawn(move || loop {
-                    let res =
-                        bs_transmit.transmit(&socket_receiver, &cluster_info, &sock, &bank_forks);
+                    let res = bs_transmit.transmit(
+                        &socket_receiver,
+                        &cluster_info,
+                        &sock,
+                        &bank_forks,
+                        shred_receiver_addr,
+                    );
                     let res = Self::handle_error(res, "solana-broadcaster-transmit");
                     if let Some(res) = res {
                         return res;
@@ -394,6 +406,7 @@ pub fn broadcast_shreds(
     cluster_info: &ClusterInfo,
     bank_forks: &RwLock<BankForks>,
     socket_addr_space: &SocketAddrSpace,
+    shred_receiver_addr: Option<SocketAddr>,
 ) -> Result<()> {
     let mut result = Ok(());
     let mut shred_select = Measure::start("shred_select");
@@ -403,22 +416,27 @@ pub fn broadcast_shreds(
     };
     let packets: Vec<_> = shreds
         .iter()
-        .group_by(|shred| shred.slot())
-        .into_iter()
-        .flat_map(|(slot, shreds)| {
-            let cluster_nodes =
-                cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
-            update_peer_stats(&cluster_nodes, last_datapoint_submit);
-            let root_bank = root_bank.clone();
-            shreds.flat_map(move |shred| {
-                repeat(&shred.payload).zip(cluster_nodes.get_broadcast_addrs(
-                    shred,
-                    &root_bank,
-                    DATA_PLANE_FANOUT,
-                    socket_addr_space,
-                ))
-            })
-        })
+        .filter_map(|s| Some((&s.payload, shred_receiver_addr?)))
+        .chain(
+            shreds
+                .iter()
+                .group_by(|shred| shred.slot())
+                .into_iter()
+                .flat_map(|(slot, shreds)| {
+                    let cluster_nodes =
+                        cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
+                    update_peer_stats(&cluster_nodes, last_datapoint_submit);
+                    let root_bank = root_bank.clone();
+                    shreds.flat_map(move |shred| {
+                        repeat(&shred.payload).zip(cluster_nodes.get_broadcast_addrs(
+                            shred,
+                            &root_bank,
+                            DATA_PLANE_FANOUT,
+                            socket_addr_space,
+                        ))
+                    })
+                }),
+        )
         .collect();
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
@@ -614,6 +632,7 @@ pub mod test {
             blockstore.clone(),
             bank_forks,
             StandardBroadcastRun::new(0),
+            None,
         );
 
         MockBroadcastStage {
@@ -653,7 +672,10 @@ pub mod test {
                 let ticks = create_ticks(max_tick_height - start_tick_height, 0, Hash::default());
                 for (i, tick) in ticks.into_iter().enumerate() {
                     entry_sender
-                        .send((bank.clone(), (tick, i as u64 + 1)))
+                        .send(WorkingBankEntry {
+                            bank: bank.clone(),
+                            entries_ticks: vec![(tick, i as u64 + 1)],
+                        })
                         .expect("Expect successful send to broadcast service");
                 }
             }
