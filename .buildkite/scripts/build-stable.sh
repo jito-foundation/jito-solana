@@ -13,7 +13,7 @@ partitions=$(
 {
   "name": "partitions",
   "command": ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_stable_docker_image ci/stable/run-partition.sh",
-  "timeout_in_minutes": 30,
+  "timeout_in_minutes": 40,
   "agent": "$agent",
   "parallelism": 2,
   "retry": 3

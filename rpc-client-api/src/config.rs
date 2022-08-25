@@ -48,7 +48,7 @@ pub struct RpcSimulateTransactionConfig {
     pub inner_instructions: bool,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcRequestAirdropConfig {
     pub recent_blockhash: Option<String>, // base-58 encoded blockhash
