@@ -17,7 +17,7 @@ use {
         signature::Keypair,
         timing::{duration_as_us, AtomicInterval},
     },
-    std::{sync::RwLock, time::Duration},
+    std::{net::SocketAddr, sync::RwLock, time::Duration},
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
@@ -192,10 +192,24 @@ impl StandardBroadcastRun {
         let (ssend, srecv) = unbounded();
         self.process_receive_results(keypair, blockstore, &ssend, &bsend, receive_results)?;
         //data
-        let _ = self.transmit(&srecv, cluster_info, sock, bank_forks, quic_endpoint_sender);
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            sock,
+            bank_forks,
+            quic_endpoint_sender,
+            &Arc::new(RwLock::new(None)),
+        );
         let _ = self.record(&brecv, blockstore);
         //coding
-        let _ = self.transmit(&srecv, cluster_info, sock, bank_forks, quic_endpoint_sender);
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            sock,
+            bank_forks,
+            quic_endpoint_sender,
+            &Arc::new(RwLock::new(None)),
+        );
         let _ = self.record(&brecv, blockstore);
         Ok(())
     }
@@ -393,6 +407,7 @@ impl StandardBroadcastRun {
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shred_receiver_addr: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats::default();
@@ -409,6 +424,7 @@ impl StandardBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
+            shred_receiver_addr,
         )?;
         transmit_time.stop();
 
@@ -479,6 +495,7 @@ impl BroadcastRun for StandardBroadcastRun {
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
         self.broadcast(
@@ -488,6 +505,7 @@ impl BroadcastRun for StandardBroadcastRun {
             batch_info,
             bank_forks,
             quic_endpoint_sender,
+            &shred_receiver_address.read().unwrap(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
