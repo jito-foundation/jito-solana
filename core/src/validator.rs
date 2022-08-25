@@ -15,6 +15,7 @@ use {
             ExternalRootSource, Tower,
         },
         poh_timing_report_service::PohTimingReportService,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{self, serve_repair::ServeRepair, serve_repair_service::ServeRepairService},
         rewards_recorder_service::{RewardsRecorderSender, RewardsRecorderService},
         sample_performance_service::SamplePerformanceService,
@@ -24,6 +25,7 @@ use {
         system_monitor_service::{
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
+        tip_manager::TipManagerConfig,
         tpu::{Tpu, TpuSockets, DEFAULT_TPU_COALESCE},
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
@@ -103,6 +105,10 @@ use {
         snapshot_hash::StartingSnapshotHashes,
         snapshot_utils::{self, clean_orphaned_account_snapshot_dirs},
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
+        runtime_plugin_service::RuntimePluginService,
+    },
     solana_sdk::{
         clock::Slot,
         epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
@@ -126,7 +132,7 @@ use {
         path::{Path, PathBuf},
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{sleep, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -212,7 +218,8 @@ pub struct ValidatorConfig {
     pub rpc_config: JsonRpcConfig,
     /// Specifies which plugins to start up with
     pub on_start_geyser_plugin_config_files: Option<Vec<PathBuf>>,
-    pub rpc_addrs: Option<(SocketAddr, SocketAddr)>, // (JsonRpc, JsonRpcPubSub)
+    pub rpc_addrs: Option<(SocketAddr, SocketAddr)>,
+    // (JsonRpc, JsonRpcPubSub)
     pub pubsub_config: PubSubConfig,
     pub snapshot_config: SnapshotConfig,
     pub max_ledger_shreds: Option<u64>,
@@ -222,10 +229,14 @@ pub struct ValidatorConfig {
     pub fixed_leader_schedule: Option<FixedSchedule>,
     pub wait_for_supermajority: Option<Slot>,
     pub new_hard_forks: Option<Vec<Slot>>,
-    pub known_validators: Option<HashSet<Pubkey>>, // None = trust all
-    pub repair_validators: Option<HashSet<Pubkey>>, // None = repair from all
-    pub repair_whitelist: Arc<RwLock<HashSet<Pubkey>>>, // Empty = repair with all
-    pub gossip_validators: Option<HashSet<Pubkey>>, // None = gossip with all
+    pub known_validators: Option<HashSet<Pubkey>>,
+    // None = trust all
+    pub repair_validators: Option<HashSet<Pubkey>>,
+    // None = repair from all
+    pub repair_whitelist: Arc<RwLock<HashSet<Pubkey>>>,
+    // Empty = repair with all
+    pub gossip_validators: Option<HashSet<Pubkey>>,
+    // None = gossip with all
     pub accounts_hash_interval_slots: u64,
     pub max_genesis_archive_unpacked_size: u64,
     pub wal_recovery_mode: Option<BlockstoreRecoveryMode>,
@@ -268,6 +279,12 @@ pub struct ValidatorConfig {
     pub use_snapshot_archives_at_startup: UseSnapshotArchivesAtStartup,
     pub wen_restart_proto_path: Option<PathBuf>,
     pub unified_scheduler_handler_threads: Option<usize>,
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    // Using Option inside RwLock is ugly, but only convenient way to allow toggle on/off
+    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub preallocated_bundle_cost: u64,
 }
 
 impl Default for ValidatorConfig {
@@ -336,6 +353,11 @@ impl Default for ValidatorConfig {
             use_snapshot_archives_at_startup: UseSnapshotArchivesAtStartup::default(),
             wen_restart_proto_path: None,
             unified_scheduler_handler_threads: None,
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            shred_receiver_address: Arc::new(RwLock::new(None)),
+            tip_manager_config: TipManagerConfig::default(),
+            preallocated_bundle_cost: u64::default(),
         }
     }
 }
@@ -370,7 +392,8 @@ impl ValidatorConfig {
 // having to watch log messages.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ValidatorStartProgress {
-    Initializing, // Catch all, default state
+    Initializing,
+    // Catch all, default state
     SearchingForRpcService,
     DownloadingSnapshot {
         slot: Slot,
@@ -384,7 +407,8 @@ pub enum ValidatorStartProgress {
         max_slot: Slot,
     },
     StartingServices,
-    Halted, // Validator halted due to `--dev-halt-at-slot` argument
+    Halted,
+    // Validator halted due to `--dev-halt-at-slot` argument
     WaitingForSupermajority {
         slot: Slot,
         gossip_stake_percent: u64,
@@ -500,6 +524,10 @@ impl Validator {
         tpu_connection_pool_size: usize,
         tpu_enable_udp: bool,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+        runtime_plugin_configs_and_request_rx: Option<(
+            Vec<PathBuf>,
+            Receiver<RuntimePluginManagerRpcRequest>,
+        )>,
     ) -> Result<Self, String> {
         let id = identity_keypair.pubkey();
         assert_eq!(&id, node.info.pubkey());
@@ -912,6 +940,17 @@ impl Validator {
             None,
         ));
 
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .map_err(|e| format!("Failed to start runtime plugin service: {e:?}"))?;
+        }
+
         let max_slots = Arc::new(MaxSlots::default());
         let (completed_data_sets_sender, completed_data_sets_receiver) =
             bounded(MAX_COMPLETED_DATA_SETS_IN_CHANNEL);
@@ -1321,6 +1360,7 @@ impl Validator {
             outstanding_repair_requests.clone(),
             cluster_slots.clone(),
             wen_restart_repair_slots.clone(),
+            config.shred_receiver_address.clone(),
         )?;
 
         if in_wen_restart {
@@ -1383,6 +1423,11 @@ impl Validator {
             &prioritization_fee_cache,
             config.block_production_method.clone(),
             config.generator_config.clone(),
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_address.clone(),
+            config.preallocated_bundle_cost,
         );
 
         datapoint_info!(
@@ -1406,6 +1451,9 @@ impl Validator {
             repair_socket: Arc::new(node.sockets.repair),
             outstanding_repair_requests,
             cluster_slots,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_address: config.shred_receiver_address.clone(),
         });
 
         Ok(Self {
@@ -1871,6 +1919,7 @@ fn load_blockstore(
                 .map(|service| service.sender()),
             accounts_update_notifier,
             exit,
+            true,
         )
         .map_err(|err| err.to_string())?;
 
@@ -2566,6 +2615,7 @@ mod tests {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         assert_eq!(
@@ -2643,7 +2693,7 @@ mod tests {
                     Arc::new(RwLock::new(vec![Arc::new(vote_account_keypair)])),
                     vec![LegacyContactInfo::try_from(&leader_node.info).unwrap()],
                     &config,
-                    true, // should_check_duplicate_instance.
+                    true, // should_check_duplicate_instance
                     None, // rpc_to_plugin_manager_receiver
                     Arc::new(RwLock::new(ValidatorStartProgress::default())),
                     SocketAddrSpace::Unspecified,
@@ -2651,6 +2701,7 @@ mod tests {
                     DEFAULT_TPU_CONNECTION_POOL_SIZE,
                     DEFAULT_TPU_ENABLE_UDP,
                     Arc::new(RwLock::new(None)),
+                    None,
                 )
                 .expect("assume successful validator start")
             })
@@ -2767,7 +2818,7 @@ mod tests {
 
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(300, 200),
-            100
+            100,
         ));
 
         let default_accounts_hash_interval =
@@ -2775,62 +2826,62 @@ mod tests {
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS
+                snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
             ),
             default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            default_accounts_hash_interval
+            default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            default_accounts_hash_interval
+            default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            Slot::MAX
+            Slot::MAX,
         ));
 
         assert!(!is_snapshot_config_valid(&new_snapshot_config(0, 100), 100));
         assert!(!is_snapshot_config_valid(&new_snapshot_config(100, 0), 100));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(42, 100),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 42),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 100),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 200),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(444, 200),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(400, 222),
-            100
+            100,
         ));
 
         assert!(is_snapshot_config_valid(
             &SnapshotConfig::new_load_only(),
-            100
+            100,
         ));
         assert!(is_snapshot_config_valid(
             &SnapshotConfig {
@@ -2838,7 +2889,7 @@ mod tests {
                 incremental_snapshot_archive_interval_slots: 37,
                 ..SnapshotConfig::new_load_only()
             },
-            100
+            100,
         ));
         assert!(is_snapshot_config_valid(
             &SnapshotConfig {
@@ -2846,7 +2897,7 @@ mod tests {
                 incremental_snapshot_archive_interval_slots: DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
                 ..SnapshotConfig::new_load_only()
             },
-            100
+            100,
         ));
     }
 
