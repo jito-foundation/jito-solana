@@ -126,6 +126,7 @@ fn load_blockstore(ledger_path: &Path, arg_matches: &ArgMatches<'_>) -> Arc<Bank
         process_options,
         snapshot_archive_path,
         incremental_snapshot_archive_path,
+        true,
     )
     .unwrap_or_else(|err| {
         eprintln!("Ledger loading failed: {err:?}");

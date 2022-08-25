@@ -126,6 +126,145 @@ dependencies = [
 ]
 
 [[package]]
+name = "anchor-attribute-access-control"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-attribute-account"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "anyhow",
+ "bs58 0.4.0",
+ "proc-macro2",
+ "quote",
+ "rustversion",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-attribute-constant"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "proc-macro2",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-attribute-error"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-attribute-event"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-attribute-interface"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "anyhow",
+ "heck 0.3.3",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-attribute-program"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-attribute-state"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-derive-accounts"
+version = "0.24.2"
+dependencies = [
+ "anchor-syn",
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "anchor-lang"
+version = "0.24.2"
+dependencies = [
+ "anchor-attribute-access-control",
+ "anchor-attribute-account",
+ "anchor-attribute-constant",
+ "anchor-attribute-error",
+ "anchor-attribute-event",
+ "anchor-attribute-interface",
+ "anchor-attribute-program",
+ "anchor-attribute-state",
+ "anchor-derive-accounts",
+ "arrayref",
+ "base64 0.13.1",
+ "bincode",
+ "borsh 0.10.3",
+ "bytemuck",
+ "solana-program",
+ "thiserror",
+]
+
+[[package]]
+name = "anchor-syn"
+version = "0.24.2"
+dependencies = [
+ "anyhow",
+ "bs58 0.3.1",
+ "heck 0.3.3",
+ "proc-macro2",
+ "proc-macro2-diagnostics",
+ "quote",
+ "serde",
+ "serde_json",
+ "sha2 0.9.9",
+ "syn 1.0.109",
+ "thiserror",
+]
+
+[[package]]
 name = "android-tzdata"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -761,6 +900,12 @@ dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
 ]
+
+[[package]]
+name = "bs58"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "476e9cd489f9e121e02ffa6014a8ef220ecb15c05ed23fc34cca13925dc283fb"
 
 [[package]]
 name = "bs58"
@@ -1977,6 +2122,15 @@ dependencies = [
 
 [[package]]
 name = "heck"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d621efb26863f0e9924c6ac577e8275e5e6b77455db64ffa6c65c904e9e132c"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "heck"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2540771e65fc8cb83cd6e8a237f70c319bd5c29f78ed1084ba5d50eeac86f7f9"
@@ -2284,6 +2438,29 @@ name = "itoa"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af150ab688ff2122fcef229be89cb50dd66af9e01a4ff320cc137eecc9bacc38"
+
+[[package]]
+name = "jito-programs-vote-state"
+version = "0.1.2"
+dependencies = [
+ "anchor-lang",
+ "bincode",
+ "serde",
+ "serde_derive",
+ "solana-program",
+]
+
+[[package]]
+name = "jito-protos"
+version = "1.17.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "prost-types",
+ "protobuf-src",
+ "tonic",
+ "tonic-build",
+]
 
 [[package]]
 name = "jobserver"
@@ -3502,6 +3679,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro2-diagnostics"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bf29726d67464d49fa6224a1d07936a8c08bb3fba727c7493f6cf1616fdaada"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "version_check",
+ "yansi",
+]
+
+[[package]]
 name = "prost"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3518,7 +3708,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "119533552c9a7ffacc21e099c24a0ac8bb19c2a2a3f363de84cd9b844feab270"
 dependencies = [
  "bytes",
- "heck",
+ "heck 0.4.0",
  "itertools",
  "lazy_static",
  "log",
@@ -4451,7 +4641,7 @@ dependencies = [
  "Inflector",
  "base64 0.21.3",
  "bincode",
- "bs58",
+ "bs58 0.4.0",
  "bv",
  "lazy_static",
  "serde",
@@ -4590,6 +4780,7 @@ dependencies = [
  "solana-accounts-db",
  "solana-banks-interface",
  "solana-client",
+ "solana-gossip",
  "solana-runtime",
  "solana-sdk",
  "solana-send-transaction-service",
@@ -4656,6 +4847,23 @@ dependencies = [
  "solana-measure",
  "solana-sdk",
  "tempfile",
+]
+
+[[package]]
+name = "solana-bundle"
+version = "1.17.0"
+dependencies = [
+ "itertools",
+ "log",
+ "solana-accounts-db",
+ "solana-ledger",
+ "solana-logger",
+ "solana-measure",
+ "solana-program-runtime",
+ "solana-runtime",
+ "solana-sdk",
+ "solana-transaction-status",
+ "thiserror",
 ]
 
 [[package]]
@@ -4786,9 +4994,10 @@ dependencies = [
 name = "solana-core"
 version = "1.17.0"
 dependencies = [
+ "anchor-lang",
  "base64 0.21.3",
  "bincode",
- "bs58",
+ "bs58 0.4.0",
  "bytes",
  "chrono",
  "crossbeam-channel",
@@ -4797,11 +5006,14 @@ dependencies = [
  "etcd-client",
  "histogram",
  "itertools",
+ "jito-protos",
  "lazy_static",
  "log",
  "lru",
  "min-max-heap",
  "num_enum 0.6.1",
+ "prost",
+ "prost-types",
  "quinn",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -4813,6 +5025,7 @@ dependencies = [
  "solana-accounts-db",
  "solana-address-lookup-table-program",
  "solana-bloom",
+ "solana-bundle",
  "solana-client",
  "solana-cost-model",
  "solana-entry",
@@ -4846,7 +5059,11 @@ dependencies = [
  "sysctl",
  "tempfile",
  "thiserror",
+ "tip-distribution",
+ "tip-payment",
  "tokio",
+ "tonic",
+ "tonic-build",
  "trees",
 ]
 
@@ -4933,7 +5150,7 @@ dependencies = [
  "ahash 0.8.3",
  "blake3",
  "block-buffer 0.10.4",
- "bs58",
+ "bs58 0.4.0",
  "bv",
  "byteorder 1.4.3",
  "cc",
@@ -4990,7 +5207,7 @@ dependencies = [
 name = "solana-geyser-plugin-manager"
 version = "1.17.0"
 dependencies = [
- "bs58",
+ "bs58 0.4.0",
  "crossbeam-channel",
  "json5",
  "jsonrpc-core",
@@ -5247,7 +5464,7 @@ dependencies = [
  "blake3",
  "borsh 0.10.3",
  "borsh 0.9.3",
- "bs58",
+ "bs58 0.4.0",
  "bv",
  "bytemuck",
  "cc",
@@ -5416,7 +5633,7 @@ version = "1.17.0"
 dependencies = [
  "base64 0.21.3",
  "bincode",
- "bs58",
+ "bs58 0.4.0",
  "crossbeam-channel",
  "dashmap",
  "itertools",
@@ -5435,6 +5652,7 @@ dependencies = [
  "soketto",
  "solana-account-decoder",
  "solana-accounts-db",
+ "solana-bundle",
  "solana-client",
  "solana-entry",
  "solana-faucet",
@@ -5444,6 +5662,7 @@ dependencies = [
  "solana-metrics",
  "solana-perf",
  "solana-poh",
+ "solana-program-runtime",
  "solana-rayon-threadlimit",
  "solana-rpc-client-api",
  "solana-runtime",
@@ -5471,7 +5690,7 @@ dependencies = [
  "async-trait",
  "base64 0.21.3",
  "bincode",
- "bs58",
+ "bs58 0.4.0",
  "indicatif",
  "log",
  "reqwest",
@@ -5493,7 +5712,7 @@ name = "solana-rpc-client-api"
 version = "1.17.0"
 dependencies = [
  "base64 0.21.3",
- "bs58",
+ "bs58 0.4.0",
  "jsonrpc-core",
  "reqwest",
  "semver",
@@ -6000,12 +6219,13 @@ dependencies = [
 name = "solana-sdk"
 version = "1.17.0"
 dependencies = [
+ "anchor-lang",
  "assert_matches",
  "base64 0.21.3",
  "bincode",
  "bitflags 2.3.3",
  "borsh 0.10.3",
- "bs58",
+ "bs58 0.4.0",
  "bytemuck",
  "byteorder 1.4.3",
  "chrono",
@@ -6052,7 +6272,7 @@ dependencies = [
 name = "solana-sdk-macro"
 version = "1.17.0"
 dependencies = [
- "bs58",
+ "bs58 0.4.0",
  "proc-macro2",
  "quote",
  "rustversion",
@@ -6066,6 +6286,7 @@ dependencies = [
  "crossbeam-channel",
  "log",
  "solana-client",
+ "solana-gossip",
  "solana-measure",
  "solana-metrics",
  "solana-runtime",
@@ -6123,7 +6344,7 @@ name = "solana-storage-proto"
 version = "1.17.0"
 dependencies = [
  "bincode",
- "bs58",
+ "bs58 0.4.0",
  "prost",
  "protobuf-src",
  "serde",
@@ -6248,7 +6469,7 @@ dependencies = [
  "base64 0.21.3",
  "bincode",
  "borsh 0.9.3",
- "bs58",
+ "bs58 0.4.0",
  "lazy_static",
  "log",
  "serde",
@@ -6372,6 +6593,7 @@ dependencies = [
  "symlink",
  "thiserror",
  "tikv-jemallocator",
+ "tonic",
 ]
 
 [[package]]
@@ -6590,7 +6812,7 @@ version = "0.24.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e385be0d24f186b4ce2f9982191e7101bb737312ad61c1f2f984f34bcf85d59"
 dependencies = [
- "heck",
+ "heck 0.4.0",
  "proc-macro2",
  "quote",
  "rustversion",
@@ -6868,6 +7090,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
+name = "tip-distribution"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "jito-programs-vote-state",
+ "solana-program",
+]
+
+[[package]]
+name = "tip-payment"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "tokio"
 version = "1.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7030,6 +7268,7 @@ dependencies = [
  "percent-encoding 2.3.0",
  "pin-project",
  "prost",
+ "rustls-native-certs",
  "rustls-pemfile 1.0.0",
  "tokio",
  "tokio-rustls",
@@ -7038,6 +7277,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "webpki-roots 0.23.1",
 ]
 
 [[package]]
@@ -7216,6 +7456,12 @@ checksum = "5c5713f0fc4b5db668a2ac63cdb7bb4469d8c9fed047b1d0292cc7b0ce2ba921"
 dependencies = [
  "tinyvec",
 ]
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1dd624098567895118886609431a7c3b8f516e41d30e0643f03d94592a147e36"
 
 [[package]]
 name = "unicode-width"
@@ -7726,6 +7972,12 @@ checksum = "f4686009f71ff3e5c4dbcf1a282d0a44db3f021ba69350cd42086b3e5f1c6985"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "yansi"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09041cd90cf85f7f8b2df60c646f853b7f535ce68f85244eb6731cf89fa498ec"
 
 [[package]]
 name = "yasna"

@@ -138,6 +138,7 @@ impl Tvu {
         banking_tracer: Arc<BankingTracer>,
         turbine_quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
         turbine_quic_endpoint_receiver: Receiver<(Pubkey, SocketAddr, Bytes)>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let TvuSockets {
             repair: repair_socket,
@@ -183,6 +184,7 @@ impl Tvu {
             retransmit_receiver,
             max_slots.clone(),
             Some(rpc_subscriptions.clone()),
+            shred_receiver_addr,
         );
 
         let cluster_slots = Arc::new(ClusterSlots::default());
@@ -484,6 +486,7 @@ pub mod tests {
             BankingTracer::new_disabled(),
             turbine_quic_endpoint_sender,
             turbine_quic_endpoint_receiver,
+            Arc::new(RwLock::new(None)),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
