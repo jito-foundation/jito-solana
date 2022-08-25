@@ -117,6 +117,7 @@ pub enum RpcRequest {
     RequestAirdrop,
     SendTransaction,
     SimulateTransaction,
+    SimulateBundle,
     SignVote,
 }
 
@@ -193,6 +194,7 @@ impl fmt::Display for RpcRequest {
             RpcRequest::RequestAirdrop => "requestAirdrop",
             RpcRequest::SendTransaction => "sendTransaction",
             RpcRequest::SimulateTransaction => "simulateTransaction",
+            RpcRequest::SimulateBundle => "simulateBundle",
             RpcRequest::SignVote => "signVote",
         };
 
@@ -262,6 +264,7 @@ pub enum RpcError {
     RpcRequestError(String),
     #[error("RPC response error {code}: {message} {data}")]
     RpcResponseError {
+        request_id: u64,
         code: i64,
         message: String,
         data: RpcResponseErrorData,
