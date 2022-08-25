@@ -219,7 +219,7 @@ impl QosService {
             );
     }
 
-    fn remove_transaction_costs<'a>(
+    pub fn remove_transaction_costs<'a>(
         transaction_costs: impl Iterator<Item = &'a TransactionCost>,
         transaction_qos_results: impl Iterator<Item = &'a transaction::Result<()>>,
         bank: &Arc<Bank>,
