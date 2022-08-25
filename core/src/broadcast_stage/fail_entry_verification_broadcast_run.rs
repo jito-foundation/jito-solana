@@ -3,7 +3,7 @@ use {
     crate::cluster_nodes::ClusterNodesCache,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
     solana_sdk::{hash::Hash, signature::Keypair},
-    std::{thread::sleep, time::Duration},
+    std::{net::SocketAddr, thread::sleep, time::Duration},
 };
 
 pub const NUM_BAD_SLOTS: u64 = 10;
@@ -162,6 +162,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
+        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()> {
         let (shreds, _) = receiver.lock().unwrap().recv()?;
         broadcast_shreds(
@@ -173,6 +174,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             cluster_info,
             bank_forks,
             cluster_info.socket_addr_space(),
+            &shred_receiver_address.read().unwrap(),
         )
     }
     fn record(&mut self, receiver: &Mutex<RecordReceiver>, blockstore: &Blockstore) -> Result<()> {
