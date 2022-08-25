@@ -48,7 +48,7 @@ use {
     solana_sdk::{clock::Slot, pubkey::Pubkey, signature::Keypair},
     std::{
         collections::HashSet,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, RwLock},
         thread::{self, JoinHandle},
     },
@@ -129,6 +129,7 @@ impl Tvu {
         accounts_background_request_sender: AbsRequestSender,
         log_messages_bytes_limit: Option<usize>,
         connection_cache: &Arc<ConnectionCache>,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Self {
         let TvuSockets {
             repair: repair_socket,
@@ -176,6 +177,7 @@ impl Tvu {
             retransmit_receiver,
             max_slots.clone(),
             Some(rpc_subscriptions.clone()),
+            shred_receiver_addr,
         );
 
         let cluster_slots = Arc::new(ClusterSlots::default());
@@ -450,6 +452,7 @@ pub mod tests {
             AbsRequestSender::default(),
             None,
             &Arc::new(ConnectionCache::default()),
+            None,
         );
         exit.store(true, Ordering::Relaxed);
         tvu.join().unwrap();
