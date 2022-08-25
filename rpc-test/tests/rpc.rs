@@ -240,6 +240,7 @@ fn test_rpc_slot_updates() {
 }
 
 #[test]
+#[ignore] // TODO (LB): this test is flaky in master
 fn test_rpc_subscriptions() {
     solana_logger::setup();
 

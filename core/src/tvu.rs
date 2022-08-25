@@ -48,7 +48,7 @@ use {
     solana_tpu_client::connection_cache::ConnectionCache,
     std::{
         collections::HashSet,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, RwLock},
         thread::{self, JoinHandle},
     },
@@ -131,6 +131,7 @@ impl Tvu {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: &Arc<ConnectionCache>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        shred_receiver_addr: Option<SocketAddr>,
     ) -> Result<Self, String> {
         let TvuSockets {
             repair: repair_socket,
@@ -178,6 +179,7 @@ impl Tvu {
             retransmit_receiver,
             max_slots.clone(),
             Some(rpc_subscriptions.clone()),
+            shred_receiver_addr,
         );
 
         let cluster_slots = Arc::new(ClusterSlots::default());
@@ -456,6 +458,7 @@ pub mod tests {
             None,
             &Arc::new(ConnectionCache::default()),
             &_ignored_prioritization_fee_cache,
+            None,
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
