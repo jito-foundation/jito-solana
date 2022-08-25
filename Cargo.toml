@@ -11,6 +11,7 @@ members = [
     "bench-tps",
     "bloom",
     "bucket_map",
+    "bundle",
     "clap-utils",
     "clap-v3-utils",
     "cli",
@@ -32,6 +33,7 @@ members = [
     "geyser-plugin-manager",
     "gossip",
     "install",
+    "jito-protos",
     "keygen",
     "ledger",
     "ledger-tool",
@@ -93,6 +95,7 @@ members = [
     "streamer",
     "test-validator",
     "thin-client",
+    "tip-distributor",
     "tokens",
     "tpu-client",
     "transaction-dos",
@@ -107,6 +110,8 @@ members = [
 ]
 
 exclude = [
+    "anchor",
+    "jito-programs",
     "programs/sbf",
 ]
 
@@ -125,6 +130,7 @@ edition = "2021"
 aes-gcm-siv = "0.10.3"
 ahash = "0.8.3"
 anyhow = "1.0.71"
+anchor-lang = { path = "anchor/lang" }
 ark-bn254 = "0.4.0"
 ark-ec = "0.4.0"
 ark-ff = "0.4.0"
@@ -210,6 +216,9 @@ indicatif = "0.17.4"
 Inflector = "0.11.4"
 itertools = "0.10.5"
 jemallocator = { package = "tikv-jemallocator", version = "0.4.1", features = ["unprefixed_malloc_on_supported_platforms"] }
+jito-protos = { path = "jito-protos", version = "=1.16.18" }
+jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
+jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
 js-sys = "0.3.63"
 json5 = "0.4.1"
 jsonrpc-core = "18.0.0"
@@ -298,6 +307,7 @@ solana-bench-tps = { path = "bench-tps", version = "=1.16.18" }
 solana-bloom = { path = "bloom", version = "=1.16.18" }
 solana-bpf-loader-program = { path = "programs/bpf_loader", version = "=1.16.18" }
 solana-bucket-map = { path = "bucket_map", version = "=1.16.18" }
+solana-bundle = { path = "bundle", version = "=1.16.18" }
 solana-connection-cache = { path = "connection-cache", version = "=1.16.18", default-features = false }
 solana-clap-utils = { path = "clap-utils", version = "=1.16.18" }
 solana-clap-v3-utils = { path = "clap-v3-utils", version = "=1.16.18" }
