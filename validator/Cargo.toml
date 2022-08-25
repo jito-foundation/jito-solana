@@ -54,6 +54,7 @@ solana-rpc = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-runtime = { workspace = true }
+solana-runtime-plugin = { workspace = true }
 solana-sdk = { workspace = true }
 solana-send-transaction-service = { workspace = true }
 solana-storage-bigtable = { workspace = true }
@@ -64,6 +65,7 @@ solana-version = { workspace = true }
 solana-vote-program = { workspace = true }
 symlink = { workspace = true }
 thiserror = { workspace = true }
+tonic = { workspace = true, features = ["tls", "tls-roots", "tls-webpki-roots"] }
 
 [dev-dependencies]
 solana-account-decoder = { workspace = true }
