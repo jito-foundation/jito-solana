@@ -16,6 +16,7 @@ futures = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-banks-interface = { workspace = true }
 solana-client = { workspace = true }
+solana-gossip = { workspace = true }
 solana-runtime = { workspace = true }
 solana-sdk = { workspace = true }
 solana-send-transaction-service = { workspace = true }
