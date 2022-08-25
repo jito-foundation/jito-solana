@@ -13,6 +13,10 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::{tower_storage::TowerStorage, Tower},
+        proxy::{
+            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         validator::ValidatorStartProgress,
     },
     solana_geyser_plugin_manager::GeyserPluginManagerRequest,
@@ -30,6 +34,7 @@ use {
         fmt::{self, Display},
         net::SocketAddr,
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{Arc, RwLock},
         thread::{self, Builder},
         time::{Duration, SystemTime},
@@ -233,6 +238,27 @@ pub trait AdminRpc {
         meta: Self::Metadata,
         public_tpu_forwards_addr: SocketAddr,
     ) -> Result<()>;
+
+    #[rpc(meta, name = "setBlockEngineConfig")]
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        trust_packets: bool,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setRelayerConfig")]
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        trust_packets: bool,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setShredReceiverAddress")]
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()>;
 }
 
 pub struct AdminRpcImpl;
@@ -431,6 +457,30 @@ impl AdminRpc for AdminRpcImpl {
         Ok(())
     }
 
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        trust_packets: bool,
+    ) -> Result<()> {
+        debug!("set_block_engine_config request received");
+        let config = BlockEngineConfig {
+            block_engine_url,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if BlockEngineStage::is_valid_block_engine_config(&config) {
+            meta.with_post_init(|post_init| {
+                *post_init.block_engine_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set block engine config. see logs for details.",
+            ))
+        }
+    }
+
     fn set_identity(
         &self,
         meta: Self::Metadata,
@@ -463,6 +513,55 @@ impl AdminRpc for AdminRpcImpl {
         })?;
 
         AdminRpcImpl::set_identity_keypair(meta, identity_keypair, require_tower)
+    }
+
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        trust_packets: bool,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()> {
+        debug!("set_relayer_config request received");
+        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+        let oldest_allowed_heartbeat =
+            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+        let config = RelayerConfig {
+            relayer_url,
+            expected_heartbeat_interval,
+            oldest_allowed_heartbeat,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if RelayerStage::is_valid_relayer_config(&config) {
+            meta.with_post_init(|post_init| {
+                *post_init.relayer_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set relayer config. see logs for details.",
+            ))
+        }
+    }
+
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
+        let shred_receiver_address = if addr.is_empty() {
+            None
+        } else {
+            Some(SocketAddr::from_str(&addr).map_err(|_| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address: {}",
+                    addr
+                ))
+            })?)
+        };
+
+        meta.with_post_init(|post_init| {
+            *post_init.shred_receiver_address.write().unwrap() = shred_receiver_address;
+            Ok(())
+        })
     }
 
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()> {
@@ -844,7 +943,10 @@ mod tests {
             solana_program::{program_option::COption, program_pack::Pack},
             state::{Account as TokenAccount, AccountState as TokenAccountState, Mint},
         },
-        std::{collections::HashSet, sync::atomic::AtomicBool},
+        std::{
+            collections::HashSet,
+            sync::{atomic::AtomicBool, Mutex},
+        },
     };
 
     #[derive(Default)]
@@ -882,6 +984,9 @@ mod tests {
             let vote_account = vote_keypair.pubkey();
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
+            let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
+            let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
+            let shred_receiver_address = Arc::new(RwLock::new(None));
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),
@@ -895,6 +1000,9 @@ mod tests {
                     vote_account,
                     repair_whitelist,
                     notifies: Vec::new(),
+                    block_engine_config,
+                    relayer_config,
+                    shred_receiver_address,
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,

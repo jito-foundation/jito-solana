@@ -14,17 +14,29 @@ use {
         },
         BankingStageStats, FilterForwardingResults, ForwardOption,
     },
+    crate::{
+        bundle_stage::bundle_stage_leader_metrics::BundleStageLeaderMetrics,
+        immutable_deserialized_bundle::ImmutableDeserializedBundle,
+    },
     itertools::Itertools,
     min_max_heap::MinMaxHeap,
+    solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
+    solana_bundle::BundleExecutionError,
     solana_measure::{measure, measure_us},
     solana_runtime::bank::Bank,
     solana_sdk::{
-        clock::FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET, feature_set::FeatureSet, hash::Hash,
-        saturating_add_assign, transaction::SanitizedTransaction,
+        bundle::SanitizedBundle,
+        clock::{Slot, FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET},
+        feature_set::FeatureSet,
+        hash::Hash,
+        pubkey::Pubkey,
+        saturating_add_assign,
+        transaction::SanitizedTransaction,
     },
     std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet, VecDeque},
         sync::{atomic::Ordering, Arc},
+        time::Instant,
     },
 };
 
@@ -39,6 +51,7 @@ const MAX_NUM_VOTES_RECEIVE: usize = 10_000;
 pub enum UnprocessedTransactionStorage {
     VoteStorage(VoteStorage),
     LocalTransactionStorage(ThreadLocalUnprocessedPackets),
+    BundleStorage(BundleStorage),
 }
 
 #[derive(Debug)]
@@ -57,10 +70,11 @@ pub struct VoteStorage {
 pub enum ThreadType {
     Voting(VoteSource),
     Transactions,
+    Bundles,
 }
 
 #[derive(Debug)]
-pub(crate) enum InsertPacketBatchSummary {
+pub enum InsertPacketBatchSummary {
     VoteBatchInsertionMetrics(VoteBatchInsertionMetrics),
     PacketBatchInsertionMetrics(PacketBatchInsertionMetrics),
 }
@@ -143,6 +157,7 @@ fn consume_scan_should_process_packet(
     banking_stage_stats: &BankingStageStats,
     packet: &ImmutableDeserializedPacket,
     payload: &mut ConsumeScannerPayload,
+    blacklisted_accounts: &HashSet<Pubkey>,
 ) -> ProcessingDecision {
     // If end of the slot, return should process (quick loop after reached end of slot)
     if payload.reached_end_of_slot {
@@ -170,6 +185,10 @@ fn consume_scan_should_process_packet(
             bank.get_transaction_account_lock_limit(),
         )
         .is_err()
+            || message
+                .account_keys()
+                .iter()
+                .any(|key| blacklisted_accounts.contains(key))
         {
             payload
                 .message_hash_to_transaction
@@ -243,10 +262,24 @@ impl UnprocessedTransactionStorage {
         })
     }
 
+    pub fn new_bundle_storage(
+        unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+        cost_model_failed_bundles: VecDeque<ImmutableDeserializedBundle>,
+    ) -> Self {
+        Self::BundleStorage(BundleStorage {
+            last_update_slot: Slot::default(),
+            unprocessed_bundle_storage,
+            cost_model_buffered_bundle_storage: cost_model_failed_bundles,
+        })
+    }
+
     pub fn is_empty(&self) -> bool {
         match self {
             Self::VoteStorage(vote_storage) => vote_storage.is_empty(),
             Self::LocalTransactionStorage(transaction_storage) => transaction_storage.is_empty(),
+            UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
+                bundle_storage.is_empty()
+            }
         }
     }
 
@@ -254,6 +287,10 @@ impl UnprocessedTransactionStorage {
         match self {
             Self::VoteStorage(vote_storage) => vote_storage.len(),
             Self::LocalTransactionStorage(transaction_storage) => transaction_storage.len(),
+            UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
+                bundle_storage.unprocessed_bundles_len()
+                    + bundle_storage.cost_model_buffered_bundles_len()
+            }
         }
     }
 
@@ -263,6 +300,9 @@ impl UnprocessedTransactionStorage {
             Self::VoteStorage(vote_storage) => vote_storage.max_receive_size(),
             Self::LocalTransactionStorage(transaction_storage) => {
                 transaction_storage.max_receive_size()
+            }
+            UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
+                bundle_storage.max_receive_size()
             }
         }
     }
@@ -290,6 +330,9 @@ impl UnprocessedTransactionStorage {
             Self::LocalTransactionStorage(transaction_storage) => {
                 transaction_storage.forward_option()
             }
+            UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
+                bundle_storage.forward_option()
+            }
         }
     }
 
@@ -297,6 +340,16 @@ impl UnprocessedTransactionStorage {
         match self {
             Self::LocalTransactionStorage(transaction_storage) => transaction_storage.clear(), // Since we set everything as forwarded this is the same
             Self::VoteStorage(vote_storage) => vote_storage.clear_forwarded_packets(),
+            UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
+                let _ = bundle_storage.reset();
+            }
+        }
+    }
+
+    pub fn bundle_storage(&mut self) -> Option<&mut BundleStorage> {
+        match self {
+            UnprocessedTransactionStorage::BundleStorage(bundle_stoge) => Some(bundle_stoge),
+            _ => None,
         }
     }
 
@@ -311,6 +364,11 @@ impl UnprocessedTransactionStorage {
             Self::LocalTransactionStorage(transaction_storage) => InsertPacketBatchSummary::from(
                 transaction_storage.insert_batch(deserialized_packets),
             ),
+            UnprocessedTransactionStorage::BundleStorage(_) => {
+                panic!(
+                    "bundles must be inserted using UnprocessedTransactionStorage::insert_bundle"
+                )
+            }
         }
     }
 
@@ -330,6 +388,9 @@ impl UnprocessedTransactionStorage {
                     bank,
                     forward_packet_batches_by_accounts,
                 ),
+            UnprocessedTransactionStorage::BundleStorage(_) => {
+                panic!("bundles are not forwarded between leaders")
+            }
         }
     }
 
@@ -343,6 +404,7 @@ impl UnprocessedTransactionStorage {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         processing_function: F,
+        blacklisted_accounts: &HashSet<Pubkey>,
     ) -> bool
     where
         F: FnMut(
@@ -357,13 +419,60 @@ impl UnprocessedTransactionStorage {
                     banking_stage_stats,
                     slot_metrics_tracker,
                     processing_function,
+                    blacklisted_accounts,
                 ),
             Self::VoteStorage(vote_storage) => vote_storage.process_packets(
                 bank,
                 banking_stage_stats,
                 slot_metrics_tracker,
                 processing_function,
+                blacklisted_accounts,
             ),
+            UnprocessedTransactionStorage::BundleStorage(_) => panic!(
+                "UnprocessedTransactionStorage::BundleStorage does not support processing packets"
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn process_bundles<F>(
+        &mut self,
+        bank: Arc<Bank>,
+        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        processing_function: F,
+    ) -> bool
+    where
+        F: FnMut(
+            &[(ImmutableDeserializedBundle, SanitizedBundle)],
+            &mut BundleStageLeaderMetrics,
+        ) -> Vec<Result<(), BundleExecutionError>>,
+    {
+        match self {
+            UnprocessedTransactionStorage::BundleStorage(bundle_storage) => bundle_storage
+                .process_bundles(
+                    bank,
+                    bundle_stage_leader_metrics,
+                    blacklisted_accounts,
+                    processing_function,
+                ),
+            _ => panic!("class does not support processing bundles"),
+        }
+    }
+
+    /// Inserts bundles into storage. Only supported for UnprocessedTransactionStorage::BundleStorage
+    pub(crate) fn insert_bundles(
+        &mut self,
+        deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+    ) -> InsertPacketBundlesSummary {
+        match self {
+            UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
+                bundle_storage.insert_unprocessed_bundles(deserialized_bundles, true)
+            }
+            UnprocessedTransactionStorage::LocalTransactionStorage(_)
+            | UnprocessedTransactionStorage::VoteStorage(_) => {
+                panic!("UnprocessedTransactionStorage::insert_bundles only works for type UnprocessedTransactionStorage::BundleStorage");
+            }
         }
     }
 }
@@ -434,6 +543,7 @@ impl VoteStorage {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         mut processing_function: F,
+        blacklisted_accounts: &HashSet<Pubkey>,
     ) -> bool
     where
         F: FnMut(
@@ -447,7 +557,13 @@ impl VoteStorage {
 
         let should_process_packet =
             |packet: &Arc<ImmutableDeserializedPacket>, payload: &mut ConsumeScannerPayload| {
-                consume_scan_should_process_packet(&bank, banking_stage_stats, packet, payload)
+                consume_scan_should_process_packet(
+                    &bank,
+                    banking_stage_stats,
+                    packet,
+                    payload,
+                    blacklisted_accounts,
+                )
             };
 
         // Based on the stake distribution present in the supplied bank, drain the unprocessed votes
@@ -522,6 +638,7 @@ impl ThreadLocalUnprocessedPackets {
             ThreadType::Transactions => ForwardOption::ForwardTransaction,
             ThreadType::Voting(VoteSource::Tpu) => ForwardOption::ForwardTpuVote,
             ThreadType::Voting(VoteSource::Gossip) => ForwardOption::NotForward,
+            ThreadType::Bundles => panic!(), // TODO (LB)
         }
     }
 
@@ -846,6 +963,7 @@ impl ThreadLocalUnprocessedPackets {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         mut processing_function: F,
+        blacklisted_accounts: &HashSet<Pubkey>,
     ) -> bool
     where
         F: FnMut(
@@ -860,7 +978,13 @@ impl ThreadLocalUnprocessedPackets {
 
         let should_process_packet =
             |packet: &Arc<ImmutableDeserializedPacket>, payload: &mut ConsumeScannerPayload| {
-                consume_scan_should_process_packet(bank, banking_stage_stats, packet, payload)
+                consume_scan_should_process_packet(
+                    bank,
+                    banking_stage_stats,
+                    packet,
+                    payload,
+                    blacklisted_accounts,
+                )
             };
         let mut scanner = create_consume_multi_iterator(
             &all_packets_to_process,
@@ -934,6 +1058,309 @@ impl ThreadLocalUnprocessedPackets {
             .unzip();
 
         (forwarded_packets, forwardable_packets, is_tracer_packet)
+    }
+}
+
+pub struct InsertPacketBundlesSummary {
+    pub insert_packets_summary: InsertPacketBatchSummary,
+    pub num_bundles_inserted: usize,
+    pub num_packets_inserted: usize,
+    pub num_bundles_dropped: usize,
+}
+
+/// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
+/// the cost model and need to get retried next slot.
+#[derive(Debug)]
+pub struct BundleStorage {
+    last_update_slot: Slot,
+    unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    // Storage for bundles that exceeded the cost model for the slot they were last attempted
+    // execution on
+    cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+}
+
+impl BundleStorage {
+    fn is_empty(&self) -> bool {
+        self.unprocessed_bundle_storage.is_empty()
+    }
+
+    pub fn unprocessed_bundles_len(&self) -> usize {
+        self.unprocessed_bundle_storage.len()
+    }
+
+    pub fn unprocessed_packets_len(&self) -> usize {
+        self.unprocessed_bundle_storage
+            .iter()
+            .map(|b| b.len())
+            .sum::<usize>()
+    }
+
+    pub(crate) fn cost_model_buffered_bundles_len(&self) -> usize {
+        self.cost_model_buffered_bundle_storage.len()
+    }
+
+    pub(crate) fn cost_model_buffered_packets_len(&self) -> usize {
+        self.cost_model_buffered_bundle_storage
+            .iter()
+            .map(|b| b.len())
+            .sum()
+    }
+
+    pub(crate) fn max_receive_size(&self) -> usize {
+        self.unprocessed_bundle_storage.capacity() - self.unprocessed_bundle_storage.len()
+    }
+
+    fn forward_option(&self) -> ForwardOption {
+        ForwardOption::NotForward
+    }
+
+    /// Returns the number of unprocessed bundles + cost model buffered cleared
+    pub fn reset(&mut self) -> (usize, usize) {
+        let num_unprocessed_bundles = self.unprocessed_bundle_storage.len();
+        let num_cost_model_buffered_bundles = self.cost_model_buffered_bundle_storage.len();
+        self.unprocessed_bundle_storage.clear();
+        self.cost_model_buffered_bundle_storage.clear();
+        (num_unprocessed_bundles, num_cost_model_buffered_bundles)
+    }
+
+    fn insert_bundles(
+        deque: &mut VecDeque<ImmutableDeserializedBundle>,
+        deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+        push_back: bool,
+    ) -> InsertPacketBundlesSummary {
+        let mut num_bundles_inserted: usize = 0;
+        let mut num_packets_inserted: usize = 0;
+        let mut num_bundles_dropped: usize = 0;
+        let mut num_packets_dropped: usize = 0;
+
+        for bundle in deserialized_bundles {
+            if deque.capacity() == deque.len() {
+                saturating_add_assign!(num_bundles_dropped, 1);
+                saturating_add_assign!(num_packets_dropped, bundle.len());
+            } else {
+                saturating_add_assign!(num_bundles_inserted, 1);
+                saturating_add_assign!(num_packets_inserted, bundle.len());
+                if push_back {
+                    deque.push_back(bundle);
+                } else {
+                    deque.push_front(bundle)
+                }
+            }
+        }
+
+        InsertPacketBundlesSummary {
+            insert_packets_summary: PacketBatchInsertionMetrics {
+                num_dropped_packets: num_packets_dropped,
+                num_dropped_tracer_packets: 0,
+            }
+            .into(),
+            num_bundles_inserted,
+            num_packets_inserted,
+            num_bundles_dropped,
+        }
+    }
+
+    fn push_front_unprocessed_bundles(
+        &mut self,
+        deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+    ) -> InsertPacketBundlesSummary {
+        Self::insert_bundles(
+            &mut self.unprocessed_bundle_storage,
+            deserialized_bundles,
+            false,
+        )
+    }
+
+    fn push_back_cost_model_buffered_bundles(
+        &mut self,
+        deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+    ) -> InsertPacketBundlesSummary {
+        Self::insert_bundles(
+            &mut self.cost_model_buffered_bundle_storage,
+            deserialized_bundles,
+            true,
+        )
+    }
+
+    fn insert_unprocessed_bundles(
+        &mut self,
+        deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+        push_back: bool,
+    ) -> InsertPacketBundlesSummary {
+        Self::insert_bundles(
+            &mut self.unprocessed_bundle_storage,
+            deserialized_bundles,
+            push_back,
+        )
+    }
+
+    /// Drains bundles from the queue, sanitizes them to prepare for execution, executes them by
+    /// calling `processing_function`, then potentially rebuffer them.
+    pub fn process_bundles<F>(
+        &mut self,
+        bank: Arc<Bank>,
+        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        mut processing_function: F,
+    ) -> bool
+    where
+        F: FnMut(
+            &[(ImmutableDeserializedBundle, SanitizedBundle)],
+            &mut BundleStageLeaderMetrics,
+        ) -> Vec<Result<(), BundleExecutionError>>,
+    {
+        let sanitized_bundles = self.drain_and_sanitize_bundles(
+            bank,
+            bundle_stage_leader_metrics,
+            blacklisted_accounts,
+        );
+
+        debug!("processing {} bundles", sanitized_bundles.len());
+        let bundle_execution_results =
+            processing_function(&sanitized_bundles, bundle_stage_leader_metrics);
+
+        let mut is_slot_over = false;
+
+        let mut rebuffered_bundles = Vec::new();
+
+        sanitized_bundles
+            .into_iter()
+            .zip(bundle_execution_results)
+            .for_each(
+                |((deserialized_bundle, sanitized_bundle), result)| match result {
+                    Ok(_) => {
+                        debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
+                        // yippee
+                    }
+                    Err(BundleExecutionError::PohRecordError(e)) => {
+                        // buffer the bundle to the front of the queue to be attempted next slot
+                        debug!(
+                            "bundle={} poh record error: {e:?}",
+                            sanitized_bundle.bundle_id
+                        );
+                        rebuffered_bundles.push(deserialized_bundle);
+                        is_slot_over = true;
+                    }
+                    Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
+                        // buffer the bundle to the front of the queue to be attempted next slot
+                        debug!("bundle={} bank processing done", sanitized_bundle.bundle_id);
+                        rebuffered_bundles.push(deserialized_bundle);
+                        is_slot_over = true;
+                    }
+                    Err(BundleExecutionError::TransactionFailure(e)) => {
+                        debug!(
+                            "bundle={} execution error: {:?}",
+                            sanitized_bundle.bundle_id, e
+                        );
+                        // do nothing
+                    }
+                    Err(BundleExecutionError::ExceedsCostModel) => {
+                        // cost model buffered bundles contain most recent bundles at the front of the queue
+                        debug!("bundle={} exceeds cost model", sanitized_bundle.bundle_id);
+                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                    }
+                    Err(BundleExecutionError::TipError(e)) => {
+                        debug!("bundle={} tip error: {}", sanitized_bundle.bundle_id, e);
+                        // Tip errors are _typically_ due to misconfiguration (except for poh record error, bank processing error, exceeds cost model)
+                        // in order to prevent buffering too many bundles, we'll just drop the bundle
+                    }
+                    Err(BundleExecutionError::LockError) => {
+                        // lock errors are irrecoverable due to malformed transactions
+                        debug!("bundle={} lock error", sanitized_bundle.bundle_id);
+                    }
+                },
+            );
+
+        // rebuffered bundles are pushed onto deque in reverse order so the first bundle is at the front
+        for bundle in rebuffered_bundles.into_iter().rev() {
+            self.push_front_unprocessed_bundles(vec![bundle]);
+        }
+
+        is_slot_over
+    }
+
+    /// Drains the unprocessed_bundle_storage, converting bundle packets into SanitizedBundles
+    fn drain_and_sanitize_bundles(
+        &mut self,
+        bank: Arc<Bank>,
+        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        blacklisted_accounts: &HashSet<Pubkey>,
+    ) -> Vec<(ImmutableDeserializedBundle, SanitizedBundle)> {
+        let mut error_metrics = TransactionErrorMetrics::default();
+
+        let start = Instant::now();
+
+        let mut sanitized_bundles = Vec::new();
+
+        // on new slot, drain anything that was buffered from last slot
+        if bank.slot() != self.last_update_slot {
+            sanitized_bundles.extend(
+                self.cost_model_buffered_bundle_storage
+                    .drain(..)
+                    .filter_map(|packet_bundle| {
+                        let r = packet_bundle.build_sanitized_bundle(
+                            &bank,
+                            blacklisted_accounts,
+                            &mut error_metrics,
+                        );
+                        bundle_stage_leader_metrics
+                            .bundle_stage_metrics_tracker()
+                            .increment_sanitize_transaction_result(&r);
+
+                        match r {
+                            Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
+                            Err(e) => {
+                                debug!(
+                                    "bundle id: {} error sanitizing: {}",
+                                    packet_bundle.bundle_id(),
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    }),
+            );
+
+            self.last_update_slot = bank.slot();
+        }
+
+        sanitized_bundles.extend(self.unprocessed_bundle_storage.drain(..).filter_map(
+            |packet_bundle| {
+                let r = packet_bundle.build_sanitized_bundle(
+                    &bank,
+                    blacklisted_accounts,
+                    &mut error_metrics,
+                );
+                bundle_stage_leader_metrics
+                    .bundle_stage_metrics_tracker()
+                    .increment_sanitize_transaction_result(&r);
+                match r {
+                    Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
+                    Err(e) => {
+                        debug!(
+                            "bundle id: {} error sanitizing: {}",
+                            packet_bundle.bundle_id(),
+                            e
+                        );
+                        None
+                    }
+                }
+            },
+        ));
+
+        let elapsed = start.elapsed().as_micros();
+        bundle_stage_leader_metrics
+            .bundle_stage_metrics_tracker()
+            .increment_sanitize_bundle_elapsed_us(elapsed as u64);
+        bundle_stage_leader_metrics
+            .leader_slot_metrics_tracker()
+            .increment_transactions_from_packets_us(elapsed as u64);
+
+        bundle_stage_leader_metrics
+            .leader_slot_metrics_tracker()
+            .accumulate_transaction_errors(&error_metrics);
+
+        sanitized_bundles
     }
 }
 

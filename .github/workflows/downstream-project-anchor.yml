@@ -38,6 +38,8 @@ jobs:
         version: ["v0.29.0"]
     steps:
       - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |

@@ -108,6 +108,7 @@ impl BroadcastStageType {
         bank_forks: Arc<RwLock<BankForks>>,
         shred_version: u16,
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
+        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     ) -> BroadcastStage {
         match self {
             BroadcastStageType::Standard => BroadcastStage::new(
@@ -120,6 +121,7 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 StandardBroadcastRun::new(shred_version),
+                shred_receiver_address,
             ),
 
             BroadcastStageType::FailEntryVerification => BroadcastStage::new(
@@ -132,6 +134,7 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 FailEntryVerificationBroadcastRun::new(shred_version),
+                Arc::new(RwLock::new(None)),
             ),
 
             BroadcastStageType::BroadcastFakeShreds => BroadcastStage::new(
@@ -144,6 +147,7 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 BroadcastFakeShredsRun::new(0, shred_version),
+                Arc::new(RwLock::new(None)),
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -156,6 +160,7 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
+                Arc::new(RwLock::new(None)),
             ),
         }
     }
@@ -177,6 +182,7 @@ trait BroadcastRun {
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()>;
 }
@@ -272,6 +278,7 @@ impl BroadcastStage {
         bank_forks: Arc<RwLock<BankForks>>,
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
         broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
+        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -303,6 +310,8 @@ impl BroadcastStage {
             let cluster_info = cluster_info.clone();
             let bank_forks = bank_forks.clone();
             let quic_endpoint_sender = quic_endpoint_sender.clone();
+            let shred_receiver_address = shred_receiver_address.clone();
+
             let run_transmit = move || loop {
                 let res = bs_transmit.transmit(
                     &socket_receiver,
@@ -310,6 +319,7 @@ impl BroadcastStage {
                     &sock,
                     &bank_forks,
                     &quic_endpoint_sender,
+                    &shred_receiver_address,
                 );
                 let res = Self::handle_error(res, "solana-broadcaster-transmit");
                 if let Some(res) = res {
@@ -420,6 +430,7 @@ fn update_peer_stats(
 
 /// Broadcasts shreds from the leader (i.e. this node) to the root of the
 /// turbine retransmit tree for each shred.
+#[allow(clippy::too_many_arguments)]
 pub fn broadcast_shreds(
     s: &UdpSocket,
     shreds: &[Shred],
@@ -430,6 +441,7 @@ pub fn broadcast_shreds(
     bank_forks: &RwLock<BankForks>,
     socket_addr_space: &SocketAddrSpace,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+    shred_receiver_address: &Option<SocketAddr>,
 ) -> Result<()> {
     let mut result = Ok(());
     let mut shred_select = Measure::start("shred_select");
@@ -445,15 +457,34 @@ pub fn broadcast_shreds(
             let cluster_nodes =
                 cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
             update_peer_stats(&cluster_nodes, last_datapoint_submit);
-            shreds.filter_map(move |shred| {
+            shreds.flat_map(move |shred| {
                 let key = shred.id();
                 let protocol = cluster_nodes::get_broadcast_protocol(&key);
-                cluster_nodes
-                    .get_broadcast_peer(&key)?
-                    .tvu(protocol)
-                    .ok()
-                    .filter(|addr| socket_addr_space.check(addr))
-                    .map(|addr| {
+
+                let mut addrs = Vec::with_capacity(2);
+                if let Some(shred_receiver_address) = shred_receiver_address {
+                    // Assuming always over UDP for shred_receiver_address
+                    addrs.push((Protocol::UDP, *shred_receiver_address));
+                }
+                if let Some(peer) = cluster_nodes.get_broadcast_peer(&key) {
+                    match protocol {
+                        Protocol::QUIC => {
+                            if let Ok(tvu) = peer.tvu(Protocol::QUIC) {
+                                addrs.push((Protocol::QUIC, tvu));
+                            }
+                        }
+                        Protocol::UDP => {
+                            if let Ok(tvu) = peer.tvu(Protocol::UDP) {
+                                addrs.push((Protocol::UDP, tvu));
+                            }
+                        }
+                    }
+                }
+
+                addrs
+                    .into_iter()
+                    .filter(|(_, a)| socket_addr_space.check(a))
+                    .map(move |(protocol, addr)| {
                         (match protocol {
                             Protocol::QUIC => Either::Right,
                             Protocol::UDP => Either::Left,
@@ -685,6 +716,7 @@ pub mod test {
             bank_forks,
             quic_endpoint_sender,
             StandardBroadcastRun::new(0),
+            Arc::new(RwLock::new(None)),
         );
 
         MockBroadcastStage {
@@ -723,7 +755,10 @@ pub mod test {
             let ticks = create_ticks(max_tick_height - start_tick_height, 0, Hash::default());
             for (i, tick) in ticks.into_iter().enumerate() {
                 entry_sender
-                    .send((bank.clone(), (tick, i as u64 + 1)))
+                    .send(WorkingBankEntry {
+                        bank: bank.clone(),
+                        entries_ticks: vec![(tick, i as u64 + 1)],
+                    })
                     .expect("Expect successful send to broadcast service");
             }
         }
