@@ -2678,12 +2678,13 @@ pub mod rpc_minimal {
                 .unwrap();
 
             let full_snapshot_slot =
-                snapshot_utils::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir)
+                snapshot_utils::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir, None)
                     .ok_or(RpcCustomError::NoSnapshot)?;
             let incremental_snapshot_slot =
                 snapshot_utils::get_highest_incremental_snapshot_archive_slot(
                     &incremental_snapshot_archives_dir,
                     full_snapshot_slot,
+                    None,
                 );
 
             Ok(RpcSnapshotSlotInfo {
@@ -4355,6 +4356,7 @@ pub mod rpc_deprecated_v1_9 {
                 .and_then(|snapshot_config| {
                     snapshot_utils::get_highest_full_snapshot_archive_slot(
                         &snapshot_config.full_snapshot_archives_dir,
+                        None,
                     )
                 })
                 .ok_or_else(|| RpcCustomError::NoSnapshot.into())

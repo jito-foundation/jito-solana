@@ -100,6 +100,7 @@ pub fn load_bank_forks(
 
         if snapshot_utils::get_highest_full_snapshot_archive_info(
             &snapshot_config.full_snapshot_archives_dir,
+            process_options.halt_at_slot,
         )
         .is_some()
         {
@@ -214,6 +215,7 @@ fn bank_forks_from_snapshot(
             process_options.verify_index,
             process_options.accounts_db_config.clone(),
             accounts_update_notifier,
+            process_options.halt_at_slot,
         )
         .expect("Load from snapshot failed");
 

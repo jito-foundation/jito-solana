@@ -253,6 +253,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                 let full_snapshot_archive_info =
                     snapshot_utils::get_highest_full_snapshot_archive_info(
                         &snapshot_config.full_snapshot_archives_dir,
+                        None,
                     );
                 let snapshot_archive_info =
                     if let Some(full_snapshot_archive_info) = full_snapshot_archive_info {
@@ -262,6 +263,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                             snapshot_utils::get_highest_incremental_snapshot_archive_info(
                                 &snapshot_config.incremental_snapshot_archives_dir,
                                 full_snapshot_archive_info.slot(),
+                                None,
                             )
                             .map(|incremental_snapshot_archive_info| {
                                 incremental_snapshot_archive_info
