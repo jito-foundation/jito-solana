@@ -149,7 +149,7 @@ pub struct Stakes {
     vote_accounts: VoteAccounts,
 
     /// stake_delegations
-    stake_delegations: ImHashMap<Pubkey, Delegation>,
+    pub stake_delegations: ImHashMap<Pubkey, Delegation>,
 
     /// unused
     unused: u64,

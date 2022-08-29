@@ -1,9 +1,13 @@
-use solana_sdk::{account::AccountSharedData, pubkey::Pubkey, sysvar};
+use {
+    im::HashMap,
+    solana_sdk::{account::AccountSharedData, pubkey::Pubkey, sysvar},
+};
 
 /// Encapsulates overridden accounts, typically used for transaction simulations
 #[derive(Default)]
 pub struct AccountOverrides {
     pub slot_history: Option<AccountSharedData>,
+    pub accounts: HashMap<Pubkey, AccountSharedData>,
 }
 
 impl AccountOverrides {
@@ -19,7 +23,18 @@ impl AccountOverrides {
         if pubkey == &sysvar::slot_history::id() {
             self.slot_history.as_ref()
         } else {
-            None
+            self.accounts.get(pubkey)
+        }
+    }
+
+    pub fn set_account(&mut self, pubkey: &Pubkey, data: Option<AccountSharedData>) {
+        match data {
+            None => {
+                self.accounts.remove(pubkey);
+            }
+            Some(data) => {
+                self.accounts.insert(*pubkey, data);
+            }
         }
     }
 }

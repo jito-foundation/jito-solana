@@ -1,5 +1,4 @@
 //! The `pubsub` module implements a threaded subscription service on client RPC request
-
 use {
     crate::{
         rpc::check_is_at_least_confirmed,
