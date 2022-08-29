@@ -1,8 +1,8 @@
 #![cfg(feature = "full")]
 
 use {
-    anchor_lang::error::Error, serde::Deserialize, solana_program::pubkey::Pubkey,
-    solana_sdk::transaction::TransactionError, std::time::Duration, thiserror::Error,
+    serde::Deserialize, solana_program::pubkey::Pubkey, solana_sdk::transaction::TransactionError,
+    std::time::Duration, thiserror::Error,
 };
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,12 +40,12 @@ pub enum TipPaymentError {
     #[error("Anchor error: {0}")]
     AnchorError(String),
 }
-
-impl From<anchor_lang::error::Error> for TipPaymentError {
-    fn from(anchor_err: Error) -> Self {
-        match anchor_err {
-            Error::AnchorError(e) => Self::AnchorError(e.error_msg),
-            Error::ProgramError(e) => Self::AnchorError(e.to_string()),
-        }
-    }
-}
+//
+// impl From<anchor_lang::error::Error> for TipPaymentError {
+//     fn from(anchor_err: Error) -> Self {
+//         match anchor_err {
+//             Error::AnchorError(e) => Self::AnchorError(e.error_msg),
+//             Error::ProgramError(e) => Self::AnchorError(e.to_string()),
+//         }
+//     }
+// }

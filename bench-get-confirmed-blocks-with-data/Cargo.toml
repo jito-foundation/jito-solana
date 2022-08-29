@@ -9,4 +9,4 @@ log = "0.4.14"
 solana-sdk = { path = "../sdk", version = "=1.10.39" }
 solana-storage-bigtable = { path = "../storage-bigtable", version = "=1.10.39" }
 solana-transaction-status = { path = "../transaction-status", version = "=1.10.39" }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "~1.14.1", features = ["full"] }
