@@ -76,7 +76,7 @@ members = [
     "streamer",
     "sys-tuner",
     "test-validator",
-#    "tip-distributor",
+    "tip-distributor",
     "tokens",
     "transaction-dos",
     "transaction-status",

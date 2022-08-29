@@ -495,6 +495,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2b2456fd614d856680dcd9fcc660a51a820fa09daef2e49772b56a193c8474"
 
 [[package]]
+name = "bigdecimal"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aaf33151a6429fe9211d1b276eafdf70cdff28b071e76c0b0e1503221ea3744"
+dependencies = [
+ "num-bigint 0.4.3",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6555,6 +6566,35 @@ dependencies = [
  "solana-runtime",
  "solana-sdk 1.10.39",
  "solana-streamer",
+ "tokio",
+]
+
+[[package]]
+name = "solana-tip-distributor"
+version = "1.10.39"
+dependencies = [
+ "anchor-lang",
+ "bigdecimal",
+ "clap 3.2.18",
+ "crossbeam-channel",
+ "env_logger",
+ "futures 0.3.24",
+ "im",
+ "itertools",
+ "log",
+ "num-traits",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-genesis-utils",
+ "solana-ledger",
+ "solana-merkle-tree",
+ "solana-program 1.10.39",
+ "solana-runtime",
+ "solana-sdk 1.10.39",
+ "solana-stake-program",
+ "thiserror",
+ "tip-distribution",
  "tokio",
 ]
 

@@ -4,22 +4,23 @@ use {
         RpcAccountFetcher, StakeMeta, StakeMetaCollection, TipDistributionAccountWrapper,
         TipDistributionMeta,
     },
+    crossbeam_channel::unbounded,
     itertools::Itertools,
     log::*,
     solana_client::{client_error::ClientError, rpc_client::RpcClient},
     solana_ledger::{
         bank_forks_utils,
         blockstore::{Blockstore, BlockstoreError},
-        blockstore_options::{AccessType, BlockstoreOptions, BlockstoreRecoveryMode},
+        blockstore_db::{AccessType, BlockstoreOptions, BlockstoreRecoveryMode},
         blockstore_processor::{BlockstoreProcessorError, ProcessOptions},
     },
+    solana_program::stake::state::Delegation,
     solana_runtime::{
         bank::Bank,
         bank_forks::BankForks,
         hardened_unpack::{open_genesis_config, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE},
         snapshot_config::SnapshotConfig,
         snapshot_utils,
-        stakes::StakeAccount,
         vote_account::VoteAccount,
     },
     solana_sdk::{
@@ -35,7 +36,7 @@ use {
         fs::{self, File},
         io::{BufWriter, Write},
         path::Path,
-        sync::{Arc, RwLock},
+        sync::Arc,
     },
     thiserror::Error as ThisError,
 };
@@ -100,11 +101,9 @@ fn create_bank_from_snapshot(
     snapshot_slot: Slot,
 ) -> Result<Arc<Bank>, Error> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
-    let blockstore = open_blockstore(ledger_path, AccessType::Secondary, None)?;
+    let blockstore = open_blockstore(ledger_path, AccessType::TryPrimaryThenSecondary, None)?;
 
-    let bank_forks = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?;
-
-    let working_bank = bank_forks.read().unwrap().working_bank();
+    let working_bank = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?.working_bank();
     assert_eq!(
         working_bank.hash().to_string(),
         expected_bank_hash,
@@ -128,7 +127,7 @@ fn load_bank_forks(
     blockstore: &Blockstore,
     genesis_config: &GenesisConfig,
     snapshot_slot: Slot,
-) -> Result<Arc<RwLock<BankForks>>, Error> {
+) -> Result<BankForks, Error> {
     let bank_snapshots_dir = blockstore
         .ledger_path()
         .join(if blockstore.is_primary_access() {
@@ -146,13 +145,10 @@ fn load_bank_forks(
         assert_eq!(full_snapshot_slot, snapshot_slot, "The expected snapshot was not found, try moving your snapshot to a different directory than the ledger directory if you haven't already. [actual_highest_snapshot={}, expected_highest_snapshot={}]", full_snapshot_slot, snapshot_slot);
     }
 
-    let incremental_snapshot_archives_dir = blockstore.ledger_path().to_path_buf();
-
     let snapshot_config = SnapshotConfig {
         full_snapshot_archive_interval_slots: Slot::MAX,
         incremental_snapshot_archive_interval_slots: Slot::MAX,
-        full_snapshot_archives_dir,
-        incremental_snapshot_archives_dir,
+        snapshot_archives_dir: full_snapshot_archives_dir,
         bank_snapshots_dir,
         ..SnapshotConfig::default()
     };
@@ -180,6 +176,7 @@ fn load_bank_forks(
         vec![non_primary_accounts_path]
     };
 
+    let (accounts_package_sender, _) = unbounded();
     Ok(bank_forks_utils::load(
         genesis_config,
         blockstore,
@@ -188,15 +185,16 @@ fn load_bank_forks(
         Some(&snapshot_config),
         ProcessOptions {
             new_hard_forks: None,
-            halt_at_slot: Some(snapshot_slot),
+            dev_halt_at_slot: Some(snapshot_slot),
             poh_verify: false,
             ..ProcessOptions::default()
         },
         None,
         None,
+        accounts_package_sender,
         None,
     )
-    .map(|(bank_forks, ..)| bank_forks)?)
+    .map(|(bank_forks, .., _)| bank_forks)?)
 }
 
 fn open_blockstore(
@@ -325,22 +323,22 @@ pub fn generate_stake_meta_collection(
 
 /// Given an [EpochStakes] object, return delegations grouped by voter_pubkey (validator delegated to).
 fn group_delegations_by_voter_pubkey(
-    delegations: &im::HashMap<Pubkey, StakeAccount>,
+    delegations: &im::HashMap<Pubkey, Delegation>,
     epoch: Epoch,
 ) -> HashMap<Pubkey, Vec<crate::Delegation>> {
     delegations
         .into_iter()
-        .filter(|(_stake_pubkey, stake_account)| stake_account.delegation().stake(epoch, None) > 0)
-        .into_group_map_by(|(_stake_pubkey, stake_account)| stake_account.delegation().voter_pubkey)
+        .filter(|(_stake_pubkey, delegation)| delegation.stake(epoch, None) > 0)
+        .into_group_map_by(|(_stake_pubkey, delegation)| delegation.voter_pubkey)
         .into_iter()
         .map(|(voter_pubkey, group)| {
             (
                 voter_pubkey,
                 group
                     .into_iter()
-                    .map(|(stake_pubkey, stake_account)| crate::Delegation {
+                    .map(|(stake_pubkey, delegation)| crate::Delegation {
                         stake_account: bs58::encode(stake_pubkey).into_string(),
-                        amount_delegated: stake_account.delegation().stake,
+                        amount_delegated: delegation.stake,
                     })
                     .collect::<Vec<crate::Delegation>>(),
             )
