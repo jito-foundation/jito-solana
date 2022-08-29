@@ -204,7 +204,8 @@ impl TipManager {
                 self.tip_payment_program_info.config_pda_bump.0,
             ))?;
 
-        Ok(Config::try_deserialize(&mut config_data.data())?)
+        Ok(Config::try_deserialize(&mut config_data.data())
+            .map_err(|e| TipPaymentError::AnchorError(format!("{}", e)))?)
     }
 
     /// Only called once during contract creation.

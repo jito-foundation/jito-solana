@@ -5650,7 +5650,6 @@ dependencies = [
 name = "solana-sdk"
 version = "1.10.39"
 dependencies = [
- "anchor-lang",
  "assert_matches",
  "base64 0.13.0",
  "bincode",

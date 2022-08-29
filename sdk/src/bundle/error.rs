@@ -40,12 +40,3 @@ pub enum TipPaymentError {
     #[error("Anchor error: {0}")]
     AnchorError(String),
 }
-//
-// impl From<anchor_lang::error::Error> for TipPaymentError {
-//     fn from(anchor_err: Error) -> Self {
-//         match anchor_err {
-//             Error::AnchorError(e) => Self::AnchorError(e.error_msg),
-//             Error::ProgramError(e) => Self::AnchorError(e.to_string()),
-//         }
-//     }
-// }
