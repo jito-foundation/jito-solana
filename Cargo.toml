@@ -7,8 +7,6 @@ members = [
     "banks-client",
     "banks-interface",
     "banks-server",
-    "bench-batch-simulate-bundle",
-    "bench-get-confirmed-blocks-with-data",
     "bench-streamer",
     "bench-tps",
     "bloom",
