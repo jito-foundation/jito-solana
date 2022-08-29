@@ -496,7 +496,7 @@ checksum = "ea2b2456fd614d856680dcd9fcc660a51a820fa09daef2e49772b56a193c8474"
 
 [[package]]
 name = "bench-get-confirmed-blocks-with-data"
-version = "1.12.0"
+version = "1.10.39"
 dependencies = [
  "env_logger",
  "log",
@@ -935,9 +935,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.17"
+version = "3.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29e724a68d9319343bb3328c9cc2dfde263f4b3142ee1059a9980580171c954b"
+checksum = "b15f2ea93df33549dbe2e8eecd1ca55269d63ae0b3ba1f55db030817d1c2867f"
 dependencies = [
  "atty",
  "bitflags",
@@ -952,9 +952,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "3.2.17"
+version = "3.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13547f7012c01ab4a0e8f8967730ada8f9fdf419e8b6c792788f39cf4e46eefa"
+checksum = "ea0c8bce528c4be4da13ea6fead8965e95b6073585a2f05204bd8f4119f82a65"
 dependencies = [
  "heck 0.4.0",
  "proc-macro-error",
@@ -1741,9 +1741,9 @@ checksum = "3a471a38ef8ed83cd6e40aa59c1ffe17db6855c18e3604d9c4ed8c08ebc28678"
 
 [[package]]
 name = "futures"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab30e97ab6aacfe635fad58f22c2bb06c8b685f7421eb1e064a729e2a5f481fa"
+checksum = "7f21eda599937fba36daeb58a22e8f5cee2d14c4a17b5b7739c7c8e5e3b8230c"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -1756,9 +1756,9 @@ dependencies = [
 
 [[package]]
 name = "futures-channel"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bfc52cbddcfd745bf1740338492bb0bd83d76c67b445f91c5fb29fae29ecaa1"
+checksum = "30bdd20c28fadd505d0fd6712cdfcb0d4b5648baf45faef7f852afb2399bb050"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -1766,15 +1766,15 @@ dependencies = [
 
 [[package]]
 name = "futures-core"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2acedae88d38235936c3922476b10fced7b2b68136f5e3c03c2d5be348a1115"
+checksum = "4e5aa3de05362c3fb88de6531e6296e85cde7739cccad4b9dfeeb7f6ebce56bf"
 
 [[package]]
 name = "futures-executor"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d11aa21b5b587a64682c0094c2bdd4df0076c5324961a40cc3abd7f37930528"
+checksum = "9ff63c23854bee61b6e9cd331d523909f238fc7636290b96826e9cfa5faa00ab"
 dependencies = [
  "futures-core",
  "futures-task",
@@ -1784,15 +1784,15 @@ dependencies = [
 
 [[package]]
 name = "futures-io"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93a66fc6d035a26a3ae255a6d2bca35eda63ae4c5512bef54449113f7a1228e5"
+checksum = "bbf4d2a7a308fd4578637c0b17c7e1c7ba127b8f6ba00b29f717e9655d85eb68"
 
 [[package]]
 name = "futures-macro"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0db9cce532b0eae2ccf2766ab246f114b56b9cf6d445e00c2549fbc100ca045d"
+checksum = "42cd15d1c7456c04dbdf7e88bcd69760d74f3a798d6444e16974b505b0e62f17"
 dependencies = [
  "proc-macro2 1.0.43",
  "quote 1.0.21",
@@ -1801,21 +1801,21 @@ dependencies = [
 
 [[package]]
 name = "futures-sink"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca0bae1fe9752cf7fd9b0064c674ae63f97b37bc714d745cbde0afb7ec4e6765"
+checksum = "21b20ba5a92e727ba30e72834706623d94ac93a725410b6a6b6fbc1b07f7ba56"
 
 [[package]]
 name = "futures-task"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "842fc63b931f4056a24d59de13fb1272134ce261816e063e634ad0c15cdc5306"
+checksum = "a6508c467c73851293f390476d4491cf4d227dbabcd4170f3bb6044959b294f1"
 
 [[package]]
 name = "futures-util"
-version = "0.3.23"
+version = "0.3.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0828a5471e340229c11c77ca80017937ce3c58cb788a17e5f1c2d5c485a9577"
+checksum = "44fb6cb1be61cc1d2e43b262516aafcf63b241cffdb1d3fa115f91d9c7b09c90"
 dependencies = [
  "futures 0.1.31",
  "futures-channel",
@@ -1929,7 +1929,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38f3d68c8343245dc047982651b5afb8bd659c9959ed72efe5a73bf22684e5fd"
 dependencies = [
  "arc-swap",
- "futures 0.3.23",
+ "futures 0.3.24",
  "log",
  "reqwest",
  "serde",
@@ -2061,9 +2061,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hidapi"
-version = "1.4.1"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b1717343691998deb81766bfcd1dce6df0d5d6c37070b5a3de2bb6d39f7822"
+checksum = "9d26e1151deaab68f34fbfd16d491a2a0170cf98d69d3efa23873b567a4199e1"
 dependencies = [
  "cc",
  "libc",
@@ -2183,7 +2183,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca815a891b24fdfb243fa3239c86154392b0953ee584aa1a2a1f66d20cbe75cc"
 dependencies = [
  "bytes",
- "futures 0.3.23",
+ "futures 0.3.24",
  "headers",
  "http",
  "hyper",
@@ -2416,7 +2416,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2b99d4207e2a04fb4581746903c2bb7eb376f88de9c699d0f3e10feeac0cd3a"
 dependencies = [
  "derive_more",
- "futures 0.3.23",
+ "futures 0.3.24",
  "jsonrpc-core",
  "jsonrpc-pubsub",
  "jsonrpc-server-utils",
@@ -2434,7 +2434,7 @@ version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14f7f76aef2d054868398427f6c54943cf3d1caa9a7ec7d0c38d69df97a965eb"
 dependencies = [
- "futures 0.3.23",
+ "futures 0.3.24",
  "futures-executor",
  "futures-util",
  "log",
@@ -2449,7 +2449,7 @@ version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b51da17abecbdab3e3d4f26b01c5ec075e88d3abe3ab3b05dc9aa69392764ec0"
 dependencies = [
- "futures 0.3.23",
+ "futures 0.3.24",
  "jsonrpc-client-transports",
 ]
 
@@ -2471,7 +2471,7 @@ version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1dea6e07251d9ce6a552abfb5d7ad6bc290a4596c8dcc3d795fae2bbdc1f3ff"
 dependencies = [
- "futures 0.3.23",
+ "futures 0.3.24",
  "hyper",
  "jsonrpc-core",
  "jsonrpc-server-utils",
@@ -2487,7 +2487,7 @@ version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "382bb0206323ca7cda3dcd7e245cea86d37d02457a02a975e3378fb149a48845"
 dependencies = [
- "futures 0.3.23",
+ "futures 0.3.24",
  "jsonrpc-core",
  "jsonrpc-server-utils",
  "log",
@@ -2502,7 +2502,7 @@ version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "240f87695e6c6f62fb37f05c02c04953cf68d6408b8c1c89de85c7a0125b1011"
 dependencies = [
- "futures 0.3.23",
+ "futures 0.3.24",
  "jsonrpc-core",
  "lazy_static",
  "log",
@@ -2518,7 +2518,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa4fdea130485b572c39a460d50888beb00afb3e35de23ccd7fad8ff19f0e0d4"
 dependencies = [
  "bytes",
- "futures 0.3.23",
+ "futures 0.3.24",
  "globset",
  "jsonrpc-core",
  "lazy_static",
@@ -3138,7 +3138,7 @@ checksum = "e1cf9b1c4e9a6c4de793c632496fa490bdc0e1eea73f0c91394f7b6990935d22"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
- "futures 0.3.23",
+ "futures 0.3.24",
  "js-sys",
  "lazy_static",
  "percent-encoding 2.1.0",
@@ -3183,7 +3183,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9981e32fb75e004cc148f5fb70342f393830e0a4aa62e3cc93b50976218d42b6"
 dependencies = [
- "futures 0.3.23",
+ "futures 0.3.24",
  "libc",
  "log",
  "rand 0.7.3",
@@ -4008,7 +4008,7 @@ dependencies = [
 name = "rbpf-cli"
 version = "1.10.39"
 dependencies = [
- "clap 3.2.17",
+ "clap 3.2.18",
  "serde",
  "serde_json",
  "solana-bpf-loader-program",
@@ -4528,7 +4528,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92761393ee4dc3ff8f4af487bd58f4307c9329bbedea02cac0089ad9c411e153"
 dependencies = [
  "dashmap 5.3.4",
- "futures 0.3.23",
+ "futures 0.3.24",
  "lazy_static",
  "log",
  "parking_lot 0.12.1",
@@ -4750,7 +4750,7 @@ checksum = "41d1c5305e39e09653383c2c7244f2f78b3bcae37cf50c64cb4789c9f5096ec2"
 dependencies = [
  "base64 0.13.0",
  "bytes",
- "futures 0.3.23",
+ "futures 0.3.24",
  "httparse",
  "log",
  "rand 0.8.5",
@@ -4854,7 +4854,7 @@ dependencies = [
 name = "solana-banking-bench"
 version = "1.10.39"
 dependencies = [
- "clap 3.2.17",
+ "clap 3.2.18",
  "crossbeam-channel",
  "log",
  "rand 0.7.3",
@@ -4878,7 +4878,7 @@ name = "solana-banks-client"
 version = "1.10.39"
 dependencies = [
  "borsh",
- "futures 0.3.23",
+ "futures 0.3.24",
  "solana-banks-interface",
  "solana-banks-server",
  "solana-program 1.10.39",
@@ -4905,7 +4905,7 @@ version = "1.10.39"
 dependencies = [
  "bincode",
  "crossbeam-channel",
- "futures 0.3.23",
+ "futures 0.3.24",
  "solana-banks-interface",
  "solana-client",
  "solana-gossip",
@@ -4921,9 +4921,9 @@ dependencies = [
 
 [[package]]
 name = "solana-bench-batch-simulate-bundle"
-version = "1.12.0"
+version = "1.10.39"
 dependencies = [
- "clap 3.2.17",
+ "clap 3.2.18",
  "env_logger",
  "log",
  "num-traits",
@@ -5035,7 +5035,7 @@ version = "1.10.39"
 dependencies = [
  "bzip2",
  "cargo_metadata",
- "clap 3.2.17",
+ "clap 3.2.18",
  "regex",
  "serial_test 0.9.0",
  "solana-download-utils",
@@ -5048,7 +5048,7 @@ name = "solana-cargo-test-bpf"
 version = "1.10.39"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.17",
+ "clap 3.2.18",
 ]
 
 [[package]]
@@ -5167,7 +5167,7 @@ dependencies = [
  "clap 2.34.0",
  "crossbeam-channel",
  "enum_dispatch",
- "futures 0.3.23",
+ "futures 0.3.24",
  "futures-util",
  "indexmap",
  "indicatif",
@@ -5268,12 +5268,12 @@ dependencies = [
  "bs58 0.4.0",
  "bytes",
  "chrono",
- "clap 3.2.17",
+ "clap 3.2.18",
  "crossbeam-channel",
  "dashmap 4.0.2",
  "etcd-client",
  "fs_extra",
- "futures 0.3.23",
+ "futures 0.3.24",
  "futures-util",
  "histogram",
  "indexmap",
@@ -5344,7 +5344,7 @@ name = "solana-dos"
 version = "1.10.39"
 dependencies = [
  "bincode",
- "clap 3.2.17",
+ "clap 3.2.18",
  "log",
  "rand 0.7.3",
  "serde",
@@ -5671,7 +5671,7 @@ dependencies = [
  "chrono-humanize",
  "crossbeam-channel",
  "fs_extra",
- "futures 0.3.23",
+ "futures 0.3.24",
  "itertools",
  "lazy_static",
  "libc",
@@ -6508,7 +6508,7 @@ dependencies = [
  "bzip2",
  "enum-iterator",
  "flate2",
- "futures 0.3.23",
+ "futures 0.3.24",
  "goauth",
  "http",
  "hyper",
@@ -7211,7 +7211,7 @@ checksum = "b85d0a9369a919ba0db919b142a2b704cd207dfc676f7a43c2d105d0bc225487"
 dependencies = [
  "anyhow",
  "fnv",
- "futures 0.3.23",
+ "futures 0.3.24",
  "humantime",
  "opentelemetry",
  "pin-project",
