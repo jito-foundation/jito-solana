@@ -5,10 +5,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
-bytes = "1.1.0"
-prost = "0.8.0"
-prost-types = "0.8.0"
-tonic = "0.5.2"
+#bytes = "1.1.0"
+prost = "0.10.0"
+prost-types = "0.10.0"
+tonic = "0.7.0"
 
 [build-dependencies]
-tonic-build = "0.5.2"
+tonic-build = "0.7.0"

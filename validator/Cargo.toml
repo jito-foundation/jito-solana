@@ -54,7 +54,7 @@ solana-test-validator = { path = "../test-validator", version = "=1.10.39" }
 solana-version = { path = "../version", version = "=1.10.39" }
 solana-vote-program = { path = "../programs/vote", version = "=1.10.39" }
 symlink = "0.1.0"
-tonic = "0.5.2"
+tonic = "0.7.0"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 jemallocator = { package = "tikv-jemallocator", version = "0.4.1", features = ["unprefixed_malloc_on_supported_platforms"] }

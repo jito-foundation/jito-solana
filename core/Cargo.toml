@@ -75,7 +75,7 @@ tip-distribution = { path = "../jito-programs/tip-payment/programs/tip-distribut
 tip-payment = { path = "../jito-programs/tip-payment/programs/tip-payment", features = ["no-entrypoint"] }
 tokio = { version = "~1.14.1", features = ["full"] }
 tokio-stream = "0.1.8"
-tonic = { version = "0.5.2", features = ["tls"] }
+tonic = { version = "0.7.0", features = ["tls"] }
 trees = "0.4.2"
 uuid = { version = "1.0.0", features = ["v4", "fast-rng"] }
 
@@ -96,7 +96,6 @@ sysctl = "0.4.4"
 
 [build-dependencies]
 rustc_version = "0.4"
-tonic-build = "0.5.2"
 
 [[bench]]
 name = "banking_stage"
