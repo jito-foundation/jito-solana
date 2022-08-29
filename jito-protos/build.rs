@@ -2,6 +2,8 @@ use tonic_build::configure;
 
 fn main() {
     configure()
+        .build_client(true)
+        .build_server(false)
         .compile(
             &[
                 "protos/auth.proto",

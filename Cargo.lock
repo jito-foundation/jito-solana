@@ -1268,18 +1268,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashmap"
-version = "5.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3495912c9c1ccf2e18976439f4443f3fee0fd61f424ff99fde6a66b15ecb448f"
-dependencies = [
- "cfg-if 1.0.0",
- "hashbrown 0.12.3",
- "lock_api",
- "parking_lot_core 0.9.3",
-]
-
-[[package]]
 name = "data-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2366,10 +2354,11 @@ checksum = "6c8af84674fe1f223a982c933a0ee1086ac4d4052aa0fb8060c12c6ad838e754"
 name = "jito-protos"
 version = "1.10.39"
 dependencies = [
+ "lock_api",
  "prost 0.10.4",
  "prost-types 0.10.1",
- "tonic 0.7.2",
- "tonic-build 0.7.2",
+ "tonic 0.7.1",
+ "tonic-build 0.7.1",
 ]
 
 [[package]]
@@ -2658,11 +2647,10 @@ checksum = "d4d2456c373231a208ad294c33dc5bff30051eafd954cd4caae83a712b12854d"
 
 [[package]]
 name = "lock_api"
-version = "0.4.8"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f80bf5aacaf25cbfc8210d1cfb718f2bf3b11c4c54e5afe36c236853a8ec390"
+checksum = "88943dd7ef4a2e5a4bfa2753aaab3013e34ce2533d1996fb18ef591e315e2b3b"
 dependencies = [
- "autocfg",
  "scopeguard",
 ]
 
@@ -4257,6 +4245,15 @@ dependencies = [
 
 [[package]]
 name = "rustls-pemfile"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ee86d63972a7c661d1536fefe8c3c8407321c3df668891286de28abcd087360"
+dependencies = [
+ "base64 0.13.0",
+]
+
+[[package]]
+name = "rustls-pemfile"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0864aeff53f8c05aa08d86e5ef839d3dfcf07aeba2db32f12db0ef716e87bd55"
@@ -4482,21 +4479,7 @@ checksum = "e5bcc41d18f7a1d50525d080fd3e953be87c4f9f1a974f3c21798ca00d54ec15"
 dependencies = [
  "lazy_static",
  "parking_lot 0.11.2",
- "serial_test_derive 0.6.0",
-]
-
-[[package]]
-name = "serial_test"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92761393ee4dc3ff8f4af487bd58f4307c9329bbedea02cac0089ad9c411e153"
-dependencies = [
- "dashmap 5.3.4",
- "futures 0.3.24",
- "lazy_static",
- "log",
- "parking_lot 0.12.1",
- "serial_test_derive 0.9.0",
+ "serial_test_derive",
 ]
 
 [[package]]
@@ -4509,18 +4492,6 @@ dependencies = [
  "proc-macro2 1.0.43",
  "quote 1.0.21",
  "rustversion",
- "syn 1.0.99",
-]
-
-[[package]]
-name = "serial_test_derive"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6f5d1c3087fb119617cff2966fe3808a80e5eb59a8c1601d5994d66f4346a5"
-dependencies = [
- "proc-macro-error",
- "proc-macro2 1.0.43",
- "quote 1.0.21",
  "syn 1.0.99",
 ]
 
@@ -4904,7 +4875,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "serde_yaml",
- "serial_test 0.6.0",
+ "serial_test",
  "solana-clap-utils",
  "solana-cli-config",
  "solana-client",
@@ -4986,7 +4957,7 @@ dependencies = [
  "cargo_metadata",
  "clap 3.2.18",
  "regex",
- "serial_test 0.9.0",
+ "serial_test",
  "solana-download-utils",
  "solana-sdk 1.10.39",
  "tar",
@@ -5165,7 +5136,7 @@ version = "1.10.39"
 dependencies = [
  "futures-util",
  "serde_json",
- "serial_test 0.6.0",
+ "serial_test",
  "solana-client",
  "solana-ledger",
  "solana-logger 1.10.39",
@@ -5219,7 +5190,7 @@ dependencies = [
  "chrono",
  "clap 3.2.18",
  "crossbeam-channel",
- "dashmap 4.0.2",
+ "dashmap",
  "etcd-client",
  "fs_extra",
  "futures 0.3.24",
@@ -5244,7 +5215,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "serial_test 0.6.0",
+ "serial_test",
  "solana-address-lookup-table-program",
  "solana-bloom",
  "solana-client",
@@ -5282,7 +5253,7 @@ dependencies = [
  "tip-payment",
  "tokio",
  "tokio-stream",
- "tonic 0.7.2",
+ "tonic 0.7.1",
  "trees",
  "uuid",
 ]
@@ -5536,7 +5507,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_derive",
- "serial_test 0.6.0",
+ "serial_test",
  "solana-bloom",
  "solana-clap-utils",
  "solana-client",
@@ -5674,7 +5645,7 @@ dependencies = [
  "clap 2.34.0",
  "crossbeam-channel",
  "csv",
- "dashmap 4.0.2",
+ "dashmap",
  "histogram",
  "itertools",
  "log",
@@ -5712,7 +5683,7 @@ dependencies = [
  "log",
  "rand 0.7.3",
  "rayon",
- "serial_test 0.6.0",
+ "serial_test",
  "solana-client",
  "solana-config-program",
  "solana-core",
@@ -5803,7 +5774,7 @@ dependencies = [
  "log",
  "rand 0.7.3",
  "reqwest",
- "serial_test 0.6.0",
+ "serial_test",
  "solana-sdk 1.10.39",
 ]
 
@@ -6069,7 +6040,7 @@ dependencies = [
  "log",
  "num-derive",
  "num-traits",
- "parking_lot 0.12.1",
+ "parking_lot 0.11.2",
  "qstring",
  "semver 1.0.13",
  "solana-sdk 1.10.39",
@@ -6089,8 +6060,8 @@ dependencies = [
  "solana-runtime",
  "solana-sdk 1.10.39",
  "tokio",
- "tonic 0.7.2",
- "tonic-build 0.7.2",
+ "tonic 0.7.1",
+ "tonic-build 0.7.1",
 ]
 
 [[package]]
@@ -6101,7 +6072,7 @@ dependencies = [
  "crossbeam-channel",
  "log",
  "rand 0.7.3",
- "serial_test 0.6.0",
+ "serial_test",
  "solana-clap-utils",
  "solana-client",
  "solana-core",
@@ -6121,7 +6092,7 @@ dependencies = [
  "solana-validator",
  "solana-version",
  "tempfile",
- "tonic-build 0.7.2",
+ "tonic-build 0.7.1",
 ]
 
 [[package]]
@@ -6132,7 +6103,7 @@ dependencies = [
  "bincode",
  "bs58 0.4.0",
  "crossbeam-channel",
- "dashmap 4.0.2",
+ "dashmap",
  "itertools",
  "jsonrpc-core",
  "jsonrpc-core-client",
@@ -6146,7 +6117,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "serial_test 0.6.0",
+ "serial_test",
  "soketto",
  "solana-account-decoder",
  "solana-address-lookup-table-program",
@@ -6215,7 +6186,7 @@ dependencies = [
  "byteorder",
  "bzip2",
  "crossbeam-channel",
- "dashmap 4.0.2",
+ "dashmap",
  "dir-diff",
  "ed25519-dalek",
  "flate2",
@@ -6473,7 +6444,7 @@ dependencies = [
  "solana-transaction-status",
  "thiserror",
  "tokio",
- "tonic 0.7.2",
+ "tonic 0.7.1",
  "zstd",
 ]
 
@@ -6489,7 +6460,7 @@ dependencies = [
  "solana-account-decoder",
  "solana-sdk 1.10.39",
  "solana-transaction-status",
- "tonic-build 0.7.2",
+ "tonic-build 0.7.1",
 ]
 
 [[package]]
@@ -6739,7 +6710,7 @@ dependencies = [
  "solana-vote-program",
  "symlink",
  "tikv-jemallocator",
- "tonic 0.7.2",
+ "tonic 0.7.1",
 ]
 
 [[package]]
@@ -7629,9 +7600,9 @@ dependencies = [
 
 [[package]]
 name = "tonic"
-version = "0.7.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be9d60db39854b30b835107500cf0aca0b0d14d6e1c3de124217c23a29c2ddb"
+checksum = "30fb54bf1e446f44d870d260d99957e7d11fb9d0a0f5bd1a662ad1411cc103f9"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -7649,7 +7620,7 @@ dependencies = [
  "pin-project",
  "prost 0.10.4",
  "prost-derive 0.10.1",
- "rustls-pemfile 1.0.1",
+ "rustls-pemfile 0.3.0",
  "tokio",
  "tokio-rustls 0.23.4",
  "tokio-stream",
@@ -7675,9 +7646,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
-version = "0.7.2"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9263bf4c9bfaae7317c1c2faf7f18491d2fe476f70c414b73bf5d445b00ffa1"
+checksum = "c03447cdc9eaf8feffb6412dcb27baf2db11669a6c4789f29da799aabfb99547"
 dependencies = [
  "prettyplease",
  "proc-macro2 1.0.43",
