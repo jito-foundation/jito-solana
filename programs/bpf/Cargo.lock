@@ -2132,7 +2132,6 @@ name = "jito-protos"
 version = "1.10.39"
 dependencies = [
  "bytes",
- "lock_api",
  "prost 0.8.0",
  "prost-types 0.8.0",
  "tonic 0.5.2",
@@ -2425,10 +2424,11 @@ checksum = "d4d2456c373231a208ad294c33dc5bff30051eafd954cd4caae83a712b12854d"
 
 [[package]]
 name = "lock_api"
-version = "0.4.6"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88943dd7ef4a2e5a4bfa2753aaab3013e34ce2533d1996fb18ef591e315e2b3b"
+checksum = "9f80bf5aacaf25cbfc8210d1cfb718f2bf3b11c4c54e5afe36c236853a8ec390"
 dependencies = [
+ "autocfg",
  "scopeguard",
 ]
 
