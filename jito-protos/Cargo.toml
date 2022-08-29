@@ -8,7 +8,7 @@ publish = false
 #bytes = "1.1.0"
 prost = "0.10.0"
 prost-types = "0.10.0"
-tonic = "0.7.0"
+tonic = "0.7.1"
 
 [build-dependencies]
-tonic-build = "0.7.0"
+tonic-build = "0.7.1"
