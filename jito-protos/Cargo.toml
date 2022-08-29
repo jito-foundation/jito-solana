@@ -9,6 +9,7 @@ bytes = "1.1.0"
 prost = "0.8.0"
 prost-types = "0.8.0"
 tonic = "0.5.2"
+lock_api = "=0.4.6"
 
 [build-dependencies]
 tonic-build = "0.5.2"
