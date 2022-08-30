@@ -530,298 +530,298 @@ impl BankForks {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        crate::{
-            bank::tests::update_vote_account_timestamp,
-            genesis_utils::{
-                create_genesis_config, create_genesis_config_with_leader, GenesisConfigInfo,
-            },
-        },
-        solana_sdk::{
-            clock::UnixTimestamp,
-            hash::Hash,
-            pubkey::Pubkey,
-            signature::{Keypair, Signer},
-            sysvar::epoch_schedule::EpochSchedule,
-        },
-        solana_vote_program::vote_state::BlockTimestamp,
-    };
-
-    #[test]
-    fn test_bank_forks_new() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let mut bank_forks = BankForks::new(bank);
-        let child_bank = Bank::new_from_parent(&bank_forks[0u64], &Pubkey::default(), 1);
-        child_bank.register_tick(&Hash::default());
-        bank_forks.insert(child_bank);
-        assert_eq!(bank_forks[1u64].tick_height(), 1);
-        assert_eq!(bank_forks.working_bank().tick_height(), 1);
-    }
-
-    #[test]
-    fn test_bank_forks_new_from_banks() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
-        let child_bank = Arc::new(Bank::new_from_parent(&bank, &Pubkey::default(), 1));
-
-        let bank_forks = BankForks::new_from_banks(&[bank.clone(), child_bank.clone()], 0);
-        assert_eq!(bank_forks.root(), 0);
-        assert_eq!(bank_forks.working_bank().slot(), 1);
-
-        let bank_forks = BankForks::new_from_banks(&[child_bank, bank], 0);
-        assert_eq!(bank_forks.root(), 0);
-        assert_eq!(bank_forks.working_bank().slot(), 1);
-    }
-
-    #[test]
-    fn test_bank_forks_descendants() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let mut bank_forks = BankForks::new(bank);
-        let bank0 = bank_forks[0].clone();
-        let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
-        bank_forks.insert(bank);
-        let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 2);
-        bank_forks.insert(bank);
-        let descendants = bank_forks.descendants();
-        let children: HashSet<u64> = [1u64, 2u64].iter().copied().collect();
-        assert_eq!(children, *descendants.get(&0).unwrap());
-        assert!(descendants[&1].is_empty());
-        assert!(descendants[&2].is_empty());
-    }
-
-    #[test]
-    fn test_bank_forks_ancestors() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let mut bank_forks = BankForks::new(bank);
-        let bank0 = bank_forks[0].clone();
-        let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
-        bank_forks.insert(bank);
-        let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 2);
-        bank_forks.insert(bank);
-        let ancestors = bank_forks.ancestors();
-        assert!(ancestors[&0].is_empty());
-        let parents: Vec<u64> = ancestors[&1].iter().cloned().collect();
-        assert_eq!(parents, vec![0]);
-        let parents: Vec<u64> = ancestors[&2].iter().cloned().collect();
-        assert_eq!(parents, vec![0]);
-    }
-
-    #[test]
-    fn test_bank_forks_frozen_banks() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let mut bank_forks = BankForks::new(bank);
-        let child_bank = Bank::new_from_parent(&bank_forks[0u64], &Pubkey::default(), 1);
-        bank_forks.insert(child_bank);
-        assert!(bank_forks.frozen_banks().get(&0).is_some());
-        assert!(bank_forks.frozen_banks().get(&1).is_none());
-    }
-
-    #[test]
-    fn test_bank_forks_active_banks() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let mut bank_forks = BankForks::new(bank);
-        let child_bank = Bank::new_from_parent(&bank_forks[0u64], &Pubkey::default(), 1);
-        bank_forks.insert(child_bank);
-        assert_eq!(bank_forks.active_banks(), vec![1]);
-    }
-
-    #[test]
-    fn test_bank_forks_different_set_root() {
-        solana_logger::setup();
-        let leader_keypair = Keypair::new();
-        let GenesisConfigInfo {
-            mut genesis_config,
-            voting_keypair,
-            ..
-        } = create_genesis_config_with_leader(10_000, &leader_keypair.pubkey(), 1_000);
-        let slots_in_epoch = 32;
-        genesis_config.epoch_schedule = EpochSchedule::new(slots_in_epoch);
-
-        let bank0 = Bank::new_for_tests(&genesis_config);
-        let mut bank_forks0 = BankForks::new(bank0);
-        bank_forks0.set_root(0, &AbsRequestSender::default(), None);
-
-        let bank1 = Bank::new_for_tests(&genesis_config);
-        let mut bank_forks1 = BankForks::new(bank1);
-
-        let additional_timestamp_secs = 2;
-
-        let num_slots = slots_in_epoch + 1; // Advance past first epoch boundary
-        for slot in 1..num_slots {
-            // Just after the epoch boundary, timestamp a vote that will shift
-            // Clock::unix_timestamp from Bank::unix_timestamp_from_genesis()
-            let update_timestamp_case = slot == slots_in_epoch;
-
-            let child1 = Bank::new_from_parent(&bank_forks0[slot - 1], &Pubkey::default(), slot);
-            let child2 = Bank::new_from_parent(&bank_forks1[slot - 1], &Pubkey::default(), slot);
-
-            if update_timestamp_case {
-                for child in &[&child1, &child2] {
-                    let recent_timestamp: UnixTimestamp = child.unix_timestamp_from_genesis();
-                    update_vote_account_timestamp(
-                        BlockTimestamp {
-                            slot: child.slot(),
-                            timestamp: recent_timestamp + additional_timestamp_secs,
-                        },
-                        child,
-                        &voting_keypair.pubkey(),
-                    );
-                }
-            }
-
-            // Set root in bank_forks0 to truncate the ancestor history
-            bank_forks0.insert(child1);
-            bank_forks0.set_root(slot, &AbsRequestSender::default(), None);
-
-            // Don't set root in bank_forks1 to keep the ancestor history
-            bank_forks1.insert(child2);
-        }
-        let child1 = &bank_forks0.working_bank();
-        let child2 = &bank_forks1.working_bank();
-
-        child1.freeze();
-        child2.freeze();
-
-        info!("child0.ancestors: {:?}", child1.ancestors);
-        info!("child1.ancestors: {:?}", child2.ancestors);
-        assert_eq!(child1.hash(), child2.hash());
-    }
-
-    fn make_hash_map(data: Vec<(Slot, Vec<Slot>)>) -> HashMap<Slot, HashSet<Slot>> {
-        data.into_iter()
-            .map(|(k, v)| (k, v.into_iter().collect()))
-            .collect()
-    }
-
-    #[test]
-    fn test_bank_forks_with_set_root() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let mut banks = vec![Arc::new(Bank::new_for_tests(&genesis_config))];
-        assert_eq!(banks[0].slot(), 0);
-        let mut bank_forks = BankForks::new_from_banks(&banks, 0);
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 1)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[1], &Pubkey::default(), 2)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 3)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[3], &Pubkey::default(), 4)));
-        assert_eq!(
-            bank_forks.ancestors(),
-            make_hash_map(vec![
-                (0, vec![]),
-                (1, vec![0]),
-                (2, vec![0, 1]),
-                (3, vec![0]),
-                (4, vec![0, 3]),
-            ])
-        );
-        assert_eq!(
-            bank_forks.descendants(),
-            make_hash_map(vec![
-                (0, vec![1, 2, 3, 4]),
-                (1, vec![2]),
-                (2, vec![]),
-                (3, vec![4]),
-                (4, vec![]),
-            ])
-        );
-        bank_forks.set_root(
-            2,
-            &AbsRequestSender::default(),
-            None, // highest confirmed root
-        );
-        banks[2].squash();
-        assert_eq!(bank_forks.ancestors(), make_hash_map(vec![(2, vec![]),]));
-        assert_eq!(
-            bank_forks.descendants(),
-            make_hash_map(vec![(0, vec![2]), (1, vec![2]), (2, vec![]),])
-        );
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[2], &Pubkey::default(), 5)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[5], &Pubkey::default(), 6)));
-        assert_eq!(
-            bank_forks.ancestors(),
-            make_hash_map(vec![(2, vec![]), (5, vec![2]), (6, vec![2, 5])])
-        );
-        assert_eq!(
-            bank_forks.descendants(),
-            make_hash_map(vec![
-                (0, vec![2]),
-                (1, vec![2]),
-                (2, vec![5, 6]),
-                (5, vec![6]),
-                (6, vec![])
-            ])
-        );
-    }
-
-    #[test]
-    fn test_bank_forks_with_highest_confirmed_root() {
-        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
-        let mut banks = vec![Arc::new(Bank::new_for_tests(&genesis_config))];
-        assert_eq!(banks[0].slot(), 0);
-        let mut bank_forks = BankForks::new_from_banks(&banks, 0);
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 1)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[1], &Pubkey::default(), 2)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 3)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[3], &Pubkey::default(), 4)));
-        assert_eq!(
-            bank_forks.ancestors(),
-            make_hash_map(vec![
-                (0, vec![]),
-                (1, vec![0]),
-                (2, vec![0, 1]),
-                (3, vec![0]),
-                (4, vec![0, 3]),
-            ])
-        );
-        assert_eq!(
-            bank_forks.descendants(),
-            make_hash_map(vec![
-                (0, vec![1, 2, 3, 4]),
-                (1, vec![2]),
-                (2, vec![]),
-                (3, vec![4]),
-                (4, vec![]),
-            ])
-        );
-        bank_forks.set_root(
-            2,
-            &AbsRequestSender::default(),
-            Some(1), // highest confirmed root
-        );
-        banks[2].squash();
-        assert_eq!(
-            bank_forks.ancestors(),
-            make_hash_map(vec![(1, vec![]), (2, vec![]),])
-        );
-        assert_eq!(
-            bank_forks.descendants(),
-            make_hash_map(vec![(0, vec![1, 2]), (1, vec![2]), (2, vec![]),])
-        );
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[2], &Pubkey::default(), 5)));
-        banks.push(bank_forks.insert(Bank::new_from_parent(&banks[5], &Pubkey::default(), 6)));
-        assert_eq!(
-            bank_forks.ancestors(),
-            make_hash_map(vec![
-                (1, vec![]),
-                (2, vec![]),
-                (5, vec![2]),
-                (6, vec![2, 5])
-            ])
-        );
-        assert_eq!(
-            bank_forks.descendants(),
-            make_hash_map(vec![
-                (0, vec![1, 2]),
-                (1, vec![2]),
-                (2, vec![5, 6]),
-                (5, vec![6]),
-                (6, vec![])
-            ])
-        );
-    }
+    // use {
+    //     super::*,
+    //     crate::{
+    //         bank::tests::update_vote_account_timestamp,
+    //         genesis_utils::{
+    //             create_genesis_config, create_genesis_config_with_leader, GenesisConfigInfo,
+    //         },
+    //     },
+    //     solana_sdk::{
+    //         clock::UnixTimestamp,
+    //         hash::Hash,
+    //         pubkey::Pubkey,
+    //         signature::{Keypair, Signer},
+    //         sysvar::epoch_schedule::EpochSchedule,
+    //     },
+    //     solana_vote_program::vote_state::BlockTimestamp,
+    // };
+    //
+    // #[test]
+    // fn test_bank_forks_new() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let bank = Bank::new_for_tests(&genesis_config);
+    //     let mut bank_forks = BankForks::new(bank);
+    //     let child_bank = Bank::new_from_parent(&bank_forks[0u64], &Pubkey::default(), 1);
+    //     child_bank.register_tick(&Hash::default());
+    //     bank_forks.insert(child_bank);
+    //     assert_eq!(bank_forks[1u64].tick_height(), 1);
+    //     assert_eq!(bank_forks.working_bank().tick_height(), 1);
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_new_from_banks() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+    //     let child_bank = Arc::new(Bank::new_from_parent(&bank, &Pubkey::default(), 1));
+    //
+    //     let bank_forks = BankForks::new_from_banks(&[bank.clone(), child_bank.clone()], 0);
+    //     assert_eq!(bank_forks.root(), 0);
+    //     assert_eq!(bank_forks.working_bank().slot(), 1);
+    //
+    //     let bank_forks = BankForks::new_from_banks(&[child_bank, bank], 0);
+    //     assert_eq!(bank_forks.root(), 0);
+    //     assert_eq!(bank_forks.working_bank().slot(), 1);
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_descendants() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let bank = Bank::new_for_tests(&genesis_config);
+    //     let mut bank_forks = BankForks::new(bank);
+    //     let bank0 = bank_forks[0].clone();
+    //     let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
+    //     bank_forks.insert(bank);
+    //     let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 2);
+    //     bank_forks.insert(bank);
+    //     let descendants = bank_forks.descendants();
+    //     let children: HashSet<u64> = [1u64, 2u64].iter().copied().collect();
+    //     assert_eq!(children, *descendants.get(&0).unwrap());
+    //     assert!(descendants[&1].is_empty());
+    //     assert!(descendants[&2].is_empty());
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_ancestors() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let bank = Bank::new_for_tests(&genesis_config);
+    //     let mut bank_forks = BankForks::new(bank);
+    //     let bank0 = bank_forks[0].clone();
+    //     let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 1);
+    //     bank_forks.insert(bank);
+    //     let bank = Bank::new_from_parent(&bank0, &Pubkey::default(), 2);
+    //     bank_forks.insert(bank);
+    //     let ancestors = bank_forks.ancestors();
+    //     assert!(ancestors[&0].is_empty());
+    //     let parents: Vec<u64> = ancestors[&1].iter().cloned().collect();
+    //     assert_eq!(parents, vec![0]);
+    //     let parents: Vec<u64> = ancestors[&2].iter().cloned().collect();
+    //     assert_eq!(parents, vec![0]);
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_frozen_banks() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let bank = Bank::new_for_tests(&genesis_config);
+    //     let mut bank_forks = BankForks::new(bank);
+    //     let child_bank = Bank::new_from_parent(&bank_forks[0u64], &Pubkey::default(), 1);
+    //     bank_forks.insert(child_bank);
+    //     assert!(bank_forks.frozen_banks().get(&0).is_some());
+    //     assert!(bank_forks.frozen_banks().get(&1).is_none());
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_active_banks() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let bank = Bank::new_for_tests(&genesis_config);
+    //     let mut bank_forks = BankForks::new(bank);
+    //     let child_bank = Bank::new_from_parent(&bank_forks[0u64], &Pubkey::default(), 1);
+    //     bank_forks.insert(child_bank);
+    //     assert_eq!(bank_forks.active_banks(), vec![1]);
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_different_set_root() {
+    //     solana_logger::setup();
+    //     let leader_keypair = Keypair::new();
+    //     let GenesisConfigInfo {
+    //         mut genesis_config,
+    //         voting_keypair,
+    //         ..
+    //     } = create_genesis_config_with_leader(10_000, &leader_keypair.pubkey(), 1_000);
+    //     let slots_in_epoch = 32;
+    //     genesis_config.epoch_schedule = EpochSchedule::new(slots_in_epoch);
+    //
+    //     let bank0 = Bank::new_for_tests(&genesis_config);
+    //     let mut bank_forks0 = BankForks::new(bank0);
+    //     bank_forks0.set_root(0, &AbsRequestSender::default(), None);
+    //
+    //     let bank1 = Bank::new_for_tests(&genesis_config);
+    //     let mut bank_forks1 = BankForks::new(bank1);
+    //
+    //     let additional_timestamp_secs = 2;
+    //
+    //     let num_slots = slots_in_epoch + 1; // Advance past first epoch boundary
+    //     for slot in 1..num_slots {
+    //         // Just after the epoch boundary, timestamp a vote that will shift
+    //         // Clock::unix_timestamp from Bank::unix_timestamp_from_genesis()
+    //         let update_timestamp_case = slot == slots_in_epoch;
+    //
+    //         let child1 = Bank::new_from_parent(&bank_forks0[slot - 1], &Pubkey::default(), slot);
+    //         let child2 = Bank::new_from_parent(&bank_forks1[slot - 1], &Pubkey::default(), slot);
+    //
+    //         if update_timestamp_case {
+    //             for child in &[&child1, &child2] {
+    //                 let recent_timestamp: UnixTimestamp = child.unix_timestamp_from_genesis();
+    //                 update_vote_account_timestamp(
+    //                     BlockTimestamp {
+    //                         slot: child.slot(),
+    //                         timestamp: recent_timestamp + additional_timestamp_secs,
+    //                     },
+    //                     child,
+    //                     &voting_keypair.pubkey(),
+    //                 );
+    //             }
+    //         }
+    //
+    //         // Set root in bank_forks0 to truncate the ancestor history
+    //         bank_forks0.insert(child1);
+    //         bank_forks0.set_root(slot, &AbsRequestSender::default(), None);
+    //
+    //         // Don't set root in bank_forks1 to keep the ancestor history
+    //         bank_forks1.insert(child2);
+    //     }
+    //     let child1 = &bank_forks0.working_bank();
+    //     let child2 = &bank_forks1.working_bank();
+    //
+    //     child1.freeze();
+    //     child2.freeze();
+    //
+    //     info!("child0.ancestors: {:?}", child1.ancestors);
+    //     info!("child1.ancestors: {:?}", child2.ancestors);
+    //     assert_eq!(child1.hash(), child2.hash());
+    // }
+    //
+    // fn make_hash_map(data: Vec<(Slot, Vec<Slot>)>) -> HashMap<Slot, HashSet<Slot>> {
+    //     data.into_iter()
+    //         .map(|(k, v)| (k, v.into_iter().collect()))
+    //         .collect()
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_with_set_root() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let mut banks = vec![Arc::new(Bank::new_for_tests(&genesis_config))];
+    //     assert_eq!(banks[0].slot(), 0);
+    //     let mut bank_forks = BankForks::new_from_banks(&banks, 0);
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 1)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[1], &Pubkey::default(), 2)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 3)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[3], &Pubkey::default(), 4)));
+    //     assert_eq!(
+    //         bank_forks.ancestors(),
+    //         make_hash_map(vec![
+    //             (0, vec![]),
+    //             (1, vec![0]),
+    //             (2, vec![0, 1]),
+    //             (3, vec![0]),
+    //             (4, vec![0, 3]),
+    //         ])
+    //     );
+    //     assert_eq!(
+    //         bank_forks.descendants(),
+    //         make_hash_map(vec![
+    //             (0, vec![1, 2, 3, 4]),
+    //             (1, vec![2]),
+    //             (2, vec![]),
+    //             (3, vec![4]),
+    //             (4, vec![]),
+    //         ])
+    //     );
+    //     bank_forks.set_root(
+    //         2,
+    //         &AbsRequestSender::default(),
+    //         None, // highest confirmed root
+    //     );
+    //     banks[2].squash();
+    //     assert_eq!(bank_forks.ancestors(), make_hash_map(vec![(2, vec![]),]));
+    //     assert_eq!(
+    //         bank_forks.descendants(),
+    //         make_hash_map(vec![(0, vec![2]), (1, vec![2]), (2, vec![]),])
+    //     );
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[2], &Pubkey::default(), 5)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[5], &Pubkey::default(), 6)));
+    //     assert_eq!(
+    //         bank_forks.ancestors(),
+    //         make_hash_map(vec![(2, vec![]), (5, vec![2]), (6, vec![2, 5])])
+    //     );
+    //     assert_eq!(
+    //         bank_forks.descendants(),
+    //         make_hash_map(vec![
+    //             (0, vec![2]),
+    //             (1, vec![2]),
+    //             (2, vec![5, 6]),
+    //             (5, vec![6]),
+    //             (6, vec![])
+    //         ])
+    //     );
+    // }
+    //
+    // #[test]
+    // fn test_bank_forks_with_highest_confirmed_root() {
+    //     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+    //     let mut banks = vec![Arc::new(Bank::new_for_tests(&genesis_config))];
+    //     assert_eq!(banks[0].slot(), 0);
+    //     let mut bank_forks = BankForks::new_from_banks(&banks, 0);
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 1)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[1], &Pubkey::default(), 2)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[0], &Pubkey::default(), 3)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[3], &Pubkey::default(), 4)));
+    //     assert_eq!(
+    //         bank_forks.ancestors(),
+    //         make_hash_map(vec![
+    //             (0, vec![]),
+    //             (1, vec![0]),
+    //             (2, vec![0, 1]),
+    //             (3, vec![0]),
+    //             (4, vec![0, 3]),
+    //         ])
+    //     );
+    //     assert_eq!(
+    //         bank_forks.descendants(),
+    //         make_hash_map(vec![
+    //             (0, vec![1, 2, 3, 4]),
+    //             (1, vec![2]),
+    //             (2, vec![]),
+    //             (3, vec![4]),
+    //             (4, vec![]),
+    //         ])
+    //     );
+    //     bank_forks.set_root(
+    //         2,
+    //         &AbsRequestSender::default(),
+    //         Some(1), // highest confirmed root
+    //     );
+    //     banks[2].squash();
+    //     assert_eq!(
+    //         bank_forks.ancestors(),
+    //         make_hash_map(vec![(1, vec![]), (2, vec![]),])
+    //     );
+    //     assert_eq!(
+    //         bank_forks.descendants(),
+    //         make_hash_map(vec![(0, vec![1, 2]), (1, vec![2]), (2, vec![]),])
+    //     );
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[2], &Pubkey::default(), 5)));
+    //     banks.push(bank_forks.insert(Bank::new_from_parent(&banks[5], &Pubkey::default(), 6)));
+    //     assert_eq!(
+    //         bank_forks.ancestors(),
+    //         make_hash_map(vec![
+    //             (1, vec![]),
+    //             (2, vec![]),
+    //             (5, vec![2]),
+    //             (6, vec![2, 5])
+    //         ])
+    //     );
+    //     assert_eq!(
+    //         bank_forks.descendants(),
+    //         make_hash_map(vec![
+    //             (0, vec![1, 2]),
+    //             (1, vec![2]),
+    //             (2, vec![5, 6]),
+    //             (5, vec![6]),
+    //             (6, vec![])
+    //         ])
+    //     );
+    // }
 }
