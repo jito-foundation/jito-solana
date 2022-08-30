@@ -934,9 +934,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.18"
+version = "3.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b15f2ea93df33549dbe2e8eecd1ca55269d63ae0b3ba1f55db030817d1c2867f"
+checksum = "68d43934757334b5c0519ff882e1ab9647ac0258b47c24c4f490d78e42697fd5"
 dependencies = [
  "atty",
  "bitflags",
@@ -1264,6 +1264,17 @@ dependencies = [
  "cfg-if 1.0.0",
  "num_cpus",
  "rayon",
+]
+
+[[package]]
+name = "dashmap"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c8858831f7781322e539ea39e72449c46b059638250c14344fec8d0aa6e539c"
+dependencies = [
+ "cfg-if 1.0.0",
+ "num_cpus",
+ "parking_lot 0.12.1",
 ]
 
 [[package]]
@@ -3961,7 +3972,7 @@ dependencies = [
 name = "rbpf-cli"
 version = "1.10.39"
 dependencies = [
- "clap 3.2.18",
+ "clap 3.2.19",
  "serde",
  "serde_json",
  "solana-bpf-loader-program",
@@ -4480,7 +4491,21 @@ checksum = "e5bcc41d18f7a1d50525d080fd3e953be87c4f9f1a974f3c21798ca00d54ec15"
 dependencies = [
  "lazy_static",
  "parking_lot 0.11.2",
- "serial_test_derive",
+ "serial_test_derive 0.6.0",
+]
+
+[[package]]
+name = "serial_test"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92761393ee4dc3ff8f4af487bd58f4307c9329bbedea02cac0089ad9c411e153"
+dependencies = [
+ "dashmap 5.2.0",
+ "futures 0.3.24",
+ "lazy_static",
+ "log",
+ "parking_lot 0.12.1",
+ "serial_test_derive 0.9.0",
 ]
 
 [[package]]
@@ -4493,6 +4518,18 @@ dependencies = [
  "proc-macro2 1.0.43",
  "quote 1.0.21",
  "rustversion",
+ "syn 1.0.99",
+]
+
+[[package]]
+name = "serial_test_derive"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b6f5d1c3087fb119617cff2966fe3808a80e5eb59a8c1601d5994d66f4346a5"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2 1.0.43",
+ "quote 1.0.21",
  "syn 1.0.99",
 ]
 
@@ -4790,7 +4827,7 @@ dependencies = [
 name = "solana-banking-bench"
 version = "1.10.39"
 dependencies = [
- "clap 3.2.18",
+ "clap 3.2.19",
  "crossbeam-channel",
  "log",
  "rand 0.7.3",
@@ -4876,7 +4913,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "serde_yaml",
- "serial_test",
+ "serial_test 0.6.0",
  "solana-clap-utils",
  "solana-cli-config",
  "solana-client",
@@ -4956,9 +4993,9 @@ version = "1.10.39"
 dependencies = [
  "bzip2",
  "cargo_metadata",
- "clap 3.2.18",
+ "clap 3.2.19",
  "regex",
- "serial_test",
+ "serial_test 0.9.0",
  "solana-download-utils",
  "solana-sdk 1.10.39",
  "tar",
@@ -4969,7 +5006,7 @@ name = "solana-cargo-test-bpf"
 version = "1.10.39"
 dependencies = [
  "cargo_metadata",
- "clap 3.2.18",
+ "clap 3.2.19",
 ]
 
 [[package]]
@@ -5137,7 +5174,7 @@ version = "1.10.39"
 dependencies = [
  "futures-util",
  "serde_json",
- "serial_test",
+ "serial_test 0.6.0",
  "solana-client",
  "solana-ledger",
  "solana-logger 1.10.39",
@@ -5189,9 +5226,9 @@ dependencies = [
  "bs58 0.4.0",
  "bytes",
  "chrono",
- "clap 3.2.18",
+ "clap 3.2.19",
  "crossbeam-channel",
- "dashmap",
+ "dashmap 4.0.2",
  "etcd-client",
  "fs_extra",
  "futures 0.3.24",
@@ -5216,7 +5253,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "serial_test",
+ "serial_test 0.6.0",
  "solana-address-lookup-table-program",
  "solana-bloom",
  "solana-client",
@@ -5264,7 +5301,7 @@ name = "solana-dos"
 version = "1.10.39"
 dependencies = [
  "bincode",
- "clap 3.2.18",
+ "clap 3.2.19",
  "log",
  "rand 0.7.3",
  "serde",
@@ -5508,7 +5545,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_derive",
- "serial_test",
+ "serial_test 0.6.0",
  "solana-bloom",
  "solana-clap-utils",
  "solana-client",
@@ -5646,7 +5683,7 @@ dependencies = [
  "clap 2.34.0",
  "crossbeam-channel",
  "csv",
- "dashmap",
+ "dashmap 4.0.2",
  "histogram",
  "itertools",
  "log",
@@ -5684,7 +5721,7 @@ dependencies = [
  "log",
  "rand 0.7.3",
  "rayon",
- "serial_test",
+ "serial_test 0.6.0",
  "solana-client",
  "solana-config-program",
  "solana-core",
@@ -5775,7 +5812,7 @@ dependencies = [
  "log",
  "rand 0.7.3",
  "reqwest",
- "serial_test",
+ "serial_test 0.6.0",
  "solana-sdk 1.10.39",
 ]
 
@@ -6073,7 +6110,7 @@ dependencies = [
  "crossbeam-channel",
  "log",
  "rand 0.7.3",
- "serial_test",
+ "serial_test 0.6.0",
  "solana-clap-utils",
  "solana-client",
  "solana-core",
@@ -6104,7 +6141,7 @@ dependencies = [
  "bincode",
  "bs58 0.4.0",
  "crossbeam-channel",
- "dashmap",
+ "dashmap 4.0.2",
  "itertools",
  "jsonrpc-core",
  "jsonrpc-core-client",
@@ -6118,7 +6155,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "serial_test",
+ "serial_test 0.6.0",
  "soketto",
  "solana-account-decoder",
  "solana-address-lookup-table-program",
@@ -6187,7 +6224,7 @@ dependencies = [
  "byteorder",
  "bzip2",
  "crossbeam-channel",
- "dashmap",
+ "dashmap 4.0.2",
  "dir-diff",
  "ed25519-dalek",
  "flate2",
@@ -6547,7 +6584,7 @@ version = "1.10.39"
 dependencies = [
  "anchor-lang",
  "bigdecimal",
- "clap 3.2.18",
+ "clap 3.2.19",
  "crossbeam-channel",
  "env_logger",
  "futures 0.3.24",

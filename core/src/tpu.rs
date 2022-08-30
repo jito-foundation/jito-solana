@@ -127,7 +127,7 @@ impl Tpu {
             transactions_forwards_quic: transactions_forwards_quic_sockets,
         } = sockets;
 
-        let (packet_intercept_sender, packet_intercept_receiver) = unbounded();
+        let (_packet_intercept_sender, packet_intercept_receiver) = unbounded();
         let (packet_sender, packet_receiver) = unbounded();
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let (forwarded_packet_sender, forwarded_packet_receiver) = unbounded();
@@ -136,7 +136,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit,
-            &packet_intercept_sender,
+            &packet_sender,
             &vote_packet_sender,
             &forwarded_packet_sender,
             forwarded_packet_receiver,

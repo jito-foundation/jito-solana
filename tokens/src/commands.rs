@@ -1223,7 +1223,6 @@ pub fn test_process_distribute_stake_with_client(client: &RpcClient, sender_keyp
 mod tests {
     use {
         super::*,
-        log::info,
         solana_sdk::{
             instruction::AccountMeta,
             signature::{read_keypair_file, write_keypair_file, Signer},
@@ -1801,7 +1800,6 @@ mod tests {
         let signers = [sender_keypair, &stake_account_keypair];
         let blockhash = client.get_latest_blockhash().unwrap();
         let transaction = Transaction::new(&signers, message, blockhash);
-        info!("sending alice tx...");
         client
             .send_and_confirm_transaction_with_spinner(&transaction)
             .unwrap();
@@ -1948,8 +1946,6 @@ mod tests {
 
     #[test]
     fn test_check_payer_balances_distribute_stakes_separate_payers() {
-        solana_logger::setup_with_default("INFO");
-
         let alice = Keypair::new();
         let test_validator = TestValidator::with_custom_fees(
             alice.pubkey(),
@@ -1968,8 +1964,6 @@ mod tests {
 
         let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
         write_keypair_file(&alice, &sender_keypair_file).unwrap();
-
-        let balance = client.get_balance(&alice.pubkey()).unwrap();
 
         let allocation_amount = 1000.0;
         let unlocked_sol = 1.0;
