@@ -1107,11 +1107,11 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let recorder = poh_recorder.read().unwrap().recorder();
+        let recorder = poh_recorder.lock().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
         let sanitized_bundle =
             get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
 
@@ -1397,12 +1397,12 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let recorder = poh_recorder.read().unwrap().recorder();
+        let recorder = poh_recorder.lock().unwrap().recorder();
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
 
         // Create two transfers
         // 0. mint_keypair -> keypair0

@@ -127,7 +127,7 @@ wait_step() {
 }
 
 all_test_steps() {
-#  command_step checks ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-checks.sh" 20
+  command_step checks ". ci/rust-version.sh; ci/docker-run.sh \$\$rust_nightly_docker_image ci/test-checks.sh" 20
   wait_step
 
   # Coverage...

@@ -443,7 +443,9 @@ mod tests {
             (&delegator_4_pk, &d_4_data),
         ];
 
-        bank.store_accounts((bank.slot(), &accounts[..]));
+        for (pubkey, acc_data) in accounts {
+            bank.store_account(pubkey, acc_data);
+        }
 
         /* 3. Delegate some stake to the initial set of validators */
         let mut validator_0_delegations = vec![crate::Delegation {
@@ -651,7 +653,9 @@ mod tests {
             (&tip_distribution_account_1.0, &data_1),
             (&tip_distribution_account_2.0, &data_2),
         ];
-        bank.store_accounts((bank.slot(), &accounts[..]));
+        for (pubkey, acc_data) in accounts {
+            bank.store_account(pubkey, acc_data);
+        }
 
         bank.freeze();
         let stake_meta_collection =
@@ -822,15 +826,15 @@ mod tests {
         vote_account: &Pubkey,
         delegation_amount: u64,
     ) -> Pubkey {
-        let minimum_delegation = solana_stake_program::get_minimum_delegation(&*bank.feature_set);
-        assert!(
-            delegation_amount >= minimum_delegation,
-            "{}",
-            format!(
-                "received delegation_amount {}, must be at least {}",
-                delegation_amount, minimum_delegation
-            )
-        );
+        // let minimum_delegation = solana_stake_program::get_minimum_delegation(&*bank.feature_set);
+        // assert!(
+        //     delegation_amount >= minimum_delegation,
+        //     "{}",
+        //     format!(
+        //         "received delegation_amount {}, must be at least {}",
+        //         delegation_amount, minimum_delegation
+        //     )
+        // );
         if let Some(from_account) = bank.get_account(&from_keypair.pubkey()) {
             assert_eq!(from_account.owner(), &solana_sdk::system_program::id());
         } else {

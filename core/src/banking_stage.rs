@@ -2801,8 +2801,11 @@ mod tests {
 
             let mut results = vec![new_execution_result(Ok(())); 2];
             let _ = BankingStage::record_transactions(bank.slot(), &txs, &results, &recorder);
-            let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
-            assert_eq!(entry.transactions.len(), txs.len());
+            let WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            } = entry_receiver.recv().unwrap();
+            assert_eq!(entries_ticks[0].0.transactions.len(), txs.len());
 
             // InstructionErrors should still be recorded
             results[0] = new_execution_result(Err(TransactionError::InstructionError(
@@ -2816,8 +2819,11 @@ mod tests {
             } = BankingStage::record_transactions(bank.slot(), &txs, &results, &recorder);
             result.unwrap();
             assert!(retryable_indexes.is_empty());
-            let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
-            assert_eq!(entry.transactions.len(), txs.len());
+            let WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            } = entry_receiver.recv().unwrap();
+            assert_eq!(entries_ticks[0].0.transactions.len(), txs.len());
 
             // Other TransactionErrors should not be recorded
             results[0] = TransactionExecutionResult::NotExecuted(TransactionError::AccountNotFound);
@@ -3063,7 +3069,6 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
-                None,
                 &bundle_locker,
             );
 
@@ -3125,7 +3130,6 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
-                None,
                 &bundle_locker,
             );
 
@@ -3223,7 +3227,6 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &qos_service,
-                None,
                 &bundle_locker,
             );
 
@@ -3264,7 +3267,6 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &qos_service,
-                None,
                 &bundle_locker,
             );
 
@@ -3364,7 +3366,6 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
-                None,
                 &bundle_locker,
             );
 
@@ -3534,7 +3535,6 @@ mod tests {
                 None,
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
-                None,
                 &bundle_locker,
             );
 
@@ -3604,7 +3604,6 @@ mod tests {
             None,
             &gossip_vote_sender,
             &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
-            None,
             &bundle_locker,
         );
 
@@ -3832,7 +3831,6 @@ mod tests {
                 }),
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
-                None,
                 &bundle_locker,
             );
 
@@ -3998,7 +3996,6 @@ mod tests {
                 }),
                 &gossip_vote_sender,
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
-                None,
                 &bundle_locker,
             );
 
@@ -4124,7 +4121,6 @@ mod tests {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 num_conflicting_transactions,
-                None,
                 &HashSet::default(),
                 &bundle_locker,
             );
@@ -4147,7 +4143,6 @@ mod tests {
                     &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                     &mut LeaderSlotMetricsTracker::new(0),
                     num_packets_to_process_per_iteration,
-                    None,
                     &HashSet::default(),
                     &bundle_locker,
                 );
@@ -4226,7 +4221,6 @@ mod tests {
                         &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                         &mut LeaderSlotMetricsTracker::new(0),
                         num_packets_to_process_per_iteration,
-                        None,
                         &HashSet::default(),
                         &bundle_locker,
                     );
