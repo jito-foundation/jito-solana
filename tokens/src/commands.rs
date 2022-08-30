@@ -1223,6 +1223,7 @@ pub fn test_process_distribute_stake_with_client(client: &RpcClient, sender_keyp
 mod tests {
     use {
         super::*,
+        log::info,
         solana_sdk::{
             instruction::AccountMeta,
             signature::{read_keypair_file, write_keypair_file, Signer},
@@ -1245,1224 +1246,1229 @@ mod tests {
         )
     }
 
-    // #[test]
-    // fn test_process_token_allocations() {
-    //     let alice = Keypair::new();
-    //     let test_validator =
-    //         TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //     test_process_distribute_tokens_with_client(&client, alice, None);
-    // }
-    //
-    // #[test]
-    // fn test_process_transfer_amount_allocations() {
-    //     let alice = Keypair::new();
-    //     let test_validator =
-    //         TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //     test_process_distribute_tokens_with_client(&client, alice, Some(sol_to_lamports(1.5)));
-    // }
-    //
-    // #[test]
-    // fn test_create_stake_allocations() {
-    //     let alice = Keypair::new();
-    //     let test_validator =
-    //         TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //     test_process_create_stake_with_client(&client, alice);
-    // }
-    //
-    // #[test]
-    // fn test_process_stake_allocations() {
-    //     let alice = Keypair::new();
-    //     let test_validator =
-    //         TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //     test_process_distribute_stake_with_client(&client, alice);
-    // }
-    //
-    // #[test]
-    // fn test_read_allocations() {
-    //     let alice_pubkey = solana_sdk::pubkey::new_rand();
-    //     let allocation = Allocation {
-    //         recipient: alice_pubkey.to_string(),
-    //         amount: 42,
-    //         lockup_date: "".to_string(),
-    //     };
-    //     let file = NamedTempFile::new().unwrap();
-    //     let input_csv = file.path().to_str().unwrap().to_string();
-    //     let mut wtr = csv::WriterBuilder::new().from_writer(file);
-    //     wtr.serialize(&allocation).unwrap();
-    //     wtr.flush().unwrap();
-    //
-    //     assert_eq!(
-    //         read_allocations(&input_csv, None, false, true).unwrap(),
-    //         vec![allocation]
-    //     );
-    //
-    //     let allocation_sol = Allocation {
-    //         recipient: alice_pubkey.to_string(),
-    //         amount: sol_to_lamports(42.0),
-    //         lockup_date: "".to_string(),
-    //     };
-    //
-    //     assert_eq!(
-    //         read_allocations(&input_csv, None, true, true).unwrap(),
-    //         vec![allocation_sol.clone()]
-    //     );
-    //     assert_eq!(
-    //         read_allocations(&input_csv, None, false, false).unwrap(),
-    //         vec![allocation_sol.clone()]
-    //     );
-    //     assert_eq!(
-    //         read_allocations(&input_csv, None, true, false).unwrap(),
-    //         vec![allocation_sol]
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_read_allocations_no_lockup() {
-    //     let pubkey0 = solana_sdk::pubkey::new_rand();
-    //     let pubkey1 = solana_sdk::pubkey::new_rand();
-    //     let file = NamedTempFile::new().unwrap();
-    //     let input_csv = file.path().to_str().unwrap().to_string();
-    //     let mut wtr = csv::WriterBuilder::new().from_writer(file);
-    //     wtr.serialize(("recipient".to_string(), "amount".to_string()))
-    //         .unwrap();
-    //     wtr.serialize((&pubkey0.to_string(), 42.0)).unwrap();
-    //     wtr.serialize((&pubkey1.to_string(), 43.0)).unwrap();
-    //     wtr.flush().unwrap();
-    //
-    //     let expected_allocations = vec![
-    //         Allocation {
-    //             recipient: pubkey0.to_string(),
-    //             amount: sol_to_lamports(42.0),
-    //             lockup_date: "".to_string(),
-    //         },
-    //         Allocation {
-    //             recipient: pubkey1.to_string(),
-    //             amount: sol_to_lamports(43.0),
-    //             lockup_date: "".to_string(),
-    //         },
-    //     ];
-    //     assert_eq!(
-    //         read_allocations(&input_csv, None, false, false).unwrap(),
-    //         expected_allocations
-    //     );
-    // }
-    //
-    // #[test]
-    // #[should_panic]
-    // fn test_read_allocations_malformed() {
-    //     let pubkey0 = solana_sdk::pubkey::new_rand();
-    //     let pubkey1 = solana_sdk::pubkey::new_rand();
-    //     let file = NamedTempFile::new().unwrap();
-    //     let input_csv = file.path().to_str().unwrap().to_string();
-    //     let mut wtr = csv::WriterBuilder::new().from_writer(file);
-    //     wtr.serialize(("recipient".to_string(), "amount".to_string()))
-    //         .unwrap();
-    //     wtr.serialize((&pubkey0.to_string(), 42.0)).unwrap();
-    //     wtr.serialize((&pubkey1.to_string(), 43.0)).unwrap();
-    //     wtr.flush().unwrap();
-    //
-    //     let expected_allocations = vec![
-    //         Allocation {
-    //             recipient: pubkey0.to_string(),
-    //             amount: sol_to_lamports(42.0),
-    //             lockup_date: "".to_string(),
-    //         },
-    //         Allocation {
-    //             recipient: pubkey1.to_string(),
-    //             amount: sol_to_lamports(43.0),
-    //             lockup_date: "".to_string(),
-    //         },
-    //     ];
-    //     assert_eq!(
-    //         read_allocations(&input_csv, None, true, false).unwrap(),
-    //         expected_allocations
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_read_allocations_transfer_amount() {
-    //     let pubkey0 = solana_sdk::pubkey::new_rand();
-    //     let pubkey1 = solana_sdk::pubkey::new_rand();
-    //     let pubkey2 = solana_sdk::pubkey::new_rand();
-    //     let file = NamedTempFile::new().unwrap();
-    //     let input_csv = file.path().to_str().unwrap().to_string();
-    //     let mut wtr = csv::WriterBuilder::new().from_writer(file);
-    //     wtr.serialize("recipient".to_string()).unwrap();
-    //     wtr.serialize(&pubkey0.to_string()).unwrap();
-    //     wtr.serialize(&pubkey1.to_string()).unwrap();
-    //     wtr.serialize(&pubkey2.to_string()).unwrap();
-    //     wtr.flush().unwrap();
-    //
-    //     let amount = sol_to_lamports(1.5);
-    //
-    //     let expected_allocations = vec![
-    //         Allocation {
-    //             recipient: pubkey0.to_string(),
-    //             amount,
-    //             lockup_date: "".to_string(),
-    //         },
-    //         Allocation {
-    //             recipient: pubkey1.to_string(),
-    //             amount,
-    //             lockup_date: "".to_string(),
-    //         },
-    //         Allocation {
-    //             recipient: pubkey2.to_string(),
-    //             amount,
-    //             lockup_date: "".to_string(),
-    //         },
-    //     ];
-    //     assert_eq!(
-    //         read_allocations(&input_csv, Some(amount), false, false).unwrap(),
-    //         expected_allocations
-    //     );
-    // }
-    //
-    // #[test]
-    // fn test_apply_previous_transactions() {
-    //     let alice = solana_sdk::pubkey::new_rand();
-    //     let bob = solana_sdk::pubkey::new_rand();
-    //     let mut allocations = vec![
-    //         Allocation {
-    //             recipient: alice.to_string(),
-    //             amount: sol_to_lamports(1.0),
-    //             lockup_date: "".to_string(),
-    //         },
-    //         Allocation {
-    //             recipient: bob.to_string(),
-    //             amount: sol_to_lamports(1.0),
-    //             lockup_date: "".to_string(),
-    //         },
-    //     ];
-    //     let transaction_infos = vec![TransactionInfo {
-    //         recipient: bob,
-    //         amount: sol_to_lamports(1.0),
-    //         ..TransactionInfo::default()
-    //     }];
-    //     apply_previous_transactions(&mut allocations, &transaction_infos);
-    //     assert_eq!(allocations.len(), 1);
-    //
-    //     // Ensure that we applied the transaction to the allocation with
-    //     // a matching recipient address (to bob, not alice).
-    //     assert_eq!(allocations[0].recipient, alice.to_string());
-    // }
-    //
-    // #[test]
-    // fn test_has_same_recipient() {
-    //     let alice_pubkey = solana_sdk::pubkey::new_rand();
-    //     let bob_pubkey = solana_sdk::pubkey::new_rand();
-    //     let lockup0 = "2021-01-07T00:00:00Z".to_string();
-    //     let lockup1 = "9999-12-31T23:59:59Z".to_string();
-    //     let alice_alloc = Allocation {
-    //         recipient: alice_pubkey.to_string(),
-    //         amount: sol_to_lamports(1.0),
-    //         lockup_date: "".to_string(),
-    //     };
-    //     let alice_alloc_lockup0 = Allocation {
-    //         recipient: alice_pubkey.to_string(),
-    //         amount: sol_to_lamports(1.0),
-    //         lockup_date: lockup0.clone(),
-    //     };
-    //     let alice_info = TransactionInfo {
-    //         recipient: alice_pubkey,
-    //         lockup_date: None,
-    //         ..TransactionInfo::default()
-    //     };
-    //     let alice_info_lockup0 = TransactionInfo {
-    //         recipient: alice_pubkey,
-    //         lockup_date: lockup0.parse().ok(),
-    //         ..TransactionInfo::default()
-    //     };
-    //     let alice_info_lockup1 = TransactionInfo {
-    //         recipient: alice_pubkey,
-    //         lockup_date: lockup1.parse().ok(),
-    //         ..TransactionInfo::default()
-    //     };
-    //     let bob_info = TransactionInfo {
-    //         recipient: bob_pubkey,
-    //         lockup_date: None,
-    //         ..TransactionInfo::default()
-    //     };
-    //     assert!(!has_same_recipient(&alice_alloc, &bob_info)); // Different recipient, no lockup
-    //     assert!(!has_same_recipient(&alice_alloc, &alice_info_lockup0)); // One with no lockup, one locked up
-    //     assert!(!has_same_recipient(
-    //         &alice_alloc_lockup0,
-    //         &alice_info_lockup1
-    //     )); // Different lockups
-    //     assert!(has_same_recipient(&alice_alloc, &alice_info)); // Same recipient, no lockups
-    //     assert!(has_same_recipient(
-    //         &alice_alloc_lockup0,
-    //         &alice_info_lockup0
-    //     )); // Same recipient, same lockups
-    // }
-    //
-    // const SET_LOCKUP_INDEX: usize = 5;
-    //
-    // #[test]
-    // fn test_set_split_stake_lockup() {
-    //     let lockup_date_str = "2021-01-07T00:00:00Z";
-    //     let allocation = Allocation {
-    //         recipient: Pubkey::default().to_string(),
-    //         amount: sol_to_lamports(1.0),
-    //         lockup_date: lockup_date_str.to_string(),
-    //     };
-    //     let stake_account_address = solana_sdk::pubkey::new_rand();
-    //     let new_stake_account_address = solana_sdk::pubkey::new_rand();
-    //     let lockup_authority = Keypair::new();
-    //     let lockup_authority_address = lockup_authority.pubkey();
-    //     let sender_stake_args = SenderStakeArgs {
-    //         stake_account_address,
-    //         stake_authority: Box::new(Keypair::new()),
-    //         withdraw_authority: Box::new(Keypair::new()),
-    //         lockup_authority: Some(Box::new(lockup_authority)),
-    //     };
-    //     let stake_args = StakeArgs {
-    //         lockup_authority: Some(lockup_authority_address),
-    //         unlocked_sol: sol_to_lamports(1.0),
-    //         sender_stake_args: Some(sender_stake_args),
-    //     };
-    //     let args = DistributeTokensArgs {
-    //         fee_payer: Box::new(Keypair::new()),
-    //         dry_run: false,
-    //         input_csv: "".to_string(),
-    //         transaction_db: "".to_string(),
-    //         output_path: None,
-    //         stake_args: Some(stake_args),
-    //         spl_token_args: None,
-    //         sender_keypair: Box::new(Keypair::new()),
-    //         transfer_amount: None,
-    //     };
-    //     let lockup_date = lockup_date_str.parse().unwrap();
-    //     let instructions = distribution_instructions(
-    //         &allocation,
-    //         &new_stake_account_address,
-    //         &args,
-    //         Some(lockup_date),
-    //         false,
-    //     );
-    //     let lockup_instruction =
-    //         bincode::deserialize(&instructions[SET_LOCKUP_INDEX].data).unwrap();
-    //     if let StakeInstruction::SetLockup(lockup_args) = lockup_instruction {
-    //         assert_eq!(lockup_args.unix_timestamp, Some(lockup_date.timestamp()));
-    //         assert_eq!(lockup_args.epoch, None); // Don't change the epoch
-    //         assert_eq!(lockup_args.custodian, None); // Don't change the lockup authority
-    //     } else {
-    //         panic!("expected SetLockup instruction");
-    //     }
-    // }
-    //
-    // fn tmp_file_path(name: &str, pubkey: &Pubkey) -> String {
-    //     use std::env;
-    //     let out_dir = env::var("FARF_DIR").unwrap_or_else(|_| "farf".to_string());
-    //
-    //     format!("{}/tmp/{}-{}", out_dir, name, pubkey)
-    // }
-    //
-    // fn initialize_check_payer_balances_inputs(
-    //     allocation_amount: u64,
-    //     sender_keypair_file: &str,
-    //     fee_payer: &str,
-    //     stake_args: Option<StakeArgs>,
-    // ) -> (Vec<Allocation>, DistributeTokensArgs) {
-    //     let recipient = solana_sdk::pubkey::new_rand();
-    //     let allocations = vec![Allocation {
-    //         recipient: recipient.to_string(),
-    //         amount: allocation_amount,
-    //         lockup_date: "".to_string(),
-    //     }];
-    //     let args = DistributeTokensArgs {
-    //         sender_keypair: read_keypair_file(sender_keypair_file).unwrap().into(),
-    //         fee_payer: read_keypair_file(fee_payer).unwrap().into(),
-    //         dry_run: false,
-    //         input_csv: "".to_string(),
-    //         transaction_db: "".to_string(),
-    //         output_path: None,
-    //         stake_args,
-    //         spl_token_args: None,
-    //         transfer_amount: None,
-    //     };
-    //     (allocations, args)
-    // }
-    //
-    // #[test]
-    // fn test_check_payer_balances_distribute_tokens_single_payer() {
-    //     let alice = Keypair::new();
-    //     let test_validator = TestValidator::with_custom_fees(
-    //         alice.pubkey(),
-    //         10_000,
-    //         None,
-    //         SocketAddrSpace::Unspecified,
-    //     );
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //     let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
-    //     write_keypair_file(&alice, &sender_keypair_file).unwrap();
-    //
-    //     let fees = client
-    //         .get_fee_for_message(&one_signer_message(&client))
-    //         .unwrap();
-    //     let fees_in_sol = lamports_to_sol(fees);
-    //
-    //     let allocation_amount = 1000.0;
-    //
-    //     // Fully funded payer
-    //     let (allocations, mut args) = initialize_check_payer_balances_inputs(
-    //         sol_to_lamports(allocation_amount),
-    //         &sender_keypair_file,
-    //         &sender_keypair_file,
-    //         None,
-    //     );
-    //     check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
-    //
-    //     // Unfunded payer
-    //     let unfunded_payer = Keypair::new();
-    //     let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
-    //     write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
-    //     args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(
-    //             sources,
-    //             vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
-    //         );
-    //         assert_eq!(amount, (allocation_amount + fees_in_sol).to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    //
-    //     // Payer funded enough for distribution only
-    //     let partially_funded_payer = Keypair::new();
-    //     let partially_funded_payer_keypair_file =
-    //         tmp_file_path("keypair_file", &partially_funded_payer.pubkey());
-    //     write_keypair_file(
-    //         &partially_funded_payer,
-    //         &partially_funded_payer_keypair_file,
-    //     )
-    //     .unwrap();
-    //     let transaction = transfer(
-    //         &client,
-    //         sol_to_lamports(allocation_amount),
-    //         &alice,
-    //         &partially_funded_payer.pubkey(),
-    //     )
-    //     .unwrap();
-    //     client
-    //         .send_and_confirm_transaction_with_spinner(&transaction)
-    //         .unwrap();
-    //
-    //     args.sender_keypair = read_keypair_file(&partially_funded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     args.fee_payer = read_keypair_file(&partially_funded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(
-    //             sources,
-    //             vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
-    //         );
-    //         assert_eq!(amount, (allocation_amount + fees_in_sol).to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    // }
-    //
-    // #[test]
-    // fn test_check_payer_balances_distribute_tokens_separate_payers() {
-    //     let alice = Keypair::new();
-    //     let test_validator = TestValidator::with_custom_fees(
-    //         alice.pubkey(),
-    //         10_000,
-    //         None,
-    //         SocketAddrSpace::Unspecified,
-    //     );
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //
-    //     let fees = client
-    //         .get_fee_for_message(&one_signer_message(&client))
-    //         .unwrap();
-    //     let fees_in_sol = lamports_to_sol(fees);
-    //
-    //     let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
-    //     write_keypair_file(&alice, &sender_keypair_file).unwrap();
-    //
-    //     let allocation_amount = 1000.0;
-    //
-    //     let funded_payer = Keypair::new();
-    //     let funded_payer_keypair_file = tmp_file_path("keypair_file", &funded_payer.pubkey());
-    //     write_keypair_file(&funded_payer, &funded_payer_keypair_file).unwrap();
-    //     let transaction = transfer(
-    //         &client,
-    //         sol_to_lamports(allocation_amount),
-    //         &alice,
-    //         &funded_payer.pubkey(),
-    //     )
-    //     .unwrap();
-    //     client
-    //         .send_and_confirm_transaction_with_spinner(&transaction)
-    //         .unwrap();
-    //
-    //     // Fully funded payers
-    //     let (allocations, mut args) = initialize_check_payer_balances_inputs(
-    //         sol_to_lamports(allocation_amount),
-    //         &funded_payer_keypair_file,
-    //         &sender_keypair_file,
-    //         None,
-    //     );
-    //     check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
-    //
-    //     // Unfunded sender
-    //     let unfunded_payer = Keypair::new();
-    //     let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
-    //     write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
-    //     args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(sources, vec![FundingSource::SystemAccount].into());
-    //         assert_eq!(amount, allocation_amount.to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    //
-    //     // Unfunded fee payer
-    //     args.sender_keypair = read_keypair_file(&sender_keypair_file).unwrap().into();
-    //     args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(sources, vec![FundingSource::FeePayer].into());
-    //         assert_eq!(amount, fees_in_sol.to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    // }
-    //
-    // fn initialize_stake_account(
-    //     stake_account_amount: u64,
-    //     unlocked_sol: u64,
-    //     sender_keypair: &Keypair,
-    //     client: &RpcClient,
-    // ) -> StakeArgs {
-    //     let stake_account_keypair = Keypair::new();
-    //     let stake_account_address = stake_account_keypair.pubkey();
-    //     let stake_authority = Keypair::new();
-    //     let withdraw_authority = Keypair::new();
-    //
-    //     let authorized = Authorized {
-    //         staker: stake_authority.pubkey(),
-    //         withdrawer: withdraw_authority.pubkey(),
-    //     };
-    //     let lockup = Lockup::default();
-    //     let instructions = stake_instruction::create_account(
-    //         &sender_keypair.pubkey(),
-    //         &stake_account_address,
-    //         &authorized,
-    //         &lockup,
-    //         stake_account_amount,
-    //     );
-    //     let message = Message::new(&instructions, Some(&sender_keypair.pubkey()));
-    //     let signers = [sender_keypair, &stake_account_keypair];
-    //     let blockhash = client.get_latest_blockhash().unwrap();
-    //     let transaction = Transaction::new(&signers, message, blockhash);
-    //     client
-    //         .send_and_confirm_transaction_with_spinner(&transaction)
-    //         .unwrap();
-    //
-    //     let sender_stake_args = SenderStakeArgs {
-    //         stake_account_address,
-    //         stake_authority: Box::new(stake_authority),
-    //         withdraw_authority: Box::new(withdraw_authority),
-    //         lockup_authority: None,
-    //     };
-    //
-    //     StakeArgs {
-    //         lockup_authority: None,
-    //         unlocked_sol,
-    //         sender_stake_args: Some(sender_stake_args),
-    //     }
-    // }
-    //
-    // #[test]
-    // fn test_check_payer_balances_distribute_stakes_single_payer() {
-    //     let alice = Keypair::new();
-    //     let test_validator = TestValidator::with_custom_fees(
-    //         alice.pubkey(),
-    //         10_000,
-    //         None,
-    //         SocketAddrSpace::Unspecified,
-    //     );
-    //     let url = test_validator.rpc_url();
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //
-    //     let fees = client
-    //         .get_fee_for_message(&one_signer_message(&client))
-    //         .unwrap();
-    //     let fees_in_sol = lamports_to_sol(fees);
-    //
-    //     let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
-    //     write_keypair_file(&alice, &sender_keypair_file).unwrap();
-    //
-    //     let allocation_amount = 1000.0;
-    //     let unlocked_sol = 1.0;
-    //     let stake_args = initialize_stake_account(
-    //         sol_to_lamports(allocation_amount),
-    //         sol_to_lamports(unlocked_sol),
-    //         &alice,
-    //         &client,
-    //     );
-    //
-    //     // Fully funded payer & stake account
-    //     let (allocations, mut args) = initialize_check_payer_balances_inputs(
-    //         sol_to_lamports(allocation_amount),
-    //         &sender_keypair_file,
-    //         &sender_keypair_file,
-    //         Some(stake_args),
-    //     );
-    //     check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
-    //
-    //     // Underfunded stake-account
-    //     let expensive_allocation_amount = 5000.0;
-    //     let expensive_allocations = vec![Allocation {
-    //         recipient: solana_sdk::pubkey::new_rand().to_string(),
-    //         amount: sol_to_lamports(expensive_allocation_amount),
-    //         lockup_date: "".to_string(),
-    //     }];
-    //     let err_result = check_payer_balances(
-    //         &[one_signer_message(&client)],
-    //         &expensive_allocations,
-    //         &client,
-    //         &args,
-    //     )
-    //     .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(sources, vec![FundingSource::StakeAccount].into());
-    //         assert_eq!(
-    //             amount,
-    //             (expensive_allocation_amount - unlocked_sol).to_string()
-    //         );
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    //
-    //     // Unfunded payer
-    //     let unfunded_payer = Keypair::new();
-    //     let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
-    //     write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
-    //     args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(
-    //             sources,
-    //             vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
-    //         );
-    //         assert_eq!(amount, (unlocked_sol + fees_in_sol).to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    //
-    //     // Payer funded enough for distribution only
-    //     let partially_funded_payer = Keypair::new();
-    //     let partially_funded_payer_keypair_file =
-    //         tmp_file_path("keypair_file", &partially_funded_payer.pubkey());
-    //     write_keypair_file(
-    //         &partially_funded_payer,
-    //         &partially_funded_payer_keypair_file,
-    //     )
-    //     .unwrap();
-    //     let transaction = transfer(
-    //         &client,
-    //         sol_to_lamports(unlocked_sol),
-    //         &alice,
-    //         &partially_funded_payer.pubkey(),
-    //     )
-    //     .unwrap();
-    //     client
-    //         .send_and_confirm_transaction_with_spinner(&transaction)
-    //         .unwrap();
-    //
-    //     args.sender_keypair = read_keypair_file(&partially_funded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     args.fee_payer = read_keypair_file(&partially_funded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(
-    //             sources,
-    //             vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
-    //         );
-    //         assert_eq!(amount, (unlocked_sol + fees_in_sol).to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    // }
-    //
-    // #[test]
-    // fn test_check_payer_balances_distribute_stakes_separate_payers() {
-    //     let alice = Keypair::new();
-    //     let test_validator = TestValidator::with_custom_fees(
-    //         alice.pubkey(),
-    //         10_000,
-    //         None,
-    //         SocketAddrSpace::Unspecified,
-    //     );
-    //     let url = test_validator.rpc_url();
-    //
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //
-    //     let fees = client
-    //         .get_fee_for_message(&one_signer_message(&client))
-    //         .unwrap();
-    //     let fees_in_sol = lamports_to_sol(fees);
-    //
-    //     let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
-    //     write_keypair_file(&alice, &sender_keypair_file).unwrap();
-    //
-    //     let allocation_amount = 1000.0;
-    //     let unlocked_sol = 1.0;
-    //     let stake_args = initialize_stake_account(
-    //         sol_to_lamports(allocation_amount),
-    //         sol_to_lamports(unlocked_sol),
-    //         &alice,
-    //         &client,
-    //     );
-    //
-    //     let funded_payer = Keypair::new();
-    //     let funded_payer_keypair_file = tmp_file_path("keypair_file", &funded_payer.pubkey());
-    //     write_keypair_file(&funded_payer, &funded_payer_keypair_file).unwrap();
-    //     let transaction = transfer(
-    //         &client,
-    //         sol_to_lamports(unlocked_sol),
-    //         &alice,
-    //         &funded_payer.pubkey(),
-    //     )
-    //     .unwrap();
-    //     client
-    //         .send_and_confirm_transaction_with_spinner(&transaction)
-    //         .unwrap();
-    //
-    //     // Fully funded payers
-    //     let (allocations, mut args) = initialize_check_payer_balances_inputs(
-    //         sol_to_lamports(allocation_amount),
-    //         &funded_payer_keypair_file,
-    //         &sender_keypair_file,
-    //         Some(stake_args),
-    //     );
-    //     check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
-    //
-    //     // Unfunded sender
-    //     let unfunded_payer = Keypair::new();
-    //     let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
-    //     write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
-    //     args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //     args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(sources, vec![FundingSource::SystemAccount].into());
-    //         assert_eq!(amount, unlocked_sol.to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    //
-    //     // Unfunded fee payer
-    //     args.sender_keypair = read_keypair_file(&sender_keypair_file).unwrap().into();
-    //     args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
-    //         .unwrap()
-    //         .into();
-    //
-    //     let err_result =
-    //         check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
-    //             .unwrap_err();
-    //     if let Error::InsufficientFunds(sources, amount) = err_result {
-    //         assert_eq!(sources, vec![FundingSource::FeePayer].into());
-    //         assert_eq!(amount, fees_in_sol.to_string());
-    //     } else {
-    //         panic!("check_payer_balances should have errored");
-    //     }
-    // }
-    //
-    // #[test]
-    // fn test_build_messages_dump_db() {
-    //     let client = RpcClient::new_mock("mock_client".to_string());
-    //     let dir = tempdir().unwrap();
-    //     let db_file = dir
-    //         .path()
-    //         .join("build_messages.db")
-    //         .to_str()
-    //         .unwrap()
-    //         .to_string();
-    //     let mut db = db::open_db(&db_file, false).unwrap();
-    //
-    //     let sender = Keypair::new();
-    //     let recipient = Pubkey::new_unique();
-    //     let amount = sol_to_lamports(1.0);
-    //     let last_valid_block_height = 222;
-    //     let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
-    //
-    //     // Queue db data
-    //     db::set_transaction_info(
-    //         &mut db,
-    //         &recipient,
-    //         amount,
-    //         &transaction,
-    //         None,
-    //         false,
-    //         last_valid_block_height,
-    //         None,
-    //     )
-    //     .unwrap();
-    //
-    //     // Check that data has not been dumped
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //
-    //     // This is just dummy data; Args will not affect messages built
-    //     let args = DistributeTokensArgs {
-    //         sender_keypair: Box::new(Keypair::new()),
-    //         fee_payer: Box::new(Keypair::new()),
-    //         dry_run: true,
-    //         input_csv: "".to_string(),
-    //         transaction_db: "".to_string(),
-    //         output_path: None,
-    //         stake_args: None,
-    //         spl_token_args: None,
-    //         transfer_amount: None,
-    //     };
-    //     let allocation = Allocation {
-    //         recipient: recipient.to_string(),
-    //         amount: sol_to_lamports(1.0),
-    //         lockup_date: "".to_string(),
-    //     };
-    //
-    //     let mut messages: Vec<Message> = vec![];
-    //     let mut stake_extras: StakeExtras = vec![];
-    //     let mut created_accounts = 0;
-    //
-    //     // Exit false will not dump data
-    //     build_messages(
-    //         &client,
-    //         &mut db,
-    //         &[allocation.clone()],
-    //         &args,
-    //         Arc::new(AtomicBool::new(false)),
-    //         &mut messages,
-    //         &mut stake_extras,
-    //         &mut created_accounts,
-    //     )
-    //     .unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //     assert_eq!(messages.len(), 1);
-    //
-    //     // Empty allocations will not dump data
-    //     let mut messages: Vec<Message> = vec![];
-    //     let exit = Arc::new(AtomicBool::new(true));
-    //     build_messages(
-    //         &client,
-    //         &mut db,
-    //         &[],
-    //         &args,
-    //         exit.clone(),
-    //         &mut messages,
-    //         &mut stake_extras,
-    //         &mut created_accounts,
-    //     )
-    //     .unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //     assert!(messages.is_empty());
-    //
-    //     // Any allocation should prompt data dump
-    //     let mut messages: Vec<Message> = vec![];
-    //     build_messages(
-    //         &client,
-    //         &mut db,
-    //         &[allocation],
-    //         &args,
-    //         exit,
-    //         &mut messages,
-    //         &mut stake_extras,
-    //         &mut created_accounts,
-    //     )
-    //     .unwrap_err();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     let transaction_info = db::read_transaction_infos(&read_db);
-    //     assert_eq!(transaction_info.len(), 1);
-    //     assert_eq!(
-    //         transaction_info[0],
-    //         TransactionInfo {
-    //             recipient,
-    //             amount,
-    //             new_stake_account_address: None,
-    //             finalized_date: None,
-    //             transaction,
-    //             last_valid_block_height,
-    //             lockup_date: None,
-    //         }
-    //     );
-    //     assert_eq!(messages.len(), 0);
-    // }
-    //
-    // #[test]
-    // fn test_send_messages_dump_db() {
-    //     let client = RpcClient::new_mock("mock_client".to_string());
-    //     let dir = tempdir().unwrap();
-    //     let db_file = dir
-    //         .path()
-    //         .join("send_messages.db")
-    //         .to_str()
-    //         .unwrap()
-    //         .to_string();
-    //     let mut db = db::open_db(&db_file, false).unwrap();
-    //
-    //     let sender = Keypair::new();
-    //     let recipient = Pubkey::new_unique();
-    //     let amount = sol_to_lamports(1.0);
-    //     let last_valid_block_height = 222;
-    //     let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
-    //
-    //     // Queue db data
-    //     db::set_transaction_info(
-    //         &mut db,
-    //         &recipient,
-    //         amount,
-    //         &transaction,
-    //         None,
-    //         false,
-    //         last_valid_block_height,
-    //         None,
-    //     )
-    //     .unwrap();
-    //
-    //     // Check that data has not been dumped
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //
-    //     // This is just dummy data; Args will not affect messages
-    //     let args = DistributeTokensArgs {
-    //         sender_keypair: Box::new(Keypair::new()),
-    //         fee_payer: Box::new(Keypair::new()),
-    //         dry_run: true,
-    //         input_csv: "".to_string(),
-    //         transaction_db: "".to_string(),
-    //         output_path: None,
-    //         stake_args: None,
-    //         spl_token_args: None,
-    //         transfer_amount: None,
-    //     };
-    //     let allocation = Allocation {
-    //         recipient: recipient.to_string(),
-    //         amount: sol_to_lamports(1.0),
-    //         lockup_date: "".to_string(),
-    //     };
-    //     let message = transaction.message.clone();
-    //
-    //     // Exit false will not dump data
-    //     send_messages(
-    //         &client,
-    //         &mut db,
-    //         &[allocation.clone()],
-    //         &args,
-    //         Arc::new(AtomicBool::new(false)),
-    //         vec![message.clone()],
-    //         vec![(Keypair::new(), None)],
-    //     )
-    //     .unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //     // The method above will, however, write a record to the in-memory db
-    //     // Grab that expected value to test successful dump
-    //     let num_records = db::read_transaction_infos(&db).len();
-    //
-    //     // Empty messages/allocations will not dump data
-    //     let exit = Arc::new(AtomicBool::new(true));
-    //     send_messages(&client, &mut db, &[], &args, exit.clone(), vec![], vec![]).unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //
-    //     // Message/allocation should prompt data dump at start of loop
-    //     send_messages(
-    //         &client,
-    //         &mut db,
-    //         &[allocation],
-    //         &args,
-    //         exit,
-    //         vec![message.clone()],
-    //         vec![(Keypair::new(), None)],
-    //     )
-    //     .unwrap_err();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     let transaction_info = db::read_transaction_infos(&read_db);
-    //     assert_eq!(transaction_info.len(), num_records);
-    //     assert!(transaction_info.contains(&TransactionInfo {
-    //         recipient,
-    //         amount,
-    //         new_stake_account_address: None,
-    //         finalized_date: None,
-    //         transaction,
-    //         last_valid_block_height,
-    //         lockup_date: None,
-    //     }));
-    //     assert!(transaction_info.contains(&TransactionInfo {
-    //         recipient,
-    //         amount,
-    //         new_stake_account_address: None,
-    //         finalized_date: None,
-    //         transaction: Transaction::new_unsigned(message),
-    //         last_valid_block_height: std::u64::MAX,
-    //         lockup_date: None,
-    //     }));
-    //
-    //     // Next dump should write record written in last send_messages call
-    //     let num_records = db::read_transaction_infos(&db).len();
-    //     db.dump().unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     let transaction_info = db::read_transaction_infos(&read_db);
-    //     assert_eq!(transaction_info.len(), num_records);
-    // }
-    //
-    // #[test]
-    // fn test_distribute_allocations_dump_db() {
-    //     let sender_keypair = Keypair::new();
-    //     let test_validator = TestValidator::with_no_fees(
-    //         sender_keypair.pubkey(),
-    //         None,
-    //         SocketAddrSpace::Unspecified,
-    //     );
-    //     let url = test_validator.rpc_url();
-    //     let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
-    //
-    //     let fee_payer = Keypair::new();
-    //     let transaction = transfer(
-    //         &client,
-    //         sol_to_lamports(1.0),
-    //         &sender_keypair,
-    //         &fee_payer.pubkey(),
-    //     )
-    //     .unwrap();
-    //     client
-    //         .send_and_confirm_transaction_with_spinner(&transaction)
-    //         .unwrap();
-    //
-    //     let dir = tempdir().unwrap();
-    //     let db_file = dir
-    //         .path()
-    //         .join("dist_allocations.db")
-    //         .to_str()
-    //         .unwrap()
-    //         .to_string();
-    //     let mut db = db::open_db(&db_file, false).unwrap();
-    //     let recipient = Pubkey::new_unique();
-    //     let allocation = Allocation {
-    //         recipient: recipient.to_string(),
-    //         amount: sol_to_lamports(1.0),
-    //         lockup_date: "".to_string(),
-    //     };
-    //     // This is just dummy data; Args will not affect messages
-    //     let args = DistributeTokensArgs {
-    //         sender_keypair: Box::new(sender_keypair),
-    //         fee_payer: Box::new(fee_payer),
-    //         dry_run: true,
-    //         input_csv: "".to_string(),
-    //         transaction_db: "".to_string(),
-    //         output_path: None,
-    //         stake_args: None,
-    //         spl_token_args: None,
-    //         transfer_amount: None,
-    //     };
-    //
-    //     let exit = Arc::new(AtomicBool::new(false));
-    //
-    //     // Ensure data is always dumped after distribute_allocations
-    //     distribute_allocations(&client, &mut db, &[allocation], &args, exit).unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     let transaction_info = db::read_transaction_infos(&read_db);
-    //     assert_eq!(transaction_info.len(), 1);
-    // }
-    //
-    // #[test]
-    // fn test_log_transaction_confirmations_dump_db() {
-    //     let client = RpcClient::new_mock("mock_client".to_string());
-    //     let dir = tempdir().unwrap();
-    //     let db_file = dir
-    //         .path()
-    //         .join("log_transaction_confirmations.db")
-    //         .to_str()
-    //         .unwrap()
-    //         .to_string();
-    //     let mut db = db::open_db(&db_file, false).unwrap();
-    //
-    //     let sender = Keypair::new();
-    //     let recipient = Pubkey::new_unique();
-    //     let amount = sol_to_lamports(1.0);
-    //     let last_valid_block_height = 222;
-    //     let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
-    //
-    //     // Queue unconfirmed transaction into db
-    //     db::set_transaction_info(
-    //         &mut db,
-    //         &recipient,
-    //         amount,
-    //         &transaction,
-    //         None,
-    //         false,
-    //         last_valid_block_height,
-    //         None,
-    //     )
-    //     .unwrap();
-    //
-    //     // Check that data has not been dumped
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //
-    //     // Empty unconfirmed_transactions will not dump data
-    //     let mut confirmations = None;
-    //     let exit = Arc::new(AtomicBool::new(true));
-    //     log_transaction_confirmations(
-    //         &client,
-    //         &mut db,
-    //         exit.clone(),
-    //         vec![],
-    //         vec![],
-    //         &mut confirmations,
-    //     )
-    //     .unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //     assert_eq!(confirmations, None);
-    //
-    //     // Exit false will not dump data
-    //     log_transaction_confirmations(
-    //         &client,
-    //         &mut db,
-    //         Arc::new(AtomicBool::new(false)),
-    //         vec![(&transaction, 111)],
-    //         vec![Some(TransactionStatus {
-    //             slot: 40,
-    //             confirmations: Some(15),
-    //             status: Ok(()),
-    //             err: None,
-    //             confirmation_status: Some(TransactionConfirmationStatus::Finalized),
-    //         })],
-    //         &mut confirmations,
-    //     )
-    //     .unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     assert!(db::read_transaction_infos(&read_db).is_empty());
-    //     assert_eq!(confirmations, Some(15));
-    //
-    //     // Exit true should dump data
-    //     log_transaction_confirmations(
-    //         &client,
-    //         &mut db,
-    //         exit,
-    //         vec![(&transaction, 111)],
-    //         vec![Some(TransactionStatus {
-    //             slot: 55,
-    //             confirmations: None,
-    //             status: Ok(()),
-    //             err: None,
-    //             confirmation_status: Some(TransactionConfirmationStatus::Finalized),
-    //         })],
-    //         &mut confirmations,
-    //     )
-    //     .unwrap_err();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     let transaction_info = db::read_transaction_infos(&read_db);
-    //     assert_eq!(transaction_info.len(), 1);
-    //     assert!(transaction_info[0].finalized_date.is_some());
-    // }
-    //
-    // #[test]
-    // fn test_update_finalized_transactions_dump_db() {
-    //     let client = RpcClient::new_mock("mock_client".to_string());
-    //     let dir = tempdir().unwrap();
-    //     let db_file = dir
-    //         .path()
-    //         .join("update_finalized_transactions.db")
-    //         .to_str()
-    //         .unwrap()
-    //         .to_string();
-    //     let mut db = db::open_db(&db_file, false).unwrap();
-    //
-    //     let sender = Keypair::new();
-    //     let recipient = Pubkey::new_unique();
-    //     let amount = sol_to_lamports(1.0);
-    //     let last_valid_block_height = 222;
-    //     let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
-    //
-    //     // Queue unconfirmed transaction into db
-    //     db::set_transaction_info(
-    //         &mut db,
-    //         &recipient,
-    //         amount,
-    //         &transaction,
-    //         None,
-    //         false,
-    //         last_valid_block_height,
-    //         None,
-    //     )
-    //     .unwrap();
-    //
-    //     // Ensure data is always dumped after update_finalized_transactions
-    //     let confs =
-    //         update_finalized_transactions(&client, &mut db, Arc::new(AtomicBool::new(false)))
-    //             .unwrap();
-    //     let read_db = db::open_db(&db_file, true).unwrap();
-    //     let transaction_info = db::read_transaction_infos(&read_db);
-    //     assert_eq!(transaction_info.len(), 1);
-    //     assert_eq!(confs, None);
-    // }
+    #[test]
+    fn test_process_token_allocations() {
+        let alice = Keypair::new();
+        let test_validator =
+            TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+        test_process_distribute_tokens_with_client(&client, alice, None);
+    }
+
+    #[test]
+    fn test_process_transfer_amount_allocations() {
+        let alice = Keypair::new();
+        let test_validator =
+            TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+        test_process_distribute_tokens_with_client(&client, alice, Some(sol_to_lamports(1.5)));
+    }
+
+    #[test]
+    fn test_create_stake_allocations() {
+        let alice = Keypair::new();
+        let test_validator =
+            TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+        test_process_create_stake_with_client(&client, alice);
+    }
+
+    #[test]
+    fn test_process_stake_allocations() {
+        let alice = Keypair::new();
+        let test_validator =
+            TestValidator::with_no_fees(alice.pubkey(), None, SocketAddrSpace::Unspecified);
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+        test_process_distribute_stake_with_client(&client, alice);
+    }
+
+    #[test]
+    fn test_read_allocations() {
+        let alice_pubkey = solana_sdk::pubkey::new_rand();
+        let allocation = Allocation {
+            recipient: alice_pubkey.to_string(),
+            amount: 42,
+            lockup_date: "".to_string(),
+        };
+        let file = NamedTempFile::new().unwrap();
+        let input_csv = file.path().to_str().unwrap().to_string();
+        let mut wtr = csv::WriterBuilder::new().from_writer(file);
+        wtr.serialize(&allocation).unwrap();
+        wtr.flush().unwrap();
+
+        assert_eq!(
+            read_allocations(&input_csv, None, false, true).unwrap(),
+            vec![allocation]
+        );
+
+        let allocation_sol = Allocation {
+            recipient: alice_pubkey.to_string(),
+            amount: sol_to_lamports(42.0),
+            lockup_date: "".to_string(),
+        };
+
+        assert_eq!(
+            read_allocations(&input_csv, None, true, true).unwrap(),
+            vec![allocation_sol.clone()]
+        );
+        assert_eq!(
+            read_allocations(&input_csv, None, false, false).unwrap(),
+            vec![allocation_sol.clone()]
+        );
+        assert_eq!(
+            read_allocations(&input_csv, None, true, false).unwrap(),
+            vec![allocation_sol]
+        );
+    }
+
+    #[test]
+    fn test_read_allocations_no_lockup() {
+        let pubkey0 = solana_sdk::pubkey::new_rand();
+        let pubkey1 = solana_sdk::pubkey::new_rand();
+        let file = NamedTempFile::new().unwrap();
+        let input_csv = file.path().to_str().unwrap().to_string();
+        let mut wtr = csv::WriterBuilder::new().from_writer(file);
+        wtr.serialize(("recipient".to_string(), "amount".to_string()))
+            .unwrap();
+        wtr.serialize((&pubkey0.to_string(), 42.0)).unwrap();
+        wtr.serialize((&pubkey1.to_string(), 43.0)).unwrap();
+        wtr.flush().unwrap();
+
+        let expected_allocations = vec![
+            Allocation {
+                recipient: pubkey0.to_string(),
+                amount: sol_to_lamports(42.0),
+                lockup_date: "".to_string(),
+            },
+            Allocation {
+                recipient: pubkey1.to_string(),
+                amount: sol_to_lamports(43.0),
+                lockup_date: "".to_string(),
+            },
+        ];
+        assert_eq!(
+            read_allocations(&input_csv, None, false, false).unwrap(),
+            expected_allocations
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_read_allocations_malformed() {
+        let pubkey0 = solana_sdk::pubkey::new_rand();
+        let pubkey1 = solana_sdk::pubkey::new_rand();
+        let file = NamedTempFile::new().unwrap();
+        let input_csv = file.path().to_str().unwrap().to_string();
+        let mut wtr = csv::WriterBuilder::new().from_writer(file);
+        wtr.serialize(("recipient".to_string(), "amount".to_string()))
+            .unwrap();
+        wtr.serialize((&pubkey0.to_string(), 42.0)).unwrap();
+        wtr.serialize((&pubkey1.to_string(), 43.0)).unwrap();
+        wtr.flush().unwrap();
+
+        let expected_allocations = vec![
+            Allocation {
+                recipient: pubkey0.to_string(),
+                amount: sol_to_lamports(42.0),
+                lockup_date: "".to_string(),
+            },
+            Allocation {
+                recipient: pubkey1.to_string(),
+                amount: sol_to_lamports(43.0),
+                lockup_date: "".to_string(),
+            },
+        ];
+        assert_eq!(
+            read_allocations(&input_csv, None, true, false).unwrap(),
+            expected_allocations
+        );
+    }
+
+    #[test]
+    fn test_read_allocations_transfer_amount() {
+        let pubkey0 = solana_sdk::pubkey::new_rand();
+        let pubkey1 = solana_sdk::pubkey::new_rand();
+        let pubkey2 = solana_sdk::pubkey::new_rand();
+        let file = NamedTempFile::new().unwrap();
+        let input_csv = file.path().to_str().unwrap().to_string();
+        let mut wtr = csv::WriterBuilder::new().from_writer(file);
+        wtr.serialize("recipient".to_string()).unwrap();
+        wtr.serialize(&pubkey0.to_string()).unwrap();
+        wtr.serialize(&pubkey1.to_string()).unwrap();
+        wtr.serialize(&pubkey2.to_string()).unwrap();
+        wtr.flush().unwrap();
+
+        let amount = sol_to_lamports(1.5);
+
+        let expected_allocations = vec![
+            Allocation {
+                recipient: pubkey0.to_string(),
+                amount,
+                lockup_date: "".to_string(),
+            },
+            Allocation {
+                recipient: pubkey1.to_string(),
+                amount,
+                lockup_date: "".to_string(),
+            },
+            Allocation {
+                recipient: pubkey2.to_string(),
+                amount,
+                lockup_date: "".to_string(),
+            },
+        ];
+        assert_eq!(
+            read_allocations(&input_csv, Some(amount), false, false).unwrap(),
+            expected_allocations
+        );
+    }
+
+    #[test]
+    fn test_apply_previous_transactions() {
+        let alice = solana_sdk::pubkey::new_rand();
+        let bob = solana_sdk::pubkey::new_rand();
+        let mut allocations = vec![
+            Allocation {
+                recipient: alice.to_string(),
+                amount: sol_to_lamports(1.0),
+                lockup_date: "".to_string(),
+            },
+            Allocation {
+                recipient: bob.to_string(),
+                amount: sol_to_lamports(1.0),
+                lockup_date: "".to_string(),
+            },
+        ];
+        let transaction_infos = vec![TransactionInfo {
+            recipient: bob,
+            amount: sol_to_lamports(1.0),
+            ..TransactionInfo::default()
+        }];
+        apply_previous_transactions(&mut allocations, &transaction_infos);
+        assert_eq!(allocations.len(), 1);
+
+        // Ensure that we applied the transaction to the allocation with
+        // a matching recipient address (to bob, not alice).
+        assert_eq!(allocations[0].recipient, alice.to_string());
+    }
+
+    #[test]
+    fn test_has_same_recipient() {
+        let alice_pubkey = solana_sdk::pubkey::new_rand();
+        let bob_pubkey = solana_sdk::pubkey::new_rand();
+        let lockup0 = "2021-01-07T00:00:00Z".to_string();
+        let lockup1 = "9999-12-31T23:59:59Z".to_string();
+        let alice_alloc = Allocation {
+            recipient: alice_pubkey.to_string(),
+            amount: sol_to_lamports(1.0),
+            lockup_date: "".to_string(),
+        };
+        let alice_alloc_lockup0 = Allocation {
+            recipient: alice_pubkey.to_string(),
+            amount: sol_to_lamports(1.0),
+            lockup_date: lockup0.clone(),
+        };
+        let alice_info = TransactionInfo {
+            recipient: alice_pubkey,
+            lockup_date: None,
+            ..TransactionInfo::default()
+        };
+        let alice_info_lockup0 = TransactionInfo {
+            recipient: alice_pubkey,
+            lockup_date: lockup0.parse().ok(),
+            ..TransactionInfo::default()
+        };
+        let alice_info_lockup1 = TransactionInfo {
+            recipient: alice_pubkey,
+            lockup_date: lockup1.parse().ok(),
+            ..TransactionInfo::default()
+        };
+        let bob_info = TransactionInfo {
+            recipient: bob_pubkey,
+            lockup_date: None,
+            ..TransactionInfo::default()
+        };
+        assert!(!has_same_recipient(&alice_alloc, &bob_info)); // Different recipient, no lockup
+        assert!(!has_same_recipient(&alice_alloc, &alice_info_lockup0)); // One with no lockup, one locked up
+        assert!(!has_same_recipient(
+            &alice_alloc_lockup0,
+            &alice_info_lockup1
+        )); // Different lockups
+        assert!(has_same_recipient(&alice_alloc, &alice_info)); // Same recipient, no lockups
+        assert!(has_same_recipient(
+            &alice_alloc_lockup0,
+            &alice_info_lockup0
+        )); // Same recipient, same lockups
+    }
+
+    const SET_LOCKUP_INDEX: usize = 5;
+
+    #[test]
+    fn test_set_split_stake_lockup() {
+        let lockup_date_str = "2021-01-07T00:00:00Z";
+        let allocation = Allocation {
+            recipient: Pubkey::default().to_string(),
+            amount: sol_to_lamports(1.0),
+            lockup_date: lockup_date_str.to_string(),
+        };
+        let stake_account_address = solana_sdk::pubkey::new_rand();
+        let new_stake_account_address = solana_sdk::pubkey::new_rand();
+        let lockup_authority = Keypair::new();
+        let lockup_authority_address = lockup_authority.pubkey();
+        let sender_stake_args = SenderStakeArgs {
+            stake_account_address,
+            stake_authority: Box::new(Keypair::new()),
+            withdraw_authority: Box::new(Keypair::new()),
+            lockup_authority: Some(Box::new(lockup_authority)),
+        };
+        let stake_args = StakeArgs {
+            lockup_authority: Some(lockup_authority_address),
+            unlocked_sol: sol_to_lamports(1.0),
+            sender_stake_args: Some(sender_stake_args),
+        };
+        let args = DistributeTokensArgs {
+            fee_payer: Box::new(Keypair::new()),
+            dry_run: false,
+            input_csv: "".to_string(),
+            transaction_db: "".to_string(),
+            output_path: None,
+            stake_args: Some(stake_args),
+            spl_token_args: None,
+            sender_keypair: Box::new(Keypair::new()),
+            transfer_amount: None,
+        };
+        let lockup_date = lockup_date_str.parse().unwrap();
+        let instructions = distribution_instructions(
+            &allocation,
+            &new_stake_account_address,
+            &args,
+            Some(lockup_date),
+            false,
+        );
+        let lockup_instruction =
+            bincode::deserialize(&instructions[SET_LOCKUP_INDEX].data).unwrap();
+        if let StakeInstruction::SetLockup(lockup_args) = lockup_instruction {
+            assert_eq!(lockup_args.unix_timestamp, Some(lockup_date.timestamp()));
+            assert_eq!(lockup_args.epoch, None); // Don't change the epoch
+            assert_eq!(lockup_args.custodian, None); // Don't change the lockup authority
+        } else {
+            panic!("expected SetLockup instruction");
+        }
+    }
+
+    fn tmp_file_path(name: &str, pubkey: &Pubkey) -> String {
+        use std::env;
+        let out_dir = env::var("FARF_DIR").unwrap_or_else(|_| "farf".to_string());
+
+        format!("{}/tmp/{}-{}", out_dir, name, pubkey)
+    }
+
+    fn initialize_check_payer_balances_inputs(
+        allocation_amount: u64,
+        sender_keypair_file: &str,
+        fee_payer: &str,
+        stake_args: Option<StakeArgs>,
+    ) -> (Vec<Allocation>, DistributeTokensArgs) {
+        let recipient = solana_sdk::pubkey::new_rand();
+        let allocations = vec![Allocation {
+            recipient: recipient.to_string(),
+            amount: allocation_amount,
+            lockup_date: "".to_string(),
+        }];
+        let args = DistributeTokensArgs {
+            sender_keypair: read_keypair_file(sender_keypair_file).unwrap().into(),
+            fee_payer: read_keypair_file(fee_payer).unwrap().into(),
+            dry_run: false,
+            input_csv: "".to_string(),
+            transaction_db: "".to_string(),
+            output_path: None,
+            stake_args,
+            spl_token_args: None,
+            transfer_amount: None,
+        };
+        (allocations, args)
+    }
+
+    #[test]
+    fn test_check_payer_balances_distribute_tokens_single_payer() {
+        let alice = Keypair::new();
+        let test_validator = TestValidator::with_custom_fees(
+            alice.pubkey(),
+            10_000,
+            None,
+            SocketAddrSpace::Unspecified,
+        );
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+        let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
+        write_keypair_file(&alice, &sender_keypair_file).unwrap();
+
+        let fees = client
+            .get_fee_for_message(&one_signer_message(&client))
+            .unwrap();
+        let fees_in_sol = lamports_to_sol(fees);
+
+        let allocation_amount = 1000.0;
+
+        // Fully funded payer
+        let (allocations, mut args) = initialize_check_payer_balances_inputs(
+            sol_to_lamports(allocation_amount),
+            &sender_keypair_file,
+            &sender_keypair_file,
+            None,
+        );
+        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+
+        // Unfunded payer
+        let unfunded_payer = Keypair::new();
+        let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
+        write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
+        args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+        args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(
+                sources,
+                vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
+            );
+            assert_eq!(amount, (allocation_amount + fees_in_sol).to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+
+        // Payer funded enough for distribution only
+        let partially_funded_payer = Keypair::new();
+        let partially_funded_payer_keypair_file =
+            tmp_file_path("keypair_file", &partially_funded_payer.pubkey());
+        write_keypair_file(
+            &partially_funded_payer,
+            &partially_funded_payer_keypair_file,
+        )
+        .unwrap();
+        let transaction = transfer(
+            &client,
+            sol_to_lamports(allocation_amount),
+            &alice,
+            &partially_funded_payer.pubkey(),
+        )
+        .unwrap();
+        client
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .unwrap();
+
+        args.sender_keypair = read_keypair_file(&partially_funded_payer_keypair_file)
+            .unwrap()
+            .into();
+        args.fee_payer = read_keypair_file(&partially_funded_payer_keypair_file)
+            .unwrap()
+            .into();
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(
+                sources,
+                vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
+            );
+            assert_eq!(amount, (allocation_amount + fees_in_sol).to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+    }
+
+    #[test]
+    fn test_check_payer_balances_distribute_tokens_separate_payers() {
+        let alice = Keypair::new();
+        let test_validator = TestValidator::with_custom_fees(
+            alice.pubkey(),
+            10_000,
+            None,
+            SocketAddrSpace::Unspecified,
+        );
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+
+        let fees = client
+            .get_fee_for_message(&one_signer_message(&client))
+            .unwrap();
+        let fees_in_sol = lamports_to_sol(fees);
+
+        let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
+        write_keypair_file(&alice, &sender_keypair_file).unwrap();
+
+        let allocation_amount = 1000.0;
+
+        let funded_payer = Keypair::new();
+        let funded_payer_keypair_file = tmp_file_path("keypair_file", &funded_payer.pubkey());
+        write_keypair_file(&funded_payer, &funded_payer_keypair_file).unwrap();
+        let transaction = transfer(
+            &client,
+            sol_to_lamports(allocation_amount),
+            &alice,
+            &funded_payer.pubkey(),
+        )
+        .unwrap();
+        client
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .unwrap();
+
+        // Fully funded payers
+        let (allocations, mut args) = initialize_check_payer_balances_inputs(
+            sol_to_lamports(allocation_amount),
+            &funded_payer_keypair_file,
+            &sender_keypair_file,
+            None,
+        );
+        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+
+        // Unfunded sender
+        let unfunded_payer = Keypair::new();
+        let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
+        write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
+        args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+        args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(sources, vec![FundingSource::SystemAccount].into());
+            assert_eq!(amount, allocation_amount.to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+
+        // Unfunded fee payer
+        args.sender_keypair = read_keypair_file(&sender_keypair_file).unwrap().into();
+        args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(sources, vec![FundingSource::FeePayer].into());
+            assert_eq!(amount, fees_in_sol.to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+    }
+
+    fn initialize_stake_account(
+        stake_account_amount: u64,
+        unlocked_sol: u64,
+        sender_keypair: &Keypair,
+        client: &RpcClient,
+    ) -> StakeArgs {
+        let stake_account_keypair = Keypair::new();
+        let stake_account_address = stake_account_keypair.pubkey();
+        let stake_authority = Keypair::new();
+        let withdraw_authority = Keypair::new();
+
+        let authorized = Authorized {
+            staker: stake_authority.pubkey(),
+            withdrawer: withdraw_authority.pubkey(),
+        };
+        let lockup = Lockup::default();
+        let instructions = stake_instruction::create_account(
+            &sender_keypair.pubkey(),
+            &stake_account_address,
+            &authorized,
+            &lockup,
+            stake_account_amount,
+        );
+        let message = Message::new(&instructions, Some(&sender_keypair.pubkey()));
+        let signers = [sender_keypair, &stake_account_keypair];
+        let blockhash = client.get_latest_blockhash().unwrap();
+        let transaction = Transaction::new(&signers, message, blockhash);
+        info!("sending alice tx...");
+        client
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .unwrap();
+
+        let sender_stake_args = SenderStakeArgs {
+            stake_account_address,
+            stake_authority: Box::new(stake_authority),
+            withdraw_authority: Box::new(withdraw_authority),
+            lockup_authority: None,
+        };
+
+        StakeArgs {
+            lockup_authority: None,
+            unlocked_sol,
+            sender_stake_args: Some(sender_stake_args),
+        }
+    }
+
+    #[test]
+    fn test_check_payer_balances_distribute_stakes_single_payer() {
+        let alice = Keypair::new();
+        let test_validator = TestValidator::with_custom_fees(
+            alice.pubkey(),
+            10_000,
+            None,
+            SocketAddrSpace::Unspecified,
+        );
+        let url = test_validator.rpc_url();
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+
+        let fees = client
+            .get_fee_for_message(&one_signer_message(&client))
+            .unwrap();
+        let fees_in_sol = lamports_to_sol(fees);
+
+        let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
+        write_keypair_file(&alice, &sender_keypair_file).unwrap();
+
+        let allocation_amount = 1000.0;
+        let unlocked_sol = 1.0;
+        let stake_args = initialize_stake_account(
+            sol_to_lamports(allocation_amount),
+            sol_to_lamports(unlocked_sol),
+            &alice,
+            &client,
+        );
+
+        // Fully funded payer & stake account
+        let (allocations, mut args) = initialize_check_payer_balances_inputs(
+            sol_to_lamports(allocation_amount),
+            &sender_keypair_file,
+            &sender_keypair_file,
+            Some(stake_args),
+        );
+        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+
+        // Underfunded stake-account
+        let expensive_allocation_amount = 5000.0;
+        let expensive_allocations = vec![Allocation {
+            recipient: solana_sdk::pubkey::new_rand().to_string(),
+            amount: sol_to_lamports(expensive_allocation_amount),
+            lockup_date: "".to_string(),
+        }];
+        let err_result = check_payer_balances(
+            &[one_signer_message(&client)],
+            &expensive_allocations,
+            &client,
+            &args,
+        )
+        .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(sources, vec![FundingSource::StakeAccount].into());
+            assert_eq!(
+                amount,
+                (expensive_allocation_amount - unlocked_sol).to_string()
+            );
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+
+        // Unfunded payer
+        let unfunded_payer = Keypair::new();
+        let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
+        write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
+        args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+        args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(
+                sources,
+                vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
+            );
+            assert_eq!(amount, (unlocked_sol + fees_in_sol).to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+
+        // Payer funded enough for distribution only
+        let partially_funded_payer = Keypair::new();
+        let partially_funded_payer_keypair_file =
+            tmp_file_path("keypair_file", &partially_funded_payer.pubkey());
+        write_keypair_file(
+            &partially_funded_payer,
+            &partially_funded_payer_keypair_file,
+        )
+        .unwrap();
+        let transaction = transfer(
+            &client,
+            sol_to_lamports(unlocked_sol),
+            &alice,
+            &partially_funded_payer.pubkey(),
+        )
+        .unwrap();
+        client
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .unwrap();
+
+        args.sender_keypair = read_keypair_file(&partially_funded_payer_keypair_file)
+            .unwrap()
+            .into();
+        args.fee_payer = read_keypair_file(&partially_funded_payer_keypair_file)
+            .unwrap()
+            .into();
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(
+                sources,
+                vec![FundingSource::SystemAccount, FundingSource::FeePayer].into()
+            );
+            assert_eq!(amount, (unlocked_sol + fees_in_sol).to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+    }
+
+    #[test]
+    fn test_check_payer_balances_distribute_stakes_separate_payers() {
+        solana_logger::setup_with_default("INFO");
+
+        let alice = Keypair::new();
+        let test_validator = TestValidator::with_custom_fees(
+            alice.pubkey(),
+            10_000,
+            None,
+            SocketAddrSpace::Unspecified,
+        );
+        let url = test_validator.rpc_url();
+
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+
+        let fees = client
+            .get_fee_for_message(&one_signer_message(&client))
+            .unwrap();
+        let fees_in_sol = lamports_to_sol(fees);
+
+        let sender_keypair_file = tmp_file_path("keypair_file", &alice.pubkey());
+        write_keypair_file(&alice, &sender_keypair_file).unwrap();
+
+        let balance = client.get_balance(&alice.pubkey()).unwrap();
+
+        let allocation_amount = 1000.0;
+        let unlocked_sol = 1.0;
+        let stake_args = initialize_stake_account(
+            sol_to_lamports(allocation_amount),
+            sol_to_lamports(unlocked_sol),
+            &alice,
+            &client,
+        );
+
+        let funded_payer = Keypair::new();
+        let funded_payer_keypair_file = tmp_file_path("keypair_file", &funded_payer.pubkey());
+        write_keypair_file(&funded_payer, &funded_payer_keypair_file).unwrap();
+        let transaction = transfer(
+            &client,
+            sol_to_lamports(unlocked_sol),
+            &alice,
+            &funded_payer.pubkey(),
+        )
+        .unwrap();
+        client
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .unwrap();
+
+        // Fully funded payers
+        let (allocations, mut args) = initialize_check_payer_balances_inputs(
+            sol_to_lamports(allocation_amount),
+            &funded_payer_keypair_file,
+            &sender_keypair_file,
+            Some(stake_args),
+        );
+        check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args).unwrap();
+
+        // Unfunded sender
+        let unfunded_payer = Keypair::new();
+        let unfunded_payer_keypair_file = tmp_file_path("keypair_file", &unfunded_payer.pubkey());
+        write_keypair_file(&unfunded_payer, &unfunded_payer_keypair_file).unwrap();
+        args.sender_keypair = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+        args.fee_payer = read_keypair_file(&sender_keypair_file).unwrap().into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(sources, vec![FundingSource::SystemAccount].into());
+            assert_eq!(amount, unlocked_sol.to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+
+        // Unfunded fee payer
+        args.sender_keypair = read_keypair_file(&sender_keypair_file).unwrap().into();
+        args.fee_payer = read_keypair_file(&unfunded_payer_keypair_file)
+            .unwrap()
+            .into();
+
+        let err_result =
+            check_payer_balances(&[one_signer_message(&client)], &allocations, &client, &args)
+                .unwrap_err();
+        if let Error::InsufficientFunds(sources, amount) = err_result {
+            assert_eq!(sources, vec![FundingSource::FeePayer].into());
+            assert_eq!(amount, fees_in_sol.to_string());
+        } else {
+            panic!("check_payer_balances should have errored");
+        }
+    }
+
+    #[test]
+    fn test_build_messages_dump_db() {
+        let client = RpcClient::new_mock("mock_client".to_string());
+        let dir = tempdir().unwrap();
+        let db_file = dir
+            .path()
+            .join("build_messages.db")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let mut db = db::open_db(&db_file, false).unwrap();
+
+        let sender = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let amount = sol_to_lamports(1.0);
+        let last_valid_block_height = 222;
+        let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
+
+        // Queue db data
+        db::set_transaction_info(
+            &mut db,
+            &recipient,
+            amount,
+            &transaction,
+            None,
+            false,
+            last_valid_block_height,
+            None,
+        )
+        .unwrap();
+
+        // Check that data has not been dumped
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+
+        // This is just dummy data; Args will not affect messages built
+        let args = DistributeTokensArgs {
+            sender_keypair: Box::new(Keypair::new()),
+            fee_payer: Box::new(Keypair::new()),
+            dry_run: true,
+            input_csv: "".to_string(),
+            transaction_db: "".to_string(),
+            output_path: None,
+            stake_args: None,
+            spl_token_args: None,
+            transfer_amount: None,
+        };
+        let allocation = Allocation {
+            recipient: recipient.to_string(),
+            amount: sol_to_lamports(1.0),
+            lockup_date: "".to_string(),
+        };
+
+        let mut messages: Vec<Message> = vec![];
+        let mut stake_extras: StakeExtras = vec![];
+        let mut created_accounts = 0;
+
+        // Exit false will not dump data
+        build_messages(
+            &client,
+            &mut db,
+            &[allocation.clone()],
+            &args,
+            Arc::new(AtomicBool::new(false)),
+            &mut messages,
+            &mut stake_extras,
+            &mut created_accounts,
+        )
+        .unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+        assert_eq!(messages.len(), 1);
+
+        // Empty allocations will not dump data
+        let mut messages: Vec<Message> = vec![];
+        let exit = Arc::new(AtomicBool::new(true));
+        build_messages(
+            &client,
+            &mut db,
+            &[],
+            &args,
+            exit.clone(),
+            &mut messages,
+            &mut stake_extras,
+            &mut created_accounts,
+        )
+        .unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+        assert!(messages.is_empty());
+
+        // Any allocation should prompt data dump
+        let mut messages: Vec<Message> = vec![];
+        build_messages(
+            &client,
+            &mut db,
+            &[allocation],
+            &args,
+            exit,
+            &mut messages,
+            &mut stake_extras,
+            &mut created_accounts,
+        )
+        .unwrap_err();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        let transaction_info = db::read_transaction_infos(&read_db);
+        assert_eq!(transaction_info.len(), 1);
+        assert_eq!(
+            transaction_info[0],
+            TransactionInfo {
+                recipient,
+                amount,
+                new_stake_account_address: None,
+                finalized_date: None,
+                transaction,
+                last_valid_block_height,
+                lockup_date: None,
+            }
+        );
+        assert_eq!(messages.len(), 0);
+    }
+
+    #[test]
+    fn test_send_messages_dump_db() {
+        let client = RpcClient::new_mock("mock_client".to_string());
+        let dir = tempdir().unwrap();
+        let db_file = dir
+            .path()
+            .join("send_messages.db")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let mut db = db::open_db(&db_file, false).unwrap();
+
+        let sender = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let amount = sol_to_lamports(1.0);
+        let last_valid_block_height = 222;
+        let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
+
+        // Queue db data
+        db::set_transaction_info(
+            &mut db,
+            &recipient,
+            amount,
+            &transaction,
+            None,
+            false,
+            last_valid_block_height,
+            None,
+        )
+        .unwrap();
+
+        // Check that data has not been dumped
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+
+        // This is just dummy data; Args will not affect messages
+        let args = DistributeTokensArgs {
+            sender_keypair: Box::new(Keypair::new()),
+            fee_payer: Box::new(Keypair::new()),
+            dry_run: true,
+            input_csv: "".to_string(),
+            transaction_db: "".to_string(),
+            output_path: None,
+            stake_args: None,
+            spl_token_args: None,
+            transfer_amount: None,
+        };
+        let allocation = Allocation {
+            recipient: recipient.to_string(),
+            amount: sol_to_lamports(1.0),
+            lockup_date: "".to_string(),
+        };
+        let message = transaction.message.clone();
+
+        // Exit false will not dump data
+        send_messages(
+            &client,
+            &mut db,
+            &[allocation.clone()],
+            &args,
+            Arc::new(AtomicBool::new(false)),
+            vec![message.clone()],
+            vec![(Keypair::new(), None)],
+        )
+        .unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+        // The method above will, however, write a record to the in-memory db
+        // Grab that expected value to test successful dump
+        let num_records = db::read_transaction_infos(&db).len();
+
+        // Empty messages/allocations will not dump data
+        let exit = Arc::new(AtomicBool::new(true));
+        send_messages(&client, &mut db, &[], &args, exit.clone(), vec![], vec![]).unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+
+        // Message/allocation should prompt data dump at start of loop
+        send_messages(
+            &client,
+            &mut db,
+            &[allocation],
+            &args,
+            exit,
+            vec![message.clone()],
+            vec![(Keypair::new(), None)],
+        )
+        .unwrap_err();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        let transaction_info = db::read_transaction_infos(&read_db);
+        assert_eq!(transaction_info.len(), num_records);
+        assert!(transaction_info.contains(&TransactionInfo {
+            recipient,
+            amount,
+            new_stake_account_address: None,
+            finalized_date: None,
+            transaction,
+            last_valid_block_height,
+            lockup_date: None,
+        }));
+        assert!(transaction_info.contains(&TransactionInfo {
+            recipient,
+            amount,
+            new_stake_account_address: None,
+            finalized_date: None,
+            transaction: Transaction::new_unsigned(message),
+            last_valid_block_height: std::u64::MAX,
+            lockup_date: None,
+        }));
+
+        // Next dump should write record written in last send_messages call
+        let num_records = db::read_transaction_infos(&db).len();
+        db.dump().unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        let transaction_info = db::read_transaction_infos(&read_db);
+        assert_eq!(transaction_info.len(), num_records);
+    }
+
+    #[test]
+    fn test_distribute_allocations_dump_db() {
+        let sender_keypair = Keypair::new();
+        let test_validator = TestValidator::with_no_fees(
+            sender_keypair.pubkey(),
+            None,
+            SocketAddrSpace::Unspecified,
+        );
+        let url = test_validator.rpc_url();
+        let client = RpcClient::new_with_commitment(url, CommitmentConfig::processed());
+
+        let fee_payer = Keypair::new();
+        let transaction = transfer(
+            &client,
+            sol_to_lamports(1.0),
+            &sender_keypair,
+            &fee_payer.pubkey(),
+        )
+        .unwrap();
+        client
+            .send_and_confirm_transaction_with_spinner(&transaction)
+            .unwrap();
+
+        let dir = tempdir().unwrap();
+        let db_file = dir
+            .path()
+            .join("dist_allocations.db")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let mut db = db::open_db(&db_file, false).unwrap();
+        let recipient = Pubkey::new_unique();
+        let allocation = Allocation {
+            recipient: recipient.to_string(),
+            amount: sol_to_lamports(1.0),
+            lockup_date: "".to_string(),
+        };
+        // This is just dummy data; Args will not affect messages
+        let args = DistributeTokensArgs {
+            sender_keypair: Box::new(sender_keypair),
+            fee_payer: Box::new(fee_payer),
+            dry_run: true,
+            input_csv: "".to_string(),
+            transaction_db: "".to_string(),
+            output_path: None,
+            stake_args: None,
+            spl_token_args: None,
+            transfer_amount: None,
+        };
+
+        let exit = Arc::new(AtomicBool::new(false));
+
+        // Ensure data is always dumped after distribute_allocations
+        distribute_allocations(&client, &mut db, &[allocation], &args, exit).unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        let transaction_info = db::read_transaction_infos(&read_db);
+        assert_eq!(transaction_info.len(), 1);
+    }
+
+    #[test]
+    fn test_log_transaction_confirmations_dump_db() {
+        let client = RpcClient::new_mock("mock_client".to_string());
+        let dir = tempdir().unwrap();
+        let db_file = dir
+            .path()
+            .join("log_transaction_confirmations.db")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let mut db = db::open_db(&db_file, false).unwrap();
+
+        let sender = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let amount = sol_to_lamports(1.0);
+        let last_valid_block_height = 222;
+        let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
+
+        // Queue unconfirmed transaction into db
+        db::set_transaction_info(
+            &mut db,
+            &recipient,
+            amount,
+            &transaction,
+            None,
+            false,
+            last_valid_block_height,
+            None,
+        )
+        .unwrap();
+
+        // Check that data has not been dumped
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+
+        // Empty unconfirmed_transactions will not dump data
+        let mut confirmations = None;
+        let exit = Arc::new(AtomicBool::new(true));
+        log_transaction_confirmations(
+            &client,
+            &mut db,
+            exit.clone(),
+            vec![],
+            vec![],
+            &mut confirmations,
+        )
+        .unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+        assert_eq!(confirmations, None);
+
+        // Exit false will not dump data
+        log_transaction_confirmations(
+            &client,
+            &mut db,
+            Arc::new(AtomicBool::new(false)),
+            vec![(&transaction, 111)],
+            vec![Some(TransactionStatus {
+                slot: 40,
+                confirmations: Some(15),
+                status: Ok(()),
+                err: None,
+                confirmation_status: Some(TransactionConfirmationStatus::Finalized),
+            })],
+            &mut confirmations,
+        )
+        .unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        assert!(db::read_transaction_infos(&read_db).is_empty());
+        assert_eq!(confirmations, Some(15));
+
+        // Exit true should dump data
+        log_transaction_confirmations(
+            &client,
+            &mut db,
+            exit,
+            vec![(&transaction, 111)],
+            vec![Some(TransactionStatus {
+                slot: 55,
+                confirmations: None,
+                status: Ok(()),
+                err: None,
+                confirmation_status: Some(TransactionConfirmationStatus::Finalized),
+            })],
+            &mut confirmations,
+        )
+        .unwrap_err();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        let transaction_info = db::read_transaction_infos(&read_db);
+        assert_eq!(transaction_info.len(), 1);
+        assert!(transaction_info[0].finalized_date.is_some());
+    }
+
+    #[test]
+    fn test_update_finalized_transactions_dump_db() {
+        let client = RpcClient::new_mock("mock_client".to_string());
+        let dir = tempdir().unwrap();
+        let db_file = dir
+            .path()
+            .join("update_finalized_transactions.db")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let mut db = db::open_db(&db_file, false).unwrap();
+
+        let sender = Keypair::new();
+        let recipient = Pubkey::new_unique();
+        let amount = sol_to_lamports(1.0);
+        let last_valid_block_height = 222;
+        let transaction = transfer(&client, amount, &sender, &recipient).unwrap();
+
+        // Queue unconfirmed transaction into db
+        db::set_transaction_info(
+            &mut db,
+            &recipient,
+            amount,
+            &transaction,
+            None,
+            false,
+            last_valid_block_height,
+            None,
+        )
+        .unwrap();
+
+        // Ensure data is always dumped after update_finalized_transactions
+        let confs =
+            update_finalized_transactions(&client, &mut db, Arc::new(AtomicBool::new(false)))
+                .unwrap();
+        let read_db = db::open_db(&db_file, true).unwrap();
+        let transaction_info = db::read_transaction_infos(&read_db);
+        assert_eq!(transaction_info.len(), 1);
+        assert_eq!(confs, None);
+    }
 }
