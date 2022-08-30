@@ -194,7 +194,7 @@ fn load_bank_forks(
         accounts_package_sender,
         None,
     )
-    .map(|(bank_forks, .., _)| bank_forks)?)
+    .map(|(bank_forks, ..)| bank_forks)?)
 }
 
 fn open_blockstore(
