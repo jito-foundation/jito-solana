@@ -1,0 +1,15 @@
+[package]
+name = "jito-protos"
+version = "1.10.39"
+edition = "2021"
+publish = false
+
+[dependencies]
+prost = "0.10.0"
+prost-types = "0.10.0"
+tonic = "=0.7.1"
+lock_api = "=0.4.6" # TODO (LB): this allows compliation on rust_nightly in ci
+crossbeam-epoch = "=0.9.5" # TODO (LB): this allows compliation on rust_nightly in ci
+
+[build-dependencies]
+tonic-build = "=0.7.1"

@@ -8,6 +8,7 @@ use {
         cluster_info_vote_listener::VoteTracker,
         completed_data_sets_service::CompletedDataSetsService,
         consensus::{reconcile_blockstore_roots_with_tower, Tower},
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         rewards_recorder_service::{RewardsRecorderSender, RewardsRecorderService},
         sample_performance_service::SamplePerformanceService,
         serve_repair::ServeRepair,
@@ -16,6 +17,7 @@ use {
         snapshot_packager_service::SnapshotPackagerService,
         stats_reporter_service::StatsReporterService,
         system_monitor_service::{verify_udp_stats_access, SystemMonitorService},
+        tip_manager::TipManagerConfig,
         tower_storage::TowerStorage,
         tpu::{Tpu, TpuSockets, DEFAULT_TPU_COALESCE_MS},
         tvu::{Tvu, TvuConfig, TvuSockets},
@@ -173,6 +175,10 @@ pub struct ValidatorConfig {
     pub wait_to_vote_slot: Option<Slot>,
     pub ledger_column_options: LedgerColumnOptions,
     pub enable_quic_servers: bool,
+    pub maybe_relayer_config: Option<RelayerConfig>,
+    pub maybe_block_engine_config: Option<BlockEngineConfig>,
+    pub shred_receiver_address: Option<SocketAddr>,
+    pub tip_manager_config: TipManagerConfig,
 }
 
 impl Default for ValidatorConfig {
@@ -237,6 +243,10 @@ impl Default for ValidatorConfig {
             wait_to_vote_slot: None,
             ledger_column_options: LedgerColumnOptions::default(),
             enable_quic_servers: true,
+            maybe_relayer_config: None,
+            maybe_block_engine_config: None,
+            shred_receiver_address: None,
+            tip_manager_config: TipManagerConfig::default(),
         }
     }
 }
@@ -959,6 +969,7 @@ impl Validator {
             config.wait_to_vote_slot,
             pruned_banks_receiver,
             &connection_cache,
+            config.shred_receiver_address,
         );
 
         let tpu = Tpu::new(
@@ -993,12 +1004,20 @@ impl Validator {
             &connection_cache,
             &identity_keypair,
             config.enable_quic_servers,
+            config.maybe_block_engine_config.clone(),
+            config.maybe_relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_address,
         );
 
         datapoint_info!(
             "validator-new",
             ("id", id.to_string(), String),
-            ("version", solana_version::version!(), String)
+            (
+                "version",
+                format!("jito-{}", solana_version::version!()),
+                String
+            )
         );
 
         *start_progress.write().unwrap() = ValidatorStartProgress::Running;
@@ -1878,7 +1897,7 @@ mod tests {
             Arc::new(validator_keypair),
             &validator_ledger_path,
             &voting_keypair.pubkey(),
-            Arc::new(RwLock::new(vec![voting_keypair.clone()])),
+            Arc::new(RwLock::new(vec![voting_keypair])),
             vec![leader_node.info],
             &config,
             true, // should_check_duplicate_instance
