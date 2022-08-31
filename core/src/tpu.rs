@@ -127,7 +127,7 @@ impl Tpu {
             transactions_forwards_quic: transactions_forwards_quic_sockets,
         } = sockets;
 
-        let (_packet_intercept_sender, packet_intercept_receiver) = unbounded();
+        let (packet_intercept_sender, packet_intercept_receiver) = unbounded();
         let (packet_sender, packet_receiver) = unbounded();
 
         // If there's a relayer, we need to redirect packets to the interceptor
