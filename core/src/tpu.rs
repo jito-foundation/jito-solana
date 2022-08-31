@@ -108,6 +108,15 @@ impl Tpu {
         } = sockets;
 
         let (packet_sender, packet_receiver) = unbounded();
+
+        // If there's a relayer, we need to redirect packets to the interceptor
+        // If not, they can flow straight through
+        let packet_send_channel = if maybe_relayer_config.is_some() {
+            packet_intercept_sender.clone()
+        } else {
+            packet_sender.clone()
+        };
+
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let (forwarded_packet_sender, forwarded_packet_receiver) = unbounded();
         let fetch_stage = FetchStage::new_with_sender(
@@ -115,7 +124,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit,
-            &packet_sender,
+            &packet_send_channel.clone(),
             &vote_packet_sender,
             &forwarded_packet_sender,
             forwarded_packet_receiver,
@@ -157,7 +166,7 @@ impl Tpu {
             transactions_quic_sockets,
             keypair,
             cluster_info.my_contact_info().tpu.ip(),
-            packet_sender,
+            packet_send_channel.clone(),
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
