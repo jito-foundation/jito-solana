@@ -133,7 +133,7 @@ impl Tpu {
         // If there's a relayer, we need to redirect packets to the interceptor
         // If not, they can flow straight through
         let packet_send_channel = if maybe_relayer_config.is_some() {
-            packet_intercept_sender.clone()
+            packet_intercept_sender
         } else {
             packet_sender.clone()
         };
@@ -145,7 +145,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit,
-            &packet_send_channel.clone(),
+            &packet_send_channel,
             &vote_packet_sender,
             &forwarded_packet_sender,
             forwarded_packet_receiver,
