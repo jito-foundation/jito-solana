@@ -30,13 +30,66 @@ pub struct UnfinishedSlotInfo {
     pub parent: Slot,
 }
 
+// =======
+//     let WorkingBankEntry {
+//         mut bank,
+//         entries_ticks,
+//     } = receiver.recv_timeout(timer)?;
+//
+//     let mut max_tick_height = bank.max_tick_height();
+//     let mut slot = bank.slot();
+//
+//     let ticks: Vec<u64> = entries_ticks.iter().map(|(_, tick)| *tick).collect();
+//     let mut highest_entry_tick = *ticks.iter().max().unwrap();
+//     assert!(highest_entry_tick <= max_tick_height);
+//
+//     let mut entries: Vec<Entry> = entries_ticks.into_iter().map(|(e, _)| e).collect();
+//
+//     // drain channel if not at max tick height for this slot yet
+//     if !ticks.iter().any(|t| *t == max_tick_height) {
+//         while let Ok(WorkingBankEntry {
+//             bank: try_bank,
+//             entries_ticks,
+//         }) = receiver.try_recv()
+//         {
+//             if try_bank.slot() != slot {
+//                 warn!("Broadcast for slot: {} interrupted", bank.slot());
+//                 entries.clear();
+//                 bank = try_bank;
+//                 slot = bank.slot();
+//                 max_tick_height = bank.max_tick_height();
+//             }
+//
+//             let ticks: Vec<u64> = entries_ticks.iter().map(|(_, tick)| *tick).collect();
+//             highest_entry_tick = *ticks.iter().max().unwrap();
+//
+//             entries.extend(entries_ticks.into_iter().map(|(entry, _)| entry));
+//             if entries.len() >= RECEIVE_ENTRY_COUNT_THRESHOLD {
+//                 break;
+//             }
+//
+//             assert!(highest_entry_tick <= max_tick_height);
+//             if highest_entry_tick == max_tick_height {
+//                 break;
+//             }
+// >>>>>>> 2846fcd7f3 (jito patch)
+
 pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result<ReceiveResults> {
     let target_serialized_batch_byte_count: u64 =
         32 * ShredData::capacity(/*merkle_proof_size*/ None).unwrap() as u64;
     let timer = Duration::new(1, 0);
     let recv_start = Instant::now();
 
-    let (mut bank, (entry, mut last_tick_height)) = receiver.recv_timeout(timer)?;
+    let WorkingBankEntry {
+        mut bank,
+        entries_ticks,
+    } = receiver.recv_timeout(timer)?;
+
+    let mut max_tick_height = bank.max_tick_height();
+    let mut slot = bank.slot();
+    let ticks: Vec<u64> = entries_ticks.iter().map(|(_, tick)| *tick).collect();
+    let mut highest_entry_tick = *ticks.iter().max().unwrap();
+    assert!(highest_entry_tick <= max_tick_height);
 
     let mut entries = vec![entry];
 
@@ -87,12 +140,11 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
         assert!(last_tick_height <= bank.max_tick_height());
     }
 
-    let time_elapsed = recv_start.elapsed();
     Ok(ReceiveResults {
         entries,
-        time_elapsed,
+        time_elapsed: recv_start.elapsed(),
         bank,
-        last_tick_height,
+        last_tick_height: highest_entry_tick,
     })
 }
 
@@ -138,7 +190,11 @@ mod tests {
             .map(|i| {
                 let entry = Entry::new(&last_hash, 1, vec![tx.clone()]);
                 last_hash = entry.hash;
-                s.send((bank1.clone(), (entry.clone(), i))).unwrap();
+                s.send(WorkingBankEntry {
+                    bank: bank1.clone(),
+                    entries_ticks: vec![(entry.clone(), i)],
+                })
+                .unwrap();
                 entry
             })
             .collect();
@@ -172,11 +228,18 @@ mod tests {
                 last_hash = entry.hash;
                 // Interrupt slot 1 right before the last tick
                 if tick_height == expected_last_height {
-                    s.send((bank2.clone(), (entry.clone(), tick_height)))
-                        .unwrap();
+                    s.send(WorkingBankEntry {
+                        bank: bank2.clone(),
+                        entries_ticks: vec![(entry.clone(), tick_height)],
+                    })
+                    .unwrap();
                     Some(entry)
                 } else {
-                    s.send((bank1.clone(), (entry, tick_height))).unwrap();
+                    s.send(WorkingBankEntry {
+                        bank: bank1.clone(),
+                        entries_ticks: vec![(entry, tick_height)],
+                    })
+                    .unwrap();
                     None
                 }
             })
