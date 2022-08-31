@@ -30,50 +30,6 @@ pub struct UnfinishedSlotInfo {
     pub parent: Slot,
 }
 
-// =======
-//     let WorkingBankEntry {
-//         mut bank,
-//         entries_ticks,
-//     } = receiver.recv_timeout(timer)?;
-//
-//     let mut max_tick_height = bank.max_tick_height();
-//     let mut slot = bank.slot();
-//
-//     let ticks: Vec<u64> = entries_ticks.iter().map(|(_, tick)| *tick).collect();
-//     let mut highest_entry_tick = *ticks.iter().max().unwrap();
-//     assert!(highest_entry_tick <= max_tick_height);
-//
-//     let mut entries: Vec<Entry> = entries_ticks.into_iter().map(|(e, _)| e).collect();
-//
-//     // drain channel if not at max tick height for this slot yet
-//     if !ticks.iter().any(|t| *t == max_tick_height) {
-//         while let Ok(WorkingBankEntry {
-//             bank: try_bank,
-//             entries_ticks,
-//         }) = receiver.try_recv()
-//         {
-//             if try_bank.slot() != slot {
-//                 warn!("Broadcast for slot: {} interrupted", bank.slot());
-//                 entries.clear();
-//                 bank = try_bank;
-//                 slot = bank.slot();
-//                 max_tick_height = bank.max_tick_height();
-//             }
-//
-//             let ticks: Vec<u64> = entries_ticks.iter().map(|(_, tick)| *tick).collect();
-//             highest_entry_tick = *ticks.iter().max().unwrap();
-//
-//             entries.extend(entries_ticks.into_iter().map(|(entry, _)| entry));
-//             if entries.len() >= RECEIVE_ENTRY_COUNT_THRESHOLD {
-//                 break;
-//             }
-//
-//             assert!(highest_entry_tick <= max_tick_height);
-//             if highest_entry_tick == max_tick_height {
-//                 break;
-//             }
-// >>>>>>> 2846fcd7f3 (jito patch)
-
 pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result<ReceiveResults> {
     let target_serialized_batch_byte_count: u64 =
         32 * ShredData::capacity(/*merkle_proof_size*/ None).unwrap() as u64;
@@ -85,22 +41,22 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
         entries_ticks,
     } = receiver.recv_timeout(timer)?;
 
-    let mut max_tick_height = bank.max_tick_height();
-    let mut slot = bank.slot();
     let ticks: Vec<u64> = entries_ticks.iter().map(|(_, tick)| *tick).collect();
-    let mut highest_entry_tick = *ticks.iter().max().unwrap();
-    assert!(highest_entry_tick <= max_tick_height);
+    let mut entries: Vec<Entry> = entries_ticks.into_iter().map(|(entry, _)| entry).collect();
 
-    let mut entries = vec![entry];
-
+    let mut last_tick_height = *ticks.iter().max().unwrap();
     assert!(last_tick_height <= bank.max_tick_height());
 
-    // Drain channel
+    // Drain channel until max tick height or no more entries
     while last_tick_height != bank.max_tick_height() {
-        let (try_bank, (entry, tick_height)) = match receiver.try_recv() {
+        let WorkingBankEntry {
+            bank: try_bank,
+            entries_ticks,
+        } = match receiver.try_recv() {
             Ok(working_bank_entry) => working_bank_entry,
             Err(_) => break,
         };
+
         // If the bank changed, that implies the previous slot was interrupted and we do not have to
         // broadcast its entries.
         if try_bank.slot() != bank.slot() {
@@ -108,19 +64,25 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
             entries.clear();
             bank = try_bank;
         }
-        last_tick_height = tick_height;
-        entries.push(entry);
+        last_tick_height = entries_ticks.iter().map(|(_, tick)| *tick).max().unwrap();
+        entries.extend(entries_ticks.into_iter().map(|(entry, _)| entry));
         assert!(last_tick_height <= bank.max_tick_height());
     }
 
-    let mut serialized_batch_byte_count = serialized_size(&entries)?;
+    let mut serialized_batch_byte_count = 0;
+    for entry in &entries {
+        serialized_batch_byte_count += serialized_size(entry)?;
+    }
 
     // Wait up to `ENTRY_COALESCE_DURATION` to try to coalesce entries into a 32 shred batch
     let mut coalesce_deadline = Instant::now() + ENTRY_COALESCE_DURATION;
     while last_tick_height != bank.max_tick_height()
         && serialized_batch_byte_count < target_serialized_batch_byte_count
     {
-        let (try_bank, (entry, tick_height)) = match receiver.recv_deadline(coalesce_deadline) {
+        let WorkingBankEntry {
+            bank: try_bank,
+            entries_ticks,
+        } = match receiver.recv_deadline(coalesce_deadline) {
             Ok(working_bank_entry) => working_bank_entry,
             Err(_) => break,
         };
@@ -133,10 +95,12 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
             bank = try_bank;
             coalesce_deadline = Instant::now() + ENTRY_COALESCE_DURATION;
         }
-        last_tick_height = tick_height;
-        let entry_bytes = serialized_size(&entry)?;
-        serialized_batch_byte_count += entry_bytes;
-        entries.push(entry);
+        last_tick_height = entries_ticks.iter().map(|(_, tick)| *tick).max().unwrap();
+
+        for (entry, _) in &entries_ticks {
+            serialized_batch_byte_count += serialized_size(entry)?;
+        }
+        entries.extend(entries_ticks.into_iter().map(|(entry, _)| entry));
         assert!(last_tick_height <= bank.max_tick_height());
     }
 
@@ -144,7 +108,7 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
         entries,
         time_elapsed: recv_start.elapsed(),
         bank,
-        last_tick_height: highest_entry_tick,
+        last_tick_height,
     })
 }
 
