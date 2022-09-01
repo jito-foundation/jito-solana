@@ -2562,14 +2562,24 @@ pub fn main() {
     let maybe_block_engine_config = is_block_engine_enabled.then(|| {
         let addr: String = value_of(&matches, "block_engine_auth_service_address")
             .expect("missing block-engine-auth-service-address");
-        let auth_service_endpoint =
-            Endpoint::from_shared(addr).expect("invalid block-engine-auth-service-address value");
+        let mut auth_service_endpoint = Endpoint::from_shared(addr.clone())
+            .expect("invalid block-engine-auth-service-address value");
+        if addr.contains("https") {
+            auth_service_endpoint = auth_service_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
 
         let addr: String =
             value_of(&matches, "block_engine_address").expect("missing block-engine-address");
-        let backend_endpoint = Endpoint::from_shared(addr)
+        let mut backend_endpoint = Endpoint::from_shared(addr.clone())
             .expect("invalid block-engine-address value")
             .tcp_keepalive(Some(Duration::from_secs(60)));
+        if addr.contains("https") {
+            backend_endpoint = backend_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
 
         BlockEngineConfig {
             auth_service_endpoint,
@@ -2586,11 +2596,22 @@ pub fn main() {
     let maybe_relayer_config = is_relayer_enabled.then(|| {
         let addr: String = value_of(&matches, "relayer_auth_service_address")
             .expect("missing relayer-auth-service-address");
-        let auth_service_endpoint =
-            Endpoint::from_shared(addr).expect("invalid relayer-auth-service-address value");
+        let mut auth_service_endpoint = Endpoint::from_shared(addr.clone())
+            .expect("invalid relayer-auth-service-address value");
+        if addr.contains("https") {
+            auth_service_endpoint = auth_service_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
 
         let addr: String = value_of(&matches, "relayer_address").expect("missing relayer-address");
-        let backend_endpoint = Endpoint::from_shared(addr).expect("invalid relayer-address value");
+        let mut backend_endpoint =
+            Endpoint::from_shared(addr.clone()).expect("invalid relayer-address value");
+        if addr.contains("https") {
+            backend_endpoint = backend_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
 
         let expected_heartbeat_interval_ms =
             value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap_or(500);
