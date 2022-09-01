@@ -5,15 +5,23 @@ use {
     crate::{
         banking_stage::BankingStage,
         broadcast_stage::{BroadcastStage, BroadcastStageType, RetransmitSlotsReceiver},
+        bundle_account_locker::BundleAccountLocker,
+        bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, GossipDuplicateConfirmedSlotsSender,
             GossipVerifiedVoteHashSender, VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
         find_packet_sender_stake_stage::FindPacketSenderStakeStage,
+        proxy::{
+            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
+            fetch_stage_manager::FetchStageManager,
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
+        tip_manager::{TipManager, TipManagerConfig},
     },
     crossbeam_channel::{unbounded, Receiver},
     solana_client::connection_cache::ConnectionCache,
@@ -35,7 +43,8 @@ use {
         streamer::StakedNodes,
     },
     std::{
-        net::UdpSocket,
+        collections::HashSet,
+        net::{SocketAddr, UdpSocket},
         sync::{atomic::AtomicBool, Arc, RwLock},
         thread,
     },
@@ -59,6 +68,9 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
+    maybe_relayer_stage: Option<RelayerStage>,
+    maybe_block_engine_stage: Option<BlockEngineStage>,
+    maybe_fetch_stage_manager: Option<FetchStageManager>,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -67,6 +79,7 @@ pub struct Tpu {
     find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     vote_find_packet_sender_stake_stage: FindPacketSenderStakeStage,
     staked_nodes_updater_service: StakedNodesUpdaterService,
+    bundle_stage: BundleStage,
 }
 
 impl Tpu {
@@ -97,6 +110,10 @@ impl Tpu {
         keypair: &Keypair,
         log_messages_bytes_limit: Option<usize>,
         staked_nodes: &Arc<RwLock<StakedNodes>>,
+        maybe_block_engine_config: Option<BlockEngineConfig>,
+        maybe_relayer_config: Option<RelayerConfig>,
+        tip_manager_config: TipManagerConfig,
+        shred_receiver_address: Option<SocketAddr>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -107,7 +124,17 @@ impl Tpu {
             transactions_forwards_quic: transactions_forwards_quic_sockets,
         } = sockets;
 
+        let (packet_intercept_sender, packet_intercept_receiver) = unbounded();
         let (packet_sender, packet_receiver) = unbounded();
+
+        // If there's a relayer, we need to redirect packets to the interceptor
+        // If not, they can flow straight through
+        let packet_send_channel = if maybe_relayer_config.is_some() {
+            packet_intercept_sender
+        } else {
+            packet_sender.clone()
+        };
+
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let (forwarded_packet_sender, forwarded_packet_receiver) = unbounded();
         let fetch_stage = FetchStage::new_with_sender(
@@ -115,7 +142,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit,
-            &packet_sender,
+            &packet_send_channel,
             &vote_packet_sender,
             &forwarded_packet_sender,
             forwarded_packet_receiver,
@@ -157,7 +184,7 @@ impl Tpu {
             transactions_quic_sockets,
             keypair,
             cluster_info.my_contact_info().tpu.ip(),
-            packet_sender,
+            packet_send_channel,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
@@ -182,7 +209,7 @@ impl Tpu {
         .unwrap();
 
         let sigverify_stage = {
-            let verifier = TransactionSigVerifier::new(verified_sender);
+            let verifier = TransactionSigVerifier::new(verified_sender.clone());
             SigVerifyStage::new(find_packet_sender_stake_receiver, verifier, "tpu-verifier")
         };
 
@@ -197,6 +224,39 @@ impl Tpu {
                 "tpu-vote-verifier",
             )
         };
+
+        let (bundle_sender, bundle_receiver) = unbounded();
+        let maybe_block_engine_stage = maybe_block_engine_config.map(|block_engine_config| {
+            BlockEngineStage::new(
+                block_engine_config,
+                bundle_sender,
+                cluster_info.clone(),
+                packet_sender.clone(),
+                verified_sender.clone(),
+                exit.clone(),
+            )
+        });
+
+        let (heartbeat_tx, heartbeat_rx) = unbounded();
+        let maybe_fetch_stage_manager = maybe_relayer_config.as_ref().map(|_| {
+            FetchStageManager::new(
+                cluster_info.clone(),
+                heartbeat_rx,
+                packet_intercept_receiver,
+                packet_sender.clone(),
+                exit.clone(),
+            )
+        });
+        let maybe_relayer_stage = maybe_relayer_config.map(|relayer_config| {
+            RelayerStage::new(
+                relayer_config,
+                cluster_info.clone(),
+                heartbeat_tx,
+                packet_sender,
+                verified_sender,
+                exit.clone(),
+            )
+        });
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
             unbounded();
@@ -216,18 +276,42 @@ impl Tpu {
             cluster_confirmed_slot_sender,
         );
 
+        let tip_manager = TipManager::new(tip_manager_config);
+
+        let bundle_account_locker = BundleAccountLocker::default();
+
+        // tip accounts can't be used in BankingStage to avoid someone from stealing tips mid-slot.
+        // it also helps reduce surface area for potential account contention
+        let mut blacklisted_accounts = HashSet::new();
+        blacklisted_accounts.insert(tip_manager.tip_payment_config_pubkey());
+        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
+        blacklisted_accounts.extend(tip_manager.get_tip_accounts());
         let banking_stage = BankingStage::new(
             cluster_info,
             poh_recorder,
             verified_receiver,
             verified_tpu_vote_packets_receiver,
             verified_gossip_vote_packets_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             cost_model.clone(),
             log_messages_bytes_limit,
             connection_cache.clone(),
             bank_forks.clone(),
+            blacklisted_accounts,
+            bundle_account_locker.clone(),
+        );
+
+        let bundle_stage = BundleStage::new(
+            cluster_info,
+            poh_recorder,
+            transaction_status_sender,
+            replay_vote_sender,
+            cost_model.clone(),
+            bundle_receiver,
+            exit.clone(),
+            tip_manager,
+            bundle_account_locker,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
@@ -239,12 +323,16 @@ impl Tpu {
             blockstore.clone(),
             bank_forks,
             shred_version,
+            shred_receiver_address,
         );
 
         Self {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
+            maybe_block_engine_stage,
+            maybe_relayer_stage,
+            maybe_fetch_stage_manager,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -253,6 +341,7 @@ impl Tpu {
             find_packet_sender_stake_stage,
             vote_find_packet_sender_stake_stage,
             staked_nodes_updater_service,
+            bundle_stage,
         }
     }
 
@@ -268,7 +357,19 @@ impl Tpu {
             self.staked_nodes_updater_service.join(),
             self.tpu_quic_t.join(),
             self.tpu_forwards_quic_t.join(),
+            self.bundle_stage.join(),
         ];
+
+        if let Some(relayer_stage) = self.maybe_relayer_stage {
+            relayer_stage.join()?;
+        }
+        if let Some(block_engine_stage) = self.maybe_block_engine_stage {
+            block_engine_stage.join()?;
+        }
+        if let Some(fetch_stage_manager) = self.maybe_fetch_stage_manager {
+            fetch_stage_manager.join()?;
+        }
+
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
             result?;
