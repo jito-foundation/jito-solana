@@ -1857,7 +1857,7 @@ pub fn main() {
         .arg(
             Arg::with_name("trust_block_engine_packets")
                 .long("trust-block-engine-packets")
-                .takes_value(true)
+                .takes_value(false)
                 .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
         )
         .arg(
