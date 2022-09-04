@@ -16,5 +16,5 @@ docker rm temp || true
 docker container create --name temp jitolabs/build-solana
 mkdir -p $SCRIPT_DIR/docker-output
 # Outputs the solana-validator binary to $SOLANA/docker-output/solana-validator
-docker container cp temp:/solana/solana-validator $SCRIPT_DIR/docker-output/solana-validator
+docker container cp temp:/solana/docker-output $SCRIPT_DIR/
 docker rm temp
