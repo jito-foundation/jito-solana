@@ -6,6 +6,7 @@ use {
     },
     chrono_humanize::{Accuracy, HumanTime, Tense},
     crossbeam_channel::{unbounded, Sender},
+    futures::AsyncReadExt,
     itertools::Itertools,
     log::*,
     rand::{seq::SliceRandom, thread_rng},
@@ -49,8 +50,8 @@ use {
         signature::{Keypair, Signature},
         timing,
         transaction::{
-            Result, SanitizedTransaction, TransactionError, TransactionVerificationMode,
-            VersionedTransaction,
+            Result, SanitizedTransaction, TransactionAccountLocks, TransactionError,
+            TransactionVerificationMode, VersionedTransaction,
         },
     },
     solana_transaction_status::token_balances::TransactionTokenBalancesSet,
@@ -375,6 +376,216 @@ fn execute_batches(
     )
 }
 
+fn execute_batches2(
+    bank: &Arc<Bank>,
+    transactions: &[SanitizedTransaction],
+    entry_callback: Option<&ProcessCallback>,
+    transaction_status_sender: Option<&TransactionStatusSender>,
+    replay_vote_sender: Option<&ReplayVoteSender>,
+    timings: &mut ExecuteTimings,
+    cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
+) -> Result<()> {
+    // readonly and writeable locks
+    let tx_account_locks_results: Vec<Result<_>> = transactions
+        .iter()
+        .map(|tx| tx.get_account_locks(&bank.feature_set))
+        .collect();
+    let dependency_graph = build_graph(&tx_account_locks_results)?;
+    let batches_indices = build_batch_indices(&dependency_graph);
+    for batch_indices in batches_indices {
+        let lens = batch_indices.len();
+        info!(
+            "slot: {:?} batch_indices lens before resize: {:?}",
+            bank.slot(),
+            lens
+        );
+
+        let sanitized_txs: Vec<SanitizedTransaction> = batch_indices
+            .iter()
+            .map(|i| transactions.get(*i).unwrap().clone())
+            .collect();
+        let batches = vec![bank.prepare_sanitized_batch(&sanitized_txs)];
+
+        let (lock_results, sanitized_txs): (Vec<_>, Vec<_>) = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .lock_results()
+                    .iter()
+                    .cloned()
+                    .zip(batch.sanitized_transactions().to_vec())
+            })
+            .unzip();
+
+        let cost_model = CostModel::new();
+        let mut minimal_tx_cost = u64::MAX;
+        let mut total_cost: u64 = 0;
+        // Allowing collect here, since it also computes the minimal tx cost, and aggregate cost.
+        // These two values are later used for checking if the tx_costs vector needs to be iterated over.
+        #[allow(clippy::needless_collect)]
+        let tx_costs = sanitized_txs
+            .iter()
+            .map(|tx| {
+                let cost = cost_model.calculate_cost(tx).sum();
+                minimal_tx_cost = std::cmp::min(minimal_tx_cost, cost);
+                total_cost = total_cost.saturating_add(cost);
+                cost
+            })
+            .collect::<Vec<_>>();
+
+        let target_batch_count = get_thread_count() as u64;
+
+        let mut tx_batches: Vec<TransactionBatch> = vec![];
+        let rebatched_txs = if total_cost > target_batch_count.saturating_mul(minimal_tx_cost) {
+            let target_batch_cost = total_cost / target_batch_count;
+            let mut batch_cost: u64 = 0;
+            let mut slice_start = 0;
+            tx_costs.into_iter().enumerate().for_each(|(index, cost)| {
+                let next_index = index + 1;
+                batch_cost = batch_cost.saturating_add(cost);
+                if batch_cost >= target_batch_cost || next_index == sanitized_txs.len() {
+                    let tx_batch = rebatch_transactions(
+                        &lock_results,
+                        bank,
+                        &sanitized_txs,
+                        slice_start,
+                        index,
+                    );
+                    slice_start = next_index;
+                    tx_batches.push(tx_batch);
+                    batch_cost = 0;
+                }
+            });
+            &tx_batches[..]
+        } else {
+            &batches
+        };
+
+        let batch_lens_after_rebatching: Vec<_> = batches
+            .iter()
+            .map(|b| b.sanitized_transactions().len())
+            .collect();
+        info!(
+            "slot: {:?} batch_lens_after_rebatching: {:?}",
+            bank.slot(),
+            batch_lens_after_rebatching
+        );
+
+        execute_batches_internal(
+            bank,
+            rebatched_txs,
+            entry_callback,
+            transaction_status_sender,
+            replay_vote_sender,
+            timings,
+            cost_capacity_meter.clone(),
+        )?
+    }
+
+    Ok(())
+}
+
+fn build_batch_indices(graph: &Vec<i32>) -> Vec<Vec<usize>> {
+    let mut processed_indices = vec![false; graph.len()];
+    let mut batches = Vec::new();
+
+    while !processed_indices.iter().all(|p| *p) {
+        let mut batch = vec![];
+        for (idx, node) in graph.iter().enumerate() {
+            // if not processed and (node == -1 || processed[node]), add to batch
+            if !processed_indices[idx] && (*node == -1 || processed_indices[*node as usize]) {
+                batch.push(idx);
+            }
+        }
+        for i in &batch {
+            processed_indices[*i] = true;
+        }
+        batches.push(batch);
+    }
+
+    batches
+}
+
+fn build_graph(tx_account_locks_results: &[Result<TransactionAccountLocks>]) -> Result<Vec<i32>> {
+    let mut graph = vec![-1; tx_account_locks_results.len()];
+
+    if let Some(err) = tx_account_locks_results.iter().find(|r| r.is_err()) {
+        err.clone()?;
+    }
+    let transaction_locks: Vec<_> = tx_account_locks_results
+        .iter()
+        .map(|r| r.as_ref().unwrap())
+        .collect();
+
+    // build a hashmap for read and write locks that map an account to transaction indices that read
+    // or write lock that account
+    let read_lock_account_indices: HashMap<Pubkey, Vec<usize>> = transaction_locks
+        .iter()
+        .enumerate()
+        .fold(HashMap::new(), |mut hmap, (idx, locks)| {
+            for account in &locks.readonly {
+                hmap.entry(**account)
+                    .and_modify(|indices| indices.push(idx))
+                    .or_insert(vec![idx]);
+            }
+            hmap
+        });
+    let write_lock_account_indices: HashMap<Pubkey, Vec<usize>> = transaction_locks
+        .iter()
+        .enumerate()
+        .fold(HashMap::new(), |mut hmap, (idx, locks)| {
+            for account in &locks.writable {
+                hmap.entry(**account)
+                    .and_modify(|indices| indices.push(idx))
+                    .or_insert(vec![idx]);
+            }
+            hmap
+        });
+
+    // for each transaction, attempt to find an index of another transaction that the current
+    // iterated transaction depends on
+    for (idx, account_locks) in transaction_locks.iter().enumerate() {
+        let mut indices_with_contention = HashSet::new();
+
+        // read locked accounts have to be executed after transactions that write lock a given account
+        for read_acc in &account_locks.readonly {
+            if let Some(writelock_indices) = write_lock_account_indices.get(read_acc) {
+                for wl_idx in writelock_indices {
+                    if *wl_idx < idx {
+                        indices_with_contention.insert(wl_idx);
+                    }
+                }
+            }
+        }
+
+        // write locked accounts have to be executed after transactions that write lock or read lock
+        // a given account
+        for write_acc in &account_locks.writable {
+            if let Some(writelock_indices) = write_lock_account_indices.get(write_acc) {
+                for wl_idx in writelock_indices {
+                    if *wl_idx < idx {
+                        indices_with_contention.insert(wl_idx);
+                    }
+                }
+            }
+            if let Some(readonly_indices) = read_lock_account_indices.get(write_acc) {
+                for rl_idx in readonly_indices {
+                    if *rl_idx < idx {
+                        indices_with_contention.insert(rl_idx);
+                    }
+                }
+            }
+        }
+        // find the index of the transaction immediately before the current transaction that needs
+        // to be executed before
+        if let Some(contention_index) = indices_with_contention.iter().max() {
+            graph[idx] = **contention_index as i32;
+        }
+    }
+
+    Ok(graph)
+}
+
 /// Process an ordered list of entries in parallel
 /// 1. In order lock accounts for each entry while the lock succeeds, up to a Tick entry
 /// 2. Process the locked group in parallel
@@ -415,7 +626,7 @@ pub fn process_entries_for_tests(
 // Note: If randomize is true this will shuffle entries' transactions in-place.
 fn process_entries_with_callback(
     bank: &Arc<Bank>,
-    entries: &mut [EntryType],
+    entries: &[EntryType],
     randomize: bool,
     entry_callback: Option<&ProcessCallback>,
     transaction_status_sender: Option<&TransactionStatusSender>,
@@ -424,10 +635,9 @@ fn process_entries_with_callback(
     timings: &mut ExecuteTimings,
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
 ) -> Result<()> {
-    // accumulator for entries that can be processed in parallel
-    let mut batches = vec![];
+    let mut executable_txs = vec![];
     let mut tick_hashes = vec![];
-    let mut rng = thread_rng();
+    // let mut rng = thread_rng();
 
     for entry in entries {
         match entry {
@@ -437,16 +647,16 @@ fn process_entries_with_callback(
                 if bank.is_block_boundary(bank.tick_height() + tick_hashes.len() as u64) {
                     // If it's a tick that will cause a new blockhash to be created,
                     // execute the group and register the tick
-                    execute_batches(
+                    execute_batches2(
                         bank,
-                        &batches,
+                        &executable_txs,
                         entry_callback,
                         transaction_status_sender,
                         replay_vote_sender,
                         timings,
                         cost_capacity_meter.clone(),
                     )?;
-                    batches.clear();
+                    executable_txs.clear();
                     for hash in &tick_hashes {
                         bank.register_tick(hash);
                     }
@@ -459,59 +669,17 @@ fn process_entries_with_callback(
                         .send_cost_details(bank.clone(), transactions.iter());
                 }
 
-                if randomize {
-                    transactions.shuffle(&mut rng);
-                }
+                // TODO (LB): add randomization back in
 
-                loop {
-                    // try to lock the accounts
-                    let batch = bank.prepare_sanitized_batch(transactions);
-                    let first_lock_err = first_err(batch.lock_results());
-
-                    // if locking worked
-                    if first_lock_err.is_ok() {
-                        batches.push(batch);
-                        // done with this entry
-                        break;
-                    }
-                    // else we failed to lock, 2 possible reasons
-                    if batches.is_empty() {
-                        // An entry has account lock conflicts with *itself*, which should not happen
-                        // if generated by a properly functioning leader
-                        datapoint_error!(
-                            "validator_process_entry_error",
-                            (
-                                "error",
-                                format!(
-                                    "Lock accounts error, entry conflicts with itself, txs: {:?}",
-                                    transactions
-                                ),
-                                String
-                            )
-                        );
-                        // bail
-                        first_lock_err?;
-                    } else {
-                        // else we have an entry that conflicts with a prior entry
-                        // execute the current queue and try to process this entry again
-                        execute_batches(
-                            bank,
-                            &batches,
-                            entry_callback,
-                            transaction_status_sender,
-                            replay_vote_sender,
-                            timings,
-                            cost_capacity_meter.clone(),
-                        )?;
-                        batches.clear();
-                    }
-                }
+                // TODO (LB): add back in lock check here.
+                // TODO (LB): avoid clone
+                executable_txs.extend(transactions.clone());
             }
         }
     }
-    execute_batches(
+    execute_batches2(
         bank,
-        &batches,
+        &executable_txs,
         entry_callback,
         transaction_status_sender,
         replay_vote_sender,
@@ -986,7 +1154,7 @@ pub fn confirm_slot(
             // Note: This will shuffle entries' transactions in-place.
             let process_result = process_entries_with_callback(
                 bank,
-                &mut entries.unwrap(),
+                &entries.unwrap(),
                 true, // shuffle transactions.
                 entry_callback,
                 transaction_status_sender,
