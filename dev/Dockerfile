@@ -30,7 +30,8 @@ RUN set -x \
 # /usr/local/cargo/git needed for crossbeam patch
 WORKDIR /solana
 COPY . .
+RUN mkdir -p docker-output
 RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    cargo build --verbose --release --bin solana-validator && cp target/release/solana-validator ./solana-validator
+    cargo build --verbose --release && cp target/release/solana* ./docker-output
