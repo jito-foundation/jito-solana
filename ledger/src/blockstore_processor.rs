@@ -417,6 +417,10 @@ fn execute_batches2(
             })
             .unzip();
 
+        if let Some(r) = lock_results.iter().find(|r| r.is_err()) {
+            info!("lock error: {:?}", r);
+        }
+
         let cost_model = CostModel::new();
         let mut minimal_tx_cost = u64::MAX;
         let mut total_cost: u64 = 0;
@@ -479,7 +483,7 @@ fn execute_batches2(
             replay_vote_sender,
             timings,
             cost_capacity_meter.clone(),
-        )?
+        )?;
     }
 
     Ok(())
