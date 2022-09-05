@@ -384,14 +384,17 @@ fn execute_batches2(
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
 ) -> Result<()> {
     // readonly and writeable locks
+
+    let now = Instant::now();
     let tx_account_locks_results: Vec<Result<_>> = transactions
         .iter()
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
     let dependency_graph = build_dependency_graph(&tx_account_locks_results)?;
     let batches_indices = build_batch_indices(&dependency_graph);
+    timings.planning_elapsed += now.elapsed().as_micros() as u64;
 
-    let lens: Vec<_> = batches_indices.iter().map(|bi| bi.len()).collect();
+    // let lens: Vec<_> = batches_indices.iter().map(|bi| bi.len()).collect();
     // info!(
     //     "slot: {:?} batch_indices lens before resize: {:?}",
     //     bank.slot(),
@@ -1029,6 +1032,7 @@ pub struct ConfirmationTiming {
     pub fetch_elapsed: u64,
     pub fetch_fail_elapsed: u64,
     pub execute_timings: ExecuteTimings,
+    pub planning_elapsed: u64,
 }
 
 impl Default for ConfirmationTiming {
@@ -1041,6 +1045,7 @@ impl Default for ConfirmationTiming {
             fetch_elapsed: 0,
             fetch_fail_elapsed: 0,
             execute_timings: ExecuteTimings::default(),
+            planning_elapsed: 0,
         }
     }
 }
@@ -1176,6 +1181,7 @@ pub fn confirm_slot(
             .map_err(BlockstoreProcessorError::from);
             replay_elapsed.stop();
             timing.replay_elapsed += replay_elapsed.as_us();
+            timing.planning_elapsed += execute_timings.planning_elapsed;
 
             timing.execute_timings.accumulate(&execute_timings);
 
