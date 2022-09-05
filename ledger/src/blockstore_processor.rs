@@ -62,6 +62,7 @@ use {
         path::PathBuf,
         result,
         sync::{Arc, RwLock},
+        thread::sleep,
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -385,17 +386,13 @@ fn execute_batches2(
     timings: &mut ExecuteTimings,
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
 ) -> Result<()> {
-    info!("grabbing locks");
     // readonly and writeable locks
     let tx_account_locks_results: Vec<Result<_>> = transactions
         .iter()
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
-    info!("generating dependency graph");
     let dependency_graph = build_graph(&tx_account_locks_results)?;
-    info!("graph built: {:?}", dependency_graph);
     let batches_indices = build_batch_indices(&dependency_graph);
-    info!("batches_indices: {:?}", batches_indices);
 
     let lens: Vec<_> = batches_indices.iter().map(|bi| bi.len()).collect();
     info!(
@@ -410,8 +407,6 @@ fn execute_batches2(
             .map(|i| transactions.get(*i).unwrap().clone())
             .collect();
         let batches = vec![bank.prepare_sanitized_batch(&sanitized_txs)];
-
-        info!("batches lock: {:?}", batches.get(0).unwrap().lock_results());
 
         let (lock_results, sanitized_txs): (Vec<_>, Vec<_>) = batches
             .iter()
@@ -477,11 +472,6 @@ fn execute_batches2(
             .iter()
             .map(|b| b.sanitized_transactions().len())
             .collect();
-        info!(
-            "slot: {:?} batch_lens_after_rebatching: {:?}",
-            bank.slot(),
-            batch_lens_after_rebatching
-        );
 
         execute_batches_internal(
             bank,
@@ -492,23 +482,25 @@ fn execute_batches2(
             timings,
             cost_capacity_meter.clone(),
         )?;
-        info!("dropping batch");
         drop(batches);
-        info!("dropped batch");
     }
 
     Ok(())
 }
 
-fn build_batch_indices(graph: &Vec<i32>) -> Vec<Vec<usize>> {
+fn build_batch_indices(graph: &Vec<HashSet<usize>>) -> Vec<Vec<usize>> {
     let mut processed_indices = vec![false; graph.len()];
     let mut batches = Vec::new();
 
     while !processed_indices.iter().all(|p| *p) {
         let mut batch = vec![];
-        for (idx, node) in graph.iter().enumerate() {
-            // if not processed and (node == -1 || processed[node]), add to batch
-            if !processed_indices[idx] && (*node == -1 || processed_indices[*node as usize]) {
+        for (idx, dependencies) in graph.iter().enumerate() {
+            // this index can be processed if its not already processed and all of its dependencies
+            // have been processed
+            if !processed_indices[idx]
+                && (dependencies.is_empty()
+                    || dependencies.iter().all(|idx| processed_indices[*idx]))
+            {
                 batch.push(idx);
             }
         }
@@ -521,8 +513,10 @@ fn build_batch_indices(graph: &Vec<i32>) -> Vec<Vec<usize>> {
     batches
 }
 
-fn build_graph(tx_account_locks_results: &[Result<TransactionAccountLocks>]) -> Result<Vec<i32>> {
-    let mut graph = vec![-1; tx_account_locks_results.len()];
+fn build_graph(
+    tx_account_locks_results: &[Result<TransactionAccountLocks>],
+) -> Result<Vec<HashSet<usize>>> {
+    let mut graph = vec![HashSet::new(); tx_account_locks_results.len()];
 
     if let Some(err) = tx_account_locks_results.iter().find(|r| r.is_err()) {
         err.clone()?;
@@ -567,7 +561,7 @@ fn build_graph(tx_account_locks_results: &[Result<TransactionAccountLocks>]) -> 
             if let Some(writelock_indices) = write_lock_account_indices.get(read_acc) {
                 for wl_idx in writelock_indices {
                     if *wl_idx < idx {
-                        indices_with_contention.insert(wl_idx);
+                        indices_with_contention.insert(*wl_idx);
                     }
                 }
             }
@@ -579,23 +573,20 @@ fn build_graph(tx_account_locks_results: &[Result<TransactionAccountLocks>]) -> 
             if let Some(writelock_indices) = write_lock_account_indices.get(write_acc) {
                 for wl_idx in writelock_indices {
                     if *wl_idx < idx {
-                        indices_with_contention.insert(wl_idx);
+                        indices_with_contention.insert(*wl_idx);
                     }
                 }
             }
             if let Some(readonly_indices) = read_lock_account_indices.get(write_acc) {
                 for rl_idx in readonly_indices {
                     if *rl_idx < idx {
-                        indices_with_contention.insert(rl_idx);
+                        indices_with_contention.insert(*rl_idx);
                     }
                 }
             }
         }
-        // find the index of the transaction immediately before the current transaction that needs
-        // to be executed before
-        if let Some(contention_index) = indices_with_contention.iter().max() {
-            graph[idx] = **contention_index as i32;
-        }
+
+        graph[idx] = indices_with_contention;
     }
 
     Ok(graph)
