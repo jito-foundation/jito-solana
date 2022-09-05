@@ -6,10 +6,8 @@ use {
     },
     chrono_humanize::{Accuracy, HumanTime, Tense},
     crossbeam_channel::{unbounded, Sender},
-    futures::AsyncReadExt,
     itertools::Itertools,
     log::*,
-    rand::{seq::SliceRandom, thread_rng},
     rayon::{prelude::*, ThreadPool},
     solana_entry::entry::{
         self, create_ticks, Entry, EntrySlice, EntryType, EntryVerificationStatus, VerifyRecyclers,
@@ -62,7 +60,6 @@ use {
         path::PathBuf,
         result,
         sync::{Arc, RwLock},
-        thread::sleep,
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -391,15 +388,15 @@ fn execute_batches2(
         .iter()
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
-    let dependency_graph = build_graph(&tx_account_locks_results)?;
+    let dependency_graph = build_dependency_graph(&tx_account_locks_results)?;
     let batches_indices = build_batch_indices(&dependency_graph);
 
     let lens: Vec<_> = batches_indices.iter().map(|bi| bi.len()).collect();
-    info!(
-        "slot: {:?} batch_indices lens before resize: {:?}",
-        bank.slot(),
-        lens
-    );
+    // info!(
+    //     "slot: {:?} batch_indices lens before resize: {:?}",
+    //     bank.slot(),
+    //     lens
+    // );
 
     for batch_indices in batches_indices {
         let sanitized_txs: Vec<SanitizedTransaction> = batch_indices
@@ -468,11 +465,6 @@ fn execute_batches2(
             &batches
         };
 
-        let batch_lens_after_rebatching: Vec<_> = batches
-            .iter()
-            .map(|b| b.sanitized_transactions().len())
-            .collect();
-
         execute_batches_internal(
             bank,
             rebatched_txs,
@@ -513,10 +505,16 @@ fn build_batch_indices(graph: &Vec<HashSet<usize>>) -> Vec<Vec<usize>> {
     batches
 }
 
-fn build_graph(
+// for each index, builds a transaction dependency graph of indices that need to execute before
+// the current one
+fn build_dependency_graph(
     tx_account_locks_results: &[Result<TransactionAccountLocks>],
 ) -> Result<Vec<HashSet<usize>>> {
-    let mut graph = vec![HashSet::new(); tx_account_locks_results.len()];
+    // the most elements in each graph will be equal to the index of it
+    let mut graph = Vec::with_capacity(tx_account_locks_results.len());
+    for index in 0..tx_account_locks_results.len() {
+        graph.push(HashSet::with_capacity(index));
+    }
 
     if let Some(err) = tx_account_locks_results.iter().find(|r| r.is_err()) {
         err.clone()?;
@@ -526,42 +524,51 @@ fn build_graph(
         .map(|r| r.as_ref().unwrap())
         .collect();
 
-    // build a hashmap for read and write locks that map an account to transaction indices that read
-    // or write lock that account
-    let read_lock_account_indices: HashMap<Pubkey, Vec<usize>> = transaction_locks
-        .iter()
-        .enumerate()
-        .fold(HashMap::new(), |mut hmap, (idx, locks)| {
-            for account in &locks.readonly {
-                hmap.entry(**account)
-                    .and_modify(|indices| indices.push(idx))
-                    .or_insert(vec![idx]);
-            }
-            hmap
-        });
-    let write_lock_account_indices: HashMap<Pubkey, Vec<usize>> = transaction_locks
-        .iter()
-        .enumerate()
-        .fold(HashMap::new(), |mut hmap, (idx, locks)| {
-            for account in &locks.writable {
-                hmap.entry(**account)
-                    .and_modify(|indices| indices.push(idx))
-                    .or_insert(vec![idx]);
-            }
-            hmap
-        });
+    // account -> vector of indices that readlock and writelock those accounts
+    let read_lock_account_indices: HashMap<Pubkey, Vec<usize>> =
+        transaction_locks.iter().enumerate().fold(
+            HashMap::with_capacity(tx_account_locks_results.len()),
+            |mut hmap, (idx, locks)| {
+                for account in &locks.readonly {
+                    hmap.entry(**account)
+                        .and_modify(|indices| indices.push(idx))
+                        .or_insert_with(|| {
+                            // this is right
+                            let mut v = Vec::with_capacity(tx_account_locks_results.len() - idx);
+                            v.push(idx);
+                            v
+                        });
+                }
+                hmap
+            },
+        );
+    let write_lock_account_indices: HashMap<Pubkey, Vec<usize>> =
+        transaction_locks.iter().enumerate().fold(
+            HashMap::with_capacity(tx_account_locks_results.len()),
+            |mut hmap, (idx, locks)| {
+                for account in &locks.writable {
+                    hmap.entry(**account)
+                        .and_modify(|indices| indices.push(idx))
+                        .or_insert_with(|| {
+                            // this is right
+                            let mut v = Vec::with_capacity(tx_account_locks_results.len() - idx);
+                            v.push(idx);
+                            v
+                        });
+                }
+                hmap
+            },
+        );
 
     // for each transaction, attempt to find an index of another transaction that the current
     // iterated transaction depends on
     for (idx, account_locks) in transaction_locks.iter().enumerate() {
-        let mut indices_with_contention = HashSet::new();
-
         // read locked accounts have to be executed after transactions that write lock a given account
         for read_acc in &account_locks.readonly {
             if let Some(writelock_indices) = write_lock_account_indices.get(read_acc) {
                 for wl_idx in writelock_indices {
                     if *wl_idx < idx {
-                        indices_with_contention.insert(*wl_idx);
+                        graph[idx].insert(*wl_idx);
                     }
                 }
             }
@@ -573,20 +580,18 @@ fn build_graph(
             if let Some(writelock_indices) = write_lock_account_indices.get(write_acc) {
                 for wl_idx in writelock_indices {
                     if *wl_idx < idx {
-                        indices_with_contention.insert(*wl_idx);
+                        graph[idx].insert(*wl_idx);
                     }
                 }
             }
             if let Some(readonly_indices) = read_lock_account_indices.get(write_acc) {
                 for rl_idx in readonly_indices {
                     if *rl_idx < idx {
-                        indices_with_contention.insert(*rl_idx);
+                        graph[idx].insert(*rl_idx);
                     }
                 }
             }
         }
-
-        graph[idx] = indices_with_contention;
     }
 
     Ok(graph)
@@ -633,7 +638,7 @@ pub fn process_entries_for_tests(
 fn process_entries_with_callback(
     bank: &Arc<Bank>,
     entries: &[EntryType],
-    randomize: bool,
+    _randomize: bool,
     entry_callback: Option<&ProcessCallback>,
     transaction_status_sender: Option<&TransactionStatusSender>,
     replay_vote_sender: Option<&ReplayVoteSender>,
@@ -676,7 +681,6 @@ fn process_entries_with_callback(
                 }
 
                 // TODO (LB): add randomization back in
-
                 // TODO (LB): add back in lock check here.
                 // TODO (LB): avoid clone
                 executable_txs.extend(transactions.clone());
