@@ -256,13 +256,16 @@ fn execute_batches_internal(
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
 ) -> Result<()> {
     inc_new_counter_debug!("bank-par_execute_entries-count", batches.len());
-    let (results, new_timings): (Vec<Result<()>>, Vec<ExecuteTimings>) =
+
+    let start = Instant::now();
+    let (results, new_timings): (Vec<Result<()>>, Vec<(ExecuteTimings, Duration)>) =
         PAR_THREAD_POOL.with(|thread_pool| {
             thread_pool.borrow().install(|| {
                 batches
                     .into_par_iter()
                     .map(|batch| {
                         let mut timings = ExecuteTimings::default();
+                        let now = Instant::now();
                         let result = execute_batch(
                             batch,
                             bank,
@@ -274,16 +277,25 @@ fn execute_batches_internal(
                         if let Some(entry_callback) = entry_callback {
                             entry_callback(bank);
                         }
-                        (result, timings)
+                        (result, (timings, now.elapsed()))
                     })
                     .unzip()
             })
         });
 
+    let elapsed = start.elapsed();
+    let all_durations: Vec<_> = new_timings.iter().map(|(_, elapsed)| elapsed).collect();
+    info!(
+        "slot: {:?} elapsed: {:?} all_durations: {:?}",
+        bank.slot(),
+        elapsed,
+        all_durations
+    );
+
     timings.saturating_add_in_place(ExecuteTimingType::TotalBatchesLen, batches.len() as u64);
     timings.saturating_add_in_place(ExecuteTimingType::NumExecuteBatches, 1);
     for timing in new_timings {
-        timings.accumulate(&timing);
+        timings.accumulate(&timing.0);
     }
 
     first_err(&results)
@@ -392,14 +404,12 @@ fn execute_batches2(
         .collect();
     let dependency_graph = build_dependency_graph(&tx_account_locks_results)?;
     let batches_indices = build_batch_indices(&dependency_graph);
+    info!(
+        "slot: {:?} planning elapsed: {:?}",
+        bank.slot(),
+        now.elapsed().as_micros()
+    );
     timings.planning_elapsed += now.elapsed().as_micros() as u64;
-
-    // let lens: Vec<_> = batches_indices.iter().map(|bi| bi.len()).collect();
-    // info!(
-    //     "slot: {:?} batch_indices lens before resize: {:?}",
-    //     bank.slot(),
-    //     lens
-    // );
 
     for batch_indices in batches_indices {
         let sanitized_txs: Vec<SanitizedTransaction> = batch_indices
@@ -443,6 +453,13 @@ fn execute_batches2(
         let target_batch_count = get_thread_count() as u64;
 
         let mut tx_batches: Vec<TransactionBatch> = vec![];
+
+        let batch_lens: Vec<usize> = batches
+            .iter()
+            .map(|b| b.sanitized_transactions().len())
+            .collect();
+        info!("slot: {:?} batch lens: {:?}", bank.slot(), batch_lens);
+
         let rebatched_txs = if total_cost > target_batch_count.saturating_mul(minimal_tx_cost) {
             let target_batch_cost = total_cost / target_batch_count;
             let mut batch_cost: u64 = 0;
@@ -467,6 +484,16 @@ fn execute_batches2(
         } else {
             &batches
         };
+
+        let rebatched_txs_lens: Vec<usize> = rebatched_txs
+            .iter()
+            .map(|b| b.sanitized_transactions().len())
+            .collect();
+        info!(
+            "slot: {:?} rebatched_txs lens: {:?}",
+            bank.slot(),
+            rebatched_txs_lens
+        );
 
         execute_batches_internal(
             bank,
