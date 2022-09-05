@@ -411,6 +411,8 @@ fn execute_batches2(
             .collect();
         let batches = vec![bank.prepare_sanitized_batch(&sanitized_txs)];
 
+        info!("batches lock: {:?}", batches.get(0).unwrap().lock_results());
+
         let (lock_results, sanitized_txs): (Vec<_>, Vec<_>) = batches
             .iter()
             .flat_map(|batch| {
@@ -424,7 +426,7 @@ fn execute_batches2(
 
         if let Some(r) = lock_results.iter().find(|r| r.is_err()) {
             info!("lock error: {:?}", r);
-            info!("sanitized txs: {:?}", sanitized_txs);
+            // info!("sanitized txs: {:?}", sanitized_txs);
         }
 
         let cost_model = CostModel::new();
