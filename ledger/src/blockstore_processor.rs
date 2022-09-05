@@ -385,21 +385,26 @@ fn execute_batches2(
     timings: &mut ExecuteTimings,
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
 ) -> Result<()> {
+    info!("grabbing locks");
     // readonly and writeable locks
     let tx_account_locks_results: Vec<Result<_>> = transactions
         .iter()
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
+    info!("generating dependency graph");
     let dependency_graph = build_graph(&tx_account_locks_results)?;
+    info!("graph built: {:?}", dependency_graph);
     let batches_indices = build_batch_indices(&dependency_graph);
-    for batch_indices in batches_indices {
-        let lens = batch_indices.len();
-        info!(
-            "slot: {:?} batch_indices lens before resize: {:?}",
-            bank.slot(),
-            lens
-        );
+    info!("batches_indices: {:?}", batches_indices);
 
+    let lens: Vec<_> = batches_indices.iter().map(|bi| bi.len()).collect();
+    info!(
+        "slot: {:?} batch_indices lens before resize: {:?}",
+        bank.slot(),
+        lens
+    );
+
+    for batch_indices in batches_indices {
         let sanitized_txs: Vec<SanitizedTransaction> = batch_indices
             .iter()
             .map(|i| transactions.get(*i).unwrap().clone())
@@ -419,6 +424,7 @@ fn execute_batches2(
 
         if let Some(r) = lock_results.iter().find(|r| r.is_err()) {
             info!("lock error: {:?}", r);
+            info!("sanitized txs: {:?}", sanitized_txs);
         }
 
         let cost_model = CostModel::new();
@@ -484,6 +490,9 @@ fn execute_batches2(
             timings,
             cost_capacity_meter.clone(),
         )?;
+        info!("dropping batch");
+        drop(batches);
+        info!("dropped batch");
     }
 
     Ok(())
