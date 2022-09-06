@@ -11,7 +11,10 @@ use {
     crossbeam_channel::{unbounded, Sender},
     itertools::Itertools,
     log::*,
-    rayon::ThreadPool,
+    rayon::{
+        iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator},
+        ThreadPool,
+    },
     solana_entry::entry::{
         self, create_ticks, Entry, EntrySlice, EntryType, EntryVerificationStatus, VerifyRecyclers,
     },
@@ -170,7 +173,7 @@ fn execute_batches(
         .iter()
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
-    let dependency_graph = build_dependency_graph(&tx_account_locks_results)?;
+    let dependency_graph = build_dependency_graphs(&tx_account_locks_results)?;
     let batches_indices = build_batch_indices(&dependency_graph);
     info!(
         "slot: {:?} planning elapsed: {:?}",
@@ -248,42 +251,11 @@ fn execute_batches(
     Ok(())
 }
 
-fn build_batch_indices(graph: &Vec<HashSet<usize>>) -> Vec<Vec<usize>> {
-    let mut processed_indices = vec![false; graph.len()];
-    let mut batches = Vec::new();
-
-    while !processed_indices.iter().all(|p| *p) {
-        let mut batch = vec![];
-        for (idx, dependencies) in graph.iter().enumerate() {
-            // this index can be processed if its not already processed and all of its dependencies
-            // have been processed
-            if !processed_indices[idx]
-                && (dependencies.is_empty()
-                    || dependencies.iter().all(|idx| processed_indices[*idx]))
-            {
-                batch.push(idx);
-            }
-        }
-        for i in &batch {
-            processed_indices[*i] = true;
-        }
-        batches.push(batch);
-    }
-
-    batches
-}
-
 // for each index, builds a transaction dependency graph of indices that need to execute before
-// the current one
-fn build_dependency_graph(
-    tx_account_locks_results: &[Result<TransactionAccountLocks>],
+// the current one.
+fn build_dependency_graphs(
+    tx_account_locks_results: &Vec<Result<TransactionAccountLocks>>,
 ) -> Result<Vec<HashSet<usize>>> {
-    // the most elements in each graph will be equal to the index of it
-    let mut graph = Vec::with_capacity(tx_account_locks_results.len());
-    for index in 0..tx_account_locks_results.len() {
-        graph.push(HashSet::with_capacity(index));
-    }
-
     if let Some(err) = tx_account_locks_results.iter().find(|r| r.is_err()) {
         err.clone()?;
     }
@@ -292,77 +264,90 @@ fn build_dependency_graph(
         .map(|r| r.as_ref().unwrap())
         .collect();
 
-    // account -> vector of indices that readlock and writelock those accounts
-    let read_lock_account_indices: HashMap<Pubkey, Vec<usize>> =
-        transaction_locks.iter().enumerate().fold(
-            HashMap::with_capacity(tx_account_locks_results.len()),
-            |mut hmap, (idx, locks)| {
-                for account in &locks.readonly {
-                    hmap.entry(**account)
-                        .and_modify(|indices| indices.push(idx))
-                        .or_insert_with(|| {
-                            // this is right
-                            let mut v = Vec::with_capacity(tx_account_locks_results.len() - idx);
-                            v.push(idx);
-                            v
-                        });
-                }
-                hmap
-            },
-        );
-    let write_lock_account_indices: HashMap<Pubkey, Vec<usize>> =
-        transaction_locks.iter().enumerate().fold(
-            HashMap::with_capacity(tx_account_locks_results.len()),
-            |mut hmap, (idx, locks)| {
-                for account in &locks.writable {
-                    hmap.entry(**account)
-                        .and_modify(|indices| indices.push(idx))
-                        .or_insert_with(|| {
-                            // this is right
-                            let mut v = Vec::with_capacity(tx_account_locks_results.len() - idx);
-                            v.push(idx);
-                            v
-                        });
-                }
-                hmap
-            },
-        );
+    // build a map whose key is a pubkey + value is a sorted vector of all indices that
+    // lock that account
+    let mut indices_read_locking_account = HashMap::new();
+    let mut indicies_write_locking_account = HashMap::new();
+    transaction_locks
+        .iter()
+        .enumerate()
+        .for_each(|(idx, tx_account_locks)| {
+            for account in &tx_account_locks.readonly {
+                indices_read_locking_account
+                    .entry(**account)
+                    .and_modify(|indices: &mut Vec<usize>| indices.push(idx))
+                    .or_insert_with(|| {
+                        let mut v = Vec::new();
+                        v.push(idx);
+                        v
+                    });
+            }
+            for account in &tx_account_locks.writable {
+                indicies_write_locking_account
+                    .entry(**account)
+                    .and_modify(|indices: &mut Vec<usize>| indices.push(idx))
+                    .or_insert_with(|| {
+                        let mut v = Vec::new();
+                        v.push(idx);
+                        v
+                    });
+            }
+        });
 
-    // for each transaction, attempt to find an index of another transaction that the current
-    // iterated transaction depends on
-    for (idx, account_locks) in transaction_locks.iter().enumerate() {
-        // read locked accounts have to be executed after transactions that write lock a given account
-        for read_acc in &account_locks.readonly {
-            if let Some(writelock_indices) = write_lock_account_indices.get(read_acc) {
-                for wl_idx in writelock_indices {
-                    if *wl_idx < idx {
-                        graph[idx].insert(*wl_idx);
-                    }
+    Ok(transaction_locks
+        .par_iter()
+        .enumerate()
+        .map(|(idx, account_locks)| {
+            let mut dep_graph = HashSet::new();
+            let readlock_accs = account_locks.writable.iter();
+            let writelock_accs = account_locks
+                .readonly
+                .iter()
+                .chain(account_locks.writable.iter());
+
+            for acc in readlock_accs {
+                if let Some(indices) = indices_read_locking_account.get(acc) {
+                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
                 }
+            }
+
+            for read_acc in writelock_accs {
+                if let Some(indices) = indicies_write_locking_account.get(read_acc) {
+                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                }
+            }
+            dep_graph
+        })
+        .collect())
+}
+
+fn build_batch_indices(tx_dependency_graph: &Vec<HashSet<usize>>) -> Vec<Vec<usize>> {
+    let mut processed_indices = vec![false; tx_dependency_graph.len()];
+    let mut batches = Vec::new();
+
+    let mut batch = Vec::with_capacity(tx_dependency_graph.len());
+
+    while !processed_indices.iter().all(|processed| *processed) {
+        for tx_idx in 0..tx_dependency_graph.len() {
+            // if the transaction at tx_idx hasn't been processed
+            // AND all dependencies have been processed
+            if !processed_indices[tx_idx]
+                && tx_dependency_graph[tx_idx]
+                    .iter()
+                    .all(|deps_idx| processed_indices[*deps_idx])
+            {
+                batch.push(tx_idx);
             }
         }
 
-        // write locked accounts have to be executed after transactions that write lock or read lock
-        // a given account
-        for write_acc in &account_locks.writable {
-            if let Some(writelock_indices) = write_lock_account_indices.get(write_acc) {
-                for wl_idx in writelock_indices {
-                    if *wl_idx < idx {
-                        graph[idx].insert(*wl_idx);
-                    }
-                }
-            }
-            if let Some(readonly_indices) = read_lock_account_indices.get(write_acc) {
-                for rl_idx in readonly_indices {
-                    if *rl_idx < idx {
-                        graph[idx].insert(*rl_idx);
-                    }
-                }
-            }
+        for i in &batch {
+            processed_indices[*i] = true;
         }
+        batches.push(batch.clone());
+        batch.clear();
     }
 
-    Ok(graph)
+    batches
 }
 
 /// Process an ordered list of entries in parallel
