@@ -294,6 +294,8 @@ fn build_dependency_graphs(
             }
         });
 
+    // TODO (LB): conditionally use par_iter here
+
     Ok(transaction_locks
         .par_iter()
         .enumerate()
