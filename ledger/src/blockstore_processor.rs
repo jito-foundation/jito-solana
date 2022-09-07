@@ -8,7 +8,7 @@ use {
         replayer::{ReplayRequest, ReplayResponse, Replayer, ReplayerHandle},
     },
     chrono_humanize::{Accuracy, HumanTime, Tense},
-    crossbeam_channel::{unbounded, Sender},
+    crossbeam_channel::{unbounded, Receiver, Select, Sender},
     itertools::Itertools,
     log::*,
     rayon::{
@@ -189,69 +189,85 @@ fn execute_batches(
     );
     timings.planning_elapsed += now.elapsed().as_micros() as u64;
 
-    for batch_indices in batches_indices {
-        let sanitized_txs: Vec<SanitizedTransaction> = batch_indices
-            .iter()
-            .map(|i| transactions.get(*i).unwrap().clone())
-            .collect();
-        let batches = vec![bank.prepare_sanitized_batch(&sanitized_txs)];
+    // let mut is_done = false;
+    // let mut sel = Select::new();
+    // let mut receivers = vec![];
+    // while !is_done {
+    //     receivers.extend(transactions.iter().map(|tx| {
+    //         replayer_handle
+    //             .send(ReplayRequest {
+    //                 bank: bank.clone(),
+    //                 tx: tx.clone(),
+    //                 transaction_status_sender: transaction_status_sender.cloned(),
+    //                 replay_vote_sender: replay_vote_sender.cloned(),
+    //                 cost_capacity_meter: cost_capacity_meter.clone(),
+    //                 entry_callback: entry_callback.cloned(),
+    //             })
+    //             .unwrap()
+    //     }));
+    //     for r in &receivers {
+    //         sel.recv(r);
+    //     }
+    // }
 
-        let (lock_results, sanitized_txs): (Vec<_>, Vec<_>) = batches
-            .iter()
-            .flat_map(|batch| {
-                batch
-                    .lock_results()
+    let mut processed_indices = vec![false; transactions.len()];
+    let mut receivers: Vec<Option<Receiver<ReplayResponse>>> = vec![None; transactions.len()];
+    while !processed_indices.iter().all(|p| *p) {
+        for (idx, (tx, dep_graph)) in transactions.iter().zip(dependency_graph.iter()).enumerate() {
+            if !processed_indices[idx]
+                && !receivers[idx].is_none()
+                && dep_graph.iter().all(|dep_idx| processed_indices[*dep_idx])
+            {
+                receivers[idx] = Some(
+                    replayer_handle
+                        .send(ReplayRequest {
+                            bank: bank.clone(),
+                            tx: tx.clone(),
+                            transaction_status_sender: transaction_status_sender.cloned(),
+                            replay_vote_sender: replay_vote_sender.cloned(),
+                            cost_capacity_meter: cost_capacity_meter.clone(),
+                            entry_callback: entry_callback.cloned(),
+                        })
+                        .unwrap(),
+                );
+            }
+            let mut unblocked = false;
+            let mut results = vec![];
+            while !unblocked {
+                println!("spinning");
+                let mut indices_to_clear: Vec<_> = receivers
                     .iter()
-                    .cloned()
-                    .zip(batch.sanitized_transactions().to_vec())
-            })
-            .unzip();
-
-        if let Some(r) = lock_results.iter().find(|r| r.is_err()) {
-            info!("lock error: {:?}", r);
-            r.clone()?;
-        }
-
-        let responses: Vec<_> = sanitized_txs
-            .into_iter()
-            .map(|tx| {
-                replayer_handle.send(ReplayRequest {
-                    bank: bank.clone(),
-                    tx,
-                    transaction_status_sender: transaction_status_sender.cloned(),
-                    replay_vote_sender: replay_vote_sender.cloned(),
-                    cost_capacity_meter: cost_capacity_meter.clone(),
-                    entry_callback: entry_callback.cloned(),
-                })
-            })
-            .collect();
-
-        let mut results = vec![];
-        let mut new_timings = vec![];
-        for r in responses {
-            match r {
-                Ok(receiver) => match receiver.recv() {
-                    Ok(ReplayResponse { result, timings }) => {
-                        results.push(result);
-                        new_timings.push(timings);
-                    }
-                    Err(_) => {
-                        error!("ReplayResponse recv error");
-                    }
-                },
-                Err(e) => {
-                    error!("error yooooo!!! error: {:?}", e);
+                    .enumerate()
+                    .filter_map(|(idx, maybe_receiver)| match maybe_receiver {
+                        None => None,
+                        Some(receiver) => {
+                            if let Ok(result) = receiver.try_recv() {
+                                results.push(result);
+                                Some(idx)
+                            } else {
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+                let mut do_check = false;
+                for idx in indices_to_clear {
+                    do_check = true;
+                    receivers[idx] = None;
+                    processed_indices[idx] = true;
+                }
+                if do_check {
+                    unblocked =
+                        dependency_graph
+                            .iter()
+                            .enumerate()
+                            .any(|(dep_idx, dependencies)| {
+                                !processed_indices[dep_idx]
+                                    && dep_graph.iter().all(|dep_idx| processed_indices[*dep_idx])
+                            });
                 }
             }
         }
-
-        // timings.saturating_add_in_place(ExecuteTimingType::TotalBatchesLen, batches.len() as u64);
-        // timings.saturating_add_in_place(ExecuteTimingType::NumExecuteBatches, 1);
-        for timing in new_timings {
-            timings.accumulate(&timing);
-        }
-
-        first_err(&results)?;
     }
 
     Ok(())
