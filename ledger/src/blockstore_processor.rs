@@ -173,12 +173,19 @@ fn execute_batches(
         .iter()
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
+    let now = Instant::now();
     let dependency_graph = build_dependency_graphs(&tx_account_locks_results)?;
+    let dependency_graph_elapsed = now.elapsed();
+    let now = Instant::now();
     let batches_indices = build_batch_indices(&dependency_graph);
+    let batches_indices_elapsed = now.elapsed();
+    let batches: Vec<_> = batches_indices.iter().map(|b| b.len()).collect();
     info!(
-        "slot: {:?} planning elapsed: {:?}",
+        "slot: {:?} dependency_graph_elapsed: {:?} batches_indices_elapsed: {:?} batches: {:?}",
         bank.slot(),
-        now.elapsed().as_micros()
+        dependency_graph_elapsed,
+        batches_indices_elapsed,
+        batches
     );
     timings.planning_elapsed += now.elapsed().as_micros() as u64;
 
@@ -219,7 +226,6 @@ fn execute_batches(
             })
             .collect();
 
-        // TODO (LB): wait for all the txs to return
         let mut results = vec![];
         let mut new_timings = vec![];
         for r in responses {
