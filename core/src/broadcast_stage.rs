@@ -14,7 +14,6 @@ use {
         result::{Error, Result},
     },
     crossbeam_channel::{unbounded, Receiver, RecvError, RecvTimeoutError, Sender},
-    futures_util::StreamExt,
     itertools::Itertools,
     solana_gossip::cluster_info::{ClusterInfo, ClusterInfoError, DATA_PLANE_FANOUT},
     solana_ledger::{blockstore::Blockstore, shred::Shred},

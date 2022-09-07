@@ -5,21 +5,18 @@ use {
         blockstore_db::BlockstoreError,
         blockstore_meta::SlotMeta,
         leader_schedule_cache::LeaderScheduleCache,
-        replayer::{ReplayRequest, ReplayResponse, Replayer, ReplayerHandle},
+        replayer::{ProcessCallback, ReplayRequest, ReplayResponse, Replayer, ReplayerHandle},
+        scheduler::build_dependency_graphs,
     },
     chrono_humanize::{Accuracy, HumanTime, Tense},
-    crossbeam_channel::{unbounded, Receiver, Select, Sender},
+    crossbeam_channel::{unbounded, Sender},
     itertools::Itertools,
     log::*,
-    rayon::{
-        iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator},
-        ThreadPool,
-    },
+    rayon::ThreadPool,
     solana_entry::entry::{
         self, create_ticks, Entry, EntrySlice, EntryType, EntryVerificationStatus, VerifyRecyclers,
     },
     solana_measure::measure::Measure,
-    solana_metrics::datapoint_error,
     solana_program_runtime::timings::ExecuteTimings,
     solana_rayon_threadlimit::get_thread_count,
     solana_runtime::{
@@ -37,7 +34,6 @@ use {
         snapshot_config::SnapshotConfig,
         snapshot_package::{AccountsPackageSender, SnapshotType},
         snapshot_utils,
-        transaction_batch::TransactionBatch,
         transaction_cost_metrics_sender::TransactionCostMetricsSender,
         vote_account::VoteAccount,
         vote_sender_types::ReplayVoteSender,
@@ -47,21 +43,21 @@ use {
         genesis_config::GenesisConfig,
         hash::Hash,
         pubkey::Pubkey,
-        signature::{Keypair, Signature},
+        signature::Keypair,
         timing,
         transaction::{
-            Result, SanitizedTransaction, TransactionAccountLocks, TransactionError,
-            TransactionVerificationMode, VersionedTransaction,
+            Result, SanitizedTransaction, TransactionError, TransactionVerificationMode,
+            VersionedTransaction,
         },
     },
     solana_transaction_status::token_balances::TransactionTokenBalancesSet,
     std::{
-        borrow::Cow,
         cell::RefCell,
         collections::{HashMap, HashSet},
+        io::{self, Write},
         path::PathBuf,
         result,
-        sync::{atomic::AtomicBool, Arc, RwLock},
+        sync::{Arc, RwLock},
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -111,52 +107,37 @@ fn first_err(results: &[Result<()>]) -> Result<()> {
     }
     Ok(())
 }
-
-// Includes transaction signature for unit-testing
-fn get_first_error(
-    batch: &TransactionBatch,
-    fee_collection_results: Vec<Result<()>>,
-) -> Option<(Result<()>, Signature)> {
-    let mut first_err = None;
-    for (result, transaction) in fee_collection_results
-        .iter()
-        .zip(batch.sanitized_transactions())
-    {
-        if let Err(ref err) = result {
-            if first_err.is_none() {
-                first_err = Some((result.clone(), *transaction.signature()));
-            }
-            warn!(
-                "Unexpected validator error: {:?}, transaction: {:?}",
-                err, transaction
-            );
-            datapoint_error!(
-                "validator_process_entry_error",
-                (
-                    "error",
-                    format!("error: {:?}, transaction: {:?}", err, transaction),
-                    String
-                )
-            );
-        }
-    }
-    first_err
-}
-
-fn rebatch_transactions<'a>(
-    lock_results: &'a [Result<()>],
-    bank: &'a Arc<Bank>,
-    sanitized_txs: &'a [SanitizedTransaction],
-    start: usize,
-    end: usize,
-) -> TransactionBatch<'a, 'a> {
-    let txs = &sanitized_txs[start..=end];
-    let results = &lock_results[start..=end];
-    let mut tx_batch = TransactionBatch::new(results.to_vec(), bank, Cow::from(txs));
-    tx_batch.set_needs_unlock(false);
-
-    tx_batch
-}
+//
+// // Includes transaction signature for unit-testing
+// fn get_first_error(
+//     batch: &TransactionBatch,
+//     fee_collection_results: Vec<Result<()>>,
+// ) -> Option<(Result<()>, Signature)> {
+//     let mut first_err = None;
+//     for (result, transaction) in fee_collection_results
+//         .iter()
+//         .zip(batch.sanitized_transactions())
+//     {
+//         if let Err(ref err) = result {
+//             if first_err.is_none() {
+//                 first_err = Some((result.clone(), *transaction.signature()));
+//             }
+//             warn!(
+//                 "Unexpected validator error: {:?}, transaction: {:?}",
+//                 err, transaction
+//             );
+//             datapoint_error!(
+//                 "validator_process_entry_error",
+//                 (
+//                     "error",
+//                     format!("error: {:?}, transaction: {:?}", err, transaction),
+//                     String
+//                 )
+//             );
+//         }
+//     }
+//     first_err
+// }
 
 fn execute_batches(
     bank: &Arc<Bank>,
@@ -174,206 +155,87 @@ fn execute_batches(
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
     let now = Instant::now();
+
+    println!("building dep graph");
+    io::stdout().flush().unwrap();
+
     let dependency_graph = build_dependency_graphs(&tx_account_locks_results)?;
     let dependency_graph_elapsed = now.elapsed();
-    let now = Instant::now();
-    let batches_indices = build_batch_indices(&dependency_graph);
-    let batches_indices_elapsed = now.elapsed();
-    let batches: Vec<_> = batches_indices.iter().map(|b| b.len()).collect();
+    println!("done building dep graph");
+    io::stdout().flush().unwrap();
     info!(
-        "slot: {:?} dependency_graph_elapsed: {:?} batches_indices_elapsed: {:?} batches: {:?}",
+        "slot: {:?} dependency_graph_elapsed: {:?}",
         bank.slot(),
         dependency_graph_elapsed,
-        batches_indices_elapsed,
-        batches
     );
+    io::stdout().flush().unwrap();
     timings.planning_elapsed += now.elapsed().as_micros() as u64;
 
-    // let mut is_done = false;
-    // let mut sel = Select::new();
-    // let mut receivers = vec![];
-    // while !is_done {
-    //     receivers.extend(transactions.iter().map(|tx| {
-    //         replayer_handle
-    //             .send(ReplayRequest {
-    //                 bank: bank.clone(),
-    //                 tx: tx.clone(),
-    //                 transaction_status_sender: transaction_status_sender.cloned(),
-    //                 replay_vote_sender: replay_vote_sender.cloned(),
-    //                 cost_capacity_meter: cost_capacity_meter.clone(),
-    //                 entry_callback: entry_callback.cloned(),
-    //             })
-    //             .unwrap()
-    //     }));
-    //     for r in &receivers {
-    //         sel.recv(r);
-    //     }
-    // }
+    let mut num_left_to_process = transactions.len();
+    let mut is_processed: Vec<bool> = vec![false; transactions.len()];
+    let mut is_processing: Vec<bool> = vec![false; transactions.len()];
 
-    let mut processed_indices = vec![false; transactions.len()];
-    let mut receivers: Vec<Option<Receiver<ReplayResponse>>> = vec![None; transactions.len()];
-    while !processed_indices.iter().all(|p| *p) {
-        for (idx, (tx, dep_graph)) in transactions.iter().zip(dependency_graph.iter()).enumerate() {
-            if !processed_indices[idx]
-                && !receivers[idx].is_none()
-                && dep_graph.iter().all(|dep_idx| processed_indices[*dep_idx])
-            {
-                receivers[idx] = Some(
-                    replayer_handle
-                        .send(ReplayRequest {
-                            bank: bank.clone(),
-                            tx: tx.clone(),
-                            transaction_status_sender: transaction_status_sender.cloned(),
-                            replay_vote_sender: replay_vote_sender.cloned(),
-                            cost_capacity_meter: cost_capacity_meter.clone(),
-                            entry_callback: entry_callback.cloned(),
-                        })
-                        .unwrap(),
-                );
-            }
-            let mut unblocked = false;
-            let mut results = vec![];
-            while !unblocked {
-                println!("spinning");
-                let mut indices_to_clear: Vec<_> = receivers
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, maybe_receiver)| match maybe_receiver {
-                        None => None,
-                        Some(receiver) => {
-                            if let Ok(result) = receiver.try_recv() {
-                                results.push(result);
-                                Some(idx)
-                            } else {
-                                None
-                            }
-                        }
-                    })
-                    .collect();
-                let mut do_check = false;
-                for idx in indices_to_clear {
-                    do_check = true;
-                    receivers[idx] = None;
-                    processed_indices[idx] = true;
-                }
-                if do_check {
-                    unblocked =
-                        dependency_graph
-                            .iter()
-                            .enumerate()
-                            .any(|(dep_idx, dependencies)| {
-                                !processed_indices[dep_idx]
-                                    && dep_graph.iter().all(|dep_idx| processed_indices[*dep_idx])
-                            });
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// for each index, builds a transaction dependency graph of indices that need to execute before
-// the current one.
-fn build_dependency_graphs(
-    tx_account_locks_results: &Vec<Result<TransactionAccountLocks>>,
-) -> Result<Vec<HashSet<usize>>> {
-    if let Some(err) = tx_account_locks_results.iter().find(|r| r.is_err()) {
-        err.clone()?;
-    }
-    let transaction_locks: Vec<_> = tx_account_locks_results
-        .iter()
-        .map(|r| r.as_ref().unwrap())
-        .collect();
-
-    // build a map whose key is a pubkey + value is a sorted vector of all indices that
-    // lock that account
-    let mut indices_read_locking_account = HashMap::new();
-    let mut indicies_write_locking_account = HashMap::new();
-    transaction_locks
+    let mut indices_need_scheduling: Vec<usize> = dependency_graph
         .iter()
         .enumerate()
-        .for_each(|(idx, tx_account_locks)| {
-            for account in &tx_account_locks.readonly {
-                indices_read_locking_account
-                    .entry(**account)
-                    .and_modify(|indices: &mut Vec<usize>| indices.push(idx))
-                    .or_insert_with(|| {
-                        let mut v = Vec::new();
-                        v.push(idx);
-                        v
-                    });
-            }
-            for account in &tx_account_locks.writable {
-                indicies_write_locking_account
-                    .entry(**account)
-                    .and_modify(|indices: &mut Vec<usize>| indices.push(idx))
-                    .or_insert_with(|| {
-                        let mut v = Vec::new();
-                        v.push(idx);
-                        v
-                    });
-            }
-        });
-
-    Ok(PAR_THREAD_POOL.with(|thread_pool| {
-        thread_pool.borrow().install(|| {
-            transaction_locks
-                .par_iter()
-                .enumerate()
-                .map(|(idx, account_locks)| {
-                    let mut dep_graph = HashSet::new();
-                    let readlock_accs = account_locks.writable.iter();
-                    let writelock_accs = account_locks
-                        .readonly
-                        .iter()
-                        .chain(account_locks.writable.iter());
-
-                    for acc in readlock_accs {
-                        if let Some(indices) = indices_read_locking_account.get(acc) {
-                            dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
-                        }
-                    }
-
-                    for read_acc in writelock_accs {
-                        if let Some(indices) = indicies_write_locking_account.get(read_acc) {
-                            dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
-                        }
-                    }
-                    dep_graph
+        .filter_map(|(idx, indices)| indices.is_empty().then(|| idx))
+        .collect();
+    println!("running planner...");
+    io::stdout().flush().unwrap();
+    while num_left_to_process > 0 {
+        for idx in indices_need_scheduling {
+            replayer_handle
+                .send(ReplayRequest {
+                    bank: bank.clone(),
+                    tx: transactions[idx].clone(),
+                    transaction_status_sender: transaction_status_sender.cloned(),
+                    replay_vote_sender: replay_vote_sender.cloned(),
+                    cost_capacity_meter: cost_capacity_meter.clone(),
+                    entry_callback: entry_callback.cloned(),
+                    idx: Some(idx),
                 })
-                .collect()
-        })
-    }))
-}
+                .unwrap();
+            is_processing[idx] = true;
+        }
 
-fn build_batch_indices(tx_dependency_graph: &Vec<HashSet<usize>>) -> Vec<Vec<usize>> {
-    let mut processed_indices = vec![false; tx_dependency_graph.len()];
-    let mut batches = Vec::new();
+        loop {
+            let ReplayResponse {
+                result,
+                timings: _,
+                idx,
+            } = replayer_handle.recv().unwrap();
+            let idx = idx.unwrap();
+            is_processed[idx] = true;
+            is_processing[idx] = false;
+            num_left_to_process -= 1;
 
-    let mut batch = Vec::with_capacity(tx_dependency_graph.len());
+            result?;
 
-    while !processed_indices.iter().all(|processed| *processed) {
-        for tx_idx in 0..tx_dependency_graph.len() {
-            // if the transaction at tx_idx hasn't been processed
-            // AND all dependencies have been processed
-            if !processed_indices[tx_idx]
-                && tx_dependency_graph[tx_idx]
-                    .iter()
-                    .all(|deps_idx| processed_indices[*deps_idx])
-            {
-                batch.push(tx_idx);
+            indices_need_scheduling = dependency_graph
+                .iter()
+                .enumerate()
+                .filter_map(|(i, dependencies)| {
+                    if !is_processed[i]
+                        && !is_processing[i]
+                        && dependencies
+                            .iter()
+                            .all(|dependency_idx| is_processed[*dependency_idx])
+                    {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !indices_need_scheduling.is_empty() {
+                break;
             }
         }
-
-        for i in &batch {
-            processed_indices[*i] = true;
-        }
-        batches.push(batch.clone());
-        batch.clear();
     }
 
-    batches
+    info!("replay time: {:?}", now.elapsed());
+
+    Ok(())
 }
 
 /// Process an ordered list of entries in parallel
@@ -509,9 +371,6 @@ pub enum BlockstoreProcessorError {
     #[error("root bank with mismatched capitalization at {0}")]
     RootBankWithMismatchedCapitalization(Slot),
 }
-
-/// Callback for accessing bank state while processing the blockstore
-pub type ProcessCallback = Arc<dyn Fn(&Bank) + Sync + Send>;
 
 #[derive(Default, Clone)]
 pub struct ProcessOptions {
@@ -1117,9 +976,7 @@ fn load_frozen_forks(
     let mut root = bank_forks.root();
     let max_root = std::cmp::max(root, blockstore_max_root);
 
-    let exit = Arc::new(AtomicBool::new(false));
-    let replayer = Replayer::new(get_thread_count(), &exit);
-    let replayer_handle = replayer.handle();
+    let (replayer, replayer_handle) = Replayer::new(get_thread_count());
 
     info!(
         "load_frozen_forks() latest root from blockstore: {}, max_root: {}",
@@ -1133,6 +990,8 @@ fn load_frozen_forks(
         leader_schedule_cache,
         &mut pending_slots,
     )?;
+
+    info!("processing next slots..");
 
     let dev_halt_at_slot = opts.dev_halt_at_slot.unwrap_or(std::u64::MAX);
     if bank_forks.root() != dev_halt_at_slot {
@@ -1158,6 +1017,7 @@ fn load_frozen_forks(
             let mut progress = ConfirmationProgress::new(last_entry_hash);
 
             let bank = bank_forks.insert(bank);
+            info!("processing single slot..");
             if process_single_slot(
                 blockstore,
                 &bank,
