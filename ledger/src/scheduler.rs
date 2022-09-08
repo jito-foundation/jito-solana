@@ -55,33 +55,58 @@ pub fn build_dependency_graphs(
             }
         });
 
-    Ok(PAR_THREAD_POOL.with(|thread_pool| {
-        thread_pool.borrow().install(|| {
-            transaction_locks
-                .par_iter()
-                .enumerate()
-                .map(|(idx, account_locks)| {
-                    let mut dep_graph = HashSet::new();
-                    let readlock_accs = account_locks.writable.iter();
-                    let writelock_accs = account_locks
-                        .readonly
-                        .iter()
-                        .chain(account_locks.writable.iter());
+    // Ok(PAR_THREAD_POOL.with(|thread_pool| {
+    //     thread_pool.borrow().install(|| {
+    //         transaction_locks
+    //             .par_iter()
+    //             .enumerate()
+    //             .map(|(idx, account_locks)| {
+    //                 let mut dep_graph = HashSet::new();
+    //                 let readlock_accs = account_locks.writable.iter();
+    //                 let writelock_accs = account_locks
+    //                     .readonly
+    //                     .iter()
+    //                     .chain(account_locks.writable.iter());
+    //
+    //                 for acc in readlock_accs {
+    //                     if let Some(indices) = indices_read_locking_account.get(acc) {
+    //                         dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+    //                     }
+    //                 }
+    //
+    //                 for read_acc in writelock_accs {
+    //                     if let Some(indices) = indicies_write_locking_account.get(read_acc) {
+    //                         dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+    //                     }
+    //                 }
+    //                 dep_graph
+    //             })
+    //             .collect()
+    //     })
+    // }))
+    Ok(transaction_locks
+        .par_iter()
+        .enumerate()
+        .map(|(idx, account_locks)| {
+            let mut dep_graph = HashSet::new();
+            let readlock_accs = account_locks.writable.iter();
+            let writelock_accs = account_locks
+                .readonly
+                .iter()
+                .chain(account_locks.writable.iter());
 
-                    for acc in readlock_accs {
-                        if let Some(indices) = indices_read_locking_account.get(acc) {
-                            dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
-                        }
-                    }
+            for acc in readlock_accs {
+                if let Some(indices) = indices_read_locking_account.get(acc) {
+                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                }
+            }
 
-                    for read_acc in writelock_accs {
-                        if let Some(indices) = indicies_write_locking_account.get(read_acc) {
-                            dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
-                        }
-                    }
-                    dep_graph
-                })
-                .collect()
+            for read_acc in writelock_accs {
+                if let Some(indices) = indicies_write_locking_account.get(read_acc) {
+                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                }
+            }
+            dep_graph
         })
-    }))
+        .collect())
 }
