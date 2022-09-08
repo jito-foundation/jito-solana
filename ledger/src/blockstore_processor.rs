@@ -9,7 +9,7 @@ use {
         scheduler::build_dependency_graphs,
     },
     chrono_humanize::{Accuracy, HumanTime, Tense},
-    crossbeam_channel::{unbounded, RecvError, Sender},
+    crossbeam_channel::{unbounded, Sender},
     itertools::Itertools,
     log::*,
     rayon::ThreadPool,
@@ -54,7 +54,6 @@ use {
     std::{
         cell::RefCell,
         collections::{HashMap, HashSet},
-        io::{self, Write},
         path::PathBuf,
         result,
         sync::{Arc, RwLock},
@@ -202,7 +201,7 @@ fn execute_batches(
                 is_processing.iter().map(|p| if *p { 1 } else { 0 }).sum::<usize>(),
                 num_left_to_process
             );
-            let mut results = replayer_handle.recv_and_drain().unwrap();
+            let results = replayer_handle.recv_and_drain().unwrap();
             info!("got {} results", results.len());
 
             for ReplayResponse {
@@ -988,7 +987,7 @@ fn load_frozen_forks(
     let mut root = bank_forks.root();
     let max_root = std::cmp::max(root, blockstore_max_root);
 
-    let (replayer, replayer_handle) = Replayer::new(get_thread_count());
+    let (_replayer, replayer_handle) = Replayer::new(get_thread_count());
 
     info!(
         "load_frozen_forks() latest root from blockstore: {}, max_root: {}",

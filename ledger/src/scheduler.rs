@@ -4,12 +4,10 @@ use {
         ThreadPool,
     },
     solana_rayon_threadlimit::get_thread_count,
-    solana_runtime::bank::Bank,
     solana_sdk::transaction::{Result, TransactionAccountLocks},
     std::{
         cell::RefCell,
         collections::{HashMap, HashSet},
-        sync::Arc,
     },
 };
 
