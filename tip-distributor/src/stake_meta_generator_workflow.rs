@@ -138,9 +138,11 @@ fn load_bank_forks(
         });
 
     let full_snapshot_archives_dir = blockstore.ledger_path().to_path_buf();
-    let full_snapshot_slot =
-        snapshot_utils::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir, Some(snapshot_slot))
-            .ok_or(Error::SnapshotSlotNotFound)?;
+    let full_snapshot_slot = snapshot_utils::get_highest_full_snapshot_archive_slot(
+        &full_snapshot_archives_dir,
+        Some(snapshot_slot),
+    )
+    .ok_or(Error::SnapshotSlotNotFound)?;
     assert_eq!(full_snapshot_slot, snapshot_slot);
     if full_snapshot_slot != snapshot_slot {
         assert_eq!(full_snapshot_slot, snapshot_slot, "The expected snapshot was not found, try moving your snapshot to a different directory than the ledger directory if you haven't already. [actual_highest_snapshot={}, expected_highest_snapshot={}]", full_snapshot_slot, snapshot_slot);

@@ -944,11 +944,6 @@ fn load_bank_forks(
                 )
                 .unwrap_or_default();
             starting_slot = std::cmp::max(full_snapshot_slot, incremental_snapshot_slot);
-            println!(
-                "full_snapshot_slot: {}, incremental_snapshot_slot: {}, starting_slot: {}",
-                full_snapshot_slot, incremental_snapshot_slot, starting_slot
-            );
-        } else {
         }
 
         Some(SnapshotConfig {
@@ -967,8 +962,7 @@ fn load_bank_forks(
         if !blockstore.slot_range_connected(starting_slot, halt_slot) {
             eprintln!(
                 "Unable to load bank forks [start {} end {}] due to disconnected blocks.",
-                starting_slot,
-                halt_slot,
+                starting_slot, halt_slot,
             );
             exit(1);
         }

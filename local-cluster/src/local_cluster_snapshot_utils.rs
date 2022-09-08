@@ -79,7 +79,10 @@ impl LocalCluster {
         );
         loop {
             if let Some(full_snapshot_archive_info) =
-                snapshot_utils::get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir, None)
+                snapshot_utils::get_highest_full_snapshot_archive_info(
+                    &full_snapshot_archives_dir,
+                    None,
+                )
             {
                 match next_snapshot_type {
                     NextSnapshotType::FullSnapshot => {

@@ -1426,7 +1426,8 @@ pub fn get_highest_full_snapshot_archive_info(
 ) -> Option<FullSnapshotArchiveInfo> {
     let mut full_snapshot_archives = get_full_snapshot_archives(full_snapshot_archives_dir);
     if let Some(halt_at_slot) = halt_at_slot {
-        full_snapshot_archives.retain(| archive | archive.snapshot_archive_info().slot <= halt_at_slot);
+        full_snapshot_archives
+            .retain(|archive| archive.snapshot_archive_info().slot <= halt_at_slot);
     }
     full_snapshot_archives.sort_unstable();
     full_snapshot_archives.into_iter().rev().next()
@@ -1450,7 +1451,7 @@ pub fn get_highest_incremental_snapshot_archive_info(
             })
             .collect::<Vec<_>>();
     if let Some(halt_at_slot) = halt_at_slot {
-        incremental_snapshot_archives.retain(|archive| { archive.slot() <= halt_at_slot });
+        incremental_snapshot_archives.retain(|archive| archive.slot() <= halt_at_slot);
     }
     incremental_snapshot_archives.sort_unstable();
     incremental_snapshot_archives.into_iter().rev().next()
@@ -2909,7 +2910,7 @@ mod tests {
                 get_highest_incremental_snapshot_archive_slot(
                     incremental_snapshot_archives_dir.path(),
                     full_snapshot_slot,
-                        None,
+                    None,
                 ),
                 Some(max_incremental_snapshot_slot - 1)
             );
