@@ -156,7 +156,7 @@ fn execute_batches(
     let now = Instant::now();
     let dependency_graph = build_dependency_graphs(&tx_account_locks_results)?;
     let dependency_graph_elapsed = now.elapsed();
-    info!(
+    debug!(
         "slot: {:?} txs: {:?} dependency_graph_elapsed: {:?}",
         bank.slot(),
         transactions.len(),
@@ -177,39 +177,40 @@ fn execute_batches(
 
     while num_left_to_process > 0 {
         // send them to get executed
-        info!("sending {} to get scheduled", indices_need_scheduling.len());
+        debug!("sending {} to get scheduled", indices_need_scheduling.len());
 
-        for idx in indices_need_scheduling {
+        for idx in &indices_need_scheduling {
             replayer_handle
                 .send(ReplayRequest {
                     bank: bank.clone(),
-                    tx: transactions[idx].clone(),
+                    tx: transactions[*idx].clone(),
                     transaction_status_sender: transaction_status_sender.cloned(),
                     replay_vote_sender: replay_vote_sender.cloned(),
                     cost_capacity_meter: cost_capacity_meter.clone(),
                     entry_callback: entry_callback.cloned(),
-                    idx: Some(idx),
+                    idx: Some(*idx),
                 })
                 .unwrap();
-            is_processing[idx] = true;
+            is_processing[*idx] = true;
         }
 
-        loop {
-            info!(
+        while num_left_to_process > 0 {
+            debug!(
                 "waiting for results num_processed: {:?} num_processing: {:?} num_left_to_process: {:?}",
                 is_processed.iter().map(|p| if *p { 1 } else { 0 }).sum::<usize>(),
                 is_processing.iter().map(|p| if *p { 1 } else { 0 }).sum::<usize>(),
                 num_left_to_process
             );
             let results = replayer_handle.recv_and_drain().unwrap();
-            info!("got {} results", results.len());
+            debug!("got {} results", results.len());
 
             for ReplayResponse {
                 result,
-                timings: _,
+                timing,
                 idx,
             } in results
             {
+                timings.accumulate(&timing);
                 let idx = idx.unwrap();
                 is_processed[idx] = true;
                 is_processing[idx] = false;
@@ -235,7 +236,7 @@ fn execute_batches(
                 })
                 .collect();
             if !indices_need_scheduling.is_empty() {
-                info!(
+                debug!(
                     "more ready to be scheduled: {:?}",
                     indices_need_scheduling.len()
                 );

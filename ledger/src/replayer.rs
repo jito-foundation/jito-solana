@@ -34,7 +34,7 @@ pub type ProcessCallback = Arc<dyn Fn(&Bank) + Sync + Send>;
 
 pub struct ReplayResponse {
     pub result: transaction::Result<()>,
-    pub timings: ExecuteTimings,
+    pub timing: ExecuteTimings,
     pub idx: Option<usize>,
 }
 
@@ -119,7 +119,7 @@ impl Replayer {
                                     entry_callback,
                                     idx,
                                 }) => {
-                                    let mut timings = ExecuteTimings::default();
+                                    let mut timing = ExecuteTimings::default();
 
                                     let txs = vec![tx];
                                     let batch = TransactionBatch::new(
@@ -132,7 +132,7 @@ impl Replayer {
                                         &bank,
                                         transaction_status_sender.as_ref(),
                                         replay_vote_sender.as_ref(),
-                                        &mut timings,
+                                        &mut timing,
                                         cost_capacity_meter.clone(),
                                     );
 
@@ -143,7 +143,7 @@ impl Replayer {
                                     if response_sender
                                         .send(ReplayResponse {
                                             result,
-                                            timings,
+                                            timing,
                                             idx,
                                         })
                                         .is_err()
