@@ -149,26 +149,19 @@ fn execute_batches(
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
     replayer_handle: &ReplayerHandle,
 ) -> Result<()> {
-    let now = Instant::now();
     let tx_account_locks_results: Vec<Result<_>> = transactions
         .iter()
         .map(|tx| tx.get_account_locks(&bank.feature_set))
         .collect();
+
     let now = Instant::now();
-
-    println!("building dep graph");
-    io::stdout().flush().unwrap();
-
     let dependency_graph = build_dependency_graphs(&tx_account_locks_results)?;
     let dependency_graph_elapsed = now.elapsed();
-    println!("done building dep graph");
-    io::stdout().flush().unwrap();
     info!(
         "slot: {:?} dependency_graph_elapsed: {:?}",
         bank.slot(),
         dependency_graph_elapsed,
     );
-    io::stdout().flush().unwrap();
     timings.planning_elapsed += now.elapsed().as_micros() as u64;
 
     let mut num_left_to_process = transactions.len();
@@ -181,10 +174,11 @@ fn execute_batches(
         .enumerate()
         .filter_map(|(idx, indices)| indices.is_empty().then(|| idx))
         .collect();
-    println!("running planner...");
-    io::stdout().flush().unwrap();
+
     while num_left_to_process > 0 {
         // send them to get executed
+        info!("sending {} to get scheduled", indices_need_scheduling.len());
+
         for idx in indices_need_scheduling {
             replayer_handle
                 .send(ReplayRequest {
@@ -201,7 +195,10 @@ fn execute_batches(
         }
 
         loop {
+            info!("waiting for results...");
             let mut results = replayer_handle.recv_and_drain().unwrap();
+            info!("got {} results", results.len());
+
             for ReplayResponse {
                 result,
                 timings: _,
@@ -233,6 +230,10 @@ fn execute_batches(
                 })
                 .collect();
             if indices_need_scheduling.is_empty() {
+                info!(
+                    "more ready to be scheduled: {:?}",
+                    indices_need_scheduling.len()
+                );
                 break;
             }
         }
