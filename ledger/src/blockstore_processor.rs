@@ -736,7 +736,7 @@ pub fn confirm_slot(
     recyclers: &VerifyRecyclers,
     allow_dead_slots: bool,
     replayer_handle: &ReplayerHandle,
-) -> result::Result<(), BlockstoreProcessorError> {
+) -> result::Result<bool, BlockstoreProcessorError> {
     let slot = bank.slot();
 
     let (entries, num_shreds, slot_full) = {
@@ -752,6 +752,10 @@ pub fn confirm_slot(
         }
         load_result
     }?;
+
+    if entries.is_empty() {
+        return Ok(false);
+    }
 
     let num_entries = entries.len();
     let num_txs = entries.iter().map(|e| e.transactions.len()).sum::<usize>();
@@ -873,7 +877,7 @@ pub fn confirm_slot(
                 progress.last_entry = last_entry_hash;
             }
 
-            Ok(())
+            Ok(true)
         }
         Err(err) => {
             warn!("Ledger proof of history failed at slot: {}", bank.slot());
