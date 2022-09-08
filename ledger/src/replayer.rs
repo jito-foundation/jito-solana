@@ -105,7 +105,6 @@ impl Replayer {
                 let response_sender = response_sender.clone();
                 Builder::new()
                     .name(format!("solReplayer-{}", i))
-                    .stack_size(64 * 1024)
                     .spawn(move || {
                         info!("started replayer");
                         loop {

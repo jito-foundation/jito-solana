@@ -17,7 +17,7 @@ use {
         self, create_ticks, Entry, EntrySlice, EntryType, EntryVerificationStatus, VerifyRecyclers,
     },
     solana_measure::measure::Measure,
-    solana_program_runtime::timings::ExecuteTimings,
+    solana_program_runtime::timings::{ExecuteTimingType, ExecuteTimings},
     solana_rayon_threadlimit::get_thread_count,
     solana_runtime::{
         accounts_background_service::DroppedSlotsReceiver,
@@ -98,46 +98,6 @@ thread_local!(static PAR_THREAD_POOL: RefCell<ThreadPool> = RefCell::new(rayon::
                     .unwrap())
 );
 
-fn first_err(results: &[Result<()>]) -> Result<()> {
-    for r in results {
-        if r.is_err() {
-            return r.clone();
-        }
-    }
-    Ok(())
-}
-//
-// // Includes transaction signature for unit-testing
-// fn get_first_error(
-//     batch: &TransactionBatch,
-//     fee_collection_results: Vec<Result<()>>,
-// ) -> Option<(Result<()>, Signature)> {
-//     let mut first_err = None;
-//     for (result, transaction) in fee_collection_results
-//         .iter()
-//         .zip(batch.sanitized_transactions())
-//     {
-//         if let Err(ref err) = result {
-//             if first_err.is_none() {
-//                 first_err = Some((result.clone(), *transaction.signature()));
-//             }
-//             warn!(
-//                 "Unexpected validator error: {:?}, transaction: {:?}",
-//                 err, transaction
-//             );
-//             datapoint_error!(
-//                 "validator_process_entry_error",
-//                 (
-//                     "error",
-//                     format!("error: {:?}, transaction: {:?}", err, transaction),
-//                     String
-//                 )
-//             );
-//         }
-//     }
-//     first_err
-// }
-
 fn execute_batches(
     bank: &Arc<Bank>,
     transactions: &[SanitizedTransaction],
@@ -204,20 +164,56 @@ fn execute_batches(
             let results = replayer_handle.recv_and_drain().unwrap();
             debug!("got {} results", results.len());
 
+            let mut transaction_results = vec![Ok(()); transactions.len()];
+
             for ReplayResponse {
                 result,
                 timing,
                 idx,
             } in results
             {
-                timings.accumulate(&timing);
                 let idx = idx.unwrap();
                 is_processed[idx] = true;
                 is_processing[idx] = false;
                 num_left_to_process -= 1;
 
-                // TODO (LB): if we bail out here, we need to drain the entire channel
-                result?;
+                timings.accumulate(&timing);
+
+                timings.saturating_add_in_place(ExecuteTimingType::TotalBatchesLen, 1);
+                timings.saturating_add_in_place(ExecuteTimingType::NumExecuteBatches, 1);
+
+                transaction_results[idx] = result;
+            }
+
+            // if there's any errors, we need to wait until all of the current executing transactions
+            // return then return that error
+            if let Some((idx, err)) = transaction_results
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.is_err())
+            {
+                let transaction = &transactions[idx];
+                warn!(
+                    "Unexpected validator error: {:?}, transaction: {:?}",
+                    err, transaction
+                );
+                datapoint_error!(
+                    "validator_process_entry_error",
+                    (
+                        "error",
+                        format!("error: {:?}, transaction: {:?}", err, transaction),
+                        String
+                    )
+                );
+                while is_processing.iter().any(|p| *p) {
+                    warn!("waiting for scheduler to finish");
+                    let results = replayer_handle.recv_and_drain().unwrap();
+                    results
+                        .iter()
+                        .for_each(|r| is_processing[r.idx.unwrap()] = false);
+                }
+                warn!("done waiting, returning");
+                return err.clone();
             }
 
             indices_need_scheduling = dependency_graph

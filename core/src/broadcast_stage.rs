@@ -422,41 +422,34 @@ pub fn broadcast_shreds(
         let bank_forks = bank_forks.read().unwrap();
         (bank_forks.root_bank(), bank_forks.working_bank())
     };
-
-    let shredstream_packets: Vec<_> = shreds
-        .iter()
-        .filter_map(|shred| Some((&shred.payload, shred_receiver_addr?)))
-        .collect();
-
     let packets: Vec<_> = shreds
         .iter()
-        .group_by(|shred| shred.slot())
-        .into_iter()
-        .flat_map(|(slot, shreds)| {
-            let cluster_nodes =
-                cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
-            update_peer_stats(&cluster_nodes, last_datapoint_submit);
-            let root_bank = root_bank.clone();
-            shreds.flat_map(move |shred| {
-                repeat(&shred.payload).zip(cluster_nodes.get_broadcast_addrs(
-                    shred,
-                    &root_bank,
-                    DATA_PLANE_FANOUT,
-                    socket_addr_space,
-                ))
-            })
-        })
+        .filter_map(|shred| Some((&shred.payload, shred_receiver_addr?)))
+        .chain(
+            shreds
+                .iter()
+                .group_by(|shred| shred.slot())
+                .into_iter()
+                .flat_map(|(slot, shreds)| {
+                    let cluster_nodes =
+                        cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
+                    update_peer_stats(&cluster_nodes, last_datapoint_submit);
+                    let root_bank = root_bank.clone();
+                    shreds.flat_map(move |shred| {
+                        repeat(&shred.payload).zip(cluster_nodes.get_broadcast_addrs(
+                            shred,
+                            &root_bank,
+                            DATA_PLANE_FANOUT,
+                            socket_addr_space,
+                        ))
+                    })
+                }),
+        )
         .collect();
-
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
 
     let mut send_mmsg_time = Measure::start("send_mmsg");
-    if let Err(SendPktsError::IoError(ioerr, num_failed)) = batch_send(s, &shredstream_packets[..])
-    {
-        transmit_stats.dropped_packets += num_failed;
-        result = Err(Error::Io(ioerr));
-    }
     if let Err(SendPktsError::IoError(ioerr, num_failed)) = batch_send(s, &packets[..]) {
         transmit_stats.dropped_packets += num_failed;
         result = Err(Error::Io(ioerr));
