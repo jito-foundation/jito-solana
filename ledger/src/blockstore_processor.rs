@@ -158,8 +158,9 @@ fn execute_batches(
     let dependency_graph = build_dependency_graphs(&tx_account_locks_results)?;
     let dependency_graph_elapsed = now.elapsed();
     info!(
-        "slot: {:?} dependency_graph_elapsed: {:?}",
+        "slot: {:?} txs: {:?} dependency_graph_elapsed: {:?}",
         bank.slot(),
+        transactions.len(),
         dependency_graph_elapsed,
     );
     timings.planning_elapsed += now.elapsed().as_micros() as u64;
@@ -175,7 +176,7 @@ fn execute_batches(
         .filter_map(|(idx, indices)| indices.is_empty().then(|| idx))
         .collect();
 
-    while num_left_to_process > 0 {
+    while is_processed.iter().any(|p| !*p) {
         // send them to get executed
         info!("sending {} to get scheduled", indices_need_scheduling.len());
 
@@ -195,7 +196,12 @@ fn execute_batches(
         }
 
         loop {
-            info!("waiting for results...");
+            info!(
+                "waiting for results num_processed: {:?} num_processing: {:?} num_left_to_process: {:?}",
+                is_processed.iter().map(|p| if *p { 1 } else { 0 }).sum::<usize>(),
+                is_processing.iter().map(|p| if *p { 1 } else { 0 }).sum::<usize>(),
+                num_left_to_process
+            );
             let mut results = replayer_handle.recv_and_drain().unwrap();
             info!("got {} results", results.len());
 
@@ -229,7 +235,7 @@ fn execute_batches(
                     }
                 })
                 .collect();
-            if indices_need_scheduling.is_empty() {
+            if !indices_need_scheduling.is_empty() {
                 info!(
                     "more ready to be scheduled: {:?}",
                     indices_need_scheduling.len()
