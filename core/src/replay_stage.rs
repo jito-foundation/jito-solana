@@ -1667,19 +1667,17 @@ impl ReplayStage {
         verify_recyclers: &VerifyRecyclers,
         replayer_handle: &ReplayerHandle,
     ) -> result::Result<usize, BlockstoreProcessorError> {
-        const MAX_REPLAY_DURATION: Duration = Duration::from_millis(400);
-
         let tx_count_before = bank_progress.replay_progress.num_txs;
 
         // try to replay the entire slot before exiting
         // the idea here is that by the time we return from the first call to confirm_slot,
         // we might have more shreds for this slot
-        let start = Instant::now();
-        while start.elapsed() < MAX_REPLAY_DURATION || !bank.is_complete() {
+        let mut did_process_new_entries = true;
+        while did_process_new_entries {
             // All errors must lead to marking the slot as dead, otherwise,
             // the `check_slot_agrees_with_cluster()` called by `replay_active_banks()`
             // will break!
-            let did_process_new_entries = blockstore_processor::confirm_slot(
+            did_process_new_entries = blockstore_processor::confirm_slot(
                 blockstore,
                 bank,
                 &mut bank_progress.replay_stats,
@@ -1693,9 +1691,6 @@ impl ReplayStage {
                 false,
                 replayer_handle,
             )?;
-            if !did_process_new_entries {
-                break;
-            }
         }
         let tx_count_after = bank_progress.replay_progress.num_txs;
         let tx_count = tx_count_after - tx_count_before;
