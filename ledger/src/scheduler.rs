@@ -5,18 +5,18 @@ use {
     },
     solana_rayon_threadlimit::get_thread_count,
     solana_sdk::transaction::{Result, TransactionAccountLocks},
-    std::{
-        cell::RefCell,
-        collections::{HashMap, HashSet},
-    },
+    std::collections::{HashMap, HashSet},
 };
 
-thread_local!(static PAR_THREAD_POOL: RefCell<ThreadPool> = RefCell::new(rayon::ThreadPoolBuilder::new()
-                    .num_threads(get_thread_count())
-                    .thread_name(|ix| format!("blockstore_processor_{}", ix))
-                    .build()
-                    .unwrap())
-);
+lazy_static! {
+    static ref PAR_THREAD_POOL: ThreadPool = rayon::ThreadPoolBuilder::new()
+        .num_threads(get_thread_count())
+        .thread_name(|ix| format!("blockstore_processor_{}", ix))
+        .build()
+        .unwrap();
+}
+
+const DEFAULT_CONFLICT_SET_SIZE: usize = 30;
 
 // for each index, builds a transaction dependency graph of indices that need to execute before
 // the current one.
@@ -53,58 +53,32 @@ pub fn build_dependency_graphs(
             }
         });
 
-    // Ok(PAR_THREAD_POOL.with(|thread_pool| {
-    //     thread_pool.borrow().install(|| {
-    //         transaction_locks
-    //             .par_iter()
-    //             .enumerate()
-    //             .map(|(idx, account_locks)| {
-    //                 let mut dep_graph = HashSet::new();
-    //                 let readlock_accs = account_locks.writable.iter();
-    //                 let writelock_accs = account_locks
-    //                     .readonly
-    //                     .iter()
-    //                     .chain(account_locks.writable.iter());
-    //
-    //                 for acc in readlock_accs {
-    //                     if let Some(indices) = indices_read_locking_account.get(acc) {
-    //                         dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
-    //                     }
-    //                 }
-    //
-    //                 for read_acc in writelock_accs {
-    //                     if let Some(indices) = indicies_write_locking_account.get(read_acc) {
-    //                         dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
-    //                     }
-    //                 }
-    //                 dep_graph
-    //             })
-    //             .collect()
-    //     })
-    // }))
-    Ok(transaction_locks
-        .par_iter()
-        .enumerate()
-        .map(|(idx, account_locks)| {
-            let mut dep_graph = HashSet::new();
-            let readlock_accs = account_locks.writable.iter();
-            let writelock_accs = account_locks
-                .readonly
-                .iter()
-                .chain(account_locks.writable.iter());
+    Ok(PAR_THREAD_POOL.install(|| {
+        transaction_locks
+            .par_iter()
+            .enumerate()
+            .map(|(idx, account_locks)| {
+                // user measured value from mainnet; rarely see more than 30 conflicts or so
+                let mut dep_graph = HashSet::with_capacity(DEFAULT_CONFLICT_SET_SIZE);
+                let readlock_accs = account_locks.writable.iter();
+                let writelock_accs = account_locks
+                    .readonly
+                    .iter()
+                    .chain(account_locks.writable.iter());
 
-            for acc in readlock_accs {
-                if let Some(indices) = indices_read_locking_account.get(acc) {
-                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                for acc in readlock_accs {
+                    if let Some(indices) = indices_read_locking_account.get(acc) {
+                        dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                    }
                 }
-            }
 
-            for read_acc in writelock_accs {
-                if let Some(indices) = indicies_write_locking_account.get(read_acc) {
-                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                for read_acc in writelock_accs {
+                    if let Some(indices) = indicies_write_locking_account.get(read_acc) {
+                        dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                    }
                 }
-            }
-            dep_graph
-        })
-        .collect())
+                dep_graph
+            })
+            .collect()
+    }))
 }
