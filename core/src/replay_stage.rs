@@ -405,7 +405,7 @@ impl ReplayStage {
         );
 
         #[allow(clippy::cognitive_complexity)]
-            let t_replay = Builder::new()
+        let t_replay = Builder::new()
             .name("solana-replay-stage".to_string())
             .spawn(move || {
                 let verify_recyclers = VerifyRecyclers::default();
