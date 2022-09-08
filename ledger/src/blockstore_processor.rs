@@ -175,7 +175,7 @@ fn execute_batches(
         .filter_map(|(idx, indices)| indices.is_empty().then(|| idx))
         .collect();
 
-    while is_processed.iter().any(|p| !*p) {
+    while num_left_to_process > 0 {
         // send them to get executed
         info!("sending {} to get scheduled", indices_need_scheduling.len());
 
