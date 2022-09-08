@@ -216,6 +216,7 @@ fn execute_batches(
                 is_processing[idx] = false;
                 num_left_to_process -= 1;
 
+                // TODO (LB): if we bail out here, we need to drain the entire channel
                 result?;
             }
 
