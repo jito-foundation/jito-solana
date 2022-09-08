@@ -9,7 +9,7 @@ use {
         scheduler::build_dependency_graphs,
     },
     chrono_humanize::{Accuracy, HumanTime, Tense},
-    crossbeam_channel::{unbounded, Sender},
+    crossbeam_channel::{unbounded, RecvError, Sender},
     itertools::Itertools,
     log::*,
     rayon::ThreadPool,
@@ -175,6 +175,7 @@ fn execute_batches(
     let mut is_processed: Vec<bool> = vec![false; transactions.len()];
     let mut is_processing: Vec<bool> = vec![false; transactions.len()];
 
+    // first batch that gets executed has no dependencies
     let mut indices_need_scheduling: Vec<usize> = dependency_graph
         .iter()
         .enumerate()
@@ -183,6 +184,7 @@ fn execute_batches(
     println!("running planner...");
     io::stdout().flush().unwrap();
     while num_left_to_process > 0 {
+        // send them to get executed
         for idx in indices_need_scheduling {
             replayer_handle
                 .send(ReplayRequest {
@@ -199,17 +201,20 @@ fn execute_batches(
         }
 
         loop {
-            let ReplayResponse {
+            let mut results = replayer_handle.recv_and_drain().unwrap();
+            for ReplayResponse {
                 result,
                 timings: _,
                 idx,
-            } = replayer_handle.recv().unwrap();
-            let idx = idx.unwrap();
-            is_processed[idx] = true;
-            is_processing[idx] = false;
-            num_left_to_process -= 1;
+            } in results
+            {
+                let idx = idx.unwrap();
+                is_processed[idx] = true;
+                is_processing[idx] = false;
+                num_left_to_process -= 1;
 
-            result?;
+                result?;
+            }
 
             indices_need_scheduling = dependency_graph
                 .iter()
@@ -227,7 +232,7 @@ fn execute_batches(
                     }
                 })
                 .collect();
-            if !indices_need_scheduling.is_empty() {
+            if indices_need_scheduling.is_empty() {
                 break;
             }
         }

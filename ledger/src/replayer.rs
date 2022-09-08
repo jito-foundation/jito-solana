@@ -73,8 +73,10 @@ impl ReplayerHandle {
         self.request_sender.send(request)
     }
 
-    pub fn recv(&self) -> Result<ReplayResponse, RecvError> {
-        self.response_receiver.recv()
+    pub fn recv_and_drain(&self) -> Result<Vec<ReplayResponse>, RecvError> {
+        let mut results = vec![self.response_receiver.recv()?];
+        results.extend(self.response_receiver.try_iter());
+        Ok(results)
     }
 }
 
