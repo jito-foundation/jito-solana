@@ -1436,7 +1436,12 @@ fn load_blockstore(
 
     let blockstore = Arc::new(blockstore);
     let blockstore_root_scan = BlockstoreRootScan::new(config, &blockstore, exit);
-    let halt_at_slot = config.halt_at_slot.or_else(|| highest_slot(&blockstore));
+    let mut halt_at_slot = config.halt_at_slot.or_else(|| highest_slot(&blockstore));
+    // Snapshot loading respects halt_at_slot, so we don't want to pass slot 0
+    // Passing None in process_options will load highest snapshot by default.
+    if halt_at_slot == Some(0) {
+        halt_at_slot = None;
+    }
 
     let process_options = blockstore_processor::ProcessOptions {
         poh_verify: config.poh_verify,
