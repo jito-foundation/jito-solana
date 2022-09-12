@@ -436,7 +436,7 @@ pub struct RpcSimulateBundleTransactionResult {
     pub pre_execution_accounts: Option<Vec<UiAccount>>,
     pub post_execution_accounts: Option<Vec<UiAccount>>,
     pub units_consumed: Option<u64>,
-    pub return_data: Option<RpcTransactionReturnData>,
+    pub return_data: Option<UiTransactionReturnData>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
