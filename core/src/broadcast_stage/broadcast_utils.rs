@@ -18,6 +18,7 @@ const ENTRY_COALESCE_DURATION: Duration = Duration::from_millis(50);
 pub(super) struct ReceiveResults {
     pub entries: Vec<Entry>,
     pub time_elapsed: Duration,
+    pub time_coalesced: Duration,
     pub bank: Arc<Bank>,
     pub last_tick_height: u64,
 }
@@ -75,14 +76,14 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
     }
 
     // Wait up to `ENTRY_COALESCE_DURATION` to try to coalesce entries into a 32 shred batch
-    let mut coalesce_deadline = Instant::now() + ENTRY_COALESCE_DURATION;
+    let mut coalesce_start = Instant::now();
     while last_tick_height != bank.max_tick_height()
         && serialized_batch_byte_count < target_serialized_batch_byte_count
     {
         let WorkingBankEntry {
             bank: try_bank,
             entries_ticks,
-        } = match receiver.recv_deadline(coalesce_deadline) {
+        } = match receiver.recv_deadline(coalesce_start + ENTRY_COALESCE_DURATION) {
             Ok(working_bank_entry) => working_bank_entry,
             Err(_) => break,
         };
@@ -93,7 +94,7 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
             entries.clear();
             serialized_batch_byte_count = 8; // Vec len
             bank = try_bank;
-            coalesce_deadline = Instant::now() + ENTRY_COALESCE_DURATION;
+            coalesce_start = Instant::now();
         }
         last_tick_height = entries_ticks.iter().map(|(_, tick)| *tick).max().unwrap();
 
@@ -103,10 +104,12 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
         entries.extend(entries_ticks.into_iter().map(|(entry, _)| entry));
         assert!(last_tick_height <= bank.max_tick_height());
     }
+    let time_coalesced = coalesce_start.elapsed();
 
     Ok(ReceiveResults {
         entries,
         time_elapsed: recv_start.elapsed(),
+        time_coalesced,
         bank,
         last_tick_height,
     })

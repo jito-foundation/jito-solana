@@ -163,6 +163,7 @@ pub struct ValidatorConfig {
     pub no_os_disk_stats_reporting: bool,
     pub poh_pinned_cpu_core: usize,
     pub poh_hashes_per_batch: u64,
+    pub process_ledger_before_services: bool,
     pub account_indexes: AccountSecondaryIndexes,
     pub accounts_db_caching_enabled: bool,
     pub accounts_db_config: Option<AccountsDbConfig>,
@@ -229,6 +230,7 @@ impl Default for ValidatorConfig {
             no_os_disk_stats_reporting: true,
             poh_pinned_cpu_core: poh_service::DEFAULT_PINNED_CPU_CORE,
             poh_hashes_per_batch: poh_service::DEFAULT_HASHES_PER_BATCH,
+            process_ledger_before_services: false,
             account_indexes: AccountSecondaryIndexes::default(),
             accounts_db_caching_enabled: false,
             warp_slot: None,
@@ -400,6 +402,7 @@ impl Validator {
         socket_addr_space: SocketAddrSpace,
         use_quic: bool,
         tpu_connection_pool_size: usize,
+        tpu_enable_udp: bool,
     ) -> Self {
         let id = identity_keypair.pubkey();
         assert_eq!(id, node.info.id);
@@ -714,6 +717,9 @@ impl Validator {
             &leader_schedule_cache,
         );
 
+        if config.process_ledger_before_services {
+            process_blockstore.process();
+        }
         *start_progress.write().unwrap() = ValidatorStartProgress::StartingServices;
 
         let sample_performance_service =
@@ -747,6 +753,7 @@ impl Validator {
             block_commitment_cache.clone(),
             optimistically_confirmed_bank.clone(),
             &config.pubsub_config,
+            None,
         ));
 
         let max_slots = Arc::new(MaxSlots::default());
@@ -1054,6 +1061,7 @@ impl Validator {
             &identity_keypair,
             config.runtime_config.log_messages_bytes_limit,
             &staked_nodes,
+            tpu_enable_udp,
             config.maybe_block_engine_config.clone(),
             config.maybe_relayer_config.clone(),
             config.tip_manager_config.clone(),
@@ -2112,7 +2120,9 @@ mod tests {
     use {
         super::*,
         crossbeam_channel::{bounded, RecvTimeoutError},
-        solana_client::connection_cache::{DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_TPU_USE_QUIC},
+        solana_client::connection_cache::{
+            DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_TPU_ENABLE_UDP, DEFAULT_TPU_USE_QUIC,
+        },
         solana_ledger::{create_new_tmp_ledger, genesis_utils::create_genesis_config_with_leader},
         solana_sdk::{genesis_config::create_genesis_config, poh_config::PohConfig},
         std::{fs::remove_dir_all, thread, time::Duration},
@@ -2150,7 +2160,9 @@ mod tests {
             SocketAddrSpace::Unspecified,
             DEFAULT_TPU_USE_QUIC,
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
+            DEFAULT_TPU_ENABLE_UDP,
         );
+
         assert_eq!(
             *start_progress.read().unwrap(),
             ValidatorStartProgress::Running
@@ -2233,6 +2245,7 @@ mod tests {
                     SocketAddrSpace::Unspecified,
                     DEFAULT_TPU_USE_QUIC,
                     DEFAULT_TPU_CONNECTION_POOL_SIZE,
+                    DEFAULT_TPU_ENABLE_UDP,
                 )
             })
             .collect();

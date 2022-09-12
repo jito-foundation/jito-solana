@@ -3,9 +3,12 @@ use {
     log::*,
     solana_cli_output::CliAccount,
     solana_client::{
-        connection_cache::{DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_TPU_USE_QUIC},
+        connection_cache::{
+            DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_TPU_ENABLE_UDP, DEFAULT_TPU_USE_QUIC,
+        },
         nonblocking,
         rpc_client::RpcClient,
+        rpc_request::MAX_MULTIPLE_ACCOUNTS,
     },
     solana_core::{
         tower_storage::TowerStorage,
@@ -122,6 +125,7 @@ pub struct TestValidatorGenesis {
     deactivate_feature_set: HashSet<Pubkey>,
     compute_unit_limit: Option<u64>,
     pub log_messages_bytes_limit: Option<usize>,
+    pub tpu_enable_udp: bool,
 }
 
 impl Default for TestValidatorGenesis {
@@ -151,6 +155,7 @@ impl Default for TestValidatorGenesis {
             deactivate_feature_set: HashSet::<Pubkey>::default(),
             compute_unit_limit: Option::<u64>::default(),
             log_messages_bytes_limit: Option::<usize>::default(),
+            tpu_enable_udp: DEFAULT_TPU_ENABLE_UDP,
         }
     }
 }
@@ -176,6 +181,11 @@ impl TestValidatorGenesis {
     /// Check if a given TestValidator ledger has already been initialized
     pub fn ledger_exists(ledger_path: &Path) -> bool {
         ledger_path.join("vote-account-keypair.json").exists()
+    }
+
+    pub fn tpu_enable_udp(&mut self, tpu_enable_udp: bool) -> &mut Self {
+        self.tpu_enable_udp = tpu_enable_udp;
+        self
     }
 
     pub fn fee_rate_governor(&mut self, fee_rate_governor: FeeRateGovernor) -> &mut Self {
@@ -283,16 +293,24 @@ impl TestValidatorGenesis {
     where
         T: IntoIterator<Item = Pubkey>,
     {
-        for address in addresses {
-            info!("Fetching {} over RPC...", address);
-            let res = rpc_client.get_account(&address);
-            if let Ok(account) = res {
-                self.add_account(address, AccountSharedData::from(account));
-            } else if skip_missing {
-                warn!("Could not find {}, skipping.", address);
-            } else {
-                error!("Failed to fetch {}: {}", address, res.unwrap_err());
-                solana_core::validator::abort();
+        let addresses: Vec<Pubkey> = addresses.into_iter().collect();
+        for chunk in addresses.chunks(MAX_MULTIPLE_ACCOUNTS) {
+            info!("Fetching {:?} over RPC...", chunk);
+            let responses = rpc_client
+                .get_multiple_accounts(chunk)
+                .unwrap_or_else(|err| {
+                    error!("Failed to fetch: {}", err);
+                    solana_core::validator::abort();
+                });
+            for (address, res) in chunk.iter().zip(responses) {
+                if let Some(account) = res {
+                    self.add_account(*address, AccountSharedData::from(account));
+                } else if skip_missing {
+                    warn!("Could not find {}, skipping.", address);
+                } else {
+                    error!("Failed to fetch {}", address);
+                    solana_core::validator::abort();
+                }
             }
         }
         self
@@ -531,6 +549,25 @@ impl TestValidator {
         socket_addr_space: SocketAddrSpace,
     ) -> Self {
         TestValidatorGenesis::default()
+            .fee_rate_governor(FeeRateGovernor::new(0, 0))
+            .rent(Rent {
+                lamports_per_byte_year: 1,
+                exemption_threshold: 1.0,
+                ..Rent::default()
+            })
+            .faucet_addr(faucet_addr)
+            .start_with_mint_address(mint_address, socket_addr_space)
+            .expect("validator start failed")
+    }
+
+    /// Create a test validator using udp for TPU.
+    pub fn with_no_fees_udp(
+        mint_address: Pubkey,
+        faucet_addr: Option<SocketAddr>,
+        socket_addr_space: SocketAddrSpace,
+    ) -> Self {
+        TestValidatorGenesis::default()
+            .tpu_enable_udp(true)
             .fee_rate_governor(FeeRateGovernor::new(0, 0))
             .rent(Rent {
                 lamports_per_byte_year: 1,
@@ -806,6 +843,7 @@ impl TestValidator {
             socket_addr_space,
             DEFAULT_TPU_USE_QUIC,
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
+            config.tpu_enable_udp,
         ));
 
         // Needed to avoid panics in `solana-responder-gossip` in tests that create a number of

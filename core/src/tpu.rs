@@ -110,6 +110,7 @@ impl Tpu {
         keypair: &Keypair,
         log_messages_bytes_limit: Option<usize>,
         staked_nodes: &Arc<RwLock<StakedNodes>>,
+        tpu_enable_udp: bool,
         maybe_block_engine_config: Option<BlockEngineConfig>,
         maybe_relayer_config: Option<RelayerConfig>,
         tip_manager_config: TipManagerConfig,
@@ -149,6 +150,7 @@ impl Tpu {
             poh_recorder,
             tpu_coalesce_ms,
             Some(bank_forks.read().unwrap().get_vote_only_mode_signal()),
+            tpu_enable_udp,
         );
 
         let staked_nodes_updater_service = StakedNodesUpdaterService::new(

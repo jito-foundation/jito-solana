@@ -19,8 +19,10 @@ use {
         keypair::SKIP_SEED_PHRASE_VALIDATION_ARG,
     },
     solana_client::{
-        connection_cache::DEFAULT_TPU_CONNECTION_POOL_SIZE, rpc_client::RpcClient,
-        rpc_config::RpcLeaderScheduleConfig, rpc_request::MAX_MULTIPLE_ACCOUNTS,
+        connection_cache::{DEFAULT_TPU_CONNECTION_POOL_SIZE, DEFAULT_TPU_ENABLE_UDP},
+        rpc_client::RpcClient,
+        rpc_config::RpcLeaderScheduleConfig,
+        rpc_request::MAX_MULTIPLE_ACCOUNTS,
     },
     solana_core::{
         ledger_cleanup_service::{DEFAULT_MAX_LEDGER_SHREDS, DEFAULT_MIN_MAX_LEDGER_SHREDS},
@@ -1245,6 +1247,12 @@ pub fn main() {
                 .help("Do not use QUIC to send transactions."),
         )
         .arg(
+            Arg::with_name("tpu_enable_udp")
+                .long("tpu-enable-udp")
+                .takes_value(false)
+                .help("Enable UDP for receiving/sending transactions."),
+        )
+        .arg(
             Arg::with_name("disable_quic_servers")
                 .long("disable-quic-servers")
                 .takes_value(false)
@@ -1619,6 +1627,12 @@ pub fn main() {
                 .takes_value(true)
                 .value_name("NUM")
                 .help("Specify hashes per batch in PoH service"),
+        )
+        .arg(
+            Arg::with_name("process_ledger_before_services")
+                .long("process-ledger-before-services")
+                .hidden(true)
+                .help("Process the local ledger fully before starting networking services")
         )
         .arg(
             Arg::with_name("account_indexes")
@@ -2438,6 +2452,12 @@ pub fn main() {
     let accounts_shrink_optimize_total_space =
         value_t_or_exit!(matches, "accounts_shrink_optimize_total_space", bool);
     let tpu_use_quic = !matches.is_present("tpu_disable_quic");
+    let tpu_enable_udp = if matches.is_present("tpu_enable_udp") {
+        true
+    } else {
+        DEFAULT_TPU_ENABLE_UDP
+    };
+
     let tpu_connection_pool_size = value_t_or_exit!(matches, "tpu_connection_pool_size", usize);
 
     let shrink_ratio = value_t_or_exit!(matches, "accounts_shrink_ratio", f64);
@@ -2858,6 +2878,7 @@ pub fn main() {
             .unwrap_or(poh_service::DEFAULT_PINNED_CPU_CORE),
         poh_hashes_per_batch: value_of(&matches, "poh_hashes_per_batch")
             .unwrap_or(poh_service::DEFAULT_HASHES_PER_BATCH),
+        process_ledger_before_services: matches.is_present("process_ledger_before_services"),
         account_indexes,
         accounts_db_caching_enabled: !matches.is_present("no_accounts_db_caching"),
         accounts_db_test_hash_calculation: matches.is_present("accounts_db_test_hash_calculation"),
@@ -3301,6 +3322,7 @@ pub fn main() {
         socket_addr_space,
         tpu_use_quic,
         tpu_connection_pool_size,
+        tpu_enable_udp,
     );
     *admin_service_post_init.write().unwrap() =
         Some(admin_rpc_service::AdminRpcRequestMetadataPostInit {
