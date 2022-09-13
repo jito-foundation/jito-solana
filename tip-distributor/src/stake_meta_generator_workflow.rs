@@ -100,7 +100,6 @@ fn create_bank_from_snapshot(
     snapshot_slot: Slot,
 ) -> Result<Arc<Bank>, Error> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
-    //let blockstore = open_blockstore(ledger_path, AccessType::Secondary, None)?;
     let snapshot_config = SnapshotConfig {
         full_snapshot_archive_interval_slots: Slot::MAX,
         incremental_snapshot_archive_interval_slots: Slot::MAX,
@@ -109,21 +108,13 @@ fn create_bank_from_snapshot(
         bank_snapshots_dir: PathBuf::from(ledger_path),
         ..SnapshotConfig::default()
     };
-    let (bank_forks, snapshot_hash) = bank_forks_utils::bank_forks_from_snapshot(
+    let (bank_forks, _snapshot_hashes) = bank_forks_utils::bank_forks_from_snapshot(
         &genesis_config,
-        vec![PathBuf::from_str("/solana/ledger/stake-meta").unwrap()],
+        vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.accounts"))],
         None,
         &snapshot_config,
         &ProcessOptions::default(),
         None);
-
-    if let Some(sh) = snapshot_hash {
-        println!("[bill] FOUND SNAPSHOT HASH: {:?}", sh);
-    } else {
-        println!("[bill] COULDNT DEDUCE SNAPSHOT HASH");
-    }
-
-    //let bank_forks = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?;
 
     let working_bank = bank_forks.read().unwrap().working_bank();
     assert_eq!(
