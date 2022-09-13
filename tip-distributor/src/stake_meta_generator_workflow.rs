@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::str::FromStr;
 use {
     crate::{
         fetch_and_deserialize_tip_distribution_account, AccountFetcher, BankAccountFetcher,
@@ -100,9 +102,24 @@ fn create_bank_from_snapshot(
     snapshot_slot: Slot,
 ) -> Result<Arc<Bank>, Error> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
-    let blockstore = open_blockstore(ledger_path, AccessType::Secondary, None)?;
+    //let blockstore = open_blockstore(ledger_path, AccessType::Secondary, None)?;
+    let snapshot_config = SnapshotConfig {
+        full_snapshot_archive_interval_slots: Slot::MAX,
+        incremental_snapshot_archive_interval_slots: Slot::MAX,
+        full_snapshot_archives_dir: PathBuf::from(ledger_path),
+        incremental_snapshot_archives_dir: PathBuf::from(ledger_path),
+        bank_snapshots_dir: PathBuf::from(ledger_path),
+        ..SnapshotConfig::default()
+    };
+    let (bank_forks, snapshot_hash) = bank_forks_utils::bank_forks_from_snapshot(
+        &genesis_config,
+        vec![PathBuf::from_str("stake-meta").unwrap()],
+        None,
+        &snapshot_config,
+        &ProcessOptions::default(),
+        None);
 
-    let bank_forks = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?;
+    //let bank_forks = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?;
 
     let working_bank = bank_forks.read().unwrap().working_bank();
     assert_eq!(
