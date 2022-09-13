@@ -119,6 +119,12 @@ fn create_bank_from_snapshot(
         &ProcessOptions::default(),
         None);
 
+    if let Some(sh) = snapshot_hash {
+        println!("[bill] FOUND SNAPSHOT HASH: {:?}", sh);
+    } else {
+        println!("[bill] COULDNT DEDUCE SNAPSHOT HASH");
+    }
+
     //let bank_forks = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?;
 
     let working_bank = bank_forks.read().unwrap().working_bank();
