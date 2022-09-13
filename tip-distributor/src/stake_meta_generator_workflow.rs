@@ -113,7 +113,7 @@ fn create_bank_from_snapshot(
     };
     let (bank_forks, snapshot_hash) = bank_forks_utils::bank_forks_from_snapshot(
         &genesis_config,
-        vec![PathBuf::from_str("stake-meta").unwrap()],
+        vec![PathBuf::from_str("/solana/ledger/stake-meta").unwrap()],
         None,
         &snapshot_config,
         &ProcessOptions::default(),
