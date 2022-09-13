@@ -449,10 +449,8 @@ impl BundleStage {
                 .iter()
                 .any(|r| r.was_executed())
             {
-                warn!("none of the transactions were executed");
                 let bundle_execution_elapsed = start_time.elapsed();
                 if bundle_execution_elapsed >= *max_bundle_retry_duration {
-                    error!("max bundle retry duration");
                     return Err(BundleExecutionError::MaxRetriesExceeded(
                         bundle_execution_elapsed,
                     ));
@@ -817,7 +815,6 @@ impl BundleStage {
                 cluster_info,
                 max_bundle_retry_duration,
             )?;
-            info!("successfully changed tip receiver");
         }
         Self::update_qos_and_execute_record_commit_bundle(
             sanitized_bundle,
