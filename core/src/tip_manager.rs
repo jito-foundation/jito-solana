@@ -7,6 +7,7 @@ use {
     solana_sdk::{
         account::ReadableAccount,
         bundle::error::TipPaymentError,
+        compute_budget::ComputeBudgetInstruction,
         instruction::Instruction,
         pubkey::Pubkey,
         signature::Keypair,
@@ -400,7 +401,11 @@ impl TipManager {
         };
         Ok(
             SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
-                &[change_tip_ix],
+                &[
+                    // TODO (LB): make the on-chain program more efficient and remove this
+                    ComputeBudgetInstruction::set_compute_unit_limit(1_000_000),
+                    change_tip_ix,
+                ],
                 Some(&keypair.pubkey()),
                 &[keypair],
                 bank.last_blockhash(),
