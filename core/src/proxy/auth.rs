@@ -66,12 +66,20 @@ pub(crate) mod token_manager {
                     )
                     .await
                     {
-                        error!("auth_refresh_loop error: {:?}", e);
+                        datapoint_error!(
+                            "authentication-error",
+                            ("count", 1, i64),
+                            ("error", e.to_string(), String)
+                        );
                         sleep(retry_interval).await;
                     }
                 }
                 Err(e) => {
-                    error!("error connecting to auth service: {}", e);
+                    datapoint_error!(
+                        "authentication-connection-error",
+                        ("count", 1, i64),
+                        ("error", e.to_string(), String)
+                    );
                     sleep(retry_interval).await;
                 }
             }
@@ -130,8 +138,17 @@ pub(crate) mod token_manager {
                         Ok((new_access_token, new_refresh_token)) => {
                             *access_token.lock().unwrap() = new_access_token.clone();
                             refresh_token = new_refresh_token;
+                            datapoint_info!(
+                                "authentication-access-token-success",
+                                ("count", 1, i64),
+                            );
                         }
                         Err(e) => {
+                            datapoint_error!(
+                                "authentication-access-token-error",
+                                ("count", 1, i64),
+                                ("error", e.to_string(), String)
+                            );
                             return Err(e);
                         }
                     }
@@ -143,8 +160,19 @@ pub(crate) mod token_manager {
                     {
                         Ok(new_access_token) => {
                             *access_token.lock().unwrap() = new_access_token;
+                            datapoint_info!(
+                                "authentication-refresh-token-success",
+                                ("count", 1, i64),
+                            );
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            datapoint_error!(
+                                "authentication-refresh-token-error",
+                                ("count", 1, i64),
+                                ("error", e.to_string(), String)
+                            );
+                            return Err(e);
+                        }
                     }
                 }
                 // Sleep and do nothing if neither token is close to expired,

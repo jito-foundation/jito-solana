@@ -32,7 +32,10 @@ use {
         thread::{self, Builder, JoinHandle},
         time::Duration,
     },
-    tokio::{runtime::Runtime, time::sleep},
+    tokio::{
+        runtime::Runtime,
+        time::{interval, sleep},
+    },
     tonic::{
         codegen::InterceptedService,
         transport::{Channel, Endpoint},
@@ -40,6 +43,26 @@ use {
     },
     uuid::Uuid,
 };
+
+#[derive(Default)]
+struct BlockEngineStats {
+    num_packets: u64,
+    num_empty_packets: u64,
+    num_bundles: u64,
+    num_bundle_packets: u64,
+}
+
+impl BlockEngineStats {
+    pub fn report(&self) {
+        datapoint_info!(
+            "block-engine-loop-stats",
+            ("num_packets", self.num_packets, i64),
+            ("num_empty_packets", self.num_empty_packets, i64),
+            ("num_bundles", self.num_bundles, i64),
+            ("num_bundle_packets", self.num_bundle_packets, i64),
+        );
+    }
+}
 
 pub struct BlockEngineStage {
     t_hdls: Vec<JoinHandle<()>>,
@@ -173,12 +196,20 @@ impl BlockEngineStage {
                                 {
                                     Ok(_) => {}
                                     Err(e) => {
-                                        error!("error consuming block-engine stream: {:?}", e);
+                                        datapoint_error!(
+                                            "block-engine-stream-error",
+                                            ("count", 1, i64),
+                                            ("error", e.to_string(), String),
+                                        );
                                     }
                                 }
                             }
                             Err(e) => {
-                                error!("error connecting to block-engine: {:?}", e);
+                                datapoint_error!(
+                                    "block-engine-connection-error",
+                                    ("count", 1, i64),
+                                    ("error", e.to_string(), String),
+                                );
                             }
                         }
 
@@ -233,14 +264,22 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<()> {
         info!("Starting bundle and packet stream consumer.");
 
+        let mut block_engine_stats = BlockEngineStats::default();
+
+        let mut metrics_tick = interval(Duration::from_secs(1));
+
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_block_engine_packets(resp, packet_tx, verified_packet_tx, trust_packets)?;
+                    Self::handle_block_engine_packets(resp, packet_tx, verified_packet_tx, trust_packets, &mut block_engine_stats)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
-                    Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx)?;
+                    Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                }
+                _ = metrics_tick.tick() => {
+                    block_engine_stats.report();
+                    block_engine_stats = BlockEngineStats::default();
                 }
             }
         }
@@ -251,9 +290,9 @@ impl BlockEngineStage {
     fn handle_block_engine_maybe_bundles(
         maybe_bundles_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
         bundle_sender: &Sender<Vec<PacketBundle>>,
+        block_engine_stats: &mut BlockEngineStats,
     ) -> crate::proxy::Result<()> {
         let bundles_response = maybe_bundles_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-        info!("received block-engine bundles");
         let bundles: Vec<PacketBundle> = bundles_response
             .bundles
             .into_iter()
@@ -271,6 +310,11 @@ impl BlockEngineStage {
                 })
             })
             .collect();
+
+        block_engine_stats.num_bundles += bundles.len() as u64;
+        block_engine_stats.num_bundle_packets +=
+            bundles.iter().map(|b| b.batch.len()).sum::<usize>() as u64;
+
         bundle_sender
             .send(bundles)
             .map_err(|_| ProxyError::PacketForwardError)
@@ -281,9 +325,9 @@ impl BlockEngineStage {
         packet_tx: &Sender<PacketBatch>,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         trust_packets: bool,
+        block_engine_stats: &mut BlockEngineStats,
     ) -> crate::proxy::Result<()> {
         if let Some(batch) = resp.batch {
-            info!("received block-engine packets");
             let packet_batch = PacketBatch::new(
                 batch
                     .packets
@@ -291,6 +335,9 @@ impl BlockEngineStage {
                     .map(proto_packet_to_packet)
                     .collect(),
             );
+
+            block_engine_stats.num_packets += packet_batch.len() as u64;
+
             if trust_packets {
                 verified_packet_tx
                     .send((vec![packet_batch], None))
@@ -301,7 +348,7 @@ impl BlockEngineStage {
                     .map_err(|_| ProxyError::PacketForwardError)?;
             }
         } else {
-            warn!("received empty packet batch");
+            block_engine_stats.num_empty_packets += 1;
         }
 
         Ok(())

@@ -46,6 +46,24 @@ use {
     },
 };
 
+#[derive(Default)]
+struct RelayerStats {
+    num_packets: u64,
+    num_heartbeats: u64,
+    num_empty_messages: u64,
+}
+
+impl RelayerStats {
+    pub fn report(&self) {
+        datapoint_info!(
+            "relayer-loop-stats",
+            ("num_packets", self.num_packets, i64),
+            ("num_heartbeats", self.num_heartbeats, i64),
+            ("num_empty_messages", self.num_empty_messages, i64),
+        );
+    }
+}
+
 pub struct RelayerStage {
     t_hdls: Vec<JoinHandle<()>>,
 }
@@ -191,12 +209,20 @@ impl RelayerStage {
                                 {
                                     Ok(_) => {}
                                     Err(e) => {
-                                        error!("error in relayer stream: {:?}", e);
+                                        datapoint_error!(
+                                            "relayer-stream-error",
+                                            ("count", 1, i64),
+                                            ("error", e.to_string(), String),
+                                        );
                                     }
                                 }
                             }
                             Err(e) => {
-                                error!("error connecting to relayer: {:?}", e);
+                                datapoint_error!(
+                                    "relayer-connection-error",
+                                    ("count", 1, i64),
+                                    ("error", e.to_string(), String),
+                                );
                             }
                         }
                         sleep(Duration::from_millis(backoff.next_wait())).await;
@@ -272,6 +298,8 @@ impl RelayerStage {
     ) -> crate::proxy::Result<()> {
         info!("relayer starting bundle and packet stream");
 
+        let mut relayer_stats = RelayerStats::default();
+
         let mut heartbeat_check_interval = interval(expected_heartbeat_interval);
         let mut last_heartbeat_ts = Instant::now();
 
@@ -279,9 +307,12 @@ impl RelayerStage {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, trust_packets, verified_packet_tx)?;
+                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, trust_packets, verified_packet_tx, &mut relayer_stats)?;
                 }
                 _ = heartbeat_check_interval.tick() => {
+                    relayer_stats.report();
+                    relayer_stats = RelayerStats::default();
+
                     if last_heartbeat_ts.elapsed() > oldest_allowed_heartbeat {
                         return Err(ProxyError::HeartbeatExpired);
                     }
@@ -300,10 +331,12 @@ impl RelayerStage {
         packet_tx: &Sender<PacketBatch>,
         trust_packets: bool,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        relayer_stats: &mut RelayerStats,
     ) -> crate::proxy::Result<()> {
         match subscribe_packets_resp.msg {
             None => {
                 warn!("Received an empty subscribe_packets msg.");
+                relayer_stats.num_empty_messages += 1;
             }
             Some(relayer::subscribe_packets_response::Msg::Batch(proto_batch)) => {
                 info!("packet batch received");
@@ -315,6 +348,7 @@ impl RelayerStage {
                         .map(proto_packet_to_packet)
                         .collect(),
                 );
+                relayer_stats.num_packets += packet_batch.len() as u64;
 
                 if trust_packets {
                     verified_packet_tx
@@ -328,6 +362,7 @@ impl RelayerStage {
             }
             Some(relayer::subscribe_packets_response::Msg::Heartbeat(_)) => {
                 debug!("heartbeat received");
+                relayer_stats.num_heartbeats += 1;
 
                 *last_heartbeat_ts = Instant::now();
                 heartbeat_tx
