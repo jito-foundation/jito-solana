@@ -3,7 +3,7 @@
 pub use {crate::extract_memos::extract_and_fmt_memos, solana_sdk::reward_type::RewardType};
 use {
     crate::{
-        parse_accounts::{parse_accounts, parse_static_accounts, ParsedAccount},
+        parse_accounts::{parse_legacy_message_accounts, parse_v0_message_accounts, ParsedAccount},
         parse_instruction::{parse, ParsedInstruction},
     },
     solana_account_decoder::parse_token::UiTokenAmount,
@@ -349,7 +349,7 @@ impl From<&LoadedAddresses> for UiLoadedAddresses {
 }
 
 impl UiTransactionStatusMeta {
-    fn parse(meta: TransactionStatusMeta, static_keys: &[Pubkey]) -> Self {
+    fn parse(meta: TransactionStatusMeta, static_keys: &[Pubkey], show_rewards: bool) -> Self {
         let account_keys = AccountKeys::new(static_keys, Some(&meta.loaded_addresses));
         Self {
             err: meta.status.clone().err(),
@@ -369,8 +369,8 @@ impl UiTransactionStatusMeta {
             post_token_balances: meta
                 .post_token_balances
                 .map(|balance| balance.into_iter().map(Into::into).collect()),
-            rewards: meta.rewards,
-            loaded_addresses: Some(UiLoadedAddresses::from(&meta.loaded_addresses)),
+            rewards: if show_rewards { meta.rewards } else { None },
+            loaded_addresses: None,
         }
     }
 }
@@ -527,7 +527,11 @@ impl ConfirmedBlock {
                     self.transactions
                         .into_iter()
                         .map(|tx_with_meta| {
-                            tx_with_meta.encode(encoding, options.max_supported_transaction_version)
+                            tx_with_meta.encode(
+                                encoding,
+                                options.max_supported_transaction_version,
+                                options.show_rewards,
+                            )
                         })
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
@@ -646,6 +650,7 @@ impl TransactionWithStatusMeta {
         self,
         encoding: UiTransactionEncoding,
         max_supported_transaction_version: Option<u8>,
+        show_rewards: bool,
     ) -> Result<EncodedTransactionWithStatusMeta, EncodeError> {
         match self {
             Self::MissingMetadata(ref transaction) => Ok(EncodedTransactionWithStatusMeta {
@@ -654,7 +659,7 @@ impl TransactionWithStatusMeta {
                 meta: None,
             }),
             Self::Complete(tx_with_meta) => {
-                tx_with_meta.encode(encoding, max_supported_transaction_version)
+                tx_with_meta.encode(encoding, max_supported_transaction_version, show_rewards)
             }
         }
     }
@@ -672,6 +677,7 @@ impl VersionedTransactionWithStatusMeta {
         self,
         encoding: UiTransactionEncoding,
         max_supported_transaction_version: Option<u8>,
+        show_rewards: bool,
     ) -> Result<EncodedTransactionWithStatusMeta, EncodeError> {
         let version = match (
             max_supported_transaction_version,
@@ -698,8 +704,15 @@ impl VersionedTransactionWithStatusMeta {
                 UiTransactionEncoding::JsonParsed => UiTransactionStatusMeta::parse(
                     self.meta,
                     self.transaction.message.static_account_keys(),
+                    show_rewards,
                 ),
-                _ => UiTransactionStatusMeta::from(self.meta),
+                _ => {
+                    let mut meta = UiTransactionStatusMeta::from(self.meta);
+                    if !show_rewards {
+                        meta.rewards = None;
+                    }
+                    meta
+                }
             }),
             version,
         })
@@ -744,9 +757,11 @@ impl ConfirmedTransactionWithStatusMeta {
     ) -> Result<EncodedConfirmedTransactionWithStatusMeta, EncodeError> {
         Ok(EncodedConfirmedTransactionWithStatusMeta {
             slot: self.slot,
-            transaction: self
-                .tx_with_meta
-                .encode(encoding, max_supported_transaction_version)?,
+            transaction: self.tx_with_meta.encode(
+                encoding,
+                max_supported_transaction_version,
+                true,
+            )?,
             block_time: self.block_time,
         })
     }
@@ -891,7 +906,7 @@ impl Encodable for Message {
         if encoding == UiTransactionEncoding::JsonParsed {
             let account_keys = AccountKeys::new(&self.account_keys, None);
             UiMessage::Parsed(UiParsedMessage {
-                account_keys: parse_accounts(self),
+                account_keys: parse_legacy_message_accounts(self),
                 recent_blockhash: self.recent_blockhash.to_string(),
                 instructions: self
                     .instructions
@@ -923,7 +938,7 @@ impl EncodableWithMeta for v0::Message {
             let account_keys = AccountKeys::new(&self.account_keys, Some(&meta.loaded_addresses));
             let loaded_message = LoadedMessage::new_borrowed(self, &meta.loaded_addresses);
             UiMessage::Parsed(UiParsedMessage {
-                account_keys: parse_static_accounts(&loaded_message),
+                account_keys: parse_v0_message_accounts(&loaded_message),
                 recent_blockhash: self.recent_blockhash.to_string(),
                 instructions: self
                     .instructions
