@@ -754,10 +754,6 @@ impl BundleStage {
         let my_tip_distribution_pda = tip_manager.get_my_tip_distribution_pda(bank.epoch());
 
         if configured_tip_receiver != my_tip_distribution_pda {
-            info!(
-                "changing tip receiver from {:?} to {:?}",
-                configured_tip_receiver, my_tip_distribution_pda
-            );
             let sanitized_bundle = SanitizedBundle {
                 transactions: vec![tip_manager.change_tip_receiver_tx(
                     &my_tip_distribution_pda,
@@ -765,6 +761,11 @@ impl BundleStage {
                     &cluster_info.keypair(),
                 )?],
             };
+
+            info!(
+                "changing tip receiver from {:?} to {:?} tx: {:?}",
+                configured_tip_receiver, my_tip_distribution_pda, sanitized_bundle
+            );
 
             match Self::update_qos_and_execute_record_commit_bundle(
                 &sanitized_bundle,
@@ -803,7 +804,6 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         bundle_stage_stats: &mut BundleStageStats,
     ) -> BundleExecutionResult<()> {
-        let _lock = tip_manager.lock();
         let tip_pdas = tip_manager.get_tip_accounts();
         if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas) {
             Self::maybe_initialize_and_change_tip_receiver(

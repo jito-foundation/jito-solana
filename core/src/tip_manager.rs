@@ -7,6 +7,7 @@ use {
     solana_sdk::{
         account::ReadableAccount,
         bundle::error::TipPaymentError,
+        compute_budget::ComputeBudgetInstruction,
         instruction::Instruction,
         pubkey::Pubkey,
         signature::Keypair,
@@ -15,10 +16,7 @@ use {
         system_program,
         transaction::{SanitizedTransaction, Transaction},
     },
-    std::{
-        collections::HashSet,
-        sync::{Arc, Mutex, MutexGuard},
-    },
+    std::{collections::HashSet, sync::Arc},
     tip_distribution::sdk::{
         derive_config_account_address, derive_tip_distribution_account_address,
         instruction::{
@@ -93,7 +91,6 @@ pub struct TipManager {
     tip_payment_program_info: TipPaymentProgramInfo,
     tip_distribution_program_info: TipDistributionProgramInfo,
     tip_distribution_account_config: TipDistributionAccountConfig,
-    lock: Arc<Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -161,7 +158,6 @@ impl TipManager {
                 config_pda_and_bump,
             },
             tip_distribution_account_config,
-            lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -252,10 +248,6 @@ impl TipManager {
             recent_blockhash,
         ))
         .unwrap()
-    }
-
-    pub fn lock(&self) -> MutexGuard<()> {
-        self.lock.lock().unwrap()
     }
 
     /// Returns this validator's [TipDistributionAccount] PDA derived from the provided epoch.
@@ -401,7 +393,10 @@ impl TipManager {
         };
         Ok(
             SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
-                &[change_tip_ix],
+                &[
+                    ComputeBudgetInstruction::set_compute_unit_limit(1_000_000),
+                    change_tip_ix,
+                ],
                 Some(&keypair.pubkey()),
                 &[keypair],
                 bank.last_blockhash(),
