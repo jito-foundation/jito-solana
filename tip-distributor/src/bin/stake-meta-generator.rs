@@ -30,10 +30,6 @@ struct Args {
     #[clap(long, env)]
     out_path: String,
 
-    /// The expected base58 encoded snapshot bank hash.
-    #[clap(long, env)]
-    snapshot_bank_hash: String,
-
     /// The expected snapshot slot.
     #[clap(long, env)]
     snapshot_slot: Slot,
@@ -62,7 +58,6 @@ fn main() {
 
     run_workflow(
         &args.ledger_path,
-        args.snapshot_bank_hash,
         args.snapshot_slot,
         args.tip_distribution_program_id,
         args.out_path,

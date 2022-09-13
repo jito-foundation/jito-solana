@@ -77,14 +77,13 @@ impl Display for Error {
 /// to a JSON file.
 pub fn run_workflow(
     ledger_path: &Path,
-    snapshot_bank_hash: String,
     snapshot_slot: Slot,
     tip_distribution_program_id: Pubkey,
     out_path: String,
     rpc_client: RpcClient,
 ) -> Result<(), Error> {
     info!("Creating bank from ledger path...");
-    let bank = create_bank_from_snapshot(ledger_path, snapshot_bank_hash, snapshot_slot)?;
+    let bank = create_bank_from_snapshot(ledger_path,  snapshot_slot)?;
 
     info!("Generating stake_meta_collection object...");
     let stake_meta_coll =
@@ -98,7 +97,6 @@ pub fn run_workflow(
 
 fn create_bank_from_snapshot(
     ledger_path: &Path,
-    expected_bank_hash: String,
     snapshot_slot: Slot,
 ) -> Result<Arc<Bank>, Error> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
@@ -128,14 +126,6 @@ fn create_bank_from_snapshot(
     //let bank_forks = load_bank_forks(&blockstore, &genesis_config, snapshot_slot)?;
 
     let working_bank = bank_forks.read().unwrap().working_bank();
-    assert_eq!(
-        working_bank.hash().to_string(),
-        expected_bank_hash,
-        "expected working bank hash {}, found {} at slot {}",
-        expected_bank_hash,
-        working_bank.hash(),
-        snapshot_slot
-    );
     assert_eq!(
         working_bank.slot(),
         snapshot_slot,
