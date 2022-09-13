@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-use std::str::FromStr;
 use {
     crate::{
         fetch_and_deserialize_tip_distribution_account, AccountFetcher, BankAccountFetcher,
@@ -11,16 +9,13 @@ use {
     solana_client::{client_error::ClientError, rpc_client::RpcClient},
     solana_ledger::{
         bank_forks_utils,
-        blockstore::{Blockstore, BlockstoreError},
-        blockstore_options::{AccessType, BlockstoreOptions, BlockstoreRecoveryMode},
+        blockstore::BlockstoreError,
         blockstore_processor::{BlockstoreProcessorError, ProcessOptions},
     },
     solana_runtime::{
         bank::Bank,
-        bank_forks::BankForks,
         hardened_unpack::{open_genesis_config, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE},
         snapshot_config::SnapshotConfig,
-        snapshot_utils,
         stakes::StakeAccount,
         vote_account::VoteAccount,
     },
@@ -28,16 +23,15 @@ use {
         account::ReadableAccount,
         bs58,
         clock::{Epoch, Slot},
-        genesis_config::GenesisConfig,
         pubkey::Pubkey,
     },
     std::{
         collections::HashMap,
         fmt::{Debug, Display, Formatter},
-        fs::{self, File},
+        fs::File,
         io::{BufWriter, Write},
-        path::Path,
-        sync::{Arc, RwLock},
+        path::{Path, PathBuf},
+        sync::Arc,
     },
     thiserror::Error as ThisError,
 };
@@ -83,7 +77,7 @@ pub fn run_workflow(
     rpc_client: RpcClient,
 ) -> Result<(), Error> {
     info!("Creating bank from ledger path...");
-    let bank = create_bank_from_snapshot(ledger_path,  snapshot_slot)?;
+    let bank = create_bank_from_snapshot(ledger_path, snapshot_slot)?;
 
     info!("Generating stake_meta_collection object...");
     let stake_meta_coll =
@@ -95,10 +89,7 @@ pub fn run_workflow(
     Ok(())
 }
 
-fn create_bank_from_snapshot(
-    ledger_path: &Path,
-    snapshot_slot: Slot,
-) -> Result<Arc<Bank>, Error> {
+fn create_bank_from_snapshot(ledger_path: &Path, snapshot_slot: Slot) -> Result<Arc<Bank>, Error> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
     let snapshot_config = SnapshotConfig {
         full_snapshot_archive_interval_slots: Slot::MAX,
@@ -114,7 +105,8 @@ fn create_bank_from_snapshot(
         None,
         &snapshot_config,
         &ProcessOptions::default(),
-        None);
+        None,
+    );
 
     let working_bank = bank_forks.read().unwrap().working_bank();
     assert_eq!(
@@ -126,105 +118,6 @@ fn create_bank_from_snapshot(
     );
 
     Ok(working_bank)
-}
-
-fn load_bank_forks(
-    blockstore: &Blockstore,
-    genesis_config: &GenesisConfig,
-    snapshot_slot: Slot,
-) -> Result<Arc<RwLock<BankForks>>, Error> {
-    let bank_snapshots_dir = blockstore
-        .ledger_path()
-        .join(if blockstore.is_primary_access() {
-            "snapshot"
-        } else {
-            "snapshot.ledger-tool"
-        });
-
-    let full_snapshot_archives_dir = blockstore.ledger_path().to_path_buf();
-    let full_snapshot_slot = snapshot_utils::get_highest_full_snapshot_archive_slot(
-        &full_snapshot_archives_dir,
-        Some(snapshot_slot),
-    )
-    .ok_or(Error::SnapshotSlotNotFound)?;
-    assert_eq!(full_snapshot_slot, snapshot_slot);
-    if full_snapshot_slot != snapshot_slot {
-        assert_eq!(full_snapshot_slot, snapshot_slot, "The expected snapshot was not found, try moving your snapshot to a different directory than the ledger directory if you haven't already. [actual_highest_snapshot={}, expected_highest_snapshot={}]", full_snapshot_slot, snapshot_slot);
-    }
-
-    let incremental_snapshot_archives_dir = blockstore.ledger_path().to_path_buf();
-
-    let snapshot_config = SnapshotConfig {
-        full_snapshot_archive_interval_slots: Slot::MAX,
-        incremental_snapshot_archive_interval_slots: Slot::MAX,
-        full_snapshot_archives_dir,
-        incremental_snapshot_archives_dir,
-        bank_snapshots_dir,
-        ..SnapshotConfig::default()
-    };
-
-    let account_paths = if blockstore.is_primary_access() {
-        vec![blockstore.ledger_path().join("accounts")]
-    } else {
-        let non_primary_accounts_path = blockstore.ledger_path().join("accounts.ledger-tool");
-        info!(
-            "Default accounts path is switched aligning with Blockstore's secondary access: {:?}",
-            non_primary_accounts_path
-        );
-
-        if non_primary_accounts_path.exists() {
-            info!("Clearing {:?}", non_primary_accounts_path);
-            if let Err(err) = fs::remove_dir_all(&non_primary_accounts_path) {
-                error!(
-                    "error deleting accounts path {:?}: {}",
-                    non_primary_accounts_path, err
-                );
-                return Err(err.into());
-            }
-        }
-
-        vec![non_primary_accounts_path]
-    };
-
-    Ok(bank_forks_utils::load(
-        genesis_config,
-        blockstore,
-        account_paths,
-        None,
-        Some(&snapshot_config),
-        ProcessOptions {
-            new_hard_forks: None,
-            halt_at_slot: Some(snapshot_slot),
-            poh_verify: false,
-            ..ProcessOptions::default()
-        },
-        None,
-        None,
-        None,
-    )
-    .map(|(bank_forks, ..)| bank_forks)?)
-}
-
-fn open_blockstore(
-    ledger_path: &Path,
-    access_type: AccessType,
-    wal_recovery_mode: Option<BlockstoreRecoveryMode>,
-) -> Result<Blockstore, Error> {
-    match Blockstore::open_with_options(
-        ledger_path,
-        BlockstoreOptions {
-            access_type,
-            recovery_mode: wal_recovery_mode,
-            enforce_ulimit_nofile: true,
-            ..BlockstoreOptions::default()
-        },
-    ) {
-        Ok(blockstore) => Ok(blockstore),
-        Err(e) => {
-            error!("Failed to open ledger at {:?}: {:?}", ledger_path, e);
-            Err(e.into())
-        }
-    }
 }
 
 fn write_to_json_file(
