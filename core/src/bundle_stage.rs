@@ -973,6 +973,8 @@ impl BundleStage {
                                 bundles.iter().map(|p| p.uuid).collect();
                             let old_dropped_bundles: Vec<_> =
                                 unprocessed_bundles.iter().map(|p| p.uuid).collect();
+                            unprocessed_bundles.clear();
+
                             info!("dropping new bundles: {:?}", new_dropped_bundles);
                             info!("dropping old bundles: {:?}", old_dropped_bundles);
                         }
