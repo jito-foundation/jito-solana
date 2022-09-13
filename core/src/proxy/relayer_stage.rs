@@ -335,12 +335,9 @@ impl RelayerStage {
     ) -> crate::proxy::Result<()> {
         match subscribe_packets_resp.msg {
             None => {
-                warn!("Received an empty subscribe_packets msg.");
                 relayer_stats.num_empty_messages += 1;
             }
             Some(relayer::subscribe_packets_response::Msg::Batch(proto_batch)) => {
-                info!("packet batch received");
-
                 let packet_batch = PacketBatch::new(
                     proto_batch
                         .packets

@@ -378,14 +378,14 @@ impl TipManager {
         bank: &Arc<Bank>,
         keypair: &Keypair,
     ) -> Result<SanitizedTransaction> {
-        let config = self.get_tip_payment_config_account(bank)?;
+        let old_tip_receiver = self.get_configured_tip_receiver(bank)?;
 
         let change_tip_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
             data: tip_payment::instruction::ChangeTipReceiver {}.data(),
             accounts: tip_payment::accounts::ChangeTipReceiver {
                 config: self.tip_payment_program_info.config_pda_bump.0,
-                old_tip_receiver: config.tip_receiver,
+                old_tip_receiver,
                 new_tip_receiver: *new_tip_receiver,
                 tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
                 tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,

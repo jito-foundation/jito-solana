@@ -5,7 +5,7 @@ use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
         bundle_account_locker::BundleAccountLocker,
-        bundle_sanitizer::get_sanitized_bundle,
+        bundle_sanitizer::{get_sanitized_bundle, BundleSanitizerError},
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         packet_bundle::PacketBundle,
         qos_service::QosService,
@@ -70,6 +70,60 @@ struct AllExecutionResults {
     pub sanitized_txs: Vec<SanitizedTransaction>,
     pub pre_balances: (TransactionBalances, TransactionTokenBalances),
     pub post_balances: (TransactionBalances, TransactionTokenBalances),
+}
+
+#[derive(Default)]
+struct BundleStageStats {
+    num_bundles_received: u64,
+    num_bundles_dropped: u64,
+
+    num_sanitize_fail_serialization: u64,
+    num_sanitize_fail_duplicate: u64,
+    num_sanitize_fail_check_txs: u64,
+    num_sanitize_fail_pre_check: u64,
+    num_sanitize_fail_vote_only: u64,
+    num_sanitize_fail_blacklisted: u64,
+}
+
+impl BundleStageStats {
+    pub fn report(&self, slot: Slot) {
+        datapoint_info!(
+            "bundle-stage-loop-stats",
+            ("slot", slot, i64),
+            ("num_bundles_received", self.num_bundles_received, i64),
+            ("num_bundles_dropped", self.num_bundles_dropped, i64),
+            (
+                "num_sanitize_fail_serialization",
+                self.num_sanitize_fail_serialization,
+                i64
+            ),
+            (
+                "num_sanitize_fail_duplicate",
+                self.num_sanitize_fail_duplicate,
+                i64
+            ),
+            (
+                "num_sanitize_fail_check_txs",
+                self.num_sanitize_fail_check_txs,
+                i64
+            ),
+            (
+                "num_sanitize_fail_pre_check",
+                self.num_sanitize_fail_pre_check,
+                i64
+            ),
+            (
+                "num_sanitize_fail_vote_only",
+                self.num_sanitize_fail_vote_only,
+                i64
+            ),
+            (
+                "num_sanitize_fail_blacklisted",
+                self.num_sanitize_fail_blacklisted,
+                i64
+            ),
+        );
+    }
 }
 
 pub struct BundleStage {
@@ -380,6 +434,10 @@ impl BundleStage {
                     .as_slice(),
                 batch.sanitized_transactions(),
             ) {
+                error!(
+                    "bundle execution error: {:?}",
+                    load_and_execute_transactions_output.execution_results
+                );
                 return Err(e);
             }
 
@@ -394,6 +452,7 @@ impl BundleStage {
                 warn!("none of the transactions were executed");
                 let bundle_execution_elapsed = start_time.elapsed();
                 if bundle_execution_elapsed >= *max_bundle_retry_duration {
+                    error!("max bundle retry duration");
                     return Err(BundleExecutionError::MaxRetriesExceeded(
                         bundle_execution_elapsed,
                     ));
@@ -656,7 +715,6 @@ impl BundleStage {
             .should_init_tip_distribution_account(bank)
         {
             info!("initializing my [TipDistributionAccount]");
-
             Some(tip_manager.init_tip_distribution_account_tx(bank.last_blockhash(), bank.epoch()))
         } else {
             None
@@ -672,8 +730,7 @@ impl BundleStage {
         .collect::<Vec<SanitizedTransaction>>();
 
         if !transactions.is_empty() {
-            info!("executing init txs");
-            Self::update_qos_and_execute_record_commit_bundle(
+            match Self::update_qos_and_execute_record_commit_bundle(
                 &SanitizedBundle { transactions },
                 recorder,
                 transaction_status_sender,
@@ -682,8 +739,15 @@ impl BundleStage {
                 bank_start,
                 execute_and_commit_timings,
                 max_bundle_retry_duration,
-            )?;
-            info!("successfully executed init txs");
+            ) {
+                Ok(()) => {
+                    info!("successfully executing tip initialization transactions");
+                }
+                Err(e) => {
+                    error!("error executing tip initialization transaction: {:?}", e);
+                    return Err(e);
+                }
+            }
         }
 
         let configured_tip_receiver = tip_manager.get_configured_tip_receiver(bank)?;
@@ -702,7 +766,7 @@ impl BundleStage {
                 )?],
             };
 
-            Self::update_qos_and_execute_record_commit_bundle(
+            match Self::update_qos_and_execute_record_commit_bundle(
                 &sanitized_bundle,
                 recorder,
                 transaction_status_sender,
@@ -711,7 +775,15 @@ impl BundleStage {
                 bank_start,
                 execute_and_commit_timings,
                 max_bundle_retry_duration,
-            )?;
+            ) {
+                Ok(()) => {
+                    info!("changed tip receiver");
+                }
+                Err(e) => {
+                    error!("error changing tip receiver: {:?}", e);
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }
@@ -729,6 +801,7 @@ impl BundleStage {
         cluster_info: &Arc<ClusterInfo>,
         max_bundle_retry_duration: &Duration,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        bundle_stage_stats: &mut BundleStageStats,
     ) -> BundleExecutionResult<()> {
         let _lock = tip_manager.lock();
         let tip_pdas = tip_manager.get_tip_accounts();
@@ -776,6 +849,7 @@ impl BundleStage {
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
+        bundle_stage_stats: &mut BundleStageStats,
     ) -> BundleExecutionResult<()> {
         // Drain all unprocessed bundles, turn to sanitized_bundles, lock them all, then process
         // until max proof-of-history tick
@@ -790,11 +864,28 @@ impl BundleStage {
                     blacklisted_accounts,
                 ) {
                     Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-                    Err(e) => {
-                        warn!(
-                            "failed to sanitize bundle uuid: {:?} error: {:?}",
-                            packet_bundle.uuid, e
-                        );
+                    Err(BundleSanitizerError::FailedToSerializeTransaction(_)) => {
+                        bundle_stage_stats.num_sanitize_fail_serialization += 1;
+                        None
+                    }
+                    Err(BundleSanitizerError::DuplicateTransaction(_)) => {
+                        bundle_stage_stats.num_sanitize_fail_duplicate += 1;
+                        None
+                    }
+                    Err(BundleSanitizerError::FailedCheckResults(_)) => {
+                        bundle_stage_stats.num_sanitize_fail_check_txs += 1;
+                        None
+                    }
+                    Err(BundleSanitizerError::FailedPacketBatchPreCheck(_)) => {
+                        bundle_stage_stats.num_sanitize_fail_pre_check += 1;
+                        None
+                    }
+                    Err(BundleSanitizerError::VoteOnlyMode(_)) => {
+                        bundle_stage_stats.num_sanitize_fail_vote_only += 1;
+                        None
+                    }
+                    Err(BundleSanitizerError::BlacklistedAccount(_)) => {
+                        bundle_stage_stats.num_sanitize_fail_blacklisted += 1;
                         None
                     }
                 }
@@ -826,6 +917,7 @@ impl BundleStage {
                     cluster_info,
                     max_bundle_retry_duration,
                     execute_and_commit_timings,
+                    bundle_stage_stats,
                 )
             }
         });
@@ -883,6 +975,8 @@ impl BundleStage {
         let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
         let mut last_consensus_update = Epoch::default();
 
+        // TODO (LB): need to emit these stats on slot boundaries
+        let mut bundle_stage_stats = BundleStageStats::default();
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
         // Bundles can't mention the tip payment program to ensure that a malicious entity doesn't
@@ -903,8 +997,12 @@ impl BundleStage {
                     match (working_bank_start, would_be_leader_soon) {
                         // leader now, insert new read bundles + as many as can read then return bank
                         (Some(bank_start), _) => {
+                            let num_bundles_before = unprocessed_bundles.len();
                             unprocessed_bundles.extend(bundles);
                             unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
+                            bundle_stage_stats.num_bundles_received +=
+                                (unprocessed_bundles.len() - num_bundles_before) as u64;
+
                             Self::maybe_update_consensus_cache(
                                 &bank_start.working_bank,
                                 &mut consensus_accounts_cache,
@@ -924,6 +1022,7 @@ impl BundleStage {
                                 &tip_manager,
                                 &max_bundle_retry_duration,
                                 &mut execute_and_commit_timings,
+                                &mut bundle_stage_stats,
                             ) {
                                 Ok(_) => {
                                     // keep going
@@ -938,8 +1037,11 @@ impl BundleStage {
                         }
                         // leader soon, insert new read bundles
                         (None, true) => {
+                            let num_bundles_before = unprocessed_bundles.len();
                             unprocessed_bundles.extend(bundles);
                             unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
+                            bundle_stage_stats.num_bundles_received +=
+                                (unprocessed_bundles.len() - num_bundles_before) as u64;
                         }
                         // not leader now and not soon, clear bundles
                         (None, false) => {
@@ -947,8 +1049,10 @@ impl BundleStage {
                                 bundles.iter().map(|p| p.uuid).collect();
                             let old_dropped_bundles: Vec<_> =
                                 unprocessed_bundles.iter().map(|p| p.uuid).collect();
-                            info!("dropping new bundles: {:?}", new_dropped_bundles);
-                            info!("dropping old bundles: {:?}", old_dropped_bundles);
+                            unprocessed_bundles.clear();
+
+                            bundle_stage_stats.num_bundles_dropped +=
+                                (new_dropped_bundles.len() + old_dropped_bundles.len()) as u64;
                         }
                     }
                 }

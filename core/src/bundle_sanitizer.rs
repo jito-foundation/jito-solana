@@ -123,7 +123,6 @@ pub fn get_sanitized_bundle(
         &mut metrics,
     );
     if let Some(failure) = check_results.iter().find(|r| r.0.is_err()) {
-        warn!("bundle check failure: {:?}", failure);
         return Err(BundleSanitizerError::FailedCheckResults(packet_bundle.uuid));
     }
 
