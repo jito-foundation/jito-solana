@@ -394,6 +394,7 @@ impl TipManager {
         Ok(
             SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
                 &[
+                    // TODO (LB): make the on-chain program more efficient and remove this
                     ComputeBudgetInstruction::set_compute_unit_limit(1_000_000),
                     change_tip_ix,
                 ],
