@@ -11,7 +11,7 @@ use {
         qos_service::QosService,
         tip_manager::TipManager,
     },
-    crossbeam_channel::{Receiver, RecvError},
+    crossbeam_channel::{Receiver, RecvError, RecvTimeoutError},
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
@@ -83,6 +83,16 @@ struct BundleStageStats {
     num_sanitize_fail_pre_check: u64,
     num_sanitize_fail_vote_only: u64,
     num_sanitize_fail_blacklisted: u64,
+    num_lock_errors: u64,
+
+    num_tip_receiver_change_success: u64,
+    num_tip_receiver_change_error: u64,
+
+    num_execution_errors: u64,
+    num_execution_retries: u64,
+    num_execution_timeouts: u64,
+
+    num_bundles_rescheduled: u64,
 }
 
 impl BundleStageStats {
@@ -122,6 +132,20 @@ impl BundleStageStats {
                 self.num_sanitize_fail_blacklisted,
                 i64
             ),
+            (
+                "num_tip_receiver_change_success",
+                self.num_tip_receiver_change_success,
+                i64
+            ),
+            (
+                "num_tip_receiver_change_error",
+                self.num_tip_receiver_change_error,
+                i64
+            ),
+            ("num_execution_errors", self.num_execution_errors, i64),
+            ("num_execution_retries", self.num_execution_retries, i64),
+            ("num_execution_timeouts", self.num_execution_timeouts, i64),
+            ("num_bundles_rescheduled", self.num_bundles_rescheduled, i64),
         );
     }
 }
@@ -288,6 +312,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
+        bundle_stage_stats: &mut BundleStageStats,
     ) -> BundleExecutionResult<()> {
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
@@ -322,6 +347,7 @@ impl BundleStage {
             bank_start,
             execute_and_commit_timings,
             max_bundle_retry_duration,
+            bundle_stage_stats,
         ) {
             Ok(commit_transaction_details) => {
                 // NOTE: Assumptions made on the QoS transaction costs:
@@ -364,6 +390,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
+        bundle_stage_stats: &mut BundleStageStats,
     ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
         let mut account_overrides = AccountOverrides::default();
 
@@ -434,10 +461,7 @@ impl BundleStage {
                     .as_slice(),
                 batch.sanitized_transactions(),
             ) {
-                error!(
-                    "bundle execution error: {:?}",
-                    load_and_execute_transactions_output.execution_results
-                );
+                bundle_stage_stats.num_execution_errors += 1;
                 return Err(e);
             }
 
@@ -449,8 +473,12 @@ impl BundleStage {
                 .iter()
                 .any(|r| r.was_executed())
             {
+                bundle_stage_stats.num_execution_retries += 1;
+
                 let bundle_execution_elapsed = start_time.elapsed();
                 if bundle_execution_elapsed >= *max_bundle_retry_duration {
+                    bundle_stage_stats.num_execution_timeouts += 1;
+
                     return Err(BundleExecutionError::MaxRetriesExceeded(
                         bundle_execution_elapsed,
                     ));
@@ -510,6 +538,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
+        bundle_stage_stats: &mut BundleStageStats,
     ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
         let execution_results = Self::execute_bundle(
             sanitized_bundle,
@@ -517,6 +546,7 @@ impl BundleStage {
             bank_start,
             execute_and_commit_timings,
             max_bundle_retry_duration,
+            bundle_stage_stats,
         )?;
         // in order for bundle to succeed, it most have something to record + commit
         assert!(!execution_results.is_empty());
@@ -682,6 +712,7 @@ impl BundleStage {
         gossip_vote_sender: &ReplayVoteSender,
         cluster_info: &Arc<ClusterInfo>,
         max_bundle_retry_duration: &Duration,
+        bundle_stage_stats: &mut BundleStageStats,
     ) -> BundleExecutionResult<()> {
         let BankStart {
             working_bank: bank, ..
@@ -737,6 +768,7 @@ impl BundleStage {
                 bank_start,
                 execute_and_commit_timings,
                 max_bundle_retry_duration,
+                bundle_stage_stats,
             ) {
                 Ok(()) => {
                     info!("successfully executing tip initialization transactions");
@@ -774,12 +806,15 @@ impl BundleStage {
                 bank_start,
                 execute_and_commit_timings,
                 max_bundle_retry_duration,
+                bundle_stage_stats,
             ) {
                 Ok(()) => {
                     info!("changed tip receiver");
+                    bundle_stage_stats.num_tip_receiver_change_success += 1;
                 }
                 Err(e) => {
                     error!("error changing tip receiver: {:?}", e);
+                    bundle_stage_stats.num_tip_receiver_change_error += 1;
                     return Err(e);
                 }
             }
@@ -814,6 +849,7 @@ impl BundleStage {
                 gossip_vote_sender,
                 cluster_info,
                 max_bundle_retry_duration,
+                bundle_stage_stats,
             )?;
         }
         Self::update_qos_and_execute_record_commit_bundle(
@@ -825,6 +861,7 @@ impl BundleStage {
             bank_start,
             execute_and_commit_timings,
             max_bundle_retry_duration,
+            bundle_stage_stats,
         )
     }
 
@@ -896,7 +933,10 @@ impl BundleStage {
         });
 
         let execution_results = locked_bundles.into_iter().map(|maybe_locked_bundle| {
-            let locked_bundle = maybe_locked_bundle.map_err(|_| BundleExecutionError::LockError)?;
+            let locked_bundle = maybe_locked_bundle.map_err(|_| {
+                bundle_stage_stats.num_lock_errors += 1;
+                BundleExecutionError::LockError
+            })?;
             if !Bank::should_bank_still_be_processing_txs(
                 &bank_start.bank_creation_time,
                 bank_start.working_bank.ns_per_slot,
@@ -919,6 +959,7 @@ impl BundleStage {
             }
         });
 
+        let mut num_rescheduled = 0;
         execution_results
             .into_iter()
             .zip(sanitized_bundles.iter())
@@ -928,9 +969,11 @@ impl BundleStage {
                     bundle_execution_result,
                     Err(BundleExecutionError::PohMaxHeightError)
                 ) {
+                    num_rescheduled += 1;
                     unprocessed_bundles.push_front(packet_bundle.clone());
                 }
             });
+        bundle_stage_stats.num_bundles_rescheduled += num_rescheduled;
 
         Ok(())
     }
@@ -981,8 +1024,10 @@ impl BundleStage {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
+        let mut was_leader = false;
+        let mut last_slot = 0;
         while !exit.load(Ordering::Relaxed) {
-            match bundle_receiver.recv() {
+            match bundle_receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(bundles) => {
                     let l_poh_recorder = poh_recorder.lock().unwrap();
                     let poh_recorder_bank = l_poh_recorder.get_poh_recorder_bank();
@@ -994,6 +1039,17 @@ impl BundleStage {
                     match (working_bank_start, would_be_leader_soon) {
                         // leader now, insert new read bundles + as many as can read then return bank
                         (Some(bank_start), _) => {
+                            // if was_leader && bank_start.working_bank.slot() != last_slot {
+                            //     execute_and_commit_timings.report(100, last_slot);
+                            //     bundle_stage_stats.report(last_slot);
+                            //
+                            //     execute_and_commit_timings =
+                            //         LeaderExecuteAndCommitTimings::default();
+                            //     bundle_stage_stats = BundleStageStats::default();
+                            // }
+                            // was_leader = true;
+                            // last_slot = bank_start.working_bank.slot();
+
                             let num_bundles_before = unprocessed_bundles.len();
                             unprocessed_bundles.extend(bundles);
                             unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
@@ -1053,7 +1109,8 @@ impl BundleStage {
                         }
                     }
                 }
-                Err(RecvError) => {
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
                     error!("shutting down bundle_stage");
                     return;
                 }
@@ -1216,6 +1273,7 @@ mod tests {
         let sanitized_bundle =
             get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
 
+        let mut bundle_stage_stats = BundleStageStats::default();
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
             &recorder,
@@ -1225,6 +1283,7 @@ mod tests {
             &bank_start,
             &mut execute_and_commit_timings,
             &TEST_MAX_RETRY_DURATION,
+            &mut bundle_stage_stats,
         );
 
         // This is ugly, not really an option for testing but a test itself.
@@ -1537,6 +1596,7 @@ mod tests {
         let sanitized_bundle =
             get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
 
+        let mut bundle_stage_stats = BundleStageStats::default();
         let result = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
             &recorder,
@@ -1546,6 +1606,7 @@ mod tests {
             &bank_start,
             &mut execute_and_commit_timings,
             &TEST_MAX_RETRY_DURATION,
+            bundle_stage_stats,
         );
         info!("test_bundle_max_retries result: {:?}", result);
         assert!(matches!(
