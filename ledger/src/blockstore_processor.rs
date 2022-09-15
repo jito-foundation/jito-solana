@@ -93,7 +93,7 @@ impl BlockCostCapacityMeter {
 
 thread_local!(static PAR_THREAD_POOL: RefCell<ThreadPool> = RefCell::new(rayon::ThreadPoolBuilder::new()
                     .num_threads(get_thread_count())
-                    .stack_size(8 * 1024 * 1024)
+                    .stack_size(16 * 1024 * 1024)
                     .thread_name(|ix| format!("blockstore_processor_{}", ix))
                     .build()
                     .unwrap())
