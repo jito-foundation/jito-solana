@@ -1007,6 +1007,7 @@ impl BundleStage {
         max_bundle_retry_duration: Duration,
     ) {
         const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
+        const POH_CHECK_DURATION: Duration = Duration::from_millis(10);
 
         let recorder = poh_recorder.lock().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
@@ -1015,8 +1016,10 @@ impl BundleStage {
         let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
         let mut last_consensus_update = Epoch::default();
 
-        // TODO (LB): need to emit these stats on slot boundaries
+        let mut last_poh_check = Instant::now();
         let mut bundle_stage_stats = BundleStageStats::default();
+
+        // TODO (LB): need to emit these stats on slot boundaries
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
         // Bundles can't mention the tip payment program to ensure that a malicious entity doesn't
@@ -1024,96 +1027,122 @@ impl BundleStage {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
-        let mut was_leader = false;
-        let mut last_slot = 0;
+
         while !exit.load(Ordering::Relaxed) {
-            match bundle_receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(bundles) => {
-                    let l_poh_recorder = poh_recorder.lock().unwrap();
-                    let poh_recorder_bank = l_poh_recorder.get_poh_recorder_bank();
-                    let working_bank_start = poh_recorder_bank.working_bank_start();
-                    let would_be_leader_soon = l_poh_recorder
-                        .would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
-                    drop(l_poh_recorder);
+            if !unprocessed_bundles.is_empty() || last_poh_check.elapsed() >= POH_CHECK_DURATION {
+                Self::process_buffered_bundles(
+                    &mut unprocessed_bundles,
+                    poh_recorder,
+                    &mut bundle_stage_stats,
+                )?;
+            }
 
-                    match (working_bank_start, would_be_leader_soon) {
-                        // leader now, insert new read bundles + as many as can read then return bank
-                        (Some(bank_start), _) => {
-                            // if was_leader && bank_start.working_bank.slot() != last_slot {
-                            //     execute_and_commit_timings.report(100, last_slot);
-                            //     bundle_stage_stats.report(last_slot);
-                            //
-                            //     execute_and_commit_timings =
-                            //         LeaderExecuteAndCommitTimings::default();
-                            //     bundle_stage_stats = BundleStageStats::default();
-                            // }
-                            // was_leader = true;
-                            // last_slot = bank_start.working_bank.slot();
+            if last_poh_check.elapsed() >= POH_CHECK_DURATION {
+                // TODO (LB): upload stats here
+                last_poh_check = Instant::now();
+            }
+            Self::receive_and_buffer_bundles(
+                &bundle_receiver,
+                &mut unprocessed_bundles,
+                &mut bundle_stage_stats,
+            )?;
+        }
+    }
 
-                            let num_bundles_before = unprocessed_bundles.len();
-                            unprocessed_bundles.extend(bundles);
-                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
-                            bundle_stage_stats.num_bundles_received +=
-                                (unprocessed_bundles.len() - num_bundles_before) as u64;
+    fn process_buffered_bundles(
+        unprocessed_bundles: &mut VecDeque<PacketBundle>,
+        poh_recorder: &Arc<Mutex<PohRecorder>>,
+        bundle_stage_stats: &mut BundleStageStats,
+        consensus_accounts_cache: &mut HashSet<Pubkey>,
+        last_consensus_update: &mut Epoch,
+        bundle_account_locker: BundleAccountLocker,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        cluster_info: &Arc<ClusterInfo>,
+    ) -> BundleExecutionResult<()> {
+        let (working_bank_start, would_be_leader_soon) = {
+            let l_poh_recorder = poh_recorder.lock().unwrap();
+            let poh_recorder_bank = l_poh_recorder.get_poh_recorder_bank();
+            let working_bank_start = poh_recorder_bank.working_bank_start();
+            let would_be_leader_soon =
+                l_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
+            (working_bank_start, would_be_leader_soon)
+        };
 
-                            Self::maybe_update_consensus_cache(
-                                &bank_start.working_bank,
-                                &mut consensus_accounts_cache,
-                                &mut last_consensus_update,
-                            );
-                            match Self::execute_bundles_until_empty_or_end_of_slot(
-                                &mut bundle_account_locker,
-                                &mut unprocessed_bundles,
-                                &blacklisted_accounts,
-                                bank_start,
-                                &consensus_accounts_cache,
-                                &cluster_info,
-                                &recorder,
-                                &transaction_status_sender,
-                                &gossip_vote_sender,
-                                &qos_service,
-                                &tip_manager,
-                                &max_bundle_retry_duration,
-                                &mut execute_and_commit_timings,
-                                &mut bundle_stage_stats,
-                            ) {
-                                Ok(_) => {
-                                    // keep going
-                                }
-                                Err(BundleExecutionError::Shutdown) => {
-                                    return;
-                                }
-                                Err(e) => {
-                                    error!("error executing all bundles: {:?}", e);
-                                }
-                            }
-                        }
-                        // leader soon, insert new read bundles
-                        (None, true) => {
-                            let num_bundles_before = unprocessed_bundles.len();
-                            unprocessed_bundles.extend(bundles);
-                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
-                            bundle_stage_stats.num_bundles_received +=
-                                (unprocessed_bundles.len() - num_bundles_before) as u64;
-                        }
-                        // not leader now and not soon, clear bundles
-                        (None, false) => {
-                            let new_dropped_bundles: Vec<_> =
-                                bundles.iter().map(|p| p.uuid).collect();
-                            let old_dropped_bundles: Vec<_> =
-                                unprocessed_bundles.iter().map(|p| p.uuid).collect();
-                            unprocessed_bundles.clear();
+        match (working_bank_start, would_be_leader_soon) {
+            // leader now, insert new read bundles + as many as can read then return bank
+            (Some(bank_start), _) => {
+                Self::maybe_update_consensus_cache(
+                    &bank_start.working_bank,
+                    consensus_accounts_cache,
+                    last_consensus_update,
+                );
+                //         match Self::execute_bundles_until_empty_or_end_of_slot(
+                //             &mut bundle_account_locker,
+                //             &mut unprocessed_bundles,
+                //             &blacklisted_accounts,
+                //             bank_start,
+                //             &consensus_accounts_cache,
+                //             &cluster_info,
+                //             &recorder,
+                //             &transaction_status_sender,
+                //             &gossip_vote_sender,
+                //             &qos_service,
+                //             &tip_manager,
+                //             &max_bundle_retry_duration,
+                //             &mut execute_and_commit_timings,
+                //             &mut bundle_stage_stats,
+                //         ) {
+                //             Ok(_) => {
+                //                 // keep going
+                //             }
+                //             Err(BundleExecutionError::Shutdown) => {
+                //                 return;
+                //             }
+                //             Err(e) => {
+                //                 error!("error executing all bundles: {:?}", e);
+                //             }
+                //         }
+            }
+            // leader soon, insert new read bundles
+            (None, true) => {
+                let num_bundles_before = unprocessed_bundles.len();
+                unprocessed_bundles.extend(bundles);
+                unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
+                bundle_stage_stats.num_bundles_received +=
+                    (unprocessed_bundles.len() - num_bundles_before) as u64;
+            }
+            // not leader now and not soon, clear bundles
+            (None, false) => {
+                let new_dropped_bundles: Vec<_> = bundles.iter().map(|p| p.uuid).collect();
+                let old_dropped_bundles: Vec<_> =
+                    unprocessed_bundles.iter().map(|p| p.uuid).collect();
+                unprocessed_bundles.clear();
 
-                            bundle_stage_stats.num_bundles_dropped +=
-                                (new_dropped_bundles.len() + old_dropped_bundles.len()) as u64;
-                        }
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    error!("shutting down bundle_stage");
-                    return;
-                }
+                bundle_stage_stats.num_bundles_dropped +=
+                    (new_dropped_bundles.len() + old_dropped_bundles.len()) as u64;
+            }
+        }
+        Ok(())
+    }
+
+    fn receive_and_buffer_bundles(
+        bundle_receiver: &Receiver<Vec<PacketBundle>>,
+        unprocessed_bundles: &mut VecDeque<PacketBundle>,
+        bundle_stage_stats: &mut BundleStageStats,
+    ) -> BundleExecutionResult<()> {
+        match bundle_receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(bundles) => {
+                let num_bundles_before = unprocessed_bundles.len();
+                unprocessed_bundles.extend(bundles);
+                unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
+                bundle_stage_stats.num_bundles_received +=
+                    (unprocessed_bundles.len() - num_bundles_before) as u64;
+                Ok(())
+            }
+            Err(RecvTimeoutError::Timeout) => Ok(()),
+            Err(RecvTimeoutError::Disconnected) => {
+                error!("shutting down bundle_stage");
+                Err(BundleExecutionError::Shutdown)
             }
         }
     }
