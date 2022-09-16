@@ -60,26 +60,26 @@ impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
 
 #[derive(Default, Clone)]
 struct BundleAccountLocks {
-    read_locks: Arc<Mutex<HashMap<Pubkey, u64>>>,
-    write_locks: Arc<Mutex<HashMap<Pubkey, u64>>>,
+    read_locks: HashMap<Pubkey, u64>,
+    write_locks: HashMap<Pubkey, u64>,
 }
 
 impl BundleAccountLocks {
     pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.read_locks.lock().unwrap().keys().cloned().collect()
+        self.read_locks.keys().cloned().collect()
     }
 
     pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.write_locks.lock().unwrap().keys().cloned().collect()
+        self.write_locks.keys().cloned().collect()
     }
 
     pub fn lock_accounts(
-        &self,
+        &mut self,
         read_locks: HashMap<Pubkey, u64>,
         write_locks: HashMap<Pubkey, u64>,
     ) {
-        let mut read_locks_l = self.read_locks.lock().unwrap();
-        let mut write_locks_l = self.write_locks.lock().unwrap();
+        let read_locks_l = &mut self.read_locks;
+        let write_locks_l = &mut self.write_locks;
         for (acc, count) in read_locks {
             *read_locks_l.entry(acc).or_insert(0) += count;
         }
@@ -89,12 +89,12 @@ impl BundleAccountLocks {
     }
 
     pub fn unlock_accounts(
-        &self,
+        &mut self,
         read_locks: HashMap<Pubkey, u64>,
         write_locks: HashMap<Pubkey, u64>,
     ) {
-        let mut read_locks_l = self.read_locks.lock().unwrap();
-        let mut write_locks_l = self.write_locks.lock().unwrap();
+        let read_locks_l = &mut self.read_locks;
+        let write_locks_l = &mut self.write_locks;
 
         for (acc, count) in read_locks {
             if let Entry::Occupied(mut entry) = read_locks_l.entry(acc) {
@@ -103,6 +103,8 @@ impl BundleAccountLocks {
                 if entry.get() == &0 {
                     let _ = entry.remove();
                 }
+            } else {
+                warn!("error unlocking read-locked account, account: {:?}", acc);
             }
         }
         for (acc, count) in write_locks {
@@ -112,6 +114,8 @@ impl BundleAccountLocks {
                 if entry.get() == &0 {
                     let _ = entry.remove();
                 }
+            } else {
+                warn!("error unlocking write-locked account, account: {:?}", acc);
             }
         }
     }
@@ -119,20 +123,21 @@ impl BundleAccountLocks {
 
 #[derive(Clone, Default)]
 pub struct BundleAccountLocker {
-    account_locks: BundleAccountLocks,
+    // TODO (LB): use an Arc<Mutex> here???
+    account_locks: Arc<Mutex<BundleAccountLocks>>,
 }
 
 impl BundleAccountLocker {
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.account_locks.read_locks()
+        self.account_locks.lock().unwrap().read_locks()
     }
 
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.account_locks.write_locks()
+        self.account_locks.lock().unwrap().write_locks()
     }
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
@@ -144,7 +149,10 @@ impl BundleAccountLocker {
     ) -> BundleAccountLockerResult<LockedBundle<'a, 'b>> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks.lock_accounts(read_locks, write_locks);
+        self.account_locks
+            .lock()
+            .unwrap()
+            .lock_accounts(read_locks, write_locks);
         Ok(LockedBundle::new(self, sanitized_bundle, bank))
     }
 
@@ -156,7 +164,10 @@ impl BundleAccountLocker {
     ) -> BundleAccountLockerResult<()> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks.unlock_accounts(read_locks, write_locks);
+        self.account_locks
+            .lock()
+            .unwrap()
+            .unlock_accounts(read_locks, write_locks);
         Ok(())
     }
 
