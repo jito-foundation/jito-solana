@@ -13,8 +13,7 @@ use std::sync::{Arc, Mutex};
 use {
     solana_runtime::bank::Bank,
     solana_sdk::{
-        bundle::sanitized::SanitizedBundle, feature_set::FeatureSet, pubkey::Pubkey,
-        transaction::TransactionAccountLocks,
+        bundle::sanitized::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks,
     },
     std::collections::{hash_map::Entry, HashMap, HashSet},
 };
@@ -29,16 +28,19 @@ pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
 pub struct LockedBundle<'a, 'b> {
     bundle_account_locker: &'a BundleAccountLocker,
     sanitized_bundle: &'b SanitizedBundle,
+    bank: Arc<Bank>,
 }
 
 impl<'a, 'b> LockedBundle<'a, 'b> {
     pub fn new(
         bundle_account_locker: &'a BundleAccountLocker,
         sanitized_bundle: &'b SanitizedBundle,
+        bank: &Arc<Bank>,
     ) -> Self {
         Self {
             bundle_account_locker,
             sanitized_bundle,
+            bank: bank.clone(),
         }
     }
 
@@ -52,7 +54,7 @@ impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
     fn drop(&mut self) {
         let _ = self
             .bundle_account_locker
-            .unlock_bundle_accounts(self.sanitized_bundle);
+            .unlock_bundle_accounts(self.sanitized_bundle, &self.bank);
     }
 }
 
@@ -138,18 +140,19 @@ impl BundleAccountLocker {
     pub fn prepare_locked_bundle<'a, 'b>(
         &'a self,
         sanitized_bundle: &'b SanitizedBundle,
-        bank: &Bank,
+        bank: &Arc<Bank>,
     ) -> BundleAccountLockerResult<LockedBundle<'a, 'b>> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
         self.account_locks.lock_accounts(read_locks, write_locks);
-        Ok(LockedBundle::new(self, sanitized_bundle))
+        Ok(LockedBundle::new(self, sanitized_bundle, bank))
     }
 
     /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
     fn unlock_bundle_accounts(
         &self,
         sanitized_bundle: &SanitizedBundle,
+        bank: &Bank,
     ) -> BundleAccountLockerResult<()> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
