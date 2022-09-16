@@ -84,7 +84,6 @@ pub struct ExecuteTimings {
     pub metrics: Metrics,
     pub details: ExecuteDetailsTimings,
     pub execute_accessories: ExecuteAccessoryTimings,
-    pub planning_elapsed: u64,
 }
 
 impl ExecuteTimings {
