@@ -30,9 +30,9 @@ tip-distribution = { path = "../jito-programs/tip-payment/programs/tip-distribut
 tokio = { version = "1.12.0", features = ["rt-multi-thread", "macros", "sync", "time", "full"] }
 
 [[bin]]
-name = "stake-meta-generator"
+name = "solana-stake-meta-generator"
 path = "src/bin/stake-meta-generator.rs"
 
 [[bin]]
-name = "merkle-root-generator"
+name = "solana-merkle-root-generator"
 path = "src/bin/merkle-root-generator.rs"
