@@ -11,6 +11,7 @@
 /// replayed improperly and that leader would have produced an invalid block.
 use std::sync::{Arc, Mutex};
 use {
+    solana_runtime::bank::Bank,
     solana_sdk::{
         bundle::sanitized::SanitizedBundle, feature_set::FeatureSet, pubkey::Pubkey,
         transaction::TransactionAccountLocks,
@@ -137,8 +138,9 @@ impl BundleAccountLocker {
     pub fn prepare_locked_bundle<'a, 'b>(
         &'a self,
         sanitized_bundle: &'b SanitizedBundle,
+        bank: &Bank,
     ) -> BundleAccountLockerResult<LockedBundle<'a, 'b>> {
-        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
+        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
         self.account_locks.lock_accounts(read_locks, write_locks);
         Ok(LockedBundle::new(self, sanitized_bundle))
@@ -149,7 +151,7 @@ impl BundleAccountLocker {
         &self,
         sanitized_bundle: &SanitizedBundle,
     ) -> BundleAccountLockerResult<()> {
-        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
+        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
         self.account_locks.unlock_accounts(read_locks, write_locks);
         Ok(())
@@ -159,11 +161,12 @@ impl BundleAccountLocker {
     /// Each lock type contains a HashMap which maps Pubkey to number of locks held
     fn get_read_write_locks(
         bundle: &SanitizedBundle,
+        bank: &Bank,
     ) -> BundleAccountLockerResult<(HashMap<Pubkey, u64>, HashMap<Pubkey, u64>)> {
         let transaction_locks: Vec<TransactionAccountLocks> = bundle
             .transactions
             .iter()
-            .filter_map(|tx| tx.get_account_locks(&FeatureSet::default()).ok())
+            .filter_map(|tx| tx.get_account_locks(&bank.feature_set).ok())
             .collect();
 
         if transaction_locks.len() != bundle.transactions.len() {
