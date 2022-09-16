@@ -36,7 +36,7 @@ In order to use this library as the merkle root creator one must follow the foll
 2. Download the snapshot onto your worker machine (where this script will run).
 3. Run `solana-ledger-tool -l ${PATH_TO_LEDGER} create-snapshot ${YOUR_SLOT} ${WHERE_TO_CREATE_SNAPSHOT}`
    1. The snapshot created at `${WHERE_TO_CREATE_SNAPSHOT}` will have the highest slot of `${YOUR_SLOT}`, assuming you downloaded the correct snapshot.
-4. Run `stake-meta-generator --ledger-path ${WHERE_TO_CREATE_SNAPSHOT} --tip-distribution-program-id ${PUBKEY} --out-path ${JSON_OUT_PATH} --snapshot-bank-hash ${HASH} --snapshot-slot ${SLOT} --rpc-url ${URL}`
+4. Run `stake-meta-generator --ledger-path ${WHERE_TO_CREATE_SNAPSHOT} --tip-distribution-program-id ${PUBKEY} --out-path ${JSON_OUT_PATH} --snapshot-slot ${SLOT} --rpc-url ${URL}`
    1. Note: `${WHERE_TO_CREATE_SNAPSHOT}` must be the same in steps 3 & 4.
 5. Run `merkle-root-generator --path-to-my-keypair ${KEYPAIR_PATH} --stake-meta-coll-path ${STAKE_META_COLLECTION_JSON} --rpc-url ${URL} --upload-roots ${BOOL} --force-upload-root ${BOOL}`
 

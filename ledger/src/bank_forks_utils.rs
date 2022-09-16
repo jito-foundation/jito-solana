@@ -180,7 +180,7 @@ pub fn load_bank_forks(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn bank_forks_from_snapshot(
+pub fn bank_forks_from_snapshot(
     genesis_config: &GenesisConfig,
     account_paths: Vec<PathBuf>,
     shrink_paths: Option<Vec<PathBuf>>,
