@@ -235,6 +235,7 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<()> {
+        info!("update_qos_and_execute_record_commit_bundle start");
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
             sanitized_bundle.transactions.iter(),
@@ -244,6 +245,7 @@ impl BundleStage {
 
         // qos rate-limited a tx in here, drop the bundle
         if sanitized_bundle.transactions.len() != num_included {
+            warn!("bundle exceeds cost model");
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
                 transactions_qos_results.iter(),
@@ -270,6 +272,7 @@ impl BundleStage {
             max_bundle_retry_duration,
         ) {
             Ok(commit_transaction_details) => {
+                info!("successfully ran execute_record_commit_bundle");
                 // NOTE: Assumptions made on the QoS transaction costs:
                 // - commit_transaction_details are returned in the same ordering as the transactions
                 //   in the sanitized_bundle, which is the same ordering as tx_costs.
@@ -293,6 +296,7 @@ impl BundleStage {
                 Ok(())
             }
             Err(e) => {
+                error!("failed to run execute_record_commit_bundle");
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
@@ -311,6 +315,7 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
+        info!("execute_bundle start");
         let mut account_overrides = AccountOverrides::default();
 
         let mut execution_results = Vec::new();
@@ -323,6 +328,7 @@ impl BundleStage {
 
         let mut chunk_start = 0;
         let start_time = Instant::now();
+        info!("entering bundle chunk loop");
         while chunk_start != sanitized_bundle.transactions.len() {
             if !Bank::should_bank_still_be_processing_txs(bank_creation_time, bank.ns_per_slot) {
                 return Err(BundleExecutionError::PohMaxHeightError);
@@ -462,6 +468,7 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
     ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
+        info!("execute_record_commit_bundle start");
         let execution_results = Self::execute_bundle(
             sanitized_bundle,
             transaction_status_sender,
@@ -756,9 +763,11 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
     ) -> BundleExecutionResult<()> {
+        info!("handle_tip_and_execute_record_commit_bundle start");
         let _lock = tip_manager.lock();
         let tip_pdas = tip_manager.get_tip_accounts();
         if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas) {
+            info!("bundle touches tip pdas");
             Self::maybe_initialize_and_change_tip_receiver(
                 bank_start,
                 tip_manager,
@@ -769,7 +778,11 @@ impl BundleStage {
                 gossip_vote_sender,
                 cluster_info,
                 max_bundle_retry_duration,
-            )?;
+            )
+            .map_err(|e| {
+                error!("failed to change tip receiver: {}", e);
+                e
+            })?;
             info!("successfully changed tip receiver");
         }
         Self::update_qos_and_execute_record_commit_bundle(
@@ -803,8 +816,11 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
     ) -> BundleExecutionResult<()> {
+        info!("executing bundles");
+
         // Drain all unprocessed bundles, turn to sanitized_bundles, lock them all, then process
         // until max proof-of-history tick
+        info!("sanitizing bundles");
         let sanitized_bundles: VecDeque<(PacketBundle, SanitizedBundle)> = unprocessed_bundles
             .drain(..)
             .into_iter()
@@ -829,6 +845,7 @@ impl BundleStage {
 
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
         // BankingStage can't lock them
+        info!("preparing locked bundles");
         let locked_bundles = sanitized_bundles.iter().map(|(_, sanitized_bundle)| {
             bundle_account_locker.prepare_locked_bundle(sanitized_bundle)
         });
