@@ -762,7 +762,9 @@ impl BundleStage {
                         )?,
                     };
                     if !sanitized_tip_bundle.transactions.is_empty() {
-                        match bundle_account_locker.prepare_locked_bundle(&sanitized_tip_bundle) {
+                        match bundle_account_locker
+                            .prepare_locked_bundle(&sanitized_tip_bundle, &bank_start.working_bank)
+                        {
                             Ok(locked_tip_bundle) => {
                                 match Self::update_qos_and_execute_record_commit_bundle(
                                     &locked_tip_bundle.sanitized_bundle(),
