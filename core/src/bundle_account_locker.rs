@@ -123,7 +123,6 @@ impl BundleAccountLocks {
 
 #[derive(Clone, Default)]
 pub struct BundleAccountLocker {
-    // TODO (LB): use an Arc<Mutex> here???
     account_locks: Arc<Mutex<BundleAccountLocks>>,
 }
 
