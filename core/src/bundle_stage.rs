@@ -737,7 +737,7 @@ impl BundleStage {
         // BankingStage can't lock them. This adds a layer of protection since a transaction in a bundle
         // will not hold the AccountLocks through TransactionBatch across load-execute-commit cycle.
         let locked_bundles = sanitized_bundles.iter().map(|(_, sanitized_bundle)| {
-            bundle_account_locker.prepare_locked_bundle(sanitized_bundle)
+            bundle_account_locker.prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
         });
 
         let execution_results = locked_bundles.into_iter().map(|maybe_locked_bundle| {
