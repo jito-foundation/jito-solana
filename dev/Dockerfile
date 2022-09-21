@@ -1,6 +1,4 @@
 FROM rust:1.63.0
-ARG ci_commit
-ENV CI_COMMIT=$ci_commit
 
 # Add Google Protocol Buffers for Libra's metrics library.
 ENV PROTOC_VERSION 3.8.0
@@ -28,11 +26,15 @@ RUN set -x \
  && rm -f $PROTOC_ZIP
 
 
-# Uses docker buildkit to cache the image.
-# /usr/local/cargo/git needed for crossbeam patch
 WORKDIR /solana
 COPY . .
 RUN mkdir -p docker-output
+
+ARG ci_commit
+ENV CI_COMMIT=$ci_commit
+
+# Uses docker buildkit to cache the image.
+# /usr/local/cargo/git needed for crossbeam patch
 RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
