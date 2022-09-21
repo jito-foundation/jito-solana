@@ -738,6 +738,7 @@ impl BundleStage {
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
         // BankingStage can't lock them. This adds a layer of protection since a transaction in a bundle
         // will not hold the AccountLocks through TransactionBatch across load-execute-commit cycle.
+        // TODO (LB): make sure they're all locked up front since this might not evaluate the entire thing up front (lazy iter)
         let locked_bundles = sanitized_bundles.iter().map(|(_, sanitized_bundle)| {
             bundle_account_locker.prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
         });

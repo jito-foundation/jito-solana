@@ -253,7 +253,7 @@ impl BlockEngineStage {
         bundle_sender: &Sender<Vec<PacketBundle>>,
     ) -> crate::proxy::Result<()> {
         let bundles_response = maybe_bundles_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-        info!("received block-engine bundles");
+        // info!("received block-engine bundles");
         let bundles: Vec<PacketBundle> = bundles_response
             .bundles
             .into_iter()
@@ -283,7 +283,7 @@ impl BlockEngineStage {
         trust_packets: bool,
     ) -> crate::proxy::Result<()> {
         if let Some(batch) = resp.batch {
-            info!("received block-engine packets");
+            // info!("received block-engine packets");
             let packet_batch = PacketBatch::new(
                 batch
                     .packets
