@@ -400,9 +400,9 @@ impl BundleStage {
                 .iter()
                 .any(|r| r.was_executed())
             {
-                warn!("none of the transactions were executed");
                 let bundle_execution_elapsed = start_time.elapsed();
                 if bundle_execution_elapsed >= *max_bundle_retry_duration {
+                    warn!("bundle timed out: {:?}", sanitized_bundle);
                     return Err(BundleExecutionError::MaxRetriesExceeded(
                         bundle_execution_elapsed,
                     ));
@@ -733,6 +733,8 @@ impl BundleStage {
             })
             .collect();
 
+        let tip_pdas = tip_manager.get_tip_accounts();
+
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
         // BankingStage can't lock them. This adds a layer of protection since a transaction in a bundle
         // will not hold the AccountLocks through TransactionBatch across load-execute-commit cycle.
@@ -749,8 +751,6 @@ impl BundleStage {
                 Err(BundleExecutionError::PohMaxHeightError)
             } else {
                 let sanitized_bundle = locked_bundle.sanitized_bundle();
-
-                let tip_pdas = tip_manager.get_tip_accounts();
                 if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas)
                     && bank_start.working_bank.slot() != *last_tip_update_slot
                 {

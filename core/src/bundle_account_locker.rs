@@ -78,13 +78,11 @@ impl BundleAccountLocks {
         read_locks: HashMap<Pubkey, u64>,
         write_locks: HashMap<Pubkey, u64>,
     ) {
-        let read_locks_l = &mut self.read_locks;
-        let write_locks_l = &mut self.write_locks;
         for (acc, count) in read_locks {
-            *read_locks_l.entry(acc).or_insert(0) += count;
+            *self.read_locks.entry(acc).or_insert(0) += count;
         }
         for (acc, count) in write_locks {
-            *write_locks_l.entry(acc).or_insert(0) += count;
+            *self.write_locks.entry(acc).or_insert(0) += count;
         }
     }
 
@@ -93,11 +91,8 @@ impl BundleAccountLocks {
         read_locks: HashMap<Pubkey, u64>,
         write_locks: HashMap<Pubkey, u64>,
     ) {
-        let read_locks_l = &mut self.read_locks;
-        let write_locks_l = &mut self.write_locks;
-
         for (acc, count) in read_locks {
-            if let Entry::Occupied(mut entry) = read_locks_l.entry(acc) {
+            if let Entry::Occupied(mut entry) = self.read_locks.entry(acc) {
                 let val = entry.get_mut();
                 *val = val.saturating_sub(count);
                 if entry.get() == &0 {
@@ -108,7 +103,7 @@ impl BundleAccountLocks {
             }
         }
         for (acc, count) in write_locks {
-            if let Entry::Occupied(mut entry) = write_locks_l.entry(acc) {
+            if let Entry::Occupied(mut entry) = self.write_locks.entry(acc) {
                 let val = entry.get_mut();
                 *val = val.saturating_sub(count);
                 if entry.get() == &0 {
@@ -137,6 +132,13 @@ impl BundleAccountLocker {
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn write_locks(&self) -> HashSet<Pubkey> {
         self.account_locks.lock().unwrap().write_locks()
+    }
+
+    /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
+    /// doesn't lock anything currently locked in the BundleAccountLocker
+    pub fn account_locks(&self) -> (HashSet<Pubkey>, HashSet<Pubkey>) {
+        let account_locks = self.account_locks.lock().unwrap();
+        (account_locks.read_locks(), account_locks.write_locks())
     }
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.

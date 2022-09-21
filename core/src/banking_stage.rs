@@ -1574,8 +1574,7 @@ impl BankingStage {
         // to ensure that avoid race conditions
         let mut lock_time = Measure::start("lock_time");
 
-        let read_locks = bundle_account_locker.read_locks();
-        let write_locks = bundle_account_locker.write_locks();
+        let (read_locks, write_locks) = bundle_account_locker.account_locks();
 
         let batch = bank.prepare_sanitized_batch_with_results(
             txs,
