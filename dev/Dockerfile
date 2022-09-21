@@ -1,4 +1,6 @@
 FROM rust:1.63.0
+ARG ci_commit
+ENV CI_COMMIT=$ci_commit
 
 # Add Google Protocol Buffers for Libra's metrics library.
 ENV PROTOC_VERSION 3.8.0
