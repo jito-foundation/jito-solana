@@ -9,7 +9,7 @@
 /// and commit the results before the bundle completes. By the time the bundle commits the new account
 /// state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 /// replayed improperly and that leader would have produced an invalid block.
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use {
     solana_runtime::bank::Bank,
     solana_sdk::{
@@ -136,9 +136,8 @@ impl BundleAccountLocker {
 
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
-    pub fn account_locks(&self) -> (HashSet<Pubkey>, HashSet<Pubkey>) {
-        let account_locks = self.account_locks.lock().unwrap();
-        (account_locks.read_locks(), account_locks.write_locks())
+    pub fn account_locks(&self) -> MutexGuard<BundleAccountLocks> {
+        self.account_locks.lock().unwrap()
     }
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
