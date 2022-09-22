@@ -237,6 +237,10 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
     ) -> BundleStageResult<()> {
+        if sanitized_bundle.transactions.is_empty() {
+            return Ok(());
+        }
+
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
             sanitized_bundle.transactions.iter(),
