@@ -778,9 +778,10 @@ impl BundleStage {
                         )?;
                     }
 
-                    // change tip receiver, draining the previous tip_receiver in the process
-                    // note that this needs to happen after the above tip-related bundle executes
-                    // because get_configured_tip_receiver reads an account in from the bank.
+                    // change tip receiver, draining tips to the previous tip_receiver in the process
+                    // note that this needs to happen after the above tip-related bundle initializes
+                    // config accounts because get_configured_tip_receiver relies on an account
+                    // existing in the bank
                     let configured_tip_receiver =
                         tip_manager.get_configured_tip_receiver(&bank_start.working_bank)?;
                     let my_tip_distribution_pda =

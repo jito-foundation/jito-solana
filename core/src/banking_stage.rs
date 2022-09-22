@@ -1573,8 +1573,8 @@ impl BankingStage {
         let mut lock_time = Measure::start("lock_time");
 
         let batch = {
-            // BundleStage prevents locking ALL accounts in ALL transactions in a bundle mid-execution
-            // to ensure that avoid race conditions
+            // BundleStage locks ALL accounts in ALL transactions in a bundle to avoid race
+            // conditions with BankingStage
             let account_locks = bundle_account_locker.account_locks();
             bank.prepare_sanitized_batch_with_results(
                 txs,
