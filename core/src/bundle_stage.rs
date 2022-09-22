@@ -758,8 +758,7 @@ impl BundleStage {
         let locked_bundles: Vec<BundleAccountLockerResult<LockedBundle>> = sanitized_bundles
             .iter()
             .map(|(_, sanitized_bundle)| {
-                bundle_account_locker
-                    .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+                bundle_account_locker.prepare_locked_bundle(sanitized_bundle)
             })
             .collect();
 
@@ -788,10 +787,7 @@ impl BundleStage {
                     };
                     {
                         let locked_init_tip_bundle = bundle_account_locker
-                            .prepare_locked_bundle(
-                                &initialize_tip_accounts_bundle,
-                                &bank_start.working_bank,
-                            )
+                            .prepare_locked_bundle(&initialize_tip_accounts_bundle)
                             .map_err(|_| BundleExecutionError::LockError)?;
                         Self::update_qos_and_execute_record_commit_bundle(
                             locked_init_tip_bundle.sanitized_bundle(),
@@ -827,10 +823,7 @@ impl BundleStage {
                             )?],
                         };
                         let locked_change_tip_receiver_bundle = bundle_account_locker
-                            .prepare_locked_bundle(
-                                &change_tip_receiver_bundle,
-                                &bank_start.working_bank,
-                            )
+                            .prepare_locked_bundle(&change_tip_receiver_bundle)
                             .map_err(|_| BundleExecutionError::LockError)?;
                         Self::update_qos_and_execute_record_commit_bundle(
                             locked_change_tip_receiver_bundle.sanitized_bundle(),

@@ -57,17 +57,18 @@ pub fn setup() {
 // Configures file logging with a default filter if RUST_LOG is not set
 //
 // NOTE: This does not work at the moment, pending the resolution of https://github.com/env-logger-rs/env_logger/issues/208
-pub fn setup_file_with_default(logfile: &str, filter: &str) {
-    use std::fs::OpenOptions;
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .append(true)
-        .open(logfile)
-        .unwrap();
-    let logger = env_logger::Builder::from_env(env_logger::Env::new().default_filter_or(filter))
-        .format_timestamp_nanos()
-        .target(env_logger::Target::Pipe(Box::new(file)))
-        .build();
-    replace_logger(logger);
+pub fn setup_file_with_default(_logfile: &str, _filter: &str) {
+    // TODO (LB): fix Target::Pipe error
+    // use std::fs::OpenOptions;
+    // let file = OpenOptions::new()
+    //     .write(true)
+    //     .create(true)
+    //     .append(true)
+    //     .open(logfile)
+    //     .unwrap();
+    // let logger = env_logger::Builder::from_env(env_logger::Env::new().default_filter_or(filter))
+    //     .format_timestamp_nanos()
+    //     .target(env_logger::Target::Pipe(Box::new(file)))
+    //     .build();
+    // replace_logger(logger);
 }
