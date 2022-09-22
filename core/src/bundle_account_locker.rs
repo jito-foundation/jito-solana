@@ -9,13 +9,13 @@
 /// and commit the results before the bundle completes. By the time the bundle commits the new account
 /// state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 /// replayed improperly and that leader would have produced an invalid block.
-use std::sync::{Arc, Mutex, MutexGuard};
 use {
     solana_runtime::bank::Bank,
     solana_sdk::{
         bundle::sanitized::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks,
     },
     std::collections::{hash_map::Entry, HashMap, HashSet},
+    std::sync::{Arc, Mutex, MutexGuard},
 };
 
 #[derive(Debug)]
