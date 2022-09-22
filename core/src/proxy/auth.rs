@@ -71,7 +71,11 @@ pub(crate) mod token_manager {
                     }
                 }
                 Err(e) => {
-                    error!("error connecting to auth service: {}", e);
+                    error!(
+                        "error connecting to auth service url: {} error: {}",
+                        auth_service_endpoint.uri(),
+                        e
+                    );
                     sleep(retry_interval).await;
                 }
             }

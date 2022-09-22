@@ -306,8 +306,6 @@ impl RelayerStage {
                 warn!("Received an empty subscribe_packets msg.");
             }
             Some(relayer::subscribe_packets_response::Msg::Batch(proto_batch)) => {
-                info!("packet batch received");
-
                 let packet_batch = PacketBatch::new(
                     proto_batch
                         .packets
@@ -327,8 +325,6 @@ impl RelayerStage {
                 }
             }
             Some(relayer::subscribe_packets_response::Msg::Heartbeat(_)) => {
-                debug!("heartbeat received");
-
                 *last_heartbeat_ts = Instant::now();
                 heartbeat_tx
                     .send(heartbeat_event)

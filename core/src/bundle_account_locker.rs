@@ -9,12 +9,13 @@
 /// and commit the results before the bundle completes. By the time the bundle commits the new account
 /// state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 /// replayed improperly and that leader would have produced an invalid block.
-use std::sync::{Arc, Mutex};
 use {
+    solana_runtime::bank::Bank,
     solana_sdk::{
         bundle::sanitized::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks,
     },
     std::collections::{hash_map::Entry, HashMap, HashSet},
+    std::sync::{Arc, Mutex, MutexGuard},
 };
 
 #[derive(Debug)]
@@ -27,16 +28,19 @@ pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
 pub struct LockedBundle<'a, 'b> {
     bundle_account_locker: &'a BundleAccountLocker,
     sanitized_bundle: &'b SanitizedBundle,
+    bank: Arc<Bank>,
 }
 
 impl<'a, 'b> LockedBundle<'a, 'b> {
     pub fn new(
         bundle_account_locker: &'a BundleAccountLocker,
         sanitized_bundle: &'b SanitizedBundle,
+        bank: &Arc<Bank>,
     ) -> Self {
         Self {
             bundle_account_locker,
             sanitized_bundle,
+            bank: bank.clone(),
         }
     }
 
@@ -50,64 +54,63 @@ impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
     fn drop(&mut self) {
         let _ = self
             .bundle_account_locker
-            .unlock_bundle_accounts(self.sanitized_bundle);
+            .unlock_bundle_accounts(self.sanitized_bundle, &self.bank);
     }
 }
 
 #[derive(Default, Clone)]
-struct BundleAccountLocks {
-    read_locks: Arc<Mutex<HashMap<Pubkey, u64>>>,
-    write_locks: Arc<Mutex<HashMap<Pubkey, u64>>>,
+pub struct BundleAccountLocks {
+    read_locks: HashMap<Pubkey, u64>,
+    write_locks: HashMap<Pubkey, u64>,
 }
 
 impl BundleAccountLocks {
     pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.read_locks.lock().unwrap().keys().cloned().collect()
+        self.read_locks.keys().cloned().collect()
     }
 
     pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.write_locks.lock().unwrap().keys().cloned().collect()
+        self.write_locks.keys().cloned().collect()
     }
 
     pub fn lock_accounts(
-        &self,
+        &mut self,
         read_locks: HashMap<Pubkey, u64>,
         write_locks: HashMap<Pubkey, u64>,
     ) {
-        let mut read_locks_l = self.read_locks.lock().unwrap();
-        let mut write_locks_l = self.write_locks.lock().unwrap();
         for (acc, count) in read_locks {
-            *read_locks_l.entry(acc).or_insert(0) += count;
+            *self.read_locks.entry(acc).or_insert(0) += count;
         }
         for (acc, count) in write_locks {
-            *write_locks_l.entry(acc).or_insert(0) += count;
+            *self.write_locks.entry(acc).or_insert(0) += count;
         }
     }
 
     pub fn unlock_accounts(
-        &self,
+        &mut self,
         read_locks: HashMap<Pubkey, u64>,
         write_locks: HashMap<Pubkey, u64>,
     ) {
-        let mut read_locks_l = self.read_locks.lock().unwrap();
-        let mut write_locks_l = self.write_locks.lock().unwrap();
-
         for (acc, count) in read_locks {
-            if let Entry::Occupied(mut entry) = read_locks_l.entry(acc) {
+            if let Entry::Occupied(mut entry) = self.read_locks.entry(acc) {
                 let val = entry.get_mut();
                 *val = val.saturating_sub(count);
                 if entry.get() == &0 {
                     let _ = entry.remove();
                 }
+            } else {
+                warn!("error unlocking read-locked account, account: {:?}", acc);
             }
         }
         for (acc, count) in write_locks {
-            if let Entry::Occupied(mut entry) = write_locks_l.entry(acc) {
+            if let Entry::Occupied(mut entry) = self.write_locks.entry(acc) {
                 let val = entry.get_mut();
                 *val = val.saturating_sub(count);
                 if entry.get() == &0 {
                     let _ = entry.remove();
                 }
+            } else {
+                warn!("error unlocking write-locked account, account: {:?}", acc);
             }
         }
     }
@@ -115,20 +118,26 @@ impl BundleAccountLocks {
 
 #[derive(Clone, Default)]
 pub struct BundleAccountLocker {
-    account_locks: BundleAccountLocks,
+    account_locks: Arc<Mutex<BundleAccountLocks>>,
 }
 
 impl BundleAccountLocker {
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.account_locks.read_locks()
+        self.account_locks.lock().unwrap().read_locks()
     }
 
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.account_locks.write_locks()
+        self.account_locks.lock().unwrap().write_locks()
+    }
+
+    /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
+    /// doesn't lock anything currently locked in the BundleAccountLocker
+    pub fn account_locks(&self) -> MutexGuard<BundleAccountLocks> {
+        self.account_locks.lock().unwrap()
     }
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
@@ -136,21 +145,29 @@ impl BundleAccountLocker {
     pub fn prepare_locked_bundle<'a, 'b>(
         &'a self,
         sanitized_bundle: &'b SanitizedBundle,
+        bank: &Arc<Bank>,
     ) -> BundleAccountLockerResult<LockedBundle<'a, 'b>> {
-        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
+        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks.lock_accounts(read_locks, write_locks);
-        Ok(LockedBundle::new(self, sanitized_bundle))
+        self.account_locks
+            .lock()
+            .unwrap()
+            .lock_accounts(read_locks, write_locks);
+        Ok(LockedBundle::new(self, sanitized_bundle, bank))
     }
 
     /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
     fn unlock_bundle_accounts(
         &self,
         sanitized_bundle: &SanitizedBundle,
+        bank: &Bank,
     ) -> BundleAccountLockerResult<()> {
-        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle)?;
+        let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks.unlock_accounts(read_locks, write_locks);
+        self.account_locks
+            .lock()
+            .unwrap()
+            .unlock_accounts(read_locks, write_locks);
         Ok(())
     }
 
@@ -158,6 +175,7 @@ impl BundleAccountLocker {
     /// Each lock type contains a HashMap which maps Pubkey to number of locks held
     fn get_read_write_locks(
         bundle: &SanitizedBundle,
+        bank: &Bank,
     ) -> BundleAccountLockerResult<(HashMap<Pubkey, u64>, HashMap<Pubkey, u64>)> {
         let transaction_locks: Vec<TransactionAccountLocks> = bundle
             .transactions
@@ -265,7 +283,7 @@ mod tests {
         .expect("sanitize bundle 1");
 
         let locked_bundle0 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle0)
+            .prepare_locked_bundle(&sanitized_bundle0, &bank)
             .unwrap();
 
         assert_eq!(
@@ -278,7 +296,7 @@ mod tests {
         );
 
         let locked_bundle1 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle1)
+            .prepare_locked_bundle(&sanitized_bundle1, &bank)
             .unwrap();
         assert_eq!(
             bundle_account_locker.write_locks(),

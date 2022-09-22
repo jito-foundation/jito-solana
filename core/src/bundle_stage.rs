@@ -4,7 +4,7 @@
 use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
-        bundle_account_locker::BundleAccountLocker,
+        bundle_account_locker::{BundleAccountLocker, BundleAccountLockerResult, LockedBundle},
         bundle_sanitizer::get_sanitized_bundle,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         packet_bundle::PacketBundle,
@@ -63,7 +63,7 @@ use {
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
 
-type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
+type BundleStageResult<T> = Result<T, BundleExecutionError>;
 
 struct AllExecutionResults {
     pub load_and_execute_tx_output: LoadAndExecuteTransactionsOutput,
@@ -225,6 +225,8 @@ impl BundleStage {
 
     /// Calculates QoS and reserves compute space for the bundle. If the bundle succeeds, commits
     /// the results to the cost tracker. If the bundle fails, rolls back any QoS changes made.
+    /// Ensure that SanitizedBundle was returned by BundleAccountLocker to avoid parallelism issues
+    /// with banking stage
     fn update_qos_and_execute_record_commit_bundle(
         sanitized_bundle: &SanitizedBundle,
         recorder: &TransactionRecorder,
@@ -234,7 +236,11 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
-    ) -> BundleExecutionResult<()> {
+    ) -> BundleStageResult<()> {
+        if sanitized_bundle.transactions.is_empty() {
+            return Ok(());
+        }
+
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
             sanitized_bundle.transactions.iter(),
@@ -310,7 +316,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
-    ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
+    ) -> BundleStageResult<Vec<AllExecutionResults>> {
         let mut account_overrides = AccountOverrides::default();
 
         let mut execution_results = Vec::new();
@@ -331,6 +337,13 @@ impl BundleStage {
             // ************************************************************************
             // Build a TransactionBatch that ensures transactions in the bundle
             // are executed sequentially.
+            // NOTE: The TransactionBatch is dropped before the results are committed, which
+            // would normally open up race conditions between this stage and BankingStage where
+            // a transaction here could read and execute state on a transaction and BankingStage
+            // could read-execute-store, invaliding the state produced by the bundle.
+            // Assuming the SanitizedBundle was locked with the BundleAccountLocker, that race
+            // condition shall be prevented as it holds an extra set of locks until the entire
+            // bundle is processed.
             // ************************************************************************
             let chunk_end = std::cmp::min(sanitized_bundle.transactions.len(), chunk_start + 128);
             let chunk = &sanitized_bundle.transactions[chunk_start..chunk_end];
@@ -396,9 +409,9 @@ impl BundleStage {
                 .iter()
                 .any(|r| r.was_executed())
             {
-                warn!("none of the transactions were executed");
                 let bundle_execution_elapsed = start_time.elapsed();
                 if bundle_execution_elapsed >= *max_bundle_retry_duration {
+                    warn!("bundle timed out: {:?}", sanitized_bundle);
                     return Err(BundleExecutionError::MaxRetriesExceeded(
                         bundle_execution_elapsed,
                     ));
@@ -461,7 +474,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
-    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
+    ) -> BundleStageResult<Vec<CommitTransactionDetails>> {
         let execution_results = Self::execute_bundle(
             sanitized_bundle,
             transaction_status_sender,
@@ -491,7 +504,7 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         transaction_status_sender: &Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
-    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
+    ) -> BundleStageResult<Vec<CommitTransactionDetails>> {
         // *********************************************************************************
         // All transactions are executed in the bundle.
         // Record to PoH and send the saved execution results to the Bank.
@@ -639,23 +652,14 @@ impl BundleStage {
         }
     }
 
-    /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then
-    /// sets the tip_receiver if needed and executes them as a bundle.
-    fn maybe_initialize_and_change_tip_receiver(
-        bank_start: &BankStart,
+    /// When executed the first time, there's some accounts that need to be initialized.
+    /// This is only helpful for local testing, on testnet and mainnet these will never be executed.
+    /// TODO (LB): consider removing this for mainnet/testnet and move to program deployment?
+    fn get_initialize_tip_accounts_transactions(
+        bank: &Bank,
         tip_manager: &TipManager,
-        qos_service: &QosService,
-        recorder: &TransactionRecorder,
-        transaction_status_sender: &Option<TransactionStatusSender>,
-        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
-        gossip_vote_sender: &ReplayVoteSender,
         cluster_info: &Arc<ClusterInfo>,
-        max_bundle_retry_duration: &Duration,
-    ) -> BundleExecutionResult<()> {
-        let BankStart {
-            working_bank: bank, ..
-        } = bank_start;
-
+    ) -> BundleStageResult<Vec<SanitizedTransaction>> {
         let maybe_init_tip_payment_config_tx =
             if tip_manager.should_initialize_tip_payment_program(bank) {
                 info!("initializing tip-payment program config");
@@ -682,7 +686,6 @@ impl BundleStage {
             .should_init_tip_distribution_account(bank)
         {
             info!("initializing my [TipDistributionAccount]");
-
             Some(tip_manager.init_tip_distribution_account_tx(bank.last_blockhash(), bank.epoch()))
         } else {
             None
@@ -697,91 +700,7 @@ impl BundleStage {
         .flatten()
         .collect::<Vec<SanitizedTransaction>>();
 
-        if !transactions.is_empty() {
-            info!("executing init txs");
-            Self::update_qos_and_execute_record_commit_bundle(
-                &SanitizedBundle { transactions },
-                recorder,
-                transaction_status_sender,
-                gossip_vote_sender,
-                qos_service,
-                bank_start,
-                execute_and_commit_timings,
-                max_bundle_retry_duration,
-            )?;
-            info!("successfully executed init txs");
-        }
-
-        let configured_tip_receiver = tip_manager.get_configured_tip_receiver(bank)?;
-        let my_tip_distribution_pda = tip_manager.get_my_tip_distribution_pda(bank.epoch());
-
-        if configured_tip_receiver != my_tip_distribution_pda {
-            info!(
-                "changing tip receiver from {:?} to {:?}",
-                configured_tip_receiver, my_tip_distribution_pda
-            );
-            let sanitized_bundle = SanitizedBundle {
-                transactions: vec![tip_manager.change_tip_receiver_tx(
-                    &my_tip_distribution_pda,
-                    bank,
-                    &cluster_info.keypair(),
-                )?],
-            };
-
-            Self::update_qos_and_execute_record_commit_bundle(
-                &sanitized_bundle,
-                recorder,
-                transaction_status_sender,
-                gossip_vote_sender,
-                qos_service,
-                bank_start,
-                execute_and_commit_timings,
-                max_bundle_retry_duration,
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Handles tip account management and executing, recording, and committing bundles
-    #[allow(clippy::too_many_arguments)]
-    fn handle_tip_and_execute_record_commit_bundle(
-        sanitized_bundle: &SanitizedBundle,
-        tip_manager: &TipManager,
-        bank_start: &BankStart,
-        qos_service: &QosService,
-        recorder: &TransactionRecorder,
-        transaction_status_sender: &Option<TransactionStatusSender>,
-        gossip_vote_sender: &ReplayVoteSender,
-        cluster_info: &Arc<ClusterInfo>,
-        max_bundle_retry_duration: &Duration,
-        execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
-    ) -> BundleExecutionResult<()> {
-        let _lock = tip_manager.lock();
-        let tip_pdas = tip_manager.get_tip_accounts();
-        if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas) {
-            Self::maybe_initialize_and_change_tip_receiver(
-                bank_start,
-                tip_manager,
-                qos_service,
-                recorder,
-                transaction_status_sender,
-                execute_and_commit_timings,
-                gossip_vote_sender,
-                cluster_info,
-                max_bundle_retry_duration,
-            )?;
-            info!("successfully changed tip receiver");
-        }
-        Self::update_qos_and_execute_record_commit_bundle(
-            sanitized_bundle,
-            recorder,
-            transaction_status_sender,
-            gossip_vote_sender,
-            qos_service,
-            bank_start,
-            execute_and_commit_timings,
-            max_bundle_retry_duration,
-        )
+        Ok(transactions)
     }
 
     /// Execute all unprocessed bundles until no more left or POH max tick height is reached.
@@ -802,7 +721,8 @@ impl BundleStage {
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
-    ) -> BundleExecutionResult<()> {
+        last_tip_update_slot: &mut Slot,
+    ) -> BundleStageResult<()> {
         // Drain all unprocessed bundles, turn to sanitized_bundles, lock them all, then process
         // until max proof-of-history tick
         let sanitized_bundles: VecDeque<(PacketBundle, SanitizedBundle)> = unprocessed_bundles
@@ -817,7 +737,7 @@ impl BundleStage {
                 ) {
                     Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
                     Err(e) => {
-                        warn!(
+                        debug!(
                             "failed to sanitize bundle uuid: {:?} error: {:?}",
                             packet_bundle.uuid, e
                         );
@@ -827,11 +747,21 @@ impl BundleStage {
             })
             .collect();
 
+        let tip_pdas = tip_manager.get_tip_accounts();
+
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
-        // BankingStage can't lock them
-        let locked_bundles = sanitized_bundles.iter().map(|(_, sanitized_bundle)| {
-            bundle_account_locker.prepare_locked_bundle(sanitized_bundle)
-        });
+        // BankingStage can't lock them. This adds a layer of protection since a transaction in a bundle
+        // will not hold the AccountLocks through TransactionBatch across load-execute-commit cycle.
+        // We collect here to ensure that all of the bundles are locked ahead of time for priority over
+        // BankingStage
+        #[allow(clippy::needless_collect)]
+        let locked_bundles: Vec<BundleAccountLockerResult<LockedBundle>> = sanitized_bundles
+            .iter()
+            .map(|(_, sanitized_bundle)| {
+                bundle_account_locker
+                    .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+            })
+            .collect();
 
         let execution_results = locked_bundles.into_iter().map(|maybe_locked_bundle| {
             let locked_bundle = maybe_locked_bundle.map_err(|_| BundleExecutionError::LockError)?;
@@ -841,17 +771,90 @@ impl BundleStage {
             ) {
                 Err(BundleExecutionError::PohMaxHeightError)
             } else {
-                Self::handle_tip_and_execute_record_commit_bundle(
-                    locked_bundle.sanitized_bundle(),
-                    tip_manager,
-                    bank_start,
-                    qos_service,
+                let sanitized_bundle = locked_bundle.sanitized_bundle();
+
+                // if bundle touches tip account, need to make sure the tip-related accounts are initialized
+                // and the tip receiver is set correctly so tips in any bundles executed go to this leader
+                // instead of the last.
+                if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas)
+                    && bank_start.working_bank.slot() != *last_tip_update_slot
+                {
+                    let initialize_tip_accounts_bundle = SanitizedBundle {
+                        transactions: Self::get_initialize_tip_accounts_transactions(
+                            &bank_start.working_bank,
+                            tip_manager,
+                            cluster_info,
+                        )?,
+                    };
+                    {
+                        let locked_init_tip_bundle = bundle_account_locker
+                            .prepare_locked_bundle(
+                                &initialize_tip_accounts_bundle,
+                                &bank_start.working_bank,
+                            )
+                            .map_err(|_| BundleExecutionError::LockError)?;
+                        Self::update_qos_and_execute_record_commit_bundle(
+                            locked_init_tip_bundle.sanitized_bundle(),
+                            recorder,
+                            transaction_status_sender,
+                            gossip_vote_sender,
+                            qos_service,
+                            bank_start,
+                            execute_and_commit_timings,
+                            max_bundle_retry_duration,
+                        )?;
+                    }
+
+                    // change tip receiver, draining tips to the previous tip_receiver in the process
+                    // note that this needs to happen after the above tip-related bundle initializes
+                    // config accounts because get_configured_tip_receiver relies on an account
+                    // existing in the bank
+                    let configured_tip_receiver =
+                        tip_manager.get_configured_tip_receiver(&bank_start.working_bank)?;
+                    let my_tip_distribution_pda =
+                        tip_manager.get_my_tip_distribution_pda(bank_start.working_bank.epoch());
+                    if configured_tip_receiver != my_tip_distribution_pda {
+                        info!(
+                            "changing tip receiver from {} to {}",
+                            configured_tip_receiver, my_tip_distribution_pda
+                        );
+
+                        let change_tip_receiver_bundle = SanitizedBundle {
+                            transactions: vec![tip_manager.change_tip_receiver_tx(
+                                &my_tip_distribution_pda,
+                                &bank_start.working_bank,
+                                &cluster_info.keypair(),
+                            )?],
+                        };
+                        let locked_change_tip_receiver_bundle = bundle_account_locker
+                            .prepare_locked_bundle(
+                                &change_tip_receiver_bundle,
+                                &bank_start.working_bank,
+                            )
+                            .map_err(|_| BundleExecutionError::LockError)?;
+                        Self::update_qos_and_execute_record_commit_bundle(
+                            locked_change_tip_receiver_bundle.sanitized_bundle(),
+                            recorder,
+                            transaction_status_sender,
+                            gossip_vote_sender,
+                            qos_service,
+                            bank_start,
+                            execute_and_commit_timings,
+                            max_bundle_retry_duration,
+                        )?;
+                    }
+
+                    *last_tip_update_slot = bank_start.working_bank.slot();
+                }
+                Self::update_qos_and_execute_record_commit_bundle(
+                    sanitized_bundle,
                     recorder,
                     transaction_status_sender,
                     gossip_vote_sender,
-                    cluster_info,
-                    max_bundle_retry_duration,
+                    qos_service,
+                    bank_start,
                     execute_and_commit_timings,
+                    max_bundle_retry_duration,
                 )
             }
         });
@@ -908,6 +911,7 @@ impl BundleStage {
         // Bundles can't mention any accounts related to consensus
         let mut consensus_accounts_cache: HashSet<Pubkey> = HashSet::new();
         let mut last_consensus_update = Epoch::default();
+        let mut last_tip_update_slot = Slot::default();
 
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
@@ -929,13 +933,14 @@ impl BundleStage {
                     match (working_bank_start, would_be_leader_soon) {
                         // leader now, insert new read bundles + as many as can read then return bank
                         (Some(bank_start), _) => {
-                            unprocessed_bundles.extend(bundles);
-                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
                             Self::maybe_update_consensus_cache(
                                 &bank_start.working_bank,
                                 &mut consensus_accounts_cache,
                                 &mut last_consensus_update,
                             );
+
+                            unprocessed_bundles.extend(bundles);
+                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
                             match Self::execute_bundles_until_empty_or_end_of_slot(
                                 &mut bundle_account_locker,
                                 &mut unprocessed_bundles,
@@ -950,6 +955,7 @@ impl BundleStage {
                                 &tip_manager,
                                 &max_bundle_retry_duration,
                                 &mut execute_and_commit_timings,
+                                &mut last_tip_update_slot,
                             ) {
                                 Ok(_) => {
                                     // keep going
@@ -975,8 +981,8 @@ impl BundleStage {
                                 unprocessed_bundles.iter().map(|p| p.uuid).collect();
                             unprocessed_bundles.clear();
 
-                            info!("dropping new bundles: {:?}", new_dropped_bundles);
-                            info!("dropping old bundles: {:?}", old_dropped_bundles);
+                            debug!("dropping new bundles: {:?}", new_dropped_bundles);
+                            debug!("dropping old bundles: {:?}", old_dropped_bundles);
                         }
                     }
                 }
@@ -1048,7 +1054,7 @@ impl BundleStage {
         recorder: &TransactionRecorder,
         bank_slot: Slot,
         mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
-    ) -> BundleExecutionResult<Option<usize>> {
+    ) -> BundleStageResult<Option<usize>> {
         match recorder.record(bank_slot, mixins_txs) {
             Ok(maybe_tx_index) => Ok(maybe_tx_index),
             Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
