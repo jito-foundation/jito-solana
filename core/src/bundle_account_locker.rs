@@ -286,7 +286,7 @@ mod tests {
         .expect("sanitize bundle 1");
 
         let locked_bundle0 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle0)
+            .prepare_locked_bundle(&sanitized_bundle0, &bank)
             .unwrap();
 
         assert_eq!(
@@ -299,7 +299,7 @@ mod tests {
         );
 
         let locked_bundle1 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle1)
+            .prepare_locked_bundle(&sanitized_bundle1, &bank)
             .unwrap();
         assert_eq!(
             bundle_account_locker.write_locks(),
