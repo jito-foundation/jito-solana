@@ -905,13 +905,14 @@ impl BundleStage {
                     match (working_bank_start, would_be_leader_soon) {
                         // leader now, insert new read bundles + as many as can read then return bank
                         (Some(bank_start), _) => {
-                            unprocessed_bundles.extend(bundles);
-                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
                             Self::maybe_update_consensus_cache(
                                 &bank_start.working_bank,
                                 &mut consensus_accounts_cache,
                                 &mut last_consensus_update,
                             );
+
+                            unprocessed_bundles.extend(bundles);
+                            unprocessed_bundles.extend(bundle_receiver.try_iter().flatten());
                             match Self::execute_bundles_until_empty_or_end_of_slot(
                                 &mut bundle_account_locker,
                                 &mut unprocessed_bundles,
