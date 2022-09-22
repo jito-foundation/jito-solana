@@ -63,7 +63,7 @@ use {
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
 
-type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
+type BundleStageResult<T> = Result<T, BundleExecutionError>;
 
 struct AllExecutionResults {
     pub load_and_execute_tx_output: LoadAndExecuteTransactionsOutput,
@@ -236,7 +236,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
-    ) -> BundleExecutionResult<()> {
+    ) -> BundleStageResult<()> {
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
             sanitized_bundle.transactions.iter(),
@@ -312,7 +312,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
-    ) -> BundleExecutionResult<Vec<AllExecutionResults>> {
+    ) -> BundleStageResult<Vec<AllExecutionResults>> {
         let mut account_overrides = AccountOverrides::default();
 
         let mut execution_results = Vec::new();
@@ -462,7 +462,7 @@ impl BundleStage {
         bank_start: &BankStart,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         max_bundle_retry_duration: &Duration,
-    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
+    ) -> BundleStageResult<Vec<CommitTransactionDetails>> {
         let execution_results = Self::execute_bundle(
             sanitized_bundle,
             transaction_status_sender,
@@ -492,7 +492,7 @@ impl BundleStage {
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         transaction_status_sender: &Option<TransactionStatusSender>,
         gossip_vote_sender: &ReplayVoteSender,
-    ) -> BundleExecutionResult<Vec<CommitTransactionDetails>> {
+    ) -> BundleStageResult<Vec<CommitTransactionDetails>> {
         // *********************************************************************************
         // All transactions are executed in the bundle.
         // Record to PoH and send the saved execution results to the Bank.
@@ -629,7 +629,7 @@ impl BundleStage {
         bank: &Bank,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
-    ) -> BundleExecutionResult<Vec<SanitizedTransaction>> {
+    ) -> BundleStageResult<Vec<SanitizedTransaction>> {
         let maybe_init_tip_payment_config_tx =
             if tip_manager.should_initialize_tip_payment_program(bank) {
                 info!("initializing tip-payment program config");
@@ -692,7 +692,7 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
         last_tip_update_slot: &mut Slot,
-    ) -> BundleExecutionResult<()> {
+    ) -> BundleStageResult<()> {
         // Drain all unprocessed bundles, turn to sanitized_bundles, lock them all, then process
         // until max proof-of-history tick
         let sanitized_bundles: VecDeque<(PacketBundle, SanitizedBundle)> = unprocessed_bundles
@@ -1021,7 +1021,7 @@ impl BundleStage {
         recorder: &TransactionRecorder,
         bank_slot: Slot,
         mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
-    ) -> BundleExecutionResult<()> {
+    ) -> BundleStageResult<()> {
         match recorder.record(bank_slot, mixins_txs) {
             Ok(()) => Ok(()),
             Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
