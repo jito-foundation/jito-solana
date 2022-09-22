@@ -1570,19 +1570,19 @@ impl BankingStage {
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
         // same account state.
-        // BundleStage prevents locking ALL accounts in ALL transactions in a bundle mid-execution
-        // to ensure that avoid race conditions
         let mut lock_time = Measure::start("lock_time");
 
-        let read_locks = bundle_account_locker.read_locks();
-        let write_locks = bundle_account_locker.write_locks();
-
-        let batch = bank.prepare_sanitized_batch_with_results(
-            txs,
-            transactions_qos_results.iter(),
-            &read_locks,
-            &write_locks,
-        );
+        let batch = {
+            // BundleStage locks ALL accounts in ALL transactions in a bundle to avoid race
+            // conditions with BankingStage
+            let account_locks = bundle_account_locker.account_locks();
+            bank.prepare_sanitized_batch_with_results(
+                txs,
+                transactions_qos_results.iter(),
+                &account_locks.read_locks(),
+                &account_locks.write_locks(),
+            )
+        };
         lock_time.stop();
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
