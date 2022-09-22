@@ -59,7 +59,7 @@ impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
 }
 
 #[derive(Default, Clone)]
-struct BundleAccountLocks {
+pub struct BundleAccountLocks {
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
 }
