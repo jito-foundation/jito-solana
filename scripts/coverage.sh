@@ -69,14 +69,15 @@ if [[ -n $CI || -z $1 ]]; then
 fi
 
 # limit jobs to 4gb/thread
-if [[ -f "/proc/meminfo" ]]; then
-  JOBS=$(grep MemTotal /proc/meminfo | awk '{printf "%.0f", ($2 / (4 * 1024 * 1024))}')
-else
-  JOBS=$(sysctl hw.memsize | awk '{printf "%.0f", ($2 / (4 * 1024**3))}')
-fi
+#if [[ -f "/proc/meminfo" ]]; then
+  #JOBS=$(grep MemTotal /proc/meminfo | awk '{printf "%.0f", ($2 / (4 * 1024 * 1024))}')
+#else
+  #JOBS=$(sysctl hw.memsize | awk '{printf "%.0f", ($2 / (4 * 1024**3))}')
+#fi
 
-NPROC=$(nproc)
-JOBS=$((JOBS>NPROC ? NPROC : JOBS))
+#NPROC=$(nproc)
+#JOBS=$((JOBS>NPROC ? NPROC : JOBS))
+JOBS=32
 
 RUST_LOG=solana=trace _ "$cargo" nightly test --jobs "$JOBS" --target-dir target/cov --no-run "${packages[@]}"
 if RUST_LOG=solana=trace _ "$cargo" nightly test --jobs "$JOBS" --target-dir target/cov "${packages[@]}" -- --nocapture 2> >(tee target/cov/coverage-stderr.log >&2); then
