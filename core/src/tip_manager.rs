@@ -181,7 +181,7 @@ impl TipManager {
     }
 
     /// Given a bank, returns the current `tip_receiver` configured with the tip-payment program.
-    pub fn get_configured_tip_receiver(&self, bank: &Arc<Bank>) -> Result<Pubkey> {
+    pub fn get_configured_tip_receiver(&self, bank: &Bank) -> Result<Pubkey> {
         Ok(self.get_tip_payment_config_account(bank)?.tip_receiver)
     }
 
@@ -198,7 +198,7 @@ impl TipManager {
         ])
     }
 
-    pub fn get_tip_payment_config_account(&self, bank: &Arc<Bank>) -> Result<Config> {
+    pub fn get_tip_payment_config_account(&self, bank: &Bank) -> Result<Config> {
         let config_data = bank
             .get_account(&self.tip_payment_program_info.config_pda_bump.0)
             .ok_or(TipPaymentError::AccountMissing(
@@ -269,7 +269,7 @@ impl TipManager {
     }
 
     /// Returns whether or not the tip-payment program should be initialized.
-    pub fn should_initialize_tip_payment_program(&self, bank: &Arc<Bank>) -> bool {
+    pub fn should_initialize_tip_payment_program(&self, bank: &Bank) -> bool {
         match bank.get_account(&self.tip_payment_config_pubkey()) {
             None => true,
             Some(account) => account.owner() != &self.tip_payment_program_info.program_id,
@@ -277,7 +277,7 @@ impl TipManager {
     }
 
     /// Returns whether or not the tip-distribution program's [Config] PDA should be initialized.
-    pub fn should_initialize_tip_distribution_config(&self, bank: &Arc<Bank>) -> bool {
+    pub fn should_initialize_tip_distribution_config(&self, bank: &Bank) -> bool {
         match bank.get_account(&self.tip_distribution_config_pubkey()) {
             None => true,
             Some(account) => account.owner() != &self.tip_distribution_program_info.program_id,
@@ -285,7 +285,7 @@ impl TipManager {
     }
 
     /// Returns whether or not the current [TipDistributionAccount] PDA should be initialized for this epoch.
-    pub fn should_init_tip_distribution_account(&self, bank: &Arc<Bank>) -> bool {
+    pub fn should_init_tip_distribution_account(&self, bank: &Bank) -> bool {
         let pda = derive_tip_distribution_account_address(
             &self.tip_distribution_program_info.program_id,
             &self.tip_distribution_account_config.vote_account,
@@ -375,7 +375,7 @@ impl TipManager {
     pub fn change_tip_receiver_tx(
         &self,
         new_tip_receiver: &Pubkey,
-        bank: &Arc<Bank>,
+        bank: &Bank,
         keypair: &Keypair,
     ) -> Result<SanitizedTransaction> {
         let config = self.get_tip_payment_config_account(bank)?;
