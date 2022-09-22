@@ -1053,7 +1053,7 @@ impl BundleStage {
         recorder: &TransactionRecorder,
         bank_slot: Slot,
         mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
-    ) -> BundleExecutionResult<Option<usize>> {
+    ) -> BundleStageResult<Option<usize>> {
         match recorder.record(bank_slot, mixins_txs) {
             Ok(maybe_tx_index) => Ok(maybe_tx_index),
             Err(PohRecorderError::MaxHeightReached) => Err(BundleExecutionError::PohMaxHeightError),
