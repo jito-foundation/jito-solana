@@ -75,12 +75,13 @@ pub fn redirect_stderr_to_file(logfile: Option<String>) -> Option<JoinHandle<()>
                     }
                 }))
             }
-            #[cfg(not(unix))]
-            {
-                println!("logrotate is not supported on this platform");
-                solana_logger::setup_file_with_default(&logfile, filter);
-                None
-            }
+            // TODO (LB): fix
+            // #[cfg(not(unix))]
+            // {
+            //     println!("logrotate is not supported on this platform");
+            //     solana_logger::setup_file_with_default(&logfile, filter);
+            //     None
+            // }
         }
     }
 }

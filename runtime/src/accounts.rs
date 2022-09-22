@@ -4,7 +4,7 @@ use {
         account_rent_state::{check_rent_state_with_account, RentState},
         accounts_db::{
             AccountShrinkThreshold, AccountsAddRootTiming, AccountsDb, AccountsDbConfig,
-            BankHashInfo, LoadHint, LoadedAccount, ScanStorageResult,
+            BankHashInfo, LoadHint, LoadZeroLamports, LoadedAccount, ScanStorageResult,
             ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
         },
         accounts_index::{AccountSecondaryIndexes, IndexKey, ScanConfig, ScanError, ScanResult},
@@ -31,7 +31,10 @@ use {
         account_utils::StateMut,
         bpf_loader_upgradeable::{self, UpgradeableLoaderState},
         clock::{BankId, Slot, INITIAL_RENT_EPOCH},
-        feature_set::{self, add_set_compute_unit_price_ix, tx_wide_compute_cap, FeatureSet},
+        feature_set::{
+            self, add_set_compute_unit_price_ix, return_none_for_zero_lamport_accounts,
+            tx_wide_compute_cap, FeatureSet,
+        },
         fee::FeeStructure,
         genesis_config::ClusterType,
         hash::Hash,
@@ -245,6 +248,13 @@ impl Accounts {
         feature_set: &FeatureSet,
         account_overrides: Option<&AccountOverrides>,
     ) -> Result<LoadedTransaction> {
+        let load_zero_lamports =
+            if feature_set.is_active(&return_none_for_zero_lamport_accounts::id()) {
+                LoadZeroLamports::None
+            } else {
+                LoadZeroLamports::SomeWithZeroLamportAccount
+            };
+
         // Copy all the accounts
         let message = tx.message();
         // NOTE: this check will never fail because `tx` is sanitized
@@ -280,7 +290,7 @@ impl Accounts {
                             (account_override.clone(), 0)
                         } else {
                             self.accounts_db
-                                .load_with_fixed_root(ancestors, key)
+                                .load_with_fixed_root(ancestors, key, load_zero_lamports)
                                 .map(|(mut account, _)| {
                                     if message.is_writable(i) {
                                         let rent_due = rent_collector
@@ -329,9 +339,12 @@ impl Accounts {
                                     programdata_address,
                                 }) = account.state()
                                 {
-                                    if let Some((programdata_account, _)) = self
-                                        .accounts_db
-                                        .load_with_fixed_root(ancestors, &programdata_address)
+                                    if let Some((programdata_account, _)) =
+                                        self.accounts_db.load_with_fixed_root(
+                                            ancestors,
+                                            &programdata_address,
+                                            load_zero_lamports,
+                                        )
                                     {
                                         account_deps
                                             .push((programdata_address, programdata_account));
@@ -375,6 +388,7 @@ impl Accounts {
                             &mut accounts,
                             instruction.program_id_index as usize,
                             error_counters,
+                            load_zero_lamports,
                         )
                     })
                     .collect::<Result<Vec<Vec<usize>>>>()?;
@@ -454,6 +468,7 @@ impl Accounts {
         accounts: &mut Vec<TransactionAccount>,
         mut program_account_index: usize,
         error_counters: &mut TransactionErrorMetrics,
+        load_zero_lamports: LoadZeroLamports,
     ) -> Result<Vec<usize>> {
         let mut account_indices = Vec::new();
         let mut program_id = accounts[program_account_index].0;
@@ -465,10 +480,11 @@ impl Accounts {
             }
             depth += 1;
 
-            program_account_index = match self
-                .accounts_db
-                .load_with_fixed_root(ancestors, &program_id)
-            {
+            program_account_index = match self.accounts_db.load_with_fixed_root(
+                ancestors,
+                &program_id,
+                load_zero_lamports,
+            ) {
                 Some((program_account, _)) => {
                     let account_index = accounts.len();
                     accounts.push((program_id, program_account));
@@ -494,10 +510,11 @@ impl Accounts {
                     programdata_address,
                 }) = program.state()
                 {
-                    let programdata_account_index = match self
-                        .accounts_db
-                        .load_with_fixed_root(ancestors, &programdata_address)
-                    {
+                    let programdata_account_index = match self.accounts_db.load_with_fixed_root(
+                        ancestors,
+                        &programdata_address,
+                        load_zero_lamports,
+                    ) {
                         Some((programdata_account, _)) => {
                             let account_index = accounts.len();
                             accounts.push((programdata_address, programdata_account));
@@ -595,10 +612,15 @@ impl Accounts {
         ancestors: &Ancestors,
         address_table_lookup: &MessageAddressTableLookup,
         slot_hashes: &SlotHashes,
+        load_zero_lamports: LoadZeroLamports,
     ) -> std::result::Result<LoadedAddresses, AddressLookupError> {
         let table_account = self
             .accounts_db
-            .load_with_fixed_root(ancestors, &address_table_lookup.account_key)
+            .load_with_fixed_root(
+                ancestors,
+                &address_table_lookup.account_key,
+                load_zero_lamports,
+            )
             .map(|(account, _rent)| account)
             .ok_or(AddressLookupError::LookupTableAccountNotFound)?;
 
@@ -1096,10 +1118,11 @@ impl Accounts {
     pub fn lock_accounts<'a>(
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
-        feature_set: &FeatureSet,
+        tx_account_lock_limit: usize,
     ) -> Vec<Result<()>> {
-        let tx_account_locks_results: Vec<Result<_>> =
-            txs.map(|tx| tx.get_account_locks(feature_set)).collect();
+        let tx_account_locks_results: Vec<Result<_>> = txs
+            .map(|tx| tx.get_account_locks(tx_account_lock_limit))
+            .collect();
         self.lock_accounts_inner(
             tx_account_locks_results,
             &HashSet::default(),
@@ -1110,11 +1133,12 @@ impl Accounts {
     pub fn lock_accounts_sequential_with_results<'a>(
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
-        feature_set: &FeatureSet,
+        tx_account_lock_limit: usize,
         account_locks_override: Option<Mutex<AccountLocks>>,
     ) -> Vec<Result<()>> {
-        let tx_account_locks_results: Vec<Result<_>> =
-            txs.map(|tx| tx.get_account_locks(feature_set)).collect();
+        let tx_account_locks_results: Vec<Result<_>> = txs
+            .map(|tx| tx.get_account_locks(tx_account_lock_limit))
+            .collect();
         self.lock_accounts_sequential_inner(tx_account_locks_results, account_locks_override)
     }
 
@@ -1124,14 +1148,14 @@ impl Accounts {
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
         results: impl Iterator<Item = &'a Result<()>>,
-        feature_set: &FeatureSet,
+        tx_account_lock_limit: usize,
         additional_read_locks: &HashSet<Pubkey>,
         additional_write_locks: &HashSet<Pubkey>,
     ) -> Vec<Result<()>> {
         let tx_account_locks_results: Vec<Result<_>> = txs
             .zip(results)
             .map(|(tx, result)| match result {
-                Ok(()) => tx.get_account_locks(feature_set),
+                Ok(()) => tx.get_account_locks(tx_account_lock_limit),
                 Err(err) => Err(err.clone()),
             })
             .collect();
@@ -2105,6 +2129,7 @@ mod tests {
                 &ancestors,
                 &address_table_lookup,
                 &SlotHashes::default(),
+                LoadZeroLamports::SomeWithZeroLamportAccount,
             ),
             Err(AddressLookupError::LookupTableAccountNotFound),
         );
@@ -2122,7 +2147,8 @@ mod tests {
         );
 
         let invalid_table_key = Pubkey::new_unique();
-        let invalid_table_account = AccountSharedData::default();
+        let mut invalid_table_account = AccountSharedData::default();
+        invalid_table_account.set_lamports(1);
         accounts.store_slow_uncached(0, &invalid_table_key, &invalid_table_account);
 
         let address_table_lookup = MessageAddressTableLookup {
@@ -2136,6 +2162,7 @@ mod tests {
                 &ancestors,
                 &address_table_lookup,
                 &SlotHashes::default(),
+                LoadZeroLamports::SomeWithZeroLamportAccount,
             ),
             Err(AddressLookupError::InvalidAccountOwner),
         );
@@ -2168,6 +2195,7 @@ mod tests {
                 &ancestors,
                 &address_table_lookup,
                 &SlotHashes::default(),
+                LoadZeroLamports::SomeWithZeroLamportAccount,
             ),
             Err(AddressLookupError::InvalidAccountData),
         );
@@ -2212,6 +2240,7 @@ mod tests {
                 &ancestors,
                 &address_table_lookup,
                 &SlotHashes::default(),
+                LoadZeroLamports::SomeWithZeroLamportAccount,
             ),
             Ok(LoadedAddresses {
                 writable: vec![table_addresses[0]],
@@ -2508,6 +2537,7 @@ mod tests {
                 &mut vec![(keypair.pubkey(), account)],
                 0,
                 &mut error_counters,
+                LoadZeroLamports::SomeWithZeroLamportAccount,
             ),
             Err(TransactionError::ProgramAccountNotFound)
         );
@@ -2548,7 +2578,7 @@ mod tests {
         };
 
         let tx = new_sanitized_tx(&[&keypair], message, Hash::default());
-        let results = accounts.lock_accounts([tx].iter(), &FeatureSet::all_enabled());
+        let results = accounts.lock_accounts([tx].iter(), MAX_TX_ACCOUNT_LOCKS);
         assert_eq!(results[0], Err(TransactionError::AccountLoadedTwice));
     }
 
@@ -2581,12 +2611,12 @@ mod tests {
             };
 
             let txs = vec![new_sanitized_tx(&[&keypair], message, Hash::default())];
-            let results = accounts.lock_accounts(txs.iter(), &FeatureSet::all_enabled());
+            let results = accounts.lock_accounts(txs.iter(), MAX_TX_ACCOUNT_LOCKS);
             assert_eq!(results[0], Ok(()));
             accounts.unlock_accounts(txs.iter(), &results);
         }
 
-        // Allow over MAX_TX_ACCOUNT_LOCKS before feature activation
+        // Disallow over MAX_TX_ACCOUNT_LOCKS
         {
             let num_account_keys = MAX_TX_ACCOUNT_LOCKS + 1;
             let mut account_keys: Vec<_> = (0..num_account_keys)
@@ -2603,29 +2633,7 @@ mod tests {
             };
 
             let txs = vec![new_sanitized_tx(&[&keypair], message, Hash::default())];
-            let results = accounts.lock_accounts(txs.iter(), &FeatureSet::default());
-            assert_eq!(results[0], Ok(()));
-            accounts.unlock_accounts(txs.iter(), &results);
-        }
-
-        // Disallow over MAX_TX_ACCOUNT_LOCKS after feature activation
-        {
-            let num_account_keys = MAX_TX_ACCOUNT_LOCKS + 1;
-            let mut account_keys: Vec<_> = (0..num_account_keys)
-                .map(|_| Pubkey::new_unique())
-                .collect();
-            account_keys[0] = keypair.pubkey();
-            let message = Message {
-                header: MessageHeader {
-                    num_required_signatures: 1,
-                    ..MessageHeader::default()
-                },
-                account_keys,
-                ..Message::default()
-            };
-
-            let txs = vec![new_sanitized_tx(&[&keypair], message, Hash::default())];
-            let results = accounts.lock_accounts(txs.iter(), &FeatureSet::all_enabled());
+            let results = accounts.lock_accounts(txs.iter(), MAX_TX_ACCOUNT_LOCKS);
             assert_eq!(results[0], Err(TransactionError::TooManyAccountLocks));
         }
     }
@@ -2664,7 +2672,7 @@ mod tests {
             instructions,
         );
         let tx = new_sanitized_tx(&[&keypair0], message, Hash::default());
-        let results0 = accounts.lock_accounts([tx.clone()].iter(), &FeatureSet::all_enabled());
+        let results0 = accounts.lock_accounts([tx.clone()].iter(), MAX_TX_ACCOUNT_LOCKS);
 
         assert!(results0[0].is_ok());
         assert_eq!(
@@ -2699,7 +2707,7 @@ mod tests {
         );
         let tx1 = new_sanitized_tx(&[&keypair1], message, Hash::default());
         let txs = vec![tx0, tx1];
-        let results1 = accounts.lock_accounts(txs.iter(), &FeatureSet::all_enabled());
+        let results1 = accounts.lock_accounts(txs.iter(), MAX_TX_ACCOUNT_LOCKS);
 
         assert!(results1[0].is_ok()); // Read-only account (keypair1) can be referenced multiple times
         assert!(results1[1].is_err()); // Read-only account (keypair1) cannot also be locked as writable
@@ -2726,7 +2734,7 @@ mod tests {
             instructions,
         );
         let tx = new_sanitized_tx(&[&keypair1], message, Hash::default());
-        let results2 = accounts.lock_accounts([tx].iter(), &FeatureSet::all_enabled());
+        let results2 = accounts.lock_accounts([tx].iter(), MAX_TX_ACCOUNT_LOCKS);
         assert!(results2[0].is_ok()); // Now keypair1 account can be locked as writable
 
         // Check that read-only lock with zero references is deleted
@@ -2797,7 +2805,7 @@ mod tests {
                 let txs = vec![writable_tx.clone()];
                 let results = accounts_clone
                     .clone()
-                    .lock_accounts(txs.iter(), &FeatureSet::all_enabled());
+                    .lock_accounts(txs.iter(), MAX_TX_ACCOUNT_LOCKS);
                 for result in results.iter() {
                     if result.is_ok() {
                         counter_clone.clone().fetch_add(1, Ordering::SeqCst);
@@ -2814,7 +2822,7 @@ mod tests {
             let txs = vec![readonly_tx.clone()];
             let results = accounts_arc
                 .clone()
-                .lock_accounts(txs.iter(), &FeatureSet::all_enabled());
+                .lock_accounts(txs.iter(), MAX_TX_ACCOUNT_LOCKS);
             if results[0].is_ok() {
                 let counter_value = counter_clone.clone().load(Ordering::SeqCst);
                 thread::sleep(time::Duration::from_millis(50));
@@ -2860,7 +2868,7 @@ mod tests {
             instructions,
         );
         let tx = new_sanitized_tx(&[&keypair0], message, Hash::default());
-        let results0 = accounts.lock_accounts([tx].iter(), &FeatureSet::all_enabled());
+        let results0 = accounts.lock_accounts([tx].iter(), MAX_TX_ACCOUNT_LOCKS);
 
         assert!(results0[0].is_ok());
         // Instruction program-id account demoted to readonly
@@ -2954,7 +2962,7 @@ mod tests {
         let results = accounts.lock_accounts_with_results(
             txs.iter(),
             qos_results.iter(),
-            &FeatureSet::all_enabled(),
+            MAX_TX_ACCOUNT_LOCKS,
             &HashSet::default(),
             &HashSet::default(),
         );
