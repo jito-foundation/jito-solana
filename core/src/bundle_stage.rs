@@ -4,7 +4,7 @@
 use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
-        bundle_account_locker::BundleAccountLocker,
+        bundle_account_locker::{BundleAccountLocker, BundleAccountLockerResult, LockedBundle},
         bundle_sanitizer::get_sanitized_bundle,
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         packet_bundle::PacketBundle,
@@ -622,9 +622,9 @@ impl BundleStage {
         }
     }
 
-    /// Initializes the tip config, as well as the tip_receiver iff the epoch has changed, then
-    /// sets the tip_receiver if needed and executes them as a bundle.
-    fn get_tip_transactions(
+    /// When executed the first time, there's some accounts that need to be initialized.
+    /// This is only helpful for local testing, on testnet and mainnet these will never be executed.
+    fn get_initialize_tip_accounts_transactions(
         bank: &Bank,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
@@ -660,27 +660,10 @@ impl BundleStage {
             None
         };
 
-        let configured_tip_receiver = tip_manager.get_configured_tip_receiver(bank)?;
-        let my_tip_distribution_pda = tip_manager.get_my_tip_distribution_pda(bank.epoch());
-        let maybe_change_tip_receiver = if configured_tip_receiver != my_tip_distribution_pda {
-            info!(
-                "changing tip receiver from {:?} to {:?}",
-                configured_tip_receiver, my_tip_distribution_pda
-            );
-            Some(tip_manager.change_tip_receiver_tx(
-                &my_tip_distribution_pda,
-                bank,
-                &cluster_info.keypair(),
-            )?)
-        } else {
-            None
-        };
-
         let transactions = [
             maybe_init_tip_payment_config_tx,
             maybe_init_tip_distro_config_tx,
             maybe_init_tip_distro_account_tx,
-            maybe_change_tip_receiver,
         ]
         .into_iter()
         .flatten()
@@ -738,10 +721,15 @@ impl BundleStage {
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
         // BankingStage can't lock them. This adds a layer of protection since a transaction in a bundle
         // will not hold the AccountLocks through TransactionBatch across load-execute-commit cycle.
-        // TODO (LB): make sure they're all locked up front since this might not evaluate the entire thing up front (lazy iter)
-        let locked_bundles = sanitized_bundles.iter().map(|(_, sanitized_bundle)| {
-            bundle_account_locker.prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
-        });
+        // We collect here to ensure that all of the bundles are locked ahead of time for priority over
+        // BankingStage
+        let locked_bundles: Vec<BundleAccountLockerResult<LockedBundle>> = sanitized_bundles
+            .iter()
+            .map(|(_, sanitized_bundle)| {
+                bundle_account_locker
+                    .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+            })
+            .collect();
 
         let execution_results = locked_bundles.into_iter().map(|maybe_locked_bundle| {
             let locked_bundle = maybe_locked_bundle.map_err(|_| BundleExecutionError::LockError)?;
@@ -752,47 +740,77 @@ impl BundleStage {
                 Err(BundleExecutionError::PohMaxHeightError)
             } else {
                 let sanitized_bundle = locked_bundle.sanitized_bundle();
+
+                // if bundle touches tip account, need to make sure the tip-related accounts are initialized
+                // and the tip receiver is set correctly.
                 if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas)
                     && bank_start.working_bank.slot() != *last_tip_update_slot
                 {
-                    let sanitized_tip_bundle = SanitizedBundle {
-                        transactions: Self::get_tip_transactions(
+                    let initialize_tip_accounts_bundle = SanitizedBundle {
+                        transactions: Self::get_initialize_tip_accounts_transactions(
                             &bank_start.working_bank,
                             tip_manager,
                             cluster_info,
                         )?,
                     };
-                    if !sanitized_tip_bundle.transactions.is_empty() {
-                        match bundle_account_locker
-                            .prepare_locked_bundle(&sanitized_tip_bundle, &bank_start.working_bank)
-                        {
-                            Ok(locked_tip_bundle) => {
-                                match Self::update_qos_and_execute_record_commit_bundle(
-                                    &locked_tip_bundle.sanitized_bundle(),
-                                    recorder,
-                                    transaction_status_sender,
-                                    gossip_vote_sender,
-                                    qos_service,
-                                    bank_start,
-                                    execute_and_commit_timings,
-                                    max_bundle_retry_duration,
-                                ) {
-                                    Ok(_) => {
-                                        info!("successfully updated tip receiver");
-                                        *last_tip_update_slot = bank_start.working_bank.slot();
-                                    }
-                                    Err(e) => {
-                                        error!("error executing tip instructions: {:?}", e);
-                                        return Err(e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("error locking tip transactions: {:?}", e);
-                                return Err(BundleExecutionError::LockError);
-                            }
-                        }
+                    {
+                        let locked_init_tip_bundle = bundle_account_locker
+                            .prepare_locked_bundle(
+                                &initialize_tip_accounts_bundle,
+                                &bank_start.working_bank,
+                            )
+                            .map_err(|_| BundleExecutionError::LockError)?;
+                        Self::update_qos_and_execute_record_commit_bundle(
+                            &locked_init_tip_bundle.sanitized_bundle(),
+                            recorder,
+                            transaction_status_sender,
+                            gossip_vote_sender,
+                            qos_service,
+                            bank_start,
+                            execute_and_commit_timings,
+                            max_bundle_retry_duration,
+                        )?;
                     }
+
+                    // change tip receiver, draining the previous tip_receiver in the process
+                    // note that this needs to happen after the above tip-related bundle executes
+                    // because get_configured_tip_receiver reads an account in from the bank.
+                    let configured_tip_receiver =
+                        tip_manager.get_configured_tip_receiver(&bank_start.working_bank)?;
+                    let my_tip_distribution_pda =
+                        tip_manager.get_my_tip_distribution_pda(bank_start.working_bank.epoch());
+                    if configured_tip_receiver != my_tip_distribution_pda {
+                        info!(
+                            "changing tip receiver from {} to {}",
+                            configured_tip_receiver, my_tip_distribution_pda
+                        );
+
+                        let change_tip_receiver_bundle = SanitizedBundle {
+                            transactions: vec![tip_manager.change_tip_receiver_tx(
+                                &my_tip_distribution_pda,
+                                &bank_start.working_bank,
+                                &cluster_info.keypair(),
+                            )?],
+                        };
+                        let locked_change_tip_receiver_bundle = bundle_account_locker
+                            .prepare_locked_bundle(
+                                &change_tip_receiver_bundle,
+                                &bank_start.working_bank,
+                            )
+                            .map_err(|_| BundleExecutionError::LockError)?;
+                        Self::update_qos_and_execute_record_commit_bundle(
+                            &locked_change_tip_receiver_bundle.sanitized_bundle(),
+                            recorder,
+                            transaction_status_sender,
+                            gossip_vote_sender,
+                            qos_service,
+                            bank_start,
+                            execute_and_commit_timings,
+                            max_bundle_retry_duration,
+                        )?;
+                    }
+
+                    *last_tip_update_slot = bank_start.working_bank.slot();
                 }
                 Self::update_qos_and_execute_record_commit_bundle(
                     sanitized_bundle,

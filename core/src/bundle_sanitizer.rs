@@ -122,8 +122,7 @@ pub fn get_sanitized_bundle(
         MAX_PROCESSING_AGE,
         &mut metrics,
     );
-    if let Some(failure) = check_results.iter().find(|r| r.0.is_err()) {
-        // warn!("bundle check failure: {:?}", failure);
+    if check_results.iter().any(|r| r.0.is_err()) {
         return Err(BundleSanitizerError::FailedCheckResults(packet_bundle.uuid));
     }
 
