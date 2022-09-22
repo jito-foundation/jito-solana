@@ -711,7 +711,7 @@ impl BundleStage {
                 ) {
                     Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
                     Err(e) => {
-                        warn!(
+                        debug!(
                             "failed to sanitize bundle uuid: {:?} error: {:?}",
                             packet_bundle.uuid, e
                         );
@@ -952,8 +952,8 @@ impl BundleStage {
                                 unprocessed_bundles.iter().map(|p| p.uuid).collect();
                             unprocessed_bundles.clear();
 
-                            info!("dropping new bundles: {:?}", new_dropped_bundles);
-                            info!("dropping old bundles: {:?}", old_dropped_bundles);
+                            debug!("dropping new bundles: {:?}", new_dropped_bundles);
+                            debug!("dropping old bundles: {:?}", old_dropped_bundles);
                         }
                     }
                 }
