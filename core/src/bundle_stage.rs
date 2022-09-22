@@ -728,6 +728,7 @@ impl BundleStage {
         // will not hold the AccountLocks through TransactionBatch across load-execute-commit cycle.
         // We collect here to ensure that all of the bundles are locked ahead of time for priority over
         // BankingStage
+        #[allow(clippy::needless_collect)]
         let locked_bundles: Vec<BundleAccountLockerResult<LockedBundle>> = sanitized_bundles
             .iter()
             .map(|(_, sanitized_bundle)| {
@@ -767,7 +768,7 @@ impl BundleStage {
                             )
                             .map_err(|_| BundleExecutionError::LockError)?;
                         Self::update_qos_and_execute_record_commit_bundle(
-                            &locked_init_tip_bundle.sanitized_bundle(),
+                            locked_init_tip_bundle.sanitized_bundle(),
                             recorder,
                             transaction_status_sender,
                             gossip_vote_sender,
@@ -806,7 +807,7 @@ impl BundleStage {
                             )
                             .map_err(|_| BundleExecutionError::LockError)?;
                         Self::update_qos_and_execute_record_commit_bundle(
-                            &locked_change_tip_receiver_bundle.sanitized_bundle(),
+                            locked_change_tip_receiver_bundle.sanitized_bundle(),
                             recorder,
                             transaction_status_sender,
                             gossip_vote_sender,
