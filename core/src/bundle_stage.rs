@@ -624,6 +624,7 @@ impl BundleStage {
 
     /// When executed the first time, there's some accounts that need to be initialized.
     /// This is only helpful for local testing, on testnet and mainnet these will never be executed.
+    /// TODO (LB): consider removing this for mainnet/testnet and move to program deployment?
     fn get_initialize_tip_accounts_transactions(
         bank: &Bank,
         tip_manager: &TipManager,
@@ -742,7 +743,8 @@ impl BundleStage {
                 let sanitized_bundle = locked_bundle.sanitized_bundle();
 
                 // if bundle touches tip account, need to make sure the tip-related accounts are initialized
-                // and the tip receiver is set correctly.
+                // and the tip receiver is set correctly so tips in any bundles executed go to this leader
+                // instead of the last.
                 if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas)
                     && bank_start.working_bank.slot() != *last_tip_update_slot
                 {
