@@ -20,9 +20,9 @@ use {
         auth::Token,
         block_engine::{self, block_engine_validator_client::BlockEngineValidatorClient},
     },
-    log::*,
     solana_gossip::cluster_info::ClusterInfo,
     solana_perf::packet::PacketBatch,
+    solana_sdk::saturating_add_assign,
     std::{
         str::FromStr,
         sync::{
@@ -32,7 +32,7 @@ use {
         thread::{self, Builder, JoinHandle},
         time::Duration,
     },
-    tokio::{runtime::Runtime, time::sleep},
+    tokio::time::{interval, sleep},
     tonic::{
         codegen::InterceptedService,
         transport::{Channel, Endpoint},
@@ -41,8 +41,24 @@ use {
     uuid::Uuid,
 };
 
-pub struct BlockEngineStage {
-    t_hdls: Vec<JoinHandle<()>>,
+#[derive(Default)]
+struct BlockEngineStageStats {
+    num_bundles: u64,
+    num_bundle_packets: u64,
+    num_packets: u64,
+    num_empty_packets: u64,
+}
+
+impl BlockEngineStageStats {
+    pub(crate) fn report(&self) {
+        datapoint_info!(
+            "block_engine_stage-stats",
+            ("num_bundles", self.num_bundles, i64),
+            ("num_bundle_packets", self.num_bundle_packets, i64),
+            ("num_packets", self.num_packets, i64),
+            ("num_empty_packets", self.num_empty_packets, i64)
+        );
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +71,10 @@ pub struct BlockEngineConfig {
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
+}
+
+pub struct BlockEngineStage {
+    t_hdls: Vec<JoinHandle<()>>,
 }
 
 impl BlockEngineStage {
@@ -76,51 +96,35 @@ impl BlockEngineStage {
             trust_packets,
         } = block_engine_config;
 
-        let mut t_hdls = vec![];
         let access_token = Arc::new(Mutex::new(Token::default()));
-        let rt = Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
-        );
+        let thread = Builder::new()
+            .name("block-engine-stage".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.spawn(auth_tokens_update_loop(
+                    auth_service_endpoint,
+                    access_token.clone(),
+                    cluster_info.clone(),
+                    exit.clone(),
+                ));
+                rt.block_on(Self::start(
+                    access_token,
+                    backend_endpoint,
+                    bundle_tx,
+                    packet_tx,
+                    trust_packets,
+                    verified_packet_tx,
+                    exit,
+                ));
+            })
+            .unwrap();
 
-        {
-            let access_token = access_token.clone();
-            let rt = rt.clone();
-            let exit = exit.clone();
-
-            t_hdls.push(
-                Builder::new()
-                    .name("block-engine-auth-update-thread".into())
-                    .spawn(move || {
-                        rt.block_on(async move {
-                            auth_tokens_update_loop(
-                                auth_service_endpoint,
-                                access_token,
-                                cluster_info,
-                                Duration::from_secs(1),
-                                exit,
-                            )
-                            .await
-                        });
-                    })
-                    .unwrap(),
-            );
+        Self {
+            t_hdls: vec![thread],
         }
-
-        t_hdls.push(Self::start(
-            rt,
-            access_token,
-            backend_endpoint,
-            bundle_tx,
-            packet_tx,
-            trust_packets,
-            verified_packet_tx,
-            exit,
-        ));
-
-        Self { t_hdls }
     }
 
     pub fn join(self) -> thread::Result<()> {
@@ -131,8 +135,7 @@ impl BlockEngineStage {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn start(
-        rt: Arc<Runtime>,
+    async fn start(
         access_token: Arc<Mutex<Token>>,
         block_engine_endpoint: Endpoint,
         bundle_tx: Sender<Vec<PacketBundle>>,
@@ -140,53 +143,66 @@ impl BlockEngineStage {
         trust_packets: bool,
         verified_packet_tx: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: Arc<AtomicBool>,
-    ) -> JoinHandle<()> {
-        Builder::new()
-            .name("jito-block-engine-thread".into())
-            .spawn(move || {
-                rt.block_on(async move {
-                    while access_token.lock().unwrap().value.is_empty() {
-                        if exit.load(Ordering::Relaxed) {
-                            return;
+    ) {
+        const WAIT_FOR_FIRST_AUTH: Duration = Duration::from_secs(5);
+
+        let mut num_wait_for_auth: usize = 0;
+        let mut num_stream_errors: usize = 0;
+        let mut num_connect_errors: usize = 0;
+
+        while access_token.lock().unwrap().value.is_empty() {
+            if exit.load(Ordering::Relaxed) {
+                return;
+            }
+            num_wait_for_auth += 1;
+            datapoint_info!(
+                "block_engine_stage-wait_for_auth",
+                ("wait_count", num_wait_for_auth, i64)
+            );
+            sleep(WAIT_FOR_FIRST_AUTH).await;
+        }
+
+        let mut backoff = BackoffStrategy::new();
+        while !exit.load(Ordering::Relaxed) {
+            match block_engine_endpoint.connect().await {
+                Ok(channel) => {
+                    match Self::start_consuming_block_engine_bundles_and_packets(
+                        &mut backoff,
+                        &bundle_tx,
+                        BlockEngineValidatorClient::with_interceptor(
+                            channel,
+                            AuthInterceptor::new(access_token.clone()),
+                        ),
+                        &packet_tx,
+                        trust_packets,
+                        &verified_packet_tx,
+                        &exit,
+                    )
+                    .await
+                    {
+                        Ok(_) => {}
+                        Err(e) => {
+                            num_stream_errors += 1;
+                            datapoint_error!(
+                                "block_engine_stage-stream_error",
+                                ("count", num_stream_errors, i64),
+                                ("error", e.to_string(), String),
+                            );
                         }
-
-                        sleep(Duration::from_millis(500)).await;
                     }
+                }
+                Err(e) => {
+                    num_connect_errors += 1;
+                    datapoint_error!(
+                        "block_engine_stage-connect_error",
+                        ("count", num_connect_errors, i64),
+                        ("error", e.to_string(), String),
+                    );
+                }
+            }
 
-                    let mut backoff = BackoffStrategy::new();
-                    while !exit.load(Ordering::Relaxed) {
-                        match block_engine_endpoint.connect().await {
-                            Ok(channel) => {
-                                match Self::start_consuming_block_engine_bundles_and_packets(
-                                    &mut backoff,
-                                    &bundle_tx,
-                                    BlockEngineValidatorClient::with_interceptor(
-                                        channel,
-                                        AuthInterceptor::new(access_token.clone()),
-                                    ),
-                                    &packet_tx,
-                                    trust_packets,
-                                    &verified_packet_tx,
-                                    &exit,
-                                )
-                                .await
-                                {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        error!("error consuming block-engine stream: {:?}", e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("error connecting to block-engine: {:?}", e);
-                            }
-                        }
-
-                        sleep(Duration::from_millis(backoff.next_wait())).await;
-                    }
-                });
-            })
-            .unwrap()
+            sleep(Duration::from_millis(backoff.next_wait())).await;
+        }
     }
 
     async fn start_consuming_block_engine_bundles_and_packets(
@@ -231,16 +247,25 @@ impl BlockEngineStage {
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
-        info!("Starting bundle and packet stream consumer.");
+        const METRICS_TICK: Duration = Duration::from_secs(1);
+
+        let mut block_engine_stats = BlockEngineStageStats::default();
+        let mut metrics_tick = interval(METRICS_TICK);
+
+        info!("connected to packet and bundle stream");
 
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_block_engine_packets(resp, packet_tx, verified_packet_tx, trust_packets)?;
+                    Self::handle_block_engine_packets(resp, packet_tx, verified_packet_tx, trust_packets, &mut block_engine_stats)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
-                    Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx)?;
+                    Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                }
+                _ = metrics_tick.tick() => {
+                    block_engine_stats.report();
+                    block_engine_stats = BlockEngineStageStats::default();
                 }
             }
         }
@@ -251,6 +276,7 @@ impl BlockEngineStage {
     fn handle_block_engine_maybe_bundles(
         maybe_bundles_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
         bundle_sender: &Sender<Vec<PacketBundle>>,
+        block_engine_stats: &mut BlockEngineStageStats,
     ) -> crate::proxy::Result<()> {
         let bundles_response = maybe_bundles_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
         let bundles: Vec<PacketBundle> = bundles_response
@@ -270,6 +296,13 @@ impl BlockEngineStage {
                 })
             })
             .collect();
+
+        saturating_add_assign!(block_engine_stats.num_bundles, bundles.len() as u64);
+        saturating_add_assign!(
+            block_engine_stats.num_bundle_packets,
+            bundles.iter().map(|bundle| bundle.batch.len() as u64).sum()
+        );
+
         bundle_sender
             .send(bundles)
             .map_err(|_| ProxyError::PacketForwardError)
@@ -280,6 +313,7 @@ impl BlockEngineStage {
         packet_tx: &Sender<PacketBatch>,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         trust_packets: bool,
+        block_engine_stats: &mut BlockEngineStageStats,
     ) -> crate::proxy::Result<()> {
         if let Some(batch) = resp.batch {
             let packet_batch = PacketBatch::new(
@@ -289,6 +323,9 @@ impl BlockEngineStage {
                     .map(proto_packet_to_packet)
                     .collect(),
             );
+
+            saturating_add_assign!(block_engine_stats.num_packets, packet_batch.len() as u64);
+
             if trust_packets {
                 verified_packet_tx
                     .send((vec![packet_batch], None))
@@ -299,7 +336,7 @@ impl BlockEngineStage {
                     .map_err(|_| ProxyError::PacketForwardError)?;
             }
         } else {
-            warn!("received empty packet batch");
+            saturating_add_assign!(block_engine_stats.num_empty_packets, 1);
         }
 
         Ok(())
