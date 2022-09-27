@@ -303,8 +303,7 @@ impl BlockEngineStage {
             bundles.iter().map(|bundle| bundle.batch.len() as u64).sum()
         );
 
-        // TODO (LB): these need to be optionally verified based on trust_packets!
-
+        // NOTE: bundles are sanitized in bundle_sanitizer module
         bundle_sender
             .send(bundles)
             .map_err(|_| ProxyError::PacketForwardError)

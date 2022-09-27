@@ -1123,7 +1123,6 @@ impl BundleStage {
         let would_be_leader_soon =
             r_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
 
-        // TODO (LB): emit leader slot metrics here
         bundle_stage_leader_stats.maybe_report(id, &working_bank_start);
 
         match (working_bank_start, would_be_leader_soon) {

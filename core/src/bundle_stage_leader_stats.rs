@@ -8,21 +8,35 @@ use {
 // Stats emitted only during leader slots
 #[derive(Default)]
 pub struct BundleStageLeaderSlotTrackingMetrics {
-    last_slot_update: Option<Slot>,
+    current_slot: Option<Slot>,
     bundle_stage_leader_stats: BundleStageLeaderStats,
 }
 
 impl BundleStageLeaderSlotTrackingMetrics {
     pub fn maybe_report(&mut self, id: u32, bank_start: &Option<&BankStart>) {
-        match (self.last_slot_update, bank_start) {
+        match (self.current_slot, bank_start) {
             // not was leader, not is leader
             (None, None) => {}
             // was leader, not leader anymore
-            (Some(last_update), None) => {}
+            (Some(current_slot), None) => {
+                self.bundle_stage_leader_stats.report(id, current_slot);
+
+                self.bundle_stage_leader_stats = BundleStageLeaderStats::default();
+                self.current_slot = None;
+            }
             // was leader, is leader
-            (Some(last_update), Some(bank_start)) => {}
+            (Some(current_slot), Some(bank_start)) => {
+                if current_slot != bank_start.working_bank.slot() {
+                    self.bundle_stage_leader_stats.report(id, current_slot);
+                    self.bundle_stage_leader_stats = BundleStageLeaderStats::default();
+                    self.current_slot = Some(bank_start.working_bank.slot());
+                }
+            }
             // not was leader, is leader
-            (None, Some(bank_start)) => {}
+            (None, Some(bank_start)) => {
+                self.bundle_stage_leader_stats = BundleStageLeaderStats::default();
+                self.current_slot = Some(bank_start.working_bank.slot());
+            }
         }
     }
 
@@ -50,6 +64,12 @@ impl BundleStageLeaderStats {
     pub fn bundle_stage_stats(&mut self) -> &mut BundleStageStats {
         &mut self.bundle_stage_stats
     }
+
+    pub fn report(&self, id: u32, slot: Slot) {
+        self.transaction_errors.report(id, slot);
+        self.execute_and_commit_timings.report(id, slot);
+        self.bundle_stage_stats.report(id, slot);
+    }
 }
 
 #[derive(Default)]
@@ -76,6 +96,55 @@ pub struct BundleStageStats {
 }
 
 impl BundleStageStats {
+    pub fn report(&self, id: u32, slot: Slot) {
+        datapoint_info!(
+            "bundle_stage-stats",
+            ("id", id, i64),
+            ("slot", slot, i64),
+            ("num_sanitized_ok", self.num_sanitized_ok, i64),
+            (
+                "sanitize_bundle_elapsed_us",
+                self.sanitize_bundle_elapsed_us,
+                i64
+            ),
+            (
+                "locked_bundle_elapsed_us",
+                self.locked_bundle_elapsed_us,
+                i64
+            ),
+            ("num_lock_errors", self.num_lock_errors, i64),
+            (
+                "num_init_tip_account_errors",
+                self.num_init_tip_account_errors,
+                i64
+            ),
+            ("num_init_tip_account_ok", self.num_init_tip_account_ok, i64),
+            (
+                "num_change_tip_receiver_errors",
+                self.num_change_tip_receiver_errors,
+                i64
+            ),
+            (
+                "num_change_tip_receiver_ok",
+                self.num_change_tip_receiver_ok,
+                i64
+            ),
+            (
+                "change_tip_receiver_elapsed_us",
+                self.change_tip_receiver_elapsed_us,
+                i64
+            ),
+            ("num_execution_failures", self.num_execution_failures, i64),
+            ("num_execution_timeouts", self.num_execution_timeouts, i64),
+            ("num_execution_retries", self.num_execution_retries, i64),
+            (
+                "execute_locked_bundles_elapsed_us",
+                self.execute_locked_bundles_elapsed_us,
+                i64
+            ),
+        );
+    }
+
     pub fn increment_num_sanitized_ok(&mut self, num: u64) {
         saturating_add_assign!(self.num_sanitized_ok, num);
     }
