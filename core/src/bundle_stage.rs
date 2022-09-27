@@ -799,9 +799,7 @@ impl BundleStage {
         let execution_results = Self::execute_locked_bundles(
             bundle_account_locker,
             &locked_bundles,
-            blacklisted_accounts,
             bank_start,
-            consensus_accounts_cache,
             cluster_info,
             recorder,
             transaction_status_sender,
@@ -832,6 +830,9 @@ impl BundleStage {
         // );
     }
 
+    /// This only needs to be done once on program initialization
+    /// TODO (LB): may make sense to remove this and move to program deployment instead, but helpful
+    ///  during development
     fn maybe_initialize_tip_accounts(
         bundle_account_locker: &BundleAccountLocker,
         bank_start: &BankStart,
@@ -929,9 +930,7 @@ impl BundleStage {
     fn execute_locked_bundles(
         bundle_account_locker: &BundleAccountLocker,
         locked_bundles: &[BundleAccountLockerResult<LockedBundle>],
-        blacklisted_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
-        consensus_accounts_cache: &HashSet<Pubkey>,
         cluster_info: &Arc<ClusterInfo>,
         recorder: &TransactionRecorder,
         transaction_status_sender: &Option<TransactionStatusSender>,
