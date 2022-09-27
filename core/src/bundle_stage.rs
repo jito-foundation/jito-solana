@@ -6,9 +6,8 @@ use {
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
         bundle_account_locker::{BundleAccountLocker, BundleAccountLockerResult, LockedBundle},
         bundle_sanitizer::get_sanitized_bundle,
-        bundle_stage_leader_stats::BundleStageLeaderStats,
+        bundle_stage_leader_stats::{BundleStageLeaderSlotTrackingMetrics, BundleStageLeaderStats},
         consensus_cache_updater::ConsensusCacheUpdater,
-        leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         packet_bundle::PacketBundle,
         qos_service::QosService,
         tip_manager::TipManager,
@@ -19,7 +18,7 @@ use {
     solana_ledger::{
         blockstore_processor::TransactionStatusSender, token_balances::collect_token_balances,
     },
-    solana_measure::{measure, measure::Measure},
+    solana_measure::measure,
     solana_poh::poh_recorder::{
         BankStart, PohRecorder,
         PohRecorderError::{self},
@@ -36,7 +35,6 @@ use {
         bank_utils,
         cost_model::{CostModel, TransactionCost},
         transaction_batch::TransactionBatch,
-        transaction_error_metrics::TransactionErrorMetrics,
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{
@@ -70,12 +68,49 @@ const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 type BundleStageResult<T> = Result<T, BundleExecutionError>;
 
 // Stats emitted periodically
-#[derive(Default)]
-struct BundleStageStats {
+struct BundleStageLoopStats {
+    last_report: Instant,
+
     num_bundles_received: u64,
     num_bundles_dropped: u64,
     receive_and_buffer_bundles_elapsed_us: u64,
     process_buffered_bundles_elapsed_us: u64,
+}
+
+impl Default for BundleStageLoopStats {
+    fn default() -> Self {
+        BundleStageLoopStats {
+            last_report: Instant::now(),
+            num_bundles_received: 0,
+            num_bundles_dropped: 0,
+            receive_and_buffer_bundles_elapsed_us: 0,
+            process_buffered_bundles_elapsed_us: 0,
+        }
+    }
+}
+
+impl BundleStageLoopStats {
+    fn maybe_report(&mut self, id: u32, period: Duration) {
+        if self.last_report.elapsed() > period {
+            datapoint_info!(
+                "bundle_stage-loop_stats",
+                ("id", id, i64),
+                ("num_bundles_received", self.num_bundles_received, i64),
+                ("num_bundles_dropped", self.num_bundles_dropped, i64),
+                (
+                    "receive_and_buffer_bundles_elapsed_us",
+                    self.receive_and_buffer_bundles_elapsed_us,
+                    i64
+                ),
+                (
+                    "process_buffered_bundles_elapsed_us",
+                    self.process_buffered_bundles_elapsed_us,
+                    i64
+                ),
+            );
+            *self = BundleStageLoopStats::default();
+        }
+    }
 }
 
 struct AllExecutionResults {
@@ -129,6 +164,7 @@ impl BundleStage {
         bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
     ) -> Self {
+        const BUNDLE_STAGE_ID: u32 = 10_000;
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
 
@@ -142,7 +178,7 @@ impl BundleStage {
                     transaction_status_sender,
                     bundle_receiver,
                     gossip_vote_sender,
-                    0,
+                    BUNDLE_STAGE_ID,
                     cost_model,
                     exit,
                     tip_manager,
@@ -305,7 +341,7 @@ impl BundleStage {
                 );
                 let (cu, us) = Self::accumulate_execute_units_and_time(
                     &bundle_stage_leader_stats
-                        .execute_and_commit_timings
+                        .execute_and_commit_timings()
                         .execute_timings,
                 );
                 qos_service.accumulate_actual_execute_cu(cu);
@@ -394,7 +430,7 @@ impl BundleStage {
                     transaction_status_sender.is_some(),
                     transaction_status_sender.is_some(),
                     &mut bundle_stage_leader_stats
-                        .execute_and_commit_timings
+                        .execute_and_commit_timings()
                         .execute_timings,
                     Some(&account_overrides),
                     None,
@@ -403,10 +439,10 @@ impl BundleStage {
             );
 
             bundle_stage_leader_stats
-                .execute_and_commit_timings
+                .execute_and_commit_timings()
                 .load_execute_us = load_execute_time.as_us();
             bundle_stage_leader_stats
-                .transaction_errors
+                .transaction_errors()
                 .accumulate(&load_and_execute_transactions_output.error_counters);
 
             // Return error if executed and failed or didn't execute because of an unexpected reason.
@@ -421,6 +457,10 @@ impl BundleStage {
                     .as_slice(),
                 batch.sanitized_transactions(),
             ) {
+                bundle_stage_leader_stats
+                    .bundle_stage_stats()
+                    .increment_num_execution_failures(1);
+
                 return Err(e);
             }
 
@@ -435,10 +475,17 @@ impl BundleStage {
                 let bundle_execution_elapsed = start_time.elapsed();
                 if bundle_execution_elapsed >= *max_bundle_retry_duration {
                     warn!("bundle timed out: {:?}", sanitized_bundle);
+                    bundle_stage_leader_stats
+                        .bundle_stage_stats()
+                        .increment_num_execution_timeouts(1);
                     return Err(BundleExecutionError::MaxRetriesExceeded(
                         bundle_execution_elapsed,
                     ));
                 }
+
+                bundle_stage_leader_stats
+                    .bundle_stage_stats()
+                    .increment_num_execution_retries(1);
                 continue;
             }
 
@@ -562,7 +609,7 @@ impl BundleStage {
                     signature_count: output.signature_count,
                 },
                 &mut bundle_stage_leader_stats
-                    .execute_and_commit_timings
+                    .execute_and_commit_timings()
                     .execute_timings,
             );
 
@@ -758,7 +805,7 @@ impl BundleStage {
                         &bank_start.working_bank,
                         consensus_accounts_cache,
                         blacklisted_accounts,
-                        &mut bundle_stage_leader_stats.transaction_errors,
+                        &mut bundle_stage_leader_stats.transaction_errors(),
                     )
                     .map(|sanitized_bundle| (packet_bundle, sanitized_bundle))
                     .ok()
@@ -766,14 +813,12 @@ impl BundleStage {
                 .collect::<VecDeque<(PacketBundle, SanitizedBundle)>>(),
             "sanitized_bundle_elapsed"
         );
-        saturating_add_assign!(
-            bundle_stage_leader_stats.sanitize_bundle_elapsed_us,
-            sanitized_bundle_elapsed.as_us()
-        );
-        saturating_add_assign!(
-            bundle_stage_leader_stats.num_sanitized_ok,
-            sanitized_bundles.len() as u64
-        );
+        bundle_stage_leader_stats
+            .bundle_stage_stats()
+            .increment_sanitize_bundle_elapsed_us(sanitized_bundle_elapsed.as_us());
+        bundle_stage_leader_stats
+            .bundle_stage_stats()
+            .increment_num_sanitized_ok(sanitized_bundles.len() as u64);
 
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
         // BankingStage can't lock them. This adds a layer of protection since a transaction in a bundle
@@ -791,43 +836,50 @@ impl BundleStage {
                 .collect::<Vec<BundleAccountLockerResult<LockedBundle>>>(),
             "locked_bundles_elapsed"
         );
-        saturating_add_assign!(
-            bundle_stage_leader_stats.locked_bundle_elapsed_us,
-            locked_bundles_elapsed.as_us()
+        bundle_stage_leader_stats
+            .bundle_stage_stats()
+            .increment_locked_bundle_elapsed_us(locked_bundles_elapsed.as_us());
+
+        let (execution_results, execute_locked_bundles_elapsed) = measure!(
+            Self::execute_locked_bundles(
+                bundle_account_locker,
+                &locked_bundles,
+                bank_start,
+                cluster_info,
+                recorder,
+                transaction_status_sender,
+                gossip_vote_sender,
+                qos_service,
+                tip_manager,
+                max_bundle_retry_duration,
+                last_tip_update_slot,
+                bundle_stage_leader_stats,
+            ),
+            "execute_locked_bundles_elapsed"
         );
 
-        let execution_results = Self::execute_locked_bundles(
-            bundle_account_locker,
-            &locked_bundles,
-            bank_start,
-            cluster_info,
-            recorder,
-            transaction_status_sender,
-            gossip_vote_sender,
-            qos_service,
-            tip_manager,
-            max_bundle_retry_duration,
-            last_tip_update_slot,
-            bundle_stage_leader_stats,
-        );
+        bundle_stage_leader_stats
+            .bundle_stage_stats()
+            .increment_execute_locked_bundles_elapsed_us(execute_locked_bundles_elapsed.as_us());
 
         execution_results
             .into_iter()
             .zip(sanitized_bundles.iter())
-            .rev()
-            .for_each(|(bundle_execution_result, (packet_bundle, _))| {
-                if matches!(
-                    bundle_execution_result,
-                    Err(BundleExecutionError::PohMaxHeightError)
-                ) {
-                    unprocessed_bundles.push_front(packet_bundle.clone());
-                }
-            });
-
-        // saturating_add_assign!(
-        //     bundle_stage_leader_stats.execute_time_us,
-        //     execute_time.as_us()
-        // );
+            .for_each(
+                |(bundle_execution_result, (packet_bundle, _))| match bundle_execution_result {
+                    Ok(_) => {}
+                    Err(BundleExecutionError::PohMaxHeightError) => {
+                        // retry the bundle
+                        unprocessed_bundles.push_back(packet_bundle.clone());
+                    }
+                    Err(BundleExecutionError::TransactionFailure(_)) => {}
+                    Err(BundleExecutionError::ExceedsCostModel) => {}
+                    Err(BundleExecutionError::TipError(_)) => {}
+                    Err(BundleExecutionError::Shutdown) => {}
+                    Err(BundleExecutionError::MaxRetriesExceeded(_)) => {}
+                    Err(BundleExecutionError::LockError) => {}
+                },
+            );
     }
 
     /// This only needs to be done once on program initialization
@@ -855,10 +907,7 @@ impl BundleStage {
         if !initialize_tip_accounts_bundle.transactions.is_empty() {
             let locked_init_tip_bundle = bundle_account_locker
                 .prepare_locked_bundle(&initialize_tip_accounts_bundle, &bank_start.working_bank)
-                .map_err(|_| {
-                    saturating_add_assign!(bundle_stage_leader_stats.num_tip_init_error, 1);
-                    BundleExecutionError::LockError
-                })?;
+                .map_err(|_| BundleExecutionError::LockError)?;
             Self::update_qos_and_execute_record_commit_bundle(
                 locked_init_tip_bundle.sanitized_bundle(),
                 recorder,
@@ -947,7 +996,10 @@ impl BundleStage {
             .into_iter()
             .map(|maybe_locked_bundle| {
                 let locked_bundle = maybe_locked_bundle.as_ref().map_err(|_| {
-                    saturating_add_assign!(bundle_stage_leader_stats.num_lock_errors, 1);
+                    bundle_stage_leader_stats
+                        .bundle_stage_stats()
+                        .increment_num_lock_errors(1);
+
                     BundleExecutionError::LockError
                 })?;
 
@@ -962,6 +1014,8 @@ impl BundleStage {
                     if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas)
                         && bank_start.working_bank.slot() != *last_tip_update_slot
                     {
+                        let start_handle_tips = Instant::now();
+
                         Self::maybe_initialize_tip_accounts(
                             bundle_account_locker,
                             bank_start,
@@ -973,7 +1027,17 @@ impl BundleStage {
                             tip_manager,
                             max_bundle_retry_duration,
                             bundle_stage_leader_stats,
-                        )?;
+                        )
+                        .map_err(|e| {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_num_init_tip_account_errors(1);
+                            e
+                        })?;
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_num_init_tip_account_ok(1);
+
                         Self::maybe_change_tip_receiver(
                             bundle_account_locker,
                             bank_start,
@@ -985,7 +1049,23 @@ impl BundleStage {
                             tip_manager,
                             max_bundle_retry_duration,
                             bundle_stage_leader_stats,
-                        )?;
+                        )
+                        .map_err(|e| {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_num_change_tip_receiver_errors(1);
+                            e
+                        })?;
+
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_num_change_tip_receiver_ok(1);
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_change_tip_receiver_elapsed_us(
+                                start_handle_tips.elapsed().as_micros() as u64,
+                            );
+
                         *last_tip_update_slot = bank_start.working_bank.slot();
                     }
 
@@ -1031,8 +1111,9 @@ impl BundleStage {
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
         last_tip_update_slot: &mut u64,
-        bundle_stage_leader_stats: &mut BundleStageLeaderStats,
-        bundle_stage_stats: &mut BundleStageStats,
+        bundle_stage_leader_stats: &mut BundleStageLeaderSlotTrackingMetrics,
+        bundle_stage_stats: &mut BundleStageLoopStats,
+        id: u32,
     ) {
         const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
 
@@ -1041,6 +1122,9 @@ impl BundleStage {
         let working_bank_start = poh_recorder_bank.working_bank_start();
         let would_be_leader_soon =
             r_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
+
+        // TODO (LB): emit leader slot metrics here
+        bundle_stage_leader_stats.maybe_report(id, &working_bank_start);
 
         match (working_bank_start, would_be_leader_soon) {
             // leader now, insert new read bundles + as many as can read then return bank
@@ -1061,7 +1145,7 @@ impl BundleStage {
                     &tip_manager,
                     &max_bundle_retry_duration,
                     last_tip_update_slot,
-                    bundle_stage_leader_stats,
+                    bundle_stage_leader_stats.bundle_stage_leader_stats(),
                 );
             }
             // not leader now and not soon, clear bundles
@@ -1088,9 +1172,11 @@ impl BundleStage {
         cost_model: Arc<RwLock<CostModel>>,
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
-        mut bundle_account_locker: BundleAccountLocker,
+        bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
     ) {
+        const LOOP_STATS_METRICS_PERIOD: Duration = Duration::from_secs(1);
+
         let recorder = poh_recorder.read().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
@@ -1099,8 +1185,8 @@ impl BundleStage {
         let mut last_tip_update_slot = Slot::default();
 
         let mut last_leader_slots_update_time = Instant::now();
-        let mut bundle_stage_leader_stats = BundleStageLeaderStats::default();
-        let mut bundle_stage_stats = BundleStageStats::default();
+        let mut bundle_stage_leader_stats = BundleStageLeaderSlotTrackingMetrics::default();
+        let mut bundle_stage_stats = BundleStageLoopStats::default();
 
         // Bundles can't mention the tip payment program to ensure that a malicious entity doesn't
         // steal tips mid-slot
@@ -1128,6 +1214,7 @@ impl BundleStage {
                         &mut last_tip_update_slot,
                         &mut bundle_stage_leader_stats,
                         &mut bundle_stage_stats,
+                        id,
                     ),
                     "process_buffered_bundles_elapsed"
                 );
@@ -1139,14 +1226,14 @@ impl BundleStage {
                 last_leader_slots_update_time = Instant::now();
             }
 
-            // TODO: check to see if need to emit bundle_stage_stats
+            bundle_stage_stats.maybe_report(id, LOOP_STATS_METRICS_PERIOD);
 
             // ensure bundle stage can run immediately if bundles to process, otherwise okay
             // chilling for a few
             let sleep_time = if !unprocessed_bundles.is_empty() {
                 Duration::from_millis(0)
             } else {
-                Duration::from_millis(100)
+                Duration::from_millis(10)
             };
 
             let (res, receive_and_buffer_elapsed) = measure!(

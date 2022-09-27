@@ -1,7 +1,7 @@
-use crate::{packet_bundle::PacketBundle, unprocessed_packet_batches::ImmutableDeserializedPacket};
 ///! Turns packets into SanitizedTransactions and ensure they pass sanity checks
 use {
     crate::unprocessed_packet_batches::deserialize_packets,
+    crate::{packet_bundle::PacketBundle, unprocessed_packet_batches::ImmutableDeserializedPacket},
     solana_perf::sigverify::verify_packet,
     solana_runtime::{bank::Bank, transaction_error_metrics::TransactionErrorMetrics},
     solana_sdk::{
@@ -18,7 +18,6 @@ use {
         sync::Arc,
     },
     thiserror::Error,
-    uuid::Uuid,
 };
 
 pub const MAX_PACKETS_PER_BUNDLE: usize = 5;
