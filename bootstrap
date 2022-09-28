@@ -13,8 +13,8 @@ RUST_LOG=INFO \
   --relayer-address http://127.0.0.1:11226 \
   --rpc-pubsub-enable-block-subscription \
   --enable-rpc-transaction-history \
-  --tip-payment-program-pubkey DThZmRNNXh7kvTQW9hXeGoWGPKktK8pgVAyoTLjH7UrT \
-  --tip-distribution-program-pubkey FjrdANjvo76aCYQ4kf9FM1R8aESUcEE6F8V7qyoVUQcM \
+  --tip-payment-program-pubkey AeehMKWUfPDcuU2mnx7jyuHgr6NjyFvSxvjSnudgkQRo \
+  --tip-distribution-program-pubkey APy2ShJsonjhn9ka1oa9vwEVpcspqra2gkFWx4kvpsW8 \
   --commission-bps 0 \
   --shred-receiver-address 127.0.0.1:1002 \
   --allow-private-addr \
