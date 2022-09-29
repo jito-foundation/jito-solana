@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Deploys the tip payment and tip distribution programs
+set -eux
+
+WALLET_LOCATION=~/.config/solana/id.json
+
+solana airdrop -ul 1000 $WALLET_LOCATION
+cd jito-programs/tip-payment
+anchor deploy --provider.cluster localnet
