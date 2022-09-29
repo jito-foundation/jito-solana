@@ -884,7 +884,7 @@ impl BundleStage {
                         &bank_start.working_bank,
                         consensus_accounts_cache,
                         blacklisted_accounts,
-                        &mut bundle_stage_leader_stats.transaction_errors(),
+                        bundle_stage_leader_stats.transaction_errors(),
                     )
                     .map(|sanitized_bundle| (packet_bundle, sanitized_bundle))
                     .ok()
@@ -964,6 +964,7 @@ impl BundleStage {
     /// This only needs to be done once on program initialization
     /// TODO (LB): may make sense to remove this and move to program deployment instead, but helpful
     ///  during development
+    #[allow(clippy::too_many_arguments)]
     fn maybe_initialize_tip_accounts(
         bundle_account_locker: &BundleAccountLocker,
         bank_start: &BankStart,
@@ -1097,6 +1098,7 @@ impl BundleStage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_locked_bundles(
         bundle_account_locker: &BundleAccountLocker,
         locked_bundles: &[BundleAccountLockerResult<LockedBundle>],
@@ -1114,7 +1116,7 @@ impl BundleStage {
         let tip_pdas = tip_manager.get_tip_accounts();
 
         locked_bundles
-            .into_iter()
+            .iter()
             .map(|maybe_locked_bundle| {
                 let locked_bundle = maybe_locked_bundle.as_ref().map_err(|_| {
                     bundle_stage_leader_stats
@@ -1192,6 +1194,7 @@ impl BundleStage {
         Ok(num_bundles_after - num_bundles_before)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_buffered_bundles(
         bundle_account_locker: &BundleAccountLocker,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
@@ -1229,16 +1232,16 @@ impl BundleStage {
                 Self::execute_bundles_until_empty_or_end_of_slot(
                     bundle_account_locker,
                     unprocessed_bundles,
-                    &blacklisted_accounts,
+                    blacklisted_accounts,
                     bank_start,
-                    &consensus_cache_updater.consensus_accounts_cache(),
-                    &cluster_info,
-                    &recorder,
-                    &transaction_status_sender,
-                    &gossip_vote_sender,
-                    &qos_service,
-                    &tip_manager,
-                    &max_bundle_retry_duration,
+                    consensus_cache_updater.consensus_accounts_cache(),
+                    cluster_info,
+                    recorder,
+                    transaction_status_sender,
+                    gossip_vote_sender,
+                    qos_service,
+                    tip_manager,
+                    max_bundle_retry_duration,
                     last_tip_update_slot,
                     bundle_stage_leader_stats.bundle_stage_leader_stats(),
                 );
@@ -1516,7 +1519,7 @@ mod tests {
             &bank,
             &HashSet::default(),
             &HashSet::default(),
-            &mut bundle_stage_leader_stats.transaction_errors(),
+            bundle_stage_leader_stats.transaction_errors(),
         )
         .unwrap();
 
@@ -1547,7 +1550,7 @@ mod tests {
                 &bank,
                 &HashSet::default(),
                 &HashSet::default(),
-                &mut bundle_stage_leader_stats.transaction_errors(),
+                bundle_stage_leader_stats.transaction_errors(),
             )
             .is_err());
         }
@@ -1847,7 +1850,7 @@ mod tests {
             &bank,
             &HashSet::default(),
             &HashSet::default(),
-            &mut bundle_stage_leader_stats.transaction_errors(),
+            bundle_stage_leader_stats.transaction_errors(),
         )
         .unwrap();
 

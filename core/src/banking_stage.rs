@@ -1951,17 +1951,10 @@ impl BankingStage {
                         bank.as_ref(),
                     )
                     .filter(|tx| {
-                        if tx
-                            .message()
+                        tx.message()
                             .account_keys()
                             .iter()
                             .any(|acc| blacklisted_accounts.contains(acc))
-                            && !tx.message().is_upgradeable_loader_present()
-                        {
-                            false
-                        } else {
-                            true
-                        }
                     })
                     .map(|transaction| (transaction, i))
                 })
