@@ -1025,6 +1025,7 @@ impl BundleStage {
     /// note that this needs to happen after the above tip-related bundle initializes
     /// config accounts because get_configured_tip_receiver relies on an account
     /// existing in the bank
+    #[allow(clippy::too_many_arguments)]
     fn maybe_change_tip_receiver(
         bundle_account_locker: &BundleAccountLocker,
         bank_start: &BankStart,
