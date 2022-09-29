@@ -1951,7 +1951,7 @@ impl BankingStage {
                         bank.as_ref(),
                     )
                     .filter(|tx| {
-                        tx.message()
+                        !tx.message()
                             .account_keys()
                             .iter()
                             .any(|acc| blacklisted_accounts.contains(acc))
