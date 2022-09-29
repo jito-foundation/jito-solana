@@ -1464,6 +1464,7 @@ mod tests {
         std::{collections::HashSet, sync::atomic::Ordering},
         uuid::Uuid,
     };
+
     const TEST_MAX_RETRY_DURATION: Duration = Duration::from_millis(500);
 
     enum TestOption {
@@ -1508,10 +1509,16 @@ mod tests {
         let recorder = poh_recorder.read().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
+        let mut bundle_stage_leader_stats = BundleStageLeaderStats::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
-        let sanitized_bundle =
-            get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
+        let sanitized_bundle = get_sanitized_bundle(
+            &bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+            &mut bundle_stage_leader_stats.transaction_errors(),
+        )
+        .unwrap();
 
         let results = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
@@ -1520,7 +1527,7 @@ mod tests {
             &gossip_vote_sender,
             &qos_service,
             &bank_start,
-            &mut execute_and_commit_timings,
+            &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
         );
 
@@ -1535,10 +1542,14 @@ mod tests {
                 .any(|option| matches!(option, AssertDuplicateInBundleDropped))
         {
             assert_eq!(results, Ok(()));
-            assert!(
-                get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default())
-                    .is_err()
-            );
+            assert!(get_sanitized_bundle(
+                &bundle,
+                &bank,
+                &HashSet::default(),
+                &HashSet::default(),
+                &mut bundle_stage_leader_stats.transaction_errors(),
+            )
+            .is_err());
         }
 
         // Transaction rolled back successfully if
@@ -1799,7 +1810,7 @@ mod tests {
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
-        let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
+        let mut bundle_stage_leader_stats = BundleStageLeaderStats::default();
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
         // Create two transfers
@@ -1831,8 +1842,14 @@ mod tests {
         };
         info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
 
-        let sanitized_bundle =
-            get_sanitized_bundle(&bundle, &bank, &HashSet::default(), &HashSet::default()).unwrap();
+        let sanitized_bundle = get_sanitized_bundle(
+            &bundle,
+            &bank,
+            &HashSet::default(),
+            &HashSet::default(),
+            &mut bundle_stage_leader_stats.transaction_errors(),
+        )
+        .unwrap();
 
         let result = BundleStage::update_qos_and_execute_record_commit_bundle(
             &sanitized_bundle,
@@ -1841,7 +1858,7 @@ mod tests {
             &gossip_vote_sender,
             &qos_service,
             &bank_start,
-            &mut execute_and_commit_timings,
+            &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
         );
         info!("test_bundle_max_retries result: {:?}", result);

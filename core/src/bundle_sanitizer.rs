@@ -158,7 +158,10 @@ mod tests {
         solana_address_lookup_table_program::instruction::create_lookup_table,
         solana_ledger::genesis_utils::create_genesis_config,
         solana_perf::packet::PacketBatch,
-        solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
+        solana_runtime::{
+            bank::Bank, genesis_utils::GenesisConfigInfo,
+            transaction_error_metrics::TransactionErrorMetrics,
+        },
         solana_sdk::{
             hash::Hash,
             instruction::Instruction,
@@ -197,11 +200,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
+        let mut transaction_errors = TransactionErrorMetrics::default();
         let sanitized_bundle = get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors,
         )
         .unwrap();
         assert_eq!(sanitized_bundle.transactions.len(), 1);
@@ -237,11 +242,13 @@ mod tests {
         };
 
         let consensus_accounts_cache = HashSet::from([kp.pubkey()]);
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &consensus_accounts_cache,
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -273,11 +280,13 @@ mod tests {
         };
 
         // fails to pop because bundle it locks the same transaction twice
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -304,11 +313,13 @@ mod tests {
         };
 
         // fails to pop because bundle has bad blockhash
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -338,11 +349,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
+        let mut transaction_errors = TransactionErrorMetrics::default();
         let sanitized_bundle = get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors,
         )
         .unwrap();
 
@@ -367,6 +380,7 @@ mod tests {
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -410,11 +424,13 @@ mod tests {
         };
 
         // fails to pop because bundle mentions tip program
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::from_iter([tip_manager.tip_payment_program_id()]),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -442,11 +458,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_ok());
     }
@@ -462,11 +480,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
         // fails to pop because empty bundle
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -497,11 +517,13 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
         // fails to pop because too many packets in a bundle
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -533,11 +555,13 @@ mod tests {
         };
 
         // fails to pop because one of the packets is marked as discard
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }
@@ -574,11 +598,13 @@ mod tests {
             batch: PacketBatch::new(vec![packet]),
             uuid: Uuid::new_v4(),
         };
+        let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
             &packet_bundle,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors
         )
         .is_err());
     }

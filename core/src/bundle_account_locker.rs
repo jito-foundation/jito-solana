@@ -225,7 +225,10 @@ mod tests {
         },
         solana_ledger::genesis_utils::create_genesis_config,
         solana_perf::packet::PacketBatch,
-        solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
+        solana_runtime::{
+            bank::Bank, genesis_utils::GenesisConfigInfo,
+            transaction_error_metrics::TransactionErrorMetrics,
+        },
         solana_sdk::{
             packet::Packet, signature::Signer, signer::keypair::Keypair, system_program,
             system_transaction::transfer, transaction::VersionedTransaction,
@@ -270,11 +273,14 @@ mod tests {
             uuid: Uuid::new_v4(),
         };
 
+        let mut transaction_errors = TransactionErrorMetrics::default();
+
         let sanitized_bundle0 = get_sanitized_bundle(
             &packet_bundle0,
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors,
         )
         .expect("sanitize bundle 0");
         let sanitized_bundle1 = get_sanitized_bundle(
@@ -282,6 +288,7 @@ mod tests {
             &bank,
             &HashSet::default(),
             &HashSet::default(),
+            &mut transaction_errors,
         )
         .expect("sanitize bundle 1");
 
