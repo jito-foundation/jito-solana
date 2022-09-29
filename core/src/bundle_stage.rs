@@ -8,6 +8,7 @@ use {
         bundle_sanitizer::get_sanitized_bundle,
         bundle_stage_leader_stats::{BundleStageLeaderSlotTrackingMetrics, BundleStageLeaderStats},
         consensus_cache_updater::ConsensusCacheUpdater,
+        leader_slot_banking_stage_timing_metrics::RecordTransactionsTimings,
         packet_bundle::PacketBundle,
         qos_service::QosService,
         tip_manager::TipManager,
@@ -411,7 +412,7 @@ impl BundleStage {
                 return Err(e.into());
             }
 
-            let ((pre_balances, pre_token_balances), _) = measure!(
+            let ((pre_balances, pre_token_balances), collect_balances_elapsed) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
@@ -420,6 +421,12 @@ impl BundleStage {
                     &mut mint_decimals,
                 ),
                 "collect_balances",
+            );
+            saturating_add_assign!(
+                bundle_stage_leader_stats
+                    .execute_and_commit_timings()
+                    .collect_balances_us,
+                collect_balances_elapsed.as_us()
             );
 
             let (mut load_and_execute_transactions_output, load_execute_time) = measure!(
@@ -438,9 +445,12 @@ impl BundleStage {
                 "load_execute",
             );
 
-            bundle_stage_leader_stats
-                .execute_and_commit_timings()
-                .load_execute_us = load_execute_time.as_us();
+            saturating_add_assign!(
+                bundle_stage_leader_stats
+                    .execute_and_commit_timings()
+                    .load_execute_us,
+                load_execute_time.as_us()
+            );
             bundle_stage_leader_stats
                 .transaction_errors()
                 .accumulate(&load_and_execute_transactions_output.error_counters);
@@ -508,7 +518,7 @@ impl BundleStage {
                 &mut account_overrides,
             );
 
-            let ((post_balances, post_token_balances), _) = measure!(
+            let ((post_balances, post_token_balances), collect_balances_elapsed) = measure!(
                 Self::collect_balances(
                     bank,
                     &batch,
@@ -517,6 +527,13 @@ impl BundleStage {
                     &mut mint_decimals,
                 ),
                 "collect_balances",
+            );
+
+            saturating_add_assign!(
+                bundle_stage_leader_stats
+                    .execute_and_commit_timings()
+                    .collect_balances_us,
+                collect_balances_elapsed.as_us()
             );
 
             execution_results.push(AllExecutionResults {
@@ -589,18 +606,48 @@ impl BundleStage {
         // not all together
         // *********************************************************************************
         debug!("grabbing freeze lock");
-        let (_freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
+        let (_freeze_lock, freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
+        saturating_add_assign!(
+            bundle_stage_leader_stats
+                .execute_and_commit_timings()
+                .freeze_lock_us,
+            freeze_lock_time.as_us()
+        );
 
-        let (slot, mixins) = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
+        let (slot, mixins) = Self::prepare_poh_record_bundle(
+            &bank.slot(),
+            &execution_results,
+            &mut bundle_stage_leader_stats
+                .execute_and_commit_timings()
+                .record_transactions_timings,
+        );
 
         debug!("recording bundle");
-        let mut transaction_index = Self::try_record(recorder, slot, mixins)
-            .map_err(|e| {
-                error!("error recording bundle: {:?}", e);
-                e
-            })?
-            .unwrap_or_default();
+        let (mut transaction_index, record_elapsed) = measure!(
+            Self::try_record(recorder, slot, mixins)
+                .map_err(|e| {
+                    error!("error recording bundle: {:?}", e);
+                    e
+                })?
+                .unwrap_or_default(),
+            "record_elapsed"
+        );
         debug!("bundle recorded");
+
+        saturating_add_assign!(
+            bundle_stage_leader_stats
+                .execute_and_commit_timings()
+                .record_us,
+            record_elapsed.as_us()
+        );
+        bundle_stage_leader_stats
+            .execute_and_commit_timings()
+            .record_transactions_timings
+            .accumulate(&RecordTransactionsTimings {
+                execution_results_to_transactions_us: 0,
+                hash_us: 0,
+                poh_record_us: record_elapsed.as_us(),
+            });
 
         let mut commit_transaction_details = Vec::new();
         for r in execution_results {
@@ -609,26 +656,36 @@ impl BundleStage {
 
             let (last_blockhash, lamports_per_signature) =
                 bank.last_blockhash_and_lamports_per_signature();
-            let transaction_results = bank.commit_transactions(
-                &sanitized_txs,
-                &mut output.loaded_transactions,
-                output.execution_results.clone(),
-                last_blockhash,
-                lamports_per_signature,
-                CommitTransactionCounts {
-                    committed_transactions_count: output.executed_transactions_count as u64,
-                    committed_with_failure_result_count: output
-                        .executed_transactions_count
-                        .saturating_sub(output.executed_with_successful_result_count)
-                        as u64,
-                    signature_count: output.signature_count,
-                },
-                &mut bundle_stage_leader_stats
+
+            let (transaction_results, commit_elapsed) = measure!(
+                bank.commit_transactions(
+                    &sanitized_txs,
+                    &mut output.loaded_transactions,
+                    output.execution_results.clone(),
+                    last_blockhash,
+                    lamports_per_signature,
+                    CommitTransactionCounts {
+                        committed_transactions_count: output.executed_transactions_count as u64,
+                        committed_with_failure_result_count: output
+                            .executed_transactions_count
+                            .saturating_sub(output.executed_with_successful_result_count)
+                            as u64,
+                        signature_count: output.signature_count,
+                    },
+                    &mut bundle_stage_leader_stats
+                        .execute_and_commit_timings()
+                        .execute_timings,
+                ),
+                "commit_elapsed"
+            );
+            saturating_add_assign!(
+                bundle_stage_leader_stats
                     .execute_and_commit_timings()
-                    .execute_timings,
+                    .commit_us,
+                commit_elapsed.as_us()
             );
 
-            let (_, _) = measure!(
+            let (_, find_and_send_votes_elapsed) = measure!(
                 {
                     bank_utils::find_and_send_votes(
                         &sanitized_txs,
@@ -661,6 +718,13 @@ impl BundleStage {
                     }
                 },
                 "find_and_send_votes",
+            );
+
+            saturating_add_assign!(
+                bundle_stage_leader_stats
+                    .execute_and_commit_timings()
+                    .find_and_send_votes_us,
+                find_and_send_votes_elapsed.as_us()
             );
 
             for tx_results in transaction_results.execution_results {
@@ -1025,7 +1089,6 @@ impl BundleStage {
                     bundle_stage_leader_stats
                         .bundle_stage_stats()
                         .increment_num_change_tip_receiver_errors(1);
-                    e
                 }
             }
             result
@@ -1299,27 +1362,51 @@ impl BundleStage {
     fn prepare_poh_record_bundle(
         bank_slot: &Slot,
         execution_results_txs: &[AllExecutionResults],
+        record_transactions_timings: &mut RecordTransactionsTimings,
     ) -> (Slot, Vec<(Hash, Vec<VersionedTransaction>)>) {
+        let mut new_record_transaction_timings = RecordTransactionsTimings::default();
+
         let mixins_txs = execution_results_txs
             .iter()
             .map(|r| {
-                let processed_transactions: Vec<VersionedTransaction> = r
-                    .load_and_execute_tx_output
-                    .execution_results
-                    .iter()
-                    .zip(r.sanitized_txs.iter())
-                    .filter_map(|(execution_result, tx)| {
-                        if execution_result.was_executed() {
-                            Some(tx.to_versioned_transaction())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let hash = hash_transactions(&processed_transactions[..]);
+                let (processed_transactions, results_to_transactions_elapsed) = measure!(
+                    {
+                        r.load_and_execute_tx_output
+                            .execution_results
+                            .iter()
+                            .zip(r.sanitized_txs.iter())
+                            .filter_map(|(execution_result, tx)| {
+                                if execution_result.was_executed() {
+                                    Some(tx.to_versioned_transaction())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<VersionedTransaction>>()
+                    },
+                    "results_to_transactions_elapsed"
+                );
+
+                let (hash, hash_elapsed) = measure!(
+                    hash_transactions(&processed_transactions[..]),
+                    "hash_elapsed"
+                );
+
+                saturating_add_assign!(
+                    new_record_transaction_timings.execution_results_to_transactions_us,
+                    results_to_transactions_elapsed.as_us()
+                );
+                saturating_add_assign!(
+                    new_record_transaction_timings.hash_us,
+                    hash_elapsed.as_us()
+                );
+
                 (hash, processed_transactions)
             })
             .collect();
+
+        record_transactions_timings.accumulate(&new_record_transaction_timings);
+
         (*bank_slot, mixins_txs)
     }
 
