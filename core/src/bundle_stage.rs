@@ -445,6 +445,10 @@ impl BundleStage {
                 .transaction_errors()
                 .accumulate(&load_and_execute_transactions_output.error_counters);
 
+            debug!(
+                "execution results: {:?}",
+                load_and_execute_transactions_output.execution_results
+            );
             // Return error if executed and failed or didn't execute because of an unexpected reason.
             // The only acceptable reasons for not executing would be failure to lock errors from:
             //  Ok(())
@@ -457,6 +461,7 @@ impl BundleStage {
                     .as_slice(),
                 batch.sanitized_transactions(),
             ) {
+                debug!("execution error");
                 bundle_stage_leader_stats
                     .bundle_stage_stats()
                     .increment_num_execution_failures(1);
@@ -472,6 +477,8 @@ impl BundleStage {
                 .iter()
                 .any(|r| r.was_executed())
             {
+                debug!("retrying bundle");
+
                 let bundle_execution_elapsed = start_time.elapsed();
                 if bundle_execution_elapsed >= *max_bundle_retry_duration {
                     warn!("bundle timed out: {:?}", sanitized_bundle);
@@ -581,11 +588,19 @@ impl BundleStage {
         // Note: Ensure that bank.commit_transactions is called on a per-batch basis and
         // not all together
         // *********************************************************************************
-
+        debug!("grabbing freeze lock");
         let (_freeze_lock, _freeze_lock_time) = measure!(bank.freeze_lock(), "freeze_lock");
 
         let (slot, mixins) = Self::prepare_poh_record_bundle(&bank.slot(), &execution_results);
-        let mut transaction_index = Self::try_record(recorder, slot, mixins)?.unwrap_or_default();
+
+        debug!("recording bundle");
+        let mut transaction_index = Self::try_record(recorder, slot, mixins)
+            .map_err(|e| {
+                error!("error recording bundle: {:?}", e);
+                e
+            })?
+            .unwrap_or_default();
+        debug!("bundle recorded");
 
         let mut commit_transaction_details = Vec::new();
         for r in execution_results {
@@ -734,7 +749,7 @@ impl BundleStage {
     ) -> BundleStageResult<Vec<SanitizedTransaction>> {
         let maybe_init_tip_payment_config_tx =
             if tip_manager.should_initialize_tip_payment_program(bank) {
-                info!("initializing tip-payment program config");
+                info!("building initialize_tip_payment_program_tx");
                 Some(tip_manager.initialize_tip_payment_program_tx(
                     bank.last_blockhash(),
                     &cluster_info.keypair(),
@@ -745,7 +760,7 @@ impl BundleStage {
 
         let maybe_init_tip_distro_config_tx =
             if tip_manager.should_initialize_tip_distribution_config(bank) {
-                info!("initializing tip-distribution program config");
+                info!("building initialize_tip_distribution_config_tx");
                 Some(tip_manager.initialize_tip_distribution_config_tx(
                     bank.last_blockhash(),
                     &cluster_info.keypair(),
@@ -757,7 +772,7 @@ impl BundleStage {
         let maybe_init_tip_distro_account_tx = if tip_manager
             .should_init_tip_distribution_account(bank)
         {
-            info!("initializing my [TipDistributionAccount]");
+            info!("building init_tip_distribution_account_tx");
             Some(tip_manager.init_tip_distribution_account_tx(bank.last_blockhash(), bank.epoch()))
         } else {
             None
@@ -905,10 +920,12 @@ impl BundleStage {
             )?,
         };
         if !initialize_tip_accounts_bundle.transactions.is_empty() {
+            debug!("initialize tip account");
+
             let locked_init_tip_bundle = bundle_account_locker
                 .prepare_locked_bundle(&initialize_tip_accounts_bundle, &bank_start.working_bank)
                 .map_err(|_| BundleExecutionError::LockError)?;
-            Self::update_qos_and_execute_record_commit_bundle(
+            let result = Self::update_qos_and_execute_record_commit_bundle(
                 locked_init_tip_bundle.sanitized_bundle(),
                 recorder,
                 transaction_status_sender,
@@ -917,7 +934,23 @@ impl BundleStage {
                 bank_start,
                 bundle_stage_leader_stats,
                 max_bundle_retry_duration,
-            )
+            );
+
+            match &result {
+                Ok(_) => {
+                    debug!("initialize tip account: success");
+                    bundle_stage_leader_stats
+                        .bundle_stage_stats()
+                        .increment_num_init_tip_account_ok(1);
+                }
+                Err(e) => {
+                    error!("initialize tip account error: {:?}", e);
+                    bundle_stage_leader_stats
+                        .bundle_stage_stats()
+                        .increment_num_init_tip_account_errors(1);
+                }
+            }
+            result
         } else {
             Ok(())
         }
@@ -939,6 +972,8 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
     ) -> BundleStageResult<()> {
+        let start_handle_tips = Instant::now();
+
         let configured_tip_receiver =
             tip_manager.get_configured_tip_receiver(&bank_start.working_bank)?;
         let my_tip_distribution_pda =
@@ -961,7 +996,7 @@ impl BundleStage {
             let locked_change_tip_receiver_bundle = bundle_account_locker
                 .prepare_locked_bundle(&change_tip_receiver_bundle, &bank_start.working_bank)
                 .map_err(|_| BundleExecutionError::LockError)?;
-            Self::update_qos_and_execute_record_commit_bundle(
+            let result = Self::update_qos_and_execute_record_commit_bundle(
                 locked_change_tip_receiver_bundle.sanitized_bundle(),
                 recorder,
                 transaction_status_sender,
@@ -970,7 +1005,30 @@ impl BundleStage {
                 bank_start,
                 bundle_stage_leader_stats,
                 max_bundle_retry_duration,
-            )
+            );
+
+            bundle_stage_leader_stats
+                .bundle_stage_stats()
+                .increment_change_tip_receiver_elapsed_us(
+                    start_handle_tips.elapsed().as_micros() as u64
+                );
+
+            match &result {
+                Ok(_) => {
+                    debug!("change tip receiver: success");
+                    bundle_stage_leader_stats
+                        .bundle_stage_stats()
+                        .increment_num_change_tip_receiver_ok(1);
+                }
+                Err(e) => {
+                    error!("change tip receiver: error {:?}", e);
+                    bundle_stage_leader_stats
+                        .bundle_stage_stats()
+                        .increment_num_change_tip_receiver_errors(1);
+                    e
+                }
+            }
+            result
         } else {
             Ok(())
         }
@@ -1014,8 +1072,6 @@ impl BundleStage {
                     if Self::bundle_touches_tip_pdas(&sanitized_bundle.transactions, &tip_pdas)
                         && bank_start.working_bank.slot() != *last_tip_update_slot
                     {
-                        let start_handle_tips = Instant::now();
-
                         Self::maybe_initialize_tip_accounts(
                             bundle_account_locker,
                             bank_start,
@@ -1027,16 +1083,7 @@ impl BundleStage {
                             tip_manager,
                             max_bundle_retry_duration,
                             bundle_stage_leader_stats,
-                        )
-                        .map_err(|e| {
-                            bundle_stage_leader_stats
-                                .bundle_stage_stats()
-                                .increment_num_init_tip_account_errors(1);
-                            e
-                        })?;
-                        bundle_stage_leader_stats
-                            .bundle_stage_stats()
-                            .increment_num_init_tip_account_ok(1);
+                        )?;
 
                         Self::maybe_change_tip_receiver(
                             bundle_account_locker,
@@ -1049,22 +1096,7 @@ impl BundleStage {
                             tip_manager,
                             max_bundle_retry_duration,
                             bundle_stage_leader_stats,
-                        )
-                        .map_err(|e| {
-                            bundle_stage_leader_stats
-                                .bundle_stage_stats()
-                                .increment_num_change_tip_receiver_errors(1);
-                            e
-                        })?;
-
-                        bundle_stage_leader_stats
-                            .bundle_stage_stats()
-                            .increment_num_change_tip_receiver_ok(1);
-                        bundle_stage_leader_stats
-                            .bundle_stage_stats()
-                            .increment_change_tip_receiver_elapsed_us(
-                                start_handle_tips.elapsed().as_micros() as u64,
-                            );
+                        )?;
 
                         *last_tip_update_slot = bank_start.working_bank.slot();
                     }
@@ -1122,6 +1154,7 @@ impl BundleStage {
         let working_bank_start = poh_recorder_bank.working_bank_start();
         let would_be_leader_soon =
             r_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
+        drop(r_poh_recorder);
 
         bundle_stage_leader_stats.maybe_report(id, &working_bank_start);
 
