@@ -35,10 +35,9 @@ impl BundleStageLeaderSlotTrackingMetrics {
             }
         }
 
-        self.current_slot = match bank_start {
-            None => None,
-            Some(bank_start) => Some(bank_start.working_bank.slot()),
-        };
+        self.current_slot = bank_start
+            .as_ref()
+            .map(|bank_start| bank_start.working_bank.slot());
     }
 
     pub fn bundle_stage_leader_stats(&mut self) -> &mut BundleStageLeaderStats {
