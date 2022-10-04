@@ -5,7 +5,7 @@ use {
     crate::{
         banking_stage::{BatchedTransactionDetails, CommitTransactionDetails},
         bundle_account_locker::{BundleAccountLocker, BundleAccountLockerResult, LockedBundle},
-        bundle_sanitizer::get_sanitized_bundle,
+        bundle_sanitizer::{get_sanitized_bundle, BundleSanitizerError},
         bundle_stage_leader_stats::{BundleStageLeaderSlotTrackingMetrics, BundleStageLeaderStats},
         consensus_cache_updater::ConsensusCacheUpdater,
         leader_slot_banking_stage_timing_metrics::RecordTransactionsTimings,
@@ -879,15 +879,56 @@ impl BundleStage {
                 .drain(..)
                 .into_iter()
                 .filter_map(|packet_bundle| {
-                    get_sanitized_bundle(
+                    match get_sanitized_bundle(
                         &packet_bundle,
                         &bank_start.working_bank,
                         consensus_accounts_cache,
                         blacklisted_accounts,
                         bundle_stage_leader_stats.transaction_errors(),
-                    )
-                    .map(|sanitized_bundle| (packet_bundle, sanitized_bundle))
-                    .ok()
+                    ) {
+                        Ok(sanitized_bundle) => {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_sanitize_transaction_ok(1);
+                            Some((packet_bundle, sanitized_bundle))
+                        }
+                        Err(BundleSanitizerError::VoteOnlyMode) => {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_sanitize_transaction_vote_only_mode(1);
+                            None
+                        }
+                        Err(BundleSanitizerError::FailedPacketBatchPreCheck) => {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_sanitize_transaction_failed_precheck(1);
+                            None
+                        }
+                        Err(BundleSanitizerError::BlacklistedAccount) => {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_sanitize_transaction_blacklisted_account(1);
+                            None
+                        }
+                        Err(BundleSanitizerError::FailedToSerializeTransaction) => {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_sanitize_transaction_failed_to_serialize(1);
+                            None
+                        }
+                        Err(BundleSanitizerError::DuplicateTransaction) => {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_sanitize_transaction_duplicate_transaction(1);
+                            None
+                        }
+                        Err(BundleSanitizerError::FailedCheckTransactions) => {
+                            bundle_stage_leader_stats
+                                .bundle_stage_stats()
+                                .increment_sanitize_transaction_failed_check(1);
+                            None
+                        }
+                    }
                 })
                 .collect::<VecDeque<(PacketBundle, SanitizedBundle)>>(),
             "sanitized_bundle_elapsed"
@@ -895,9 +936,6 @@ impl BundleStage {
         bundle_stage_leader_stats
             .bundle_stage_stats()
             .increment_sanitize_bundle_elapsed_us(sanitized_bundle_elapsed.as_us());
-        bundle_stage_leader_stats
-            .bundle_stage_stats()
-            .increment_num_sanitized_ok(sanitized_bundles.len() as u64);
 
         // Prepare locked bundles, which will RW lock accounts in sanitized_bundles so
         // BankingStage can't lock them. This adds a layer of protection since a transaction in a bundle

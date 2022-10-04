@@ -74,7 +74,13 @@ impl BundleStageLeaderStats {
 
 #[derive(Default)]
 pub struct BundleStageStats {
-    num_sanitized_ok: u64,
+    sanitize_transaction_ok: u64,
+    sanitize_transaction_vote_only_mode: u64,
+    sanitize_transaction_failed_precheck: u64,
+    sanitize_transaction_blacklisted_account: u64,
+    sanitize_transaction_failed_to_serialize: u64,
+    sanitize_transaction_duplicate_transaction: u64,
+    sanitize_transaction_failed_check: u64,
     sanitize_bundle_elapsed_us: u64,
 
     locked_bundle_elapsed_us: u64,
@@ -109,7 +115,37 @@ impl BundleStageStats {
             "bundle_stage-stats",
             ("id", id, i64),
             ("slot", slot, i64),
-            ("num_sanitized_ok", self.num_sanitized_ok, i64),
+            ("num_sanitized_ok", self.sanitize_transaction_ok, i64),
+            (
+                "sanitize_transaction_vote_only_mode",
+                self.sanitize_transaction_vote_only_mode,
+                i64
+            ),
+            (
+                "sanitize_transaction_failed_precheck",
+                self.sanitize_transaction_failed_precheck,
+                i64
+            ),
+            (
+                "sanitize_transaction_blacklisted_account",
+                self.sanitize_transaction_blacklisted_account,
+                i64
+            ),
+            (
+                "sanitize_transaction_failed_to_serialize",
+                self.sanitize_transaction_failed_to_serialize,
+                i64
+            ),
+            (
+                "sanitize_transaction_duplicate_transaction",
+                self.sanitize_transaction_duplicate_transaction,
+                i64
+            ),
+            (
+                "sanitize_transaction_failed_check",
+                self.sanitize_transaction_failed_check,
+                i64
+            ),
             (
                 "sanitize_bundle_elapsed_us",
                 self.sanitize_bundle_elapsed_us,
@@ -145,6 +181,11 @@ impl BundleStageStats {
             ("num_execution_failures", self.num_execution_failures, i64),
             ("num_execution_timeouts", self.num_execution_timeouts, i64),
             ("num_execution_retries", self.num_execution_retries, i64),
+            (
+                "execute_locked_bundles_elapsed_us",
+                self.execute_locked_bundles_elapsed_us,
+                i64
+            ),
             ("execution_results_ok", self.execution_results_ok, i64),
             (
                 "execution_results_poh_max_height",
@@ -179,8 +220,32 @@ impl BundleStageStats {
         );
     }
 
-    pub fn increment_num_sanitized_ok(&mut self, num: u64) {
-        saturating_add_assign!(self.num_sanitized_ok, num);
+    pub fn increment_sanitize_transaction_ok(&mut self, num: u64) {
+        saturating_add_assign!(self.sanitize_transaction_ok, num);
+    }
+
+    pub fn increment_sanitize_transaction_vote_only_mode(&mut self, num: u64) {
+        saturating_add_assign!(self.sanitize_transaction_vote_only_mode, num);
+    }
+
+    pub fn increment_sanitize_transaction_failed_precheck(&mut self, num: u64) {
+        saturating_add_assign!(self.sanitize_transaction_failed_precheck, num);
+    }
+
+    pub fn increment_sanitize_transaction_blacklisted_account(&mut self, num: u64) {
+        saturating_add_assign!(self.sanitize_transaction_blacklisted_account, num);
+    }
+
+    pub fn increment_sanitize_transaction_failed_to_serialize(&mut self, num: u64) {
+        saturating_add_assign!(self.sanitize_transaction_failed_to_serialize, num);
+    }
+
+    pub fn increment_sanitize_transaction_duplicate_transaction(&mut self, num: u64) {
+        saturating_add_assign!(self.sanitize_transaction_duplicate_transaction, num);
+    }
+
+    pub fn increment_sanitize_transaction_failed_check(&mut self, num: u64) {
+        saturating_add_assign!(self.sanitize_transaction_failed_check, num);
     }
 
     pub fn increment_sanitize_bundle_elapsed_us(&mut self, num: u64) {
