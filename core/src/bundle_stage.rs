@@ -981,7 +981,7 @@ impl BundleStage {
 
         execution_results
             .into_iter()
-            .zip(sanitized_bundles.iter())
+            .zip(sanitized_bundles.into_iter())
             .for_each(
                 |(bundle_execution_result, (packet_bundle, _))| match bundle_execution_result {
                     Ok(_) => {
@@ -994,7 +994,7 @@ impl BundleStage {
                             .bundle_stage_stats()
                             .increment_execution_results_poh_max_height(1);
                         // retry the bundle
-                        unprocessed_bundles.push_back(packet_bundle.clone());
+                        unprocessed_bundles.push_back(packet_bundle);
                     }
                     Err(BundleExecutionError::TransactionFailure(_)) => {
                         bundle_stage_leader_stats
