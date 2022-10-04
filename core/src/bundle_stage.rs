@@ -960,7 +960,7 @@ impl BundleStage {
         let (execution_results, execute_locked_bundles_elapsed) = measure!(
             Self::execute_locked_bundles(
                 bundle_account_locker,
-                &locked_bundles,
+                locked_bundles,
                 bank_start,
                 cluster_info,
                 recorder,
@@ -1167,7 +1167,7 @@ impl BundleStage {
     #[allow(clippy::too_many_arguments)]
     fn execute_locked_bundles(
         bundle_account_locker: &BundleAccountLocker,
-        locked_bundles: &[BundleAccountLockerResult<LockedBundle>],
+        locked_bundles: Vec<BundleAccountLockerResult<LockedBundle>>,
         bank_start: &BankStart,
         cluster_info: &Arc<ClusterInfo>,
         recorder: &TransactionRecorder,
@@ -1181,8 +1181,9 @@ impl BundleStage {
     ) -> Vec<BundleStageResult<()>> {
         let tip_pdas = tip_manager.get_tip_accounts();
 
+        // make sure each locked_bundle is dropped after processing to unlock BankingStage
         locked_bundles
-            .iter()
+            .into_iter()
             .map(|maybe_locked_bundle| {
                 let locked_bundle = maybe_locked_bundle.as_ref().map_err(|_| {
                     bundle_stage_leader_stats
