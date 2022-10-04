@@ -946,17 +946,44 @@ impl BundleStage {
             .zip(sanitized_bundles.iter())
             .for_each(
                 |(bundle_execution_result, (packet_bundle, _))| match bundle_execution_result {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_execution_results_ok(1);
+                    }
                     Err(BundleExecutionError::PohMaxHeightError) => {
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_execution_results_poh_max_height(1);
                         // retry the bundle
                         unprocessed_bundles.push_back(packet_bundle.clone());
                     }
-                    Err(BundleExecutionError::TransactionFailure(_)) => {}
-                    Err(BundleExecutionError::ExceedsCostModel) => {}
-                    Err(BundleExecutionError::TipError(_)) => {}
+                    Err(BundleExecutionError::TransactionFailure(_)) => {
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_execution_results_transaction_failures(1);
+                    }
+                    Err(BundleExecutionError::ExceedsCostModel) => {
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_execution_results_exceeds_cost_model(1);
+                    }
+                    Err(BundleExecutionError::TipError(_)) => {
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_execution_results_tip_errors(1);
+                    }
                     Err(BundleExecutionError::Shutdown) => {}
-                    Err(BundleExecutionError::MaxRetriesExceeded(_)) => {}
-                    Err(BundleExecutionError::LockError) => {}
+                    Err(BundleExecutionError::MaxRetriesExceeded(_)) => {
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_execution_results_max_retries(1);
+                    }
+                    Err(BundleExecutionError::LockError) => {
+                        bundle_stage_leader_stats
+                            .bundle_stage_stats()
+                            .increment_execution_results_lock_errors(1);
+                    }
                 },
             );
     }

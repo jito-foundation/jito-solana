@@ -20,24 +20,25 @@ impl BundleStageLeaderSlotTrackingMetrics {
             // was leader, not leader anymore
             (Some(current_slot), None) => {
                 self.bundle_stage_leader_stats.report(id, current_slot);
-
                 self.bundle_stage_leader_stats = BundleStageLeaderStats::default();
-                self.current_slot = None;
             }
             // was leader, is leader
             (Some(current_slot), Some(bank_start)) => {
                 if current_slot != bank_start.working_bank.slot() {
                     self.bundle_stage_leader_stats.report(id, current_slot);
                     self.bundle_stage_leader_stats = BundleStageLeaderStats::default();
-                    self.current_slot = Some(bank_start.working_bank.slot());
                 }
             }
             // not was leader, is leader
-            (None, Some(bank_start)) => {
+            (None, Some(_)) => {
                 self.bundle_stage_leader_stats = BundleStageLeaderStats::default();
-                self.current_slot = Some(bank_start.working_bank.slot());
             }
         }
+
+        self.current_slot = match bank_start {
+            None => None,
+            Some(bank_start) => Some(bank_start.working_bank.slot()),
+        };
     }
 
     pub fn bundle_stage_leader_stats(&mut self) -> &mut BundleStageLeaderStats {
@@ -93,6 +94,14 @@ pub struct BundleStageStats {
     num_execution_retries: u64,
 
     execute_locked_bundles_elapsed_us: u64,
+
+    execution_results_ok: u64,
+    execution_results_poh_max_height: u64,
+    execution_results_transaction_failures: u64,
+    execution_results_exceeds_cost_model: u64,
+    execution_results_tip_errors: u64,
+    execution_results_max_retries: u64,
+    execution_results_lock_errors: u64,
 }
 
 impl BundleStageStats {
@@ -137,9 +146,35 @@ impl BundleStageStats {
             ("num_execution_failures", self.num_execution_failures, i64),
             ("num_execution_timeouts", self.num_execution_timeouts, i64),
             ("num_execution_retries", self.num_execution_retries, i64),
+            ("execution_results_ok", self.execution_results_ok, i64),
             (
-                "execute_locked_bundles_elapsed_us",
-                self.execute_locked_bundles_elapsed_us,
+                "execution_results_poh_max_height",
+                self.execution_results_poh_max_height,
+                i64
+            ),
+            (
+                "execution_results_transaction_failures",
+                self.execution_results_transaction_failures,
+                i64
+            ),
+            (
+                "execution_results_exceeds_cost_model",
+                self.execution_results_exceeds_cost_model,
+                i64
+            ),
+            (
+                "execution_results_tip_errors",
+                self.execution_results_tip_errors,
+                i64
+            ),
+            (
+                "execution_results_max_retries",
+                self.execution_results_max_retries,
+                i64
+            ),
+            (
+                "execution_results_lock_errors",
+                self.execution_results_lock_errors,
                 i64
             ),
         );
@@ -195,5 +230,33 @@ impl BundleStageStats {
 
     pub fn increment_execute_locked_bundles_elapsed_us(&mut self, num: u64) {
         saturating_add_assign!(self.execute_locked_bundles_elapsed_us, num);
+    }
+
+    pub fn increment_execution_results_ok(&mut self, num: u64) {
+        saturating_add_assign!(self.execution_results_ok, num);
+    }
+
+    pub fn increment_execution_results_poh_max_height(&mut self, num: u64) {
+        saturating_add_assign!(self.execution_results_poh_max_height, num);
+    }
+
+    pub fn increment_execution_results_transaction_failures(&mut self, num: u64) {
+        saturating_add_assign!(self.execution_results_transaction_failures, num);
+    }
+
+    pub fn increment_execution_results_exceeds_cost_model(&mut self, num: u64) {
+        saturating_add_assign!(self.execution_results_exceeds_cost_model, num);
+    }
+
+    pub fn increment_execution_results_tip_errors(&mut self, num: u64) {
+        saturating_add_assign!(self.execution_results_tip_errors, num);
+    }
+
+    pub fn increment_execution_results_max_retries(&mut self, num: u64) {
+        saturating_add_assign!(self.execution_results_max_retries, num);
+    }
+
+    pub fn increment_execution_results_lock_errors(&mut self, num: u64) {
+        saturating_add_assign!(self.execution_results_lock_errors, num);
     }
 }
