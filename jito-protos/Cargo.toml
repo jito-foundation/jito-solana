@@ -1,6 +1,6 @@
 [package]
 name = "jito-protos"
-version = "1.10.40"
+version = "1.10.41"
 edition = "2021"
 publish = false
 
