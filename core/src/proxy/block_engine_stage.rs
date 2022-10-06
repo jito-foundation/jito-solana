@@ -303,6 +303,7 @@ impl BlockEngineStage {
             bundles.iter().map(|bundle| bundle.batch.len() as u64).sum()
         );
 
+        // NOTE: bundles are sanitized in bundle_sanitizer module
         bundle_sender
             .send(bundles)
             .map_err(|_| ProxyError::PacketForwardError)

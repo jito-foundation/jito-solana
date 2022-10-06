@@ -11,6 +11,5 @@ fi
 
 echo "Syncing to host: $HOST"
 
-# sync + build
-rsync -avh --delete --exclude target "$SCRIPT_DIR" "$HOST":~/
-#ssh $HOST "source ~/.profile && cd mev-solana-priv && cargo b --release"
+# sync to build server, ignoring local builds and local/remote dev ledger
+rsync -avh --delete --exclude target --exclude config "$SCRIPT_DIR" "$HOST":~/
