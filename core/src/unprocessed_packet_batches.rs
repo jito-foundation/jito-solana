@@ -108,9 +108,14 @@ impl DeserializedPacket {
         let is_simple_vote = packet.meta.is_simple_vote_tx();
 
         // drop transaction if prioritization fails.
-        let priority_details = priority_details
+        let mut priority_details = priority_details
             .or_else(|| sanitized_transaction.get_transaction_priority_details())
             .ok_or(DeserializedPacketError::PrioritizationFailure)?;
+
+        // set priority to zero for vote transactions
+        if is_simple_vote {
+            priority_details.priority = 0;
+        };
 
         Ok(Self {
             immutable_section: Rc::new(ImmutableDeserializedPacket {
@@ -586,7 +591,7 @@ mod tests {
         let capacity = transactions.len();
         let mut packet_vector = Vec::with_capacity(capacity);
         for tx in transactions.iter() {
-            packet_vector.push(Packet::from_data(None, &tx).unwrap());
+            packet_vector.push(Packet::from_data(None, tx).unwrap());
         }
         for index in vote_indexes.iter() {
             packet_vector[*index].meta.flags |= PacketFlags::SIMPLE_VOTE_TX;
