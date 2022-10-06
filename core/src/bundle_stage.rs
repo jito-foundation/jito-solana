@@ -1562,7 +1562,7 @@ mod tests {
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
         let mut bundle_stage_leader_stats = BundleStageLeaderStats::default();
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
         let sanitized_bundle = get_sanitized_bundle(
             &bundle,
             &bank,
@@ -1863,7 +1863,7 @@ mod tests {
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
         let mut bundle_stage_leader_stats = BundleStageLeaderStats::default();
-        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+        let bank_start = poh_recorder.lock().unwrap().bank_start().unwrap();
 
         // Create two transfers
         // 0. mint_keypair -> keypair0
