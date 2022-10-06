@@ -12,5 +12,6 @@ cargo b --release --bin solana
 (cd jito-programs/tip-payment && anchor build)
 
 # NOTE: make sure the declare_id! is set correctly in the programs
-RUST_INFO=trace ./target/release/solana deploy --keypair $WALLET_LOCATION -ul ./jito-programs/tip-payment/target/deploy/tip_distribution.so dev/dev_tip_distribution.json
-RUST_INFO=trace ./target/release/solana deploy --keypair $WALLET_LOCATION -ul ./jito-programs/tip-payment/target/deploy/tip_payment.so  dev/dev_tip_payment.json
+# Also, || true to make sure if fails the first time around, tip_payment can still be deployed
+RUST_INFO=trace ./target/release/solana deploy --keypair $WALLET_LOCATION -ul ./jito-programs/tip-payment/target/deploy/tip_distribution.so ./jito-programs/tip-payment/dev/dev_tip_distribution.json || true
+RUST_INFO=trace ./target/release/solana deploy --keypair $WALLET_LOCATION -ul ./jito-programs/tip-payment/target/deploy/tip_payment.so  ./jito-programs/tip-payment/dev/dev_tip_payment.json
