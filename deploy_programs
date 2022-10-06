@@ -1,9 +1,16 @@
 #!/usr/bin/env sh
-# Deploys the tip payment and tip distribution programs
+# Deploys the tip payment and tip distribution programs on local validator at predetermined address
 set -eux
 
 WALLET_LOCATION=~/.config/solana/id.json
 
-solana airdrop -ul 1000 $WALLET_LOCATION
-cd jito-programs/tip-payment
-anchor deploy --provider.cluster localnet
+# build this solana binary to ensure we're using a version compatible with the validator
+cargo b --release --bin solana
+
+./target/release/solana airdrop -ul 1000 $WALLET_LOCATION
+
+(cd jito-programs/tip-payment && anchor build)
+
+# NOTE: make sure the declare_id! is set correctly in the programs
+RUST_INFO=trace ./target/release/solana deploy --keypair $WALLET_LOCATION -ul ./jito-programs/tip-payment/target/deploy/tip_distribution.so dev/dev_tip_distribution.json
+RUST_INFO=trace ./target/release/solana deploy --keypair $WALLET_LOCATION -ul ./jito-programs/tip-payment/target/deploy/tip_payment.so  dev/dev_tip_payment.json
