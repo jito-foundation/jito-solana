@@ -292,7 +292,6 @@ impl Tpu {
         // it also helps reduce surface area for potential account contention
         let mut blacklisted_accounts = HashSet::new();
         blacklisted_accounts.insert(tip_manager.tip_payment_config_pubkey());
-        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
         blacklisted_accounts.extend(tip_manager.get_tip_accounts());
         let banking_stage = BankingStage::new(
             cluster_info,
