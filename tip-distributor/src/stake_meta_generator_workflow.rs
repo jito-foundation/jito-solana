@@ -20,10 +20,7 @@ use {
         vote_account::VoteAccount,
     },
     solana_sdk::{
-        account::ReadableAccount,
-        bs58,
-        clock::{Epoch, Slot},
-        pubkey::Pubkey,
+        account::ReadableAccount, clock::Slot, genesis_config::GenesisConfig, pubkey::Pubkey,
     },
     std::{
         collections::HashMap,
@@ -127,7 +124,8 @@ fn write_to_json_file(
 ) -> Result<(), Error> {
     let file = File::create(out_path)?;
     let mut writer = BufWriter::new(file);
-    serde_json::to_writer(&mut writer, stake_meta_coll)?;
+    let json = serde_json::to_string_pretty(&stake_meta_coll).unwrap();
+    writer.write(json.as_bytes())?;
     writer.flush()?;
 
     Ok(())
@@ -152,12 +150,15 @@ pub fn generate_stake_meta_collection(
     let l_stakes = bank.stakes_cache.stakes();
     let delegations = l_stakes.stake_delegations();
 
-    let account_fetcher = if let Some(rpc_client) = maybe_rpc_client {
+    // the last leader in an epoch may not crank the tip_receiver before the epoch is over.
+    // to get the most accurate number for a given epoch, fetch the tip distribution account
+    // balance from an rpc server.
+    let tda_account_fetcher = if let Some(rpc_client) = maybe_rpc_client {
         Box::new(RpcAccountFetcher { rpc_client }) as Box<dyn AccountFetcher>
     } else {
         Box::new(BankAccountFetcher { bank: bank.clone() }) as Box<dyn AccountFetcher>
     };
-    let account_fetcher = Arc::new(account_fetcher);
+    let tda_account_fetcher = Arc::new(tda_account_fetcher);
 
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
@@ -166,7 +167,7 @@ pub fn generate_stake_meta_collection(
         .iter()
         .map(|(&vote_pubkey, (_total_stake, vote_account))| {
             let tda = fetch_and_deserialize_tip_distribution_account(
-                account_fetcher.clone(),
+                tda_account_fetcher.clone(),
                 &vote_pubkey,
                 &tip_distribution_program_id,
                 bank.epoch(),
@@ -177,7 +178,7 @@ pub fn generate_stake_meta_collection(
         })
         .collect::<Result<_, Error>>()?;
 
-    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank.epoch());
+    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank);
 
     let mut stake_metas = vec![];
     for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {
@@ -200,7 +201,7 @@ pub fn generate_stake_meta_collection(
 
             stake_metas.push(StakeMeta {
                 maybe_tip_distribution_meta,
-                validator_vote_account: bs58::encode(vote_pubkey).into_string(),
+                validator_vote_account: vote_pubkey,
                 delegations: delegations.clone(),
                 total_delegated,
                 commission: vote_account.vote_state().as_ref().unwrap().commission,
@@ -215,8 +216,7 @@ pub fn generate_stake_meta_collection(
 
     Ok(StakeMetaCollection {
         stake_metas,
-        tip_distribution_program_id: bs58::encode(tip_distribution_program_id.as_ref())
-            .into_string(),
+        tip_distribution_program_id,
         bank_hash: bank.hash().to_string(),
         epoch: bank.epoch(),
         slot: bank.slot(),
@@ -226,21 +226,25 @@ pub fn generate_stake_meta_collection(
 /// Given an [EpochStakes] object, return delegations grouped by voter_pubkey (validator delegated to).
 fn group_delegations_by_voter_pubkey(
     delegations: &im::HashMap<Pubkey, StakeAccount>,
-    epoch: Epoch,
+    bank: &Bank,
 ) -> HashMap<Pubkey, Vec<crate::Delegation>> {
     delegations
         .into_iter()
-        .filter(|(_stake_pubkey, stake_account)| stake_account.delegation().stake(epoch, None) > 0)
-        .into_group_map_by(|(_stake_pubkey, stake_account)| stake_account.delegation().voter_pubkey)
+        .filter(|(_stake_pubkey, delegation)| delegation.stake(bank.epoch(), None) > 0)
+        .into_group_map_by(|(_stake_pubkey, delegation)| delegation.voter_pubkey)
         .into_iter()
         .map(|(voter_pubkey, group)| {
             (
                 voter_pubkey,
                 group
                     .into_iter()
-                    .map(|(stake_pubkey, stake_account)| crate::Delegation {
-                        stake_account: bs58::encode(stake_pubkey).into_string(),
-                        amount_delegated: stake_account.delegation().stake,
+                    .map(|(stake_pubkey, delegation)| crate::Delegation {
+                        stake_account: *stake_pubkey,
+                        owner: bank
+                            .get_account(stake_pubkey)
+                            .map(|acc| acc.owner().clone())
+                            .unwrap_or_default(),
+                        amount_delegated: delegation.stake,
                     })
                     .collect::<Vec<crate::Delegation>>(),
             )

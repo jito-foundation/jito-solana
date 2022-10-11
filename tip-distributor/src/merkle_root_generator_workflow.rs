@@ -71,19 +71,16 @@ pub fn run_workflow(
     write_to_json_file(&merkle_tree_coll, out_path)?;
 
     if should_upload_roots {
-        let tip_distribution_program_id = stake_meta_coll
-            .tip_distribution_program_id
-            .parse()
-            .map_err(|_| Error::Base58DecodeError)?;
-
         let rpc_client = Arc::new(RpcClient::new_with_commitment(
             rpc_url,
             CommitmentConfig {
                 commitment: CommitmentLevel::Finalized,
             },
         ));
-        let (config, _) =
-            Pubkey::find_program_address(&[Config::SEED], &tip_distribution_program_id);
+        let (config, _) = Pubkey::find_program_address(
+            &[Config::SEED],
+            &stake_meta_coll.tip_distribution_program_id,
+        );
 
         let recent_blockhash = {
             let rpc_client = rpc_client.clone();
@@ -96,7 +93,7 @@ pub fn run_workflow(
         upload_roots(
             rpc_client,
             merkle_tree_coll,
-            tip_distribution_program_id,
+            stake_meta_coll.tip_distribution_program_id,
             config,
             my_keypair,
             recent_blockhash,
@@ -119,7 +116,8 @@ fn write_to_json_file(
 ) -> Result<(), Error> {
     let file = File::create(file_path)?;
     let mut writer = BufWriter::new(file);
-    serde_json::to_writer(&mut writer, merkle_tree_coll)?;
+    let json = serde_json::to_string_pretty(&merkle_tree_coll).unwrap();
+    writer.write(json.as_bytes())?;
     writer.flush()?;
 
     Ok(())

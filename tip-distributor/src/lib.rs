@@ -16,7 +16,6 @@ use {
     solana_runtime::bank::Bank,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
-        bs58,
         clock::Slot,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
@@ -52,8 +51,6 @@ impl GeneratedMerkleTreeCollection {
         stake_meta_coll: StakeMetaCollection,
         merkle_root_upload_authority: Pubkey,
     ) -> Result<GeneratedMerkleTreeCollection, Error> {
-        let b58_merkle_root_upload_authority =
-            bs58::encode(merkle_root_upload_authority.as_ref()).into_string();
         let generated_merkle_trees = stake_meta_coll
             .stake_metas
             .into_iter()
@@ -61,7 +58,7 @@ impl GeneratedMerkleTreeCollection {
                 if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref()
                 {
                     tip_distribution_meta.merkle_root_upload_authority
-                        == b58_merkle_root_upload_authority
+                        == merkle_root_upload_authority
                 } else {
                     false
                 }
@@ -79,12 +76,6 @@ impl GeneratedMerkleTreeCollection {
 
                 let tip_distribution_meta = stake_meta.maybe_tip_distribution_meta.unwrap();
 
-                let tip_distribution_account =
-                    match tip_distribution_meta.tip_distribution_account.parse() {
-                        Err(_) => return Some(Err(Error::Base58DecodeError)),
-                        Ok(tip_distribution_account) => tip_distribution_account,
-                    };
-
                 let merkle_tree = MerkleTree::new(&hashed_nodes[..], true);
                 let max_num_nodes = tree_nodes.len() as u64;
 
@@ -94,7 +85,7 @@ impl GeneratedMerkleTreeCollection {
 
                 Some(Ok(GeneratedMerkleTree {
                     max_num_nodes,
-                    tip_distribution_account,
+                    tip_distribution_account: tip_distribution_meta.tip_distribution_account,
                     merkle_tree,
                     tree_nodes,
                     max_total_claim: tip_distribution_meta.total_tips,
@@ -140,17 +131,13 @@ pub struct TreeNode {
 
 impl TreeNode {
     fn vec_from_stake_meta(stake_meta: &StakeMeta) -> Result<Option<Vec<TreeNode>>, Error> {
-        let validator_vote_account = stake_meta
-            .validator_vote_account
-            .parse()
-            .map_err(|_| Error::Base58DecodeError)?;
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
             let validator_fee = calc_validator_fee(
                 tip_distribution_meta.total_tips,
                 tip_distribution_meta.validator_fee_bps,
             );
             let mut tree_nodes = vec![TreeNode {
-                claimant: validator_vote_account,
+                claimant: stake_meta.validator_vote_account,
                 amount: validator_fee,
                 proof: None,
             }];
@@ -201,7 +188,7 @@ impl TreeNode {
                     }
 
                     Ok(TreeNode {
-                        claimant: delegation.stake_account.parse().map_err(|_| Error::Base58DecodeError)?,
+                        claimant: delegation.stake_account,
                         amount: amount.to_u64().unwrap(),
                         proof: None
                     })
@@ -233,7 +220,8 @@ pub struct StakeMetaCollection {
     pub stake_metas: Vec<StakeMeta>,
 
     /// base58 encoded tip-distribution program id.
-    pub tip_distribution_program_id: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub tip_distribution_program_id: Pubkey,
 
     /// Base58 encoded bank hash this object was generated at.
     pub bank_hash: String,
@@ -247,8 +235,8 @@ pub struct StakeMetaCollection {
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct StakeMeta {
-    /// The validator's base58 encoded vote account.
-    pub validator_vote_account: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub validator_vote_account: Pubkey,
 
     /// The validator's tip-distribution meta if it exists.
     pub maybe_tip_distribution_meta: Option<TipDistributionMeta>,
@@ -265,11 +253,11 @@ pub struct StakeMeta {
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct TipDistributionMeta {
-    /// The account authorized to generate and upload a merkle_root for the validator.
-    pub merkle_root_upload_authority: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub merkle_root_upload_authority: Pubkey,
 
-    /// The validator's base58 encoded [TipDistributionAccount].
-    pub tip_distribution_account: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub tip_distribution_account: Pubkey,
 
     /// The validator's total tips in the [TipDistributionAccount].
     pub total_tips: u64,
@@ -286,8 +274,7 @@ impl TipDistributionMeta {
         rent_exempt_amount: u64,
     ) -> Result<Self, stake_meta_generator_workflow::Error> {
         Ok(TipDistributionMeta {
-            tip_distribution_account: bs58::encode(tda_wrapper.tip_distribution_account_pubkey)
-                .into_string(),
+            tip_distribution_account: tda_wrapper.tip_distribution_account_pubkey,
             total_tips: tda_wrapper
                 .account_data
                 .lamports()
@@ -296,22 +283,22 @@ impl TipDistributionMeta {
             validator_fee_bps: tda_wrapper
                 .tip_distribution_account
                 .validator_commission_bps,
-            merkle_root_upload_authority: bs58::encode(
-                tda_wrapper
-                    .tip_distribution_account
-                    .merkle_root_upload_authority,
-            )
-            .into_string(),
+            merkle_root_upload_authority: tda_wrapper
+                .tip_distribution_account
+                .merkle_root_upload_authority,
         })
     }
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct Delegation {
-    /// The stake account of interest base58 encoded.
-    pub stake_account: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub stake_account: Pubkey,
 
-    /// Amount delegated by this account.
+    #[serde(with = "pubkey_string_conversion")]
+    pub owner: Pubkey,
+
+    /// Lamports delegated by the stake account
     pub amount_delegated: u64,
 }
 
@@ -473,6 +460,30 @@ mod math {
             .checked_div(100_000)
             .unwrap(),
         )
+    }
+}
+
+mod pubkey_string_conversion {
+    use {
+        serde::{self, Deserialize, Deserializer, Serializer},
+        solana_sdk::pubkey::Pubkey,
+        std::str::FromStr,
+    };
+
+    pub fn serialize<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = format!("{}", pubkey.to_string());
+        serializer.serialize_str(&s)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Pubkey::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
