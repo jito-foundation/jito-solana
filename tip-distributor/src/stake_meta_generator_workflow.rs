@@ -148,9 +148,12 @@ pub fn generate_stake_meta_collection(
     let l_stakes = bank.stakes_cache.stakes();
     let delegations = l_stakes.stake_delegations();
 
-    // the last leader in an epoch may not crank the tip_receiver before the epoch is over.
-    // to get the most accurate number for a given epoch, fetch the tip distribution account
-    // balance from an rpc server.
+    // the last leader in an epoch may not crank the tip program before the epoch is over, which
+    // would result in MEV rewards for epoch N not being cranked until epoch N + 1. This means that
+    // the account balance in the snapshot could be incorrect.
+    // We assume that by the time the call to read the balance from the RPC server is made that
+    // the tip payment program has been cranked and the balance for the tip distribution account
+    // is reflected accurately by reading the tip distribution amount on-chain.
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
         Option<TipDistributionAccountWrapper>,

@@ -31,6 +31,7 @@ pub struct GeneratedMerkleTreeCollection {
 
 #[derive(Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]
 pub struct GeneratedMerkleTree {
+    #[serde(with = "pubkey_string_conversion")]
     pub tip_distribution_account: Pubkey,
     #[serde(skip_serializing, skip_deserializing)]
     pub merkle_tree: MerkleTree,
@@ -113,6 +114,7 @@ pub fn get_proof(merkle_tree: &MerkleTree, i: usize) -> Vec<[u8; 32]> {
 #[derive(Clone, Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]
 pub struct TreeNode {
     /// The account entitled to redeem.
+    #[serde(with = "pubkey_string_conversion")]
     pub claimant: Pubkey,
 
     /// The amount this account is entitled to.
