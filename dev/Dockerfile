@@ -38,6 +38,6 @@ ENV CI_COMMIT=$ci_commit
 RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    cargo build --verbose --release && cp target/release/solana* ./docker-output \
-    && cd jito-programs/cli/claim-mev; cargo build --verbose --release \
+    cargo build --release && cp target/release/solana* ./docker-output \
+    && cd jito-programs/cli/claim-mev; cargo build --release \
     && cp target/release/claim-mev ../../../docker-output/
