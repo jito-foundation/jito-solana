@@ -230,21 +230,23 @@ fn group_delegations_by_voter_pubkey(
 ) -> HashMap<Pubkey, Vec<crate::Delegation>> {
     delegations
         .into_iter()
-        .filter(|(_stake_pubkey, delegation)| delegation.stake(bank.epoch(), None) > 0)
-        .into_group_map_by(|(_stake_pubkey, delegation)| delegation.voter_pubkey)
+        .filter(|(_stake_pubkey, stake_account)| {
+            stake_account.delegation().stake(bank.epoch(), None) > 0
+        })
+        .into_group_map_by(|(_stake_pubkey, stake_account)| stake_account.delegation().voter_pubkey)
         .into_iter()
         .map(|(voter_pubkey, group)| {
             (
                 voter_pubkey,
                 group
                     .into_iter()
-                    .map(|(stake_pubkey, delegation)| crate::Delegation {
+                    .map(|(stake_pubkey, stake_account)| crate::Delegation {
                         stake_account: *stake_pubkey,
                         owner: bank
                             .get_account(stake_pubkey)
                             .map(|acc| acc.owner().clone())
                             .unwrap_or_default(),
-                        amount_delegated: delegation.stake,
+                        amount_delegated: stake_account.delegation().stake,
                     })
                     .collect::<Vec<crate::Delegation>>(),
             )
