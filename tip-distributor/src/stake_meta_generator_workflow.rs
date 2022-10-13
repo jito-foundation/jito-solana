@@ -1,9 +1,9 @@
 use {
     crate::{
-        fetch_and_deserialize_tip_distribution_account, AccountFetcher, BankAccountFetcher,
-        RpcAccountFetcher, StakeMeta, StakeMetaCollection, TipDistributionAccountWrapper,
-        TipDistributionMeta,
+        derive_tip_distribution_account_address, StakeMeta, StakeMetaCollection,
+        TipDistributionAccount, TipDistributionAccountWrapper, TipDistributionMeta,
     },
+    anchor_lang::AccountDeserialize,
     itertools::Itertools,
     log::*,
     solana_client::{client_error::ClientError, rpc_client::RpcClient},
@@ -20,7 +20,9 @@ use {
         vote_account::VoteAccount,
     },
     solana_sdk::{
-        account::ReadableAccount, clock::Slot, genesis_config::GenesisConfig, pubkey::Pubkey,
+        account::{AccountSharedData, ReadableAccount},
+        clock::Slot,
+        pubkey::Pubkey,
     },
     std::{
         collections::HashMap,
@@ -68,17 +70,17 @@ impl Display for Error {
 /// to a JSON file.
 pub fn run_workflow(
     ledger_path: &Path,
-    snapshot_slot: Slot,
-    tip_distribution_program_id: Pubkey,
-    out_path: String,
-    rpc_client: RpcClient,
+    snapshot_slot: &Slot,
+    tip_distribution_program_id: &Pubkey,
+    out_path: &str,
+    rpc_client: &RpcClient,
 ) -> Result<(), Error> {
     info!("Creating bank from ledger path...");
     let bank = create_bank_from_snapshot(ledger_path, snapshot_slot)?;
 
     info!("Generating stake_meta_collection object...");
     let stake_meta_coll =
-        generate_stake_meta_collection(&bank, tip_distribution_program_id, Some(rpc_client))?;
+        generate_stake_meta_collection(&bank, tip_distribution_program_id, rpc_client)?;
 
     info!("Writing stake_meta_collection to JSON {}...", out_path);
     write_to_json_file(&stake_meta_coll, out_path)?;
@@ -86,7 +88,7 @@ pub fn run_workflow(
     Ok(())
 }
 
-fn create_bank_from_snapshot(ledger_path: &Path, snapshot_slot: Slot) -> Result<Arc<Bank>, Error> {
+fn create_bank_from_snapshot(ledger_path: &Path, snapshot_slot: &Slot) -> Result<Arc<Bank>, Error> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
     let snapshot_config = SnapshotConfig {
         full_snapshot_archive_interval_slots: Slot::MAX,
@@ -109,7 +111,7 @@ fn create_bank_from_snapshot(ledger_path: &Path, snapshot_slot: Slot) -> Result<
     let working_bank = bank_forks.read().unwrap().working_bank();
     assert_eq!(
         working_bank.slot(),
-        snapshot_slot,
+        *snapshot_slot,
         "expected working bank slot {}, found {}",
         snapshot_slot,
         working_bank.slot()
@@ -118,10 +120,7 @@ fn create_bank_from_snapshot(ledger_path: &Path, snapshot_slot: Slot) -> Result<
     Ok(working_bank)
 }
 
-fn write_to_json_file(
-    stake_meta_coll: &StakeMetaCollection,
-    out_path: String,
-) -> Result<(), Error> {
+fn write_to_json_file(stake_meta_coll: &StakeMetaCollection, out_path: &str) -> Result<(), Error> {
     let file = File::create(out_path)?;
     let mut writer = BufWriter::new(file);
     let json = serde_json::to_string_pretty(&stake_meta_coll).unwrap();
@@ -135,9 +134,8 @@ fn write_to_json_file(
 pub fn generate_stake_meta_collection(
     bank: &Arc<Bank>,
     // Used to derive the PDA and fetch the account data from the Bank.
-    tip_distribution_program_id: Pubkey,
-    // Optionally used to fetch the tip distribution accounts from an RPC node.
-    maybe_rpc_client: Option<RpcClient>,
+    tip_distribution_program_id: &Pubkey,
+    rpc_client: &RpcClient,
 ) -> Result<StakeMetaCollection, Error> {
     assert!(bank.is_frozen());
 
@@ -153,28 +151,37 @@ pub fn generate_stake_meta_collection(
     // the last leader in an epoch may not crank the tip_receiver before the epoch is over.
     // to get the most accurate number for a given epoch, fetch the tip distribution account
     // balance from an rpc server.
-    let tda_account_fetcher = if let Some(rpc_client) = maybe_rpc_client {
-        Box::new(RpcAccountFetcher { rpc_client }) as Box<dyn AccountFetcher>
-    } else {
-        Box::new(BankAccountFetcher { bank: bank.clone() }) as Box<dyn AccountFetcher>
-    };
-    let tda_account_fetcher = Arc::new(tda_account_fetcher);
-
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
         Option<TipDistributionAccountWrapper>,
     )> = epoch_vote_accounts
         .iter()
-        .map(|(&vote_pubkey, (_total_stake, vote_account))| {
-            let tda = fetch_and_deserialize_tip_distribution_account(
-                tda_account_fetcher.clone(),
+        .map(|(vote_pubkey, (_total_stake, vote_account))| {
+            // the tip distribution account for a given epoch will exist in the bank, but might
+            // not have an accurate number of lamports in it, so only fetch the lamport balance
+            // from RPC if it exists in the bank (checking bank way faster than rpc).
+            let tip_distribution_pubkey = derive_tip_distribution_account_address(
+                tip_distribution_program_id,
                 &vote_pubkey,
-                &tip_distribution_program_id,
                 bank.epoch(),
             )
-            .map_err(Error::from)?;
-
-            Ok(((vote_pubkey, vote_account), tda))
+            .0;
+            let tda = if bank.get_account(&tip_distribution_pubkey).is_some() {
+                let account_data: AccountSharedData = rpc_client
+                    .get_account(&tip_distribution_pubkey)
+                    .expect("error reading account from RPC")
+                    .into();
+                Some(TipDistributionAccountWrapper {
+                    tip_distribution_account: TipDistributionAccount::try_deserialize(
+                        &mut account_data.data(),
+                    )?,
+                    account_data,
+                    tip_distribution_pubkey,
+                })
+            } else {
+                None
+            };
+            Ok(((*vote_pubkey, vote_account), tda))
         })
         .collect::<Result<_, Error>>()?;
 
@@ -216,7 +223,7 @@ pub fn generate_stake_meta_collection(
 
     Ok(StakeMetaCollection {
         stake_metas,
-        tip_distribution_program_id,
+        tip_distribution_program_id: *tip_distribution_program_id,
         bank_hash: bank.hash().to_string(),
         epoch: bank.epoch(),
         slot: bank.slot(),
@@ -590,7 +597,7 @@ mod tests {
                         merkle_root_upload_authority.as_ref(),
                     )
                     .into_string(),
-                    tip_distribution_account: bs58::encode(tda_0_fields.0.as_ref()).into_string(),
+                    tip_distribution_pubkey: bs58::encode(tda_0_fields.0.as_ref()).into_string(),
                     total_tips: tip_distro_0_tips
                         .checked_sub(
                             bank.get_minimum_balance_for_rent_exemption(
@@ -621,7 +628,7 @@ mod tests {
                         merkle_root_upload_authority.as_ref(),
                     )
                     .into_string(),
-                    tip_distribution_account: bs58::encode(tda_1_fields.0.as_ref()).into_string(),
+                    tip_distribution_pubkey: bs58::encode(tda_1_fields.0.as_ref()).into_string(),
                     total_tips: tip_distro_1_tips
                         .checked_sub(
                             bank.get_minimum_balance_for_rent_exemption(
@@ -652,7 +659,7 @@ mod tests {
                         merkle_root_upload_authority.as_ref(),
                     )
                     .into_string(),
-                    tip_distribution_account: bs58::encode(tda_2_fields.0.as_ref()).into_string(),
+                    tip_distribution_pubkey: bs58::encode(tda_2_fields.0.as_ref()).into_string(),
                     total_tips: tip_distro_2_tips
                         .checked_sub(
                             bank.get_minimum_balance_for_rent_exemption(

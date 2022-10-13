@@ -6,14 +6,10 @@ use {
         merkle_root_generator_workflow::Error,
         stake_meta_generator_workflow::Error::CheckedMathError,
     },
-    anchor_lang::AccountDeserialize,
     bigdecimal::{num_bigint::BigUint, BigDecimal},
-    log::*,
     num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
     serde::{Deserialize, Serialize},
-    solana_client::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
-    solana_runtime::bank::Bank,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
@@ -21,10 +17,7 @@ use {
         pubkey::Pubkey,
         stake_history::Epoch,
     },
-    std::{
-        ops::{Div, Mul},
-        sync::Arc,
-    },
+    std::ops::{Div, Mul},
     tip_distribution::state::TipDistributionAccount,
 };
 
@@ -85,7 +78,7 @@ impl GeneratedMerkleTreeCollection {
 
                 Some(Ok(GeneratedMerkleTree {
                     max_num_nodes,
-                    tip_distribution_account: tip_distribution_meta.tip_distribution_account,
+                    tip_distribution_account: tip_distribution_meta.tip_distribution_pubkey,
                     merkle_tree,
                     tree_nodes,
                     max_total_claim: tip_distribution_meta.total_tips,
@@ -257,7 +250,7 @@ pub struct TipDistributionMeta {
     pub merkle_root_upload_authority: Pubkey,
 
     #[serde(with = "pubkey_string_conversion")]
-    pub tip_distribution_account: Pubkey,
+    pub tip_distribution_pubkey: Pubkey,
 
     /// The validator's total tips in the [TipDistributionAccount].
     pub total_tips: u64,
@@ -274,7 +267,7 @@ impl TipDistributionMeta {
         rent_exempt_amount: u64,
     ) -> Result<Self, stake_meta_generator_workflow::Error> {
         Ok(TipDistributionMeta {
-            tip_distribution_account: tda_wrapper.tip_distribution_account_pubkey,
+            tip_distribution_pubkey: tda_wrapper.tip_distribution_pubkey,
             total_tips: tda_wrapper
                 .account_data
                 .lamports()
@@ -306,7 +299,7 @@ pub struct Delegation {
 pub struct TipDistributionAccountWrapper {
     pub tip_distribution_account: TipDistributionAccount,
     pub account_data: AccountSharedData,
-    pub tip_distribution_account_pubkey: Pubkey,
+    pub tip_distribution_pubkey: Pubkey,
 }
 
 // TODO: move to program's sdk
@@ -323,80 +316,6 @@ pub fn derive_tip_distribution_account_address(
         ],
         tip_distribution_program_id,
     )
-}
-
-pub trait AccountFetcher {
-    fn fetch_account(
-        &self,
-        pubkey: &Pubkey,
-    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error>;
-}
-
-/// Fetches and deserializes the vote_pubkey's corresponding [TipDistributionAccount].
-pub fn fetch_and_deserialize_tip_distribution_account(
-    account_fetcher: Arc<Box<dyn AccountFetcher>>,
-    vote_pubkey: &Pubkey,
-    tip_distribution_program_id: &Pubkey,
-    epoch: Epoch,
-) -> Result<Option<TipDistributionAccountWrapper>, stake_meta_generator_workflow::Error> {
-    let tip_distribution_account_pubkey =
-        derive_tip_distribution_account_address(tip_distribution_program_id, vote_pubkey, epoch).0;
-
-    match account_fetcher.fetch_account(&tip_distribution_account_pubkey)? {
-        None => {
-            warn!(
-                "TipDistributionAccount not found for vote_pubkey {}, epoch {}, tip_distribution_account_pubkey {}",
-                vote_pubkey,
-                epoch,
-                tip_distribution_account_pubkey,
-            );
-            Ok(None)
-        }
-        Some(account_data) => Ok(Some(TipDistributionAccountWrapper {
-            tip_distribution_account: TipDistributionAccount::try_deserialize(
-                &mut account_data.data(),
-            )?,
-            account_data,
-            tip_distribution_account_pubkey,
-        })),
-    }
-}
-
-struct BankAccountFetcher {
-    bank: Arc<Bank>,
-}
-
-impl AccountFetcher for BankAccountFetcher {
-    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from the accounts DB.
-    fn fetch_account(
-        &self,
-        pubkey: &Pubkey,
-    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
-        Ok(self.bank.get_account(pubkey))
-    }
-}
-
-struct RpcAccountFetcher {
-    rpc_client: RpcClient,
-}
-
-impl AccountFetcher for RpcAccountFetcher {
-    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from an RPC node.
-    fn fetch_account(
-        &self,
-        pubkey: &Pubkey,
-    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
-        match self
-            .rpc_client
-            .get_account_with_commitment(pubkey, self.rpc_client.commitment())
-        {
-            Ok(resp) => Ok(resp.value.map(|a| a.into())),
-            Err(e) => {
-                error!("error fetching account {}", e);
-                Err(e.into())
-            }
-        }
-    }
 }
 
 /// Calculate validator fee denominated in lamports
@@ -555,7 +474,7 @@ mod tests {
                     validator_vote_account: validator_vote_account_0.clone(),
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority: b58_merkle_root_upload_authority.clone(),
-                        tip_distribution_account: tda_0.clone(),
+                        tip_distribution_pubkey: tda_0.clone(),
                         total_tips: 1_900_122_111_000,
                         validator_fee_bps: 100,
                     }),
@@ -576,7 +495,7 @@ mod tests {
                     validator_vote_account: validator_vote_account_1.clone(),
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority: b58_merkle_root_upload_authority.clone(),
-                        tip_distribution_account: tda_1.clone(),
+                        tip_distribution_pubkey: tda_1.clone(),
                         total_tips: 1_900_122_111_333,
                         validator_fee_bps: 200,
                     }),

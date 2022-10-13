@@ -58,10 +58,10 @@ fn main() {
 
     run_workflow(
         &args.ledger_path,
-        args.snapshot_slot,
-        args.tip_distribution_program_id,
-        args.out_path,
-        rpc_client,
+        &args.snapshot_slot,
+        &args.tip_distribution_program_id,
+        &args.out_path,
+        &rpc_client,
     )
     .expect("Workflow failed.");
 }
