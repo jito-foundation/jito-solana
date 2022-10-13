@@ -154,11 +154,11 @@ impl TreeNode {
                 .iter()
                 .map(|delegation| {
                     // TODO(seg): Check this math!
-                    let amount_delegated = BigDecimal::try_from(delegation.amount_delegated as f64)
+                    let amount_delegated = BigDecimal::try_from(delegation.lamports_delegated as f64)
                         .expect(&*format!(
                             "failed to convert amount_delegated to BigDecimal [stake_account={}, amount_delegated={}]",
-                            delegation.stake_account,
-                            delegation.amount_delegated,
+                            delegation.stake_account_pubkey,
+                            delegation.lamports_delegated,
                         ));
                     let mut weight = amount_delegated.div(&total_delegated);
 
@@ -169,7 +169,7 @@ impl TreeNode {
                     }
 
                     let truncated_weight = weight.to_u128()
-                        .expect(&*format!("failed to convert weight to u128 [stake_account={}, weight={}]", delegation.stake_account, weight));
+                        .expect(&*format!("failed to convert weight to u128 [stake_account={}, weight={}]", delegation.stake_account_pubkey, weight));
                     let truncated_weight = BigUint::from(truncated_weight);
 
                     let mut amount = truncated_weight
@@ -181,7 +181,7 @@ impl TreeNode {
                     }
 
                     Ok(TreeNode {
-                        claimant: delegation.stake_account,
+                        claimant: delegation.stake_account_pubkey,
                         amount: amount.to_u64().unwrap(),
                         proof: None
                     })
@@ -286,13 +286,16 @@ impl TipDistributionMeta {
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct Delegation {
     #[serde(with = "pubkey_string_conversion")]
-    pub stake_account: Pubkey,
+    pub stake_account_pubkey: Pubkey,
 
     #[serde(with = "pubkey_string_conversion")]
-    pub owner: Pubkey,
+    pub staker_pubkey: Pubkey,
+
+    #[serde(with = "pubkey_string_conversion")]
+    pub withdrawer_pubkey: Pubkey,
 
     /// Lamports delegated by the stake account
-    pub amount_delegated: u64,
+    pub lamports_delegated: u64,
 }
 
 /// Convenience wrapper around [TipDistributionAccount]
@@ -480,12 +483,12 @@ mod tests {
                     }),
                     delegations: vec![
                         Delegation {
-                            stake_account: stake_account_0.clone(),
-                            amount_delegated: 123_999_123_555,
+                            stake_account_pubkey: stake_account_0.clone(),
+                            lamports_delegated: 123_999_123_555,
                         },
                         Delegation {
-                            stake_account: stake_account_1.clone(),
-                            amount_delegated: 144_555_444_556,
+                            stake_account_pubkey: stake_account_1.clone(),
+                            lamports_delegated: 144_555_444_556,
                         },
                     ],
                     total_delegated: 1_555_123_000_333_454_000,
@@ -501,12 +504,12 @@ mod tests {
                     }),
                     delegations: vec![
                         Delegation {
-                            stake_account: stake_account_2.clone(),
-                            amount_delegated: 224_555_444,
+                            stake_account_pubkey: stake_account_2.clone(),
+                            lamports_delegated: 224_555_444,
                         },
                         Delegation {
-                            stake_account: stake_account_3.clone(),
-                            amount_delegated: 700_888_944_555,
+                            stake_account_pubkey: stake_account_3.clone(),
+                            lamports_delegated: 700_888_944_555,
                         },
                     ],
                     total_delegated: 2_565_318_909_444_123,

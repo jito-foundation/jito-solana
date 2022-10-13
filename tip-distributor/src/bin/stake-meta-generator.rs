@@ -56,12 +56,15 @@ fn main() {
 
     let rpc_client = RpcClient::new(args.rpc_url);
 
-    run_workflow(
+    if let Err(e) = run_workflow(
         &args.ledger_path,
         &args.snapshot_slot,
         &args.tip_distribution_program_id,
         &args.out_path,
         &rpc_client,
-    )
-    .expect("Workflow failed.");
+    ) {
+        error!("error producing stake-meta: {:?}", e);
+    } else {
+        info!("produced stake meta");
+    }
 }

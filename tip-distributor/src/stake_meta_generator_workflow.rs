@@ -178,7 +178,8 @@ pub fn generate_stake_meta_collection(
                 Some(TipDistributionAccountWrapper {
                     tip_distribution_account: TipDistributionAccount::try_deserialize(
                         &mut account_data.data(),
-                    )?,
+                    )
+                    .expect("deserialize tda"),
                     account_data,
                     tip_distribution_pubkey,
                 })
@@ -199,7 +200,7 @@ pub fn generate_stake_meta_collection(
     for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {
         if let Some(delegations) = voter_pubkey_to_delegations.get(&vote_pubkey).cloned() {
             let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
-                sum.checked_add(delegation.amount_delegated).unwrap()
+                sum.checked_add(delegation.lamports_delegated).unwrap()
             });
 
             let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
@@ -256,12 +257,18 @@ fn group_delegations_by_voter_pubkey(
                 group
                     .into_iter()
                     .map(|(stake_pubkey, stake_account)| crate::Delegation {
-                        stake_account: *stake_pubkey,
-                        owner: bank
-                            .get_account(stake_pubkey)
-                            .map(|acc| acc.owner().clone())
+                        stake_account_pubkey: *stake_pubkey,
+                        staker_pubkey: stake_account
+                            .stake_state()
+                            .authorized()
+                            .map(|a| a.staker)
                             .unwrap_or_default(),
-                        amount_delegated: stake_account.delegation().stake,
+                        withdrawer_pubkey: stake_account
+                            .stake_state()
+                            .authorized()
+                            .map(|a| a.withdrawer)
+                            .unwrap_or_default(),
+                        lamports_delegated: stake_account.delegation().stake,
                     })
                     .collect::<Vec<crate::Delegation>>(),
             )
@@ -370,9 +377,11 @@ mod tests {
 
         /* 3. Delegate some stake to the initial set of validators */
         let mut validator_0_delegations = vec![crate::Delegation {
-            stake_account: bs58::encode(validator_keypairs_0.stake_keypair.pubkey().as_ref())
-                .into_string(),
-            amount_delegated: INITIAL_VALIDATOR_STAKES,
+            stake_account_pubkey: bs58::encode(
+                validator_keypairs_0.stake_keypair.pubkey().as_ref(),
+            )
+            .into_string(),
+            lamports_delegated: INITIAL_VALIDATOR_STAKES,
         }];
         let stake_account = delegate_stake_helper(
             &bank,
@@ -381,8 +390,8 @@ mod tests {
             30_000_000_000,
         );
         validator_0_delegations.push(crate::Delegation {
-            stake_account: bs58::encode(stake_account.as_ref()).into_string(),
-            amount_delegated: 30_000_000_000,
+            stake_account_pubkey: bs58::encode(stake_account.as_ref()).into_string(),
+            lamports_delegated: 30_000_000_000,
         });
         let stake_account = delegate_stake_helper(
             &bank,
@@ -391,8 +400,8 @@ mod tests {
             3_000_000_000,
         );
         validator_0_delegations.push(crate::Delegation {
-            stake_account: bs58::encode(stake_account.as_ref()).into_string(),
-            amount_delegated: 3_000_000_000,
+            stake_account_pubkey: bs58::encode(stake_account.as_ref()).into_string(),
+            lamports_delegated: 3_000_000_000,
         });
         let stake_account = delegate_stake_helper(
             &bank,
@@ -401,14 +410,16 @@ mod tests {
             33_000_000_000,
         );
         validator_0_delegations.push(crate::Delegation {
-            stake_account: bs58::encode(stake_account.as_ref()).into_string(),
-            amount_delegated: 33_000_000_000,
+            stake_account_pubkey: bs58::encode(stake_account.as_ref()).into_string(),
+            lamports_delegated: 33_000_000_000,
         });
 
         let mut validator_1_delegations = vec![crate::Delegation {
-            stake_account: bs58::encode(validator_keypairs_1.stake_keypair.pubkey().as_ref())
-                .into_string(),
-            amount_delegated: INITIAL_VALIDATOR_STAKES,
+            stake_account_pubkey: bs58::encode(
+                validator_keypairs_1.stake_keypair.pubkey().as_ref(),
+            )
+            .into_string(),
+            lamports_delegated: INITIAL_VALIDATOR_STAKES,
         }];
         let stake_account = delegate_stake_helper(
             &bank,
@@ -417,8 +428,8 @@ mod tests {
             4_222_364_000,
         );
         validator_1_delegations.push(crate::Delegation {
-            stake_account: bs58::encode(stake_account.as_ref()).into_string(),
-            amount_delegated: 4_222_364_000,
+            stake_account_pubkey: bs58::encode(stake_account.as_ref()).into_string(),
+            lamports_delegated: 4_222_364_000,
         });
         let stake_account = delegate_stake_helper(
             &bank,
@@ -427,14 +438,16 @@ mod tests {
             6_000_000_527,
         );
         validator_1_delegations.push(crate::Delegation {
-            stake_account: bs58::encode(stake_account.as_ref()).into_string(),
-            amount_delegated: 6_000_000_527,
+            stake_account_pubkey: bs58::encode(stake_account.as_ref()).into_string(),
+            lamports_delegated: 6_000_000_527,
         });
 
         let mut validator_2_delegations = vec![crate::Delegation {
-            stake_account: bs58::encode(validator_keypairs_2.stake_keypair.pubkey().as_ref())
-                .into_string(),
-            amount_delegated: INITIAL_VALIDATOR_STAKES,
+            stake_account_pubkey: bs58::encode(
+                validator_keypairs_2.stake_keypair.pubkey().as_ref(),
+            )
+            .into_string(),
+            lamports_delegated: INITIAL_VALIDATOR_STAKES,
         }];
         let stake_account = delegate_stake_helper(
             &bank,
@@ -443,8 +456,8 @@ mod tests {
             1_300_123_156,
         );
         validator_2_delegations.push(crate::Delegation {
-            stake_account: bs58::encode(stake_account.as_ref()).into_string(),
-            amount_delegated: 1_300_123_156,
+            stake_account_pubkey: bs58::encode(stake_account.as_ref()).into_string(),
+            lamports_delegated: 1_300_123_156,
         });
         let stake_account = delegate_stake_helper(
             &bank,
@@ -453,8 +466,8 @@ mod tests {
             1_610_565_420,
         );
         validator_2_delegations.push(crate::Delegation {
-            stake_account: bs58::encode(stake_account.as_ref()).into_string(),
-            amount_delegated: 1_610_565_420,
+            stake_account_pubkey: bs58::encode(stake_account.as_ref()).into_string(),
+            lamports_delegated: 1_610_565_420,
         });
 
         /* 4. Run assertions */
@@ -493,17 +506,17 @@ mod tests {
         let mut bank = Arc::new(bank);
         let mut stake_pubkeys = validator_0_delegations
             .iter()
-            .map(|v| Pubkey::from_str(&*v.stake_account).unwrap())
+            .map(|v| Pubkey::from_str(&*v.stake_account_pubkey).unwrap())
             .collect::<Vec<Pubkey>>();
         stake_pubkeys.extend(
             validator_1_delegations
                 .iter()
-                .map(|v| Pubkey::from_str(&*v.stake_account).unwrap()),
+                .map(|v| Pubkey::from_str(&*v.stake_account_pubkey).unwrap()),
         );
         stake_pubkeys.extend(
             validator_2_delegations
                 .iter()
-                .map(|v| Pubkey::from_str(&*v.stake_account).unwrap()),
+                .map(|v| Pubkey::from_str(&*v.stake_account_pubkey).unwrap()),
         );
         loop {
             if warmed_up(&bank, &stake_pubkeys[..]) {
@@ -598,7 +611,7 @@ mod tests {
                 total_delegated: validator_0_delegations
                     .iter()
                     .fold(0u64, |sum, delegation| {
-                        sum.checked_add(delegation.amount_delegated).unwrap()
+                        sum.checked_add(delegation.lamports_delegated).unwrap()
                     }),
                 maybe_tip_distribution_meta: Some(TipDistributionMeta {
                     merkle_root_upload_authority: bs58::encode(
@@ -629,7 +642,7 @@ mod tests {
                 total_delegated: validator_1_delegations
                     .iter()
                     .fold(0u64, |sum, delegation| {
-                        sum.checked_add(delegation.amount_delegated).unwrap()
+                        sum.checked_add(delegation.lamports_delegated).unwrap()
                     }),
                 maybe_tip_distribution_meta: Some(TipDistributionMeta {
                     merkle_root_upload_authority: bs58::encode(
@@ -660,7 +673,7 @@ mod tests {
                 total_delegated: validator_2_delegations
                     .iter()
                     .fold(0u64, |sum, delegation| {
-                        sum.checked_add(delegation.amount_delegated).unwrap()
+                        sum.checked_add(delegation.lamports_delegated).unwrap()
                     }),
                 maybe_tip_distribution_meta: Some(TipDistributionMeta {
                     merkle_root_upload_authority: bs58::encode(
@@ -729,7 +742,7 @@ mod tests {
                 let actual_delegation = actual_stake_meta
                     .delegations
                     .iter()
-                    .find(|d| d.stake_account == expected_delegation.stake_account)
+                    .find(|d| d.stake_account_pubkey == expected_delegation.stake_account_pubkey)
                     .unwrap();
 
                 assert_eq!(expected_delegation, actual_delegation);
