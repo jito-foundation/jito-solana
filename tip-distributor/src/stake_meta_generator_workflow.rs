@@ -167,6 +167,10 @@ pub fn generate_stake_meta_collection(
             )
             .0;
             let tda = if bank.get_account(&tip_distribution_pubkey).is_some() {
+                info!(
+                    "fetching tip distribution account for pubkey: {}",
+                    tip_distribution_pubkey
+                );
                 let account_data: AccountSharedData = rpc_client
                     .get_account(&tip_distribution_pubkey)
                     .expect("error reading account from RPC")
@@ -179,6 +183,10 @@ pub fn generate_stake_meta_collection(
                     tip_distribution_pubkey,
                 })
             } else {
+                info!(
+                    "no tip distribution account for pubkey: {}",
+                    tip_distribution_pubkey
+                );
                 None
             };
             Ok(((*vote_pubkey, vote_account), tda))
