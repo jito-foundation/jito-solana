@@ -157,9 +157,9 @@ pub fn generate_stake_meta_collection(
     // the rewards are claimed.
     let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
     let account = bank.get_account(&tip_accounts.config_pda);
-    let maybe_tip_receiver = account
+    let maybe_tip_receiver: Option<Pubkey> = account
         .and_then(|account| Config::try_deserialize(&mut account.data()).ok())
-        .map(|config| Some(config.tip_receiver));
+        .and_then(|config| Some(config.tip_receiver));
 
     let excess_tip_balances: u64 = tip_accounts
         .tip_pdas
