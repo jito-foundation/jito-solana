@@ -6813,6 +6813,7 @@ dependencies = [
  "solana-stake-program",
  "thiserror",
  "tip-distribution",
+ "tip-payment",
  "tokio",
 ]
 

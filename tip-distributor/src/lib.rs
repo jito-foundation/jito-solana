@@ -6,27 +6,24 @@ use {
         merkle_root_generator_workflow::Error,
         stake_meta_generator_workflow::Error::CheckedMathError,
     },
-    anchor_lang::AccountDeserialize,
     bigdecimal::{num_bigint::BigUint, BigDecimal},
-    log::*,
     num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
     serde::{Deserialize, Serialize},
-    solana_client::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
-    solana_runtime::bank::Bank,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
-        bs58,
         clock::Slot,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
         stake_history::Epoch,
     },
-    std::{
-        ops::{Div, Mul},
-        sync::Arc,
-    },
+    std::ops::{Div, Mul},
     tip_distribution::state::TipDistributionAccount,
+    tip_payment::{
+        Config, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
+        TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
+        TIP_ACCOUNT_SEED_7,
+    },
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -39,7 +36,10 @@ pub struct GeneratedMerkleTreeCollection {
 
 #[derive(Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]
 pub struct GeneratedMerkleTree {
+    #[serde(with = "pubkey_string_conversion")]
     pub tip_distribution_account: Pubkey,
+    #[serde(with = "pubkey_string_conversion")]
+    pub merkle_root_upload_authority: Pubkey,
     #[serde(skip_serializing, skip_deserializing)]
     pub merkle_tree: MerkleTree,
     pub tree_nodes: Vec<TreeNode>,
@@ -47,43 +47,29 @@ pub struct GeneratedMerkleTree {
     pub max_num_nodes: u64,
 }
 
+pub struct TipPaymentPubkeys {
+    config_pda: Pubkey,
+    tip_pdas: Vec<Pubkey>,
+}
+
 impl GeneratedMerkleTreeCollection {
     pub fn new_from_stake_meta_collection(
         stake_meta_coll: StakeMetaCollection,
-        merkle_root_upload_authority: Pubkey,
     ) -> Result<GeneratedMerkleTreeCollection, Error> {
-        let b58_merkle_root_upload_authority =
-            bs58::encode(merkle_root_upload_authority.as_ref()).into_string();
         let generated_merkle_trees = stake_meta_coll
             .stake_metas
             .into_iter()
-            .filter(|stake_meta| {
-                if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref()
-                {
-                    tip_distribution_meta.merkle_root_upload_authority
-                        == b58_merkle_root_upload_authority
-                } else {
-                    false
-                }
-            })
+            .filter(|stake_meta| stake_meta.maybe_tip_distribution_meta.is_some())
             .filter_map(|stake_meta| {
-                // Build the tree
                 let mut tree_nodes = match TreeNode::vec_from_stake_meta(&stake_meta) {
                     Err(e) => return Some(Err(e)),
                     Ok(maybe_tree_nodes) => maybe_tree_nodes,
                 }?;
 
-                // Hash the nodes
                 let hashed_nodes: Vec<[u8; 32]> =
                     tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
 
                 let tip_distribution_meta = stake_meta.maybe_tip_distribution_meta.unwrap();
-
-                let tip_distribution_account =
-                    match tip_distribution_meta.tip_distribution_account.parse() {
-                        Err(_) => return Some(Err(Error::Base58DecodeError)),
-                        Ok(tip_distribution_account) => tip_distribution_account,
-                    };
 
                 let merkle_tree = MerkleTree::new(&hashed_nodes[..], true);
                 let max_num_nodes = tree_nodes.len() as u64;
@@ -94,7 +80,9 @@ impl GeneratedMerkleTreeCollection {
 
                 Some(Ok(GeneratedMerkleTree {
                     max_num_nodes,
-                    tip_distribution_account,
+                    tip_distribution_account: tip_distribution_meta.tip_distribution_pubkey,
+                    merkle_root_upload_authority: tip_distribution_meta
+                        .merkle_root_upload_authority,
                     merkle_tree,
                     tree_nodes,
                     max_total_claim: tip_distribution_meta.total_tips,
@@ -126,10 +114,36 @@ pub fn get_proof(merkle_tree: &MerkleTree, i: usize) -> Vec<[u8; 32]> {
     proof
 }
 
+fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
+    let config_pda = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], program_id).0;
+    let tip_pda_0 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], program_id).0;
+    let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], program_id).0;
+    let tip_pda_2 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], program_id).0;
+    let tip_pda_3 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_3], program_id).0;
+    let tip_pda_4 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_4], program_id).0;
+    let tip_pda_5 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_5], program_id).0;
+    let tip_pda_6 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_6], program_id).0;
+    let tip_pda_7 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], program_id).0;
+
+    TipPaymentPubkeys {
+        config_pda,
+        tip_pdas: vec![
+            tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
+        ],
+    }
+}
+
 #[derive(Clone, Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]
 pub struct TreeNode {
-    /// The account entitled to redeem.
+    /// The stake account entitled to redeem.
+    #[serde(with = "pubkey_string_conversion")]
     pub claimant: Pubkey,
+
+    #[serde(with = "pubkey_string_conversion")]
+    pub staker_pubkey: Pubkey,
+
+    #[serde(with = "pubkey_string_conversion")]
+    pub withdrawer_pubkey: Pubkey,
 
     /// The amount this account is entitled to.
     pub amount: u64,
@@ -140,17 +154,15 @@ pub struct TreeNode {
 
 impl TreeNode {
     fn vec_from_stake_meta(stake_meta: &StakeMeta) -> Result<Option<Vec<TreeNode>>, Error> {
-        let validator_vote_account = stake_meta
-            .validator_vote_account
-            .parse()
-            .map_err(|_| Error::Base58DecodeError)?;
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
             let validator_fee = calc_validator_fee(
                 tip_distribution_meta.total_tips,
                 tip_distribution_meta.validator_fee_bps,
             );
             let mut tree_nodes = vec![TreeNode {
-                claimant: validator_vote_account,
+                claimant: stake_meta.validator_vote_account,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: validator_fee,
                 proof: None,
             }];
@@ -174,11 +186,11 @@ impl TreeNode {
                 .iter()
                 .map(|delegation| {
                     // TODO(seg): Check this math!
-                    let amount_delegated = BigDecimal::try_from(delegation.amount_delegated as f64)
+                    let amount_delegated = BigDecimal::try_from(delegation.lamports_delegated as f64)
                         .expect(&*format!(
                             "failed to convert amount_delegated to BigDecimal [stake_account={}, amount_delegated={}]",
-                            delegation.stake_account,
-                            delegation.amount_delegated,
+                            delegation.stake_account_pubkey,
+                            delegation.lamports_delegated,
                         ));
                     let mut weight = amount_delegated.div(&total_delegated);
 
@@ -189,7 +201,7 @@ impl TreeNode {
                     }
 
                     let truncated_weight = weight.to_u128()
-                        .expect(&*format!("failed to convert weight to u128 [stake_account={}, weight={}]", delegation.stake_account, weight));
+                        .expect(&*format!("failed to convert weight to u128 [stake_account={}, weight={}]", delegation.stake_account_pubkey, weight));
                     let truncated_weight = BigUint::from(truncated_weight);
 
                     let mut amount = truncated_weight
@@ -201,7 +213,9 @@ impl TreeNode {
                     }
 
                     Ok(TreeNode {
-                        claimant: delegation.stake_account.parse().map_err(|_| Error::Base58DecodeError)?,
+                        claimant: delegation.stake_account_pubkey,
+                        staker_pubkey: delegation.staker_pubkey,
+                        withdrawer_pubkey: delegation.withdrawer_pubkey,
                         amount: amount.to_u64().unwrap(),
                         proof: None
                     })
@@ -233,7 +247,8 @@ pub struct StakeMetaCollection {
     pub stake_metas: Vec<StakeMeta>,
 
     /// base58 encoded tip-distribution program id.
-    pub tip_distribution_program_id: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub tip_distribution_program_id: Pubkey,
 
     /// Base58 encoded bank hash this object was generated at.
     pub bank_hash: String,
@@ -247,8 +262,8 @@ pub struct StakeMetaCollection {
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct StakeMeta {
-    /// The validator's base58 encoded vote account.
-    pub validator_vote_account: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub validator_vote_account: Pubkey,
 
     /// The validator's tip-distribution meta if it exists.
     pub maybe_tip_distribution_meta: Option<TipDistributionMeta>,
@@ -265,11 +280,11 @@ pub struct StakeMeta {
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct TipDistributionMeta {
-    /// The account authorized to generate and upload a merkle_root for the validator.
-    pub merkle_root_upload_authority: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub merkle_root_upload_authority: Pubkey,
 
-    /// The validator's base58 encoded [TipDistributionAccount].
-    pub tip_distribution_account: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub tip_distribution_pubkey: Pubkey,
 
     /// The validator's total tips in the [TipDistributionAccount].
     pub total_tips: u64,
@@ -286,8 +301,7 @@ impl TipDistributionMeta {
         rent_exempt_amount: u64,
     ) -> Result<Self, stake_meta_generator_workflow::Error> {
         Ok(TipDistributionMeta {
-            tip_distribution_account: bs58::encode(tda_wrapper.tip_distribution_account_pubkey)
-                .into_string(),
+            tip_distribution_pubkey: tda_wrapper.tip_distribution_pubkey,
             total_tips: tda_wrapper
                 .account_data
                 .lamports()
@@ -296,30 +310,33 @@ impl TipDistributionMeta {
             validator_fee_bps: tda_wrapper
                 .tip_distribution_account
                 .validator_commission_bps,
-            merkle_root_upload_authority: bs58::encode(
-                tda_wrapper
-                    .tip_distribution_account
-                    .merkle_root_upload_authority,
-            )
-            .into_string(),
+            merkle_root_upload_authority: tda_wrapper
+                .tip_distribution_account
+                .merkle_root_upload_authority,
         })
     }
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct Delegation {
-    /// The stake account of interest base58 encoded.
-    pub stake_account: String,
+    #[serde(with = "pubkey_string_conversion")]
+    pub stake_account_pubkey: Pubkey,
 
-    /// Amount delegated by this account.
-    pub amount_delegated: u64,
+    #[serde(with = "pubkey_string_conversion")]
+    pub staker_pubkey: Pubkey,
+
+    #[serde(with = "pubkey_string_conversion")]
+    pub withdrawer_pubkey: Pubkey,
+
+    /// Lamports delegated by the stake account
+    pub lamports_delegated: u64,
 }
 
 /// Convenience wrapper around [TipDistributionAccount]
 pub struct TipDistributionAccountWrapper {
     pub tip_distribution_account: TipDistributionAccount,
     pub account_data: AccountSharedData,
-    pub tip_distribution_account_pubkey: Pubkey,
+    pub tip_distribution_pubkey: Pubkey,
 }
 
 // TODO: move to program's sdk
@@ -336,80 +353,6 @@ pub fn derive_tip_distribution_account_address(
         ],
         tip_distribution_program_id,
     )
-}
-
-pub trait AccountFetcher {
-    fn fetch_account(
-        &self,
-        pubkey: &Pubkey,
-    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error>;
-}
-
-/// Fetches and deserializes the vote_pubkey's corresponding [TipDistributionAccount].
-pub fn fetch_and_deserialize_tip_distribution_account(
-    account_fetcher: Arc<Box<dyn AccountFetcher>>,
-    vote_pubkey: &Pubkey,
-    tip_distribution_program_id: &Pubkey,
-    epoch: Epoch,
-) -> Result<Option<TipDistributionAccountWrapper>, stake_meta_generator_workflow::Error> {
-    let tip_distribution_account_pubkey =
-        derive_tip_distribution_account_address(tip_distribution_program_id, vote_pubkey, epoch).0;
-
-    match account_fetcher.fetch_account(&tip_distribution_account_pubkey)? {
-        None => {
-            warn!(
-                "TipDistributionAccount not found for vote_pubkey {}, epoch {}, tip_distribution_account_pubkey {}",
-                vote_pubkey,
-                epoch,
-                tip_distribution_account_pubkey,
-            );
-            Ok(None)
-        }
-        Some(account_data) => Ok(Some(TipDistributionAccountWrapper {
-            tip_distribution_account: TipDistributionAccount::try_deserialize(
-                &mut account_data.data(),
-            )?,
-            account_data,
-            tip_distribution_account_pubkey,
-        })),
-    }
-}
-
-struct BankAccountFetcher {
-    bank: Arc<Bank>,
-}
-
-impl AccountFetcher for BankAccountFetcher {
-    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from the accounts DB.
-    fn fetch_account(
-        &self,
-        pubkey: &Pubkey,
-    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
-        Ok(self.bank.get_account(pubkey))
-    }
-}
-
-struct RpcAccountFetcher {
-    rpc_client: RpcClient,
-}
-
-impl AccountFetcher for RpcAccountFetcher {
-    /// Fetches the vote_pubkey's corresponding [TipDistributionAccount] from an RPC node.
-    fn fetch_account(
-        &self,
-        pubkey: &Pubkey,
-    ) -> Result<Option<AccountSharedData>, stake_meta_generator_workflow::Error> {
-        match self
-            .rpc_client
-            .get_account_with_commitment(pubkey, self.rpc_client.commitment())
-        {
-            Ok(resp) => Ok(resp.value.map(|a| a.into())),
-            Err(e) => {
-                error!("error fetching account {}", e);
-                Err(e.into())
-            }
-        }
-    }
 }
 
 /// Calculate validator fee denominated in lamports
@@ -476,6 +419,29 @@ mod math {
     }
 }
 
+mod pubkey_string_conversion {
+    use {
+        serde::{self, Deserialize, Deserializer, Serializer},
+        solana_sdk::pubkey::Pubkey,
+        std::str::FromStr,
+    };
+
+    pub fn serialize<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&pubkey.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Pubkey::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {super::*, solana_sdk::bs58, tip_distribution::merkle_proof};
@@ -489,11 +455,15 @@ mod tests {
         let tree_nodes = vec![
             TreeNode {
                 claimant: acct_0.parse().unwrap(),
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 151_507,
                 proof: None,
             },
             TreeNode {
                 claimant: acct_1.parse().unwrap(),
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 176_624,
                 proof: None,
             },
@@ -517,21 +487,22 @@ mod tests {
 
     #[test]
     fn test_new_from_stake_meta_collection_happy_path() {
-        let b58_merkle_root_upload_authority =
-            bs58::encode(Pubkey::new_unique().as_ref()).into_string();
+        let merkle_root_upload_authority = Pubkey::new_unique();
 
-        let (tda_0, tda_1) = (
-            bs58::encode(Pubkey::new_unique().as_ref()).into_string(),
-            bs58::encode(Pubkey::new_unique().as_ref()).into_string(),
-        );
+        let (tda_0, tda_1) = (Pubkey::new_unique(), Pubkey::new_unique());
 
-        let stake_account_0 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        let stake_account_1 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        let stake_account_2 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        let stake_account_3 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
+        let stake_account_0 = Pubkey::new_unique();
+        let stake_account_1 = Pubkey::new_unique();
+        let stake_account_2 = Pubkey::new_unique();
+        let stake_account_3 = Pubkey::new_unique();
 
-        let validator_vote_account_0 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        let validator_vote_account_1 = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
+        let staker_account_0 = Pubkey::new_unique();
+        let staker_account_1 = Pubkey::new_unique();
+        let staker_account_2 = Pubkey::new_unique();
+        let staker_account_3 = Pubkey::new_unique();
+
+        let validator_vote_account_0 = Pubkey::new_unique();
+        let validator_vote_account_1 = Pubkey::new_unique();
 
         println!("test stake_account {}", stake_account_0);
         println!("test stake_account {}", stake_account_1);
@@ -541,49 +512,57 @@ mod tests {
         let stake_meta_collection = StakeMetaCollection {
             stake_metas: vec![
                 StakeMeta {
-                    validator_vote_account: validator_vote_account_0.clone(),
+                    validator_vote_account: validator_vote_account_0,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
-                        merkle_root_upload_authority: b58_merkle_root_upload_authority.clone(),
-                        tip_distribution_account: tda_0.clone(),
+                        merkle_root_upload_authority,
+                        tip_distribution_pubkey: tda_0,
                         total_tips: 1_900_122_111_000,
                         validator_fee_bps: 100,
                     }),
                     delegations: vec![
                         Delegation {
-                            stake_account: stake_account_0.clone(),
-                            amount_delegated: 123_999_123_555,
+                            stake_account_pubkey: stake_account_0,
+                            staker_pubkey: staker_account_0,
+                            withdrawer_pubkey: staker_account_0,
+                            lamports_delegated: 123_999_123_555,
                         },
                         Delegation {
-                            stake_account: stake_account_1.clone(),
-                            amount_delegated: 144_555_444_556,
+                            stake_account_pubkey: stake_account_1,
+                            staker_pubkey: staker_account_1,
+                            withdrawer_pubkey: staker_account_1,
+                            lamports_delegated: 144_555_444_556,
                         },
                     ],
                     total_delegated: 1_555_123_000_333_454_000,
                     commission: 100,
                 },
                 StakeMeta {
-                    validator_vote_account: validator_vote_account_1.clone(),
+                    validator_vote_account: validator_vote_account_1,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
-                        merkle_root_upload_authority: b58_merkle_root_upload_authority.clone(),
-                        tip_distribution_account: tda_1.clone(),
+                        merkle_root_upload_authority,
+                        tip_distribution_pubkey: tda_1,
                         total_tips: 1_900_122_111_333,
                         validator_fee_bps: 200,
                     }),
                     delegations: vec![
                         Delegation {
-                            stake_account: stake_account_2.clone(),
-                            amount_delegated: 224_555_444,
+                            stake_account_pubkey: stake_account_2,
+                            staker_pubkey: staker_account_2,
+                            withdrawer_pubkey: staker_account_2,
+                            lamports_delegated: 224_555_444,
                         },
                         Delegation {
-                            stake_account: stake_account_3.clone(),
-                            amount_delegated: 700_888_944_555,
+                            stake_account_pubkey: stake_account_3,
+                            staker_pubkey: staker_account_3,
+                            withdrawer_pubkey: staker_account_3,
+                            lamports_delegated: 700_888_944_555,
                         },
                     ],
                     total_delegated: 2_565_318_909_444_123,
                     commission: 10,
                 },
             ],
-            tip_distribution_program_id: bs58::encode(Pubkey::new_unique().as_ref()).into_string(),
+            tip_distribution_program_id: Pubkey::new_unique(),
             bank_hash: solana_sdk::hash::Hash::new_unique().to_string(),
             epoch: 100,
             slot: 2_000_000,
@@ -591,7 +570,6 @@ mod tests {
 
         let merkle_tree_collection = GeneratedMerkleTreeCollection::new_from_stake_meta_collection(
             stake_meta_collection.clone(),
-            b58_merkle_root_upload_authority.parse().unwrap(),
         )
         .unwrap();
 
@@ -608,24 +586,31 @@ mod tests {
 
         let tree_nodes = vec![
             TreeNode {
-                claimant: validator_vote_account_0.parse().unwrap(),
+                claimant: validator_vote_account_0,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 19_001_221_110,
                 proof: None,
             },
             TreeNode {
-                claimant: stake_account_0.parse().unwrap(),
+                claimant: stake_account_0,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 149_992,
                 proof: None,
             },
             TreeNode {
-                claimant: stake_account_1.parse().unwrap(),
+                claimant: stake_account_1,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 174_858,
                 proof: None,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
         let gmt_0 = GeneratedMerkleTree {
-            tip_distribution_account: tda_0.parse().unwrap(),
+            tip_distribution_account: tda_0,
+            merkle_root_upload_authority,
             merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[0]
@@ -638,24 +623,31 @@ mod tests {
 
         let tree_nodes = vec![
             TreeNode {
-                claimant: validator_vote_account_1.parse().unwrap(),
+                claimant: validator_vote_account_1,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 38_002_442_227,
                 proof: None,
             },
             TreeNode {
-                claimant: stake_account_2.parse().unwrap(),
+                claimant: stake_account_2,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 163_000,
                 proof: None,
             },
             TreeNode {
-                claimant: stake_account_3.parse().unwrap(),
+                claimant: stake_account_3,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 508_762_900,
                 proof: None,
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
         let gmt_1 = GeneratedMerkleTree {
-            tip_distribution_account: tda_1.parse().unwrap(),
+            tip_distribution_account: tda_1,
+            merkle_root_upload_authority,
             merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[1]

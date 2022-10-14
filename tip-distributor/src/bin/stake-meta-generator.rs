@@ -5,7 +5,6 @@
 use {
     clap::Parser,
     log::*,
-    solana_client::rpc_client::RpcClient,
     solana_sdk::{clock::Slot, pubkey::Pubkey},
     solana_tip_distributor::{self, stake_meta_generator_workflow::run_workflow},
     std::{
@@ -26,6 +25,10 @@ struct Args {
     #[clap(long, env)]
     tip_distribution_program_id: Pubkey,
 
+    /// The tip-payment program id.
+    #[clap(long, env)]
+    tip_payment_program_id: Pubkey,
+
     /// Path to JSON file populated with the [StakeMetaCollection] object.
     #[clap(long, env)]
     out_path: String,
@@ -33,10 +36,6 @@ struct Args {
     /// The expected snapshot slot.
     #[clap(long, env)]
     snapshot_slot: Slot,
-
-    /// The RPC to fetch lamports from for the tip distribution accounts.
-    #[clap(long, env)]
-    rpc_url: String,
 }
 
 impl Args {
@@ -54,14 +53,15 @@ fn main() {
 
     let args: Args = Args::parse();
 
-    let rpc_client = RpcClient::new(args.rpc_url);
-
-    run_workflow(
+    if let Err(e) = run_workflow(
         &args.ledger_path,
-        args.snapshot_slot,
-        args.tip_distribution_program_id,
-        args.out_path,
-        rpc_client,
-    )
-    .expect("Workflow failed.");
+        &args.snapshot_slot,
+        &args.tip_distribution_program_id,
+        &args.out_path,
+        &args.tip_payment_program_id,
+    ) {
+        error!("error producing stake-meta: {:?}", e);
+    } else {
+        info!("produced stake meta");
+    }
 }
