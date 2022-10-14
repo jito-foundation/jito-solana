@@ -125,7 +125,7 @@ fn write_to_json_file(stake_meta_coll: &StakeMetaCollection, out_path: &str) -> 
     let file = File::create(out_path)?;
     let mut writer = BufWriter::new(file);
     let json = serde_json::to_string_pretty(&stake_meta_coll).unwrap();
-    writer.write(json.as_bytes())?;
+    let _ = writer.write(json.as_bytes())?;
     writer.flush()?;
 
     Ok(())
@@ -155,12 +155,11 @@ pub fn generate_stake_meta_collection(
     // the account balance in the snapshot could be incorrect.
     // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
     // the rewards are claimed.
-    let tip_accounts = derive_tip_payment_pubkeys(&tip_payment_program_id);
+    let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
     let account = bank.get_account(&tip_accounts.config_pda);
     let maybe_tip_receiver = account
-        .map(|account| Config::try_deserialize(&mut account.data()).ok())
-        .flatten()
-        .map(|config| config.tip_receiver);
+        .and_then(|account| Config::try_deserialize(&mut account.data()).ok())
+        .and_then(|config| Some(config.tip_receiver));
 
     let excess_tip_balances: u64 = tip_accounts
         .tip_pdas
@@ -184,7 +183,7 @@ pub fn generate_stake_meta_collection(
         .map(|(vote_pubkey, (_total_stake, vote_account))| {
             let tip_distribution_pubkey = derive_tip_distribution_account_address(
                 tip_distribution_program_id,
-                &vote_pubkey,
+                vote_pubkey,
                 bank.epoch(),
             )
             .0;

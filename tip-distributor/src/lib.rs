@@ -115,15 +115,15 @@ pub fn get_proof(merkle_tree: &MerkleTree, i: usize) -> Vec<[u8; 32]> {
 }
 
 fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
-    let config_pda = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], &program_id).0;
-    let tip_pda_0 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], &program_id).0;
-    let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], &program_id).0;
-    let tip_pda_2 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], &program_id).0;
-    let tip_pda_3 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_3], &program_id).0;
-    let tip_pda_4 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_4], &program_id).0;
-    let tip_pda_5 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_5], &program_id).0;
-    let tip_pda_6 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_6], &program_id).0;
-    let tip_pda_7 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], &program_id).0;
+    let config_pda = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], program_id).0;
+    let tip_pda_0 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], program_id).0;
+    let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], program_id).0;
+    let tip_pda_2 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], program_id).0;
+    let tip_pda_3 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_3], program_id).0;
+    let tip_pda_4 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_4], program_id).0;
+    let tip_pda_5 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_5], program_id).0;
+    let tip_pda_6 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_6], program_id).0;
+    let tip_pda_7 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], program_id).0;
 
     TipPaymentPubkeys {
         config_pda,
@@ -420,8 +420,7 @@ mod pubkey_string_conversion {
     where
         S: Serializer,
     {
-        let s = format!("{}", pubkey.to_string());
-        serializer.serialize_str(&s)
+        serializer.serialize_str(&pubkey.to_string())
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
@@ -499,22 +498,22 @@ mod tests {
         let stake_meta_collection = StakeMetaCollection {
             stake_metas: vec![
                 StakeMeta {
-                    validator_vote_account: validator_vote_account_0.clone(),
+                    validator_vote_account: validator_vote_account_0,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
-                        merkle_root_upload_authority: merkle_root_upload_authority.clone(),
-                        tip_distribution_pubkey: tda_0.clone(),
+                        merkle_root_upload_authority,
+                        tip_distribution_pubkey: tda_0,
                         total_tips: 1_900_122_111_000,
                         validator_fee_bps: 100,
                     }),
                     delegations: vec![
                         Delegation {
-                            stake_account_pubkey: stake_account_0.clone(),
+                            stake_account_pubkey: stake_account_0,
                             staker_pubkey: staker_account_0,
                             withdrawer_pubkey: staker_account_0,
                             lamports_delegated: 123_999_123_555,
                         },
                         Delegation {
-                            stake_account_pubkey: stake_account_1.clone(),
+                            stake_account_pubkey: stake_account_1,
                             staker_pubkey: staker_account_1,
                             withdrawer_pubkey: staker_account_1,
                             lamports_delegated: 144_555_444_556,
@@ -524,22 +523,22 @@ mod tests {
                     commission: 100,
                 },
                 StakeMeta {
-                    validator_vote_account: validator_vote_account_1.clone(),
+                    validator_vote_account: validator_vote_account_1,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
-                        merkle_root_upload_authority: merkle_root_upload_authority.clone(),
-                        tip_distribution_pubkey: tda_1.clone(),
+                        merkle_root_upload_authority,
+                        tip_distribution_pubkey: tda_1,
                         total_tips: 1_900_122_111_333,
                         validator_fee_bps: 200,
                     }),
                     delegations: vec![
                         Delegation {
-                            stake_account_pubkey: stake_account_2.clone(),
+                            stake_account_pubkey: stake_account_2,
                             staker_pubkey: staker_account_2,
                             withdrawer_pubkey: staker_account_2,
                             lamports_delegated: 224_555_444,
                         },
                         Delegation {
-                            stake_account_pubkey: stake_account_3.clone(),
+                            stake_account_pubkey: stake_account_3,
                             staker_pubkey: staker_account_3,
                             withdrawer_pubkey: staker_account_3,
                             lamports_delegated: 700_888_944_555,
