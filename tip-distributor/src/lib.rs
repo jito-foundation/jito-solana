@@ -135,9 +135,15 @@ fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
 
 #[derive(Clone, Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]
 pub struct TreeNode {
-    /// The account entitled to redeem.
+    /// The stake account entitled to redeem.
     #[serde(with = "pubkey_string_conversion")]
     pub claimant: Pubkey,
+
+    #[serde(with = "pubkey_string_conversion")]
+    pub staker_pubkey: Pubkey,
+
+    #[serde(with = "pubkey_string_conversion")]
+    pub withdrawer_pubkey: Pubkey,
 
     /// The amount this account is entitled to.
     pub amount: u64,
@@ -155,6 +161,8 @@ impl TreeNode {
             );
             let mut tree_nodes = vec![TreeNode {
                 claimant: stake_meta.validator_vote_account,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: validator_fee,
                 proof: None,
             }];
@@ -206,6 +214,8 @@ impl TreeNode {
 
                     Ok(TreeNode {
                         claimant: delegation.stake_account_pubkey,
+                        staker_pubkey: delegation.staker_pubkey,
+                        withdrawer_pubkey: delegation.withdrawer_pubkey,
                         amount: amount.to_u64().unwrap(),
                         proof: None
                     })
@@ -445,11 +455,15 @@ mod tests {
         let tree_nodes = vec![
             TreeNode {
                 claimant: acct_0.parse().unwrap(),
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 151_507,
                 proof: None,
             },
             TreeNode {
                 claimant: acct_1.parse().unwrap(),
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 176_624,
                 proof: None,
             },
@@ -573,16 +587,22 @@ mod tests {
         let tree_nodes = vec![
             TreeNode {
                 claimant: validator_vote_account_0,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 19_001_221_110,
                 proof: None,
             },
             TreeNode {
                 claimant: stake_account_0,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 149_992,
                 proof: None,
             },
             TreeNode {
                 claimant: stake_account_1,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 174_858,
                 proof: None,
             },
@@ -604,16 +624,22 @@ mod tests {
         let tree_nodes = vec![
             TreeNode {
                 claimant: validator_vote_account_1,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 38_002_442_227,
                 proof: None,
             },
             TreeNode {
                 claimant: stake_account_2,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 163_000,
                 proof: None,
             },
             TreeNode {
                 claimant: stake_account_3,
+                staker_pubkey: Pubkey::default(),
+                withdrawer_pubkey: Pubkey::default(),
                 amount: 508_762_900,
                 proof: None,
             },
