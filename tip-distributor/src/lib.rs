@@ -19,6 +19,11 @@ use {
     },
     std::ops::{Div, Mul},
     tip_distribution::state::TipDistributionAccount,
+    tip_payment::{
+        Config, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
+        TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
+        TIP_ACCOUNT_SEED_7,
+    },
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -33,6 +38,8 @@ pub struct GeneratedMerkleTreeCollection {
 pub struct GeneratedMerkleTree {
     #[serde(with = "pubkey_string_conversion")]
     pub tip_distribution_account: Pubkey,
+    #[serde(with = "pubkey_string_conversion")]
+    pub merkle_root_upload_authority: Pubkey,
     #[serde(skip_serializing, skip_deserializing)]
     pub merkle_tree: MerkleTree,
     pub tree_nodes: Vec<TreeNode>,
@@ -40,31 +47,25 @@ pub struct GeneratedMerkleTree {
     pub max_num_nodes: u64,
 }
 
+pub struct TipPaymentPubkeys {
+    config_pda: Pubkey,
+    tip_pdas: Vec<Pubkey>,
+}
+
 impl GeneratedMerkleTreeCollection {
     pub fn new_from_stake_meta_collection(
         stake_meta_coll: StakeMetaCollection,
-        merkle_root_upload_authority: Pubkey,
     ) -> Result<GeneratedMerkleTreeCollection, Error> {
         let generated_merkle_trees = stake_meta_coll
             .stake_metas
             .into_iter()
-            .filter(|stake_meta| {
-                if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref()
-                {
-                    tip_distribution_meta.merkle_root_upload_authority
-                        == merkle_root_upload_authority
-                } else {
-                    false
-                }
-            })
+            .filter(|stake_meta| stake_meta.maybe_tip_distribution_meta.is_some())
             .filter_map(|stake_meta| {
-                // Build the tree
                 let mut tree_nodes = match TreeNode::vec_from_stake_meta(&stake_meta) {
                     Err(e) => return Some(Err(e)),
                     Ok(maybe_tree_nodes) => maybe_tree_nodes,
                 }?;
 
-                // Hash the nodes
                 let hashed_nodes: Vec<[u8; 32]> =
                     tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
 
@@ -80,6 +81,8 @@ impl GeneratedMerkleTreeCollection {
                 Some(Ok(GeneratedMerkleTree {
                     max_num_nodes,
                     tip_distribution_account: tip_distribution_meta.tip_distribution_pubkey,
+                    merkle_root_upload_authority: tip_distribution_meta
+                        .merkle_root_upload_authority,
                     merkle_tree,
                     tree_nodes,
                     max_total_claim: tip_distribution_meta.total_tips,
@@ -109,6 +112,25 @@ pub fn get_proof(merkle_tree: &MerkleTree, i: usize) -> Vec<[u8; 32]> {
         }
     }
     proof
+}
+
+fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
+    let config_pda = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], &program_id).0;
+    let tip_pda_0 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], &program_id).0;
+    let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], &program_id).0;
+    let tip_pda_2 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], &program_id).0;
+    let tip_pda_3 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_3], &program_id).0;
+    let tip_pda_4 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_4], &program_id).0;
+    let tip_pda_5 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_5], &program_id).0;
+    let tip_pda_6 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_6], &program_id).0;
+    let tip_pda_7 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], &program_id).0;
+
+    TipPaymentPubkeys {
+        config_pda,
+        tip_pdas: vec![
+            tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
+        ],
+    }
 }
 
 #[derive(Clone, Eq, Debug, Hash, PartialEq, Deserialize, Serialize)]

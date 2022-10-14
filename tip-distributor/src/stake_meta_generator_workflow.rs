@@ -1,12 +1,13 @@
 use {
     crate::{
-        derive_tip_distribution_account_address, StakeMeta, StakeMetaCollection,
-        TipDistributionAccount, TipDistributionAccountWrapper, TipDistributionMeta,
+        derive_tip_distribution_account_address, derive_tip_payment_pubkeys, Config, StakeMeta,
+        StakeMetaCollection, TipDistributionAccount, TipDistributionAccountWrapper,
+        TipDistributionMeta,
     },
     anchor_lang::AccountDeserialize,
     itertools::Itertools,
     log::*,
-    solana_client::{client_error::ClientError, rpc_client::RpcClient},
+    solana_client::client_error::ClientError,
     solana_ledger::{
         bank_forks_utils,
         blockstore::BlockstoreError,
@@ -20,7 +21,7 @@ use {
         vote_account::VoteAccount,
     },
     solana_sdk::{
-        account::{AccountSharedData, ReadableAccount},
+        account::{ReadableAccount, WritableAccount},
         clock::Slot,
         pubkey::Pubkey,
     },
@@ -73,14 +74,14 @@ pub fn run_workflow(
     snapshot_slot: &Slot,
     tip_distribution_program_id: &Pubkey,
     out_path: &str,
-    rpc_client: &RpcClient,
+    tip_payment_program_id: &Pubkey,
 ) -> Result<(), Error> {
     info!("Creating bank from ledger path...");
     let bank = create_bank_from_snapshot(ledger_path, snapshot_slot)?;
 
     info!("Generating stake_meta_collection object...");
     let stake_meta_coll =
-        generate_stake_meta_collection(&bank, tip_distribution_program_id, rpc_client)?;
+        generate_stake_meta_collection(&bank, tip_distribution_program_id, tip_payment_program_id)?;
 
     info!("Writing stake_meta_collection to JSON {}...", out_path);
     write_to_json_file(&stake_meta_coll, out_path)?;
@@ -133,9 +134,8 @@ fn write_to_json_file(stake_meta_coll: &StakeMetaCollection, out_path: &str) -> 
 /// Creates a collection of [StakeMeta]'s from the given bank.
 pub fn generate_stake_meta_collection(
     bank: &Arc<Bank>,
-    // Used to derive the PDA and fetch the account data from the Bank.
     tip_distribution_program_id: &Pubkey,
-    rpc_client: &RpcClient,
+    tip_payment_program_id: &Pubkey,
 ) -> Result<StakeMetaCollection, Error> {
     assert!(bank.is_frozen());
 
@@ -148,56 +148,71 @@ pub fn generate_stake_meta_collection(
     let l_stakes = bank.stakes_cache.stakes();
     let delegations = l_stakes.stake_delegations();
 
+    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank);
+
     // the last leader in an epoch may not crank the tip program before the epoch is over, which
     // would result in MEV rewards for epoch N not being cranked until epoch N + 1. This means that
     // the account balance in the snapshot could be incorrect.
-    // We assume that by the time the call to read the balance from the RPC server is made that
-    // the tip payment program has been cranked and the balance for the tip distribution account
-    // is reflected accurately by reading the tip distribution amount on-chain.
+    // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
+    // the rewards are claimed.
+    let tip_accounts = derive_tip_payment_pubkeys(&tip_payment_program_id);
+    let tip_receiver = Config::try_deserialize(
+        &mut bank
+            .get_account(&tip_accounts.config_pda)
+            .expect("tip payment config account exists")
+            .data(),
+    )
+    .expect("tip payment config account deserializes")
+    .tip_receiver;
+
+    let excess_tip_balances: u64 = tip_accounts
+        .tip_pdas
+        .iter()
+        .map(|pubkey| {
+            let acc = bank.get_account(pubkey).expect("tip account exists");
+            acc.lamports()
+                .checked_sub(bank.get_minimum_balance_for_rent_exemption(acc.data().len()))
+                .expect("tip balance underflow")
+        })
+        .sum();
+
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
         Option<TipDistributionAccountWrapper>,
     )> = epoch_vote_accounts
         .iter()
         .map(|(vote_pubkey, (_total_stake, vote_account))| {
-            // the tip distribution account for a given epoch will exist in the bank, but might
-            // not have an accurate number of lamports in it, so only fetch the lamport balance
-            // from RPC if it exists in the bank (checking bank way faster than rpc).
             let tip_distribution_pubkey = derive_tip_distribution_account_address(
                 tip_distribution_program_id,
                 &vote_pubkey,
                 bank.epoch(),
             )
             .0;
-            let tda = if bank.get_account(&tip_distribution_pubkey).is_some() {
-                info!(
-                    "fetching tip distribution account for pubkey: {}",
-                    tip_distribution_pubkey
-                );
-                let account_data: AccountSharedData = rpc_client
-                    .get_account(&tip_distribution_pubkey)
-                    .expect("error reading account from RPC")
-                    .into();
-                Some(TipDistributionAccountWrapper {
-                    tip_distribution_account: TipDistributionAccount::try_deserialize(
-                        &mut account_data.data(),
-                    )
-                    .expect("deserialize tda"),
-                    account_data,
-                    tip_distribution_pubkey,
-                })
-            } else {
-                info!(
-                    "no tip distribution account for pubkey: {}",
-                    tip_distribution_pubkey
-                );
-                None
-            };
+            let tda = bank
+                .get_account(&tip_distribution_pubkey)
+                .map(|mut account_data| {
+                    let tip_distribution_account =
+                        TipDistributionAccount::try_deserialize(&mut account_data.data())
+                            .expect("deserialized TipDistributionAccount");
+                    // this snapshot might have tips that weren't claimed by the time the epoch is over
+                    // assume that it will eventually be cranked and credit the excess to this account
+                    if tip_distribution_pubkey == tip_receiver {
+                        account_data.set_lamports(
+                            account_data
+                                .lamports()
+                                .checked_add(excess_tip_balances)
+                                .expect("tip overflow"),
+                        );
+                    }
+                    TipDistributionAccountWrapper {
+                        tip_distribution_account,
+                        account_data,
+                        tip_distribution_pubkey,
+                    }
+                });
             Ok(((*vote_pubkey, vote_account), tda))
         })
         .collect::<Result<_, Error>>()?;
-
-    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank);
 
     let mut stake_metas = vec![];
     for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {

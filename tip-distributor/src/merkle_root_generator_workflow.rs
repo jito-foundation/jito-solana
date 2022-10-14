@@ -63,10 +63,8 @@ pub fn run_workflow(
 ) -> Result<(), Error> {
     let stake_meta_coll = read_stake_meta_collection(stake_meta_coll_path)?;
 
-    let merkle_tree_coll = GeneratedMerkleTreeCollection::new_from_stake_meta_collection(
-        stake_meta_coll.clone(),
-        my_keypair.pubkey(),
-    )?;
+    let merkle_tree_coll =
+        GeneratedMerkleTreeCollection::new_from_stake_meta_collection(stake_meta_coll.clone())?;
 
     write_to_json_file(&merkle_tree_coll, out_path)?;
 
@@ -138,6 +136,7 @@ fn upload_roots(
     let txs = merkle_tree_coll
         .generated_merkle_trees
         .into_iter()
+        .filter(|tree| tree.merkle_root_upload_authority == my_keypair.pubkey())
         .filter(|gmt| {
             if !force_upload_roots {
                 let account = rt
