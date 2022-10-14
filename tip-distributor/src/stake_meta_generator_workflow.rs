@@ -396,8 +396,8 @@ mod tests {
         /* 3. Delegate some stake to the initial set of validators */
         let mut validator_0_delegations = vec![crate::Delegation {
             stake_account_pubkey: validator_keypairs_0.stake_keypair.pubkey(),
-            staker_pubkey: validator_keypairs_0.node_keypair.pubkey(),
-            withdrawer_pubkey: validator_keypairs_0.node_keypair.pubkey(),
+            staker_pubkey: validator_keypairs_0.stake_keypair.pubkey(),
+            withdrawer_pubkey: validator_keypairs_0.stake_keypair.pubkey(),
             lamports_delegated: INITIAL_VALIDATOR_STAKES,
         }];
         let stake_account = delegate_stake_helper(
@@ -439,8 +439,8 @@ mod tests {
 
         let mut validator_1_delegations = vec![crate::Delegation {
             stake_account_pubkey: validator_keypairs_1.stake_keypair.pubkey(),
-            staker_pubkey: validator_keypairs_1.node_keypair.pubkey(),
-            withdrawer_pubkey: validator_keypairs_1.node_keypair.pubkey(),
+            staker_pubkey: validator_keypairs_1.stake_keypair.pubkey(),
+            withdrawer_pubkey: validator_keypairs_1.stake_keypair.pubkey(),
             lamports_delegated: INITIAL_VALIDATOR_STAKES,
         }];
         let stake_account = delegate_stake_helper(
@@ -470,8 +470,8 @@ mod tests {
 
         let mut validator_2_delegations = vec![crate::Delegation {
             stake_account_pubkey: validator_keypairs_2.stake_keypair.pubkey(),
-            staker_pubkey: validator_keypairs_2.node_keypair.pubkey(),
-            withdrawer_pubkey: validator_keypairs_2.node_keypair.pubkey(),
+            staker_pubkey: validator_keypairs_2.stake_keypair.pubkey(),
+            withdrawer_pubkey: validator_keypairs_2.stake_keypair.pubkey(),
             lamports_delegated: INITIAL_VALIDATOR_STAKES,
         }];
         let stake_account = delegate_stake_helper(
@@ -794,7 +794,7 @@ mod tests {
             &from_keypair.pubkey(),
             &stake_keypair.pubkey(),
             vote_account,
-            &Authorized::auto(&stake_keypair.pubkey()),
+            &Authorized::auto(&from_keypair.pubkey()),
             &Lockup::default(),
             delegation_amount,
         );
