@@ -1,19 +1,22 @@
 use {
     crate::{read_json_from_file, GeneratedMerkleTree, GeneratedMerkleTreeCollection},
     anchor_lang::AccountDeserialize,
+    im::HashMap,
+    log::{error, info},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_sdk::{
+        commitment_config::CommitmentConfig,
         pubkey::Pubkey,
-        signature::{read_keypair_file, Signer},
+        signature::{read_keypair_file, Signature, Signer},
         transaction::Transaction,
     },
-    std::path::PathBuf,
+    std::{path::PathBuf, time::Duration},
     thiserror::Error,
     tip_distribution::{
         sdk::instruction::{upload_merkle_root_ix, UploadMerkleRootAccounts, UploadMerkleRootArgs},
         state::{Config, TipDistributionAccount},
     },
-    tokio::runtime::Builder,
+    tokio::{runtime::Builder, time::sleep},
 };
 
 #[derive(Error, Debug)]
@@ -45,7 +48,8 @@ pub fn upload_merkle_root(
         .expect("build runtime");
 
     runtime.block_on(async move {
-        let rpc_client = RpcClient::new(rpc_url.to_string());
+        let rpc_client =
+            RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
         let recent_blockhash = rpc_client
             .get_latest_blockhash()
             .await
@@ -106,74 +110,55 @@ pub fn upload_merkle_root(
                 )
             })
             .collect();
+        send_transactions_with_retry(&rpc_client, &transactions).await;
     });
 
     Ok(())
 }
 
-//     if !txs.is_empty() {
-//         execute_transactions(rpc_client, txs);
-//     } else {
-//         error!("No transactions to execute, use --force-upload-root to reupload roots");
-//     }
-// }
-//
-// fn execute_transactions(rpc_client: Arc<RpcClient>, txs: Vec<Transaction>) {
-//     const DELAY: Duration = Duration::from_millis(500);
-//     const MAX_RETRIES: usize = 5;
-//
-//     let rt = Builder::new_multi_thread()
-//         .worker_threads(txs.len().min(20))
-//         .thread_name("execute_transactions")
-//         .enable_time()
-//         .enable_io()
-//         .build()
-//         .unwrap();
-//
-//     let hdls = txs
-//         .into_iter()
-//         .map(|tx| {
-//             let rpc_client = rpc_client.clone();
-//             rt.spawn(async move {
-//                 if let Err(e) =
-//                     send_transaction_with_retry(rpc_client, &tx, DELAY, MAX_RETRIES).await
-//                 {
-//                     error!(
-//                         "error sending transaction [signature={}, error={}]",
-//                         tx.signatures[0], e
-//                     );
-//                 } else {
-//                     info!(
-//                         "successfully sent transaction: [signature={}]",
-//                         tx.signatures[0]
-//                     );
-//                 }
-//             })
-//         })
-//         .collect::<Vec<JoinHandle<()>>>();
-//
-//     rt.block_on(async { futures::future::join_all(hdls).await });
-// }
-//
-// async fn send_transaction_with_retry(
-//     rpc_client: Arc<RpcClient>,
-//     tx: &Transaction,
-//     delay: Duration,
-//     max_retries: usize,
-// ) -> solana_client::client_error::Result<Signature> {
-//     let mut retry_count: usize = 0;
-//     loop {
-//         match rpc_client.send_and_confirm_transaction(tx).await {
-//             Ok(sig) => {
-//                 return Ok(sig);
-//             }
-//             Err(e) => {
-//                 retry_count = retry_count.checked_add(1).unwrap();
-//                 if retry_count == max_retries {
-//                     return Err(e);
-//                 }
-//                 sleep(delay);
-//             }
-//         }
-//     }
-// }
+async fn send_transactions_with_retry(rpc_client: &RpcClient, transactions: &Vec<Transaction>) {
+    let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
+        .iter()
+        .map(|tx| (tx.signatures[0], tx.clone()))
+        .collect();
+    while !transactions_to_send.is_empty() {
+        info!("sending {} transactions", transactions_to_send.len());
+
+        for (signature, tx) in &transactions_to_send {
+            match rpc_client.send_transaction(tx).await {
+                Ok(send_tx_sig) => {
+                    info!("send transaction: {:?}", send_tx_sig);
+                }
+                Err(e) => {
+                    error!("error sending transaction {} error: {}", signature, e);
+                }
+            }
+        }
+
+        sleep(Duration::from_secs(5)).await;
+
+        let mut signatures_confirmed: Vec<Signature> = Vec::new();
+        for (signature, _) in &transactions_to_send {
+            match rpc_client.confirm_transaction(signature).await {
+                Ok(true) => {
+                    info!("confirmed signature: {:?}", signature);
+                    signatures_confirmed.push(*signature);
+                }
+                Ok(false) => {
+                    info!("didn't confirmed signature: {:?}", signature);
+                }
+                Err(e) => {
+                    error!(
+                        "error confirming signature: {:?}, signature: {:?}",
+                        signature, e
+                    );
+                }
+            }
+        }
+
+        info!("confirmed {} signatures", signatures_confirmed.len());
+        for sig in signatures_confirmed {
+            transactions_to_send.remove(&sig);
+        }
+    }
+}
