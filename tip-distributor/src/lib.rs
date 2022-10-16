@@ -1,14 +1,15 @@
 pub mod merkle_root_generator_workflow;
+pub mod merkle_root_upload_workflow;
 pub mod stake_meta_generator_workflow;
 
 use {
     crate::{
-        merkle_root_generator_workflow::Error,
-        stake_meta_generator_workflow::Error::CheckedMathError,
+        merkle_root_generator_workflow::MerkleRootGeneratorError,
+        stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     bigdecimal::{num_bigint::BigUint, BigDecimal},
     num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
-    serde::{Deserialize, Serialize},
+    serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_merkle_tree::MerkleTree,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
@@ -17,7 +18,12 @@ use {
         pubkey::Pubkey,
         stake_history::Epoch,
     },
-    std::ops::{Div, Mul},
+    std::{
+        fs::File,
+        io::BufReader,
+        ops::{Div, Mul},
+        path::PathBuf,
+    },
     tip_distribution::state::TipDistributionAccount,
     tip_payment::{
         Config, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
@@ -55,7 +61,7 @@ pub struct TipPaymentPubkeys {
 impl GeneratedMerkleTreeCollection {
     pub fn new_from_stake_meta_collection(
         stake_meta_coll: StakeMetaCollection,
-    ) -> Result<GeneratedMerkleTreeCollection, Error> {
+    ) -> Result<GeneratedMerkleTreeCollection, MerkleRootGeneratorError> {
         let generated_merkle_trees = stake_meta_coll
             .stake_metas
             .into_iter()
@@ -88,7 +94,7 @@ impl GeneratedMerkleTreeCollection {
                     max_total_claim: tip_distribution_meta.total_tips,
                 }))
             })
-            .collect::<Result<Vec<GeneratedMerkleTree>, Error>>()?;
+            .collect::<Result<Vec<GeneratedMerkleTree>, MerkleRootGeneratorError>>()?;
 
         Ok(GeneratedMerkleTreeCollection {
             generated_merkle_trees,
@@ -153,7 +159,9 @@ pub struct TreeNode {
 }
 
 impl TreeNode {
-    fn vec_from_stake_meta(stake_meta: &StakeMeta) -> Result<Option<Vec<TreeNode>>, Error> {
+    fn vec_from_stake_meta(
+        stake_meta: &StakeMeta,
+    ) -> Result<Option<Vec<TreeNode>>, MerkleRootGeneratorError> {
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
             let validator_fee = calc_validator_fee(
                 tip_distribution_meta.total_tips,
@@ -220,7 +228,7 @@ impl TreeNode {
                         proof: None
                     })
                 })
-                .collect::<Result<Vec<TreeNode>, Error>>()?);
+                .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?);
 
             let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
                 sum.checked_add(tree_node.amount).unwrap()
@@ -299,7 +307,7 @@ impl TipDistributionMeta {
         tda_wrapper: TipDistributionAccountWrapper,
         // The amount that will be left remaining in the tda to maintain rent exemption status.
         rent_exempt_amount: u64,
-    ) -> Result<Self, stake_meta_generator_workflow::Error> {
+    ) -> Result<Self, stake_meta_generator_workflow::StakeMetaGeneratorError> {
         Ok(TipDistributionMeta {
             tip_distribution_pubkey: tda_wrapper.tip_distribution_pubkey,
             total_tips: tda_wrapper
@@ -426,20 +434,29 @@ mod pubkey_string_conversion {
         std::str::FromStr,
     };
 
-    pub fn serialize<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         serializer.serialize_str(&pubkey.to_string())
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
     where
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         Pubkey::from_str(&s).map_err(serde::de::Error::custom)
     }
+}
+
+pub(crate) fn read_json_from_file<T>(path: &PathBuf) -> serde_json::Result<T>
+where
+    T: DeserializeOwned,
+{
+    let file = File::open(path).unwrap();
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader)
 }
 
 #[cfg(test)]

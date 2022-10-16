@@ -37,3 +37,7 @@ path = "src/bin/stake-meta-generator.rs"
 [[bin]]
 name = "solana-merkle-root-generator"
 path = "src/bin/merkle-root-generator.rs"
+
+[[bin]]
+name = "solana-merkle-root-uploader"
+path = "src/bin/merkle-root-uploader.rs"

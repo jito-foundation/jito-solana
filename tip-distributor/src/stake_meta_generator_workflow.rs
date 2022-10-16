@@ -33,11 +33,11 @@ use {
         path::{Path, PathBuf},
         sync::{atomic::AtomicBool, Arc},
     },
-    thiserror::Error as ThisError,
+    thiserror::Error,
 };
 
-#[derive(ThisError, Debug)]
-pub enum Error {
+#[derive(Error, Debug)]
+pub enum StakeMetaGeneratorError {
     #[error(transparent)]
     AnchorError(#[from] anchor_lang::error::Error),
 
@@ -61,7 +61,7 @@ pub enum Error {
     SnapshotSlotNotFound,
 }
 
-impl Display for Error {
+impl Display for StakeMetaGeneratorError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&self, f)
     }
@@ -69,13 +69,13 @@ impl Display for Error {
 
 /// Runs the entire workflow of creating a bank from a snapshot to writing stake meta-data
 /// to a JSON file.
-pub fn run_workflow(
+pub fn generate_stake_meta(
     ledger_path: &Path,
     snapshot_slot: &Slot,
     tip_distribution_program_id: &Pubkey,
     out_path: &str,
     tip_payment_program_id: &Pubkey,
-) -> Result<(), Error> {
+) -> Result<(), StakeMetaGeneratorError> {
     info!("Creating bank from ledger path...");
     let bank = create_bank_from_snapshot(ledger_path, snapshot_slot)?;
 
@@ -89,7 +89,10 @@ pub fn run_workflow(
     Ok(())
 }
 
-fn create_bank_from_snapshot(ledger_path: &Path, snapshot_slot: &Slot) -> Result<Arc<Bank>, Error> {
+fn create_bank_from_snapshot(
+    ledger_path: &Path,
+    snapshot_slot: &Slot,
+) -> Result<Arc<Bank>, StakeMetaGeneratorError> {
     let genesis_config = open_genesis_config(ledger_path, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE);
     let snapshot_config = SnapshotConfig {
         full_snapshot_archive_interval_slots: Slot::MAX,
@@ -121,7 +124,10 @@ fn create_bank_from_snapshot(ledger_path: &Path, snapshot_slot: &Slot) -> Result
     Ok(working_bank)
 }
 
-fn write_to_json_file(stake_meta_coll: &StakeMetaCollection, out_path: &str) -> Result<(), Error> {
+fn write_to_json_file(
+    stake_meta_coll: &StakeMetaCollection,
+    out_path: &str,
+) -> Result<(), StakeMetaGeneratorError> {
     let file = File::create(out_path)?;
     let mut writer = BufWriter::new(file);
     let json = serde_json::to_string_pretty(&stake_meta_coll).unwrap();
@@ -136,7 +142,7 @@ pub fn generate_stake_meta_collection(
     bank: &Arc<Bank>,
     tip_distribution_program_id: &Pubkey,
     tip_payment_program_id: &Pubkey,
-) -> Result<StakeMetaCollection, Error> {
+) -> Result<StakeMetaCollection, StakeMetaGeneratorError> {
     assert!(bank.is_frozen());
 
     let epoch_vote_accounts = bank.epoch_vote_accounts(bank.epoch()).expect(&*format!(
@@ -213,7 +219,7 @@ pub fn generate_stake_meta_collection(
                 });
             Ok(((*vote_pubkey, vote_account), tda))
         })
-        .collect::<Result<_, Error>>()?;
+        .collect::<Result<_, StakeMetaGeneratorError>>()?;
 
     let mut stake_metas = vec![];
     for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {
