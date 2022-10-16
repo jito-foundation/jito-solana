@@ -135,7 +135,7 @@ async fn send_transactions_with_retry(rpc_client: &RpcClient, transactions: &Vec
             }
         }
 
-        sleep(Duration::from_secs(5)).await;
+        sleep(Duration::from_secs(10)).await;
 
         let mut signatures_confirmed: Vec<Signature> = Vec::new();
         for (signature, _) in &transactions_to_send {
