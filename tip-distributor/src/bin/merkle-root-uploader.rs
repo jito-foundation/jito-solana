@@ -26,6 +26,8 @@ struct Args {
 }
 
 fn main() {
+    env_logger::init();
+
     let args: Args = Args::parse();
 
     let tip_distribution_program_id = Pubkey::from_str(&args.tip_distribution_program_id)

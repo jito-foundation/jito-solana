@@ -61,6 +61,8 @@ pub fn upload_merkle_root(
             .filter(|tree| tree.merkle_root_upload_authority == keypair.pubkey())
             .collect();
 
+        info!("num trees to upload: {:?}", trees.len());
+
         let mut trees_needing_update: Vec<GeneratedMerkleTree> = vec![];
         for tree in trees {
             let account = rpc_client
@@ -76,7 +78,7 @@ pub fn upload_merkle_root(
             let needs_upload = match fetched_tip_distribution_account.merkle_root {
                 Some(merkle_root) => {
                     merkle_root.total_funds_claimed == 0
-                        && merkle_root.root != tree.merkle_tree.get_root().unwrap().to_bytes()
+                        && merkle_root.root != tree.merkle_root.to_bytes()
                 }
                 None => true,
             };
@@ -86,13 +88,15 @@ pub fn upload_merkle_root(
             }
         }
 
+        info!("num trees need uploading: {:?}", trees_needing_update.len());
+
         let transactions: Vec<Transaction> = trees_needing_update
             .iter()
             .map(|tree| {
                 let ix = upload_merkle_root_ix(
                     *tip_distribution_program_id,
                     UploadMerkleRootArgs {
-                        root: tree.merkle_tree.get_root().unwrap().to_bytes(),
+                        root: tree.merkle_root.to_bytes(),
                         max_total_claim: tree.max_total_claim,
                         max_num_nodes: tree.max_num_nodes,
                     },

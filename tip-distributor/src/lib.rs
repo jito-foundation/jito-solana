@@ -46,8 +46,7 @@ pub struct GeneratedMerkleTree {
     pub tip_distribution_account: Pubkey,
     #[serde(with = "pubkey_string_conversion")]
     pub merkle_root_upload_authority: Pubkey,
-    #[serde(skip_serializing, skip_deserializing)]
-    pub merkle_tree: MerkleTree,
+    pub merkle_root: Hash,
     pub tree_nodes: Vec<TreeNode>,
     pub max_total_claim: u64,
     pub max_num_nodes: u64,
@@ -89,7 +88,7 @@ impl GeneratedMerkleTreeCollection {
                     tip_distribution_account: tip_distribution_meta.tip_distribution_pubkey,
                     merkle_root_upload_authority: tip_distribution_meta
                         .merkle_root_upload_authority,
-                    merkle_tree,
+                    merkle_root: *merkle_tree.get_root().unwrap(),
                     tree_nodes,
                     max_total_claim: tip_distribution_meta.total_tips,
                 }))
