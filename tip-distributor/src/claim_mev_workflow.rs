@@ -38,10 +38,10 @@ pub fn claim_mev_tips(
 
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
-    let keypair = read_keypair_file(&keypair_path).expect("read keypair file");
+    let keypair = read_keypair_file(keypair_path).expect("read keypair file");
 
     let tip_distribution_config =
-        Pubkey::find_program_address(&[Config::SEED], &tip_distribution_program_id).0;
+        Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
 
     let rpc_client =
         RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
@@ -68,7 +68,7 @@ pub fn claim_mev_tips(
                         node.claimant.as_ref(), // ordering matters here
                         tree.tip_distribution_account.as_ref(),
                     ],
-                    &tip_distribution_program_id,
+                    tip_distribution_program_id,
                 );
 
                 // only claim for ones that have merkle root on-chain

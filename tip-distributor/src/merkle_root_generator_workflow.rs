@@ -26,10 +26,10 @@ pub fn generate_merkle_root(
     stake_meta_coll_path: &PathBuf,
     out_path: &PathBuf,
 ) -> Result<(), MerkleRootGeneratorError> {
-    let stake_meta_coll: StakeMetaCollection = read_json_from_file(&stake_meta_coll_path)?;
+    let stake_meta_coll: StakeMetaCollection = read_json_from_file(stake_meta_coll_path)?;
 
     let merkle_tree_coll =
-        GeneratedMerkleTreeCollection::new_from_stake_meta_collection(stake_meta_coll.clone())?;
+        GeneratedMerkleTreeCollection::new_from_stake_meta_collection(stake_meta_coll)?;
 
     write_to_json_file(&merkle_tree_coll, out_path)?;
     Ok(())

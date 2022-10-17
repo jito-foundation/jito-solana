@@ -384,7 +384,7 @@ pub fn calc_validator_fee(total_tips: u64, validator_commission_bps: u16) -> u64
 
 pub async fn send_transactions_with_retry(
     rpc_client: &RpcClient,
-    transactions: &Vec<Transaction>,
+    transactions: &[Transaction],
     max_send_duration: Duration,
 ) {
     let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
@@ -410,7 +410,7 @@ pub async fn send_transactions_with_retry(
         sleep(Duration::from_secs(10)).await;
 
         let mut signatures_confirmed: Vec<Signature> = Vec::new();
-        for (signature, _) in &transactions_to_send {
+        for signature in transactions_to_send.keys() {
             match rpc_client.confirm_transaction(signature).await {
                 Ok(true) => {
                     info!("confirmed signature: {:?}", signature);
