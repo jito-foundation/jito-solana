@@ -36,9 +36,6 @@ ENV CI_COMMIT=$ci_commit
 # Uses docker buildkit to cache the image.
 # /usr/local/cargo/git needed for crossbeam patch
 RUN --mount=type=cache,mode=0777,target=/solana/target \
-    --mount=type=cache,mode=0777,target=/solana/jito-programs/cli/claim-mev/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    cargo build --release && cp target/release/solana* ./docker-output \
-    && cd jito-programs/cli/claim-mev && cargo build --release \
-    && cp target/release/claim-mev ../../../docker-output/
+    cargo build --release && cp target/release/solana* ./docker-output

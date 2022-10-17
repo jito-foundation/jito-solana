@@ -6798,6 +6798,7 @@ dependencies = [
  "solana-ledger",
  "solana-merkle-tree",
  "solana-program 1.15.0",
+ "solana-rpc-client-api",
  "solana-runtime",
  "solana-sdk 1.15.0",
  "solana-stake-program",

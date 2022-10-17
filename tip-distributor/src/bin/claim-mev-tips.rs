@@ -1,45 +1,48 @@
+//! This binary claims MEV tips.
+
 use {
     clap::Parser,
-    log::info,
+    log::*,
     solana_sdk::pubkey::Pubkey,
-    solana_tip_distributor::merkle_root_upload_workflow::upload_merkle_root,
+    solana_tip_distributor::claim_mev_workflow::claim_mev_tips,
     std::{path::PathBuf, str::FromStr},
 };
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// Path to JSON file containing the [StakeMetaCollection] object.
+    /// Path to JSON file containing the [GeneratedMerkleTreeCollection] object.
     #[clap(long, env)]
-    merkle_root_path: PathBuf,
+    merkle_trees_path: PathBuf,
 
-    /// The path to the keypair used to sign and pay for the `upload_merkle_root` transactions.
-    #[clap(long, env)]
-    keypair_path: PathBuf,
-
-    /// The RPC to send transactions to.
+    /// RPC to send transactions through
     #[clap(long, env)]
     rpc_url: String,
 
     /// Tip distribution program ID
     #[clap(long, env)]
     tip_distribution_program_id: String,
+
+    /// Path to keypair
+    #[clap(long, env)]
+    keypair_path: PathBuf,
 }
 
 fn main() {
     env_logger::init();
+    info!("Starting to claim mev tips...");
 
     let args: Args = Args::parse();
 
     let tip_distribution_program_id = Pubkey::from_str(&args.tip_distribution_program_id)
         .expect("valid tip_distribution_program_id");
 
-    info!("starting merkle root uploader...");
-    upload_merkle_root(
-        &args.merkle_root_path,
-        &args.keypair_path,
+    if let Err(e) = claim_mev_tips(
+        &args.merkle_trees_path,
         &args.rpc_url,
         &tip_distribution_program_id,
-    )
-    .expect("upload merkle root succeeds");
+        &args.keypair_path,
+    ) {
+        error!("error claiming mev tips: {:?}", e);
+    }
 }

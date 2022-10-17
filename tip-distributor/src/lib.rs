@@ -1,3 +1,4 @@
+pub mod claim_mev_workflow;
 pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
 pub mod stake_meta_generator_workflow;
@@ -8,21 +9,27 @@ use {
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     bigdecimal::{num_bigint::BigUint, BigDecimal},
+    log::{error, info},
     num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
     serde::{de::DeserializeOwned, Deserialize, Serialize},
+    solana_client::nonblocking::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
+        signature::Signature,
         stake_history::Epoch,
+        transaction::Transaction,
     },
     std::{
+        collections::HashMap,
         fs::File,
         io::BufReader,
         ops::{Div, Mul},
         path::PathBuf,
+        time::{Duration, Instant},
     },
     tip_distribution::state::TipDistributionAccount,
     tip_payment::{
@@ -30,6 +37,7 @@ use {
         TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
         TIP_ACCOUNT_SEED_7,
     },
+    tokio::time::sleep,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -372,6 +380,64 @@ pub fn calc_validator_fee(total_tips: u64, validator_commission_bps: u16) -> u64
         .floor()
         .checked_add((validator_fee.frac_part() != 0) as u64)
         .unwrap()
+}
+
+pub async fn send_transactions_with_retry(
+    rpc_client: &RpcClient,
+    transactions: &Vec<Transaction>,
+    max_send_duration: Duration,
+) {
+    let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
+        .iter()
+        .map(|tx| (tx.signatures[0], tx.clone()))
+        .collect();
+
+    let start = Instant::now();
+    while !transactions_to_send.is_empty() && start.elapsed() < max_send_duration {
+        info!("sending {} transactions", transactions_to_send.len());
+
+        for (signature, tx) in &transactions_to_send {
+            match rpc_client.send_transaction(tx).await {
+                Ok(send_tx_sig) => {
+                    info!("send transaction: {:?}", send_tx_sig);
+                }
+                Err(e) => {
+                    error!("error sending transaction {:?} error: {:?}", signature, e);
+                }
+            }
+        }
+
+        sleep(Duration::from_secs(10)).await;
+
+        let mut signatures_confirmed: Vec<Signature> = Vec::new();
+        for (signature, _) in &transactions_to_send {
+            match rpc_client.confirm_transaction(signature).await {
+                Ok(true) => {
+                    info!("confirmed signature: {:?}", signature);
+                    signatures_confirmed.push(*signature);
+                }
+                Ok(false) => {
+                    info!("didn't confirmed signature: {:?}", signature);
+                }
+                Err(e) => {
+                    error!(
+                        "error confirming signature: {:?}, signature: {:?}",
+                        signature, e
+                    );
+                }
+            }
+        }
+
+        info!("confirmed #{} signatures", signatures_confirmed.len());
+        for sig in signatures_confirmed {
+            transactions_to_send.remove(&sig);
+        }
+    }
+
+    assert!(
+        transactions_to_send.is_empty(),
+        "all transactions failed to send"
+    );
 }
 
 mod math {

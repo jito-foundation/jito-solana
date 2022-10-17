@@ -1,13 +1,15 @@
 use {
-    crate::{read_json_from_file, GeneratedMerkleTree, GeneratedMerkleTreeCollection},
+    crate::{
+        read_json_from_file, send_transactions_with_retry, GeneratedMerkleTree,
+        GeneratedMerkleTreeCollection,
+    },
     anchor_lang::AccountDeserialize,
-    im::HashMap,
     log::{error, info},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_sdk::{
         commitment_config::CommitmentConfig,
         pubkey::Pubkey,
-        signature::{read_keypair_file, Signature, Signer},
+        signature::{read_keypair_file, Signer},
         transaction::Transaction,
     },
     std::{path::PathBuf, time::Duration},
@@ -16,7 +18,7 @@ use {
         sdk::instruction::{upload_merkle_root_ix, UploadMerkleRootAccounts, UploadMerkleRootArgs},
         state::{Config, TipDistributionAccount},
     },
-    tokio::{runtime::Builder, time::sleep},
+    tokio::runtime::Builder,
 };
 
 #[derive(Error, Debug)]
@@ -34,6 +36,9 @@ pub fn upload_merkle_root(
     rpc_url: &str,
     tip_distribution_program_id: &Pubkey,
 ) -> Result<(), MerkleRootUploadError> {
+    // max amount of time before blockhash expires
+    const MAX_RETRY_DURATION: Duration = Duration::from_secs(60);
+
     let merkle_tree: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
     let keypair = read_keypair_file(&keypair_path).expect("read keypair file");
@@ -114,55 +119,8 @@ pub fn upload_merkle_root(
                 )
             })
             .collect();
-        send_transactions_with_retry(&rpc_client, &transactions).await;
+        send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
     });
 
     Ok(())
-}
-
-async fn send_transactions_with_retry(rpc_client: &RpcClient, transactions: &Vec<Transaction>) {
-    let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
-        .iter()
-        .map(|tx| (tx.signatures[0], tx.clone()))
-        .collect();
-    while !transactions_to_send.is_empty() {
-        info!("sending {} transactions", transactions_to_send.len());
-
-        for (signature, tx) in &transactions_to_send {
-            match rpc_client.send_transaction(tx).await {
-                Ok(send_tx_sig) => {
-                    info!("send transaction: {:?}", send_tx_sig);
-                }
-                Err(e) => {
-                    error!("error sending transaction {} error: {}", signature, e);
-                }
-            }
-        }
-
-        sleep(Duration::from_secs(10)).await;
-
-        let mut signatures_confirmed: Vec<Signature> = Vec::new();
-        for (signature, _) in &transactions_to_send {
-            match rpc_client.confirm_transaction(signature).await {
-                Ok(true) => {
-                    info!("confirmed signature: {:?}", signature);
-                    signatures_confirmed.push(*signature);
-                }
-                Ok(false) => {
-                    info!("didn't confirmed signature: {:?}", signature);
-                }
-                Err(e) => {
-                    error!(
-                        "error confirming signature: {:?}, signature: {:?}",
-                        signature, e
-                    );
-                }
-            }
-        }
-
-        info!("confirmed {} signatures", signatures_confirmed.len());
-        for sig in signatures_confirmed {
-            transactions_to_send.remove(&sig);
-        }
-    }
 }
