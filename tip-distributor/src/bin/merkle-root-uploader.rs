@@ -38,37 +38,4 @@ fn main() {
         &tip_distribution_program_id,
     )
     .expect("upload merkle root succeeds");
-
-    // let merkle_tree = read_json_from_path(&args.merkle_root_path);
-
-    // if should_upload_roots {
-    //     let rpc_client = Arc::new(RpcClient::new_with_commitment(
-    //         rpc_url,
-    //         CommitmentConfig {
-    //             commitment: CommitmentLevel::Finalized,
-    //         },
-    //     ));
-    //     let (config, _) = Pubkey::find_program_address(
-    //         &[Config::SEED],
-    //         &stake_meta_coll.tip_distribution_program_id,
-    //     );
-    //
-    //     let recent_blockhash = {
-    //         let rpc_client = rpc_client.clone();
-    //         let rt = tokio::runtime::Runtime::new().unwrap();
-    //         // TODO(seg): is there a possibility this goes stale while synchronously executing transactions?
-    //         rt.block_on(async move { rpc_client.get_latest_blockhash().await })
-    //     }
-    //         .map_err(Box::new)?;
-    //
-    //     upload_roots(
-    //         rpc_client,
-    //         merkle_tree_coll,
-    //         stake_meta_coll.tip_distribution_program_id,
-    //         config,
-    //         my_keypair,
-    //         recent_blockhash,
-    //         force_upload_roots,
-    //     );
-    // }
 }
