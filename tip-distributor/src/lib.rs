@@ -690,10 +690,11 @@ mod tests {
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
+        let merkle_tree = MerkleTree::new(&hashed_nodes[..], true);
         let gmt_0 = GeneratedMerkleTree {
             tip_distribution_account: tda_0,
             merkle_root_upload_authority,
-            merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
+            merkle_root: *merkle_tree.get_root().unwrap(),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[0]
                 .clone()
@@ -727,10 +728,11 @@ mod tests {
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
+        let merkle_tree = MerkleTree::new(&hashed_nodes[..], true);
         let gmt_1 = GeneratedMerkleTree {
             tip_distribution_account: tda_1,
             merkle_root_upload_authority,
-            merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
+            merkle_root: *merkle_tree.get_root().unwrap(),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[1]
                 .clone()
@@ -771,10 +773,7 @@ mod tests {
                             .unwrap();
                         assert_eq!(expected_tree_node.amount, actual_tree_node.amount);
                     });
-                assert_eq!(
-                    expected_gmt.merkle_tree.get_root().unwrap(),
-                    actual_gmt.merkle_tree.get_root().unwrap()
-                );
+                assert_eq!(expected_gmt.merkle_root, actual_gmt.merkle_root);
             });
     }
 }

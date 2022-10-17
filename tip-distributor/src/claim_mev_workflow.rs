@@ -71,8 +71,6 @@ pub fn claim_mev_tips(
                     &tip_distribution_program_id,
                 );
 
-                let min_balance = rpc_client.get_minimum_balance_for_rent_exemption(0).await.expect("get balance");
-
                 // only claim for ones that have merkle root on-chain
                 let account = rpc_client
                     .get_account(&tree.tip_distribution_account)
