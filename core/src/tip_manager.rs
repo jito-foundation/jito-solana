@@ -7,7 +7,6 @@ use {
     solana_sdk::{
         account::ReadableAccount,
         bundle::error::TipPaymentError,
-        compute_budget::ComputeBudgetInstruction,
         instruction::Instruction,
         pubkey::Pubkey,
         signature::Keypair,
@@ -372,11 +371,13 @@ impl TipManager {
     /// Builds a transaction that changes the current tip receiver to new_tip_receiver.
     /// The on-chain program will transfer tips sitting in the tip accounts to the tip receiver
     /// before changing ownership.
-    pub fn change_tip_receiver_tx(
+    pub fn change_tip_receiver_and_block_builder_tx(
         &self,
         new_tip_receiver: &Pubkey,
         bank: &Bank,
         keypair: &Keypair,
+        block_builder: &Pubkey,
+        block_builder_commission: u64,
     ) -> Result<SanitizedTransaction> {
         let config = self.get_tip_payment_config_account(bank)?;
 
@@ -387,6 +388,30 @@ impl TipManager {
                 config: self.tip_payment_program_info.config_pda_bump.0,
                 old_tip_receiver: config.tip_receiver,
                 new_tip_receiver: *new_tip_receiver,
+                block_builder: *block_builder,
+                tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
+                tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
+                tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
+                tip_payment_account_3: self.tip_payment_program_info.tip_pda_3.0,
+                tip_payment_account_4: self.tip_payment_program_info.tip_pda_4.0,
+                tip_payment_account_5: self.tip_payment_program_info.tip_pda_5.0,
+                tip_payment_account_6: self.tip_payment_program_info.tip_pda_6.0,
+                tip_payment_account_7: self.tip_payment_program_info.tip_pda_7.0,
+                signer: keypair.pubkey(),
+            }
+            .to_account_metas(None),
+        };
+        let change_block_builder_ix = Instruction {
+            program_id: self.tip_payment_program_info.program_id,
+            data: tip_payment::instruction::ChangeBlockBuilder {
+                block_builder_commission,
+            }
+            .data(),
+            accounts: tip_payment::accounts::ChangeBlockBuilder {
+                config: self.tip_payment_program_info.config_pda_bump.0,
+                tip_receiver: *new_tip_receiver, // tip receiver will have just changed in previous ix
+                old_block_builder: config.block_builder,
+                new_block_builder: *block_builder,
                 tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
                 tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
                 tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
@@ -401,11 +426,7 @@ impl TipManager {
         };
         Ok(
             SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
-                &[
-                    // TODO (LB): make the on-chain program more efficient and remove this
-                    ComputeBudgetInstruction::set_compute_unit_limit(1_000_000),
-                    change_tip_ix,
-                ],
+                &[change_tip_ix, change_block_builder_ix],
                 Some(&keypair.pubkey()),
                 &[keypair],
                 bank.last_blockhash(),

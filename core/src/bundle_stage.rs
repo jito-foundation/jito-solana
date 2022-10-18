@@ -10,6 +10,7 @@ use {
         consensus_cache_updater::ConsensusCacheUpdater,
         leader_slot_banking_stage_timing_metrics::RecordTransactionsTimings,
         packet_bundle::PacketBundle,
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
         qos_service::QosService,
         tip_manager::TipManager,
     },
@@ -56,7 +57,7 @@ use {
         collections::{HashMap, HashSet, VecDeque},
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -137,6 +138,7 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
         Self::start_bundle_thread(
             cluster_info,
@@ -149,6 +151,7 @@ impl BundleStage {
             tip_manager,
             bundle_account_locker,
             MAX_BUNDLE_RETRY_DURATION,
+            block_builder_fee_info,
         )
     }
 
@@ -164,15 +167,17 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
         const BUNDLE_STAGE_ID: u32 = 10_000;
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
+        let transaction_status_sender = transaction_status_sender.clone();
+        let block_builder_fee_info = block_builder_fee_info.clone();
 
         let bundle_thread = Builder::new()
             .name("solana-bundle-stage".to_string())
             .spawn(move || {
-                let transaction_status_sender = transaction_status_sender.clone();
                 Self::process_loop(
                     cluster_info,
                     &poh_recorder,
@@ -185,6 +190,7 @@ impl BundleStage {
                     tip_manager,
                     bundle_account_locker,
                     max_bundle_retry_duration,
+                    block_builder_fee_info,
                 );
             })
             .unwrap();
@@ -873,6 +879,7 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
         last_tip_update_slot: &mut Slot,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) {
         let (sanitized_bundles, sanitized_bundle_elapsed) = measure!(
             unprocessed_bundles
@@ -971,6 +978,7 @@ impl BundleStage {
                 max_bundle_retry_duration,
                 last_tip_update_slot,
                 bundle_stage_leader_stats,
+                block_builder_fee_info
             ),
             "execute_locked_bundles_elapsed"
         );
@@ -1102,6 +1110,7 @@ impl BundleStage {
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> BundleStageResult<()> {
         let start_handle_tips = Instant::now();
 
@@ -1115,10 +1124,13 @@ impl BundleStage {
                 configured_tip_receiver, my_tip_distribution_pda
             );
 
-            let change_tip_receiver_tx = tip_manager.change_tip_receiver_tx(
+            let bb_info = block_builder_fee_info.lock().unwrap();
+            let change_tip_receiver_tx = tip_manager.change_tip_receiver_and_block_builder_tx(
                 &my_tip_distribution_pda,
                 &bank_start.working_bank,
                 &cluster_info.keypair(),
+                &bb_info.block_builder,
+                bb_info.block_builder_commission,
             )?;
 
             let change_tip_receiver_bundle = SanitizedBundle {
@@ -1178,6 +1190,7 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
         last_tip_update_slot: &mut Slot,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Vec<BundleStageResult<()>> {
         let tip_pdas = tip_manager.get_tip_accounts();
 
@@ -1228,6 +1241,7 @@ impl BundleStage {
                             tip_manager,
                             max_bundle_retry_duration,
                             bundle_stage_leader_stats,
+                            block_builder_fee_info,
                         )?;
 
                         *last_tip_update_slot = bank_start.working_bank.slot();
@@ -1279,6 +1293,7 @@ impl BundleStage {
         bundle_stage_leader_stats: &mut BundleStageLeaderSlotTrackingMetrics,
         bundle_stage_stats: &mut BundleStageLoopStats,
         id: u32,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) {
         const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
 
@@ -1311,6 +1326,7 @@ impl BundleStage {
                     max_bundle_retry_duration,
                     last_tip_update_slot,
                     bundle_stage_leader_stats.bundle_stage_leader_stats(),
+                    block_builder_fee_info,
                 );
             }
             // not leader now and not soon, clear bundles
@@ -1339,6 +1355,7 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
     ) {
         const LOOP_STATS_METRICS_PERIOD: Duration = Duration::from_secs(1);
 
@@ -1380,6 +1397,7 @@ impl BundleStage {
                         &mut bundle_stage_leader_stats,
                         &mut bundle_stage_stats,
                         id,
+                        &block_builder_fee_info
                     ),
                     "process_buffered_bundles_elapsed"
                 );

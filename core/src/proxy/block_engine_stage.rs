@@ -18,11 +18,14 @@ use {
     crossbeam_channel::Sender,
     jito_protos::proto::{
         auth::Token,
-        block_engine::{self, block_engine_validator_client::BlockEngineValidatorClient},
+        block_engine::{
+            self, block_engine_validator_client::BlockEngineValidatorClient,
+            BlockBuilderFeeInfoRequest,
+        },
     },
     solana_gossip::cluster_info::ClusterInfo,
     solana_perf::packet::PacketBatch,
-    solana_sdk::saturating_add_assign,
+    solana_sdk::{pubkey::Pubkey, saturating_add_assign},
     std::{
         str::FromStr,
         sync::{
@@ -61,6 +64,11 @@ impl BlockEngineStageStats {
     }
 }
 
+pub struct BlockBuilderFeeInfo {
+    pub block_builder: Pubkey,
+    pub block_builder_commission: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct BlockEngineConfig {
     /// Address to the external auth-service responsible for generating access tokens.
@@ -89,6 +97,7 @@ impl BlockEngineStage {
         // Channel that trusted packets get piped through.
         verified_packet_tx: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: Arc<AtomicBool>,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
         let BlockEngineConfig {
             auth_service_endpoint,
@@ -97,6 +106,8 @@ impl BlockEngineStage {
         } = block_engine_config;
 
         let access_token = Arc::new(Mutex::new(Token::default()));
+        let block_builder_fee_info = block_builder_fee_info.clone();
+
         let thread = Builder::new()
             .name("block-engine-stage".into())
             .spawn(move || {
@@ -118,6 +129,7 @@ impl BlockEngineStage {
                     trust_packets,
                     verified_packet_tx,
                     exit,
+                    block_builder_fee_info,
                 ));
             })
             .unwrap();
@@ -143,6 +155,7 @@ impl BlockEngineStage {
         trust_packets: bool,
         verified_packet_tx: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: Arc<AtomicBool>,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
     ) {
         const WAIT_FOR_FIRST_AUTH: Duration = Duration::from_secs(5);
 
@@ -177,6 +190,7 @@ impl BlockEngineStage {
                         trust_packets,
                         &verified_packet_tx,
                         &exit,
+                        &block_builder_fee_info,
                     )
                     .await
                     {
@@ -213,6 +227,7 @@ impl BlockEngineStage {
         trust_packets: bool,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = client
             .subscribe_packets(block_engine::SubscribePacketsRequest {})
@@ -226,17 +241,20 @@ impl BlockEngineStage {
         backoff.reset();
 
         Self::consume_bundle_and_packet_stream(
+            client,
             (subscribe_bundles_stream, subscribe_packets_stream),
             bundle_tx,
             packet_tx,
             trust_packets,
             verified_packet_tx,
             exit,
+            block_builder_fee_info,
         )
         .await
     }
 
     async fn consume_bundle_and_packet_stream(
+        mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
         (mut bundle_stream, mut packet_stream): (
             Streaming<block_engine::SubscribeBundlesResponse>,
             Streaming<block_engine::SubscribePacketsResponse>,
@@ -246,11 +264,14 @@ impl BlockEngineStage {
         trust_packets: bool,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
+        const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
 
         let mut block_engine_stats = BlockEngineStageStats::default();
         let mut metrics_tick = interval(METRICS_TICK);
+        let mut maintenance_tick = interval(MAINTENANCE_TICK);
 
         info!("connected to packet and bundle stream");
 
@@ -266,6 +287,12 @@ impl BlockEngineStage {
                 _ = metrics_tick.tick() => {
                     block_engine_stats.report();
                     block_engine_stats = BlockEngineStageStats::default();
+                }
+                _ = maintenance_tick.tick() => {
+                    let block_builder_info = client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest{}).await?.into_inner();
+                    let mut bb_fee = block_builder_fee_info.lock().unwrap();
+                    bb_fee.block_builder_commission = block_builder_info.commission;
+                    bb_fee.block_builder = Pubkey::from_str(&block_builder_info.pubkey).unwrap_or(bb_fee.block_builder);
                 }
             }
         }

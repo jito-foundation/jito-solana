@@ -14,7 +14,7 @@ use {
         fetch_stage::FetchStage,
         find_packet_sender_stake_stage::FindPacketSenderStakeStage,
         proxy::{
-            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
+            block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
             relayer_stage::{RelayerConfig, RelayerStage},
         },
@@ -36,7 +36,10 @@ use {
         cost_model::CostModel,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
-    solana_sdk::{pubkey::Pubkey, signature::Keypair},
+    solana_sdk::{
+        pubkey::Pubkey,
+        signature::{Keypair, Signer},
+    },
     solana_streamer::{
         quic::{spawn_server, StreamStats, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
         streamer::StakedNodes,
@@ -45,7 +48,7 @@ use {
     std::{
         collections::{HashMap, HashSet},
         net::{SocketAddr, UdpSocket},
-        sync::{atomic::AtomicBool, Arc, RwLock},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread,
     },
 };
@@ -229,6 +232,11 @@ impl Tpu {
             )
         };
 
+        let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: cluster_info.keypair().pubkey(),
+            block_builder_commission: 0,
+        }));
+
         let (bundle_sender, bundle_receiver) = unbounded();
         let maybe_block_engine_stage = maybe_block_engine_config.map(|block_engine_config| {
             BlockEngineStage::new(
@@ -238,6 +246,7 @@ impl Tpu {
                 packet_sender.clone(),
                 verified_sender.clone(),
                 exit.clone(),
+                &block_builder_fee_info,
             )
         });
 
@@ -315,6 +324,7 @@ impl Tpu {
             exit.clone(),
             tip_manager,
             bundle_account_locker,
+            &block_builder_fee_info,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
