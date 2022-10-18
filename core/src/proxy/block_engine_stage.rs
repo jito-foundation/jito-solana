@@ -238,6 +238,17 @@ impl BlockEngineStage {
             .await?
             .into_inner();
 
+        let block_builder_info = client
+            .get_block_builder_fee_info(BlockBuilderFeeInfoRequest {})
+            .await?
+            .into_inner();
+        {
+            let mut bb_fee = block_builder_fee_info.lock().unwrap();
+            bb_fee.block_builder_commission = block_builder_info.commission;
+            bb_fee.block_builder =
+                Pubkey::from_str(&block_builder_info.pubkey).unwrap_or(bb_fee.block_builder);
+        }
+
         backoff.reset();
 
         Self::consume_bundle_and_packet_stream(
