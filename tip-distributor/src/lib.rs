@@ -1,29 +1,43 @@
+pub mod claim_mev_workflow;
 pub mod merkle_root_generator_workflow;
+pub mod merkle_root_upload_workflow;
 pub mod stake_meta_generator_workflow;
 
 use {
     crate::{
-        merkle_root_generator_workflow::Error,
-        stake_meta_generator_workflow::Error::CheckedMathError,
+        merkle_root_generator_workflow::MerkleRootGeneratorError,
+        stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     bigdecimal::{num_bigint::BigUint, BigDecimal},
+    log::{error, info},
     num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
-    serde::{Deserialize, Serialize},
+    serde::{de::DeserializeOwned, Deserialize, Serialize},
+    solana_client::nonblocking::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
+        signature::Signature,
         stake_history::Epoch,
+        transaction::Transaction,
     },
-    std::ops::{Div, Mul},
+    std::{
+        collections::HashMap,
+        fs::File,
+        io::BufReader,
+        ops::{Div, Mul},
+        path::PathBuf,
+        time::{Duration, Instant},
+    },
     tip_distribution::state::TipDistributionAccount,
     tip_payment::{
         Config, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
         TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
         TIP_ACCOUNT_SEED_7,
     },
+    tokio::time::sleep,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -40,8 +54,7 @@ pub struct GeneratedMerkleTree {
     pub tip_distribution_account: Pubkey,
     #[serde(with = "pubkey_string_conversion")]
     pub merkle_root_upload_authority: Pubkey,
-    #[serde(skip_serializing, skip_deserializing)]
-    pub merkle_tree: MerkleTree,
+    pub merkle_root: Hash,
     pub tree_nodes: Vec<TreeNode>,
     pub max_total_claim: u64,
     pub max_num_nodes: u64,
@@ -55,7 +68,7 @@ pub struct TipPaymentPubkeys {
 impl GeneratedMerkleTreeCollection {
     pub fn new_from_stake_meta_collection(
         stake_meta_coll: StakeMetaCollection,
-    ) -> Result<GeneratedMerkleTreeCollection, Error> {
+    ) -> Result<GeneratedMerkleTreeCollection, MerkleRootGeneratorError> {
         let generated_merkle_trees = stake_meta_coll
             .stake_metas
             .into_iter()
@@ -83,12 +96,12 @@ impl GeneratedMerkleTreeCollection {
                     tip_distribution_account: tip_distribution_meta.tip_distribution_pubkey,
                     merkle_root_upload_authority: tip_distribution_meta
                         .merkle_root_upload_authority,
-                    merkle_tree,
+                    merkle_root: *merkle_tree.get_root().unwrap(),
                     tree_nodes,
                     max_total_claim: tip_distribution_meta.total_tips,
                 }))
             })
-            .collect::<Result<Vec<GeneratedMerkleTree>, Error>>()?;
+            .collect::<Result<Vec<GeneratedMerkleTree>, MerkleRootGeneratorError>>()?;
 
         Ok(GeneratedMerkleTreeCollection {
             generated_merkle_trees,
@@ -153,7 +166,9 @@ pub struct TreeNode {
 }
 
 impl TreeNode {
-    fn vec_from_stake_meta(stake_meta: &StakeMeta) -> Result<Option<Vec<TreeNode>>, Error> {
+    fn vec_from_stake_meta(
+        stake_meta: &StakeMeta,
+    ) -> Result<Option<Vec<TreeNode>>, MerkleRootGeneratorError> {
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
             let validator_fee = calc_validator_fee(
                 tip_distribution_meta.total_tips,
@@ -220,7 +235,7 @@ impl TreeNode {
                         proof: None
                     })
                 })
-                .collect::<Result<Vec<TreeNode>, Error>>()?);
+                .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?);
 
             let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
                 sum.checked_add(tree_node.amount).unwrap()
@@ -299,7 +314,7 @@ impl TipDistributionMeta {
         tda_wrapper: TipDistributionAccountWrapper,
         // The amount that will be left remaining in the tda to maintain rent exemption status.
         rent_exempt_amount: u64,
-    ) -> Result<Self, stake_meta_generator_workflow::Error> {
+    ) -> Result<Self, stake_meta_generator_workflow::StakeMetaGeneratorError> {
         Ok(TipDistributionMeta {
             tip_distribution_pubkey: tda_wrapper.tip_distribution_pubkey,
             total_tips: tda_wrapper
@@ -367,6 +382,64 @@ pub fn calc_validator_fee(total_tips: u64, validator_commission_bps: u16) -> u64
         .unwrap()
 }
 
+pub async fn send_transactions_with_retry(
+    rpc_client: &RpcClient,
+    transactions: &[Transaction],
+    max_send_duration: Duration,
+) {
+    let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
+        .iter()
+        .map(|tx| (tx.signatures[0], tx.clone()))
+        .collect();
+
+    let start = Instant::now();
+    while !transactions_to_send.is_empty() && start.elapsed() < max_send_duration {
+        info!("sending {} transactions", transactions_to_send.len());
+
+        for (signature, tx) in &transactions_to_send {
+            match rpc_client.send_transaction(tx).await {
+                Ok(send_tx_sig) => {
+                    info!("send transaction: {:?}", send_tx_sig);
+                }
+                Err(e) => {
+                    error!("error sending transaction {:?} error: {:?}", signature, e);
+                }
+            }
+        }
+
+        sleep(Duration::from_secs(10)).await;
+
+        let mut signatures_confirmed: Vec<Signature> = Vec::new();
+        for signature in transactions_to_send.keys() {
+            match rpc_client.confirm_transaction(signature).await {
+                Ok(true) => {
+                    info!("confirmed signature: {:?}", signature);
+                    signatures_confirmed.push(*signature);
+                }
+                Ok(false) => {
+                    info!("didn't confirmed signature: {:?}", signature);
+                }
+                Err(e) => {
+                    error!(
+                        "error confirming signature: {:?}, signature: {:?}",
+                        signature, e
+                    );
+                }
+            }
+        }
+
+        info!("confirmed #{} signatures", signatures_confirmed.len());
+        for sig in signatures_confirmed {
+            transactions_to_send.remove(&sig);
+        }
+    }
+
+    assert!(
+        transactions_to_send.is_empty(),
+        "all transactions failed to send"
+    );
+}
+
 mod math {
     /// copy-pasta from [here](https://github.com/project-serum/serum-dex/blob/e00bb9e6dac0a1fff295acb034722be9afc1eba3/dex/src/fees.rs#L43)
     #[repr(transparent)]
@@ -426,20 +499,29 @@ mod pubkey_string_conversion {
         std::str::FromStr,
     };
 
-    pub fn serialize<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         serializer.serialize_str(&pubkey.to_string())
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
     where
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         Pubkey::from_str(&s).map_err(serde::de::Error::custom)
     }
+}
+
+pub(crate) fn read_json_from_file<T>(path: &PathBuf) -> serde_json::Result<T>
+where
+    T: DeserializeOwned,
+{
+    let file = File::open(path).unwrap();
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader)
 }
 
 #[cfg(test)]
@@ -608,10 +690,11 @@ mod tests {
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
+        let merkle_tree = MerkleTree::new(&hashed_nodes[..], true);
         let gmt_0 = GeneratedMerkleTree {
             tip_distribution_account: tda_0,
             merkle_root_upload_authority,
-            merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
+            merkle_root: *merkle_tree.get_root().unwrap(),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[0]
                 .clone()
@@ -645,10 +728,11 @@ mod tests {
             },
         ];
         let hashed_nodes: Vec<[u8; 32]> = tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
+        let merkle_tree = MerkleTree::new(&hashed_nodes[..], true);
         let gmt_1 = GeneratedMerkleTree {
             tip_distribution_account: tda_1,
             merkle_root_upload_authority,
-            merkle_tree: MerkleTree::new(&hashed_nodes[..], true),
+            merkle_root: *merkle_tree.get_root().unwrap(),
             tree_nodes,
             max_total_claim: stake_meta_collection.stake_metas[1]
                 .clone()
@@ -689,10 +773,7 @@ mod tests {
                             .unwrap();
                         assert_eq!(expected_tree_node.amount, actual_tree_node.amount);
                     });
-                assert_eq!(
-                    expected_gmt.merkle_tree.get_root().unwrap(),
-                    actual_gmt.merkle_tree.get_root().unwrap()
-                );
+                assert_eq!(expected_gmt.merkle_root, actual_gmt.merkle_root);
             });
     }
 }

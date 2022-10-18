@@ -6,7 +6,7 @@ use {
     clap::Parser,
     log::*,
     solana_sdk::{clock::Slot, pubkey::Pubkey},
-    solana_tip_distributor::{self, stake_meta_generator_workflow::run_workflow},
+    solana_tip_distributor::{self, stake_meta_generator_workflow::generate_stake_meta},
     std::{
         fs::{self},
         path::PathBuf,
@@ -53,7 +53,7 @@ fn main() {
 
     let args: Args = Args::parse();
 
-    if let Err(e) = run_workflow(
+    if let Err(e) = generate_stake_meta(
         &args.ledger_path,
         &args.snapshot_slot,
         &args.tip_distribution_program_id,
