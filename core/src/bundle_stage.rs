@@ -128,6 +128,7 @@ pub struct BundleStage {
 
 impl BundleStage {
     #[allow(clippy::new_ret_no_self)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
@@ -172,7 +173,6 @@ impl BundleStage {
         const BUNDLE_STAGE_ID: u32 = 10_000;
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
-        let transaction_status_sender = transaction_status_sender.clone();
         let block_builder_fee_info = block_builder_fee_info.clone();
 
         let bundle_thread = Builder::new()
