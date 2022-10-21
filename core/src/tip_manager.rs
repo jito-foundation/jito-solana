@@ -388,7 +388,7 @@ impl TipManager {
                 config: self.tip_payment_program_info.config_pda_bump.0,
                 old_tip_receiver: config.tip_receiver,
                 new_tip_receiver: *new_tip_receiver,
-                block_builder: *block_builder,
+                block_builder: config.block_builder,
                 tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
                 tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
                 tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
