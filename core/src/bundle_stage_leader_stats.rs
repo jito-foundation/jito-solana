@@ -104,7 +104,6 @@ pub struct BundleStageStats {
     execution_results_poh_max_height: u64,
     execution_results_transaction_failures: u64,
     execution_results_exceeds_cost_model: u64,
-    execution_results_tip_errors: u64,
     execution_results_max_retries: u64,
     execution_results_lock_errors: u64,
 }
@@ -200,11 +199,6 @@ impl BundleStageStats {
             (
                 "execution_results_exceeds_cost_model",
                 self.execution_results_exceeds_cost_model,
-                i64
-            ),
-            (
-                "execution_results_tip_errors",
-                self.execution_results_tip_errors,
                 i64
             ),
             (
@@ -310,10 +304,6 @@ impl BundleStageStats {
 
     pub fn increment_execution_results_exceeds_cost_model(&mut self, num: u64) {
         saturating_add_assign!(self.execution_results_exceeds_cost_model, num);
-    }
-
-    pub fn increment_execution_results_tip_errors(&mut self, num: u64) {
-        saturating_add_assign!(self.execution_results_tip_errors, num);
     }
 
     pub fn increment_execution_results_max_retries(&mut self, num: u64) {

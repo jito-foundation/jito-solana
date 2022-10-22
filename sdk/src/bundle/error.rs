@@ -16,9 +16,6 @@ pub enum BundleExecutionError {
     #[error("The bundle exceeds the cost model")]
     ExceedsCostModel,
 
-    #[error("Tip error {0}")]
-    TipError(#[from] TipPaymentError),
-
     #[error("Shutdown triggered")]
     Shutdown,
 

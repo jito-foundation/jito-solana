@@ -1014,11 +1014,6 @@ impl BundleStage {
                             .bundle_stage_stats()
                             .increment_execution_results_exceeds_cost_model(1);
                     }
-                    Err(BundleExecutionError::TipError(_)) => {
-                        bundle_stage_leader_stats
-                            .bundle_stage_stats()
-                            .increment_execution_results_tip_errors(1);
-                    }
                     Err(BundleExecutionError::Shutdown) => {}
                     Err(BundleExecutionError::MaxRetriesExceeded(_)) => {
                         bundle_stage_leader_stats
