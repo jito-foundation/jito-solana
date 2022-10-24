@@ -275,6 +275,40 @@ pub struct StakeMetaCollection {
     pub slot: Slot,
 }
 
+impl StakeMetaCollection {
+    pub fn assert_eq(&self, other: &StakeMetaCollection) {
+        assert_eq!(
+            self.stake_metas.len(),
+            other.stake_metas.len(),
+            "stake_metas len"
+        );
+        assert_eq!(self.slot, other.slot, "slot");
+        assert_eq!(self.bank_hash, other.bank_hash, "bank_hash");
+        assert_eq!(self.epoch, other.epoch, "epoch");
+        assert_eq!(
+            self.tip_distribution_program_id, other.tip_distribution_program_id,
+            "tip_distribution_program_id"
+        );
+
+        for left in &self.stake_metas {
+            let right = other
+                .stake_metas
+                .iter()
+                .filter(|s| s.validator_vote_account == left.validator_vote_account)
+                .collect::<Vec<&StakeMeta>>();
+            assert_eq!(
+                right.len(),
+                1,
+                "validator vote account {}",
+                left.validator_vote_account
+            );
+
+            let right = right[0];
+            left.assert_eq(right);
+        }
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct StakeMeta {
     #[serde(with = "pubkey_string_conversion")]
@@ -291,6 +325,57 @@ pub struct StakeMeta {
 
     /// The validator's delegation commission rate as a percentage between 0-100.
     pub commission: u8,
+}
+
+impl StakeMeta {
+    pub fn assert_eq(&self, other: &StakeMeta) {
+        assert_eq!(
+            self.validator_vote_account, other.validator_vote_account,
+            "validator_vote_account"
+        );
+        assert_eq!(
+            self.maybe_tip_distribution_meta, other.maybe_tip_distribution_meta,
+            "validator_vote_account"
+        );
+
+        assert_eq!(
+            self.total_delegated, other.total_delegated,
+            "total_delegated"
+        );
+        assert_eq!(self.commission, other.commission, "commission");
+
+        match (
+            &self.maybe_tip_distribution_meta,
+            &other.maybe_tip_distribution_meta,
+        ) {
+            (Some(tda_left), Some(tda_right)) => {
+                tda_left.assert_eq(tda_right);
+            }
+            (None, None) => {}
+            _ => unreachable!(),
+        }
+
+        assert_eq!(
+            self.delegations.len(),
+            other.delegations.len(),
+            "delegations len"
+        );
+        for left in &self.delegations {
+            let right = other
+                .delegations
+                .iter()
+                .filter(|d| {
+                    d.staker_pubkey == left.staker_pubkey
+                        && d.withdrawer_pubkey == left.withdrawer_pubkey
+                        && d.stake_account_pubkey == left.stake_account_pubkey
+                })
+                .collect::<Vec<&Delegation>>();
+            assert_eq!(right.len(), 1, "delegations");
+
+            let right = right[0];
+            left.assert_eq(right);
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
@@ -310,6 +395,22 @@ pub struct TipDistributionMeta {
 }
 
 impl TipDistributionMeta {
+    pub fn assert_eq(&self, other: &TipDistributionMeta) {
+        assert_eq!(
+            self.merkle_root_upload_authority, other.merkle_root_upload_authority,
+            "merkle_root_upload_authority"
+        );
+        assert_eq!(
+            self.tip_distribution_pubkey, other.tip_distribution_pubkey,
+            "tip_distribution_pubkey"
+        );
+        assert_eq!(self.total_tips, other.total_tips, "total_tips");
+        assert_eq!(
+            self.validator_fee_bps, other.validator_fee_bps,
+            "validator_fee_bps"
+        );
+    }
+
     fn from_tda_wrapper(
         tda_wrapper: TipDistributionAccountWrapper,
         // The amount that will be left remaining in the tda to maintain rent exemption status.
@@ -345,6 +446,24 @@ pub struct Delegation {
 
     /// Lamports delegated by the stake account
     pub lamports_delegated: u64,
+}
+
+impl Delegation {
+    pub fn assert_eq(&self, other: &Delegation) {
+        assert_eq!(
+            self.stake_account_pubkey, other.stake_account_pubkey,
+            "stake_account_pubkey"
+        );
+        assert_eq!(self.staker_pubkey, other.staker_pubkey, "staker_pubkey");
+        assert_eq!(
+            self.withdrawer_pubkey, other.withdrawer_pubkey,
+            "withdrawer_pubkey"
+        );
+        assert_eq!(
+            self.lamports_delegated, other.lamports_delegated,
+            "lamports_delegated"
+        );
+    }
 }
 
 /// Convenience wrapper around [TipDistributionAccount]
@@ -515,7 +634,7 @@ mod pubkey_string_conversion {
     }
 }
 
-pub(crate) fn read_json_from_file<T>(path: &PathBuf) -> serde_json::Result<T>
+pub fn read_json_from_file<T>(path: &PathBuf) -> serde_json::Result<T>
 where
     T: DeserializeOwned,
 {
