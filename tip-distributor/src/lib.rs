@@ -290,21 +290,42 @@ impl StakeMetaCollection {
             "tip_distribution_program_id"
         );
 
-        for left in &self.stake_metas {
-            let right = other
-                .stake_metas
-                .iter()
-                .filter(|s| s.validator_vote_account == left.validator_vote_account)
-                .collect::<Vec<&StakeMeta>>();
-            assert_eq!(
-                right.len(),
-                1,
-                "validator vote account {}",
-                left.validator_vote_account
-            );
+        let mut right_metas = HashMap::new();
+        for right in &other.stake_metas {
+            if right_metas.contains_key(&right.validator_vote_account) {
+                assert!(
+                    false,
+                    "multiple metas found for right: validator_vote_account={}",
+                    right.validator_vote_account
+                );
+            } else {
+                right_metas.insert(right.validator_vote_account, right);
+            }
+        }
 
-            let right = right[0];
-            left.assert_eq(right);
+        let mut left_metas = HashMap::new();
+        for left in &other.stake_metas {
+            if left_metas.contains_key(&left.validator_vote_account) {
+                assert!(
+                    false,
+                    "multiple metas found for left: validator_vote_account={}",
+                    left.validator_vote_account
+                );
+            } else {
+                left_metas.insert(left.validator_vote_account, left);
+            }
+        }
+
+        for (vote_account, left_meta) in left_metas {
+            if let Some(right_meta) = right_metas.get(&vote_account) {
+                left_meta.assert_eq(right_meta);
+            } else {
+                assert!(
+                    false,
+                    "right_meta not found for vote_account: {}",
+                    vote_account
+                );
+            }
         }
     }
 }
@@ -360,6 +381,52 @@ impl StakeMeta {
             other.delegations.len(),
             "delegations len"
         );
+
+        #[derive(Copy, Clone, Hash, Eq, PartialEq)]
+        struct DelegationsUniqueKey {
+            staker_pubkey: Pubkey,
+            withdrawer_pubkey: Pubkey,
+            stake_account_pubkey: Pubkey,
+        }
+        let mut right_delegations: HashMap<DelegationsUniqueKey, Delegation> = HashMap::default();
+        for right in &other.delegations {
+            let key = DelegationsUniqueKey {
+                staker_pubkey: right.staker_pubkey,
+                withdrawer_pubkey: right.withdrawer_pubkey,
+                stake_account_pubkey: right.stake_account_pubkey,
+            };
+            if right_delegations.contains_key(&key) {
+                assert!(false, "duplicate delegation found for right: staker_pk={} withdrawer_pk={} stake_account_pk={}", key.staker_pubkey, key.withdrawer_pubkey, key.stake_account_pubkey);
+            } else {
+                right_delegations.insert(key, right.clone());
+            }
+        }
+        let mut left_delegations: HashMap<DelegationsUniqueKey, Delegation> = HashMap::default();
+        for left in &other.delegations {
+            let key = DelegationsUniqueKey {
+                staker_pubkey: left.staker_pubkey,
+                withdrawer_pubkey: left.withdrawer_pubkey,
+                stake_account_pubkey: left.stake_account_pubkey,
+            };
+            if left_delegations.contains_key(&key) {
+                assert!(false, "duplicate delegation found for left: staker_pk={} withdrawer_pk={} stake_account_pk={}", key.staker_pubkey, key.withdrawer_pubkey, key.stake_account_pubkey);
+            } else {
+                left_delegations.insert(key, left.clone());
+            }
+        }
+
+        for (key, left) in left_delegations {
+            if let Some(delegation) = right_delegations.get(&key) {
+                left.assert_eq(delegation);
+            } else {
+                assert!(
+                    false,
+                    "right delegation not found: staker_pk={} withdrawer_pk={} stake_account_pk={}",
+                    key.staker_pubkey, key.withdrawer_pubkey, key.stake_account_pubkey
+                );
+            }
+        }
+
         for left in &self.delegations {
             let right = other
                 .delegations
