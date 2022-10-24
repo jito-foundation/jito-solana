@@ -290,6 +290,7 @@ impl StakeMetaCollection {
             "tip_distribution_program_id"
         );
 
+        info!("creating right_metas map");
         let mut right_metas = HashMap::new();
         for right in &other.stake_metas {
             if right_metas.contains_key(&right.validator_vote_account) {
@@ -303,6 +304,7 @@ impl StakeMetaCollection {
             }
         }
 
+        info!("creating left_metas map");
         let mut left_metas = HashMap::new();
         for left in &other.stake_metas {
             if left_metas.contains_key(&left.validator_vote_account) {
@@ -389,6 +391,7 @@ impl StakeMeta {
             withdrawer_pubkey: Pubkey,
             stake_account_pubkey: Pubkey,
         }
+        info!("creating right_delegations map");
         let mut right_delegations: HashMap<DelegationsUniqueKey, Delegation> = HashMap::default();
         for right in &other.delegations {
             let key = DelegationsUniqueKey {
@@ -402,6 +405,7 @@ impl StakeMeta {
                 right_delegations.insert(key, right.clone());
             }
         }
+        info!("creating left_delegations map");
         let mut left_delegations: HashMap<DelegationsUniqueKey, Delegation> = HashMap::default();
         for left in &other.delegations {
             let key = DelegationsUniqueKey {
