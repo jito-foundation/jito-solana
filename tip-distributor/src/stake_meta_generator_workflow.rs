@@ -223,7 +223,7 @@ pub fn generate_stake_meta_collection(
 
     let mut stake_metas = vec![];
     for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {
-        if let Some(delegations) = voter_pubkey_to_delegations.get(&vote_pubkey).cloned() {
+        if let Some(mut delegations) = voter_pubkey_to_delegations.get(&vote_pubkey).cloned() {
             let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
                 sum.checked_add(delegation.lamports_delegated).unwrap()
             });
@@ -240,10 +240,11 @@ pub fn generate_stake_meta_collection(
                 None
             };
 
+            delegations.sort();
             stake_metas.push(StakeMeta {
                 maybe_tip_distribution_meta,
                 validator_vote_account: vote_pubkey,
-                delegations: delegations.clone(),
+                delegations,
                 total_delegated,
                 commission: vote_account.vote_state().as_ref().unwrap().commission,
             });
@@ -254,6 +255,7 @@ pub fn generate_stake_meta_collection(
                 );
         }
     }
+    stake_metas.sort();
 
     Ok(StakeMetaCollection {
         stake_metas,
