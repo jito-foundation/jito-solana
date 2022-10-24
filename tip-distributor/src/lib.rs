@@ -167,21 +167,23 @@ impl TreeNode {
         stake_meta: &StakeMeta,
     ) -> Result<Option<Vec<TreeNode>>, MerkleRootGeneratorError> {
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
-            let validator_fee = calc_validator_fee(
-                tip_distribution_meta.total_tips,
-                tip_distribution_meta.validator_fee_bps,
-            );
+            let validator_amount = (tip_distribution_meta.total_tips as u128)
+                .checked_mul(tip_distribution_meta.validator_fee_bps as u128)
+                .unwrap()
+                .checked_div(10_000)
+                .unwrap() as u64;
+
             let mut tree_nodes = vec![TreeNode {
                 claimant: stake_meta.validator_vote_account,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
-                amount: validator_fee,
+                amount: validator_amount,
                 proof: None,
             }];
 
             let remaining_total_rewards = tip_distribution_meta
                 .total_tips
-                .checked_sub(validator_fee)
+                .checked_sub(validator_amount)
                 .unwrap() as u128;
 
             let total_delegated = stake_meta.total_delegated as u128;
@@ -376,18 +378,6 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
-/// Calculate validator fee denominated in lamports
-pub fn calc_validator_fee(total_tips: u64, validator_commission_bps: u16) -> u64 {
-    let validator_commission_rate =
-        math::fee_tenth_of_bps(((validator_commission_bps as u64).checked_mul(10).unwrap()) as u64);
-    let validator_fee: math::U64F64 = validator_commission_rate.mul_u64(total_tips);
-
-    validator_fee
-        .floor()
-        .checked_add((validator_fee.frac_part() != 0) as u64)
-        .unwrap()
-}
-
 pub async fn send_transactions_with_retry(
     rpc_client: &RpcClient,
     transactions: &[Transaction],
@@ -444,58 +434,6 @@ pub async fn send_transactions_with_retry(
         transactions_to_send.is_empty(),
         "all transactions failed to send"
     );
-}
-
-mod math {
-    /// copy-pasta from [here](https://github.com/project-serum/serum-dex/blob/e00bb9e6dac0a1fff295acb034722be9afc1eba3/dex/src/fees.rs#L43)
-    #[repr(transparent)]
-    #[derive(Copy, Clone)]
-    pub(crate) struct U64F64(u128);
-
-    #[allow(dead_code)]
-    impl U64F64 {
-        const ONE: Self = U64F64(1 << 64);
-
-        pub(crate) fn add(self, other: U64F64) -> U64F64 {
-            U64F64(self.0.checked_add(other.0).unwrap())
-        }
-
-        pub(crate) fn div(self, other: U64F64) -> u128 {
-            self.0.checked_div(other.0).unwrap()
-        }
-
-        pub(crate) fn mul_u64(self, other: u64) -> U64F64 {
-            U64F64(self.0.checked_mul(other as u128).unwrap())
-        }
-
-        /// right shift 64
-        pub(crate) fn floor(self) -> u64 {
-            (self.0.checked_div(2u128.checked_pow(64).unwrap()).unwrap()) as u64
-        }
-
-        pub(crate) fn frac_part(self) -> u64 {
-            self.0 as u64
-        }
-
-        /// left shift 64
-        pub(crate) fn from_int(n: u64) -> Self {
-            U64F64(
-                (n as u128)
-                    .checked_mul(2u128.checked_pow(64).unwrap())
-                    .unwrap(),
-            )
-        }
-    }
-
-    pub(crate) fn fee_tenth_of_bps(tenth_of_bps: u64) -> U64F64 {
-        U64F64(
-            ((tenth_of_bps as u128)
-                .checked_mul(2u128.checked_pow(64).unwrap())
-                .unwrap())
-            .checked_div(100_000)
-            .unwrap(),
-        )
-    }
 }
 
 mod pubkey_string_conversion {
@@ -715,7 +653,7 @@ mod tests {
                 claimant: validator_vote_account_1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
-                amount: 38_002_442_227,
+                amount: 38_002_442_226,
                 proof: None,
             },
             TreeNode {
