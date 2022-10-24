@@ -319,6 +319,7 @@ impl StakeMetaCollection {
         for (vote_account, left_meta) in left_metas {
             if let Some(right_meta) = right_metas.get(&vote_account) {
                 left_meta.assert_eq(right_meta);
+                info!("stake_meta diff check passed");
             } else {
                 assert!(
                     false,
@@ -418,6 +419,7 @@ impl StakeMeta {
         for (key, left) in left_delegations {
             if let Some(delegation) = right_delegations.get(&key) {
                 left.assert_eq(delegation);
+                info!("dellegation diff check passed");
             } else {
                 assert!(
                     false,
@@ -425,22 +427,6 @@ impl StakeMeta {
                     key.staker_pubkey, key.withdrawer_pubkey, key.stake_account_pubkey
                 );
             }
-        }
-
-        for left in &self.delegations {
-            let right = other
-                .delegations
-                .iter()
-                .filter(|d| {
-                    d.staker_pubkey == left.staker_pubkey
-                        && d.withdrawer_pubkey == left.withdrawer_pubkey
-                        && d.stake_account_pubkey == left.stake_account_pubkey
-                })
-                .collect::<Vec<&Delegation>>();
-            assert_eq!(right.len(), 1, "delegations");
-
-            let right = right[0];
-            left.assert_eq(right);
         }
     }
 }
