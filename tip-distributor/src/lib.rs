@@ -8,9 +8,7 @@ use {
         merkle_root_generator_workflow::MerkleRootGeneratorError,
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
-    bigdecimal::{num_bigint::BigUint, BigDecimal},
     log::{error, info},
-    num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
@@ -27,7 +25,6 @@ use {
         collections::HashMap,
         fs::File,
         io::BufReader,
-        ops::{Div, Mul},
         path::PathBuf,
         time::{Duration, Instant},
     },
@@ -182,60 +179,33 @@ impl TreeNode {
                 proof: None,
             }];
 
-            let remaining_tips = tip_distribution_meta
+            let remaining_total_rewards = tip_distribution_meta
                 .total_tips
                 .checked_sub(validator_fee)
-                .unwrap();
+                .unwrap() as u128;
 
-            // The theoretically smallest weight an account can have is  (1 / SOL_TOTAL_SUPPLY_IN_LAMPORTS)
-            // where we round SOL_TOTAL_SUPPLY is rounded to 500_000_000. We use u64::MAX. This gives a reasonable
-            // guarantee that everyone gets paid out regardless of weight, as long as some non-zero amount of
-            // lamports were delegated.
-            let uint_precision_multiplier = BigUint::from(u64::MAX);
-            let f64_precision_multiplier = BigDecimal::try_from(u64::MAX as f64).unwrap();
+            let total_delegated = stake_meta.total_delegated as u128;
+            tree_nodes.extend(
+                stake_meta
+                    .delegations
+                    .iter()
+                    .map(|delegation| {
+                        let amount_delegated = delegation.lamports_delegated as u128;
+                        let reward_amount = (amount_delegated.checked_mul(remaining_total_rewards))
+                            .unwrap()
+                            .checked_div(total_delegated)
+                            .unwrap();
 
-            let total_delegated = BigDecimal::try_from(stake_meta.total_delegated as f64)
-                .expect("failed to convert total_delegated to BigDecimal");
-            tree_nodes.extend(stake_meta
-                .delegations
-                .iter()
-                .map(|delegation| {
-                    // TODO(seg): Check this math!
-                    let amount_delegated = BigDecimal::try_from(delegation.lamports_delegated as f64)
-                        .expect(&*format!(
-                            "failed to convert amount_delegated to BigDecimal [stake_account={}, amount_delegated={}]",
-                            delegation.stake_account_pubkey,
-                            delegation.lamports_delegated,
-                        ));
-                    let mut weight = amount_delegated.div(&total_delegated);
-
-                    let use_multiplier = weight < f64_precision_multiplier;
-
-                    if use_multiplier {
-                        weight = weight.mul(&f64_precision_multiplier);
-                    }
-
-                    let truncated_weight = weight.to_u128()
-                        .expect(&*format!("failed to convert weight to u128 [stake_account={}, weight={}]", delegation.stake_account_pubkey, weight));
-                    let truncated_weight = BigUint::from(truncated_weight);
-
-                    let mut amount = truncated_weight
-                        .checked_mul(&BigUint::from(remaining_tips))
-                        .unwrap();
-
-                    if use_multiplier {
-                        amount = amount.checked_div(&uint_precision_multiplier).unwrap();
-                    }
-
-                    Ok(TreeNode {
-                        claimant: delegation.stake_account_pubkey,
-                        staker_pubkey: delegation.staker_pubkey,
-                        withdrawer_pubkey: delegation.withdrawer_pubkey,
-                        amount: amount.to_u64().unwrap(),
-                        proof: None
+                        Ok(TreeNode {
+                            claimant: delegation.stake_account_pubkey,
+                            staker_pubkey: delegation.staker_pubkey,
+                            withdrawer_pubkey: delegation.withdrawer_pubkey,
+                            amount: reward_amount as u64,
+                            proof: None,
+                        })
                     })
-                })
-                .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?);
+                    .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?,
+            );
 
             let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
                 sum.checked_add(tree_node.amount).unwrap()
