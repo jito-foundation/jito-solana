@@ -11,7 +11,7 @@
 [//]: # ([![codecov]&#40;https://codecov.io/gh/solana-labs/solana/branch/master/graph/badge.svg&#41;]&#40;https://codecov.io/gh/solana-labs/solana&#41;)
 
 # About
-This repository contains Jito Lab's fork of the Solana validator.
+This repository contains Jito Foundations's fork of the Solana validator.
 
 # Building
 
