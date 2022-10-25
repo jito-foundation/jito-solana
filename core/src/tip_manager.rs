@@ -309,8 +309,8 @@ impl TipManager {
             InitializeArgs {
                 authority: my_keypair.pubkey(),
                 expired_funds_account: my_keypair.pubkey(),
-                num_epochs_valid: 3,
-                max_validator_commission_bps: 1000,
+                num_epochs_valid: 10,
+                max_validator_commission_bps: 10_000,
                 bump: self.tip_distribution_program_info.config_pda_and_bump.1,
             },
             InitializeAccounts {
