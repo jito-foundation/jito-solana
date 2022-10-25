@@ -8,9 +8,7 @@ use {
         merkle_root_generator_workflow::MerkleRootGeneratorError,
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
-    bigdecimal::{num_bigint::BigUint, BigDecimal},
     log::{error, info},
-    num_traits::{CheckedDiv, CheckedMul, ToPrimitive},
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_merkle_tree::MerkleTree,
@@ -27,7 +25,6 @@ use {
         collections::HashMap,
         fs::File,
         io::BufReader,
-        ops::{Div, Mul},
         path::PathBuf,
         time::{Duration, Instant},
     },
@@ -170,72 +167,47 @@ impl TreeNode {
         stake_meta: &StakeMeta,
     ) -> Result<Option<Vec<TreeNode>>, MerkleRootGeneratorError> {
         if let Some(tip_distribution_meta) = stake_meta.maybe_tip_distribution_meta.as_ref() {
-            let validator_fee = calc_validator_fee(
-                tip_distribution_meta.total_tips,
-                tip_distribution_meta.validator_fee_bps,
-            );
+            let validator_amount = (tip_distribution_meta.total_tips as u128)
+                .checked_mul(tip_distribution_meta.validator_fee_bps as u128)
+                .unwrap()
+                .checked_div(10_000)
+                .unwrap() as u64;
+
             let mut tree_nodes = vec![TreeNode {
                 claimant: stake_meta.validator_vote_account,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
-                amount: validator_fee,
+                amount: validator_amount,
                 proof: None,
             }];
 
-            let remaining_tips = tip_distribution_meta
+            let remaining_total_rewards = tip_distribution_meta
                 .total_tips
-                .checked_sub(validator_fee)
-                .unwrap();
+                .checked_sub(validator_amount)
+                .unwrap() as u128;
 
-            // The theoretically smallest weight an account can have is  (1 / SOL_TOTAL_SUPPLY_IN_LAMPORTS)
-            // where we round SOL_TOTAL_SUPPLY is rounded to 500_000_000. We use u64::MAX. This gives a reasonable
-            // guarantee that everyone gets paid out regardless of weight, as long as some non-zero amount of
-            // lamports were delegated.
-            let uint_precision_multiplier = BigUint::from(u64::MAX);
-            let f64_precision_multiplier = BigDecimal::try_from(u64::MAX as f64).unwrap();
+            let total_delegated = stake_meta.total_delegated as u128;
+            tree_nodes.extend(
+                stake_meta
+                    .delegations
+                    .iter()
+                    .map(|delegation| {
+                        let amount_delegated = delegation.lamports_delegated as u128;
+                        let reward_amount = (amount_delegated.checked_mul(remaining_total_rewards))
+                            .unwrap()
+                            .checked_div(total_delegated)
+                            .unwrap();
 
-            let total_delegated = BigDecimal::try_from(stake_meta.total_delegated as f64)
-                .expect("failed to convert total_delegated to BigDecimal");
-            tree_nodes.extend(stake_meta
-                .delegations
-                .iter()
-                .map(|delegation| {
-                    // TODO(seg): Check this math!
-                    let amount_delegated = BigDecimal::try_from(delegation.lamports_delegated as f64)
-                        .expect(&*format!(
-                            "failed to convert amount_delegated to BigDecimal [stake_account={}, amount_delegated={}]",
-                            delegation.stake_account_pubkey,
-                            delegation.lamports_delegated,
-                        ));
-                    let mut weight = amount_delegated.div(&total_delegated);
-
-                    let use_multiplier = weight < f64_precision_multiplier;
-
-                    if use_multiplier {
-                        weight = weight.mul(&f64_precision_multiplier);
-                    }
-
-                    let truncated_weight = weight.to_u128()
-                        .expect(&*format!("failed to convert weight to u128 [stake_account={}, weight={}]", delegation.stake_account_pubkey, weight));
-                    let truncated_weight = BigUint::from(truncated_weight);
-
-                    let mut amount = truncated_weight
-                        .checked_mul(&BigUint::from(remaining_tips))
-                        .unwrap();
-
-                    if use_multiplier {
-                        amount = amount.checked_div(&uint_precision_multiplier).unwrap();
-                    }
-
-                    Ok(TreeNode {
-                        claimant: delegation.stake_account_pubkey,
-                        staker_pubkey: delegation.staker_pubkey,
-                        withdrawer_pubkey: delegation.withdrawer_pubkey,
-                        amount: amount.to_u64().unwrap(),
-                        proof: None
+                        Ok(TreeNode {
+                            claimant: delegation.stake_account_pubkey,
+                            staker_pubkey: delegation.staker_pubkey,
+                            withdrawer_pubkey: delegation.withdrawer_pubkey,
+                            amount: reward_amount as u64,
+                            proof: None,
+                        })
                     })
-                })
-                .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?);
+                    .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?,
+            );
 
             let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
                 sum.checked_add(tree_node.amount).unwrap()
@@ -293,6 +265,19 @@ pub struct StakeMeta {
     pub commission: u8,
 }
 
+impl Ord for StakeMeta {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.validator_vote_account
+            .cmp(&other.validator_vote_account)
+    }
+}
+
+impl PartialOrd<Self> for StakeMeta {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 pub struct TipDistributionMeta {
     #[serde(with = "pubkey_string_conversion")]
@@ -347,6 +332,29 @@ pub struct Delegation {
     pub lamports_delegated: u64,
 }
 
+impl Ord for Delegation {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (
+            self.stake_account_pubkey,
+            self.withdrawer_pubkey,
+            self.staker_pubkey,
+            self.lamports_delegated,
+        )
+            .cmp(&(
+                other.stake_account_pubkey,
+                other.withdrawer_pubkey,
+                other.staker_pubkey,
+                other.lamports_delegated,
+            ))
+    }
+}
+
+impl PartialOrd<Self> for Delegation {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Convenience wrapper around [TipDistributionAccount]
 pub struct TipDistributionAccountWrapper {
     pub tip_distribution_account: TipDistributionAccount,
@@ -368,18 +376,6 @@ pub fn derive_tip_distribution_account_address(
         ],
         tip_distribution_program_id,
     )
-}
-
-/// Calculate validator fee denominated in lamports
-pub fn calc_validator_fee(total_tips: u64, validator_commission_bps: u16) -> u64 {
-    let validator_commission_rate =
-        math::fee_tenth_of_bps(((validator_commission_bps as u64).checked_mul(10).unwrap()) as u64);
-    let validator_fee: math::U64F64 = validator_commission_rate.mul_u64(total_tips);
-
-    validator_fee
-        .floor()
-        .checked_add((validator_fee.frac_part() != 0) as u64)
-        .unwrap()
 }
 
 pub async fn send_transactions_with_retry(
@@ -438,58 +434,6 @@ pub async fn send_transactions_with_retry(
         transactions_to_send.is_empty(),
         "all transactions failed to send"
     );
-}
-
-mod math {
-    /// copy-pasta from [here](https://github.com/project-serum/serum-dex/blob/e00bb9e6dac0a1fff295acb034722be9afc1eba3/dex/src/fees.rs#L43)
-    #[repr(transparent)]
-    #[derive(Copy, Clone)]
-    pub(crate) struct U64F64(u128);
-
-    #[allow(dead_code)]
-    impl U64F64 {
-        const ONE: Self = U64F64(1 << 64);
-
-        pub(crate) fn add(self, other: U64F64) -> U64F64 {
-            U64F64(self.0.checked_add(other.0).unwrap())
-        }
-
-        pub(crate) fn div(self, other: U64F64) -> u128 {
-            self.0.checked_div(other.0).unwrap()
-        }
-
-        pub(crate) fn mul_u64(self, other: u64) -> U64F64 {
-            U64F64(self.0.checked_mul(other as u128).unwrap())
-        }
-
-        /// right shift 64
-        pub(crate) fn floor(self) -> u64 {
-            (self.0.checked_div(2u128.checked_pow(64).unwrap()).unwrap()) as u64
-        }
-
-        pub(crate) fn frac_part(self) -> u64 {
-            self.0 as u64
-        }
-
-        /// left shift 64
-        pub(crate) fn from_int(n: u64) -> Self {
-            U64F64(
-                (n as u128)
-                    .checked_mul(2u128.checked_pow(64).unwrap())
-                    .unwrap(),
-            )
-        }
-    }
-
-    pub(crate) fn fee_tenth_of_bps(tenth_of_bps: u64) -> U64F64 {
-        U64F64(
-            ((tenth_of_bps as u128)
-                .checked_mul(2u128.checked_pow(64).unwrap())
-                .unwrap())
-            .checked_div(100_000)
-            .unwrap(),
-        )
-    }
 }
 
 mod pubkey_string_conversion {
@@ -709,7 +653,7 @@ mod tests {
                 claimant: validator_vote_account_1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
-                amount: 38_002_442_227,
+                amount: 38_002_442_226,
                 proof: None,
             },
             TreeNode {
