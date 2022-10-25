@@ -3,7 +3,7 @@
 /solana-release.tar.bz2
 /solana-metrics/
 /solana-metrics.tar.bz2
-/target/
+**/target/
 /test-ledger/
 
 **/*.rs.bk
