@@ -4,14 +4,10 @@
   </a>
 </p>
 
-[![Build status](https://badge.buildkite.com/a6981eb34c6e0c7c09e3a3cb4bda09579f0ff2dcb1bd74b2ad.svg?branch=master)](https://buildkite.com/jito-labs/jito-solana)
-
-[//]: # ([![Solana crate]&#40;https://img.shields.io/crates/v/solana-core.svg&#41;]&#40;https://crates.io/crates/solana-core&#41;)
-[//]: # ([![Solana documentation]&#40;https://docs.rs/solana-core/badge.svg&#41;]&#40;https://docs.rs/solana-core&#41;)
-[//]: # ([![codecov]&#40;https://codecov.io/gh/solana-labs/solana/branch/master/graph/badge.svg&#41;]&#40;https://codecov.io/gh/solana-labs/solana&#41;)
+[![Build status](https://badge.buildkite.com/3a7c88c0f777e1a0fddacc190823565271ae4c251ef78d83a8.svg)](https://buildkite.com/jito/jito-solana)
 
 # About
-This repository contains Jito Foundations's fork of the Solana validator.
+This repository contains Jito's fork of the Solana validator.
 
 # Building
 
