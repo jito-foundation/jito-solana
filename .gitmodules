@@ -7,6 +7,3 @@
 [submodule "jito-protos/protos"]
 	path = jito-protos/protos
 	url = https://github.com/jito-labs/mev-protos.git
-[submodule "solana-accountsdb-connector"]
-	path = solana-accountsdb-connector
-	url = https://github.com/jito-foundation/solana-accountsdb-connector.git
