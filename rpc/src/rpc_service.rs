@@ -346,6 +346,9 @@ impl JsonRpcService {
         info!("rpc configuration: {:?}", config);
         let rpc_threads = 1.max(config.rpc_threads);
         let rpc_niceness_adj = config.rpc_niceness_adj;
+        let max_request_body_size = config
+            .max_request_body_size
+            .unwrap_or(MAX_REQUEST_PAYLOAD_SIZE);
 
         let health = Arc::new(RpcHealth::new(
             cluster_info.clone(),
@@ -462,6 +465,7 @@ impl JsonRpcService {
         let ledger_path = ledger_path.to_path_buf();
 
         let (close_handle_sender, close_handle_receiver) = unbounded();
+
         let thread_hdl = Builder::new()
             .name("solana-jsonrpc".to_string())
             .spawn(move || {
@@ -498,7 +502,7 @@ impl JsonRpcService {
                 ]))
                 .cors_max_age(86400)
                 .request_middleware(request_middleware)
-                .max_request_body_size(MAX_REQUEST_PAYLOAD_SIZE)
+                .max_request_body_size(max_request_body_size)
                 .start_http(&rpc_addr);
 
                 if let Err(e) = server {

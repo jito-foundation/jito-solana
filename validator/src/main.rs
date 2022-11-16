@@ -682,6 +682,12 @@ pub fn main() {
                        the getMultipleAccounts JSON RPC method")
         )
         .arg(
+            Arg::with_name("rpc_max_request_body_size")
+                .long("rpc-max-request-body-size")
+                .takes_value(true)
+                .help("Override the default maximum payload size accepted by the RPC server.")
+        )
+        .arg(
             Arg::with_name("health_check_slot_distance")
                 .long("health-check-slot-distance")
                 .value_name("SLOT_DISTANCE")
@@ -2694,6 +2700,9 @@ pub fn main() {
             rpc_niceness_adj: value_t_or_exit!(matches, "rpc_niceness_adj", i8),
             account_indexes: account_indexes.clone(),
             rpc_scan_and_fix_roots: matches.is_present("rpc_scan_and_fix_roots"),
+            max_request_body_size: matches
+                .value_of("rpc_max_request_body_size")
+                .map(|max_size| max_size.parse::<usize>().unwrap()),
         },
         accountsdb_repl_service_config,
         geyser_plugin_config_files,
