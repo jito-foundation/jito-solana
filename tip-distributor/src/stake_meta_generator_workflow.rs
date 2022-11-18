@@ -573,12 +573,15 @@ mod tests {
             bank.epoch(),
         );
 
+        let expires_at = bank.epoch() + 3;
+
         let tda_0 = TipDistributionAccount {
             validator_vote_account: validator_keypairs_0.vote_keypair.pubkey(),
             merkle_root_upload_authority,
             merkle_root: None,
             epoch_created_at: bank.epoch(),
             validator_commission_bps: 50,
+            expires_at,
             bump: tip_distribution_account_0.1,
         };
         let tda_1 = TipDistributionAccount {
@@ -587,6 +590,7 @@ mod tests {
             merkle_root: None,
             epoch_created_at: bank.epoch(),
             validator_commission_bps: 500,
+            expires_at: 0,
             bump: tip_distribution_account_1.1,
         };
         let tda_2 = TipDistributionAccount {
@@ -595,6 +599,7 @@ mod tests {
             merkle_root: None,
             epoch_created_at: bank.epoch(),
             validator_commission_bps: 75,
+            expires_at: 0,
             bump: tip_distribution_account_2.1,
         };
 
