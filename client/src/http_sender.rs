@@ -232,9 +232,8 @@ impl RpcSender for HttpSender {
         requests_and_params: Vec<(RpcRequest, serde_json::Value)>,
     ) -> Result<serde_json::Value> {
         let mut batch_request = vec![];
-        for (rpc_req, params) in requests_and_params {
-            let request_id = self.request_id.fetch_add(1, Ordering::Relaxed);
-            batch_request.push(rpc_req.build_request_json(request_id, params));
+        for (request_id, req) in requests_and_params.into_iter().enumerate() {
+            batch_request.push(req.0.build_request_json(request_id as u64, req.1));
         }
 
         let resp = self

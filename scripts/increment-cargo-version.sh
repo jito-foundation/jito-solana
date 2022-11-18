@@ -26,7 +26,6 @@ ignores=(
   node_modules
   jito-programs
   anchor
-  solana-accountsdb-connector
 )
 
 not_paths=()
