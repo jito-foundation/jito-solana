@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+solana_keygen=./target/release/solana-keygen
+SOLANA_CONFIG_DIR=./config
+
+mkdir $SOLANA_CONFIG_DIR
+
+NDEBUG=1 ./multinode-demo/setup.sh
+./target/release/solana-ledger-tool -l config/bootstrap-validator/ create-snapshot 0
+NDEBUG=1 ./multinode-demo/faucet.sh

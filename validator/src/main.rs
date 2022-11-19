@@ -26,7 +26,9 @@ use {
     },
     solana_core::{
         ledger_cleanup_service::{DEFAULT_MAX_LEDGER_SHREDS, DEFAULT_MIN_MAX_LEDGER_SHREDS},
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         system_monitor_service::SystemMonitorService,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tower_storage,
         tpu::DEFAULT_TPU_COALESCE_MS,
         validator::{is_snapshot_config_valid, Validator, ValidatorConfig, ValidatorStartProgress},
@@ -41,7 +43,7 @@ use {
     solana_poh::poh_service,
     solana_replica_lib::accountsdb_repl_server::AccountsDbReplServiceConfig,
     solana_rpc::{
-        rpc::{JsonRpcConfig, RpcBigtableConfig},
+        rpc::{JsonRpcConfig, RpcBigtableConfig, MAX_REQUEST_BODY_SIZE},
         rpc_pubsub_service::PubSubConfig,
     },
     solana_runtime::{
@@ -89,6 +91,7 @@ use {
         sync::{Arc, RwLock},
         time::{Duration, SystemTime},
     },
+    tonic::transport::Endpoint,
 };
 
 #[cfg(not(target_env = "msvc"))]
@@ -471,6 +474,7 @@ pub fn main() {
     let default_rocksdb_fifo_shred_storage_size =
         &DEFAULT_ROCKS_FIFO_SHRED_STORAGE_SIZE_BYTES.to_string();
     let default_tpu_connection_pool_size = &DEFAULT_TPU_CONNECTION_POOL_SIZE.to_string();
+    let default_rpc_max_request_body_size = &MAX_REQUEST_BODY_SIZE.to_string();
 
     let matches = App::new(crate_name!()).about(crate_description!())
         .version(solana_version::version!())
@@ -1437,6 +1441,15 @@ pub fn main() {
                 .help("Verifies blockstore roots on boot and fixes any gaps"),
         )
         .arg(
+            Arg::with_name("rpc_max_request_body_size")
+                .long("rpc-max-request-body-size")
+                .value_name("BYTES")
+                .takes_value(true)
+                .validator(is_parsable::<usize>)
+                .default_value(default_rpc_max_request_body_size)
+                .help("The maximum request body size accepted by rpc service"),
+        )
+        .arg(
             Arg::with_name("enable_accountsdb_repl")
                 .long("enable-accountsdb-repl")
                 .takes_value(false)
@@ -1724,6 +1737,100 @@ pub fn main() {
                 .takes_value(false)
                 .help("Allow contacting private ip addresses")
                 .hidden(true),
+        )
+        .arg(
+            Arg::with_name("relayer_address")
+                .long("relayer-address")
+                .value_name("relayer_address")
+                .takes_value(true)
+                .help("Address of the relayer")
+        )
+        .arg(
+            Arg::with_name("block_engine_address")
+                .long("block-engine-address")
+                .value_name("block_engine_address")
+                .takes_value(true)
+                .help("Address of the block engine")
+        )
+        .arg(
+            Arg::with_name("block_engine_auth_service_address")
+                .long("block-engine-auth-service-address")
+                .value_name("block_engine_auth_service_address")
+                .takes_value(true)
+                .help("Address of the block engine's authentication service.")
+        )
+        .arg(
+            Arg::with_name("relayer_auth_service_address")
+                .long("relayer-auth-service-address")
+                .value_name("relayer_auth_service_address")
+                .takes_value(true)
+                .help("Address of the block engine's authentication service.")
+        )
+        .arg(
+            Arg::with_name("trust_relayer_packets")
+                .long("trust-relayer-packets")
+                .takes_value(false)
+                .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
+        )
+        .arg(
+            Arg::with_name("relayer_expected_heartbeat_interval_ms")
+                .long("relayer-expected-heartbeat-interval-ms")
+                .takes_value(true)
+                .help("Interval at which the Relayer is expected to send heartbeat messages.")
+        )
+        .arg(
+            Arg::with_name("relayer_max_failed_heartbeats")
+                .long("relayer-max-failed-heartbeats")
+                .takes_value(true)
+                .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
+        )
+        .arg(
+            Arg::with_name("trust_block_engine_packets")
+                .long("trust-block-engine-packets")
+                .takes_value(false)
+                .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
+        )
+        .arg(
+            Arg::with_name("tip_payment_program_pubkey")
+                .long("tip-payment-program-pubkey")
+                .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-payment program")
+        )
+        .arg(
+            Arg::with_name("tip_distribution_program_pubkey")
+                .long("tip-distribution-program-pubkey")
+                .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-distribution program.")
+        )
+        .arg(
+            Arg::with_name("tip_distribution_account_payer")
+                .long("tip-distribution-account-payer")
+                .value_name("TIP_DISTRIBUTION_ACCOUNT_PAYER")
+                .takes_value(true)
+                .help("The payer of my tip distribution accounts.")
+        )
+        .arg(
+            Arg::with_name("merkle_root_upload_authority")
+                .long("merkle-root-upload-authority")
+                .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
+                .takes_value(true)
+                .help("The public key of the authorized merkle-root uploader.")
+        )
+        .arg(
+            Arg::with_name("commission_bps")
+                .long("commission-bps")
+                .value_name("COMMISSION_BPS")
+                .takes_value(true)
+                .help("The commission validator takes from tips expressed in basis points.")
+        )
+        .arg(
+            Arg::with_name("shred_receiver_address")
+                .long("shred-receiver-address")
+                .value_name("SHRED_RECEIVER_ADDRESS")
+                .takes_value(true)
+                .help("Shred receiver listening address")
         )
         .after_help("The default subcommand is run")
         .subcommand(
@@ -2480,6 +2587,88 @@ pub fn main() {
     }
     let full_api = matches.is_present("full_rpc_api");
 
+    let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
+    let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
+
+    let is_block_engine_enabled = matches.is_present("block_engine_address")
+        || matches.is_present("block_engine_auth_service_address")
+        || matches.is_present("trust_block_engine_packets");
+    let maybe_block_engine_config = is_block_engine_enabled.then(|| {
+        let addr: String = value_of(&matches, "block_engine_auth_service_address")
+            .expect("missing block-engine-auth-service-address");
+        let mut auth_service_endpoint = Endpoint::from_shared(addr.clone())
+            .expect("invalid block-engine-auth-service-address value");
+        if addr.contains("https") {
+            auth_service_endpoint = auth_service_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
+
+        let addr: String =
+            value_of(&matches, "block_engine_address").expect("missing block-engine-address");
+        let mut backend_endpoint = Endpoint::from_shared(addr.clone())
+            .expect("invalid block-engine-address value")
+            .tcp_keepalive(Some(Duration::from_secs(60)));
+        if addr.contains("https") {
+            backend_endpoint = backend_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
+
+        BlockEngineConfig {
+            auth_service_endpoint,
+            backend_endpoint,
+            trust_packets: matches.is_present("trust_block_engine_packets"),
+        }
+    });
+
+    let is_relayer_enabled = matches.is_present("relayer_auth_service_address")
+        || matches.is_present("relayer_address")
+        || matches.is_present("trust_relayer_packets")
+        || matches.is_present("relayer_expected_heartbeat_interval_ms")
+        || matches.is_present("relayer_max_failed_heartbeats");
+    let maybe_relayer_config = is_relayer_enabled.then(|| {
+        let addr: String = value_of(&matches, "relayer_auth_service_address")
+            .expect("missing relayer-auth-service-address");
+        let mut auth_service_endpoint = Endpoint::from_shared(addr.clone())
+            .expect("invalid relayer-auth-service-address value");
+        if addr.contains("https") {
+            auth_service_endpoint = auth_service_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
+
+        let addr: String = value_of(&matches, "relayer_address").expect("missing relayer-address");
+        let mut backend_endpoint =
+            Endpoint::from_shared(addr.clone()).expect("invalid relayer-address value");
+        if addr.contains("https") {
+            backend_endpoint = backend_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
+
+        let expected_heartbeat_interval_ms =
+            value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap_or(500);
+        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+
+        let max_failed_heartbeats =
+            value_of(&matches, "relayer_max_failed_heartbeats").unwrap_or(3);
+        assert!(
+            max_failed_heartbeats > 0,
+            "relayer-max-failed-heartbeats must be greater than zero"
+        );
+        let oldest_allowed_heartbeat =
+            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+
+        RelayerConfig {
+            auth_service_endpoint,
+            backend_endpoint,
+            expected_heartbeat_interval,
+            oldest_allowed_heartbeat,
+            trust_packets: matches.is_present("trust_relayer_packets"),
+        }
+    });
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -2515,6 +2704,11 @@ pub fn main() {
             rpc_niceness_adj: value_t_or_exit!(matches, "rpc_niceness_adj", i8),
             account_indexes: account_indexes.clone(),
             rpc_scan_and_fix_roots: matches.is_present("rpc_scan_and_fix_roots"),
+            max_request_body_size: Some(value_t_or_exit!(
+                matches,
+                "rpc_max_request_body_size",
+                usize
+            )),
         },
         accountsdb_repl_service_config,
         geyser_plugin_config_files,
@@ -2603,6 +2797,12 @@ pub fn main() {
         tpu_coalesce_ms,
         no_wait_for_vote_to_start_leader: matches.is_present("no_wait_for_vote_to_start_leader"),
         accounts_shrink_ratio,
+        maybe_relayer_config,
+        maybe_block_engine_config,
+        tip_manager_config,
+        shred_receiver_address: matches
+            .value_of("shred_receiver_address")
+            .map(|address| SocketAddr::from_str(address).expect("shred_receiver_address invalid")),
         ..ValidatorConfig::default()
     };
 
@@ -3056,5 +3256,60 @@ fn process_account_indexes(matches: &ArgMatches) -> AccountSecondaryIndexes {
     AccountSecondaryIndexes {
         keys,
         indexes: account_indexes,
+    }
+}
+
+fn tip_manager_config_from_matches(
+    matches: &ArgMatches,
+    voting_disabled: bool,
+) -> TipManagerConfig {
+    TipManagerConfig {
+        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
+            || {
+                if !voting_disabled {
+                    panic!("--tip-payment-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            },
+        ),
+        tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
+            .unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--tip-distribution-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+        tip_distribution_account_config: TipDistributionAccountConfig {
+            payer: {
+                let keypair =
+                    keypair_of(matches, "tip_distribution_account_payer").unwrap_or_else(|| {
+                        if !voting_disabled {
+                            panic!("--tip-distribution-account-payer argument required when validator is voting");
+                        }
+                        Keypair::new()
+                    });
+
+                Arc::new(keypair)
+            },
+            merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
+                .unwrap_or_else(|| {
+                    if !voting_disabled {
+                        panic!("--merkle-root-upload-authority argument required when validator is voting");
+                    }
+                    Pubkey::new_unique()
+                }),
+            vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--vote-account argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+            commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
+                if !voting_disabled {
+                    panic!("--commission-bps argument required when validator is voting");
+                }
+                0
+            }),
+        },
     }
 }
