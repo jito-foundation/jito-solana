@@ -732,6 +732,7 @@ impl BankingStage {
                         banking_stage_stats,
                         packet,
                         payload,
+                        blacklisted_accounts,
                     )
                 };
 
@@ -900,6 +901,7 @@ impl BankingStage {
         banking_stage_stats: &BankingStageStats,
         packet: &ImmutableDeserializedPacket,
         payload: &mut ConsumeScannerPayload,
+        blacklisted_accounts: &HashSet<Pubkey>,
     ) -> ProcessingDecision {
         // If end of the slot, return should process (quick loop after reached end of slot)
         if payload.reached_end_of_slot {
@@ -909,15 +911,18 @@ impl BankingStage {
         // Before sanitization, let's quickly check the static keys (performance optimization)
         let message = &packet.transaction().get_message().message;
         let static_keys = message.static_account_keys();
-        for key in static_keys.iter().enumerate().filter_map(|(idx, key)| {
-            if message.is_maybe_writable(idx) {
-                Some(key)
-            } else {
-                None
-            }
-        }) {
-            if payload.write_accounts.contains(key) {
+        for (idx, key) in static_keys.iter().enumerate() {
+            if message.is_maybe_writable(idx) && payload.write_accounts.contains(key) {
                 return ProcessingDecision::Later;
+            }
+
+            // throw away transactions that mention blacklisted accounts
+            if blacklisted_accounts.contains(key) {
+                payload
+                    .buffered_packet_batches
+                    .message_hash_to_transaction
+                    .remove(packet.message_hash());
+                return ProcessingDecision::Never;
             }
         }
 
@@ -4244,6 +4249,8 @@ mod tests {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 None,
+                &HashSet::default(),
+                &bundle_locker,
             );
             assert!(buffered_packet_batches.is_empty());
             poh_recorder
