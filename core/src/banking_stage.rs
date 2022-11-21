@@ -913,14 +913,8 @@ impl BankingStage {
         // Before sanitization, let's quickly check the static keys (performance optimization)
         let message = &packet.transaction().get_message().message;
         let static_keys = message.static_account_keys();
-        for key in static_keys.iter().enumerate().filter_map(|(idx, key)| {
-            if message.is_maybe_writable(idx) {
-                Some(key)
-            } else {
-                None
-            }
-        }) {
-            if payload.write_accounts.contains(key) {
+        for (idx, key) in static_keys.iter().enumerate() {
+            if message.is_maybe_writable(idx) && payload.write_accounts.contains(key) {
                 return ProcessingDecision::Later;
             }
             // throw away transactions that mention blacklisted accounts
@@ -4256,6 +4250,8 @@ mod tests {
                 &QosService::new(Arc::new(RwLock::new(CostModel::default())), 1),
                 &mut LeaderSlotMetricsTracker::new(0),
                 None,
+                &HashSet::default(),
+                &bundle_locker,
             );
             assert!(buffered_packet_batches.is_empty());
             poh_recorder
