@@ -33,9 +33,7 @@ pub fn claim_mev_tips(
     tip_distribution_program_id: &Pubkey,
     keypair_path: &PathBuf,
 ) -> Result<(), ClaimMevError> {
-    /// roughly how long before blockhash expires
-    const MAX_RETRY_DURATION: Duration = Duration::from_secs(60);
-
+    /// roughly how long before blockhash expires const MAX_RETRY_DURATION: Duration = Duration::from_secs(60);
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
     let keypair = read_keypair_file(keypair_path).expect("read keypair file");
@@ -58,7 +56,6 @@ pub fn claim_mev_tips(
         let blockhash = rpc_client.get_latest_blockhash().await.expect("read blockhash");
         let balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
         let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).count();
-
         // heuristic to make sure we have enough funds to cover the rent costs if jito has many validators
         assert!(balance >= node_count as u64 * ClaimStatus::SIZE as u64);
         let mut tip_claims_below_min_rent_count = 0;
@@ -85,51 +82,46 @@ pub fn claim_mev_tips(
                     continue;
                 }
 
-                match rpc_client.get_account(&claim_status_pubkey).await {
-                    Ok(_) => {
-                        debug!(
-                                "claim status account already exists: {:?}",
-                                claim_status_pubkey
-                            );
-                    }
-                    Err(e) => {
-                        if !matches!(e.kind(), ErrorKind::RpcError(RpcError::ForUser(_))) {
-                            panic!("Invalid RPC Error")
-                        }
-                        info!("claiming for public key: {:?}", node.claimant);
-                        let account = rpc_client.get_account(&node.claimant).await.expect("Failed to fetch account");
-                        let min_rent = rpc_client.get_minimum_balance_for_rent_exemption(account.data.len()).await.expect("Failed to calculate min rent");
-                        if node.amount < min_rent {
-                            warn!("Tip claim amount={} is less than minimum rent={} for account={}.", node.amount, min_rent, node.claimant);
-                            tip_claims_below_min_rent_count += 1;
-                            continue;
-                        }
-                        let ix = Instruction {
-                            program_id: *tip_distribution_program_id,
-                            data: tip_distribution::instruction::Claim {
-                                proof: node.proof.unwrap(),
-                                amount: node.amount,
-                                bump: claim_status_bump,
-                            }.data(),
-                            accounts: tip_distribution::accounts::Claim {
-                                config: tip_distribution_config,
-                                tip_distribution_account: tree.tip_distribution_account,
-                                claimant: node.claimant,
-                                claim_status: claim_status_pubkey,
-                                payer: keypair.pubkey(),
-                                system_program: system_program::id(),
-                            }.to_account_metas(None),
-                        };
-                        let transaction = Transaction::new_signed_with_payer(
-                            &[ix],
-                            Some(&keypair.pubkey()),
-                            &[&keypair],
-                            blockhash,
-                        );
-                        info!("tx: {:?}", transaction);
-                        transactions.push(transaction);
-                    }
+                let claim_status_acc_result = rpc_client.get_account(&claim_status_pubkey).await;
+                if claim_status_acc_result.is_ok() {
+                    debug!("claim status account already exists: {:?}", claim_status_pubkey);
+                    continue;
                 }
+                if !(matches!(claim_status_acc_result.unwrap_err().kind(), ErrorKind::RpcError(RpcError::ForUser(_)))) {
+                    panic!("Invalid RPC Error");
+                }
+                info!("claiming for public key: {:?}", node.claimant);
+                let account = rpc_client.get_account(&node.claimant).await.expect("Failed to fetch account");
+                let min_rent = rpc_client.get_minimum_balance_for_rent_exemption(account.data.len()).await.expect("Failed to calculate min rent");
+                if node.amount < min_rent {
+                    warn!("Tip claim amount={} is less than minimum rent={} for account={}.", node.amount, min_rent, node.claimant);
+                    tip_claims_below_min_rent_count += 1;
+                    continue;
+                }
+                let ix = Instruction {
+                    program_id: *tip_distribution_program_id,
+                    data: tip_distribution::instruction::Claim {
+                        proof: node.proof.unwrap(),
+                        amount: node.amount,
+                        bump: claim_status_bump,
+                    }.data(),
+                    accounts: tip_distribution::accounts::Claim {
+                        config: tip_distribution_config,
+                        tip_distribution_account: tree.tip_distribution_account,
+                        claimant: node.claimant,
+                        claim_status: claim_status_pubkey,
+                        payer: keypair.pubkey(),
+                        system_program: system_program::id(),
+                    }.to_account_metas(None),
+                };
+                let transaction = Transaction::new_signed_with_payer(
+                    &[ix],
+                    Some(&keypair.pubkey()),
+                    &[&keypair],
+                    blockhash,
+                );
+                info!("tx: {:?}", transaction);
+                transactions.push(transaction);
             }
         }
 
