@@ -3,6 +3,7 @@ pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
 pub mod stake_meta_generator_workflow;
 
+use anchor_lang::err;
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -430,10 +431,10 @@ pub async fn send_transactions_with_retry(
         }
     }
 
-    assert!(
-        transactions_to_send.is_empty(),
-        "all transactions failed to send"
-    );
+    if !transactions_to_send.is_empty() {
+        error!("still have {} txns to send", transactions_to_send.len());
+        panic!("failed to send all transactions");
+    }
 }
 
 mod pubkey_string_conversion {
