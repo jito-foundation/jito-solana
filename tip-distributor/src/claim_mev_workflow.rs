@@ -1,8 +1,7 @@
-use log::warn;
 use {
     crate::{read_json_from_file, send_transactions_with_retry, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
-    log::{debug, info},
+    log::{debug, info, warn},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
     solana_program::system_program,
     solana_rpc_client_api::client_error::ErrorKind,
@@ -15,11 +14,9 @@ use {
     },
     std::{path::PathBuf, time::Duration},
     thiserror::Error,
-    tip_distribution::state::*,
+    tip_distribution::state::{ClaimStatus, *},
     tokio::runtime::Builder,
 };
-
-use tip_distribution::state::ClaimStatus;
 
 #[derive(Error, Debug)]
 pub enum ClaimMevError {
