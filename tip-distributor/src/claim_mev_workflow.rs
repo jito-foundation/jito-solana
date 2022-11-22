@@ -60,12 +60,18 @@ pub fn claim_mev_tips(
         let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).count();
         // heuristic to make sure we have enough funds to cover the rent costs if jito has many validators
         assert!(balance >= node_count as u64 * ClaimStatus::SIZE as u64);
-        let mut tip_claims_below_min_rent_count = 0;
+
+        let mut below_min_rent_count = 0;
+        let mut zero_lamports_count = 0;
         for tree in merkle_trees.generated_merkle_trees {
             // only claim for ones that have merkle root on-chain
             let account = rpc_client.get_account(&tree.tip_distribution_account).await.expect("expected to fetch tip distribution account");
 
             for node in tree.tree_nodes {
+                if node.amount == 0 {
+                    zero_lamports_count += 1;
+                    continue;
+                }
                 let (claim_status_pubkey, claim_status_bump) = Pubkey::find_program_address(
                     &[
                         ClaimStatus::SEED,
@@ -97,7 +103,7 @@ pub fn claim_mev_tips(
                 let min_rent = rpc_client.get_minimum_balance_for_rent_exemption(account.data.len()).await.expect("Failed to calculate min rent");
                 if node.amount < min_rent {
                     warn!("Tip claim amount={} is less than minimum rent={} for account={}.", node.amount, min_rent, node.claimant);
-                    tip_claims_below_min_rent_count += 1;
+                    below_min_rent_count += 1;
                     continue;
                 }
                 let ix = Instruction {
@@ -127,10 +133,8 @@ pub fn claim_mev_tips(
             }
         }
 
-        if tip_claims_below_min_rent_count > 0 {
-            info!("Skipped {} accounts where balance after tip would be below the minimum rent amount.", tip_claims_below_min_rent_count);
-        }
-        info!("Sending {} tip claim transactions.", &transactions.len());
+        info!("Sending {} tip claim transactions. {} tried sending 0 lamports, {} would be below minimum rent",
+            &transactions.len(), zero_lamports_count, below_min_rent_count);
         send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
     });
 
