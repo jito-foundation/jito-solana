@@ -3,7 +3,6 @@ pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
 pub mod stake_meta_generator_workflow;
 
-use anchor_lang::err;
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
