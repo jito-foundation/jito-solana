@@ -57,10 +57,13 @@ pub fn claim_mev_tips(
     runtime.block_on(async move {
         let blockhash = rpc_client.get_latest_blockhash().await.expect("read blockhash");
         let balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
-        let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).count();
-        // heuristic to make sure we have enough funds to cover the rent costs if jito has many validators
-        assert!(balance >= node_count as u64 * ClaimStatus::SIZE as u64);
 
+        // heuristic to make sure we have enough funds to cover the rent costs if jito has many validators
+        {
+            let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).count();
+            let min_rent = rpc_client.get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE).await.expect("Failed to calculate min rent");
+            assert!(balance >= node_count as u64 * min_rent);
+        }
         let mut below_min_rent_count = 0;
         let mut zero_lamports_count = 0;
         for tree in merkle_trees.generated_merkle_trees {
