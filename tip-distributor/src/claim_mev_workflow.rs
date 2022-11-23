@@ -3,7 +3,7 @@ use {
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     log::{debug, info, warn},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
-    solana_program::system_program,
+    solana_program::{fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, system_program},
     solana_rpc_client_api::client_error::ErrorKind,
     solana_sdk::{
         commitment_config::CommitmentConfig,
@@ -14,7 +14,7 @@ use {
     },
     std::{path::PathBuf, time::Duration},
     thiserror::Error,
-    tip_distribution::state::{ClaimStatus, *},
+    tip_distribution::state::*,
     tokio::runtime::Builder,
 };
 
@@ -57,12 +57,11 @@ pub fn claim_mev_tips(
     runtime.block_on(async move {
         let blockhash = rpc_client.get_latest_blockhash().await.expect("read blockhash");
         let balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
-
-        // heuristic to make sure we have enough funds to cover the rent costs if jito has many validators
+        // heuristic to make sure we have enough funds to cover the rent costs if epoch has many validators
         {
             let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).count();
-            let min_rent = rpc_client.get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE).await.expect("Failed to calculate min rent");
-            assert!(balance >= node_count as u64 * min_rent);
+            let min_rent_per_claim = rpc_client.get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE).await.expect("Failed to calculate min rent");
+            assert!(balance >= node_count as u64 * (min_rent_per_claim + DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE));
         }
         let mut below_min_rent_count = 0;
         let mut zero_lamports_count = 0;
@@ -101,7 +100,6 @@ pub fn claim_mev_tips(
                 if !(matches!(claim_status_acc_result.unwrap_err().kind(), ErrorKind::RpcError(RpcError::ForUser(_)))) {
                     panic!("Invalid RPC Error");
                 }
-                info!("claiming for public key: {:?}", node.claimant);
                 let account = rpc_client.get_account(&node.claimant).await.expect("Failed to fetch account");
                 let min_rent = rpc_client.get_minimum_balance_for_rent_exemption(account.data.len()).await.expect("Failed to calculate min rent");
                 if node.amount < min_rent {
@@ -131,7 +129,7 @@ pub fn claim_mev_tips(
                     &[&keypair],
                     blockhash,
                 );
-                info!("tx: {:?}", transaction);
+                info!("claiming for pubkey: {}, tx: {:?}", node.claimant, transaction);
                 transactions.push(transaction);
             }
         }

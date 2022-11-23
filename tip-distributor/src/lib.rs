@@ -431,8 +431,11 @@ pub async fn send_transactions_with_retry(
     }
 
     if !transactions_to_send.is_empty() {
-        error!("still have {} txns to send", transactions_to_send.len());
-        panic!("failed to send all transactions");
+        error!(
+            "failed to send {} of {} transactions",
+            transactions_to_send.len(),
+            transactions.len()
+        );
     }
 }
 
