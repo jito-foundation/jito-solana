@@ -431,7 +431,7 @@ pub async fn send_transactions_with_retry(
     }
 
     if !transactions_to_send.is_empty() {
-        error!(
+        panic!(
             "failed to send {} of {} transactions",
             transactions_to_send.len(),
             transactions.len()
