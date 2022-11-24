@@ -116,7 +116,8 @@ pub fn claim_mev_tips(
                 // some older accounts can be rent-paying
                 // any new transfers will need to make the account rent-exempt (runtime enforced)
                 if current_balance + node.amount < stake_acct_min_rent {
-                    warn!("Current balance + tip claim amount of {} is less than required rent-exempt of {} for pubkey: {}. Skipping.", current_balance + node.amount, stake_acct_min_rent, node.claimant);
+                    warn!("Current balance + tip claim amount of {} is less than required rent-exempt of {} for pubkey: {}. Skipping.",
+                        current_balance + node.amount, stake_acct_min_rent, node.claimant);
                     below_min_rent_count += 1;
                     continue;
                 }
