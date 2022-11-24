@@ -102,12 +102,12 @@ pub fn claim_mev_tips(
                         debug!("claim status account already exists, skipping pubkey {:?}.", claim_status_pubkey);
                         continue;
                     }
-                    // expected to not find ClaimStatus account
+                    // expected to not find ClaimStatus account, don't skip
                     Err(client_error::Error { kind: client_error::ErrorKind::RpcError(RpcError::ForUser(err)), .. }) if err.starts_with("AccountNotFound") => {}
                     Err(err) => panic!("Unexpected RPC Error: {}", err),
                 }
 
-                let current_balance= rpc_client.get_balance(&node.claimant).await.expect("Failed to get balance");
+                let current_balance = rpc_client.get_balance(&node.claimant).await.expect("Failed to get balance");
                 // some older accounts can be rent-paying
                 // any new transfers will need to make the account rent-exempt (runtime enforced)
                 if current_balance + node.amount < stake_acct_min_rent {
