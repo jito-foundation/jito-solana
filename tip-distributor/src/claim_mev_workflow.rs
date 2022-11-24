@@ -1,10 +1,11 @@
+use solana_program::stake::state::StakeState;
 use {
     crate::{read_json_from_file, send_transactions_with_retry, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     log::{debug, info, warn},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
     solana_program::{fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, system_program},
-    solana_rpc_client_api::client_error::ErrorKind,
+    solana_rpc_client_api::client_error,
     solana_sdk::{
         commitment_config::CommitmentConfig,
         instruction::Instruction,
@@ -63,12 +64,22 @@ pub fn claim_mev_tips(
             let min_rent_per_claim = rpc_client.get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE).await.expect("Failed to calculate min rent");
             assert!(balance >= node_count as u64 * (min_rent_per_claim + DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE));
         }
+        let stake_acct_min_rent = rpc_client.get_minimum_balance_for_rent_exemption(StakeState::size_of()).await.expect("Failed to calculate min rent");
         let mut below_min_rent_count = 0;
         let mut zero_lamports_count = 0;
         for tree in merkle_trees.generated_merkle_trees {
             // only claim for ones that have merkle root on-chain
-            let account = rpc_client.get_account(&tree.tip_distribution_account).await.expect("expected to fetch tip distribution account");
 
+            let account = rpc_client.get_account(&tree.tip_distribution_account).await.expect("expected to fetch tip distribution account");
+            let fetched_tip_distribution_account = TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).expect("failed to deserialize tip_distribution_account state");
+            if fetched_tip_distribution_account.merkle_root.is_none() {
+                info!(
+                        "not claiming because merkle root isn't uploaded yet. skipped {} claimants for tda: {:?}",
+                        tree.tree_nodes.len(),
+                        tree.tip_distribution_account
+                    );
+                continue;
+            }
             for node in tree.tree_nodes {
                 if node.amount == 0 {
                     zero_lamports_count += 1;
@@ -82,28 +93,28 @@ pub fn claim_mev_tips(
                     ],
                     tip_distribution_program_id,
                 );
-                let fetched_tip_distribution_account = TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).expect("failed to deserialize tip_distribution_account state");
-                if fetched_tip_distribution_account.merkle_root.is_none() {
-                    info!(
-                        "not claiming because merkle root isn't uploaded yet. claimant: {:?} tda: {:?}",
-                        node.claimant,
-                        tree.tip_distribution_account
-                    );
-                    continue;
+
+                // make sure not previously claimed
+                match rpc_client.get_account(&claim_status_pubkey).await {
+                    Ok(_) => {
+                        debug!("claim status account already exists, skipping pubkey {:?}.", claim_status_pubkey);
+                        continue;
+                    }
+                    // expected to not find ClaimStatus account
+                    Err(client_error::Error { kind: client_error::ErrorKind::RpcError(RpcError::ForUser(err)), .. }) if err.starts_with("AccountNotFound") => {}
+                    Err(err) => panic!("Unexpected RPC Error: {}", err),
                 }
 
-                let claim_status_acc_result = rpc_client.get_account(&claim_status_pubkey).await;
-                if claim_status_acc_result.is_ok() {
-                    debug!("claim status account already exists: {:?}", claim_status_pubkey);
-                    continue;
-                }
-                if !(matches!(claim_status_acc_result.unwrap_err().kind(), ErrorKind::RpcError(RpcError::ForUser(_)))) {
-                    panic!("Invalid RPC Error");
-                }
-                let account = rpc_client.get_account(&node.claimant).await.expect("Failed to fetch account");
-                let min_rent = rpc_client.get_minimum_balance_for_rent_exemption(account.data.len()).await.expect("Failed to calculate min rent");
-                if node.amount < min_rent {
-                    warn!("Tip claim amount={} is less than minimum rent={} for account={}.", node.amount, min_rent, node.claimant);
+                let account = rpc_client.get_account(&node.claimant).await;
+                let current_balance = match account {
+                    Ok(acc) => acc.lamports,
+                    Err(_) => 0,
+                };
+
+                // some older accounts can be rent-paying
+                // any new transfers will need to make the account rent-exempt (runtime enforced)
+                if current_balance + node.amount < stake_acct_min_rent {
+                    warn!("Current balance + tip claim amount={} is less than required amount to be rent-exempt={} for account={}. Skipping.", current_balance + node.amount, stake_acct_min_rent, node.claimant);
                     below_min_rent_count += 1;
                     continue;
                 }
