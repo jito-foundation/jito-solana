@@ -430,10 +430,13 @@ pub async fn send_transactions_with_retry(
         }
     }
 
-    assert!(
-        transactions_to_send.is_empty(),
-        "all transactions failed to send"
-    );
+    if !transactions_to_send.is_empty() {
+        panic!(
+            "failed to send {} of {} transactions",
+            transactions_to_send.len(),
+            transactions.len()
+        );
+    }
 }
 
 mod pubkey_string_conversion {
