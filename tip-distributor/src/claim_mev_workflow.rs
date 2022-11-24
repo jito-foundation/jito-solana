@@ -1,10 +1,12 @@
-use solana_program::stake::state::StakeState;
 use {
     crate::{read_json_from_file, send_transactions_with_retry, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     log::{debug, info, warn},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
-    solana_program::{fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, system_program},
+    solana_program::{
+        fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, stake::state::StakeState,
+        system_program,
+    },
     solana_rpc_client_api::client_error,
     solana_sdk::{
         commitment_config::CommitmentConfig,
