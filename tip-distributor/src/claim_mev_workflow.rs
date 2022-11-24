@@ -107,12 +107,7 @@ pub fn claim_mev_tips(
                     Err(err) => panic!("Unexpected RPC Error: {}", err),
                 }
 
-                let account = rpc_client.get_account(&node.claimant).await;
-                let current_balance = match account {
-                    Ok(acc) => acc.lamports,
-                    Err(_) => 0,
-                };
-
+                let current_balance= rpc_client.get_balance(&node.claimant).await.expect("Failed to get balance");
                 // some older accounts can be rent-paying
                 // any new transfers will need to make the account rent-exempt (runtime enforced)
                 if current_balance + node.amount < stake_acct_min_rent {
