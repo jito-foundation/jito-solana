@@ -68,8 +68,8 @@ pub fn claim_mev_tips(
             let desired_balance = node_count as u64 * (min_rent_per_claim + DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE);
             if start_balance < desired_balance {
                 let sol_deposit = (desired_balance - start_balance + LAMPORTS_PER_SOL - 1) / LAMPORTS_PER_SOL; //rounds up to nearest sol
-                panic!("Expected to have at least {} lamports, current balance is {} lamports, deposit {} SOL to continue.",
-                       desired_balance, start_balance, sol_deposit)
+                panic!("Expected to have at least {} lamports, current balance is {} lamports, deposit {} SOL to {} to continue.",
+                       desired_balance, start_balance, sol_deposit, &keypair.pubkey())
             }
         }
         let stake_acct_min_rent = rpc_client.get_minimum_balance_for_rent_exemption(StakeState::size_of()).await.expect("Failed to calculate min rent");
@@ -77,7 +77,6 @@ pub fn claim_mev_tips(
         let mut zero_lamports_count = 0;
         for tree in merkle_trees.generated_merkle_trees {
             // only claim for ones that have merkle root on-chain
-
             let account = rpc_client.get_account(&tree.tip_distribution_account).await.expect("expected to fetch tip distribution account");
             let fetched_tip_distribution_account = TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).expect("failed to deserialize tip_distribution_account state");
             if fetched_tip_distribution_account.merkle_root.is_none() {
