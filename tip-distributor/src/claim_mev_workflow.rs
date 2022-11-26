@@ -1,3 +1,4 @@
+use solana_program::native_token::LAMPORTS_PER_SOL;
 use {
     crate::{read_json_from_file, send_transactions_with_retry, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
@@ -59,19 +60,23 @@ pub fn claim_mev_tips(
 
     runtime.block_on(async move {
         let blockhash = rpc_client.get_latest_blockhash().await.expect("read blockhash");
-        let balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
+        let start_balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
         // heuristic to make sure we have enough funds to cover the rent costs if epoch has many validators
         {
             let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).count();
             let min_rent_per_claim = rpc_client.get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE).await.expect("Failed to calculate min rent");
-            assert!(balance >= node_count as u64 * (min_rent_per_claim + DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE));
+            let desired_balance = node_count as u64 * (min_rent_per_claim + DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE);
+            if start_balance < desired_balance {
+                let sol_to_deposit = (desired_balance - start_balance + LAMPORTS_PER_SOL - 1) / LAMPORTS_PER_SOL; // rounds up to nearest sol
+                panic!("Expected to have at least {} lamports in {}, current balance is {} lamports, deposit {} SOL to continue.",
+                       desired_balance, &keypair.pubkey(), start_balance, sol_to_deposit)
+            }
         }
         let stake_acct_min_rent = rpc_client.get_minimum_balance_for_rent_exemption(StakeState::size_of()).await.expect("Failed to calculate min rent");
         let mut below_min_rent_count = 0;
         let mut zero_lamports_count = 0;
         for tree in merkle_trees.generated_merkle_trees {
             // only claim for ones that have merkle root on-chain
-
             let account = rpc_client.get_account(&tree.tip_distribution_account).await.expect("expected to fetch tip distribution account");
             let fetched_tip_distribution_account = TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).expect("failed to deserialize tip_distribution_account state");
             if fetched_tip_distribution_account.merkle_root.is_none() {
