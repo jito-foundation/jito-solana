@@ -1410,7 +1410,7 @@ impl RpcClient {
 
     pub async fn batch_simulate_bundle(
         &self,
-        bundles: Vec<VersionedBundle>,
+        bundles: &[VersionedBundle],
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         let configs = bundles
             .iter()
@@ -1422,13 +1422,13 @@ impl RpcClient {
             })
             .collect::<Vec<RpcSimulateBundleConfig>>();
 
-        self.batch_simulate_bundle_with_config(bundles.into_iter().zip(configs).collect())
+        self.batch_simulate_bundle_with_config(bundles.iter().zip(configs).collect())
             .await
     }
 
     pub async fn batch_simulate_bundle_with_config(
         &self,
-        bundles_and_configs: Vec<(VersionedBundle, RpcSimulateBundleConfig)>,
+        bundles_and_configs: Vec<(&VersionedBundle, RpcSimulateBundleConfig)>,
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         let mut params = vec![];
         for (bundle, config) in bundles_and_configs {
