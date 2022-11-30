@@ -1154,14 +1154,14 @@ impl RpcClient {
 
     pub fn batch_simulate_bundle(
         &self,
-        bundles: Vec<VersionedBundle>,
+        bundles: &[VersionedBundle],
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         self.invoke(self.rpc_client.batch_simulate_bundle(bundles))
     }
 
     pub fn batch_simulate_bundle_with_config(
         &self,
-        bundles_and_configs: Vec<(VersionedBundle, RpcSimulateBundleConfig)>,
+        bundles_and_configs: Vec<(&VersionedBundle, RpcSimulateBundleConfig)>,
     ) -> BatchRpcResult<RpcSimulateBundleResult> {
         self.invoke(
             self.rpc_client
