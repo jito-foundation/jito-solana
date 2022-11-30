@@ -75,7 +75,7 @@ impl Simulator {
             self.t_pool.spawn(move || {
                 // TODO: is this slow?
                 if let Some((n_succeeded, n_failed)) =
-                    Self::do_simulate(bundles, simulation_slot, &rpc_client)
+                    Self::do_simulate(&bundles[..], simulation_slot, &rpc_client)
                 {
                     stats
                         .total_sim_success
@@ -96,7 +96,7 @@ impl Simulator {
 
     /// returns (num_succeeded, num_failed) simulations
     fn do_simulate(
-        bundles: Vec<VersionedBundle>,
+        bundles: &[VersionedBundle],
         simulation_slot: Slot,
         rpc_client: &Arc<RpcClient>,
     ) -> Option<(u64, u64)> {
@@ -113,9 +113,7 @@ impl Simulator {
             })
             .collect::<Vec<RpcSimulateBundleConfig>>();
 
-        match rpc_client
-            .batch_simulate_bundle_with_config(bundles.into_iter().zip(configs).collect())
-        {
+        match rpc_client.batch_simulate_bundle_with_config(bundles.iter().zip(configs).collect()) {
             Ok(response) => {
                 let mut n_succeeded: u64 = 0;
                 let mut n_failed: u64 = 0;
