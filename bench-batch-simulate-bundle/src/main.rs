@@ -232,7 +232,7 @@ fn spawn_slots_subscribe_thread(
     node_name: String,
     exit: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    let mut slots_sub = PubsubClient::slot_subscribe(&*pubsub_addr).unwrap();
+    let mut slots_sub = PubsubClient::slot_subscribe(&pubsub_addr).unwrap();
     thread::spawn(move || loop {
         if exit.load(Ordering::Acquire) {
             let _ = slots_sub.0.shutdown();
@@ -243,7 +243,7 @@ fn spawn_slots_subscribe_thread(
             Ok(slot_info) => info!("[RPC={} slot={:?}]", node_name, slot_info.slot),
             Err(e) => {
                 error!("error receiving on slots_sub channel: {}", e);
-                slots_sub = PubsubClient::slot_subscribe(&*pubsub_addr).unwrap();
+                slots_sub = PubsubClient::slot_subscribe(&pubsub_addr).unwrap();
             }
         }
     })
@@ -270,7 +270,7 @@ fn fetch_n_highest_cost_transactions(
     };
     let block = rpc_client
         .get_block_with_config(slot, config)
-        .expect(&*format!("failed to fetch block at slot: {}", slot));
+        .unwrap_or_else(|_| panic!("failed to fetch block at slot: {}", slot));
 
     let parent_slot = block.parent_slot;
     (

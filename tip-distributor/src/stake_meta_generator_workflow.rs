@@ -145,11 +145,13 @@ pub fn generate_stake_meta_collection(
 ) -> Result<StakeMetaCollection, StakeMetaGeneratorError> {
     assert!(bank.is_frozen());
 
-    let epoch_vote_accounts = bank.epoch_vote_accounts(bank.epoch()).expect(&*format!(
-        "No epoch_vote_accounts found for slot {} at epoch {}",
-        bank.slot(),
-        bank.epoch()
-    ));
+    let epoch_vote_accounts = bank.epoch_vote_accounts(bank.epoch()).unwrap_or_else(|| {
+        panic!(
+            "No epoch_vote_accounts found for slot {} at epoch {}",
+            bank.slot(),
+            bank.epoch()
+        )
+    });
 
     let l_stakes = bank.stakes_cache.stakes();
     let delegations = l_stakes.stake_delegations();
