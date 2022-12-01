@@ -1,5 +1,3 @@
-use solana_program::fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE;
-use solana_program::native_token::LAMPORTS_PER_SOL;
 use {
     crate::{
         read_json_from_file, send_transactions_with_retry, GeneratedMerkleTree,
@@ -8,6 +6,9 @@ use {
     anchor_lang::AccountDeserialize,
     log::{error, info},
     solana_client::nonblocking::rpc_client::RpcClient,
+    solana_program::{
+        fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
+    },
     solana_sdk::{
         commitment_config::CommitmentConfig,
         pubkey::Pubkey,

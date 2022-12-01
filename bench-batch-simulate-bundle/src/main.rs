@@ -111,14 +111,10 @@ fn main() {
     let t_hdls = vec![
         spawn_slots_subscribe_thread(
             args.simulation_ws_url,
-            "simulation-node".to_string(),
+            "simulation-node".into(),
             exit.clone(),
         ),
-        spawn_slots_subscribe_thread(
-            args.baseline_ws_url,
-            "baseline-node".to_string(),
-            exit.clone(),
-        ),
+        spawn_slots_subscribe_thread(args.baseline_ws_url, "baseline-node".into(), exit.clone()),
     ];
 
     let rpc_client = RpcClient::new(args.baseline_rpc_url.clone());
@@ -208,7 +204,7 @@ fn spawn_highest_cost_bundle_scraper(
     bundle_size: usize,
 ) -> JoinHandle<()> {
     Builder::new()
-        .name("highest-cost-tx-scraper".to_string())
+        .name("highest-cost-tx-scraper".into())
         .spawn(move || loop {
             let (transactions, simulation_slot) =
                 fetch_n_highest_cost_transactions(&rpc_client, bundle_size);
