@@ -72,9 +72,8 @@ pub fn upload_merkle_root(
 
         // heuristic to make sure we have enough funds to cover execution, assumes all trees need updating 
         {
-            let tree_count = trees.iter().count();
             let initial_balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
-            let desired_balance = tree_count as u64 * DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE;
+            let desired_balance = trees.len() as u64 * DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE;
             if initial_balance < desired_balance {
                 let sol_to_deposit = (desired_balance - initial_balance + LAMPORTS_PER_SOL - 1) / LAMPORTS_PER_SOL; // rounds up to nearest sol
                 panic!("Expected to have at least {} lamports in {}, current balance is {} lamports, deposit {} SOL to continue.",
