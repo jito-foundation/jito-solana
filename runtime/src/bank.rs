@@ -3703,24 +3703,9 @@ impl Bank {
         pre_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
         post_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
     ) -> result::Result<BundleSimulationResult, Box<dyn Error>> {
-        assert!(self.is_frozen(), "simulation bank must be frozen");
         assert_eq!(pre_execution_accounts_requested.len(), bundle.len());
         assert_eq!(post_execution_accounts_requested.len(), bundle.len());
 
-        self.simulate_bundle_unchecked(
-            bundle,
-            pre_execution_accounts_requested,
-            post_execution_accounts_requested,
-        )
-    }
-
-    /// Run transactions against a bank without committing the results; does not check if the bank is frozen.
-    fn simulate_bundle_unchecked(
-        &self,
-        bundle: Vec<SanitizedTransaction>,
-        pre_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
-        post_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
-    ) -> result::Result<BundleSimulationResult, Box<dyn Error>> {
         // Used to cache account data in between batch execution iterations
         let mut account_overrides = AccountOverrides::default();
 
@@ -8136,14 +8121,6 @@ pub(crate) mod tests {
             |old, new| assert_eq!(old + some_lamports, new),
         );
         assert_eq!(account, bank.get_account(&pubkey).unwrap());
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_simulate_bundle_unfrozen_bank() {
-        let (genesis_config, _mint_keypair) = create_genesis_config(1_000_000);
-        let bank = Bank::new_for_tests(&genesis_config);
-        let _ = bank.simulate_bundle(vec![], vec![], vec![]);
     }
 
     #[test]

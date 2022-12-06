@@ -49,8 +49,14 @@ pub struct RpcSimulateTransactionConfig {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum SimulationSlotConfig {
+    /// Simulate on top of bank with the provided commitment.
     Commitment(CommitmentConfig),
+
+    /// Simulate on the provided slot's bank.
     Slot(Slot),
+
+    /// Simulates on top of the RPC's highest slot's bank i.e. the working bank.
+    Tip,
 }
 
 impl Default for SimulationSlotConfig {
