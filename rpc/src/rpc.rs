@@ -4035,6 +4035,7 @@ pub mod rpc_full {
                 SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
                     Error::invalid_params(format!("bank not found for the provided slot: {}", slot))
                 }),
+                SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
             }?;
 
             // TODO: Come back to this and allow unfrozen bank as long as the parent is frozen.
