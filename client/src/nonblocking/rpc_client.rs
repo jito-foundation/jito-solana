@@ -5570,6 +5570,7 @@ impl RpcClient {
         T: serde::de::DeserializeOwned,
     {
         let response = self.sender.send_batch(requests_and_params).await?;
+        debug!("response: {:?}", response);
 
         serde_json::from_value(response).map_err(|err| ClientError {
             request: None,
