@@ -3982,14 +3982,6 @@ pub mod rpc_full {
                 SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
             }?;
 
-            // TODO: Come back to this and allow unfrozen bank as long as the parent is frozen.
-            if !bank.is_frozen() {
-                return Err(Error::invalid_params(format!(
-                    "bank at slot {} is not frozen",
-                    bank.slot()
-                )));
-            }
-
             let tx_encoding = config
                 .transaction_encoding
                 .unwrap_or(UiTransactionEncoding::Base64);
