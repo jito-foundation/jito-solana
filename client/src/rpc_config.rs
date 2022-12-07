@@ -85,7 +85,6 @@ pub struct RpcSimulateBundleConfig {
     pub transaction_encoding: Option<UiTransactionEncoding>,
 
     /// Specifies the bank to run simulation against.
-    #[serde(flatten)]
     pub simulation_bank: Option<SimulationSlotConfig>,
 
     /// Opt to skip sig-verify for faster performance.
