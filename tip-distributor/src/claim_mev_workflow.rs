@@ -91,19 +91,11 @@ pub fn claim_mev_tips(
                     zero_lamports_count += 1;
                     continue;
                 }
-                let (claim_status_pubkey, claim_status_bump) = Pubkey::find_program_address(
-                    &[
-                        ClaimStatus::SEED,
-                        node.claimant.as_ref(), // ordering matters here
-                        tree.tip_distribution_account.as_ref(),
-                    ],
-                    tip_distribution_program_id,
-                );
 
                 // make sure not previously claimed
-                match rpc_client.get_account(&claim_status_pubkey).await {
+                match rpc_client.get_account(&node.claim_status_pubkey).await {
                     Ok(_) => {
-                        debug!("claim status account already exists, skipping pubkey {:?}.", claim_status_pubkey);
+                        debug!("claim status account already exists, skipping pubkey {:?}.", node.claim_status_pubkey);
                         continue;
                     }
                     // expected to not find ClaimStatus account, don't skip
@@ -125,13 +117,13 @@ pub fn claim_mev_tips(
                     data: tip_distribution::instruction::Claim {
                         proof: node.proof.unwrap(),
                         amount: node.amount,
-                        bump: claim_status_bump,
+                        bump: node.claim_status_bump,
                     }.data(),
                     accounts: tip_distribution::accounts::Claim {
                         config: tip_distribution_config,
                         tip_distribution_account: tree.tip_distribution_account,
                         claimant: node.claimant,
-                        claim_status: claim_status_pubkey,
+                        claim_status: node.claim_status_pubkey,
                         payer: keypair.pubkey(),
                         system_program: system_program::id(),
                     }.to_account_metas(None),
