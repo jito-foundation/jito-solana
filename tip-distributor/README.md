@@ -1,6 +1,6 @@
 # Tip Distributor
 This library and collection of binaries are responsible for generating and uploading merkle roots to the on-chain 
-tip-distribution program found [here](https://github.com/jito-labs/jito-programs/blob/a450ef006e60e10894c02269ec8a301b81a083a0/tip-payment/programs/tip-distribution/src/lib.rs).
+tip-distribution program found [here](https://github.com/jito-foundation/jito-programs/blob/submodule/tip-payment/programs/tip-distribution/src/lib.rs).
 
 ## Background
 Each individual validator is assigned a new PDA per epoch where their share of tips, in lamports, will be stored. 
