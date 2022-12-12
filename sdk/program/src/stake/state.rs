@@ -74,6 +74,11 @@ impl Default for StakeState {
 }
 
 impl StakeState {
+    /// The fixed number of bytes used to serialize each stake account
+    pub const fn size_of() -> usize {
+        200
+    }
+
     pub fn get_rent_exempt_reserve(rent: &Rent) -> u64 {
         rent.minimum_balance(std::mem::size_of::<StakeState>())
     }
