@@ -7,7 +7,6 @@ description = "Collection of binaries used to distribute MEV rewards to delegato
 
 [dependencies]
 anchor-lang = { path = "../anchor/lang" }
-bigdecimal = "0.3.0"
 clap = { version = "3.2.5", features = ["derive", "env"] }
 env_logger = "0.9.0"
 futures = "0.3.21"
@@ -22,7 +21,6 @@ solana-genesis-utils = { path = "../genesis-utils", version = "=1.13.7" }
 solana-ledger = { path = "../ledger", version = "=1.13.7" }
 solana-merkle-tree = { path = "../merkle-tree", version = "=1.13.7" }
 solana-program = { path = "../sdk/program", version = "=1.13.7" }
-solana-rpc = { path = "../rpc", version = "=1.13.7" }
 solana-runtime = { path = "../runtime", version = "=1.13.7" }
 solana-sdk = { path = "../sdk", version = "=1.13.7" }
 solana-stake-program = { path = "../programs/stake", version = "=1.13.7" }
