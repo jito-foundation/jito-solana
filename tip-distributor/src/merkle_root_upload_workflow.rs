@@ -6,6 +6,9 @@ use {
     anchor_lang::AccountDeserialize,
     log::{error, info},
     solana_client::nonblocking::rpc_client::RpcClient,
+    solana_program::{
+        fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
+    },
     solana_sdk::{
         commitment_config::CommitmentConfig,
         pubkey::Pubkey,
@@ -68,6 +71,16 @@ pub fn upload_merkle_root(
 
         info!("num trees to upload: {:?}", trees.len());
 
+        // heuristic to make sure we have enough funds to cover execution, assumes all trees need updating 
+        {
+            let initial_balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
+            let desired_balance = trees.len() as u64 * DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE;
+            if initial_balance < desired_balance {
+                let sol_to_deposit = (desired_balance - initial_balance + LAMPORTS_PER_SOL - 1) / LAMPORTS_PER_SOL; // rounds up to nearest sol
+                panic!("Expected to have at least {} lamports in {}, current balance is {} lamports, deposit {} SOL to continue.",
+                       desired_balance, &keypair.pubkey(), initial_balance, sol_to_deposit)
+            }
+        }
         let mut trees_needing_update: Vec<GeneratedMerkleTree> = vec![];
         for tree in trees {
             let account = rpc_client

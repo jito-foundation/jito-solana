@@ -213,7 +213,7 @@ dependencies = [
  "bincode",
  "borsh",
  "bytemuck",
- "solana-program 1.14.14",
+ "solana-program 1.14.13",
  "thiserror",
 ]
 
@@ -2145,7 +2145,7 @@ checksum = "1aab8fc367588b89dcee83ab0fd66b72b50b72fa1904d7095045ace2b0c81c35"
 
 [[package]]
 name = "jito-protos"
-version = "1.14.14"
+version = "1.14.13"
 dependencies = [
  "bytes",
  "prost 0.8.0",
@@ -6612,7 +6612,7 @@ name = "tip-distribution"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
- "solana-program 1.14.14",
+ "solana-program 1.14.13",
  "vote-state",
 ]
 
@@ -7267,7 +7267,7 @@ dependencies = [
  "bincode",
  "serde",
  "serde_derive",
- "solana-program 1.14.14",
+ "solana-program 1.14.13",
 ]
 
 [[package]]
