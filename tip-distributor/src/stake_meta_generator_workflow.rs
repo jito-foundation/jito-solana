@@ -147,11 +147,13 @@ pub fn generate_stake_meta_collection(
 ) -> Result<StakeMetaCollection, StakeMetaGeneratorError> {
     assert!(bank.is_frozen());
 
-    let epoch_vote_accounts = bank.epoch_vote_accounts(bank.epoch()).expect(&*format!(
-        "No epoch_vote_accounts found for slot {} at epoch {}",
-        bank.slot(),
-        bank.epoch()
-    ));
+    let epoch_vote_accounts = bank.epoch_vote_accounts(bank.epoch()).unwrap_or_else(|| {
+        panic!(
+            "No epoch_vote_accounts found for slot {} at epoch {}",
+            bank.slot(),
+            bank.epoch()
+        )
+    });
 
     let l_stakes = bank.stakes_cache.stakes();
     let delegations = l_stakes.stake_delegations();
@@ -225,7 +227,7 @@ pub fn generate_stake_meta_collection(
 
     let mut stake_metas = vec![];
     for ((vote_pubkey, vote_account), maybe_tda) in vote_pk_and_maybe_tdas {
-        if let Some(delegations) = voter_pubkey_to_delegations.get(&vote_pubkey).cloned() {
+        if let Some(mut delegations) = voter_pubkey_to_delegations.get(&vote_pubkey).cloned() {
             let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
                 sum.checked_add(delegation.lamports_delegated).unwrap()
             });
@@ -242,10 +244,11 @@ pub fn generate_stake_meta_collection(
                 None
             };
 
+            delegations.sort();
             stake_metas.push(StakeMeta {
                 maybe_tip_distribution_meta,
                 validator_vote_account: vote_pubkey,
-                delegations: delegations.clone(),
+                delegations,
                 total_delegated,
                 commission: vote_account.vote_state().as_ref().unwrap().commission,
             });
@@ -256,6 +259,7 @@ pub fn generate_stake_meta_collection(
                 );
         }
     }
+    stake_metas.sort();
 
     Ok(StakeMetaCollection {
         stake_metas,
@@ -786,6 +790,15 @@ mod tests {
         vote_account: &Pubkey,
         delegation_amount: u64,
     ) -> Pubkey {
+        let minimum_delegation = solana_stake_program::get_minimum_delegation(&*bank.feature_set);
+        assert!(
+            delegation_amount >= minimum_delegation,
+            "{}",
+            format!(
+                "received delegation_amount {}, must be at least {}",
+                delegation_amount, minimum_delegation
+            )
+        );
         if let Some(from_account) = bank.get_account(&from_keypair.pubkey()) {
             assert_eq!(from_account.owner(), &solana_sdk::system_program::id());
         } else {
