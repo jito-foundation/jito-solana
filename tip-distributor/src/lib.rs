@@ -153,9 +153,12 @@ pub struct TreeNode {
     #[serde(with = "pubkey_string_conversion")]
     pub claimant: Pubkey,
 
-    /// Pubkey of the ClaimStatus account, this account should be closed to reclaim rent.
+    /// Pubkey of the ClaimStatus PDA account, this account should be closed to reclaim rent.
     #[serde(with = "pubkey_string_conversion")]
     pub claim_status_pubkey: Pubkey,
+
+    /// Bump of the ClaimStatus PDA account
+    pub claim_status_bump: u8,
 
     #[serde(with = "pubkey_string_conversion")]
     pub staker_pubkey: Pubkey,
@@ -180,10 +183,18 @@ impl TreeNode {
                 .unwrap()
                 .checked_div(10_000)
                 .unwrap() as u64;
-
+            let (claim_status_pubkey, claim_status_bump) = Pubkey::find_program_address(
+                &[
+                    ClaimStatus::SEED,
+                    &stake_meta.validator_vote_account.to_bytes(),
+                    &tip_distribution_meta.tip_distribution_pubkey.to_bytes(),
+                ],
+                &TipDistribution::id(),
+            );
             let mut tree_nodes = vec![TreeNode {
                 claimant: stake_meta.validator_vote_account,
-                claim_status_pubkey: Pubkey::default(),
+                claim_status_pubkey,
+                claim_status_bump,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: validator_amount,
@@ -206,18 +217,18 @@ impl TreeNode {
                             .unwrap()
                             .checked_div(total_delegated)
                             .unwrap();
-
+                        let (claim_status_pubkey, claim_status_bump) = Pubkey::find_program_address(
+                            &[
+                                ClaimStatus::SEED,
+                                &delegation.stake_account_pubkey.to_bytes(),
+                                &tip_distribution_meta.tip_distribution_pubkey.to_bytes(),
+                            ],
+                            &TipDistribution::id(),
+                        );
                         Ok(TreeNode {
                             claimant: delegation.stake_account_pubkey,
-                            claim_status_pubkey: Pubkey::find_program_address(
-                                &[
-                                    ClaimStatus::SEED,
-                                    &delegation.stake_account_pubkey.to_bytes(),
-                                    &tip_distribution_meta.tip_distribution_pubkey.to_bytes(),
-                                ],
-                                &TipDistribution::id(),
-                            )
-                            .0,
+                            claim_status_pubkey,
+                            claim_status_bump,
                             staker_pubkey: delegation.staker_pubkey,
                             withdrawer_pubkey: delegation.withdrawer_pubkey,
                             amount: reward_amount as u64,
@@ -498,14 +509,20 @@ mod tests {
         // Create the merkle tree and proofs
         let tda = Pubkey::new_unique();
         let (acct_0, acct_1) = (Pubkey::new_unique(), Pubkey::new_unique());
+        let claim_statuses = &[(acct_0, tda), (acct_1, tda)]
+            .iter()
+            .map(|(claimant, tda)| {
+                Pubkey::find_program_address(
+                    &[ClaimStatus::SEED, &claimant.to_bytes(), &tda.to_bytes()],
+                    &TipDistribution::id(),
+                )
+            })
+            .collect::<Vec<(Pubkey, u8)>>();
         let tree_nodes = vec![
             TreeNode {
                 claimant: acct_0,
-                claim_status_pubkey: Pubkey::find_program_address(
-                    &[ClaimStatus::SEED, &acct_0.to_bytes(), &tda.to_bytes()],
-                    &TipDistribution::id(),
-                )
-                .0,
+                claim_status_pubkey: claim_statuses[0].0,
+                claim_status_bump: claim_statuses[0].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 151_507,
@@ -513,11 +530,8 @@ mod tests {
             },
             TreeNode {
                 claimant: acct_1,
-                claim_status_pubkey: Pubkey::find_program_address(
-                    &[ClaimStatus::SEED, &acct_1.to_bytes(), &tda.to_bytes()],
-                    &TipDistribution::id(),
-                )
-                .0,
+                claim_status_pubkey: claim_statuses[1].0,
+                claim_status_bump: claim_statuses[1].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 176_624,
@@ -559,11 +573,6 @@ mod tests {
 
         let validator_vote_account_0 = Pubkey::new_unique();
         let validator_vote_account_1 = Pubkey::new_unique();
-
-        println!("test stake_account {}", stake_account_0);
-        println!("test stake_account {}", stake_account_1);
-        println!("test stake_account {}", stake_account_2);
-        println!("test stake_account {}", stake_account_3);
 
         let stake_meta_collection = StakeMetaCollection {
             stake_metas: vec![
@@ -639,11 +648,27 @@ mod tests {
             stake_meta_collection.stake_metas.len(),
             merkle_tree_collection.generated_merkle_trees.len()
         );
-
+        let claim_statuses = &[
+            (validator_vote_account_0, tda_0),
+            (stake_account_0, tda_0),
+            (stake_account_1, tda_0),
+            (validator_vote_account_1, tda_1),
+            (stake_account_2, tda_1),
+            (stake_account_3, tda_1),
+        ]
+        .iter()
+        .map(|(claimant, tda)| {
+            Pubkey::find_program_address(
+                &[ClaimStatus::SEED, &claimant.to_bytes(), &tda.to_bytes()],
+                &TipDistribution::id(),
+            )
+        })
+        .collect::<Vec<(Pubkey, u8)>>();
         let tree_nodes = vec![
             TreeNode {
                 claimant: validator_vote_account_0,
-                claim_status_pubkey: Pubkey::default(),
+                claim_status_pubkey: claim_statuses[0].0,
+                claim_status_bump: claim_statuses[0].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 19_001_221_110,
@@ -651,15 +676,8 @@ mod tests {
             },
             TreeNode {
                 claimant: stake_account_0,
-                claim_status_pubkey: Pubkey::find_program_address(
-                    &[
-                        ClaimStatus::SEED,
-                        &stake_account_0.to_bytes(),
-                        &tda_0.to_bytes(),
-                    ],
-                    &TipDistribution::id(),
-                )
-                .0,
+                claim_status_pubkey: claim_statuses[1].0,
+                claim_status_bump: claim_statuses[1].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 149_992,
@@ -667,15 +685,8 @@ mod tests {
             },
             TreeNode {
                 claimant: stake_account_1,
-                claim_status_pubkey: Pubkey::find_program_address(
-                    &[
-                        ClaimStatus::SEED,
-                        &stake_account_1.to_bytes(),
-                        &tda_0.to_bytes(),
-                    ],
-                    &TipDistribution::id(),
-                )
-                .0,
+                claim_status_pubkey: claim_statuses[2].0,
+                claim_status_bump: claim_statuses[2].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 174_858,
@@ -700,7 +711,8 @@ mod tests {
         let tree_nodes = vec![
             TreeNode {
                 claimant: validator_vote_account_1,
-                claim_status_pubkey: Pubkey::default(),
+                claim_status_pubkey: claim_statuses[3].0,
+                claim_status_bump: claim_statuses[3].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 38_002_442_226,
@@ -708,15 +720,8 @@ mod tests {
             },
             TreeNode {
                 claimant: stake_account_2,
-                claim_status_pubkey: Pubkey::find_program_address(
-                    &[
-                        ClaimStatus::SEED,
-                        &stake_account_2.to_bytes(),
-                        &tda_1.to_bytes(),
-                    ],
-                    &TipDistribution::id(),
-                )
-                .0,
+                claim_status_pubkey: claim_statuses[4].0,
+                claim_status_bump: claim_statuses[4].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 163_000,
@@ -724,15 +729,8 @@ mod tests {
             },
             TreeNode {
                 claimant: stake_account_3,
-                claim_status_pubkey: Pubkey::find_program_address(
-                    &[
-                        ClaimStatus::SEED,
-                        &stake_account_3.to_bytes(),
-                        &tda_1.to_bytes(),
-                    ],
-                    &TipDistribution::id(),
-                )
-                .0,
+                claim_status_pubkey: claim_statuses[5].0,
+                claim_status_bump: claim_statuses[5].1,
                 staker_pubkey: Pubkey::default(),
                 withdrawer_pubkey: Pubkey::default(),
                 amount: 508_762_900,
