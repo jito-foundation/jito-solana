@@ -62,7 +62,8 @@ pub fn claim_mev_tips(
         let start_balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
         // heuristic to make sure we have enough funds to cover the rent costs if epoch has many validators
         {
-            let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).count();
+            // most amounts are for 0 lamports. had 1736 non-zero claims out of 164742
+            let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).filter(|node| node.amount > 0).count();
             let min_rent_per_claim = rpc_client.get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE).await.expect("Failed to calculate min rent");
             let desired_balance = node_count as u64 * (min_rent_per_claim + DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE);
             if start_balance < desired_balance {
