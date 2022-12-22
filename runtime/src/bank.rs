@@ -4320,7 +4320,7 @@ impl Bank {
                     }
                     balances.push(transaction_balances);
                 }
-                Err(e) => println!("{:?}", e),
+                Err(e) => continue,
             }
         }
         balances
