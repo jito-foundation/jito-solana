@@ -4306,12 +4306,22 @@ impl Bank {
 
     pub fn collect_balances(&self, batch: &TransactionBatch) -> TransactionBalances {
         let mut balances: TransactionBalances = vec![];
-        for transaction in batch.sanitized_transactions() {
-            let mut transaction_balances: Vec<u64> = vec![];
-            for account_key in transaction.message().account_keys().iter() {
-                transaction_balances.push(self.get_balance(account_key));
+
+        for (transaction, lock_result) in batch
+            .sanitized_transactions()
+            .into_iter()
+            .zip(batch.lock_results())
+        {
+            match lock_result {
+                Ok(()) => {
+                    let mut transaction_balances: Vec<u64> = vec![];
+                    for account_key in transaction.message().account_keys().iter() {
+                        transaction_balances.push(self.get_balance(account_key));
+                    }
+                    balances.push(transaction_balances);
+                }
+                Err(e) => println!("{:?}", e),
             }
-            balances.push(transaction_balances);
         }
         balances
     }
