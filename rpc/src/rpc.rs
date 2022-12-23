@@ -9126,10 +9126,6 @@ pub mod tests {
     #[test]
     fn test_rpc_simulate_bundle_error_on_empty_list() {
         // setup
-        let rpc = RpcHandler::start();
-        let bank = rpc.working_bank();
-
-        let recent_blockhash = bank.confirmed_last_blockhash();
         let RpcHandler {
             ref meta, ref io, ..
         } = rpc;
