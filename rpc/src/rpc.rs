@@ -4008,6 +4008,12 @@ pub mod rpc_full {
         ) -> Result<RpcResponse<RpcSimulateBundleResult>> {
             debug!("simulate_bundle rpc request received");
 
+            if rpc_bundle_request.encoded_transactions.len() == 0 {
+                return Err(Error::invalid_params(
+                    "supplied empty list of transactions to bundle",
+                ));
+            }
+
             let config = config.unwrap_or_else(|| RpcSimulateBundleConfig {
                 pre_execution_accounts_configs: vec![
                     None;
@@ -9115,5 +9121,76 @@ pub mod tests {
                 },
             ],
         );
+    }
+
+    #[test]
+    fn test_rpc_simulate_bundle_error_on_empty_list() {
+        // setup
+        let rpc = RpcHandler::start();
+        let bank = rpc.working_bank();
+
+        let recent_blockhash = bank.confirmed_last_blockhash();
+        let RpcHandler {
+            ref meta, ref io, ..
+        } = rpc;
+
+        let data_len = 100;
+        let lamports = bank.get_minimum_balance_for_rent_exemption(data_len);
+        let leader_pubkey = solana_sdk::pubkey::new_rand();
+        let leader_account_data = AccountSharedData::new(lamports, data_len, &system_program::id());
+        bank.store_account(&leader_pubkey, &leader_account_data);
+        bank.freeze();
+
+        // test and assert
+        let skip_sig_verify = true;
+        let replace_recent_blockhash = false;
+        let expected_response = json!({
+            "jsonrpc":"2.0",
+            "error": {
+                "code": ErrorCode::InvalidParams,
+                "message": "supplied empty list of transactions to bundle"
+            },
+            "id":1
+        });
+        let request = format!(
+            r#"{{"jsonrpc":"2.0",
+                  "id":1,
+                  "method":"simulateBundle",
+                  "params":[
+                    {{
+                      "encodedTransactions": []
+                    }},
+                    {{
+                      "skipSigVerify": {},
+                      "replaceRecentBlockhash": {},
+                      "slot": {},
+                      "preExecutionAccountsConfigs": [
+                         {{ "encoding": "base64", "addresses": ["{}"] }},
+                         {{ "encoding": "base64", "addresses": [] }}
+                      ],
+                      "postExecutionAccountsConfigs": [
+                         {{ "encoding": "base64", "addresses": [] }},
+                         {{ "encoding": "base64", "addresses": ["{}"] }}
+                      ]
+                    }}
+                 ]
+             }}"#,
+            skip_sig_verify,
+            replace_recent_blockhash,
+            bank.slot(),
+            leader_pubkey,
+            leader_pubkey,
+        );
+
+        let actual_response = io
+            .handle_request_sync(&request, meta.clone())
+            .expect("response");
+
+        let expected_response = serde_json::from_value::<Response>(expected_response)
+            .expect("expected_response deserialization");
+        let actual_response = serde_json::from_str::<Response>(&actual_response)
+            .expect("actual_response deserialization");
+
+        assert_eq!(expected_response, actual_response);
     }
 }
