@@ -4010,7 +4010,7 @@ pub mod rpc_full {
 
             if rpc_bundle_request.encoded_transactions.len() == 0 {
                 return Err(Error::invalid_params(
-                    "supplied empty list of transactions to bundle",
+                    "bundles must contain a non-empty list of transactions",
                 ));
             }
 
