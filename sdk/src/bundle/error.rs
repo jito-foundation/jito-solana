@@ -10,7 +10,7 @@ pub enum BundleExecutionError {
     #[error("PoH max height reached in the middle of a bundle.")]
     PohMaxHeightError,
 
-    #[error("A transaction in the bundle failed")]
+    #[error("A transaction in the bundle failed with - {0}")]
     TransactionFailure(#[from] TransactionError),
 
     #[error("The bundle exceeds the cost model")]
