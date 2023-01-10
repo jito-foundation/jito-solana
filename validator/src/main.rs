@@ -1826,18 +1826,12 @@ pub fn main() {
                 .hidden(true),
         )
         .arg(
-            Arg::with_name("relayer_address")
-                .long("relayer-address")
-                .value_name("relayer_address")
-                .takes_value(true)
-                .help("Address of the relayer")
-        )
-        .arg(
             Arg::with_name("block_engine_address")
                 .long("block-engine-address")
                 .value_name("block_engine_address")
                 .takes_value(true)
                 .help("Address of the block engine")
+                .conflicts_with("block_engine_url")
         )
         .arg(
             Arg::with_name("block_engine_auth_service_address")
@@ -1845,6 +1839,7 @@ pub fn main() {
                 .value_name("block_engine_auth_service_address")
                 .takes_value(true)
                 .help("Address of the block engine's authentication service.")
+                .conflicts_with("block_engine_url")
         )
         .arg(
             Arg::with_name("relayer_auth_service_address")
@@ -1852,6 +1847,27 @@ pub fn main() {
                 .value_name("relayer_auth_service_address")
                 .takes_value(true)
                 .help("Address of the block engine's authentication service.")
+                .conflicts_with("relayer_url")
+        )
+        .arg(
+            Arg::with_name("relayer_address")
+                .long("relayer-address")
+                .value_name("relayer_address")
+                .takes_value(true)
+                .help("Address of the relayer")
+                .conflicts_with("relayer_url")
+        )
+        .arg(
+            Arg::with_name("block_engine_url")
+                .long("block-engine-url")
+                .help("Block engine url")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("relayer_url")
+                .long("relayer-url")
+                .help("Relayer url")
+                .takes_value(true)
         )
         .arg(
             Arg::with_name("trust_relayer_packets")
@@ -2688,22 +2704,35 @@ pub fn main() {
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
-    let is_block_engine_enabled = matches.is_present("block_engine_address")
+    let is_block_engine_enabled = matches.is_present("block_engine_url")
+        || matches.is_present("block_engine_address")
         || matches.is_present("block_engine_auth_service_address")
         || matches.is_present("trust_block_engine_packets");
     let maybe_block_engine_config = is_block_engine_enabled.then(|| {
-        let addr: String = value_of(&matches, "block_engine_auth_service_address")
-            .expect("missing block-engine-auth-service-address");
-        let mut auth_service_endpoint = Endpoint::from_shared(addr.clone())
-            .expect("invalid block-engine-auth-service-address value");
+        let addr: String = value_of(&matches, "block_engine_url").unwrap_or_else(|| {
+            value_of(&matches, "block_engine_auth_service_address")
+                .map(|v| {
+                    warn!("--block-engine-auth-service-address has been deprecated, instead use --block-engine-url");
+                    v
+                })
+                .expect("missing block-engine-url")
+        });
+        let mut auth_service_endpoint =
+            Endpoint::from_shared(addr.clone()).expect("invalid block-engine-url value");
         if addr.contains("https") {
             auth_service_endpoint = auth_service_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .expect("failed to set tls_config");
         }
 
-        let addr: String =
-            value_of(&matches, "block_engine_address").expect("missing block-engine-address");
+        let addr: String = value_of(&matches, "block_engine_url").unwrap_or_else(|| {
+            value_of(&matches, "block_engine_address")
+                .map(|v| {
+                    warn!("--block-engine-address has been deprecated, instead use --block-engine-url");
+                    v
+                })
+                .expect("missing block-engine-url")
+        });
         let mut backend_endpoint = Endpoint::from_shared(addr.clone())
             .expect("invalid block-engine-address value")
             .tcp_keepalive(Some(Duration::from_secs(60)));
@@ -2720,23 +2749,37 @@ pub fn main() {
         }
     });
 
-    let is_relayer_enabled = matches.is_present("relayer_auth_service_address")
+    let is_relayer_enabled = matches.is_present("relayer_url")
+        || matches.is_present("relayer_auth_service_address")
         || matches.is_present("relayer_address")
         || matches.is_present("trust_relayer_packets")
         || matches.is_present("relayer_expected_heartbeat_interval_ms")
         || matches.is_present("relayer_max_failed_heartbeats");
     let maybe_relayer_config = is_relayer_enabled.then(|| {
-        let addr: String = value_of(&matches, "relayer_auth_service_address")
-            .expect("missing relayer-auth-service-address");
-        let mut auth_service_endpoint = Endpoint::from_shared(addr.clone())
-            .expect("invalid relayer-auth-service-address value");
+        let addr: String = value_of(&matches, "relayer_url").unwrap_or_else(|| {
+            value_of(&matches, "relayer_auth_service_address")
+                .map(|v| {
+                    warn!("--relayer-auth-service-address has been deprecated, instead use --relayer-url");
+                    v
+                }).expect("missing relayer-url")
+        });
+        let mut auth_service_endpoint =
+            Endpoint::from_shared(addr.clone()).expect("invalid relayer-url value");
         if addr.contains("https") {
             auth_service_endpoint = auth_service_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .expect("failed to set tls_config");
         }
 
-        let addr: String = value_of(&matches, "relayer_address").expect("missing relayer-address");
+        let addr: String = value_of(&matches, "relayer_url")
+            .unwrap_or_else(|| {
+                value_of(&matches, "relayer_address")
+                    .map(|v| {
+                        warn!("--relayer-address has been deprecated, instead use --relayer-url");
+                        v
+                    })
+                    .expect("missing relayer-url")
+            });
         let mut backend_endpoint =
             Endpoint::from_shared(addr.clone()).expect("invalid relayer-address value");
         if addr.contains("https") {
