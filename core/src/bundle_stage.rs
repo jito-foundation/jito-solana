@@ -1016,6 +1016,8 @@ impl BundleStage {
                         bundle_stage_leader_stats
                             .bundle_stage_stats()
                             .increment_execution_results_exceeds_cost_model(1);
+                        // retry the bundle
+                        unprocessed_bundles.push_back(packet_bundle);
                     }
                     Err(BundleExecutionError::TipError(_)) => {
                         bundle_stage_leader_stats
