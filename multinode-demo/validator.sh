@@ -89,10 +89,16 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --relayer-address ]]; then
       args+=("$1" "$2")
       shift 2
+    elif [[ $1 == --block-engine-url ]]; then
+      args+=("$1" "$2")
+      shift 2
     elif [[ $1 == --block-engine-address ]]; then
       args+=("$1" "$2")
       shift 2
     elif [[ $1 == --block-engine-auth-service-address ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --relayer-url ]]; then
       args+=("$1" "$2")
       shift 2
     elif [[ $1 == --relayer-auth-service-address ]]; then
