@@ -242,13 +242,15 @@ pub fn generate_stake_meta_collection(
                 None
             };
 
+            let vote_state = vote_account.vote_state().as_ref().unwrap();
             delegations.sort();
             stake_metas.push(StakeMeta {
                 maybe_tip_distribution_meta,
+                validator_node_pubkey: vote_state.node_pubkey,
                 validator_vote_account: vote_pubkey,
                 delegations,
                 total_delegated,
-                commission: vote_account.vote_state().as_ref().unwrap().commission,
+                commission: vote_state.commission,
             });
         } else {
             warn!(
