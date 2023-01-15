@@ -22,8 +22,9 @@ use {
     tip_distribution::sdk::{
         derive_config_account_address, derive_tip_distribution_account_address,
         instruction::{
-            init_tip_distribution_account_ix, initialize_ix, InitTipDistributionAccountAccounts,
-            InitTipDistributionAccountArgs, InitializeAccounts, InitializeArgs,
+            initialize_ix, initialize_tip_distribution_account_ix, InitializeAccounts,
+            InitializeArgs, InitializeTipDistributionAccountAccounts,
+            InitializeTipDistributionAccountArgs,
         },
     },
     tip_payment::{
@@ -61,11 +62,11 @@ struct TipDistributionProgramInfo {
     config_pda_and_bump: (Pubkey, u8),
 }
 
-/// This config is used on each invocation to the `init_tip_distribution_account` instruction.
+/// This config is used on each invocation to the `initialize_tip_distribution_account` instruction.
 #[derive(Debug, Clone)]
 pub struct TipDistributionAccountConfig {
     /// The keypair paying and signing each init tx.
-    pub payer: Arc<Keypair>,
+    pub node_identity: Arc<Keypair>,
 
     /// The account with authority to upload merkle-roots to this validator's [TipDistributionAccount].
     pub merkle_root_upload_authority: Pubkey,
@@ -80,7 +81,7 @@ pub struct TipDistributionAccountConfig {
 impl Default for TipDistributionAccountConfig {
     fn default() -> Self {
         Self {
-            payer: Arc::new(Keypair::new()),
+            node_identity: Arc::new(Keypair::new()),
             merkle_root_upload_authority: Pubkey::new_unique(),
             vote_account: Pubkey::new_unique(),
             commission_bps: 0,
@@ -329,8 +330,8 @@ impl TipManager {
         .unwrap()
     }
 
-    /// Creates an [InitTipDistributionAccount] transaction object using the provided Epoch.
-    pub fn init_tip_distribution_account_tx(
+    /// Creates an [InitializeTipDistributionAccount] transaction object using the provided Epoch.
+    pub fn initialize_tip_distribution_account_tx(
         &self,
         recent_blockhash: Hash,
         epoch: Epoch,
@@ -341,28 +342,28 @@ impl TipManager {
             epoch,
         );
 
-        let ix = init_tip_distribution_account_ix(
+        let ix = initialize_tip_distribution_account_ix(
             self.tip_distribution_program_info.program_id,
-            InitTipDistributionAccountArgs {
-                validator_vote_account: self.tip_distribution_account_config.vote_account,
+            InitializeTipDistributionAccountArgs {
                 merkle_root_upload_authority: self
                     .tip_distribution_account_config
                     .merkle_root_upload_authority,
                 validator_commission_bps: self.tip_distribution_account_config.commission_bps,
                 bump,
             },
-            InitTipDistributionAccountAccounts {
+            InitializeTipDistributionAccountAccounts {
                 config: self.tip_distribution_program_info.config_pda_and_bump.0,
                 tip_distribution_account,
-                payer: self.tip_distribution_account_config.payer.pubkey(),
                 system_program: system_program::id(),
+                signer: self.tip_distribution_account_config.node_identity.pubkey(),
+                validator_vote_account: self.tip_distribution_account_config.vote_account,
             },
         );
 
         SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
             &[ix],
-            Some(&self.tip_distribution_account_config.payer.pubkey()),
-            &[self.tip_distribution_account_config.payer.as_ref()],
+            Some(&self.tip_distribution_account_config.node_identity.pubkey()),
+            &[self.tip_distribution_account_config.node_identity.as_ref()],
             recent_blockhash,
         ))
         .unwrap()
