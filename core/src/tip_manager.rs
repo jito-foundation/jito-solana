@@ -3,6 +3,7 @@ use {
         solana_program::hash::Hash, AccountDeserialize, InstructionData, ToAccountMetas,
     },
     log::warn,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_runtime::bank::Bank,
     solana_sdk::{
         account::ReadableAccount,
@@ -65,9 +66,6 @@ struct TipDistributionProgramInfo {
 /// This config is used on each invocation to the `initialize_tip_distribution_account` instruction.
 #[derive(Debug, Clone)]
 pub struct TipDistributionAccountConfig {
-    /// The keypair paying and signing each init tx.
-    pub node_identity: Arc<Keypair>,
-
     /// The account with authority to upload merkle-roots to this validator's [TipDistributionAccount].
     pub merkle_root_upload_authority: Pubkey,
 
@@ -81,7 +79,6 @@ pub struct TipDistributionAccountConfig {
 impl Default for TipDistributionAccountConfig {
     fn default() -> Self {
         Self {
-            node_identity: Arc::new(Keypair::new()),
             merkle_root_upload_authority: Pubkey::new_unique(),
             vote_account: Pubkey::new_unique(),
             commission_bps: 0,
@@ -303,13 +300,13 @@ impl TipManager {
     pub fn initialize_tip_distribution_config_tx(
         &self,
         recent_blockhash: Hash,
-        my_keypair: &Keypair,
+        cluster_info: &Arc<ClusterInfo>,
     ) -> SanitizedTransaction {
         let ix = initialize_ix(
             self.tip_distribution_program_info.program_id,
             InitializeArgs {
-                authority: my_keypair.pubkey(),
-                expired_funds_account: my_keypair.pubkey(),
+                authority: cluster_info.id(),
+                expired_funds_account: cluster_info.id(),
                 num_epochs_valid: 10,
                 max_validator_commission_bps: 10_000,
                 bump: self.tip_distribution_program_info.config_pda_and_bump.1,
@@ -317,14 +314,14 @@ impl TipManager {
             InitializeAccounts {
                 config: self.tip_distribution_program_info.config_pda_and_bump.0,
                 system_program: system_program::id(),
-                initializer: my_keypair.pubkey(),
+                initializer: cluster_info.id(),
             },
         );
 
         SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
             &[ix],
-            Some(&my_keypair.pubkey()),
-            &[my_keypair],
+            Some(&cluster_info.id()),
+            &[cluster_info.keypair().as_ref()],
             recent_blockhash,
         ))
         .unwrap()
@@ -335,6 +332,7 @@ impl TipManager {
         &self,
         recent_blockhash: Hash,
         epoch: Epoch,
+        cluster_info: &Arc<ClusterInfo>,
     ) -> SanitizedTransaction {
         let (tip_distribution_account, bump) = derive_tip_distribution_account_address(
             &self.tip_distribution_program_info.program_id,
@@ -355,15 +353,15 @@ impl TipManager {
                 config: self.tip_distribution_program_info.config_pda_and_bump.0,
                 tip_distribution_account,
                 system_program: system_program::id(),
-                signer: self.tip_distribution_account_config.node_identity.pubkey(),
+                signer: cluster_info.id(),
                 validator_vote_account: self.tip_distribution_account_config.vote_account,
             },
         );
 
         SanitizedTransaction::try_from_legacy_transaction(Transaction::new_signed_with_payer(
             &[ix],
-            Some(&self.tip_distribution_account_config.node_identity.pubkey()),
-            &[self.tip_distribution_account_config.node_identity.as_ref()],
+            Some(&cluster_info.id()),
+            &[cluster_info.keypair().as_ref()],
             recent_blockhash,
         ))
         .unwrap()

@@ -2653,11 +2653,8 @@ pub fn main() {
     }
     let full_api = matches.is_present("full_rpc_api");
 
-    let identity_keypair = Arc::new(identity_keypair);
-
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
-    let tip_manager_config =
-        tip_manager_config_from_matches(&matches, identity_keypair.clone(), voting_disabled);
+    let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
     let is_block_engine_enabled = matches.is_present("block_engine_url")
         || matches.is_present("block_engine_address")
@@ -3274,6 +3271,8 @@ pub fn main() {
     snapshot_utils::remove_tmp_snapshot_archives(&full_snapshot_archives_dir);
     snapshot_utils::remove_tmp_snapshot_archives(&incremental_snapshot_archives_dir);
 
+    let identity_keypair = Arc::new(identity_keypair);
+
     let should_check_duplicate_instance = !matches.is_present("no_duplicate_instance_check");
     if !cluster_entrypoints.is_empty() {
         bootstrap::rpc_bootstrap(
@@ -3542,7 +3541,6 @@ fn warn_for_deprecated_arguments(matches: &ArgMatches) {
 
 fn tip_manager_config_from_matches(
     matches: &ArgMatches,
-    node_identity: Arc<Keypair>,
     voting_disabled: bool,
 ) -> TipManagerConfig {
     TipManagerConfig {
@@ -3562,7 +3560,6 @@ fn tip_manager_config_from_matches(
                 Pubkey::new_unique()
             }),
         tip_distribution_account_config: TipDistributionAccountConfig {
-            node_identity,
             merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
                 .unwrap_or_else(|| {
                     if !voting_disabled {
