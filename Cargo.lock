@@ -491,18 +491,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "874f8444adcb4952a8bc51305c8be95c8ec8237bb0d2e78d2e039f771f8828a0"
 
 [[package]]
-name = "bench-get-confirmed-blocks-with-data"
-version = "1.14.14"
-dependencies = [
- "env_logger",
- "log",
- "solana-sdk 1.14.14",
- "solana-storage-bigtable",
- "solana-transaction-status",
- "tokio",
-]
-
-[[package]]
 name = "bigdecimal"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4903,21 +4891,6 @@ dependencies = [
  "tokio",
  "tokio-serde",
  "tokio-stream",
-]
-
-[[package]]
-name = "solana-bench-batch-simulate-bundle"
-version = "1.14.14"
-dependencies = [
- "clap 3.2.23",
- "env_logger",
- "log",
- "num-traits",
- "rayon",
- "solana-client",
- "solana-runtime",
- "solana-sdk 1.14.14",
- "solana-transaction-status",
 ]
 
 [[package]]
