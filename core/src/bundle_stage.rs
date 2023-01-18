@@ -813,22 +813,25 @@ impl BundleStage {
         let maybe_init_tip_distro_config_tx =
             if tip_manager.should_initialize_tip_distribution_config(bank) {
                 info!("building initialize_tip_distribution_config_tx");
-                Some(tip_manager.initialize_tip_distribution_config_tx(
-                    bank.last_blockhash(),
-                    &cluster_info.keypair(),
-                ))
+                Some(
+                    tip_manager
+                        .initialize_tip_distribution_config_tx(bank.last_blockhash(), cluster_info),
+                )
             } else {
                 None
             };
 
-        let maybe_init_tip_distro_account_tx = if tip_manager
-            .should_init_tip_distribution_account(bank)
-        {
-            info!("building init_tip_distribution_account_tx");
-            Some(tip_manager.init_tip_distribution_account_tx(bank.last_blockhash(), bank.epoch()))
-        } else {
-            None
-        };
+        let maybe_init_tip_distro_account_tx =
+            if tip_manager.should_init_tip_distribution_account(bank) {
+                info!("building initialize_tip_distribution_account tx");
+                Some(tip_manager.initialize_tip_distribution_account_tx(
+                    bank.last_blockhash(),
+                    bank.epoch(),
+                    cluster_info,
+                ))
+            } else {
+                None
+            };
 
         let transactions = [
             maybe_init_tip_payment_config_tx,
