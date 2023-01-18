@@ -25,7 +25,7 @@ tokio-serde = { version = "0.8", features = ["bincode"] }
 tokio-stream = "0.1"
 
 [dev-dependencies]
-solana-streamer = { path = "../streamer", version = "=1.14.11" }
+solana-streamer = { path = "../streamer", version = "=1.14.13" }
 
 [lib]
 crate-type = ["lib"]
