@@ -1915,13 +1915,6 @@ pub fn main() {
                 .help("The public key of the tip-distribution program.")
         )
         .arg(
-            Arg::with_name("tip_distribution_account_payer")
-                .long("tip-distribution-account-payer")
-                .value_name("TIP_DISTRIBUTION_ACCOUNT_PAYER")
-                .takes_value(true)
-                .help("The payer of my tip distribution accounts.")
-        )
-        .arg(
             Arg::with_name("merkle_root_upload_authority")
                 .long("merkle-root-upload-authority")
                 .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
@@ -3477,17 +3470,6 @@ fn tip_manager_config_from_matches(
                 Pubkey::new_unique()
             }),
         tip_distribution_account_config: TipDistributionAccountConfig {
-            payer: {
-                let keypair =
-                    keypair_of(matches, "tip_distribution_account_payer").unwrap_or_else(|| {
-                        if !voting_disabled {
-                            panic!("--tip-distribution-account-payer argument required when validator is voting");
-                        }
-                        Keypair::new()
-                    });
-
-                Arc::new(keypair)
-            },
             merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
                 .unwrap_or_else(|| {
                     if !voting_disabled {
