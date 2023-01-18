@@ -396,7 +396,6 @@ mod tests {
             tip_payment_program_id: Pubkey::new_unique(),
             tip_distribution_program_id: Pubkey::new_unique(),
             tip_distribution_account_config: TipDistributionAccountConfig {
-                payer: Arc::new(Keypair::new()),
                 merkle_root_upload_authority: Pubkey::new_unique(),
                 vote_account: Pubkey::new_unique(),
                 commission_bps: 0,
