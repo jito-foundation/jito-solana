@@ -790,15 +790,6 @@ mod tests {
         vote_account: &Pubkey,
         delegation_amount: u64,
     ) -> Pubkey {
-        let minimum_delegation = solana_stake_program::get_minimum_delegation(&*bank.feature_set);
-        assert!(
-            delegation_amount >= minimum_delegation,
-            "{}",
-            format!(
-                "received delegation_amount {}, must be at least {}",
-                delegation_amount, minimum_delegation
-            )
-        );
         if let Some(from_account) = bank.get_account(&from_keypair.pubkey()) {
             assert_eq!(from_account.owner(), &solana_sdk::system_program::id());
         } else {
