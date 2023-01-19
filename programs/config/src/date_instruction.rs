@@ -5,7 +5,7 @@ use bincode::{deserialize, serialized_size};
 use {
     crate::{config_instruction, ConfigState},
     chrono::{
-        prelude::{Date, DateTime, TimeZone, Utc},
+        prelude::{DateTime, TimeZone, Utc},
         serde::ts_seconds,
     },
     serde_derive::{Deserialize, Serialize},
@@ -21,14 +21,17 @@ pub struct DateConfig {
 impl Default for DateConfig {
     fn default() -> Self {
         Self {
-            date_time: Utc.timestamp(0, 0),
+            date_time: Utc.timestamp_opt(0, 0).unwrap(),
         }
     }
 }
 impl DateConfig {
-    pub fn new(date: Date<Utc>) -> Self {
+    pub fn new(date: DateTime<Utc>) -> Self {
         Self {
-            date_time: date.and_hms(0, 0, 0),
+            date_time: DateTime::from_utc(
+                date.date_naive().and_hms_opt(0, 0, 0).unwrap(),
+                *date.offset(),
+            ),
         }
     }
 
@@ -54,7 +57,7 @@ pub fn create_account(
 
 /// Set the date in the date account. The account pubkey must be signed in the
 /// transaction containing this instruction.
-pub fn store(date_pubkey: &Pubkey, date: Date<Utc>) -> Instruction {
+pub fn store(date_pubkey: &Pubkey, date: DateTime<Utc>) -> Instruction {
     let date_config = DateConfig::new(date);
     config_instruction::store(date_pubkey, true, vec![], &date_config)
 }
