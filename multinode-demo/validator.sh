@@ -104,9 +104,6 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --relayer-auth-service-address ]]; then
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 = --tip-distribution-account-payer ]]; then
-      args+=("$1" "$2")
-      shift 2
     elif [[ $1 = --merkle-root-upload-authority ]]; then
       args+=("$1" "$2")
       shift 2
@@ -292,7 +289,6 @@ fi
 default_arg --identity "$identity"
 default_arg --vote-account "$vote_account"
 default_arg --merkle-root-upload-authority "$identity"
-default_arg --tip-distribution-account-payer "$identity"
 default_arg --tip-payment-program-pubkey "DThZmRNNXh7kvTQW9hXeGoWGPKktK8pgVAyoTLjH7UrT"
 default_arg --tip-distribution-program-pubkey "FjrdANjvo76aCYQ4kf9FM1R8aESUcEE6F8V7qyoVUQcM"
 default_arg --commission-bps 0

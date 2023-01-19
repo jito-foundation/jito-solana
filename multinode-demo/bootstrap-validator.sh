@@ -153,7 +153,6 @@ done
 
 # These keypairs are created by ./setup.sh and included in the genesis config
 identity=$SOLANA_CONFIG_DIR/bootstrap-validator/identity.json
-tip_distribution_account_payer=$SOLANA_CONFIG_DIR/bootstrap-validator/identity.json
 vote_account="$SOLANA_CONFIG_DIR"/bootstrap-validator/vote-account.json
 
 ledger_dir="$SOLANA_CONFIG_DIR"/bootstrap-validator
@@ -175,7 +174,6 @@ args+=(
   --no-incremental-snapshots
   --identity "$identity"
   --vote-account "$vote_account"
-  --tip-distribution-account-payer "$tip_distribution_account_payer"
   --merkle-root-upload-authority "$identity"
   --rpc-faucet-address 127.0.0.1:9900
   --no-poh-speed-test
