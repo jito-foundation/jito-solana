@@ -104,7 +104,6 @@ args=(
   --ledger "$ledgerDir"
   --tip-payment-program-pubkey "DThZmRNNXh7kvTQW9hXeGoWGPKktK8pgVAyoTLjH7UrT"
   --tip-distribution-program-pubkey "FjrdANjvo76aCYQ4kf9FM1R8aESUcEE6F8V7qyoVUQcM"
-  --tip-distribution-account-payer "$validator_identity"
   --merkle-root-upload-authority "$validator_identity"
   --commission-bps 0
   --gossip-port 8001
