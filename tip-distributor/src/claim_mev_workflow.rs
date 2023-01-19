@@ -64,16 +64,16 @@ pub fn claim_mev_tips(
             // most amounts are for 0 lamports. had 1736 non-zero claims out of 164742
             let node_count = merkle_trees.generated_merkle_trees.iter().flat_map(|tree| &tree.tree_nodes).filter(|node| node.amount > 0).count();
             let min_rent_per_claim = rpc_client.get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE).await.expect("Failed to calculate min rent");
-            let desired_balance = node_count as u64 * (min_rent_per_claim + DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE);
+            let desired_balance = (node_count as u64).checked_mul(min_rent_per_claim.checked_add(DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE).unwrap()).unwrap();
             if start_balance < desired_balance {
-                let sol_to_deposit = (desired_balance - start_balance + LAMPORTS_PER_SOL - 1) / LAMPORTS_PER_SOL; // rounds up to nearest sol
+                let sol_to_deposit = desired_balance.checked_sub(start_balance).unwrap().checked_add(LAMPORTS_PER_SOL).unwrap().checked_sub(1).unwrap().checked_div(LAMPORTS_PER_SOL).unwrap(); // rounds up to nearest sol
                 panic!("Expected to have at least {} lamports in {}, current balance is {} lamports, deposit {} SOL to continue.",
                        desired_balance, &keypair.pubkey(), start_balance, sol_to_deposit)
             }
         }
         let stake_acct_min_rent = rpc_client.get_minimum_balance_for_rent_exemption(StakeState::size_of()).await.expect("Failed to calculate min rent");
-        let mut below_min_rent_count = 0;
-        let mut zero_lamports_count = 0;
+        let mut below_min_rent_count: usize = 0;
+        let mut zero_lamports_count: usize = 0;
         for tree in merkle_trees.generated_merkle_trees {
             // only claim for ones that have merkle root on-chain
             let account = rpc_client.get_account(&tree.tip_distribution_account).await.expect("expected to fetch tip distribution account");
@@ -88,7 +88,7 @@ pub fn claim_mev_tips(
             }
             for node in tree.tree_nodes {
                 if node.amount == 0 {
-                    zero_lamports_count += 1;
+                    zero_lamports_count = zero_lamports_count.checked_add(1).unwrap();
                     continue;
                 }
 
@@ -106,10 +106,10 @@ pub fn claim_mev_tips(
                 let current_balance = rpc_client.get_balance(&node.claimant).await.expect("Failed to get balance");
                 // some older accounts can be rent-paying
                 // any new transfers will need to make the account rent-exempt (runtime enforced)
-                if current_balance + node.amount < stake_acct_min_rent {
+                if current_balance.checked_add(node.amount).unwrap() < stake_acct_min_rent {
                     warn!("Current balance + tip claim amount of {} is less than required rent-exempt of {} for pubkey: {}. Skipping.",
-                        current_balance + node.amount, stake_acct_min_rent, node.claimant);
-                    below_min_rent_count += 1;
+                        current_balance.checked_add(node.amount).unwrap(), stake_acct_min_rent, node.claimant);
+                    below_min_rent_count = below_min_rent_count.checked_add(1).unwrap();
                     continue;
                 }
                 let ix = Instruction {
