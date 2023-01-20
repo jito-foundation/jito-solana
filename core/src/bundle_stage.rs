@@ -304,6 +304,14 @@ impl BundleStage {
             &bank_start.working_bank,
         );
 
+        // accumulates QoS to metrics
+        qos_service.accumulate_estimated_transaction_costs(
+            &Self::accumulate_batched_transaction_costs(
+                tx_costs.iter(),
+                transactions_qos_results.iter(),
+            ),
+        );
+
         // qos rate-limited a tx in here, drop the bundle
         if sanitized_bundle.transactions.len() != num_included {
             QosService::remove_transaction_costs(
@@ -313,14 +321,6 @@ impl BundleStage {
             );
             return Err(BundleExecutionError::ExceedsCostModel);
         }
-
-        // accumulates QoS to metrics
-        qos_service.accumulate_estimated_transaction_costs(
-            &Self::accumulate_batched_transaction_costs(
-                tx_costs.iter(),
-                transactions_qos_results.iter(),
-            ),
-        );
 
         match Self::execute_record_commit_bundle(
             sanitized_bundle,
