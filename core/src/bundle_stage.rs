@@ -66,6 +66,7 @@ use {
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
+const MAX_BUNDLE_COST: u64 = 5000000;
 
 type BundleStageResult<T> = Result<T, BundleExecutionError>;
 
@@ -312,8 +313,11 @@ impl BundleStage {
             ),
         );
 
-        // qos rate-limited a tx in here, drop the bundle
-        if sanitized_bundle.transactions.len() != num_included {
+        // either qos rate-limited a tx in here or bundle exceeds max cost, drop the bundle
+        let total_bundle_cost: u64 = tx_costs.iter().map(|tx_cost| tx_cost.sum()).sum();
+        if sanitized_bundle.transactions.len() != num_included
+            || total_bundle_cost > MAX_BUNDLE_COST
+        {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
                 transactions_qos_results.iter(),
@@ -852,6 +856,7 @@ impl BundleStage {
     fn execute_bundles_until_empty_or_end_of_slot(
         bundle_account_locker: &BundleAccountLocker,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
+        buffered_bundles: &mut VecDeque<PacketBundle>,
         blacklisted_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
         consensus_accounts_cache: &HashSet<Pubkey>,
@@ -986,7 +991,10 @@ impl BundleStage {
                         bundle_stage_leader_stats
                             .bundle_stage_stats()
                             .increment_execution_results_poh_max_height(1);
-                        // retry the bundle
+                        // slot is over, queue any buffered bundles and current bundle
+                        if !buffered_bundles.is_empty() {
+                            unprocessed_bundles.extend(buffered_bundles.drain(..));
+                        }
                         unprocessed_bundles.push_back(packet_bundle);
                     }
                     Err(BundleExecutionError::TransactionFailure(_)) => {
@@ -999,7 +1007,7 @@ impl BundleStage {
                             .bundle_stage_stats()
                             .increment_execution_results_exceeds_cost_model(1);
                         // retry the bundle
-                        unprocessed_bundles.push_back(packet_bundle);
+                        buffered_bundles.push_back(packet_bundle);
                     }
                     Err(BundleExecutionError::TipError(_)) => {
                         bundle_stage_leader_stats
@@ -1266,6 +1274,7 @@ impl BundleStage {
     fn process_buffered_bundles(
         bundle_account_locker: &BundleAccountLocker,
         unprocessed_bundles: &mut VecDeque<PacketBundle>,
+        buffered_bundles: &mut VecDeque<PacketBundle>,
         blacklisted_accounts: &HashSet<Pubkey>,
         consensus_cache_updater: &mut ConsensusCacheUpdater,
         cluster_info: &Arc<ClusterInfo>,
@@ -1301,6 +1310,7 @@ impl BundleStage {
                 Self::execute_bundles_until_empty_or_end_of_slot(
                     bundle_account_locker,
                     unprocessed_bundles,
+                    buffered_bundles,
                     blacklisted_accounts,
                     bank_start,
                     consensus_cache_updater.consensus_accounts_cache(),
@@ -1362,6 +1372,7 @@ impl BundleStage {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
+        let mut buffered_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
         while !exit.load(Ordering::Relaxed) {
             if !unprocessed_bundles.is_empty()
                 || last_leader_slots_update_time.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
@@ -1370,6 +1381,7 @@ impl BundleStage {
                     Self::process_buffered_bundles(
                         &bundle_account_locker,
                         &mut unprocessed_bundles,
+                        &mut buffered_bundles,
                         &blacklisted_accounts,
                         &mut consensus_cache_updater,
                         &cluster_info,
