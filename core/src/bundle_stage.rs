@@ -323,6 +323,7 @@ impl BundleStage {
                 transactions_qos_results.iter(),
                 &bank_start.working_bank,
             );
+            qos_service.report_metrics(bank_start.working_bank.clone());
             return Err(BundleExecutionError::ExceedsCostModel);
         }
 
