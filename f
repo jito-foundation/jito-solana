@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 # Builds jito-solana in a docker container.
 # Useful for running on machines that might not have cargo installed but can run docker (Flatcar Linux).
+# run `./f true` to compile with debug flags
+
 set -eux
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"

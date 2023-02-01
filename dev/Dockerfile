@@ -41,7 +41,7 @@ RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
     if [ "$debug" = "false" ] ; then \
-      ./cargo stable build --release && cp target/release/solana* ./docker-output && echo "compiling without debug flags......"; \
+      ./cargo stable build --release && cp target/release/solana* ./docker-output; \
     else \
-      RUSTFLAGS='-g -C force-frame-pointers=yes' ./cargo stable build --release && cp target/release/solana* ./docker-output && echo "compiling with debug flags......"; \
+      RUSTFLAGS='-g -C force-frame-pointers=yes' ./cargo stable build --release && cp target/release/solana* ./docker-output; \
     fi
