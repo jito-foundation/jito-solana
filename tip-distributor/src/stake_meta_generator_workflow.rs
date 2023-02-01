@@ -30,6 +30,7 @@ use {
         fmt::{Debug, Display, Formatter},
         fs::File,
         io::{BufWriter, Write},
+        mem::size_of,
         path::{Path, PathBuf},
         sync::{atomic::AtomicBool, Arc},
     },
@@ -231,6 +232,13 @@ pub fn generate_stake_meta_collection(
             });
 
             let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
+                // Check if this is less than
+                let actual_len = tda.account_data.data().len();
+                let expected_len = 8 + size_of::<TipDistributionAccount>();
+                info!("actual_len={actual_len}, expected_len={expected_len}",);
+                if actual_len != expected_len {
+                    info!("len mismatch actual={actual_len}, expected={expected_len}");
+                }
                 let rent_exempt_amount =
                     bank.get_minimum_balance_for_rent_exemption(tda.account_data.data().len());
 

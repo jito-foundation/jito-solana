@@ -6800,6 +6800,7 @@ dependencies = [
  "solana-genesis-utils",
  "solana-ledger",
  "solana-merkle-tree",
+ "solana-metrics",
  "solana-program 1.15.0",
  "solana-rpc-client-api",
  "solana-runtime",
