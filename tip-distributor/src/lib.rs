@@ -281,6 +281,9 @@ pub struct StakeMeta {
     #[serde(with = "pubkey_string_conversion")]
     pub validator_vote_account: Pubkey,
 
+    #[serde(with = "pubkey_string_conversion")]
+    pub validator_node_pubkey: Pubkey,
+
     /// The validator's tip-distribution meta if it exists.
     pub maybe_tip_distribution_meta: Option<TipDistributionMeta>,
 
