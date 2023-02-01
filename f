@@ -9,7 +9,10 @@ GIT_SHA="$(git describe --always --dirty)"
 
 echo $GIT_SHA
 
+DEBUG_FLAGS=${1-false}
+
 DOCKER_BUILDKIT=1 docker build \
+  --build-arg debug=$DEBUG_FLAGS \
   --build-arg ci_commit=$GIT_SHA \
   -t jitolabs/build-solana \
   -f dev/Dockerfile . \
