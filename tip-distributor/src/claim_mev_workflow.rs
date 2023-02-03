@@ -153,8 +153,8 @@ fn batch_claim_ixs(
 ) -> Vec<Transaction> {
     /// The upper limit of number of claim instructions allowed in a transaction.
     /// This is a rough estimation based on the instruction signature [here](https://github.com/jito-foundation/jito-programs/blob/dd2e2f9fee872e70d680bc5ed9207fbafafc520a/tip-payment/programs/tip-distribution/src/lib.rs#L222).
-    /// Based on that commit we assume 15 accounts and 164 bytes worth of data for 4 instructions.
-    const INSTRUCTION_LIMIT: usize = 4;
+    /// Based on that commit we assume 9 accounts for 2 instructions.
+    const INSTRUCTION_LIMIT: usize = 2;
 
     let mut transactions = vec![];
 
