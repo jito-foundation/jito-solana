@@ -498,7 +498,7 @@ pub async fn send_transactions_with_retry(
                     signatures_confirmed.push(*signature);
                 }
                 Ok(false) => {
-                    info!("didn't confirmed signature: {:?}", signature);
+                    info!("signature faile to confirm: {:?}", signature);
                 }
                 Err(e) => {
                     error!(
