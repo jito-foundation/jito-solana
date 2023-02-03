@@ -11,7 +11,7 @@ ulimit -Hn 1000000
 
 # NOTE: make sure tip-payment and tip-distribution program are deployed using the correct pubkeys
 RUST_LOG=INFO,solana_core::bundle_stage=DEBUG \
-	NDEBUG=1 ./multinode-demo/bootstrap-validator.sh  \
+  NDEBUG=1 ./multinode-demo/bootstrap-validator.sh \
   --wait-for-supermajority 0 \
   --expected-bank-hash "$BANK_HASH" \
   --block-engine-address http://127.0.0.1:1003 \
