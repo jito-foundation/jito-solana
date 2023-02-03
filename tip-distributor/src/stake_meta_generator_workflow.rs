@@ -30,6 +30,7 @@ use {
         fmt::{Debug, Display, Formatter},
         fs::File,
         io::{BufWriter, Write},
+        mem::size_of,
         path::{Path, PathBuf},
         sync::{atomic::AtomicBool, Arc},
     },
@@ -231,6 +232,11 @@ pub fn generate_stake_meta_collection(
             });
 
             let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
+                let actual_len = tda.account_data.data().len();
+                let expected_len = 8 + size_of::<TipDistributionAccount>();
+                if actual_len != expected_len {
+                    warn!("len mismatch actual={actual_len}, expected={expected_len}");
+                }
                 let rent_exempt_amount =
                     bank.get_minimum_balance_for_rent_exemption(tda.account_data.data().len());
 
@@ -666,6 +672,7 @@ mod tests {
                     validator_fee_bps: tda_0_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_0.node_keypair.pubkey(),
             },
         );
         expected_stake_metas.insert(
@@ -691,6 +698,7 @@ mod tests {
                     validator_fee_bps: tda_1_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_1.node_keypair.pubkey(),
             },
         );
         expected_stake_metas.insert(
@@ -716,6 +724,7 @@ mod tests {
                     validator_fee_bps: tda_2_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_2.node_keypair.pubkey(),
             },
         );
 

@@ -9,10 +9,11 @@ use {
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     anchor_lang::Id,
-    log::{error, info},
+    log::*,
     serde::{de::DeserializeOwned, Deserialize, Serialize},
-    solana_client::nonblocking::rpc_client::RpcClient,
+    solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
+    solana_metrics::datapoint_error,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
@@ -66,9 +67,37 @@ pub struct TipPaymentPubkeys {
     tip_pdas: Vec<Pubkey>,
 }
 
+fn valid_tree_nodes(
+    tree_nodes: &[TreeNode],
+    tip_distribution_account: &Pubkey,
+    rpc_client: &SyncRpcClient,
+) -> bool {
+    let actual_claims: u64 = tree_nodes.iter().map(|t| t.amount).sum();
+    let tda = rpc_client.get_account(&tip_distribution_account).unwrap();
+    let min_rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(tda.data.len())
+        .unwrap();
+
+    let expected_claims = tda.lamports.checked_sub(min_rent).unwrap();
+    if actual_claims != expected_claims {
+        datapoint_error!(
+            "tip-distributor",
+            (
+                "error",
+                format!("tip_distribution_account={tip_distribution_account},actual_claims={actual_claims}, expected_claims={expected_claims}"),
+                String
+            ),
+        );
+        false
+    } else {
+        true
+    }
+}
+
 impl GeneratedMerkleTreeCollection {
     pub fn new_from_stake_meta_collection(
         stake_meta_coll: StakeMetaCollection,
+        maybe_rpc_client: Option<SyncRpcClient>,
     ) -> Result<GeneratedMerkleTreeCollection, MerkleRootGeneratorError> {
         let generated_merkle_trees = stake_meta_coll
             .stake_metas
@@ -79,6 +108,18 @@ impl GeneratedMerkleTreeCollection {
                     Err(e) => return Some(Err(e)),
                     Ok(maybe_tree_nodes) => maybe_tree_nodes,
                 }?;
+
+                if let Some(rpc_client) = &maybe_rpc_client {
+                    if let Some(tda) = stake_meta.maybe_tip_distribution_meta.as_ref() {
+                        if !valid_tree_nodes(
+                            &tree_nodes[..],
+                            &tda.tip_distribution_pubkey,
+                            &rpc_client,
+                        ) {
+                            return None;
+                        }
+                    }
+                }
 
                 let hashed_nodes: Vec<[u8; 32]> =
                     tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
@@ -577,10 +618,14 @@ mod tests {
         let validator_vote_account_0 = Pubkey::new_unique();
         let validator_vote_account_1 = Pubkey::new_unique();
 
+        let validator_id_0 = Pubkey::new_unique();
+        let validator_id_1 = Pubkey::new_unique();
+
         let stake_meta_collection = StakeMetaCollection {
             stake_metas: vec![
                 StakeMeta {
                     validator_vote_account: validator_vote_account_0,
+                    validator_node_pubkey: validator_id_0,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority,
                         tip_distribution_pubkey: tda_0,
@@ -606,6 +651,7 @@ mod tests {
                 },
                 StakeMeta {
                     validator_vote_account: validator_vote_account_1,
+                    validator_node_pubkey: validator_id_1,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority,
                         tip_distribution_pubkey: tda_1,
@@ -631,13 +677,14 @@ mod tests {
                 },
             ],
             tip_distribution_program_id: Pubkey::new_unique(),
-            bank_hash: solana_sdk::hash::Hash::new_unique().to_string(),
+            bank_hash: Hash::new_unique().to_string(),
             epoch: 100,
             slot: 2_000_000,
         };
 
         let merkle_tree_collection = GeneratedMerkleTreeCollection::new_from_stake_meta_collection(
             stake_meta_collection.clone(),
+            None,
         )
         .unwrap();
 
