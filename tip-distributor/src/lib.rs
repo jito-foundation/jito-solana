@@ -13,7 +13,7 @@ use {
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
-    solana_metrics::datapoint_error,
+    solana_metrics::{datapoint_error, datapoint_warn},
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
@@ -79,17 +79,29 @@ fn valid_tree_nodes(
         .unwrap();
 
     let expected_claims = tda.lamports.checked_sub(min_rent).unwrap();
-    if actual_claims != expected_claims {
+    if actual_claims == expected_claims {
+        return true;
+    }
+
+    if actual_claims > expected_claims {
         datapoint_error!(
             "tip-distributor",
             (
-                "error",
+                "actual_claims_exceeded",
                 format!("tip_distribution_account={tip_distribution_account},actual_claims={actual_claims}, expected_claims={expected_claims}"),
                 String
             ),
         );
         false
     } else {
+        datapoint_warn!(
+            "tip-distributor",
+            (
+                "actual_claims_below",
+                format!("tip_distribution_account={tip_distribution_account},actual_claims={actual_claims}, expected_claims={expected_claims}"),
+                String
+            ),
+        );
         true
     }
 }
