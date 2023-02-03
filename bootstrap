@@ -4,8 +4,8 @@ set -eu
 BANK_HASH=$(cargo run --bin solana-ledger-tool -- -l config/bootstrap-validator bank-hash)
 
 # increase max file handle limit
-
 ulimit -Hn 1000000
+
 # if above fails, run:
 # sudo bash -c 'echo "*               hard    nofile          1000000" >> /etc/security/limits.conf'
 
