@@ -162,7 +162,7 @@ fn batch_claim_ixs(
         return transactions;
     }
 
-    for (_tda, ixs) in tda_to_claim_ixs {
+    for ixs in tda_to_claim_ixs.values() {
         for batch in ixs.chunks(INSTRUCTION_LIMIT) {
             transactions.push(Transaction::new_signed_with_payer(
                 batch,
