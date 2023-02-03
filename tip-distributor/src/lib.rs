@@ -502,7 +502,7 @@ pub async fn send_transactions_with_retry(
                 }
                 Err(e) => {
                     error!(
-                        "error confirming signature: {:?}, signature: {:?}",
+                        "error confirming signature: {:?}, error: {:?}",
                         signature, e
                     );
                 }
