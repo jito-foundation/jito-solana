@@ -295,6 +295,7 @@ impl TreeNode {
                 sum.checked_add(tree_node.amount).unwrap()
             });
             assert!(total_claim_amount < stake_meta.total_delegated);
+            assert_eq!(total_claim_amount, tip_distribution_meta.total_tips);
 
             Ok(Some(tree_nodes))
         } else {
