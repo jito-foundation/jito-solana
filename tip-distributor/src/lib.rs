@@ -618,10 +618,14 @@ mod tests {
         let validator_vote_account_0 = Pubkey::new_unique();
         let validator_vote_account_1 = Pubkey::new_unique();
 
+        let validator_id_0 = Pubkey::new_unique();
+        let validator_id_1 = Pubkey::new_unique();
+
         let stake_meta_collection = StakeMetaCollection {
             stake_metas: vec![
                 StakeMeta {
                     validator_vote_account: validator_vote_account_0,
+                    validator_node_pubkey: validator_id_0,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority,
                         tip_distribution_pubkey: tda_0,
@@ -647,6 +651,7 @@ mod tests {
                 },
                 StakeMeta {
                     validator_vote_account: validator_vote_account_1,
+                    validator_node_pubkey: validator_id_1,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority,
                         tip_distribution_pubkey: tda_1,

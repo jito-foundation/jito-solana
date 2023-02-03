@@ -674,6 +674,7 @@ mod tests {
                     validator_fee_bps: tda_0_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_0.node_keypair.pubkey(),
             },
         );
         expected_stake_metas.insert(
@@ -699,6 +700,7 @@ mod tests {
                     validator_fee_bps: tda_1_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_1.node_keypair.pubkey(),
             },
         );
         expected_stake_metas.insert(
@@ -724,6 +726,7 @@ mod tests {
                     validator_fee_bps: tda_2_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_2.node_keypair.pubkey(),
             },
         );
 
