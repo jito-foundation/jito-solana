@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eu
 
-SOLANA_KEYGEN="cargo run --bin solana-keygen --"
+SOLANA_KEYGEN="cargo run --release --bin solana-keygen --"
 SOLANA_CONFIG_DIR=./config
 
 if [[ ! -d $SOLANA_CONFIG_DIR ]]; then
