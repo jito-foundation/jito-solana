@@ -67,11 +67,11 @@ pub struct TipPaymentPubkeys {
     tip_pdas: Vec<Pubkey>,
 }
 
-fn valid_tree_nodes(
+fn emit_inconsistent_tree_node_amount_dp(
     tree_nodes: &[TreeNode],
     tip_distribution_account: &Pubkey,
     rpc_client: &SyncRpcClient,
-) -> bool {
+) {
     let actual_claims: u64 = tree_nodes.iter().map(|t| t.amount).sum();
     let tda = rpc_client.get_account(&tip_distribution_account).unwrap();
     let min_rent = rpc_client
@@ -80,7 +80,7 @@ fn valid_tree_nodes(
 
     let expected_claims = tda.lamports.checked_sub(min_rent).unwrap();
     if actual_claims == expected_claims {
-        return true;
+        return;
     }
 
     if actual_claims > expected_claims {
@@ -92,7 +92,6 @@ fn valid_tree_nodes(
                 String
             ),
         );
-        false
     } else {
         datapoint_warn!(
             "tip-distributor",
@@ -102,7 +101,6 @@ fn valid_tree_nodes(
                 String
             ),
         );
-        true
     }
 }
 
@@ -123,13 +121,11 @@ impl GeneratedMerkleTreeCollection {
 
                 if let Some(rpc_client) = &maybe_rpc_client {
                     if let Some(tda) = stake_meta.maybe_tip_distribution_meta.as_ref() {
-                        if !valid_tree_nodes(
+                        emit_inconsistent_tree_node_amount_dp(
                             &tree_nodes[..],
                             &tda.tip_distribution_pubkey,
                             &rpc_client,
-                        ) {
-                            return None;
-                        }
+                        );
                     }
                 }
 
