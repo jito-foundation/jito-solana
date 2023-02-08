@@ -52,12 +52,14 @@ fn main() {
 
                 if calculated_total_claim != tree.max_total_claim {
                     let diff = tree.max_total_claim - calculated_total_claim;
-                    error!("Calculation error: calculated total claim={calculated_total_claim}, expected total claim={}, diff={diff}, diff %={}, tda={}", tree.max_total_claim, diff/tree.max_total_claim, tda.tip_distribution_pubkey);
+                    let diff_pct = diff as f64 / tree.max_total_claim as f64;
+                    error!("Calculation error: calculated total claim={calculated_total_claim}, expected total claim={}, diff={diff}, diff %={diff_pct}, tda={}", tree.max_total_claim, tda.tip_distribution_pubkey);
                 }
 
                 if calculated_total_claim != tda.total_tips {
                     let diff = tda.total_tips - calculated_total_claim;
-                    error!("Calculation error: calculated total claim={calculated_total_claim}, calculated total tips={}, diff={diff}, diff %={}, tda={}", tda.total_tips, diff/tree.max_total_claim, tda.tip_distribution_pubkey);
+                    let diff_pct = diff as f64 / tda.total_tips as f64;
+                    error!("Calculation error: calculated total claim={calculated_total_claim}, calculated total tips={}, diff={diff}, diff %={diff_pct}, tda={}", tda.total_tips, tda.tip_distribution_pubkey);
                 }
 
                 info!("TDA {} is gucci", tda.tip_distribution_pubkey);
