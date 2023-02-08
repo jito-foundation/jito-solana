@@ -1,4 +1,4 @@
-FROM rust:1.66-slim-bullseye as builder
+FROM rust:1.64-slim-bullseye as builder
 
 # Add Google Protocol Buffers for Libra's metrics library.
 ENV PROTOC_VERSION 3.8.0
