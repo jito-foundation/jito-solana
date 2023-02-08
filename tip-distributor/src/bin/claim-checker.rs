@@ -60,7 +60,7 @@ fn main() {
             }
             None => {
                 warn!(
-                    "{} TDA not fgound in merkle trees",
+                    "TDA {} not found in merkle trees",
                     tda.tip_distribution_pubkey
                 );
             }
