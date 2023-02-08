@@ -48,18 +48,20 @@ fn main() {
     for tda in tda_metas {
         match tda_to_merkle_tree.get(&tda.tip_distribution_pubkey) {
             Some(tree) => {
-                let calculated_total_claim: u64 = tree.tree_nodes.iter().map(|t| t.amount).sum();
+                let calculated_total_claim: i64 = tree.tree_nodes.iter().map(|t| t.amount).sum();
+                let max_total_claim = tree.max_total_claim as i64;
+                let total_tips = tda.total_tips as i64;
 
-                if calculated_total_claim != tree.max_total_claim {
-                    let diff = tree.max_total_claim - calculated_total_claim;
+                if calculated_total_claim != max_total_claim {
+                    let diff = max_total_claim - calculated_total_claim;
                     let diff_pct = diff as f64 / tree.max_total_claim as f64;
-                    error!("Calculation error: calculated total claim={calculated_total_claim}, expected total claim={}, diff={diff}, diff %={diff_pct}, tda={}", tree.max_total_claim, tda.tip_distribution_pubkey);
+                    error!("Calculation error: calculated total claim={calculated_total_claim}, expected total claim={max_total_claim}, diff={diff}, diff %={diff_pct}, tda={}", tda.tip_distribution_pubkey);
                 }
 
-                if calculated_total_claim != tda.total_tips {
-                    let diff = tda.total_tips - calculated_total_claim;
-                    let diff_pct = diff as f64 / tda.total_tips as f64;
-                    error!("Calculation error: calculated total claim={calculated_total_claim}, calculated total tips={}, diff={diff}, diff %={diff_pct}, tda={}", tda.total_tips, tda.tip_distribution_pubkey);
+                if calculated_total_claim != total_tips {
+                    let diff = total_tips - calculated_total_claim;
+                    let diff_pct = diff as f64 / total_tips as f64;
+                    error!("Calculation error: calculated total claim={calculated_total_claim}, calculated total tips={total_tips}, diff={diff}, diff %={diff_pct}, tda={}", tda.tip_distribution_pubkey);
                 }
 
                 info!("TDA {} is gucci", tda.tip_distribution_pubkey);
