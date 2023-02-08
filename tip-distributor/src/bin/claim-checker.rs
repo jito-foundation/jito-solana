@@ -56,11 +56,11 @@ fn main() {
                     continue;
                 }
 
-                info!("{} tda is gucci", tda.tip_distribution_pubkey);
+                info!("TDA {} is gucci", tda.tip_distribution_pubkey);
             }
             None => {
                 warn!(
-                    "{} TDA not found in merkle trees",
+                    "{} TDA not fgound in merkle trees",
                     tda.tip_distribution_pubkey
                 );
             }
