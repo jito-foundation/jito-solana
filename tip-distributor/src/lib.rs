@@ -240,7 +240,7 @@ impl TreeNode {
                 ],
                 &TipDistribution::id(),
             );
-            let mut tree_nodes = vec![TreeNode {
+            let mut validator_tree_node = TreeNode {
                 claimant: stake_meta.validator_vote_account,
                 claim_status_pubkey,
                 claim_status_bump,
@@ -248,7 +248,7 @@ impl TreeNode {
                 withdrawer_pubkey: Pubkey::default(),
                 amount: validator_amount,
                 proof: None,
-            }];
+            };
 
             let remaining_total_rewards = tip_distribution_meta
                 .total_tips
@@ -256,16 +256,20 @@ impl TreeNode {
                 .unwrap() as u128;
 
             let total_delegated = stake_meta.total_delegated as u128;
-            tree_nodes.extend(
-                stake_meta
-                    .delegations
-                    .iter()
-                    .map(|delegation| {
-                        let amount_delegated = delegation.lamports_delegated as u128;
-                        let reward_amount = (amount_delegated.checked_mul(remaining_total_rewards))
-                            .unwrap()
-                            .checked_div(total_delegated)
-                            .unwrap();
+            let mut tree_nodes = stake_meta
+                .delegations
+                .iter()
+                .flat_map(|delegation| {
+                    let amount_delegated = delegation.lamports_delegated as u128;
+                    let reward_amount = (amount_delegated.checked_mul(remaining_total_rewards))
+                        .unwrap()
+                        .checked_div(total_delegated)
+                        .unwrap() as u64;
+                    if delegation.stake_account_pubkey == validator_tree_node.staker_pubkey {
+                        validator_tree_node.amount += reward_amount;
+
+                        None
+                    } else {
                         let (claim_status_pubkey, claim_status_bump) = Pubkey::find_program_address(
                             &[
                                 ClaimStatus::SEED,
@@ -274,18 +278,20 @@ impl TreeNode {
                             ],
                             &TipDistribution::id(),
                         );
-                        Ok(TreeNode {
+
+                        Some(TreeNode {
                             claimant: delegation.stake_account_pubkey,
                             claim_status_pubkey,
                             claim_status_bump,
                             staker_pubkey: delegation.staker_pubkey,
                             withdrawer_pubkey: delegation.withdrawer_pubkey,
-                            amount: reward_amount as u64,
+                            amount: reward_amount,
                             proof: None,
                         })
-                    })
-                    .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?,
-            );
+                    }
+                })
+                .collect::<Vec<TreeNode>>();
+            tree_nodes.push(validator_tree_node);
 
             let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
                 sum.checked_add(tree_node.amount).unwrap()
