@@ -15,6 +15,7 @@ RUN set -x \
       libssl-dev \
       pkg-config \
       zlib1g-dev \
+      curl \
  && rustup component add rustfmt \
  && rustup component add clippy \
  && rustc --version \
