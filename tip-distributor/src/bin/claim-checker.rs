@@ -39,6 +39,12 @@ fn main() {
         .flat_map(|m| m.maybe_tip_distribution_meta)
         .collect::<Vec<_>>();
 
+    info!(
+        "Found {} merkle trees, {} TipDistributionMeta",
+        merkle_tree_collection.generated_merkle_trees.len(),
+        tda_metas.len()
+    );
+
     for tda in tda_metas {
         match tda_to_merkle_tree.get(&tda.tip_distribution_pubkey) {
             Some(tree) => {
