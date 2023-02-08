@@ -63,8 +63,6 @@ fn main() {
                     let diff_pct = diff as f64 / total_tips as f64;
                     error!("Calculation error: calculated total claim={calculated_total_claim}, calculated total tips={total_tips}, diff={diff}, diff %={diff_pct}, tda={}", tda.tip_distribution_pubkey);
                 }
-
-                info!("TDA {} is gucci", tda.tip_distribution_pubkey);
             }
             None => {
                 warn!(
