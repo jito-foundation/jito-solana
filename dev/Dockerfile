@@ -1,4 +1,4 @@
-FROM rust:1.63.0
+FROM rust:1.66-slim-bullseye as builder
 
 # Add Google Protocol Buffers for Libra's metrics library.
 ENV PROTOC_VERSION 3.8.0
@@ -15,7 +15,6 @@ RUN set -x \
       libssl-dev \
       pkg-config \
       zlib1g-dev \
-      make \
  && rustup component add rustfmt \
  && rustup component add clippy \
  && rustc --version \
@@ -30,9 +29,6 @@ WORKDIR /solana
 COPY . .
 RUN mkdir -p docker-output
 
-ARG ci_commit
-ENV CI_COMMIT=$ci_commit
-
 ARG debug
 
 # Uses docker buildkit to cache the image.
@@ -45,3 +41,8 @@ RUN --mount=type=cache,mode=0777,target=/solana/target \
     else \
       RUSTFLAGS='-g -C force-frame-pointers=yes' ./cargo stable build --release && cp target/release/solana* ./docker-output; \
     fi
+
+
+# keep CI_COMMIT at bottom since it breaks caching: https://stackoverflow.com/a/57017745/3408577
+ARG ci_commit
+ENV CI_COMMIT=$ci_commit
