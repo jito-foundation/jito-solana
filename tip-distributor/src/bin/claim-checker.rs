@@ -41,7 +41,7 @@ fn main() {
 
     info!(
         "Found {} merkle trees, {} TipDistributionMeta",
-        merkle_tree_collection.generated_merkle_trees.len(),
+        tda_to_merkle_tree.len(),
         tda_metas.len()
     );
 
