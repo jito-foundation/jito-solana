@@ -48,18 +48,16 @@ fn main() {
     for tda in tda_metas {
         match tda_to_merkle_tree.get(&tda.tip_distribution_pubkey) {
             Some(tree) => {
-                let calculated_claim: u64 = tree.tree_nodes.iter().map(|t| t.amount).sum();
+                let calculated_total_claim: u64 = tree.tree_nodes.iter().map(|t| t.amount).sum();
 
-                if calculated_claim != tree.max_total_claim {
-                    let diff = tree.max_total_claim - calculated_claim;
-                    error!("Calculation error: calculated total claim={calculated_claim}, expected total claim={}, diff={diff}, tda={}", tree.max_total_claim, tda.tip_distribution_pubkey);
-                    continue;
+                if calculated_total_claim != tree.max_total_claim {
+                    let diff = tree.max_total_claim - calculated_total_claim;
+                    error!("Calculation error: calculated total claim={calculated_total_claim}, expected total claim={}, diff={diff}, diff %={}, tda={}", tree.max_total_claim, diff/tree.max_total_claim, tda.tip_distribution_pubkey);
                 }
 
-                if calculated_claim != tda.total_tips {
-                    let diff = tda.total_tips - calculated_claim;
-                    error!("Calculation error: calculated total claim={calculated_claim}, calculated total tips={}, diff={diff}, tda={}", tda.total_tips, tda.tip_distribution_pubkey);
-                    continue;
+                if calculated_total_claim != tda.total_tips {
+                    let diff = tda.total_tips - calculated_total_claim;
+                    error!("Calculation error: calculated total claim={calculated_total_claim}, calculated total tips={}, diff={diff}, diff %={}, tda={}", tda.total_tips, diff/tree.max_total_claim, tda.tip_distribution_pubkey);
                 }
 
                 info!("TDA {} is gucci", tda.tip_distribution_pubkey);
