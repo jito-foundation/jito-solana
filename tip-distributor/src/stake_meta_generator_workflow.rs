@@ -30,7 +30,6 @@ use {
         fmt::{Debug, Display, Formatter},
         fs::File,
         io::{BufWriter, Write},
-        mem::size_of,
         path::{Path, PathBuf},
         sync::{atomic::AtomicBool, Arc},
     },
@@ -166,8 +165,14 @@ pub fn generate_stake_meta_collection(
     // the rewards are claimed.
     let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
     let account = bank.get_account(&tip_accounts.config_pda);
-    let maybe_tip_receiver: Option<Pubkey> = account
-        .and_then(|account| Config::try_deserialize(&mut account.data()).ok())
+    let maybe_last_tip_receiver: Option<Pubkey> = account
+        .and_then(|account| {
+            let config = Config::try_deserialize(&mut account.data()).ok().map(|c| {
+                info!("last tip receiver: {}", c.tip_receiver);
+                c
+            });
+            config
+        })
         .map(|config| config.tip_receiver);
 
     let excess_tip_balances: u64 = tip_accounts
@@ -204,8 +209,8 @@ pub fn generate_stake_meta_collection(
                             .expect("deserialized TipDistributionAccount");
                     // this snapshot might have tips that weren't claimed by the time the epoch is over
                     // assume that it will eventually be cranked and credit the excess to this account
-                    if maybe_tip_receiver.is_some()
-                        && tip_distribution_pubkey == maybe_tip_receiver.unwrap()
+                    if maybe_last_tip_receiver.is_some()
+                        && tip_distribution_pubkey == maybe_last_tip_receiver.unwrap()
                     {
                         account_data.set_lamports(
                             account_data
@@ -232,11 +237,6 @@ pub fn generate_stake_meta_collection(
             });
 
             let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
-                let actual_len = tda.account_data.data().len();
-                let expected_len = 8 + size_of::<TipDistributionAccount>();
-                if actual_len != expected_len {
-                    warn!("len mismatch actual={actual_len}, expected={expected_len}");
-                }
                 let rent_exempt_amount =
                     bank.get_minimum_balance_for_rent_exemption(tda.account_data.data().len());
 

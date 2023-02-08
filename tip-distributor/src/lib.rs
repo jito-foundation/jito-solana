@@ -479,7 +479,10 @@ pub async fn send_transactions_with_retry(
                     info!("send transaction: {:?}", send_tx_sig);
                 }
                 Err(e) => {
-                    error!("error sending transaction {:?} error: {:?}", signature, e);
+                    error!(
+                        "error sending transaction {signature:?} [error={e:?}, tda={}]",
+                        tx.message.account_keys[1]
+                    );
                 }
             }
         }
@@ -543,7 +546,7 @@ mod pubkey_string_conversion {
     }
 }
 
-pub(crate) fn read_json_from_file<T>(path: &PathBuf) -> serde_json::Result<T>
+pub fn read_json_from_file<T>(path: &PathBuf) -> serde_json::Result<T>
 where
     T: DeserializeOwned,
 {
