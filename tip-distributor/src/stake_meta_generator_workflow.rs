@@ -158,6 +158,7 @@ pub fn generate_stake_meta_collection(
 
     let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank);
 
+    let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
     let excess_tip_balances: u64 = tip_accounts
         .tip_pdas
         .iter()
@@ -177,7 +178,6 @@ pub fn generate_stake_meta_collection(
     // the account balance in the snapshot could be incorrect.
     // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
     // the rewards are claimed.
-    let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
     let account = bank.get_account(&tip_accounts.config_pda);
     let maybe_last_tip_receiver: Option<Pubkey> = account
         .and_then(|account| {
