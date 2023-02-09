@@ -48,7 +48,8 @@ fn main() {
     for tda in tda_metas {
         match tda_to_merkle_tree.get(&tda.tip_distribution_pubkey) {
             Some(tree) => {
-                let calculated_total_claim: i64 = tree.tree_nodes.iter().map(|t| t.amount).sum();
+                let calculated_total_claim: i64 =
+                    tree.tree_nodes.iter().map(|t| t.amount as i64).sum();
                 let max_total_claim = tree.max_total_claim as i64;
                 let total_tips = tda.total_tips as i64;
 
