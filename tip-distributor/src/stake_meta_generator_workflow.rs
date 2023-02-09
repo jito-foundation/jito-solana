@@ -158,23 +158,6 @@ pub fn generate_stake_meta_collection(
 
     let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank);
 
-    // the last leader in an epoch may not crank the tip program before the epoch is over, which
-    // would result in MEV rewards for epoch N not being cranked until epoch N + 1. This means that
-    // the account balance in the snapshot could be incorrect.
-    // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
-    // the rewards are claimed.
-    let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
-    let account = bank.get_account(&tip_accounts.config_pda);
-    let maybe_last_tip_receiver: Option<Pubkey> = account
-        .and_then(|account| {
-            let config = Config::try_deserialize(&mut account.data()).ok().map(|c| {
-                info!("last tip receiver: {}", c.tip_receiver);
-                c
-            });
-            config
-        })
-        .map(|config| config.tip_receiver);
-
     let excess_tip_balances: u64 = tip_accounts
         .tip_pdas
         .iter()
@@ -188,6 +171,30 @@ pub fn generate_stake_meta_collection(
                 .unwrap_or_default()
         })
         .sum();
+
+    // the last leader in an epoch may not crank the tip program before the epoch is over, which
+    // would result in MEV rewards for epoch N not being cranked until epoch N + 1. This means that
+    // the account balance in the snapshot could be incorrect.
+    // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
+    // the rewards are claimed.
+    let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
+    let account = bank.get_account(&tip_accounts.config_pda);
+    let maybe_last_tip_receiver: Option<Pubkey> = account
+        .and_then(|account| {
+            let config = Config::try_deserialize(&mut account.data()).ok().map(|c| {
+                let account = bank.get_account(&c.tip_receiver).unwrap();
+                info!(
+                    "last tip receiver: {}, total bal: {}, rent excess: {}, rent exempt: {}",
+                    c.tip_receiver,
+                    account.lamports(),
+                    excess_tip_balances,
+                    bank.get_minimum_balance_for_rent_exemption(account.data().len())
+                );
+                c
+            });
+            config
+        })
+        .map(|config| config.tip_receiver);
 
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
