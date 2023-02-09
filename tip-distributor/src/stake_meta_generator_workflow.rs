@@ -172,7 +172,7 @@ pub fn generate_stake_meta_collection(
     let config = Config::try_deserialize(&mut account.data()).expect("deserializes configuration");
 
     let bb_commission_pct: u64 = config.block_builder_commission_pct;
-    let maybe_tip_receiver: Pubkey = config.tip_receiver;
+    let tip_receiver: Pubkey = config.tip_receiver;
 
     // includes the block builder fee
     let excess_tip_balances: u64 = tip_accounts
@@ -182,10 +182,11 @@ pub fn generate_stake_meta_collection(
             let tip_account = bank.get_account(pubkey).expect("tip account exists");
             tip_account
                 .lamports()
-                .checked_sub(bank.get_minimum_balance_for_rent_exemption(acc.data().len()))
+                .checked_sub(bank.get_minimum_balance_for_rent_exemption(tip_account.data().len()))
                 .expect("tip balance underflow")
         })
         .sum();
+    // matches math in tip payment program
     let block_builder_tips = excess_tip_balances
         .checked_mul(bb_commission_pct)
         .expect("bb_commission overflow")
@@ -215,9 +216,7 @@ pub fn generate_stake_meta_collection(
                             .expect("deserialized TipDistributionAccount");
                     // this snapshot might have tips that weren't claimed by the time the epoch is over
                     // assume that it will eventually be cranked and credit the excess to this account
-                    if maybe_tip_receiver.is_some()
-                        && tip_distribution_pubkey == maybe_tip_receiver.unwrap()
-                    {
+                    if tip_distribution_pubkey == tip_receiver {
                         account_data.set_lamports(
                             account_data
                                 .lamports()
