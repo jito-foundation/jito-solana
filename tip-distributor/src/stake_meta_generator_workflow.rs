@@ -165,24 +165,35 @@ pub fn generate_stake_meta_collection(
     // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
     // the rewards are claimed.
     let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
-    let account = bank.get_account(&tip_accounts.config_pda);
-    let maybe_tip_receiver: Option<Pubkey> = account
-        .and_then(|account| Config::try_deserialize(&mut account.data()).ok())
-        .map(|config| config.tip_receiver);
+    let account = bank
+        .get_account(&tip_accounts.config_pda)
+        .expect("config pda exists");
 
+    let config = Config::try_deserialize(&mut account.data()).expect("deserializes configuration");
+
+    let bb_commission_pct: u64 = config.block_builder_commission_pct;
+    let maybe_tip_receiver: Pubkey = config.tip_receiver;
+
+    // includes the block builder fee
     let excess_tip_balances: u64 = tip_accounts
         .tip_pdas
         .iter()
         .map(|pubkey| {
-            bank.get_account(pubkey)
-                .map(|acc| {
-                    acc.lamports()
-                        .checked_sub(bank.get_minimum_balance_for_rent_exemption(acc.data().len()))
-                        .expect("tip balance underflow")
-                })
-                .unwrap_or_default()
+            let tip_account = bank.get_account(pubkey).expect("tip account exists");
+            tip_account
+                .lamports()
+                .checked_sub(bank.get_minimum_balance_for_rent_exemption(acc.data().len()))
+                .expect("tip balance underflow")
         })
         .sum();
+    let block_builder_tips = excess_tip_balances
+        .checked_mul(bb_commission_pct)
+        .expect("bb_commission overflow")
+        .checked_div(100)
+        .expect("division");
+    let tip_receiver_fee = excess_tip_balances
+        .checked_sub(block_builder_tips)
+        .expect("tip_receiver_fee doesnt underflow");
 
     let vote_pk_and_maybe_tdas: Vec<(
         (Pubkey, &VoteAccount),
@@ -210,7 +221,7 @@ pub fn generate_stake_meta_collection(
                         account_data.set_lamports(
                             account_data
                                 .lamports()
-                                .checked_add(excess_tip_balances)
+                                .checked_add(tip_receiver_fee)
                                 .expect("tip overflow"),
                         );
                     }
