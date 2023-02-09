@@ -313,7 +313,6 @@ impl BundleStage {
         );
 
         // either qos rate-limited a tx in here or bundle exceeds max cost, drop the bundle
-        let total_bundle_cost: u64 = tx_costs.iter().map(|tx_cost| tx_cost.sum()).sum();
         if sanitized_bundle.transactions.len() != num_included {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
