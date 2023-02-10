@@ -1326,7 +1326,8 @@ impl BundleStage {
                 };
                 if is_new_slot && !cost_model_failed_bundles.is_empty() {
                     debug!(
-                        "Re-buffering {} bundles that failed cost model!",
+                        "Slot {}: Re-buffering {} bundles that failed cost model!",
+                        &bank_start.working_bank.slot(),
                         cost_model_failed_bundles.len()
                     );
                     unprocessed_bundles.extend(cost_model_failed_bundles.drain(..));
