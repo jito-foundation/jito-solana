@@ -1006,6 +1006,7 @@ impl BundleStage {
                         bundle_stage_leader_stats
                             .bundle_stage_stats()
                             .increment_execution_results_poh_max_height(1);
+                        // retry the bundle
                         unprocessed_bundles.push_back(packet_bundle);
                     }
                     Err(BundleExecutionError::TransactionFailure(_)) => {
