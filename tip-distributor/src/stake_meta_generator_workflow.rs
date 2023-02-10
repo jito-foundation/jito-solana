@@ -189,9 +189,9 @@ pub fn generate_stake_meta_collection(
     // matches math in tip payment program
     let block_builder_tips = excess_tip_balances
         .checked_mul(bb_commission_pct)
-        .expect("bb_commission overflow")
+        .expect("block_builder_tips overflow")
         .checked_div(100)
-        .expect("division");
+        .expect("block_builder_tips division error");
     let tip_receiver_fee = excess_tip_balances
         .checked_sub(block_builder_tips)
         .expect("tip_receiver_fee doesnt underflow");
