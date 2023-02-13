@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 # Builds jito-solana in a docker container.
 # Useful for running on machines that might not have cargo installed but can run docker (Flatcar Linux).
 # run `./f true` to compile with debug flags
@@ -9,13 +9,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 GIT_SHA="$(git describe --always --dirty)"
 
-echo $GIT_SHA
+echo "Git hash: $GIT_SHA"
 
 DEBUG_FLAGS=${1-false}
 
 DOCKER_BUILDKIT=1 docker build \
-  --build-arg debug=$DEBUG_FLAGS \
-  --build-arg ci_commit=$GIT_SHA \
+  --build-arg debug="$DEBUG_FLAGS" \
+  --build-arg ci_commit="$GIT_SHA" \
   -t jitolabs/build-solana \
   -f dev/Dockerfile . \
   --progress=plain
