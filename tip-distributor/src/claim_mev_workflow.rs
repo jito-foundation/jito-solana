@@ -55,10 +55,9 @@ pub fn claim_mev_tips(
         .build()
         .unwrap();
 
-    let mut transactions = Vec::new();
+    let mut instructions = Vec::new();
 
     runtime.block_on(async move {
-        let blockhash = rpc_client.get_latest_blockhash().await.expect("read blockhash");
         let start_balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
         // heuristic to make sure we have enough funds to cover the rent costs if epoch has many validators
         {
@@ -113,7 +112,7 @@ pub fn claim_mev_tips(
                     below_min_rent_count = below_min_rent_count.checked_add(1).unwrap();
                     continue;
                 }
-                let ix = Instruction {
+                instructions.push(Instruction {
                     program_id: *tip_distribution_program_id,
                     data: tip_distribution::instruction::Claim {
                         proof: node.proof.unwrap(),
@@ -128,17 +127,19 @@ pub fn claim_mev_tips(
                         payer: keypair.pubkey(),
                         system_program: system_program::id(),
                     }.to_account_metas(None),
-                };
-                let transaction = Transaction::new_signed_with_payer(
-                    &[ix],
-                    Some(&keypair.pubkey()),
-                    &[&keypair],
-                    blockhash,
-                );
-                info!("claiming for pubkey: {}, tx: {:?}", node.claimant, transaction);
-                transactions.push(transaction);
+                });
             }
         }
+
+        let blockhash = rpc_client.get_latest_blockhash().await.expect("fetch latest blockhash");
+        let transactions = instructions.into_iter().map(|ix|{
+            Transaction::new_signed_with_payer(
+                &[ix],
+                Some(&keypair.pubkey()),
+                &[&keypair],
+                blockhash,
+            )
+        }).collect::<Vec<_>>();
 
         info!("Sending {} tip claim transactions. {} tried sending zero lamports, {} would be below minimum rent",
             &transactions.len(), zero_lamports_count, below_min_rent_count);
