@@ -2399,6 +2399,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4217ad341ebadf8d8e724e264f13e593e0648f5b3e94b3896a5df283be015ecc"
 
 [[package]]
+name = "jito-programs-vote-state"
+version = "0.1.2"
+dependencies = [
+ "anchor-lang",
+ "bincode",
+ "serde",
+ "serde_derive",
+ "solana-program 1.14.16",
+]
+
+[[package]]
 name = "jito-protos"
 version = "1.14.16"
 dependencies = [
@@ -7410,8 +7421,8 @@ name = "tip-distribution"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "jito-programs-vote-state",
  "solana-program 1.14.16",
- "vote-state",
 ]
 
 [[package]]
@@ -8059,17 +8070,6 @@ name = "void"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
-
-[[package]]
-name = "vote-state"
-version = "0.1.0"
-dependencies = [
- "anchor-lang",
- "bincode",
- "serde",
- "serde_derive",
- "solana-program 1.14.16",
-]
 
 [[package]]
 name = "wait-timeout"
