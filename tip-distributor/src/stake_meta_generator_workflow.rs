@@ -338,6 +338,11 @@ mod tests {
         },
         solana_stake_program::stake_state,
         tip_distribution::state::TipDistributionAccount,
+        tip_payment::{
+            InitBumps, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1,
+            TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5,
+            TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
+        },
     };
 
     #[test]
@@ -363,6 +368,7 @@ mod tests {
         /* 2. Seed the Bank with [TipDistributionAccount]'s */
         let merkle_root_upload_authority = Pubkey::new_unique();
         let tip_distribution_program_id = Pubkey::new_unique();
+        let tip_payment_program_id = Pubkey::new_unique();
 
         let delegator_0 = Keypair::new();
         let delegator_1 = Keypair::new();
@@ -631,6 +637,11 @@ mod tests {
         let data_2 =
             tda_to_account_shared_data(&tip_distribution_program_id, tip_distro_2_tips, tda_2);
 
+        let accounts_data = create_config_account_data(&tip_payment_program_id, &bank);
+        for (pubkey, data) in accounts_data {
+            bank.store_account(&pubkey, &data);
+        }
+
         bank.store_account(&tip_distribution_account_0.0, &data_0);
         bank.store_account(&tip_distribution_account_1.0, &data_1);
         bank.store_account(&tip_distribution_account_2.0, &data_2);
@@ -639,7 +650,7 @@ mod tests {
         let stake_meta_collection = generate_stake_meta_collection(
             &bank,
             &tip_distribution_program_id,
-            &Pubkey::new_unique(),
+            &tip_payment_program_id,
         )
         .unwrap();
         assert_eq!(
@@ -850,5 +861,74 @@ mod tests {
 
         account_data.set_data(data.to_vec());
         account_data
+    }
+
+    fn create_config_account_data(
+        tip_payment_program_id: &Pubkey,
+        bank: &Bank,
+    ) -> Vec<(Pubkey, AccountSharedData)> {
+        let mut account_datas = vec![];
+
+        let config_pda =
+            Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], tip_payment_program_id);
+
+        let tip_accounts = [
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], tip_payment_program_id),
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], tip_payment_program_id),
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], tip_payment_program_id),
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_3], tip_payment_program_id),
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_4], tip_payment_program_id),
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_5], tip_payment_program_id),
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_6], tip_payment_program_id),
+            Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], tip_payment_program_id),
+        ];
+
+        let config = Config {
+            tip_receiver: Pubkey::new_unique(),
+            block_builder: Pubkey::new_unique(),
+            block_builder_commission_pct: 10,
+            bumps: InitBumps {
+                config: config_pda.1,
+                tip_payment_account_0: tip_accounts[0].1,
+                tip_payment_account_1: tip_accounts[1].1,
+                tip_payment_account_2: tip_accounts[2].1,
+                tip_payment_account_3: tip_accounts[3].1,
+                tip_payment_account_4: tip_accounts[4].1,
+                tip_payment_account_5: tip_accounts[5].1,
+                tip_payment_account_6: tip_accounts[6].1,
+                tip_payment_account_7: tip_accounts[7].1,
+            },
+        };
+
+        let mut config_account_data = AccountSharedData::new(
+            bank.get_minimum_balance_for_rent_exemption(Config::SIZE),
+            Config::SIZE,
+            tip_payment_program_id,
+        );
+
+        let mut config_data: [u8; Config::SIZE] = [0u8; Config::SIZE];
+        let mut config_cursor = std::io::Cursor::new(&mut config_data[..]);
+        config.try_serialize(&mut config_cursor).unwrap();
+        config_account_data.set_data(config_data.to_vec());
+        account_datas.push((config_pda.0, config_account_data));
+
+        account_datas.extend(tip_accounts.into_iter().map(|(pubkey, _)| {
+            let mut tip_account_data = AccountSharedData::new(
+                bank.get_minimum_balance_for_rent_exemption(TipPaymentAccount::SIZE),
+                TipPaymentAccount::SIZE,
+                tip_payment_program_id,
+            );
+
+            let mut data: [u8; TipPaymentAccount::SIZE] = [0u8; TipPaymentAccount::SIZE];
+            let mut cursor = std::io::Cursor::new(&mut data[..]);
+            TipPaymentAccount::default()
+                .try_serialize(&mut cursor)
+                .unwrap();
+            tip_account_data.set_data(data.to_vec());
+
+            (pubkey, tip_account_data)
+        }));
+
+        account_datas
     }
 }
