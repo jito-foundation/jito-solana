@@ -779,7 +779,7 @@ mod test {
         super::*,
         crate::tpu_info::NullTpuInfo,
         crossbeam_channel::unbounded,
-        solana_gossip::contact_info::ContactInfo,
+        solana_gossip::legacy_contact_info::LegacyContactInfo as ContactInfo,
         solana_sdk::{
             account::AccountSharedData,
             genesis_config::create_genesis_config,
