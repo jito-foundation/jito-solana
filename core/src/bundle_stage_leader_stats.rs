@@ -8,7 +8,7 @@ use {
 // Stats emitted only during leader slots
 #[derive(Default)]
 pub struct BundleStageLeaderSlotTrackingMetrics {
-    current_slot: Option<Slot>,
+    pub(crate) current_slot: Option<Slot>,
     bundle_stage_leader_stats: BundleStageLeaderStats,
 }
 
