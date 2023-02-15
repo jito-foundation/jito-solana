@@ -1315,57 +1315,49 @@ impl BundleStage {
         let last_slot = bundle_stage_leader_stats.current_slot;
         bundle_stage_leader_stats.maybe_report(id, &working_bank_start);
 
-        match (working_bank_start, would_be_leader_soon) {
-            // leader now, insert new read bundles + as many as can read then return bank
-            (Some(bank_start), _) => {
-                consensus_cache_updater.maybe_update(&bank_start.working_bank);
+        // leader now, insert new read bundles + as many as can read then return bank
+        if let Some(bank_start) = working_bank_start {
+            consensus_cache_updater.maybe_update(&bank_start.working_bank);
 
-                let is_new_slot = match (last_slot, bundle_stage_leader_stats.current_slot) {
-                    (Some(last_slot), Some(current_slot)) => last_slot != current_slot,
-                    (None, Some(_)) => true,
-                    (_, _) => false,
-                };
-                if is_new_slot && !cost_model_failed_bundles.is_empty() {
-                    debug!(
-                        "Slot {}: Re-buffering {} bundles that failed cost model!",
-                        &bank_start.working_bank.slot(),
-                        cost_model_failed_bundles.len()
-                    );
-                    unprocessed_bundles.extend(cost_model_failed_bundles.drain(..));
-                }
-
-                Self::execute_bundles_until_empty_or_end_of_slot(
-                    bundle_account_locker,
-                    unprocessed_bundles,
-                    cost_model_failed_bundles,
-                    blacklisted_accounts,
-                    bank_start,
-                    consensus_cache_updater.consensus_accounts_cache(),
-                    cluster_info,
-                    recorder,
-                    transaction_status_sender,
-                    gossip_vote_sender,
-                    qos_service,
-                    tip_manager,
-                    max_bundle_retry_duration,
-                    last_tip_update_slot,
-                    bundle_stage_leader_stats.bundle_stage_leader_stats(),
-                    block_builder_fee_info,
+            let is_new_slot = match (last_slot, bundle_stage_leader_stats.current_slot) {
+                (Some(last_slot), Some(current_slot)) => last_slot != current_slot,
+                (None, Some(_)) => true,
+                (_, _) => false,
+            };
+            if is_new_slot && !cost_model_failed_bundles.is_empty() {
+                debug!(
+                    "Slot {}: Re-buffering {} bundles that failed cost model!",
+                    &bank_start.working_bank.slot(),
+                    cost_model_failed_bundles.len()
                 );
+                unprocessed_bundles.extend(cost_model_failed_bundles.drain(..));
             }
-            // not leader now and not soon, clear bundles
-            (None, false) => {
-                saturating_add_assign!(
-                    bundle_stage_stats.num_bundles_dropped,
-                    unprocessed_bundles.len() as u64
-                );
 
-                unprocessed_bundles.clear();
-            }
-            _ => {}
-        }
+            Self::execute_bundles_until_empty_or_end_of_slot(
+                bundle_account_locker,
+                unprocessed_bundles,
+                cost_model_failed_bundles,
+                blacklisted_accounts,
+                bank_start,
+                consensus_cache_updater.consensus_accounts_cache(),
+                cluster_info,
+                recorder,
+                transaction_status_sender,
+                gossip_vote_sender,
+                qos_service,
+                tip_manager,
+                max_bundle_retry_duration,
+                last_tip_update_slot,
+                bundle_stage_leader_stats.bundle_stage_leader_stats(),
+                block_builder_fee_info,
+            );
+        } else if !would_be_leader_soon {
+            saturating_add_assign!(
+                bundle_stage_stats.num_bundles_dropped,
+                unprocessed_bundles.len() as u64
+            );
 
-        if !would_be_leader_soon {
+            unprocessed_bundles.clear();
             cost_model_failed_bundles.clear();
         }
     }
