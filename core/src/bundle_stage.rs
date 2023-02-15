@@ -1364,6 +1364,10 @@ impl BundleStage {
             }
             _ => {}
         }
+
+        if !would_be_leader_soon {
+            cost_model_failed_bundles.clear();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
