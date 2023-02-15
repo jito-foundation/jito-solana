@@ -1318,7 +1318,7 @@ impl BundleStage {
         if !would_be_leader_soon {
             saturating_add_assign!(
                 bundle_stage_stats.num_bundles_dropped,
-                unprocessed_bundles.len() as u64
+                unprocessed_bundles.len() as u64 + cost_model_failed_bundles.len() as u64
             );
 
             unprocessed_bundles.clear();
