@@ -1315,6 +1315,17 @@ impl BundleStage {
         let last_slot = bundle_stage_leader_stats.current_slot;
         bundle_stage_leader_stats.maybe_report(id, &working_bank_start);
 
+        if !would_be_leader_soon {
+            saturating_add_assign!(
+                bundle_stage_stats.num_bundles_dropped,
+                unprocessed_bundles.len() as u64
+            );
+
+            unprocessed_bundles.clear();
+            cost_model_failed_bundles.clear();
+            return;
+        }
+
         // leader now, insert new read bundles + as many as can read then return bank
         if let Some(bank_start) = working_bank_start {
             consensus_cache_updater.maybe_update(&bank_start.working_bank);
@@ -1351,14 +1362,6 @@ impl BundleStage {
                 bundle_stage_leader_stats.bundle_stage_leader_stats(),
                 block_builder_fee_info,
             );
-        } else if !would_be_leader_soon {
-            saturating_add_assign!(
-                bundle_stage_stats.num_bundles_dropped,
-                unprocessed_bundles.len() as u64
-            );
-
-            unprocessed_bundles.clear();
-            cost_model_failed_bundles.clear();
         }
     }
 
