@@ -33,9 +33,15 @@ RUN mkdir -p docker-output
 ARG ci_commit
 ENV CI_COMMIT=$ci_commit
 
+ARG debug
+
 # Uses docker buildkit to cache the image.
 # /usr/local/cargo/git needed for crossbeam patch
 RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
-    cargo build --release && cp target/release/solana* ./docker-output
+    if [ "$debug" = "false" ] ; then \
+      ./cargo stable build --release && cp target/release/solana* ./docker-output; \
+    else \
+      RUSTFLAGS='-g -C force-frame-pointers=yes' ./cargo stable build --release && cp target/release/solana* ./docker-output; \
+    fi
