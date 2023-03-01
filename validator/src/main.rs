@@ -111,6 +111,7 @@ const DEFAULT_MIN_SNAPSHOT_DOWNLOAD_SPEED: u64 = 10485760;
 // The maximum times of snapshot download abort and retry
 const MAX_SNAPSHOT_DOWNLOAD_ABORT: u32 = 5;
 const MILLIS_PER_SECOND: u64 = 1000;
+const DEFAULT_PREALLOCATED_BUNDLE_COST: u64 = 3000000;
 
 fn monitor_validator(ledger_path: &Path) {
     let dashboard = Dashboard::new(ledger_path, None, None).unwrap_or_else(|err| {
@@ -475,6 +476,7 @@ pub fn main() {
         &DEFAULT_ROCKS_FIFO_SHRED_STORAGE_SIZE_BYTES.to_string();
     let default_tpu_connection_pool_size = &DEFAULT_TPU_CONNECTION_POOL_SIZE.to_string();
     let default_rpc_max_request_body_size = &MAX_REQUEST_BODY_SIZE.to_string();
+    let default_preallocated_bundle_cost = &DEFAULT_PREALLOCATED_BUNDLE_COST.to_string();
 
     let matches = App::new(crate_name!()).about(crate_description!())
         .version(solana_version::version!())
@@ -1835,6 +1837,14 @@ pub fn main() {
                 .help("The commission validator takes from tips expressed in basis points.")
         )
         .arg(
+            Arg::with_name("preallocated_bundle_cost")
+                .long("preallocated-bundle-cost")
+                .value_name("PREALLOCATED_BUNDLE_COST")
+                .takes_value(true)
+                .default_value(default_preallocated_bundle_cost)
+                .help("Number of CUs to allocate for bundles at beginning of slot.")
+        )
+        .arg(
             Arg::with_name("shred_receiver_address")
                 .long("shred-receiver-address")
                 .value_name("SHRED_RECEIVER_ADDRESS")
@@ -2839,6 +2849,8 @@ pub fn main() {
         shred_receiver_address: matches
             .value_of("shred_receiver_address")
             .map(|address| SocketAddr::from_str(address).expect("shred_receiver_address invalid")),
+        preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
+            .unwrap_or(DEFAULT_PREALLOCATED_BUNDLE_COST),
         ..ValidatorConfig::default()
     };
 
