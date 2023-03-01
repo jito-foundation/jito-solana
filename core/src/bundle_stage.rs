@@ -133,8 +133,9 @@ struct BundleReservedSpace {
 
 impl BundleReservedSpace {
     fn reset_reserved_cost(&mut self, working_bank: &Arc<Bank>) {
-        self.current_bundle_block_limit = MAX_BLOCK_UNITS;
-        self.current_tx_block_limit = MAX_BLOCK_UNITS.saturating_sub(self.initial_allocated_cost);
+        self.current_tx_block_limit = self
+            .current_bundle_block_limit
+            .saturating_sub(self.initial_allocated_cost);
 
         working_bank
             .write_cost_tracker()
@@ -1731,9 +1732,10 @@ mod tests {
             &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
             &mut BundleReservedSpace {
-                current_tx_block_limit: MAX_BLOCK_UNITS,
-                current_bundle_block_limit: MAX_BLOCK_UNITS,
+                current_tx_block_limit: 1,
+                current_bundle_block_limit: 1,
                 initial_allocated_cost: 0,
+                reservation_cutoff_tick: 1,
             },
         );
 
@@ -2067,9 +2069,10 @@ mod tests {
             &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
             &mut BundleReservedSpace {
-                current_tx_block_limit: MAX_BLOCK_UNITS,
-                current_bundle_block_limit: MAX_BLOCK_UNITS,
+                current_tx_block_limit: u64::MAX,
+                current_bundle_block_limit: u64::MAX,
                 initial_allocated_cost: 0,
+                reservation_cutoff_tick: 1,
             },
         );
         info!("test_bundle_max_retries result: {:?}", result);
