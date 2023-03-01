@@ -1480,7 +1480,7 @@ impl BundleStage {
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
             reservation_cutoff_tick: poh_recorder
-                .read()
+                .lock()
                 .unwrap()
                 .ticks_per_slot()
                 .saturating_mul(4)
