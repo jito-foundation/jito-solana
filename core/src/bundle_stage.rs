@@ -162,12 +162,12 @@ impl BundleReservedSpace {
         if self.current_tx_block_limit != self.current_bundle_block_limit
             && working_bank.tick_height() > self.reservation_cutoff_tick
         {
+            self.current_tx_block_limit = self.current_bundle_block_limit;
             info!(
                 "Slot: {}. Increased Tx Cost Limit to {}",
                 working_bank.slot(),
                 self.current_tx_block_limit
             );
-            self.current_tx_block_limit = self.current_bundle_block_limit;
             working_bank
                 .write_cost_tracker()
                 .unwrap()
