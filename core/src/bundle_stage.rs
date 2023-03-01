@@ -135,10 +135,6 @@ impl BundleReservedSpace {
     fn reset_reserved_cost(&mut self, working_bank: &Arc<Bank>) {
         self.current_bundle_block_limit = MAX_BLOCK_UNITS;
         self.current_tx_block_limit = MAX_BLOCK_UNITS.saturating_sub(self.initial_allocated_cost);
-        self.reservation_cutoff_tick = working_bank
-            .ticks_per_slot()
-            .saturating_mul(4)
-            .saturating_div(5);
 
         working_bank
             .write_cost_tracker()
@@ -390,7 +386,7 @@ impl BundleStage {
             warn!(
                 "bundle dropped, qos rate limit. uuid: {} bundle_cost: {},  block_cost: {}",
                 sanitized_bundle.uuid,
-                tx_costs.iter().map(|c| c.sum()).sum(),
+                tx_costs.iter().map(|c| c.sum()).sum::<u64>(),
                 &bank_start
                     .working_bank
                     .read_cost_tracker()
@@ -1482,6 +1478,12 @@ impl BundleStage {
             current_bundle_block_limit: MAX_BLOCK_UNITS,
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
+            reservation_cutoff_tick: poh_recorder
+                .read()
+                .unwrap()
+                .ticks_per_slot()
+                .saturating_mul(4)
+                .saturating_div(5),
         };
 
         while !exit.load(Ordering::Relaxed) {
