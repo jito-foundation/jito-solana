@@ -35,7 +35,7 @@ use {
             TransactionBalancesSet, TransactionExecutionResult,
         },
         bank_utils,
-        block_cost_limits::{MAX_BLOCK_UNITS, MAX_VOTE_UNITS, MAX_WRITABLE_ACCOUNT_UNITS},
+        block_cost_limits::MAX_BLOCK_UNITS,
         cost_model::{CostModel, TransactionCost},
         transaction_batch::TransactionBatch,
         vote_sender_types::ReplayVoteSender,
@@ -63,6 +63,7 @@ use {
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
+    uuid::Uuid,
 };
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
@@ -127,18 +128,22 @@ struct BundleReservedSpace {
     current_tx_block_limit: u64,
     current_bundle_block_limit: u64,
     initial_allocated_cost: u64,
+    reservation_cutoff_tick: u64,
 }
 
 impl BundleReservedSpace {
     fn reset_reserved_cost(&mut self, working_bank: &Arc<Bank>) {
         self.current_bundle_block_limit = MAX_BLOCK_UNITS;
-        self.current_tx_block_limit = MAX_BLOCK_UNITS - self.initial_allocated_cost;
+        self.current_tx_block_limit = MAX_BLOCK_UNITS.saturating_sub(self.initial_allocated_cost);
+        self.reservation_cutoff_tick = working_bank
+            .ticks_per_slot()
+            .saturating_mul(4)
+            .saturating_div(5);
 
-        working_bank.write_cost_tracker().unwrap().set_limits(
-            MAX_WRITABLE_ACCOUNT_UNITS,
-            self.current_tx_block_limit,
-            MAX_VOTE_UNITS,
-        );
+        working_bank
+            .write_cost_tracker()
+            .unwrap()
+            .set_block_cost_limit(self.current_tx_block_limit);
 
         info!(
             "Slot: {}. Cost Limits Reset. Bundle: {}, TX: {}",
@@ -158,7 +163,7 @@ impl BundleReservedSpace {
 
     fn update_reserved_cost(&mut self, working_bank: &Arc<Bank>) {
         if self.current_tx_block_limit != self.current_bundle_block_limit
-            && working_bank.tick_height() > working_bank.ticks_per_slot() * 4 / 5
+            && working_bank.tick_height() > self.reservation_cutoff_tick
         {
             info!(
                 "Slot: {}. Increased Tx Cost Limit to {}",
@@ -166,6 +171,10 @@ impl BundleReservedSpace {
                 self.current_tx_block_limit
             );
             self.current_tx_block_limit = self.current_bundle_block_limit;
+            working_bank
+                .write_cost_tracker()
+                .unwrap()
+                .set_block_cost_limit(self.current_tx_block_limit);
         }
     }
 }
@@ -351,14 +360,9 @@ impl BundleStage {
         }
 
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
-        let bundle_cost: u64 = tx_costs.iter().map(|c| c.sum()).sum();
         let cost_tracker = &mut bank_start.working_bank.write_cost_tracker().unwrap();
-        // Increase blcok cost limit for bundles
-        cost_tracker.set_limits(
-            MAX_WRITABLE_ACCOUNT_UNITS,
-            reserved_space.bundle_block_limit(),
-            MAX_VOTE_UNITS,
-        );
+        // Increase block cost limit for bundles
+        cost_tracker.set_block_cost_limit(reserved_space.bundle_block_limit());
         let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
             sanitized_bundle.transactions.iter(),
             tx_costs.iter(),
@@ -366,11 +370,7 @@ impl BundleStage {
             cost_tracker,
         );
         // Reset block cost limit for normal txs
-        cost_tracker.set_limits(
-            MAX_WRITABLE_ACCOUNT_UNITS,
-            reserved_space.tx_block_limit(),
-            MAX_VOTE_UNITS,
-        );
+        cost_tracker.set_block_cost_limit(reserved_space.tx_block_limit());
 
         // accumulates QoS to metrics
         qos_service.accumulate_estimated_transaction_costs(
@@ -388,7 +388,9 @@ impl BundleStage {
                 &bank_start.working_bank,
             );
             warn!(
-                "Bundle dropped, QoS rate limit!!  Bundle Cost {bundle_cost},  Block Cost {}",
+                "bundle dropped, qos rate limit. uuid: {} bundle_cost: {},  block_cost: {}",
+                sanitized_bundle.uuid,
+                tx_costs.iter().map(|c| c.sum()).sum(),
                 &bank_start
                     .working_bank
                     .read_cost_tracker()
@@ -1123,6 +1125,7 @@ impl BundleStage {
                 tip_manager,
                 cluster_info,
             )?,
+            uuid: Uuid::default(),
         };
         if !initialize_tip_accounts_bundle.transactions.is_empty() {
             debug!("initialize tip account");
@@ -1204,6 +1207,7 @@ impl BundleStage {
 
             let change_tip_receiver_bundle = SanitizedBundle {
                 transactions: vec![change_tip_receiver_tx],
+                uuid: Uuid::default(),
             };
             let locked_change_tip_receiver_bundle = bundle_account_locker
                 .prepare_locked_bundle(&change_tip_receiver_bundle, &bank_start.working_bank)
@@ -1476,7 +1480,7 @@ impl BundleStage {
         let mut cost_model_failed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
         let mut reserved_space = BundleReservedSpace {
             current_bundle_block_limit: MAX_BLOCK_UNITS,
-            current_tx_block_limit: MAX_BLOCK_UNITS - preallocated_bundle_cost,
+            current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
         };
 
