@@ -137,6 +137,7 @@ impl BundleReservedSpace {
             .current_bundle_block_limit
             .saturating_sub(self.initial_allocated_cost);
 
+        debug!("Jed - Grabbing cost_tracker lock. reset_reserved_cost");
         working_bank
             .write_cost_tracker()
             .unwrap()
@@ -163,15 +164,16 @@ impl BundleReservedSpace {
             && working_bank.tick_height() > self.reservation_cutoff_tick
         {
             self.current_tx_block_limit = self.current_bundle_block_limit;
+            debug!("Jed - Update Reserved Cost");
+            working_bank
+                .write_cost_tracker()
+                .unwrap()
+                .set_block_cost_limit(self.current_tx_block_limit);
             info!(
                 "Slot: {}. Increased Tx Cost Limit to {}",
                 working_bank.slot(),
                 self.current_tx_block_limit
             );
-            working_bank
-                .write_cost_tracker()
-                .unwrap()
-                .set_block_cost_limit(self.current_tx_block_limit);
         }
     }
 }
@@ -357,6 +359,10 @@ impl BundleStage {
         }
 
         let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
+        debug!(
+            "Jed - Extending Cost Limit for Bundles {}",
+            reserved_space.bundle_block_limit()
+        );
         let cost_tracker = &mut bank_start.working_bank.write_cost_tracker().unwrap();
         // Increase block cost limit for bundles
         cost_tracker.set_block_cost_limit(reserved_space.bundle_block_limit());
@@ -366,8 +372,14 @@ impl BundleStage {
             bank_start.working_bank.slot(),
             cost_tracker,
         );
+        debug!(
+            "Jed - Resetting Cost Limit for Normal Transactions {}",
+            reserved_space.bundle_block_limit()
+        );
         // Reset block cost limit for normal txs
         cost_tracker.set_block_cost_limit(reserved_space.tx_block_limit());
+        drop(cost_tracker);
+        debug!("Dropped Cost Tracker");
 
         // accumulates QoS to metrics
         qos_service.accumulate_estimated_transaction_costs(
@@ -1374,12 +1386,14 @@ impl BundleStage {
     ) {
         const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
 
+        debug!("Jed - r_poh_recorder get working bank start");
         let r_poh_recorder = poh_recorder.lock().unwrap();
         let poh_recorder_bank = r_poh_recorder.get_poh_recorder_bank();
         let working_bank_start = poh_recorder_bank.working_bank_start();
         let would_be_leader_soon =
             r_poh_recorder.would_be_leader(DROP_BUNDLE_SLOT_OFFSET * DEFAULT_TICKS_PER_SLOT);
         drop(r_poh_recorder);
+        debug!("Jed - (dropped) r_poh_recorder get working bank start");
 
         let last_slot = bundle_stage_leader_stats.current_slot;
         bundle_stage_leader_stats.maybe_report(id, &working_bank_start);
@@ -1414,8 +1428,9 @@ impl BundleStage {
                     );
                     unprocessed_bundles.extend(cost_model_failed_bundles.drain(..));
                 }
-            } else {
-                reserved_space.update_reserved_cost(&bank_start.working_bank);
+                // ToDo (JL): turn this back on
+                // } else {
+                //     reserved_space.update_reserved_cost(&bank_start.working_bank);
             }
 
             Self::execute_bundles_until_empty_or_end_of_slot(
@@ -1475,6 +1490,7 @@ impl BundleStage {
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
         let mut cost_model_failed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
+        debug!("Jed - Init Reserved Space start");
         let mut reserved_space = BundleReservedSpace {
             current_bundle_block_limit: MAX_BLOCK_UNITS,
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
@@ -1486,6 +1502,7 @@ impl BundleStage {
                 .saturating_mul(4)
                 .saturating_div(5),
         };
+        debug!("Jed - Init Reserved Space end");
 
         while !exit.load(Ordering::Relaxed) {
             if !unprocessed_bundles.is_empty()
