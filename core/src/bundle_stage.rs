@@ -358,13 +358,12 @@ impl BundleStage {
             return Ok(());
         }
 
+        let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
+        debug!(
+            "Jed - Extending Cost Limit for Bundles {}",
+            reserved_space.bundle_block_limit()
+        );
         {
-            let tx_costs =
-                qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
-            debug!(
-                "Jed - Extending Cost Limit for Bundles {}",
-                reserved_space.bundle_block_limit()
-            );
             let cost_tracker = &mut bank_start.working_bank.write_cost_tracker().unwrap();
             // Increase block cost limit for bundles
             cost_tracker.set_block_cost_limit(reserved_space.bundle_block_limit());
