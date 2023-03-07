@@ -409,6 +409,8 @@ impl BundleStage {
             return Err(BundleExecutionError::ExceedsCostModel);
         }
 
+        debug!("Jed - here0");
+
         match Self::execute_record_commit_bundle(
             sanitized_bundle,
             recorder,
@@ -419,6 +421,8 @@ impl BundleStage {
             max_bundle_retry_duration,
         ) {
             Ok(commit_transaction_details) => {
+                debug!("Jed - here3");
+
                 // NOTE: Assumptions made on the QoS transaction costs:
                 // - commit_transaction_details are returned in the same ordering as the transactions
                 //   in the sanitized_bundle, which is the same ordering as tx_costs.
@@ -444,6 +448,8 @@ impl BundleStage {
                 Ok(())
             }
             Err(e) => {
+                debug!("Jed - here3.1");
+
                 QosService::remove_transaction_costs(
                     tx_costs.iter(),
                     transactions_qos_results.iter(),
@@ -738,6 +744,8 @@ impl BundleStage {
                 poh_record_us: record_elapsed.as_us(),
             });
 
+        debug!("Jed - here1");
+
         let mut commit_transaction_details = Vec::new();
         for r in execution_results {
             let mut output = r.load_and_execute_tx_output;
@@ -810,6 +818,9 @@ impl BundleStage {
                 }
             }
         }
+
+        debug!("Jed - here2");
+
         Ok(commit_transaction_details)
     }
 
@@ -1057,6 +1068,7 @@ impl BundleStage {
             ),
             "execute_locked_bundles_elapsed"
         );
+        debug!("Jed - somewhere");
 
         bundle_stage_leader_stats
             .bundle_stage_stats()
@@ -1153,6 +1165,7 @@ impl BundleStage {
                 max_bundle_retry_duration,
                 reserved_space,
             );
+            debug!("Jed - here5.1");
 
             match &result {
                 Ok(_) => {
@@ -1232,6 +1245,7 @@ impl BundleStage {
                 max_bundle_retry_duration,
                 reserved_space,
             );
+            debug!("Jed - here5.2");
 
             bundle_stage_leader_stats
                 .bundle_stage_stats()
