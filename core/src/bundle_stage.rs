@@ -374,7 +374,7 @@ impl BundleStage {
         );
         debug!(
             "Jed - Resetting Cost Limit for Normal Transactions {}",
-            reserved_space.bundle_block_limit()
+            reserved_space.tx_block_limit()
         );
         // Reset block cost limit for normal txs
         cost_tracker.set_block_cost_limit(reserved_space.tx_block_limit());
