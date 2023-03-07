@@ -358,28 +358,31 @@ impl BundleStage {
             return Ok(());
         }
 
-        let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
-        debug!(
-            "Jed - Extending Cost Limit for Bundles {}",
-            reserved_space.bundle_block_limit()
-        );
-        let cost_tracker = &mut bank_start.working_bank.write_cost_tracker().unwrap();
-        // Increase block cost limit for bundles
-        cost_tracker.set_block_cost_limit(reserved_space.bundle_block_limit());
-        let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
-            sanitized_bundle.transactions.iter(),
-            tx_costs.iter(),
-            bank_start.working_bank.slot(),
-            cost_tracker,
-        );
-        debug!(
-            "Jed - Resetting Cost Limit for Normal Transactions {}",
-            reserved_space.tx_block_limit()
-        );
-        // Reset block cost limit for normal txs
-        cost_tracker.set_block_cost_limit(reserved_space.tx_block_limit());
-        drop(cost_tracker);
-        debug!("Dropped Cost Tracker");
+        {
+            let tx_costs =
+                qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
+            debug!(
+                "Jed - Extending Cost Limit for Bundles {}",
+                reserved_space.bundle_block_limit()
+            );
+            let cost_tracker = &mut bank_start.working_bank.write_cost_tracker().unwrap();
+            // Increase block cost limit for bundles
+            cost_tracker.set_block_cost_limit(reserved_space.bundle_block_limit());
+            let (transactions_qos_results, num_included) = qos_service
+                .select_transactions_per_cost(
+                    sanitized_bundle.transactions.iter(),
+                    tx_costs.iter(),
+                    bank_start.working_bank.slot(),
+                    cost_tracker,
+                );
+            debug!(
+                "Jed - Resetting Cost Limit for Normal Transactions {}",
+                reserved_space.tx_block_limit()
+            );
+            // Reset block cost limit for normal txs
+            cost_tracker.set_block_cost_limit(reserved_space.tx_block_limit());
+            debug!("Dropped Cost Tracker");
+        }
 
         // accumulates QoS to metrics
         qos_service.accumulate_estimated_transaction_costs(
