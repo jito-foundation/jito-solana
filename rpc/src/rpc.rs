@@ -3443,6 +3443,7 @@ pub mod rpc_full {
         super::*,
         crate::rpc::utils::{build_simulate_bundle_params, rpc_bundle_result_from_bank_result},
         itertools::izip,
+        solana_runtime::bank::SimulateBundleError,
         solana_sdk::message::{SanitizedVersionedMessage, VersionedMessage},
     };
 
@@ -3606,6 +3607,14 @@ pub mod rpc_full {
             meta: Self::Metadata,
             pubkey_strs: Option<Vec<String>>,
         ) -> Result<Vec<RpcPrioritizationFee>>;
+    }
+
+    fn jsonrpc_error_from_simulate_bundle_error(e: SimulateBundleError) -> Error {
+        match e {
+            SimulateBundleError::AccountNotFoundInBank(pubkey) => {
+                Error::invalid_params(format!("account {:?} not found in bank", pubkey))
+            }
+        }
     }
 
     pub struct FullImpl;
@@ -4088,10 +4097,7 @@ pub mod rpc_full {
 
             let bank_result = bank
                 .simulate_bundle(sanitized_txs, pre_execution_pks, post_execution_pks)
-                .map_err(|e| {
-                    error!("bank error {}", e);
-                    Error::internal_error()
-                })?;
+                .map_err(jsonrpc_error_from_simulate_bundle_error)?;
 
             let rpc_bundle_result = rpc_bundle_result_from_bank_result(bank_result, config)?;
 
