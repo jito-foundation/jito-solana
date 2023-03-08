@@ -1473,6 +1473,8 @@ impl RpcClient {
             bundle,
             RpcSimulateBundleConfig {
                 simulation_bank: Some(SimulationSlotConfig::Commitment(self.commitment())),
+                pre_execution_accounts_configs: vec![None; bundle.transactions.len()],
+                post_execution_accounts_configs: vec![None; bundle.transactions.len()],
                 ..RpcSimulateBundleConfig::default()
             },
         )

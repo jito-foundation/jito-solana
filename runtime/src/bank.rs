@@ -155,7 +155,6 @@ use {
         cmp::min,
         collections::{HashMap, HashSet},
         convert::{TryFrom, TryInto},
-        error::Error,
         fmt, mem,
         ops::{Deref, RangeInclusive},
         path::PathBuf,
@@ -171,6 +170,7 @@ use {
         thread::Builder,
         time::{Duration, Instant},
     },
+    thiserror::Error,
 };
 
 /// params to `verify_bank_hash`
@@ -519,6 +519,12 @@ pub struct BundleSimulationResult {
     /// Gives high level summary of bundle.
     pub summary: BundleSimulationSummary,
     pub transaction_results: Vec<BundleTransactionSimulationResult>,
+}
+
+#[derive(Error, Debug)]
+pub enum SimulateBundleError {
+    #[error("account missing from bank: {0}")]
+    AccountNotFoundInBank(Pubkey),
 }
 
 #[derive(Clone)]
@@ -3848,7 +3854,7 @@ impl Bank {
         bundle: Vec<SanitizedTransaction>,
         pre_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
         post_execution_accounts_requested: Vec<Option<Vec<Pubkey>>>,
-    ) -> result::Result<BundleSimulationResult, Box<dyn Error>> {
+    ) -> result::Result<BundleSimulationResult, SimulateBundleError> {
         assert_eq!(pre_execution_accounts_requested.len(), bundle.len());
         assert_eq!(post_execution_accounts_requested.len(), bundle.len());
 
@@ -3918,8 +3924,7 @@ impl Bank {
                             Ok(data)
                         } else {
                             self.get_account(pubkey)
-                                // TODO(seg): let's use a concrete error type
-                                .ok_or(format!("pubkey {} does not exist", pubkey))
+                                .ok_or(SimulateBundleError::AccountNotFoundInBank(*pubkey))
                         }?;
                         pre_accounts.push(AccountData {
                             pubkey: *pubkey,
