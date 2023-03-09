@@ -32,8 +32,6 @@ RUN mkdir -p docker-output
 
 ARG debug
 
-ARG debug
-
 # Uses docker buildkit to cache the image.
 # /usr/local/cargo/git needed for crossbeam patch
 RUN --mount=type=cache,mode=0777,target=/solana/target \
