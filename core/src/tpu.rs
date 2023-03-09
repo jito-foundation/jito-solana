@@ -119,6 +119,7 @@ impl Tpu {
         shred_receiver_address: Option<SocketAddr>,
         shared_staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
         tpu_enable_udp: bool,
+        preallocated_bundle_cost: u64,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -325,6 +326,7 @@ impl Tpu {
             tip_manager,
             bundle_account_locker,
             &block_builder_fee_info,
+            preallocated_bundle_cost,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
