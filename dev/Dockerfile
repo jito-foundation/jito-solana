@@ -47,4 +47,3 @@ RUN --mount=type=cache,mode=0777,target=/solana/target \
 # keep CI_COMMIT at bottom since it breaks caching: https://stackoverflow.com/a/57017745/3408577
 ARG ci_commit
 ENV CI_COMMIT=$ci_commit
-
