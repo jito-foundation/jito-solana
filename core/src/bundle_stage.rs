@@ -143,7 +143,7 @@ impl BundleReservedSpace {
             .set_block_cost_limit(self.current_tx_block_limit);
 
         debug!(
-            "Slot: {}. Cost Limits Reset. Bundle: {}, TX: {}",
+            "slot: {}. cost limits reset. bundle: {}, txn: {}",
             working_bank.slot(),
             self.current_bundle_block_limit,
             self.current_tx_block_limit,
@@ -171,7 +171,7 @@ impl BundleReservedSpace {
                 .unwrap()
                 .set_block_cost_limit(self.current_tx_block_limit);
             debug!(
-                "Slot: {}. Increased Tx Cost Limit to {}",
+                "slot: {}. increased tx cost limit to {}",
                 working_bank.slot(),
                 self.current_tx_block_limit
             );
@@ -1447,7 +1447,7 @@ impl BundleStage {
                 // Re-Buffer any bundles that didn't fit into last block
                 if !cost_model_failed_bundles.is_empty() {
                     info!(
-                        "Slot {}: Re-buffering {} bundles that failed cost model!",
+                        "slot {}: re-buffering {} bundles that failed cost model.",
                         &bank_start.working_bank.slot(),
                         cost_model_failed_bundles.len()
                     );
