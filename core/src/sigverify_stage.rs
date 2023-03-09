@@ -410,7 +410,7 @@ impl SigVerifyStage {
         let mut stats = SigVerifierStats::default();
         let mut last_print = Instant::now();
         const MAX_DEDUPER_AGE: Duration = Duration::from_secs(2);
-        const MAX_DEDUPER_ITEMS: u32 = 1_000_000;
+        const MAX_DEDUPER_ITEMS: u32 = 10_000_000;
         Builder::new()
             .name("solSigVerifier".to_string())
             .spawn(move || {
