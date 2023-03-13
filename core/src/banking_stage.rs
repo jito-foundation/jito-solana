@@ -1656,8 +1656,12 @@ impl BankingStage {
 
         let transaction_costs = qos_service.compute_transaction_costs(txs.iter());
 
-        let (transactions_qos_results, num_included) =
-            qos_service.select_transactions_per_cost(txs.iter(), transaction_costs.iter(), bank);
+        let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
+            txs.iter(),
+            transaction_costs.iter(),
+            bank.slot(),
+            &mut bank.write_cost_tracker().unwrap(),
+        );
 
         let cost_model_throttled_transactions_count = txs.len().saturating_sub(num_included);
 

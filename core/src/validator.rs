@@ -182,6 +182,7 @@ pub struct ValidatorConfig {
     pub maybe_block_engine_config: Option<BlockEngineConfig>,
     pub shred_receiver_address: Option<SocketAddr>,
     pub tip_manager_config: TipManagerConfig,
+    pub preallocated_bundle_cost: u64,
 }
 
 impl Default for ValidatorConfig {
@@ -249,6 +250,7 @@ impl Default for ValidatorConfig {
             maybe_block_engine_config: None,
             shred_receiver_address: None,
             tip_manager_config: TipManagerConfig::default(),
+            preallocated_bundle_cost: u64::default(),
         }
     }
 }
@@ -1073,6 +1075,7 @@ impl Validator {
             config.tip_manager_config.clone(),
             config.shred_receiver_address,
             tpu_enable_udp,
+            config.preallocated_bundle_cost,
         );
 
         datapoint_info!(
