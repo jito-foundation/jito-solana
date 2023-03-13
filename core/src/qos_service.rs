@@ -18,7 +18,7 @@ use {
     std::{
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc, RwLock, RwLockWriteGuard,
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,
@@ -127,7 +127,7 @@ impl QosService {
         transactions: impl Iterator<Item = &'a SanitizedTransaction>,
         transactions_costs: impl Iterator<Item = &'a TransactionCost>,
         slot: Slot,
-        cost_tracker: &mut RwLockWriteGuard<CostTracker>,
+        cost_tracker: &mut CostTracker,
     ) -> (Vec<transaction::Result<()>>, usize) {
         let mut cost_tracking_time = Measure::start("cost_tracking_time");
         let mut num_included = 0;

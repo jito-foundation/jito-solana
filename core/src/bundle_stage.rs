@@ -365,6 +365,7 @@ impl BundleStage {
                 qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
 
             let mut cost_tracker = bank_start.working_bank.write_cost_tracker().unwrap();
+
             // Increase block cost limit for bundles
             debug!(
                 "increasing cost limit for bundles: {}",
@@ -1520,7 +1521,7 @@ impl BundleStage {
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
             unreserved_ticks: poh_recorder
-                .lock()
+                .write()
                 .unwrap()
                 .ticks_per_slot()
                 .saturating_div(5),
@@ -1528,7 +1529,7 @@ impl BundleStage {
         debug!(
             "initialize bundled reserved space: {preallocated_bundle_cost} cu for {} ticks",
             poh_recorder
-                .lock()
+                .write()
                 .unwrap()
                 .ticks_per_slot()
                 .saturating_sub(reserved_space.unreserved_ticks)

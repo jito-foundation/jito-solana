@@ -13,8 +13,6 @@ echo "Git hash: $GIT_SHA"
 
 DEBUG_FLAGS=${1-false}
 
-DEBUG_FLAGS=${1-false}
-
 DOCKER_BUILDKIT=1 docker build \
   --build-arg debug=$DEBUG_FLAGS \
   --build-arg ci_commit=$GIT_SHA \
