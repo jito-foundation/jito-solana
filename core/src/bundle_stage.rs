@@ -35,6 +35,7 @@ use {
             TransactionBalancesSet, TransactionExecutionResult,
         },
         bank_utils,
+        block_cost_limits::MAX_BLOCK_UNITS,
         cost_model::{CostModel, TransactionCost},
         transaction_batch::TransactionBatch,
         vote_sender_types::ReplayVoteSender,
@@ -62,6 +63,7 @@ use {
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
+    uuid::Uuid,
 };
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
@@ -122,6 +124,61 @@ struct AllExecutionResults {
     pub post_balances: (TransactionBalances, TransactionTokenBalances),
 }
 
+struct BundleReservedSpace {
+    current_tx_block_limit: u64,
+    current_bundle_block_limit: u64,
+    initial_allocated_cost: u64,
+    unreserved_ticks: u64,
+}
+
+impl BundleReservedSpace {
+    fn reset_reserved_cost(&mut self, working_bank: &Arc<Bank>) {
+        self.current_tx_block_limit = self
+            .current_bundle_block_limit
+            .saturating_sub(self.initial_allocated_cost);
+
+        working_bank
+            .write_cost_tracker()
+            .unwrap()
+            .set_block_cost_limit(self.current_tx_block_limit);
+
+        debug!(
+            "slot: {}. cost limits reset. bundle: {}, txn: {}",
+            working_bank.slot(),
+            self.current_bundle_block_limit,
+            self.current_tx_block_limit,
+        );
+    }
+
+    fn bundle_block_limit(&self) -> u64 {
+        self.current_bundle_block_limit
+    }
+
+    fn tx_block_limit(&self) -> u64 {
+        self.current_tx_block_limit
+    }
+
+    fn update_reserved_cost(&mut self, working_bank: &Arc<Bank>) {
+        if self.current_tx_block_limit != self.current_bundle_block_limit
+            && working_bank
+                .max_tick_height()
+                .saturating_sub(working_bank.tick_height())
+                < self.unreserved_ticks
+        {
+            self.current_tx_block_limit = self.current_bundle_block_limit;
+            working_bank
+                .write_cost_tracker()
+                .unwrap()
+                .set_block_cost_limit(self.current_tx_block_limit);
+            debug!(
+                "slot: {}. increased tx cost limit to {}",
+                working_bank.slot(),
+                self.current_tx_block_limit
+            );
+        }
+    }
+}
+
 pub struct BundleStage {
     bundle_thread: JoinHandle<()>,
 }
@@ -140,6 +197,7 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        preallocated_bundle_cost: u64,
     ) -> Self {
         Self::start_bundle_thread(
             cluster_info,
@@ -153,6 +211,7 @@ impl BundleStage {
             bundle_account_locker,
             MAX_BUNDLE_RETRY_DURATION,
             block_builder_fee_info,
+            preallocated_bundle_cost,
         )
     }
 
@@ -169,6 +228,7 @@ impl BundleStage {
         bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        preallocated_bundle_cost: u64,
     ) -> Self {
         const BUNDLE_STAGE_ID: u32 = 10_000;
         let poh_recorder = poh_recorder.clone();
@@ -191,6 +251,7 @@ impl BundleStage {
                     bundle_account_locker,
                     max_bundle_retry_duration,
                     block_builder_fee_info,
+                    preallocated_bundle_cost,
                 );
             })
             .unwrap();
@@ -292,17 +353,42 @@ impl BundleStage {
         bank_start: &BankStart,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
         max_bundle_retry_duration: &Duration,
+        reserved_space: &mut BundleReservedSpace,
     ) -> BundleStageResult<()> {
         if sanitized_bundle.transactions.is_empty() {
             return Ok(());
         }
 
-        let tx_costs = qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
-        let (transactions_qos_results, num_included) = qos_service.select_transactions_per_cost(
-            sanitized_bundle.transactions.iter(),
-            tx_costs.iter(),
-            &bank_start.working_bank,
-        );
+        // Try to fit bundle into block using modified limits (scoped to guarantee cost_tracker is dropped)
+        let (tx_costs, transactions_qos_results, num_included) = {
+            let tx_costs =
+                qos_service.compute_transaction_costs(sanitized_bundle.transactions.iter());
+
+            let mut cost_tracker = bank_start.working_bank.write_cost_tracker().unwrap();
+
+            // Increase block cost limit for bundles
+            debug!(
+                "increasing cost limit for bundles: {}",
+                reserved_space.bundle_block_limit()
+            );
+            cost_tracker.set_block_cost_limit(reserved_space.bundle_block_limit());
+            let (transactions_qos_results, num_included) = qos_service
+                .select_transactions_per_cost(
+                    sanitized_bundle.transactions.iter(),
+                    tx_costs.iter(),
+                    bank_start.working_bank.slot(),
+                    &mut cost_tracker,
+                );
+            debug!(
+                "resetting cost limit for normal transactions: {}",
+                reserved_space.tx_block_limit()
+            );
+
+            // Reset block cost limit for normal txs
+            cost_tracker.set_block_cost_limit(reserved_space.tx_block_limit());
+
+            (tx_costs, transactions_qos_results, num_included)
+        };
 
         // accumulates QoS to metrics
         qos_service.accumulate_estimated_transaction_costs(
@@ -312,14 +398,23 @@ impl BundleStage {
             ),
         );
 
-        // either qos rate-limited a tx in here or bundle exceeds max cost, drop the bundle
+        // qos rate-limited a tx in here, drop the bundle
         if sanitized_bundle.transactions.len() != num_included {
             QosService::remove_transaction_costs(
                 tx_costs.iter(),
                 transactions_qos_results.iter(),
                 &bank_start.working_bank,
             );
-            qos_service.report_metrics(bank_start.working_bank.clone());
+            warn!(
+                "bundle dropped, qos rate limit. uuid: {} bundle_cost: {},  block_cost: {}",
+                sanitized_bundle.uuid,
+                tx_costs.iter().map(|c| c.sum()).sum::<u64>(),
+                &bank_start
+                    .working_bank
+                    .read_cost_tracker()
+                    .unwrap()
+                    .block_cost()
+            );
             return Err(BundleExecutionError::ExceedsCostModel);
         }
 
@@ -724,6 +819,7 @@ impl BundleStage {
                 }
             }
         }
+
         Ok(commit_transaction_details)
     }
 
@@ -867,6 +963,7 @@ impl BundleStage {
         last_tip_update_slot: &mut Slot,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        reserved_space: &mut BundleReservedSpace,
     ) {
         let (sanitized_bundles, sanitized_bundle_elapsed) = measure!(
             unprocessed_bundles
@@ -965,7 +1062,8 @@ impl BundleStage {
                 max_bundle_retry_duration,
                 last_tip_update_slot,
                 bundle_stage_leader_stats,
-                block_builder_fee_info
+                block_builder_fee_info,
+                reserved_space,
             ),
             "execute_locked_bundles_elapsed"
         );
@@ -1038,6 +1136,7 @@ impl BundleStage {
         tip_manager: &TipManager,
         max_bundle_retry_duration: &Duration,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
+        reserved_space: &mut BundleReservedSpace,
     ) -> BundleStageResult<()> {
         let initialize_tip_accounts_bundle = SanitizedBundle {
             transactions: Self::get_initialize_tip_accounts_transactions(
@@ -1045,6 +1144,7 @@ impl BundleStage {
                 tip_manager,
                 cluster_info,
             )?,
+            uuid: Uuid::default(),
         };
         if !initialize_tip_accounts_bundle.transactions.is_empty() {
             debug!("initialize tip account");
@@ -1061,6 +1161,7 @@ impl BundleStage {
                 bank_start,
                 bundle_stage_leader_stats,
                 max_bundle_retry_duration,
+                reserved_space,
             );
 
             match &result {
@@ -1100,6 +1201,7 @@ impl BundleStage {
         max_bundle_retry_duration: &Duration,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        reserved_space: &mut BundleReservedSpace,
     ) -> BundleStageResult<()> {
         let start_handle_tips = Instant::now();
 
@@ -1124,6 +1226,7 @@ impl BundleStage {
 
             let change_tip_receiver_bundle = SanitizedBundle {
                 transactions: vec![change_tip_receiver_tx],
+                uuid: Uuid::default(),
             };
             let locked_change_tip_receiver_bundle = bundle_account_locker
                 .prepare_locked_bundle(&change_tip_receiver_bundle, &bank_start.working_bank)
@@ -1137,6 +1240,7 @@ impl BundleStage {
                 bank_start,
                 bundle_stage_leader_stats,
                 max_bundle_retry_duration,
+                reserved_space,
             );
 
             bundle_stage_leader_stats
@@ -1180,6 +1284,7 @@ impl BundleStage {
         last_tip_update_slot: &mut Slot,
         bundle_stage_leader_stats: &mut BundleStageLeaderStats,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        reserved_space: &mut BundleReservedSpace,
     ) -> Vec<BundleStageResult<()>> {
         let tip_pdas = tip_manager.get_tip_accounts();
 
@@ -1217,6 +1322,7 @@ impl BundleStage {
                             tip_manager,
                             max_bundle_retry_duration,
                             bundle_stage_leader_stats,
+                            reserved_space,
                         )?;
 
                         Self::maybe_change_tip_receiver(
@@ -1231,6 +1337,7 @@ impl BundleStage {
                             max_bundle_retry_duration,
                             bundle_stage_leader_stats,
                             block_builder_fee_info,
+                            reserved_space,
                         )?;
 
                         *last_tip_update_slot = bank_start.working_bank.slot();
@@ -1245,6 +1352,7 @@ impl BundleStage {
                         bank_start,
                         bundle_stage_leader_stats,
                         max_bundle_retry_duration,
+                        reserved_space,
                     )
                 }
             })
@@ -1284,6 +1392,7 @@ impl BundleStage {
         bundle_stage_stats: &mut BundleStageLoopStats,
         id: u32,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        reserved_space: &mut BundleReservedSpace,
     ) {
         const DROP_BUNDLE_SLOT_OFFSET: u64 = 4;
 
@@ -1297,54 +1406,59 @@ impl BundleStage {
         let last_slot = bundle_stage_leader_stats.current_slot;
         bundle_stage_leader_stats.maybe_report(id, &working_bank_start);
 
-        match (working_bank_start, would_be_leader_soon) {
-            // leader now, insert new read bundles + as many as can read then return bank
-            (Some(bank_start), _) => {
-                consensus_cache_updater.maybe_update(&bank_start.working_bank);
+        if !would_be_leader_soon {
+            saturating_add_assign!(
+                bundle_stage_stats.num_bundles_dropped,
+                unprocessed_bundles.len() as u64 + cost_model_failed_bundles.len() as u64
+            );
+            unprocessed_bundles.clear();
+            cost_model_failed_bundles.clear();
+            return;
+        }
 
-                let is_new_slot = match (last_slot, bundle_stage_leader_stats.current_slot) {
-                    (Some(last_slot), Some(current_slot)) => last_slot != current_slot,
-                    (None, Some(_)) => true,
-                    (_, _) => false,
-                };
-                if is_new_slot && !cost_model_failed_bundles.is_empty() {
-                    debug!(
-                        "Slot {}: Re-buffering {} bundles that failed cost model!",
+        // leader now, insert new read bundles + as many as can read then return bank
+        if let Some(bank_start) = working_bank_start {
+            consensus_cache_updater.maybe_update(&bank_start.working_bank);
+
+            let is_new_slot = match (last_slot, bundle_stage_leader_stats.current_slot) {
+                (Some(last_slot), Some(current_slot)) => last_slot != current_slot,
+                (None, Some(_)) => true,
+                (_, _) => false,
+            };
+            if is_new_slot {
+                reserved_space.reset_reserved_cost(&bank_start.working_bank);
+                // Re-Buffer any bundles that didn't fit into last block
+                if !cost_model_failed_bundles.is_empty() {
+                    info!(
+                        "slot {}: re-buffering {} bundles that failed cost model.",
                         &bank_start.working_bank.slot(),
                         cost_model_failed_bundles.len()
                     );
                     unprocessed_bundles.extend(cost_model_failed_bundles.drain(..));
                 }
-
-                Self::execute_bundles_until_empty_or_end_of_slot(
-                    bundle_account_locker,
-                    unprocessed_bundles,
-                    cost_model_failed_bundles,
-                    blacklisted_accounts,
-                    bank_start,
-                    consensus_cache_updater.consensus_accounts_cache(),
-                    cluster_info,
-                    recorder,
-                    transaction_status_sender,
-                    gossip_vote_sender,
-                    qos_service,
-                    tip_manager,
-                    max_bundle_retry_duration,
-                    last_tip_update_slot,
-                    bundle_stage_leader_stats.bundle_stage_leader_stats(),
-                    block_builder_fee_info,
-                );
+            } else {
+                reserved_space.update_reserved_cost(&bank_start.working_bank);
             }
-            // not leader now and not soon, clear bundles
-            (None, false) => {
-                saturating_add_assign!(
-                    bundle_stage_stats.num_bundles_dropped,
-                    unprocessed_bundles.len() as u64
-                );
 
-                unprocessed_bundles.clear();
-            }
-            _ => {}
+            Self::execute_bundles_until_empty_or_end_of_slot(
+                bundle_account_locker,
+                unprocessed_bundles,
+                cost_model_failed_bundles,
+                blacklisted_accounts,
+                bank_start,
+                consensus_cache_updater.consensus_accounts_cache(),
+                cluster_info,
+                recorder,
+                transaction_status_sender,
+                gossip_vote_sender,
+                qos_service,
+                tip_manager,
+                max_bundle_retry_duration,
+                last_tip_update_slot,
+                bundle_stage_leader_stats.bundle_stage_leader_stats(),
+                block_builder_fee_info,
+                reserved_space,
+            );
         }
     }
 
@@ -1362,6 +1476,7 @@ impl BundleStage {
         bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        preallocated_bundle_cost: u64,
     ) {
         const LOOP_STATS_METRICS_PERIOD: Duration = Duration::from_secs(1);
 
@@ -1382,6 +1497,26 @@ impl BundleStage {
 
         let mut unprocessed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
         let mut cost_model_failed_bundles: VecDeque<PacketBundle> = VecDeque::with_capacity(1000);
+        // Initialize block limits and open up last 20% of ticks to non-bundle transactions
+        let mut reserved_space = BundleReservedSpace {
+            current_bundle_block_limit: MAX_BLOCK_UNITS,
+            current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
+            initial_allocated_cost: preallocated_bundle_cost,
+            unreserved_ticks: poh_recorder
+                .write()
+                .unwrap()
+                .ticks_per_slot()
+                .saturating_div(5),
+        };
+        debug!(
+            "initialize bundled reserved space: {preallocated_bundle_cost} cu for {} ticks",
+            poh_recorder
+                .write()
+                .unwrap()
+                .ticks_per_slot()
+                .saturating_sub(reserved_space.unreserved_ticks)
+        );
+
         while !exit.load(Ordering::Relaxed) {
             if !unprocessed_bundles.is_empty()
                 || last_leader_slots_update_time.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
@@ -1405,7 +1540,8 @@ impl BundleStage {
                         &mut bundle_stage_leader_stats,
                         &mut bundle_stage_stats,
                         id,
-                        &block_builder_fee_info
+                        &block_builder_fee_info,
+                        &mut reserved_space,
                     ),
                     "process_buffered_bundles_elapsed"
                 );
@@ -1625,6 +1761,12 @@ mod tests {
             &bank_start,
             &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
+            &mut BundleReservedSpace {
+                current_tx_block_limit: 1,
+                current_bundle_block_limit: 1,
+                initial_allocated_cost: 0,
+                unreserved_ticks: poh_recorder.lock().unwrap().ticks_per_slot(),
+            },
         );
 
         // This is ugly, not really an option for testing but a test itself.
@@ -1956,6 +2098,12 @@ mod tests {
             &bank_start,
             &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
+            &mut BundleReservedSpace {
+                current_tx_block_limit: u64::MAX,
+                current_bundle_block_limit: u64::MAX,
+                initial_allocated_cost: 0,
+                unreserved_ticks: poh_recorder.lock().unwrap().ticks_per_slot(),
+            },
         );
         info!("test_bundle_max_retries result: {:?}", result);
         assert!(matches!(

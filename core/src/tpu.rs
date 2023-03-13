@@ -118,6 +118,7 @@ impl Tpu {
         maybe_relayer_config: Option<RelayerConfig>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Option<SocketAddr>,
+        preallocated_bundle_cost: u64,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -322,6 +323,7 @@ impl Tpu {
             tip_manager,
             bundle_account_locker,
             &block_builder_fee_info,
+            preallocated_bundle_cost,
         );
 
         let broadcast_stage = broadcast_type.new_broadcast_stage(
