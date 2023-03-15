@@ -120,7 +120,10 @@ pub fn get_sanitized_bundle(
         return Err(BundleSanitizerError::FailedCheckTransactions);
     }
 
-    Ok(SanitizedBundle { transactions })
+    Ok(SanitizedBundle {
+        transactions,
+        uuid: packet_bundle.uuid,
+    })
 }
 
 // This function deserializes packets into transactions, computes the blake3 hash of transaction
