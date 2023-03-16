@@ -1,4 +1,4 @@
-FROM rust:1.63.0
+FROM rust:1.64-slim-bullseye as builder
 
 # Add Google Protocol Buffers for Libra's metrics library.
 ENV PROTOC_VERSION 3.8.0
@@ -15,7 +15,7 @@ RUN set -x \
       libssl-dev \
       pkg-config \
       zlib1g-dev \
-      make \
+      curl \
  && rustup component add rustfmt \
  && rustup component add clippy \
  && rustc --version \
@@ -31,6 +31,7 @@ COPY . .
 RUN mkdir -p docker-output
 
 ARG ci_commit
+# NOTE: Keep this here before build since variable is referenced during CI build step.
 ENV CI_COMMIT=$ci_commit
 
 ARG debug
