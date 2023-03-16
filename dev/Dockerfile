@@ -31,6 +31,7 @@ COPY . .
 RUN mkdir -p docker-output
 
 ARG ci_commit
+# NOTE: Keep this here before build since variable is referenced during CI build step.
 ENV CI_COMMIT=$ci_commit
 
 ARG debug
