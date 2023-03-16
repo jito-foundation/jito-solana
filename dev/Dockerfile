@@ -30,6 +30,10 @@ WORKDIR /solana
 COPY . .
 RUN mkdir -p docker-output
 
+ARG ci_commit
+# NOTE: Keep this here before build since variable is referenced during CI build step.
+ENV CI_COMMIT=$ci_commit
+
 ARG debug
 
 # Uses docker buildkit to cache the image.
@@ -42,8 +46,3 @@ RUN --mount=type=cache,mode=0777,target=/solana/target \
     else \
       RUSTFLAGS='-g -C force-frame-pointers=yes' ./cargo stable build --release && cp target/release/solana* ./docker-output; \
     fi
-
-
-# keep CI_COMMIT at bottom since it breaks caching: https://stackoverflow.com/a/57017745/3408577
-ARG ci_commit
-ENV CI_COMMIT=$ci_commit
