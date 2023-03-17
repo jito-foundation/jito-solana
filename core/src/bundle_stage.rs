@@ -1785,7 +1785,7 @@ mod tests {
                 current_tx_block_limit: 1,
                 current_bundle_block_limit: 1,
                 initial_allocated_cost: 0,
-                unreserved_ticks: poh_recorder.lock().unwrap().ticks_per_slot(),
+                unreserved_ticks: poh_recorder.read().unwrap().ticks_per_slot(),
             },
         );
 
@@ -2122,7 +2122,7 @@ mod tests {
                 current_tx_block_limit: u64::MAX,
                 current_bundle_block_limit: u64::MAX,
                 initial_allocated_cost: 0,
-                unreserved_ticks: poh_recorder.lock().unwrap().ticks_per_slot(),
+                unreserved_ticks: poh_recorder.read().unwrap().ticks_per_slot(),
             },
         );
         info!("test_bundle_max_retries result: {:?}", result);
