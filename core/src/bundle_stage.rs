@@ -1498,6 +1498,7 @@ impl BundleStage {
     ) {
         const LOOP_STATS_METRICS_PERIOD: Duration = Duration::from_secs(1);
 
+        let ticks_per_slot = poh_recorder.read().unwrap().ticks_per_slot();
         let recorder = poh_recorder.read().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
@@ -1520,19 +1521,11 @@ impl BundleStage {
             current_bundle_block_limit: MAX_BLOCK_UNITS,
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
-            unreserved_ticks: poh_recorder
-                .lock()
-                .unwrap()
-                .ticks_per_slot()
-                .saturating_div(5),
+            unreserved_ticks: ticks_per_slot.saturating_div(5),
         };
         debug!(
             "initialize bundled reserved space: {preallocated_bundle_cost} cu for {} ticks",
-            poh_recorder
-                .lock()
-                .unwrap()
-                .ticks_per_slot()
-                .saturating_sub(reserved_space.unreserved_ticks)
+            ticks_per_slot.saturating_sub(reserved_space.unreserved_ticks)
         );
 
         while !exit.load(Ordering::Relaxed) {
@@ -1758,8 +1751,8 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let ticks_per_slot = poh_recorder.lock().unwrap().ticks_per_slot();
-        let recorder = poh_recorder.lock().unwrap().recorder();
+        let ticks_per_slot = poh_recorder.read().unwrap().ticks_per_slot();
+        let recorder = poh_recorder.read().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
         let mut bundle_stage_leader_stats = BundleStageLeaderStats::default();
@@ -2066,8 +2059,8 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let ticks_per_slot = poh_recorder.lock().unwrap().ticks_per_slot();
-        let recorder = poh_recorder.lock().unwrap().recorder();
+        let ticks_per_slot = poh_recorder.read().unwrap().ticks_per_slot();
+        let recorder = poh_recorder.read().unwrap().recorder();
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
