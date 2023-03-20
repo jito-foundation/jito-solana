@@ -1521,7 +1521,7 @@ impl BundleStage {
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
             unreserved_ticks: poh_recorder
-                .write()
+                .lock()
                 .unwrap()
                 .ticks_per_slot()
                 .saturating_div(5),
@@ -1529,7 +1529,7 @@ impl BundleStage {
         debug!(
             "initialize bundled reserved space: {preallocated_bundle_cost} cu for {} ticks",
             poh_recorder
-                .write()
+                .lock()
                 .unwrap()
                 .ticks_per_slot()
                 .saturating_sub(reserved_space.unreserved_ticks)
@@ -1744,6 +1744,8 @@ mod tests {
         {
             bank.write_cost_tracker().unwrap().set_limits(1, 1, 1);
         }
+        let current_block_cost_limit = bank.read_cost_tracker().unwrap().block_cost_limit();
+        debug!("current block cost limit: {current_block_cost_limit}");
         let blockstore = Arc::new(
             Blockstore::open(ledger_path.path())
                 .expect("Expected to be able to open database ledger"),
@@ -1756,7 +1758,8 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let recorder = poh_recorder.read().unwrap().recorder();
+        let ticks_per_slot = poh_recorder.lock().unwrap().ticks_per_slot();
+        let recorder = poh_recorder.lock().unwrap().recorder();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
         let mut bundle_stage_leader_stats = BundleStageLeaderStats::default();
@@ -1780,10 +1783,10 @@ mod tests {
             &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
             &mut BundleReservedSpace {
-                current_tx_block_limit: 1,
-                current_bundle_block_limit: 1,
+                current_tx_block_limit: current_block_cost_limit,
+                current_bundle_block_limit: current_block_cost_limit,
                 initial_allocated_cost: 0,
-                unreserved_ticks: poh_recorder.read().unwrap().ticks_per_slot(),
+                unreserved_ticks: ticks_per_slot,
             },
         );
 
@@ -2048,7 +2051,8 @@ mod tests {
         bank.write_cost_tracker()
             .unwrap()
             .set_limits(u64::MAX, u64::MAX, u64::MAX);
-
+        let current_block_cost_limit = bank.read_cost_tracker().unwrap().block_cost_limit();
+        debug!("current block cost limit: {current_block_cost_limit}");
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(
             Blockstore::open(ledger_path.path())
@@ -2062,7 +2066,8 @@ mod tests {
         };
         let (exit, poh_recorder, poh_service, _entry_receiver) =
             create_test_recorder(&bank, &blockstore, Some(poh_config), None);
-        let recorder = poh_recorder.read().unwrap().recorder();
+        let ticks_per_slot = poh_recorder.lock().unwrap().ticks_per_slot();
+        let recorder = poh_recorder.lock().unwrap().recorder();
         let (gossip_vote_sender, _gossip_vote_receiver) = unbounded();
         let cost_model = Arc::new(RwLock::new(CostModel::default()));
         let qos_service = QosService::new(cost_model, 0);
@@ -2117,10 +2122,10 @@ mod tests {
             &mut bundle_stage_leader_stats,
             &TEST_MAX_RETRY_DURATION,
             &mut BundleReservedSpace {
-                current_tx_block_limit: u64::MAX,
-                current_bundle_block_limit: u64::MAX,
+                current_tx_block_limit: current_block_cost_limit,
+                current_bundle_block_limit: current_block_cost_limit,
                 initial_allocated_cost: 0,
-                unreserved_ticks: poh_recorder.read().unwrap().ticks_per_slot(),
+                unreserved_ticks: ticks_per_slot,
             },
         );
         info!("test_bundle_max_retries result: {:?}", result);
