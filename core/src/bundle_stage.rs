@@ -1521,7 +1521,7 @@ impl BundleStage {
             current_bundle_block_limit: MAX_BLOCK_UNITS,
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
-            unreserved_ticks: ticks_per_slot.saturating_div(5),
+            unreserved_ticks: ticks_per_slot.saturating_div(5), // 20% for non-bundles
         };
         debug!(
             "initialize bundled reserved space: {preallocated_bundle_cost} cu for {} ticks",
