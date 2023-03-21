@@ -1480,6 +1480,7 @@ impl BundleStage {
     ) {
         const LOOP_STATS_METRICS_PERIOD: Duration = Duration::from_secs(1);
 
+        let ticks_per_slot = poh_recorder.lock().unwrap().ticks_per_slot();
         let recorder = poh_recorder.lock().unwrap().recorder();
         let qos_service = QosService::new(cost_model, id);
 
@@ -1502,19 +1503,11 @@ impl BundleStage {
             current_bundle_block_limit: MAX_BLOCK_UNITS,
             current_tx_block_limit: MAX_BLOCK_UNITS.saturating_sub(preallocated_bundle_cost),
             initial_allocated_cost: preallocated_bundle_cost,
-            unreserved_ticks: poh_recorder
-                .lock()
-                .unwrap()
-                .ticks_per_slot()
-                .saturating_div(5),
+            unreserved_ticks: ticks_per_slot.saturating_div(5), // 20% for non-bundles
         };
         debug!(
             "initialize bundled reserved space: {preallocated_bundle_cost} cu for {} ticks",
-            poh_recorder
-                .lock()
-                .unwrap()
-                .ticks_per_slot()
-                .saturating_sub(reserved_space.unreserved_ticks)
+            ticks_per_slot.saturating_sub(reserved_space.unreserved_ticks)
         );
 
         while !exit.load(Ordering::Relaxed) {
