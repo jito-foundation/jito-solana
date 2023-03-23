@@ -73,8 +73,8 @@ solana-vote-program = { path = "../programs/vote", version = "=1.15.0" }
 sys-info = "0.9.1"
 tempfile = "3.3.0"
 thiserror = "1.0"
-tip-distribution = { path = "../jito-programs/tip-payment/programs/tip-distribution", features = ["no-entrypoint"] }
-tip-payment = { path = "../jito-programs/tip-payment/programs/tip-payment", features = ["no-entrypoint"] }
+tip-distribution = { path = "../jito-programs/src/programs/tip-distribution", features = ["no-entrypoint"] }
+tip-payment = { path = "../jito-programs/src/programs/tip-payment", features = ["no-entrypoint"] }
 tokio = { version = "~1.14.1", features = ["full"] }
 tokio-stream = "0.1.8"
 tonic = { version = "0.5.2", features = ["tls"] }
