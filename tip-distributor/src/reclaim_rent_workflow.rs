@@ -62,7 +62,7 @@ pub async fn reclaim_rent(
             Some((*pubkey, claim_status))
         })
         .filter(|(_, claim_status): &(Pubkey, ClaimStatus)| {
-            // Only return claim statues that we've paid for and ones that are expired to avoid transaction failures.
+            // Only return claim statuses that we've paid for and ones that are expired to avoid transaction failures.
             claim_status.claim_status_payer == signer.pubkey()
                 && current_epoch > claim_status.expires_at
         })
