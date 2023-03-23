@@ -1,3 +1,5 @@
+extern crate core;
+
 pub mod claim_mev_workflow;
 pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
@@ -464,7 +466,7 @@ pub async fn send_transactions_with_retry(
     rpc_client: &RpcClient,
     transactions: &[Transaction],
     max_send_duration: Duration,
-) {
+) -> usize {
     let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
         .iter()
         .map(|tx| (tx.signatures[0], tx.clone()))
@@ -512,13 +514,7 @@ pub async fn send_transactions_with_retry(
         }
     }
 
-    if !transactions_to_send.is_empty() {
-        panic!(
-            "failed to send {} of {} transactions",
-            transactions_to_send.len(),
-            transactions.len()
-        );
-    }
+    transactions_to_send.len()
 }
 
 mod pubkey_string_conversion {

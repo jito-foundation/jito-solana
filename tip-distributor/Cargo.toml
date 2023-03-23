@@ -46,3 +46,7 @@ path = "src/bin/merkle-root-uploader.rs"
 [[bin]]
 name = "solana-claim-mev-tips"
 path = "src/bin/claim-mev-tips.rs"
+
+[[bin]]
+name = "solana-reclaim-rent"
+path = "src/bin/reclaim-rent.rs"
