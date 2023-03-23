@@ -4,9 +4,11 @@ use {
     clap::Parser,
     log::*,
     solana_client::nonblocking::rpc_client::RpcClient,
-    solana_sdk::{pubkey::Pubkey, signature::read_keypair_file},
+    solana_sdk::{
+        commitment_config::CommitmentConfig, pubkey::Pubkey, signature::read_keypair_file,
+    },
     solana_tip_distributor::reclaim_rent_workflow::reclaim_rent,
-    std::{path::PathBuf, str::FromStr},
+    std::{path::PathBuf, str::FromStr, time::Duration},
     tokio::runtime::Runtime,
 };
 
@@ -40,7 +42,12 @@ fn main() {
 
     let runtime = Runtime::new().unwrap();
     if let Err(e) = runtime.block_on(reclaim_rent(
-        RpcClient::new(args.rpc_url),
+        RpcClient::new_with_timeout_and_commitment(
+            args.rpc_url,
+            // High timeout b/c of get_program_accounts call
+            Duration::from_secs(60),
+            CommitmentConfig::confirmed(),
+        ),
         args.tip_distribution_program_id,
         read_keypair_file(&args.keypair_path).expect("read keypair file"),
         args.should_reclaim_tdas,
