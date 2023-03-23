@@ -1,5 +1,3 @@
-extern crate core;
-
 pub mod claim_mev_workflow;
 pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;

@@ -11,22 +11,24 @@ use {
 };
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
     /// RPC to send transactions through.
-    #[clap(long, env)]
+    /// NOTE: This script uses getProgramAccounts, make sure you have added an account index
+    /// for the tip_distribution_program_id on the RPC node.
+    #[arg(long, env)]
     rpc_url: String,
 
     /// Tip distribution program ID.
-    #[clap(long, env)]
-    tip_distribution_program_id: String,
+    #[arg(long, env, value_parser = Pubkey::from_str)]
+    tip_distribution_program_id: Pubkey,
 
     /// The keypair signing and paying for transactions.
-    #[clap(long, env)]
+    #[arg(long, env)]
     keypair_path: PathBuf,
 
     /// Specifies whether to reclaim rent on behalf of validators from respective TDAs.
-    #[clap(long, env)]
+    #[arg(long, env)]
     should_reclaim_tdas: bool,
 }
 
@@ -35,13 +37,11 @@ fn main() {
 
     info!("Starting to claim mev tips...");
     let args: Args = Args::parse();
-    let tip_distribution_program_id = Pubkey::from_str(&args.tip_distribution_program_id)
-        .expect("valid tip_distribution_program_id");
 
     let runtime = Runtime::new().unwrap();
     if let Err(e) = runtime.block_on(reclaim_rent(
         RpcClient::new(args.rpc_url),
-        tip_distribution_program_id,
+        args.tip_distribution_program_id,
         read_keypair_file(&args.keypair_path).expect("read keypair file"),
         args.should_reclaim_tdas,
     )) {
