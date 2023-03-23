@@ -1,6 +1,7 @@
 pub mod claim_mev_workflow;
 pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
+pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
 use {
