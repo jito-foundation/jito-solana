@@ -85,22 +85,29 @@ pub async fn reclaim_rent(
     let mut transactions = claim_status_accounts
         .into_iter()
         .map(|(claim_status_pubkey, claim_status)| {
+            close_claim_status_ix(
+                tip_distribution_program_id,
+                CloseClaimStatusArgs,
+                CloseClaimStatusAccounts {
+                    config: config_pubkey,
+                    claim_status: claim_status_pubkey,
+                    claim_status_payer: claim_status.claim_status_payer,
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .chunks(4)
+        .into_iter()
+        .map(|instructions| {
             Transaction::new_signed_with_payer(
-                &[close_claim_status_ix(
-                    tip_distribution_program_id,
-                    CloseClaimStatusArgs,
-                    CloseClaimStatusAccounts {
-                        config: config_pubkey,
-                        claim_status: claim_status_pubkey,
-                        claim_status_payer: claim_status.claim_status_payer,
-                    },
-                )],
+                instructions,
                 Some(&signer.pubkey()),
                 &[&signer],
                 recent_blockhash,
             )
         })
         .collect::<Vec<_>>();
+
     info!(
         "create close_claim_status_account transactions took {}us",
         now.elapsed().as_micros()
@@ -122,25 +129,31 @@ pub async fn reclaim_rent(
         let close_tda_txs = tip_distribution_accounts
             .into_iter()
             .map(|(tda_pubkey, tda)| {
+                close_tip_distribution_account_ix(
+                    tip_distribution_program_id,
+                    CloseTipDistributionAccountArgs {
+                        _epoch: tda.epoch_created_at,
+                    },
+                    CloseTipDistributionAccounts {
+                        config: config_pubkey,
+                        tip_distribution_account: tda_pubkey,
+                        validator_vote_account: tda.validator_vote_account,
+                        expired_funds_account: config_account.expired_funds_account,
+                        signer: signer.pubkey(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+            .chunks(4)
+            .map(|instructions| {
                 Transaction::new_signed_with_payer(
-                    &[close_tip_distribution_account_ix(
-                        tip_distribution_program_id,
-                        CloseTipDistributionAccountArgs {
-                            _epoch: tda.epoch_created_at,
-                        },
-                        CloseTipDistributionAccounts {
-                            config: config_pubkey,
-                            tip_distribution_account: tda_pubkey,
-                            validator_vote_account: tda.validator_vote_account,
-                            expired_funds_account: config_account.expired_funds_account,
-                            signer: signer.pubkey(),
-                        },
-                    )],
+                    instructions,
                     Some(&signer.pubkey()),
                     &[&signer],
                     recent_blockhash,
                 )
-            });
+            })
+            .collect::<Vec<_>>();
         info!("create close_tip_distribution_account transactions took {}us, closing {} tip distribution accounts", now.elapsed().as_micros(), close_tda_txs.len());
 
         transactions.extend(close_tda_txs);
