@@ -143,7 +143,10 @@ pub fn claim_mev_tips(
 
         info!("Sending {} tip claim transactions. {} tried sending zero lamports, {} would be below minimum rent",
             &transactions.len(), zero_lamports_count, below_min_rent_count);
-        send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
+        let num_failed_txs = send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
+        if num_failed_txs != 0 {
+            panic!("failed to send {num_failed_txs} transactions");
+        }
     });
 
     Ok(())
