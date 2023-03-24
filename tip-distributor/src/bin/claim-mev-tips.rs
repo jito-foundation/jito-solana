@@ -9,22 +9,22 @@ use {
 };
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to JSON file containing the [GeneratedMerkleTreeCollection] object.
-    #[clap(long, env)]
+    #[arg(long, env)]
     merkle_trees_path: PathBuf,
 
     /// RPC to send transactions through
-    #[clap(long, env)]
+    #[arg(long, env)]
     rpc_url: String,
 
     /// Tip distribution program ID
-    #[clap(long, env)]
+    #[arg(long, env)]
     tip_distribution_program_id: String,
 
     /// Path to keypair
-    #[clap(long, env)]
+    #[arg(long, env)]
     keypair_path: PathBuf,
 }
 

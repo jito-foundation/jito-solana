@@ -132,7 +132,10 @@ pub fn upload_merkle_root(
                 )
             })
             .collect();
-        send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
+        let num_failed_txs = send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
+        if num_failed_txs != 0 {
+            panic!("failed to send {num_failed_txs} transactions");
+        }
     });
 
     Ok(())
