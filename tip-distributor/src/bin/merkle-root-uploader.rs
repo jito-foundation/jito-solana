@@ -7,22 +7,22 @@ use {
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[clap(author, version, about, long_about = None)]
 struct Args {
     /// Path to JSON file containing the [StakeMetaCollection] object.
-    #[arg(long, env)]
+    #[clap(long, env)]
     merkle_root_path: PathBuf,
 
     /// The path to the keypair used to sign and pay for the `upload_merkle_root` transactions.
-    #[arg(long, env)]
+    #[clap(long, env)]
     keypair_path: PathBuf,
 
     /// The RPC to send transactions to.
-    #[arg(long, env)]
+    #[clap(long, env)]
     rpc_url: String,
 
     /// Tip distribution program ID
-    #[arg(long, env)]
+    #[clap(long, env)]
     tip_distribution_program_id: String,
 }
 
