@@ -13,24 +13,24 @@ use {
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[clap(author, version, about, long_about = None)]
 struct Args {
     /// RPC to send transactions through.
     /// NOTE: This script uses getProgramAccounts, make sure you have added an account index
     /// for the tip_distribution_program_id on the RPC node.
-    #[arg(long, env)]
+    #[clap(long, env)]
     rpc_url: String,
 
     /// Tip distribution program ID.
-    #[arg(long, env, value_parser = Pubkey::from_str)]
+    #[clap(long, env, value_parser = Pubkey::from_str)]
     tip_distribution_program_id: Pubkey,
 
     /// The keypair signing and paying for transactions.
-    #[arg(long, env)]
+    #[clap(long, env)]
     keypair_path: PathBuf,
 
     /// Specifies whether to reclaim rent on behalf of validators from respective TDAs.
-    #[arg(long, env)]
+    #[clap(long, env)]
     should_reclaim_tdas: bool,
 }
 

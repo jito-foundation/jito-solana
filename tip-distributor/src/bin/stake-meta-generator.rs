@@ -15,26 +15,26 @@ use {
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[clap(author, version, about, long_about = None)]
 struct Args {
     /// Ledger path, where you created the snapshot.
-    #[arg(long, env, value_parser = Args::ledger_path_parser)]
+    #[clap(long, env, value_parser = Args::ledger_path_parser)]
     ledger_path: PathBuf,
 
     /// The tip-distribution program id.
-    #[arg(long, env)]
+    #[clap(long, env)]
     tip_distribution_program_id: Pubkey,
 
     /// The tip-payment program id.
-    #[arg(long, env)]
+    #[clap(long, env)]
     tip_payment_program_id: Pubkey,
 
     /// Path to JSON file populated with the [StakeMetaCollection] object.
-    #[arg(long, env)]
+    #[clap(long, env)]
     out_path: String,
 
     /// The expected snapshot slot.
-    #[arg(long, env)]
+    #[clap(long, env)]
     snapshot_slot: Slot,
 }
 

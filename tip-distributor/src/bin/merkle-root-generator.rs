@@ -8,14 +8,14 @@ use {
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[clap(author, version, about, long_about = None)]
 struct Args {
     /// Path to JSON file containing the [StakeMetaCollection] object.
-    #[arg(long, env)]
+    #[clap(long, env)]
     stake_meta_coll_path: PathBuf,
 
     /// Path to JSON file to get populated with tree node data.
-    #[arg(long, env)]
+    #[clap(long, env)]
     out_path: PathBuf,
 }
 
