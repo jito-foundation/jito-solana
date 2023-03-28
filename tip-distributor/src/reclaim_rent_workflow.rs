@@ -114,35 +114,35 @@ pub async fn reclaim_rent(
     );
 
     if should_reclaim_tdas {
-        let tip_distribution_accounts: Vec<(Pubkey, TipDistributionAccount)> = accounts
-            .iter()
+        let tip_distribution_accounts = accounts
+            .into_iter()
             .filter_map(|(pubkey, account)| {
                 let tda =
                     TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).ok()?;
-                Some((*pubkey, tda))
+                Some((pubkey, tda))
             })
-            .filter(|(_, tda): &(Pubkey, TipDistributionAccount)| current_epoch > tda.expires_at)
-            .collect::<Vec<_>>();
+            .filter(|(_, tda): &(Pubkey, TipDistributionAccount)| current_epoch > tda.expires_at);
 
         info!("creating close_tip_distribution_account transactions");
         let now = Instant::now();
         let close_tda_txs = tip_distribution_accounts
-            .into_iter()
-            .map(|(tda_pubkey, tda)| {
-                close_tip_distribution_account_ix(
-                    tip_distribution_program_id,
-                    CloseTipDistributionAccountArgs {
-                        _epoch: tda.epoch_created_at,
-                    },
-                    CloseTipDistributionAccounts {
-                        config: config_pubkey,
-                        tip_distribution_account: tda_pubkey,
-                        validator_vote_account: tda.validator_vote_account,
-                        expired_funds_account: config_account.expired_funds_account,
-                        signer: signer.pubkey(),
-                    },
-                )
-            })
+            .map(
+                |(tip_distribution_account, tda): (Pubkey, TipDistributionAccount)| {
+                    close_tip_distribution_account_ix(
+                        tip_distribution_program_id,
+                        CloseTipDistributionAccountArgs {
+                            _epoch: tda.epoch_created_at,
+                        },
+                        CloseTipDistributionAccounts {
+                            config: config_pubkey,
+                            tip_distribution_account,
+                            validator_vote_account: tda.validator_vote_account,
+                            expired_funds_account: config_account.expired_funds_account,
+                            signer: signer.pubkey(),
+                        },
+                    )
+                },
+            )
             .collect::<Vec<_>>()
             .chunks(4)
             .map(|instructions| {
