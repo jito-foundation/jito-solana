@@ -26,8 +26,8 @@ solana-runtime = { path = "../runtime", version = "=1.14.17" }
 solana-sdk = { path = "../sdk", version = "=1.14.17" }
 solana-stake-program = { path = "../programs/stake", version = "=1.14.17" }
 thiserror = "1.0.31"
-tip-distribution = { path = "../jito-programs/tip-payment/programs/tip-distribution", features = ["no-entrypoint"] }
-tip-payment = { path = "../jito-programs/tip-payment/programs/tip-payment", features = ["no-entrypoint"] }
+tip-distribution = { path = "../jito-programs/src/programs/tip-distribution", features = ["no-entrypoint"] }
+tip-payment = { path = "../jito-programs/src/programs/tip-payment", features = ["no-entrypoint"] }
 tokio = { version = "1.12.0", features = ["rt-multi-thread", "macros", "sync", "time", "full"] }
 
 [[bin]]
