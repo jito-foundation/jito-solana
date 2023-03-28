@@ -1,6 +1,6 @@
 [package]
 name = "solana-tip-distributor"
-version = "1.13.7"
+version = "1.13.8"
 edition = "2021"
 license = "Apache-2.0"
 description = "Collection of binaries used to distribute MEV rewards to delegators and validators."
@@ -16,14 +16,14 @@ log = "0.4.17"
 num-traits = "0.2.15"
 serde = "1.0.137"
 serde_json = "1.0.81"
-solana-client = { path = "../client", version = "=1.13.7" }
-solana-genesis-utils = { path = "../genesis-utils", version = "=1.13.7" }
-solana-ledger = { path = "../ledger", version = "=1.13.7" }
-solana-merkle-tree = { path = "../merkle-tree", version = "=1.13.7" }
-solana-program = { path = "../sdk/program", version = "=1.13.7" }
-solana-runtime = { path = "../runtime", version = "=1.13.7" }
-solana-sdk = { path = "../sdk", version = "=1.13.7" }
-solana-stake-program = { path = "../programs/stake", version = "=1.13.7" }
+solana-client = { path = "../client", version = "=1.13.8" }
+solana-genesis-utils = { path = "../genesis-utils", version = "=1.13.8" }
+solana-ledger = { path = "../ledger", version = "=1.13.8" }
+solana-merkle-tree = { path = "../merkle-tree", version = "=1.13.8" }
+solana-program = { path = "../sdk/program", version = "=1.13.8" }
+solana-runtime = { path = "../runtime", version = "=1.13.8" }
+solana-sdk = { path = "../sdk", version = "=1.13.8" }
+solana-stake-program = { path = "../programs/stake", version = "=1.13.8" }
 thiserror = "1.0.31"
 tip-distribution = { path = "../jito-programs/src/programs/tip-distribution", features = ["no-entrypoint"] }
 tip-payment = { path = "../jito-programs/src/programs/tip-payment", features = ["no-entrypoint"] }
