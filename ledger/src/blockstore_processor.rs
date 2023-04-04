@@ -826,7 +826,7 @@ fn confirm_full_slot(
 ) -> result::Result<(), BlockstoreProcessorError> {
     let mut confirmation_timing = ConfirmationTiming::default();
     let skip_verification = !opts.poh_verify;
-    confirm_slot(
+    let _more_entries_to_process = confirm_slot(
         blockstore,
         bank,
         &mut confirmation_timing,
@@ -906,7 +906,7 @@ pub fn confirm_slot(
     entry_callback: Option<&ProcessCallback>,
     recyclers: &VerifyRecyclers,
     allow_dead_slots: bool,
-) -> result::Result<(), BlockstoreProcessorError> {
+) -> result::Result<bool, BlockstoreProcessorError> {
     let slot = bank.slot();
 
     let (entries, num_shreds, slot_full) = {
@@ -922,6 +922,10 @@ pub fn confirm_slot(
         }
         load_result
     }?;
+
+    if entries.is_empty() {
+        return Ok(false);
+    }
 
     let num_entries = entries.len();
     let num_txs = entries.iter().map(|e| e.transactions.len()).sum::<usize>();
@@ -1041,7 +1045,7 @@ pub fn confirm_slot(
                 progress.last_entry = last_entry_hash;
             }
 
-            Ok(())
+            Ok(!slot_full)
         }
         Err(err) => {
             warn!("Ledger proof of history failed at slot: {}", bank.slot());

@@ -1664,7 +1664,10 @@ impl ReplayStage {
         // All errors must lead to marking the slot as dead, otherwise,
         // the `check_slot_agrees_with_cluster()` called by `replay_active_banks()`
         // will break!
-        blockstore_processor::confirm_slot(
+
+        // loop over until no more entries to process
+        // TODO (LB): probably wanna add a time limit here
+        while blockstore_processor::confirm_slot(
             blockstore,
             bank,
             &mut bank_progress.replay_stats,
@@ -1676,7 +1679,8 @@ impl ReplayStage {
             None,
             verify_recyclers,
             false,
-        )?;
+        )? {}
+
         let tx_count_after = bank_progress.replay_progress.num_txs;
         let tx_count = tx_count_after - tx_count_before;
         Ok(tx_count)
