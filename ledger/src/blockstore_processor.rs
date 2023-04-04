@@ -670,11 +670,18 @@ pub fn process_blockstore_from_root(
     info!("processing ledger from slot {}...", start_slot);
     let now = Instant::now();
 
-    // ensure start_slot is rooted for correct replay
+    // Ensure start_slot is rooted for correct replay; also ensure start_slot and
+    // qualifying children are marked as connected
     if blockstore.is_primary_access() {
         blockstore
-            .set_roots(std::iter::once(&start_slot))
-            .expect("Couldn't set root slot on startup");
+            .mark_slots_as_if_rooted_normally_at_startup(
+                vec![(bank.slot(), Some(bank.hash()))],
+                true,
+            )
+            .expect("Couldn't mark start_slot as root on startup");
+        blockstore
+            .set_and_chain_connected_on_root_and_next_slots(bank.slot())
+            .expect("Couldn't mark start_slot as connected during startup")
     } else {
         assert!(
             blockstore.is_root(start_slot),
