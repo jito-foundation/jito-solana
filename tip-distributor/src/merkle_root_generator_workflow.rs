@@ -47,7 +47,7 @@ fn write_to_json_file(
     let file = File::create(file_path)?;
     let mut writer = BufWriter::new(file);
     let json = serde_json::to_string_pretty(&merkle_tree_coll).unwrap();
-    let _ = writer.write(json.as_bytes())?;
+    let _ = writer.write_all(json.as_bytes())?;
     writer.flush()?;
 
     Ok(())

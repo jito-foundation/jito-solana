@@ -288,11 +288,6 @@ impl TreeNode {
                     .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?,
             );
 
-            let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
-                sum.checked_add(tree_node.amount).unwrap()
-            });
-            assert!(total_claim_amount < stake_meta.total_delegated);
-
             Ok(Some(tree_nodes))
         } else {
             Ok(None)
