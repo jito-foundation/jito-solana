@@ -32,6 +32,7 @@ use {
     solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierLock,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
+        bank_transaction_executor::BankTransactionExecutor,
         block_error::BlockError,
         blockstore::Blockstore,
         blockstore_processor::{self, BlockstoreProcessorError, TransactionStatusSender},
@@ -436,6 +437,8 @@ impl ReplayStage {
                     last_print_time: Instant::now(),
                 };
                 let in_vote_only_mode = bank_forks.read().unwrap().get_vote_only_mode_signal();
+
+                let bank_tx_execution = BankTransactionExecutor::new();
 
                 loop {
                     // Stop getting entries if we get exit signal
