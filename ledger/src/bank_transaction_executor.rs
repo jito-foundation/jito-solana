@@ -10,8 +10,15 @@ use {
     },
 };
 
-type TransactionExecutionSender = Sender<()>;
-type TransactionExecutionReceiver = Receiver<()>;
+type TransactionExecutionSender = Sender<BankTransactionExecutionRequest>;
+type TransactionExecutionReceiver = Receiver<BankTransactionExecutionRequest>;
+
+type TransactionExecutionResponseSender = Sender<BankTransactionExecutionResponse>;
+type TransactionExecutionResponseReceiver = Receiver<BankTransactionExecutionResponse>;
+
+pub struct BankTransactionExecutionRequest {}
+
+pub struct BankTransactionExecutionResponse {}
 
 // pub struct ReplayResponse {
 //     pub result: transaction::Result<()>,
@@ -86,7 +93,7 @@ impl BankTransactionExecutor {
 
         while !exit.load(Ordering::Relaxed) {
             match receiver.recv_timeout(TIMEOUT) {
-                Ok(_) => {}
+                Ok(request) => {}
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     break;
