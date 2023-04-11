@@ -159,21 +159,6 @@ pub struct BankTransactionExecutionResponse {
     pub signature: Signature,
 }
 
-// pub struct ReplayResponse {
-//     pub result: transaction::Result<()>,
-//     pub timings: ExecuteTimings,
-// }
-
-/// Request for replay, sends responses back on this channel
-// pub struct ReplayRequest {
-//     pub bank: Arc<Bank>,
-//     pub tx: SanitizedTransaction,
-//     pub transaction_status_sender: Option<TransactionStatusSender>,
-//     pub replay_vote_sender: Option<ReplayVoteSender>,
-//     pub cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
-//     pub entry_callback: Option<ProcessCallback>,
-// }
-
 #[derive(Debug)]
 pub enum SchedulerError {
     ChannelClosed,
