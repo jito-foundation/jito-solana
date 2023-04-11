@@ -3936,7 +3936,7 @@ pub mod tests {
                 &replay_vote_sender,
                 None,
                 &VerifyRecyclers::default(),
-                &executor_handle,
+                executor_handle,
             );
             let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
             let rpc_subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
