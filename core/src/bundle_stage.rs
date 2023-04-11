@@ -18,7 +18,7 @@ use {
     solana_entry::entry::hash_transactions,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
-        blockstore_processor::TransactionStatusSender, token_balances::collect_token_balances,
+        bank_transaction_executor::TransactionStatusSender, token_balances::collect_token_balances,
     },
     solana_measure::measure,
     solana_poh::poh_recorder::{

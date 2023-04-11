@@ -1,6 +1,10 @@
 use {
     crate::{
-        bank_transaction_executor::{BankTransactionExecutor, BankTransactionExecutorHandle},
+        bank_transaction_executor::{
+            BankTransactionExecutionRequest, BankTransactionExecutor,
+            BankTransactionExecutorHandle, BlockCostCapacityMeter, ProcessCallback,
+            TransactionStatusSender,
+        },
         block_error::BlockError,
         blockstore::Blockstore,
         blockstore_db::BlockstoreError,
@@ -9,9 +13,10 @@ use {
         token_balances::collect_token_balances,
     },
     chrono_humanize::{Accuracy, HumanTime, Tense},
-    crossbeam_channel::{unbounded, Sender},
+    crossbeam_channel::{unbounded, Receiver, Select, Sender},
     itertools::Itertools,
     log::*,
+    nohash_hasher::{IntSet, NoHashHasher},
     rand::{seq::SliceRandom, thread_rng},
     rayon::{prelude::*, ThreadPool},
     solana_entry::entry::{
@@ -34,6 +39,7 @@ use {
         bank_utils,
         block_cost_limits::*,
         commitment::VOTE_THRESHOLD_SIZE,
+        contains::Contains,
         cost_model::CostModel,
         snapshot_config::SnapshotConfig,
         snapshot_package::{AccountsPackageSender, SnapshotType},
@@ -53,8 +59,8 @@ use {
         signature::{Keypair, Signature},
         timing,
         transaction::{
-            Result, SanitizedTransaction, TransactionError, TransactionVerificationMode,
-            VersionedTransaction,
+            Result, SanitizedTransaction, TransactionAccountLocks, TransactionError,
+            TransactionVerificationMode, VersionedTransaction,
         },
     },
     solana_transaction_status::token_balances::TransactionTokenBalancesSet,
@@ -69,35 +75,6 @@ use {
     },
     thiserror::Error,
 };
-
-// it tracks the block cost available capacity - number of compute-units allowed
-// by max block cost limit
-#[derive(Debug)]
-pub struct BlockCostCapacityMeter {
-    pub capacity: u64,
-    pub accumulated_cost: u64,
-}
-
-impl Default for BlockCostCapacityMeter {
-    fn default() -> Self {
-        BlockCostCapacityMeter::new(MAX_BLOCK_UNITS)
-    }
-}
-
-impl BlockCostCapacityMeter {
-    pub fn new(capacity_limit: u64) -> Self {
-        Self {
-            capacity: capacity_limit,
-            accumulated_cost: 0_u64,
-        }
-    }
-
-    // return the remaining capacity
-    pub fn accumulate(&mut self, cost: u64) -> u64 {
-        self.accumulated_cost += cost;
-        self.capacity.saturating_sub(self.accumulated_cost)
-    }
-}
 
 thread_local!(static PAR_THREAD_POOL: RefCell<ThreadPool> = RefCell::new(rayon::ThreadPoolBuilder::new()
                     .num_threads(get_thread_count())
@@ -309,6 +286,89 @@ fn rebatch_transactions<'a>(
     tx_batch
 }
 
+// for each index, builds a transaction dependency graph of indices that need to execute before
+// the current one.
+// The returned Vec<HashSet<usize>> is a 1:1 mapping for the indices that need to be executed
+// before that index can be executed
+fn build_dependency_graph(tx_account_locks: &[TransactionAccountLocks]) -> Vec<IntSet<usize>> {
+    // build a map whose key is a pubkey + value is a sorted vector of all indices that
+    // lock that account
+    let mut indices_read_locking_account = HashMap::new();
+    let mut indicies_write_locking_account = HashMap::new();
+    tx_account_locks
+        .iter()
+        .enumerate()
+        .for_each(|(idx, tx_account_locks)| {
+            for account in &tx_account_locks.readonly {
+                indices_read_locking_account
+                    .entry(**account)
+                    .and_modify(|indices: &mut Vec<usize>| indices.push(idx))
+                    .or_insert_with(|| vec![idx]);
+            }
+            for account in &tx_account_locks.writable {
+                indicies_write_locking_account
+                    .entry(**account)
+                    .and_modify(|indices: &mut Vec<usize>| indices.push(idx))
+                    .or_insert_with(|| vec![idx]);
+            }
+        });
+
+    tx_account_locks
+        .iter()
+        .enumerate()
+        .map(|(idx, account_locks)| {
+            let mut dep_graph: IntSet<usize> = IntSet::default();
+            let readlock_accs = account_locks.writable.iter();
+            let writelock_accs = account_locks
+                .readonly
+                .iter()
+                .chain(account_locks.writable.iter());
+
+            for acc in readlock_accs {
+                if let Some(indices) = indices_read_locking_account.get(acc) {
+                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                }
+            }
+
+            for read_acc in writelock_accs {
+                if let Some(indices) = indicies_write_locking_account.get(read_acc) {
+                    dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
+                }
+            }
+            dep_graph
+        })
+        .collect()
+}
+
+fn build_batch_indices(tx_dependency_graph: &Vec<HashSet<usize>>) -> Vec<Vec<usize>> {
+    let mut processed_indices = vec![false; tx_dependency_graph.len()];
+    let mut batches = Vec::new();
+
+    let mut batch = Vec::with_capacity(tx_dependency_graph.len());
+
+    while !processed_indices.iter().all(|processed| *processed) {
+        for tx_idx in 0..tx_dependency_graph.len() {
+            // if the transaction at tx_idx hasn't been processed
+            // AND all dependencies have been processed
+            if !processed_indices[tx_idx]
+                && tx_dependency_graph[tx_idx]
+                    .iter()
+                    .all(|deps_idx| processed_indices[*deps_idx])
+            {
+                batch.push(tx_idx);
+            }
+        }
+
+        for i in &batch {
+            processed_indices[*i] = true;
+        }
+        batches.push(batch.clone());
+        batch.clear();
+    }
+
+    batches
+}
+
 fn execute_batches(
     bank: &Arc<Bank>,
     pending_transactions: &[SanitizedTransaction],
@@ -317,57 +377,77 @@ fn execute_batches(
     replay_vote_sender: Option<&ReplayVoteSender>,
     timings: &mut ExecuteTimings,
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
+    tx_executor_handle: &BankTransactionExecutorHandle,
 ) -> Result<()> {
-    // let (lock_results, sanitized_txs): (Vec<_>, Vec<_>) = batches
-    //     .iter()
-    //     .flat_map(|batch| {
-    //         batch
-    //             .lock_results()
-    //             .iter()
-    //             .cloned()
-    //             .zip(batch.sanitized_transactions().to_vec())
-    //     })
-    //     .unzip();
-    //
-    // let cost_model = CostModel::new();
-    // let mut minimal_tx_cost = u64::MAX;
-    // let mut total_cost: u64 = 0;
-    // // Allowing collect here, since it also computes the minimal tx cost, and aggregate cost.
-    // // These two values are later used for checking if the tx_costs vector needs to be iterated over.
-    // #[allow(clippy::needless_collect)]
-    // let tx_costs = sanitized_txs
-    //     .iter()
-    //     .map(|tx| {
-    //         let cost = cost_model.calculate_cost(tx).sum();
-    //         minimal_tx_cost = std::cmp::min(minimal_tx_cost, cost);
-    //         total_cost = total_cost.saturating_add(cost);
-    //         cost
-    //     })
-    //     .collect::<Vec<_>>();
-    //
-    // let target_batch_count = get_thread_count() as u64;
-    //
-    // let mut tx_batches: Vec<TransactionBatch> = vec![];
-    // let rebatched_txs = if total_cost > target_batch_count.saturating_mul(minimal_tx_cost) {
-    //     let target_batch_cost = total_cost / target_batch_count;
-    //     let mut batch_cost: u64 = 0;
-    //     let mut slice_start = 0;
-    //     tx_costs.into_iter().enumerate().for_each(|(index, cost)| {
-    //         let next_index = index + 1;
-    //         batch_cost = batch_cost.saturating_add(cost);
-    //         if batch_cost >= target_batch_cost || next_index == sanitized_txs.len() {
-    //             let tx_batch =
-    //                 rebatch_transactions(&lock_results, bank, &sanitized_txs, slice_start, index);
-    //             slice_start = next_index;
-    //             tx_batches.push(tx_batch);
-    //             batch_cost = 0;
-    //         }
-    //     });
-    //     &tx_batches[..]
-    // } else {
-    //     batches
-    // };
-    //
+    let tx_account_locks_results: Vec<Result<_>> = pending_transactions
+        .iter()
+        .map(|tx| tx.get_account_locks(bank.get_transaction_account_lock_limit()))
+        .collect();
+
+    // bail out early if error
+    if let Some(err) = tx_account_locks_results.iter().find(|r| r.is_err()) {
+        err.clone()?;
+    }
+    let tx_account_locks: Vec<_> = tx_account_locks_results
+        .into_iter()
+        .map(|l| l.unwrap())
+        .collect();
+
+    // the dependency graph contains the indices that must be executed (marked with State::Done) before they can be executed
+    let now = Instant::now();
+    let dependency_graph = build_dependency_graph(&tx_account_locks);
+    let dependency_graph_elapsed = now.elapsed();
+    info!(
+        "slot: {:?} dependency_graph_elapsed: {:?}",
+        bank.slot(),
+        dependency_graph_elapsed,
+    );
+
+    #[derive(Clone)]
+    struct ProcessingState {
+        receiver: Receiver<()>,
+    }
+    #[derive(Clone)]
+    enum State {
+        Blocked,
+        Processing,
+        Done,
+    }
+
+    let receiver = tx_executor_handle.response_receiver();
+
+    let mut processing_states: Vec<State> = vec![State::Blocked; dependency_graph.len()];
+
+    let mut is_done = false;
+    while !is_done {
+        is_done = true;
+        for idx in 0..processing_states.len() {
+            match processing_states[idx] {
+                State::Blocked => {
+                    is_done = false;
+
+                    // if all the dependent txs are executed, this transaction can be scheduled for
+                    // execution.
+                    if dependency_graph[idx]
+                        .iter()
+                        .all(|idx| matches!(processing_states[*idx], State::Done))
+                    {
+                        let _result =
+                            tx_executor_handle.schedule(BankTransactionExecutionRequest {});
+                        // this idx can be scheduled and moved to processing
+                        processing_states[idx] = State::Processing;
+                    }
+                }
+                State::Processing => {
+                    is_done = false;
+                }
+                State::Done => {}
+            }
+        }
+
+        let mut results = vec![receiver.recv().unwrap()];
+        results.extend(receiver.try_iter());
+    }
     // execute_batches_internal(
     //     bank,
     //     rebatched_txs,
@@ -399,6 +479,10 @@ pub fn process_entries_for_tests(
         }
     };
 
+    // TODO (LB): cleanup properly
+    let exit = Arc::new(AtomicBool::new(false));
+    let tx_executor = BankTransactionExecutor::new(1, &exit);
+
     let mut timings = ExecuteTimings::default();
     let mut entries = entry::verify_transactions(entries, Arc::new(verify_transaction))?;
     let result = process_entries_with_callback(
@@ -411,6 +495,7 @@ pub fn process_entries_for_tests(
         None,
         &mut timings,
         Arc::new(RwLock::new(BlockCostCapacityMeter::default())),
+        &tx_executor.handle(),
     );
 
     debug!("process_entries: {:?}", timings);
@@ -428,6 +513,7 @@ fn process_entries_with_callback(
     transaction_cost_metrics_sender: Option<&TransactionCostMetricsSender>,
     timings: &mut ExecuteTimings,
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
+    handle: &BankTransactionExecutorHandle,
 ) -> Result<()> {
     // accumulator for entries that can be processed in parallel
     let mut pending_transactions = vec![];
@@ -450,6 +536,7 @@ fn process_entries_with_callback(
                         replay_vote_sender,
                         timings,
                         cost_capacity_meter.clone(),
+                        handle,
                     )?;
                     pending_transactions.clear();
                     for hash in &tick_hashes {
@@ -468,10 +555,31 @@ fn process_entries_with_callback(
                     transactions.shuffle(&mut rng);
                 }
 
+                // Check to ensure that a batch doesn't contain lock conflicts with itself
+                // This assumes that this is the only place things are locked/batched.
                 let batch = bank.prepare_sanitized_batch(transactions);
+                let first_lock_err = first_err(batch.lock_results());
+                drop(batch);
 
-                // TODO (LB): try to lock batch to ensure there's no RW conflicts.
+                if first_lock_err.is_err() {
+                    // An entry has account lock conflicts with *itself*, which should not happen
+                    // if generated by a properly functioning leader
+                    datapoint_error!(
+                        "validator_process_entry_error",
+                        (
+                            "error",
+                            format!(
+                                "Lock accounts error, entry conflicts with itself, txs: {:?}",
+                                transactions
+                            ),
+                            String
+                        )
+                    );
+                    // bail
+                    first_lock_err?;
+                }
 
+                // Add to be scheduled on tick or no more entries
                 pending_transactions.extend(transactions.clone());
             }
         }
@@ -484,6 +592,7 @@ fn process_entries_with_callback(
         replay_vote_sender,
         timings,
         cost_capacity_meter,
+        handle,
     )?;
     for hash in tick_hashes {
         bank.register_tick(hash);
@@ -514,9 +623,6 @@ pub enum BlockstoreProcessorError {
     #[error("root bank with mismatched capitalization at {0}")]
     RootBankWithMismatchedCapitalization(Slot),
 }
-
-/// Callback for accessing bank state while processing the blockstore
-pub type ProcessCallback = Arc<dyn Fn(&Bank) + Sync + Send>;
 
 #[derive(Default, Clone)]
 pub struct ProcessOptions {
@@ -981,6 +1087,7 @@ pub fn confirm_slot(
                 transaction_cost_metrics_sender,
                 &mut execute_timings,
                 cost_capacity_meter,
+                handle,
             )
             .map_err(BlockstoreProcessorError::from);
             replay_elapsed.stop();
@@ -1428,75 +1535,6 @@ fn process_single_slot(
     cache_block_meta(bank, cache_block_meta_sender);
 
     Ok(())
-}
-
-#[allow(clippy::large_enum_variant)]
-pub enum TransactionStatusMessage {
-    Batch(TransactionStatusBatch),
-    Freeze(Slot),
-}
-
-pub struct TransactionStatusBatch {
-    pub bank: Arc<Bank>,
-    pub transactions: Vec<SanitizedTransaction>,
-    pub execution_results: Vec<Option<TransactionExecutionDetails>>,
-    pub balances: TransactionBalancesSet,
-    pub token_balances: TransactionTokenBalancesSet,
-    pub rent_debits: Vec<RentDebits>,
-}
-
-#[derive(Clone)]
-pub struct TransactionStatusSender {
-    pub sender: Sender<TransactionStatusMessage>,
-}
-
-impl TransactionStatusSender {
-    pub fn send_transaction_status_batch(
-        &self,
-        bank: Arc<Bank>,
-        transactions: Vec<SanitizedTransaction>,
-        execution_results: Vec<TransactionExecutionResult>,
-        balances: TransactionBalancesSet,
-        token_balances: TransactionTokenBalancesSet,
-        rent_debits: Vec<RentDebits>,
-    ) {
-        let slot = bank.slot();
-
-        if let Err(e) = self
-            .sender
-            .send(TransactionStatusMessage::Batch(TransactionStatusBatch {
-                bank,
-                transactions,
-                execution_results: execution_results
-                    .into_iter()
-                    .map(|result| match result {
-                        TransactionExecutionResult::Executed { details, .. } => Some(details),
-                        TransactionExecutionResult::NotExecuted(_) => None,
-                    })
-                    .collect(),
-                balances,
-                token_balances,
-                rent_debits,
-            }))
-        {
-            trace!(
-                "Slot {} transaction_status send batch failed: {:?}",
-                slot,
-                e
-            );
-        }
-    }
-
-    pub fn send_transaction_status_freeze_message(&self, bank: &Arc<Bank>) {
-        let slot = bank.slot();
-        if let Err(e) = self.sender.send(TransactionStatusMessage::Freeze(slot)) {
-            trace!(
-                "Slot {} transaction_status send freeze message failed: {:?}",
-                slot,
-                e
-            );
-        }
-    }
 }
 
 pub type CacheBlockMetaSender = Sender<Arc<Bank>>;

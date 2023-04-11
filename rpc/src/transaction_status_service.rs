@@ -3,8 +3,8 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError},
     itertools::izip,
     solana_ledger::{
+        bank_transaction_executor::{TransactionStatusBatch, TransactionStatusMessage},
         blockstore::Blockstore,
-        blockstore_processor::{TransactionStatusBatch, TransactionStatusMessage},
     },
     solana_runtime::bank::{DurableNonceFee, TransactionExecutionDetails},
     solana_transaction_status::{

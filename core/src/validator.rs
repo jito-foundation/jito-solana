@@ -38,11 +38,12 @@ use {
     },
     solana_ledger::{
         bank_forks_utils,
+        bank_transaction_executor::TransactionStatusSender,
         blockstore::{
             Blockstore, BlockstoreError, BlockstoreSignals, CompletedSlotsReceiver, PurgeType,
         },
         blockstore_db::{BlockstoreOptions, BlockstoreRecoveryMode, LedgerColumnOptions},
-        blockstore_processor::{self, TransactionStatusSender},
+        blockstore_processor::{self},
         leader_schedule::FixedSchedule,
         leader_schedule_cache::LeaderScheduleCache,
     },

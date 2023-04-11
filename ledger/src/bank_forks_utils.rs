@@ -1,9 +1,9 @@
 use {
     crate::{
+        bank_transaction_executor::TransactionStatusSender,
         blockstore::Blockstore,
         blockstore_processor::{
             self, BlockstoreProcessorError, CacheBlockMetaSender, ProcessOptions,
-            TransactionStatusSender,
         },
         leader_schedule_cache::LeaderScheduleCache,
     },

@@ -32,7 +32,7 @@ use {
     solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierLock,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
-        blockstore::Blockstore, blockstore_processor::TransactionStatusSender,
+        bank_transaction_executor::TransactionStatusSender, blockstore::Blockstore,
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_poh::poh_recorder::PohRecorder,

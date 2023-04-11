@@ -4775,7 +4775,7 @@ pub fn populate_blockstore_for_tests(
             entries,
             true,
             Some(
-                &solana_ledger::blockstore_processor::TransactionStatusSender {
+                &solana_ledger::bank_transaction_executor::TransactionStatusSender {
                     sender: transaction_status_sender,
                 },
             ),

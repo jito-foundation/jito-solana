@@ -32,10 +32,12 @@ use {
     solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierLock,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
-        bank_transaction_executor::{BankTransactionExecutor, BankTransactionExecutorHandle},
+        bank_transaction_executor::{
+            BankTransactionExecutor, BankTransactionExecutorHandle, TransactionStatusSender,
+        },
         block_error::BlockError,
         blockstore::Blockstore,
-        blockstore_processor::{self, BlockstoreProcessorError, TransactionStatusSender},
+        blockstore_processor::{self, BlockstoreProcessorError},
         leader_schedule_cache::LeaderScheduleCache,
         leader_schedule_utils::first_of_consecutive_leader_slots,
     },
