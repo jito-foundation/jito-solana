@@ -22,6 +22,7 @@ use {
     },
     solana_transaction_status::token_balances::TransactionTokenBalancesSet,
     std::{
+        borrow::Cow,
         collections::HashMap,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -258,8 +259,8 @@ impl BankTransactionExecutor {
                     let signature = *tx.signature();
 
                     let txs = vec![tx];
-                    let batch = bank.prepare_sanitized_batch(&txs);
-                    // TODO (LB): double check to make sure no locking issues
+                    let mut batch = TransactionBatch::new(vec![Ok(())], &bank, Cow::Owned(txs));
+                    batch.set_needs_unlock(false);
 
                     let mut timings = ExecuteTimings::default();
                     let execution_result = execute_batch(

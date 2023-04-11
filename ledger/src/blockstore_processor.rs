@@ -197,6 +197,11 @@ fn execute_batches(
                         .iter()
                         .all(|idx| matches!(processing_states[*idx], State::Done))
                     {
+                        debug!(
+                            "scheduling signature: {}",
+                            pending_transactions[idx].signature()
+                        );
+
                         let _result = tx_executor_handle
                             .schedule(BankTransactionExecutionRequest {
                                 bank: bank.clone(),
@@ -217,7 +222,14 @@ fn execute_batches(
             }
         }
 
+        // TODO (LB): do cleaner
+        if is_done {
+            break;
+        }
+
         let mut first_error = Ok(());
+
+        debug!("waiting for response...");
 
         let mut executor_responses = vec![receiver.recv().unwrap()];
         executor_responses.extend(receiver.try_iter());
@@ -229,11 +241,13 @@ fn execute_batches(
             timings.saturating_add_in_place(ExecuteTimingType::NumExecuteBatches, 1);
             timings.accumulate(&r.timings);
 
+            debug!("signature done: {:?}", r.signature);
             processing_states[*signature_indices.get(&r.signature).unwrap()] = State::Done;
 
             // set first error, but continue to mark the rest as done so loop below can break
             // out on error correctly
             if r.result.is_err() && first_error.is_ok() {
+                debug!("bank.commit_transaction error: {:?}", r.result);
                 first_error = r.result.clone();
             }
         }
