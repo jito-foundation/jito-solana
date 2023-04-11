@@ -441,7 +441,8 @@ impl ReplayStage {
                 };
                 let in_vote_only_mode = bank_forks.read().unwrap().get_vote_only_mode_signal();
 
-                let bank_tx_execution = BankTransactionExecutor::new(get_thread_count(), &exit);
+                // TODO (LB): dont do * 2
+                let bank_tx_execution = BankTransactionExecutor::new(get_thread_count() * 2, &exit);
                 let handle = bank_tx_execution.handle();
 
                 loop {
