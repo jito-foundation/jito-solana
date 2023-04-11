@@ -57,7 +57,7 @@ use {
         collections::{HashMap, HashSet},
         path::PathBuf,
         result,
-        sync::{atomic::AtomicBool, Arc, RwLock},
+        sync::{Arc, RwLock},
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -294,9 +294,7 @@ pub fn process_entries_for_tests(
         }
     };
 
-    // TODO (LB): cleanup properly
-    let exit = Arc::new(AtomicBool::new(false));
-    let tx_executor = BankTransactionExecutor::new(1, &exit);
+    let tx_executor = BankTransactionExecutor::new(get_thread_count());
 
     let mut timings = ExecuteTimings::default();
     let mut entries = entry::verify_transactions(entries, Arc::new(verify_transaction))?;
@@ -312,6 +310,8 @@ pub fn process_entries_for_tests(
         Arc::new(RwLock::new(BlockCostCapacityMeter::default())),
         &tx_executor.handle(),
     );
+
+    tx_executor.join().unwrap();
 
     debug!("process_entries: {:?}", timings);
     result
@@ -714,10 +714,8 @@ fn confirm_full_slot(
 ) -> result::Result<(), BlockstoreProcessorError> {
     let mut confirmation_timing = ConfirmationTiming::default();
     let skip_verification = !opts.poh_verify;
-
-    // TODO (LB): need to handle cleaning up here
-    let exit = Arc::new(AtomicBool::new(false));
-    let bank_tx_execution = BankTransactionExecutor::new(get_thread_count(), &exit);
+    // TODO (LB): pass in higher up
+    let bank_tx_execution = BankTransactionExecutor::new(get_thread_count());
     let handle = bank_tx_execution.handle();
 
     let _more_entries_to_process = confirm_slot(
@@ -1407,6 +1405,7 @@ pub mod tests {
             accounts_data_meter::MAX_ACCOUNTS_DATA_LEN, invoke_context::InvokeContext,
         },
         solana_runtime::{
+            block_cost_limits::MAX_ACCOUNT_DATA_BLOCK_LEN,
             genesis_utils::{
                 self, create_genesis_config_with_vote_accounts, ValidatorVoteKeypairs,
             },
@@ -1415,6 +1414,7 @@ pub mod tests {
         solana_sdk::{
             account::{AccountSharedData, WritableAccount},
             epoch_schedule::EpochSchedule,
+            feature_set,
             hash::Hash,
             instruction::InstructionError,
             native_token::LAMPORTS_PER_SOL,
@@ -3333,56 +3333,6 @@ pub mod tests {
     }
 
     #[test]
-    fn test_get_first_error() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config(1_000_000_000);
-        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
-
-        let present_account_key = Keypair::new();
-        let present_account = AccountSharedData::new(1, 10, &Pubkey::default());
-        bank.store_account(&present_account_key.pubkey(), &present_account);
-
-        let keypair = Keypair::new();
-
-        // Create array of two transactions which throw different errors
-        let account_not_found_tx = system_transaction::transfer(
-            &keypair,
-            &solana_sdk::pubkey::new_rand(),
-            42,
-            bank.last_blockhash(),
-        );
-        let account_not_found_sig = account_not_found_tx.signatures[0];
-        let invalid_blockhash_tx = system_transaction::transfer(
-            &mint_keypair,
-            &solana_sdk::pubkey::new_rand(),
-            42,
-            Hash::default(),
-        );
-        let txs = vec![account_not_found_tx, invalid_blockhash_tx];
-        let batch = bank.prepare_batch_for_tests(txs);
-        let (
-            TransactionResults {
-                fee_collection_results,
-                ..
-            },
-            _balances,
-        ) = batch.bank().load_execute_and_commit_transactions(
-            &batch,
-            MAX_PROCESSING_AGE,
-            false,
-            false,
-            false,
-            &mut ExecuteTimings::default(),
-        );
-        let (err, signature) = get_first_error(&batch, fee_collection_results).unwrap();
-        assert_eq!(err.unwrap_err(), TransactionError::AccountNotFound);
-        assert_eq!(signature, account_not_found_sig);
-    }
-
-    #[test]
     fn test_replay_vote_sender() {
         let validator_keypairs: Vec<_> =
             (0..10).map(|_| ValidatorVoteKeypairs::new_rand()).collect();
@@ -3712,49 +3662,6 @@ pub mod tests {
             supermajority_root_from_vote_accounts(slot, total_stake, &accounts).unwrap(),
             8
         );
-    }
-
-    #[test]
-    fn test_rebatch_transactions() {
-        let dummy_leader_pubkey = solana_sdk::pubkey::new_rand();
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config_with_leader(500, &dummy_leader_pubkey, 100);
-        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
-
-        let pubkey = solana_sdk::pubkey::new_rand();
-        let keypair2 = Keypair::new();
-        let pubkey2 = solana_sdk::pubkey::new_rand();
-
-        let txs = vec![
-            SanitizedTransaction::from_transaction_for_tests(system_transaction::transfer(
-                &mint_keypair,
-                &pubkey,
-                1,
-                genesis_config.hash(),
-            )),
-            SanitizedTransaction::from_transaction_for_tests(system_transaction::transfer(
-                &keypair2,
-                &pubkey2,
-                1,
-                genesis_config.hash(),
-            )),
-        ];
-
-        let batch = bank.prepare_sanitized_batch(&txs);
-        assert!(batch.needs_unlock());
-
-        let batch2 = rebatch_transactions(
-            batch.lock_results(),
-            &bank,
-            batch.sanitized_transactions(),
-            0,
-            1,
-        );
-        assert!(batch.needs_unlock());
-        assert!(!batch2.needs_unlock());
     }
 
     #[test]

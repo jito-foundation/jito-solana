@@ -24,10 +24,7 @@ use {
     std::{
         borrow::Cow,
         collections::HashMap,
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
-        },
+        sync::{Arc, RwLock},
         thread::{self, Builder, JoinHandle},
         time::Duration,
     },
@@ -204,9 +201,9 @@ pub struct BankTransactionExecutor {
 }
 
 impl BankTransactionExecutor {
-    pub fn new(num_executors: usize, exit: &Arc<AtomicBool>) -> BankTransactionExecutor {
+    pub fn new(num_executors: usize) -> BankTransactionExecutor {
         let (sender, receiver) = unbounded();
-        let threads = Self::start_execution_threads(receiver, num_executors, exit);
+        let threads = Self::start_execution_threads(receiver, num_executors);
         BankTransactionExecutor { sender, threads }
     }
 
@@ -216,7 +213,10 @@ impl BankTransactionExecutor {
         BankTransactionExecutorHandle::new(self.sender.clone())
     }
 
+    /// Drops the sender + joins threads
+    /// Note: this will block unless all instances of BankTransactionExecutorHandle are dropped
     pub fn join(self) -> thread::Result<()> {
+        drop(self.sender);
         for t in self.threads {
             t.join()?;
         }
@@ -226,25 +226,23 @@ impl BankTransactionExecutor {
     fn start_execution_threads(
         receiver: TransactionExecutionReceiver,
         num_executors: usize,
-        exit: &Arc<AtomicBool>,
     ) -> Vec<JoinHandle<()>> {
         (0..num_executors)
             .map(|idx| {
-                let exit = exit.clone();
                 let receiver = receiver.clone();
 
                 Builder::new()
                     .name(format!("solBankTransactionExecutor-{}", idx))
-                    .spawn(move || Self::transaction_execution_thread(receiver, exit))
+                    .spawn(move || Self::transaction_execution_thread(receiver))
                     .unwrap()
             })
             .collect()
     }
 
-    fn transaction_execution_thread(receiver: TransactionExecutionReceiver, exit: Arc<AtomicBool>) {
+    fn transaction_execution_thread(receiver: TransactionExecutionReceiver) {
         const TIMEOUT: Duration = Duration::from_secs(1);
 
-        while !exit.load(Ordering::Relaxed) {
+        loop {
             match receiver.recv_timeout(TIMEOUT) {
                 Ok((
                     response_sender,
@@ -484,4 +482,76 @@ fn get_first_error(
         }
     }
     first_err
+}
+
+#[cfg(test)]
+pub mod tests {
+    use {
+        crate::{bank_transaction_executor::get_first_error, genesis_utils::create_genesis_config},
+        solana_program_runtime::timings::ExecuteTimings,
+        solana_runtime::{
+            bank::{Bank, TransactionResults},
+            genesis_utils::GenesisConfigInfo,
+        },
+        solana_sdk::{
+            account::AccountSharedData,
+            clock::MAX_PROCESSING_AGE,
+            hash::Hash,
+            pubkey::Pubkey,
+            signature::{Keypair, Signer},
+            system_transaction,
+            transaction::TransactionError,
+        },
+        std::sync::Arc,
+    };
+
+    #[test]
+    fn test_get_first_error() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(1_000_000_000);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+
+        let present_account_key = Keypair::new();
+        let present_account = AccountSharedData::new(1, 10, &Pubkey::default());
+        bank.store_account(&present_account_key.pubkey(), &present_account);
+
+        let keypair = Keypair::new();
+
+        // Create array of two transactions which throw different errors
+        let account_not_found_tx = system_transaction::transfer(
+            &keypair,
+            &solana_sdk::pubkey::new_rand(),
+            42,
+            bank.last_blockhash(),
+        );
+        let account_not_found_sig = account_not_found_tx.signatures[0];
+        let invalid_blockhash_tx = system_transaction::transfer(
+            &mint_keypair,
+            &solana_sdk::pubkey::new_rand(),
+            42,
+            Hash::default(),
+        );
+        let txs = vec![account_not_found_tx, invalid_blockhash_tx];
+        let batch = bank.prepare_batch_for_tests(txs);
+        let (
+            TransactionResults {
+                fee_collection_results,
+                ..
+            },
+            _balances,
+        ) = batch.bank().load_execute_and_commit_transactions(
+            &batch,
+            MAX_PROCESSING_AGE,
+            false,
+            false,
+            false,
+            &mut ExecuteTimings::default(),
+        );
+        let (err, signature) = get_first_error(&batch, fee_collection_results).unwrap();
+        assert_eq!(err.unwrap_err(), TransactionError::AccountNotFound);
+        assert_eq!(signature, account_not_found_sig);
+    }
 }
