@@ -297,24 +297,27 @@ pub fn process_entries_for_tests(
     let tx_executor = BankTransactionExecutor::new(get_thread_count());
 
     let mut timings = ExecuteTimings::default();
-    let mut entries = entry::verify_transactions(entries, Arc::new(verify_transaction))?;
-    let result = process_entries_with_callback(
-        bank,
-        &mut entries,
-        randomize,
-        None,
-        transaction_status_sender,
-        replay_vote_sender,
-        None,
-        &mut timings,
-        Arc::new(RwLock::new(BlockCostCapacityMeter::default())),
-        &tx_executor.handle(),
-    );
+    for entry in entries {
+        let mut entries_batch =
+            entry::verify_transactions(vec![entry], Arc::new(verify_transaction.clone()))?;
+        process_entries_with_callback(
+            bank,
+            &mut entries_batch,
+            randomize,
+            None,
+            transaction_status_sender,
+            replay_vote_sender,
+            None,
+            &mut timings,
+            Arc::new(RwLock::new(BlockCostCapacityMeter::default())),
+            &tx_executor.handle(),
+        )?;
+    }
 
     tx_executor.join().unwrap();
 
     debug!("process_entries: {:?}", timings);
-    result
+    Ok(())
 }
 
 // Note: If randomize is true this will shuffle entries' transactions in-place.
