@@ -1,6 +1,6 @@
 use {
     crate::token_balances::collect_token_balances,
-    crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender},
+    crossbeam_channel::{unbounded, Receiver, RecvError, RecvTimeoutError, Sender},
     solana_program_runtime::timings::ExecuteTimings,
     solana_runtime::{
         bank::{
@@ -240,10 +240,8 @@ impl BankTransactionExecutor {
     }
 
     fn transaction_execution_thread(receiver: TransactionExecutionReceiver) {
-        const TIMEOUT: Duration = Duration::from_secs(1);
-
         loop {
-            match receiver.recv_timeout(TIMEOUT) {
+            match receiver.recv() {
                 Ok((
                     response_sender,
                     BankTransactionExecutionRequest {
@@ -281,8 +279,7 @@ impl BankTransactionExecutor {
                         warn!("error sending back results");
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
+                Err(RecvError) => {
                     break;
                 }
             }
