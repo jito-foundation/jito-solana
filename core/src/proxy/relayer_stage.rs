@@ -197,7 +197,7 @@ impl RelayerStage {
                         Ok(_) => {}
                         Err(e) => {
                             stream_error_count += 1;
-                            datapoint_error!(
+                            datapoint_warn!(
                                 "relayer_stage-stream_error",
                                 ("count", stream_error_count, i64),
                                 ("error", e.to_string(), String),
