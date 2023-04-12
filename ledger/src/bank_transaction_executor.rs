@@ -1,6 +1,6 @@
 use {
     crate::token_balances::collect_token_balances,
-    crossbeam_channel::{unbounded, Receiver, RecvError, Sender},
+    crossbeam_channel::{unbounded, Receiver, Sender},
     solana_program_runtime::timings::ExecuteTimings,
     solana_runtime::{
         bank::{
@@ -239,48 +239,42 @@ impl BankTransactionExecutor {
     }
 
     fn transaction_execution_thread(receiver: TransactionExecutionReceiver) {
-        loop {
-            match receiver.recv() {
-                Ok((
-                    response_sender,
-                    BankTransactionExecutionRequest {
-                        bank,
-                        tx,
-                        transaction_status_sender,
-                        replay_vote_sender,
-                        cost_capacity_meter,
-                    },
-                )) => {
-                    let signature = *tx.signature();
+        while let Ok((
+            response_sender,
+            BankTransactionExecutionRequest {
+                bank,
+                tx,
+                transaction_status_sender,
+                replay_vote_sender,
+                cost_capacity_meter,
+            },
+        )) = receiver.recv()
+        {
+            let signature = *tx.signature();
 
-                    let txs = vec![tx];
-                    let mut batch = TransactionBatch::new(vec![Ok(())], &bank, Cow::Owned(txs));
-                    batch.set_needs_unlock(false);
+            let txs = vec![tx];
+            let mut batch = TransactionBatch::new(vec![Ok(())], &bank, Cow::Owned(txs));
+            batch.set_needs_unlock(false);
 
-                    let mut timings = ExecuteTimings::default();
-                    let execution_result = execute_batch(
-                        &batch,
-                        &bank,
-                        transaction_status_sender.as_ref(),
-                        replay_vote_sender.as_ref(),
-                        &mut timings,
-                        cost_capacity_meter,
-                    );
+            let mut timings = ExecuteTimings::default();
+            let execution_result = execute_batch(
+                &batch,
+                &bank,
+                transaction_status_sender.as_ref(),
+                replay_vote_sender.as_ref(),
+                &mut timings,
+                cost_capacity_meter,
+            );
 
-                    if response_sender
-                        .send(BankTransactionExecutionResponse {
-                            result: execution_result,
-                            timings,
-                            signature,
-                        })
-                        .is_err()
-                    {
-                        warn!("error sending back results");
-                    }
-                }
-                Err(RecvError) => {
-                    break;
-                }
+            if response_sender
+                .send(BankTransactionExecutionResponse {
+                    result: execution_result,
+                    timings,
+                    signature,
+                })
+                .is_err()
+            {
+                warn!("error sending back results");
             }
         }
     }
