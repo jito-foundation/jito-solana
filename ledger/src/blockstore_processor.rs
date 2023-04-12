@@ -16,7 +16,6 @@ use {
     itertools::Itertools,
     log::*,
     nohash_hasher::IntSet,
-    rand::{seq::SliceRandom, thread_rng},
     rayon::ThreadPool,
     solana_entry::entry::{
         self, create_ticks, Entry, EntrySlice, EntryType, EntryVerificationStatus, VerifyRecyclers,
@@ -135,7 +134,7 @@ fn build_dependency_graph(tx_account_locks: &[TransactionAccountLocks]) -> Vec<I
 
 fn execute_batches(
     bank: &Arc<Bank>,
-    pending_transactions: &[SanitizedTransaction],
+    pending_transactions: &[&SanitizedTransaction],
     entry_callback: Option<&ProcessCallback>,
     transaction_status_sender: Option<&TransactionStatusSender>,
     replay_vote_sender: Option<&ReplayVoteSender>,
@@ -143,19 +142,14 @@ fn execute_batches(
     cost_capacity_meter: Arc<RwLock<BlockCostCapacityMeter>>,
     tx_executor_handle: &BankTransactionExecutorHandle,
 ) -> Result<()> {
-    let tx_account_locks_results: Vec<Result<_>> = pending_transactions
-        .iter()
-        .map(|tx| tx.get_account_locks(bank.get_transaction_account_lock_limit()))
-        .collect();
-
-    // bail out early if error
-    if let Some(err) = tx_account_locks_results.iter().find(|r| r.is_err()) {
-        err.clone()?;
+    if pending_transactions.is_empty() {
+        return Ok(());
     }
-    let tx_account_locks: Vec<_> = tx_account_locks_results
-        .into_iter()
-        .map(|l| l.unwrap())
-        .collect();
+
+    let mut tx_account_locks: Vec<_> = Vec::with_capacity(pending_transactions.len());
+    for tx in pending_transactions {
+        tx_account_locks.push(tx.get_account_locks(bank.get_transaction_account_lock_limit())?);
+    }
 
     // the dependency graph contains the indices that must be executed (marked with State::Done) before they can be executed
     let now = Instant::now();
@@ -177,11 +171,14 @@ fn execute_batches(
     let receiver = tx_executor_handle.response_receiver();
 
     let mut processing_states: Vec<State> = vec![State::Blocked; dependency_graph.len()];
-    let signature_indices: HashMap<&Signature, usize> = pending_transactions
-        .iter()
-        .enumerate()
-        .map(|(idx, tx)| (tx.signature(), idx))
-        .collect();
+    let mut signature_indices: HashMap<&Signature, usize> =
+        HashMap::with_capacity(dependency_graph.len());
+    signature_indices.extend(
+        pending_transactions
+            .iter()
+            .enumerate()
+            .map(|(idx, tx)| (tx.signature(), idx)),
+    );
 
     let mut is_done = false;
     while !is_done {
@@ -324,8 +321,8 @@ pub fn process_entries_for_tests(
 #[allow(clippy::too_many_arguments)]
 fn process_entries_with_callback(
     bank: &Arc<Bank>,
-    entries: &mut [EntryType],
-    randomize: bool,
+    entries: &[EntryType],
+    _randomize: bool,
     entry_callback: Option<&ProcessCallback>,
     transaction_status_sender: Option<&TransactionStatusSender>,
     replay_vote_sender: Option<&ReplayVoteSender>,
@@ -337,7 +334,6 @@ fn process_entries_with_callback(
     // accumulator for entries that can be processed in parallel
     let mut pending_transactions = vec![];
     let mut tick_hashes = vec![];
-    let mut rng = thread_rng();
 
     for entry in entries {
         match entry {
@@ -370,10 +366,6 @@ fn process_entries_with_callback(
                         .send_cost_details(bank.clone(), transactions.iter());
                 }
 
-                if randomize {
-                    transactions.shuffle(&mut rng);
-                }
-
                 // Check to ensure that a batch doesn't contain lock conflicts with itself
                 // This assumes that this is the only place things are locked/batched.
                 let batch = bank.prepare_sanitized_batch(transactions);
@@ -399,7 +391,7 @@ fn process_entries_with_callback(
                 }
 
                 // Add to be scheduled on tick or no more entries
-                pending_transactions.extend(transactions.clone());
+                pending_transactions.extend(transactions.iter());
             }
         }
     }
@@ -718,7 +710,8 @@ fn confirm_full_slot(
 ) -> result::Result<(), BlockstoreProcessorError> {
     let mut confirmation_timing = ConfirmationTiming::default();
     let skip_verification = !opts.poh_verify;
-    // TODO (LB): pass in higher up
+
+    // TODO (LB): pass in higher up!
     let bank_tx_execution = BankTransactionExecutor::new(get_thread_count());
     let handle = bank_tx_execution.handle();
 
@@ -896,7 +889,7 @@ pub fn confirm_slot(
             // Note: This will shuffle entries' transactions in-place.
             let process_result = process_entries_with_callback(
                 bank,
-                &mut entries.unwrap(),
+                &entries.unwrap(),
                 true, // shuffle transactions.
                 entry_callback,
                 transaction_status_sender,
