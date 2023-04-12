@@ -1,6 +1,6 @@
 use {
     crate::token_balances::collect_token_balances,
-    crossbeam_channel::{unbounded, Receiver, RecvError, RecvTimeoutError, Sender},
+    crossbeam_channel::{unbounded, Receiver, RecvError, Sender},
     solana_program_runtime::timings::ExecuteTimings,
     solana_runtime::{
         bank::{
@@ -26,7 +26,6 @@ use {
         collections::HashMap,
         sync::{Arc, RwLock},
         thread::{self, Builder, JoinHandle},
-        time::Duration,
     },
 };
 
