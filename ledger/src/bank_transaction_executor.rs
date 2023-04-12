@@ -274,7 +274,7 @@ impl BankTransactionExecutor {
                 })
                 .is_err()
             {
-                warn!("error sending back results");
+                warn!("error sending back result for signature: {:?}", signature);
             }
         }
     }

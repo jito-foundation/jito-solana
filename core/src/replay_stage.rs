@@ -45,7 +45,6 @@ use {
     solana_metrics::inc_new_counter_info,
     solana_poh::poh_recorder::{PohLeaderStatus, PohRecorder, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
     solana_program_runtime::timings::ExecuteTimings,
-    solana_rayon_threadlimit::get_thread_count,
     solana_rpc::{
         optimistically_confirmed_bank_tracker::{BankNotification, BankNotificationSender},
         rpc_subscriptions::RpcSubscriptions,
@@ -410,6 +409,8 @@ impl ReplayStage {
         let t_replay = Builder::new()
             .name("solana-replay-stage".to_string())
             .spawn(move || {
+                const MAX_CONFIRM_SLOT_PROCESSING_DURATION: Duration = Duration::from_millis(100);
+
                 let verify_recyclers = VerifyRecyclers::default();
                 let _exit = Finalizer::new(exit.clone());
                 let mut identity_keypair = cluster_info.keypair().clone();
@@ -441,8 +442,7 @@ impl ReplayStage {
                 };
                 let in_vote_only_mode = bank_forks.read().unwrap().get_vote_only_mode_signal();
 
-                // TODO (LB): dont do * 2
-                let bank_tx_execution = BankTransactionExecutor::new(get_thread_count() * 2);
+                let bank_tx_execution = BankTransactionExecutor::new(num_cpus::get() * 2);
                 let handle = bank_tx_execution.handle();
 
                 loop {
@@ -494,7 +494,8 @@ impl ReplayStage {
                         block_metadata_notifier.clone(),
                         transaction_cost_metrics_sender.as_ref(),
                         &mut replay_timing,
-                        &handle
+                        &handle,
+                        &MAX_CONFIRM_SLOT_PROCESSING_DURATION
                     );
                     replay_active_banks_time.stop();
 
@@ -1672,6 +1673,7 @@ impl ReplayStage {
         transaction_cost_metrics_sender: Option<&TransactionCostMetricsSender>,
         verify_recyclers: &VerifyRecyclers,
         handle: &BankTransactionExecutorHandle,
+        max_confirm_slot_processing_time: &Duration,
     ) -> result::Result<usize, BlockstoreProcessorError> {
         let tx_count_before = bank_progress.replay_progress.num_txs;
         // All errors must lead to marking the slot as dead, otherwise,
@@ -1679,21 +1681,23 @@ impl ReplayStage {
         // will break!
 
         // loop over until no more entries to process
-        // TODO (LB): probably wanna add a time limit here
-        while blockstore_processor::confirm_slot(
-            blockstore,
-            bank,
-            &mut bank_progress.replay_stats,
-            &mut bank_progress.replay_progress,
-            false,
-            transaction_status_sender,
-            Some(replay_vote_sender),
-            transaction_cost_metrics_sender,
-            None,
-            verify_recyclers,
-            false,
-            handle,
-        )? {}
+        let start = Instant::now();
+        while start.elapsed() < *max_confirm_slot_processing_time
+            && blockstore_processor::confirm_slot(
+                blockstore,
+                bank,
+                &mut bank_progress.replay_stats,
+                &mut bank_progress.replay_progress,
+                false,
+                transaction_status_sender,
+                Some(replay_vote_sender),
+                transaction_cost_metrics_sender,
+                None,
+                verify_recyclers,
+                false,
+                handle,
+            )?
+        {}
 
         let tx_count_after = bank_progress.replay_progress.num_txs;
         let tx_count = tx_count_after - tx_count_before;
@@ -2193,6 +2197,7 @@ impl ReplayStage {
         transaction_cost_metrics_sender: Option<&TransactionCostMetricsSender>,
         replay_timing: &mut ReplayTiming,
         handle: &BankTransactionExecutorHandle,
+        max_confirm_slot_processing_time: &Duration,
     ) -> bool {
         let mut did_complete_bank = false;
         let mut tx_count = 0;
@@ -2246,6 +2251,7 @@ impl ReplayStage {
                     transaction_cost_metrics_sender,
                     verify_recyclers,
                     handle,
+                    max_confirm_slot_processing_time,
                 );
                 replay_blockstore_time.stop();
                 replay_timing.replay_blockstore_us += replay_blockstore_time.as_us();
@@ -3227,6 +3233,7 @@ pub mod tests {
                 SIZE_OF_COMMON_SHRED_HEADER, SIZE_OF_DATA_SHRED_HEADER, SIZE_OF_DATA_SHRED_PAYLOAD,
             },
         },
+        solana_rayon_threadlimit::get_thread_count,
         solana_rpc::{
             optimistically_confirmed_bank_tracker::OptimisticallyConfirmedBank,
             rpc::{create_test_transaction_entries, populate_blockstore_for_tests},
@@ -3937,6 +3944,7 @@ pub mod tests {
                 None,
                 &VerifyRecyclers::default(),
                 executor_handle,
+                &Duration::from_millis(400),
             );
             let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
             let rpc_subscriptions = Arc::new(RpcSubscriptions::new_for_tests(

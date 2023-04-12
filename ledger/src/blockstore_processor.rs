@@ -110,20 +110,21 @@ fn build_dependency_graph(tx_account_locks: &[TransactionAccountLocks]) -> Vec<I
         .enumerate()
         .map(|(idx, account_locks)| {
             let mut dep_graph: IntSet<usize> = IntSet::default();
-            let readlock_accs = account_locks.writable.iter();
-            let writelock_accs = account_locks
+
+            let readlock_conflict_accs = account_locks.writable.iter();
+            let writelock_conflict_accs = account_locks
                 .readonly
                 .iter()
                 .chain(account_locks.writable.iter());
 
-            for acc in readlock_accs {
+            for acc in readlock_conflict_accs {
                 if let Some(indices) = indices_read_locking_account.get(acc) {
                     dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
                 }
             }
 
-            for read_acc in writelock_accs {
-                if let Some(indices) = indicies_write_locking_account.get(read_acc) {
+            for acc in writelock_conflict_accs {
+                if let Some(indices) = indicies_write_locking_account.get(acc) {
                     dep_graph.extend(indices.iter().take_while(|l_idx| **l_idx < idx));
                 }
             }
@@ -219,7 +220,6 @@ fn execute_batches(
             }
         }
 
-        // TODO (LB): do cleaner
         if is_done {
             break;
         }
@@ -711,11 +711,11 @@ fn confirm_full_slot(
     let mut confirmation_timing = ConfirmationTiming::default();
     let skip_verification = !opts.poh_verify;
 
-    // TODO (LB): pass in higher up!
+    // TODO (LB): pass in higher up to avoid creating + tearing this down a bunch
     let bank_tx_execution = BankTransactionExecutor::new(get_thread_count());
     let handle = bank_tx_execution.handle();
 
-    let _more_entries_to_process = confirm_slot(
+    let more_entries_to_process = confirm_slot(
         blockstore,
         bank,
         &mut confirmation_timing,
@@ -728,7 +728,11 @@ fn confirm_full_slot(
         recyclers,
         opts.allow_dead_slots,
         &handle,
-    )?;
+    );
+    drop(handle);
+    bank_tx_execution.join().unwrap();
+
+    more_entries_to_process?;
 
     timing.accumulate(&confirmation_timing.execute_timings);
 
