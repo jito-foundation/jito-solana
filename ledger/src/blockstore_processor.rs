@@ -295,11 +295,11 @@ pub fn process_entries_for_tests(
 
     let mut timings = ExecuteTimings::default();
     for entry in entries {
-        let mut entries_batch =
+        let entries_batch =
             entry::verify_transactions(vec![entry], Arc::new(verify_transaction.clone()))?;
         process_entries_with_callback(
             bank,
-            &mut entries_batch,
+            &entries_batch,
             randomize,
             None,
             transaction_status_sender,
