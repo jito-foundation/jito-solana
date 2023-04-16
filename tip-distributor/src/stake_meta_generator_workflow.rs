@@ -208,12 +208,12 @@ pub fn generate_stake_meta_collection(
                 bank.epoch(),
             )
             .0;
-            let tda = bank
-                .get_account(&tip_distribution_pubkey)
-                .map(|mut account_data| {
-                    let tip_distribution_account =
-                        TipDistributionAccount::try_deserialize(&mut account_data.data())
-                            .expect("deserialized TipDistributionAccount");
+            let tda = if let Some(mut account_data) = bank.get_account(&tip_distribution_pubkey) {
+                // TDAs may be funded with lamports and therefore exist in the bank, but would fail the deserialization step
+                // if the buffer is yet to be allocated thru the init call to the program.
+                if let Ok(tip_distribution_account) =
+                    TipDistributionAccount::try_deserialize(&mut account_data.data())
+                {
                     // this snapshot might have tips that weren't claimed by the time the epoch is over
                     // assume that it will eventually be cranked and credit the excess to this account
                     if tip_distribution_pubkey == tip_receiver {
@@ -224,12 +224,17 @@ pub fn generate_stake_meta_collection(
                                 .expect("tip overflow"),
                         );
                     }
-                    TipDistributionAccountWrapper {
+                    Some(TipDistributionAccountWrapper {
                         tip_distribution_account,
                         account_data,
                         tip_distribution_pubkey,
-                    }
-                });
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             Ok(((*vote_pubkey, vote_account), tda))
         })
         .collect::<Result<_, StakeMetaGeneratorError>>()?;
