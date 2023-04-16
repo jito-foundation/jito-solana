@@ -501,7 +501,7 @@ pub async fn send_transactions_with_retry(
             }
         }
 
-        info!("confirmed #{} signatures", signatures_confirmed.len());
+        info!("confirmed {} signatures", signatures_confirmed.len());
         for sig in signatures_confirmed {
             transactions_to_send.remove(&sig);
         }
