@@ -466,9 +466,14 @@ pub async fn sign_and_send_transactions_with_retries(
         .get_latest_blockhash()
         .await
         .expect("fetch latest blockhash");
+    let mut signatures_to_transactions = transactions
+        .clone()
+        .into_iter()
+        .map(|tx| (tx.signatures[0], tx))
+        .collect::<HashMap<Signature, Transaction>>();
 
     let start = Instant::now();
-    while start.elapsed() < max_retry_duration {
+    while start.elapsed() < max_retry_duration && !signatures_to_transactions.is_empty() {
         if start.elapsed() > Duration::from_secs(60) {
             blockhash = rpc_client
                 .get_latest_blockhash()
@@ -479,11 +484,6 @@ pub async fn sign_and_send_transactions_with_retries(
         transactions
             .iter_mut()
             .for_each(|tx| tx.sign(&[signer], blockhash));
-        let mut signatures_to_transactions = transactions
-            .clone()
-            .into_iter()
-            .map(|tx| (tx.signatures[0], tx))
-            .collect::<HashMap<Signature, Transaction>>();
 
         let futs = transactions.iter().map(|tx| async {
             let result = rpc_client.send_and_confirm_transaction(tx).await;
@@ -493,7 +493,14 @@ pub async fn sign_and_send_transactions_with_retries(
         errors = futures::future::join_all(futs)
             .await
             .into_iter()
-            .filter(|(_sig, result)| result.is_err())
+            .filter(|(sig, result)| {
+                if result.is_err() {
+                    true
+                } else {
+                    let _ = signatures_to_transactions.remove(sig);
+                    false
+                }
+            })
             .map(|(sig, result)| {
                 let e = result.err().unwrap();
                 warn!("error sending transaction: [error={e}, signature={sig}]");
@@ -501,9 +508,13 @@ pub async fn sign_and_send_transactions_with_retries(
             })
             .collect::<HashMap<_, _>>();
 
-        transactions = errors
+        transactions = signatures_to_transactions
             .iter()
-            .map(|(sig, _)| signatures_to_transactions.remove(sig).unwrap())
+            .map(|(_sig, tx)| {
+                let mut tx = Transaction::new_unsigned(tx.message.clone());
+                tx.sign(&[signer], blockhash);
+                tx
+            })
             .collect::<Vec<_>>();
     }
 
