@@ -482,14 +482,12 @@ pub async fn sign_and_send_transactions_with_retries(
                 .get_latest_blockhash()
                 .await
                 .expect("fetch latest blockhash");
-            signatures_to_transactions = signatures_to_transactions
-                .into_iter()
-                .map(|(sig, tx)| {
-                    let mut tx = Transaction::new_unsigned(tx.message);
+            signatures_to_transactions
+                .iter_mut()
+                .for_each(|(_sig, tx)| {
+                    *tx = Transaction::new_unsigned(tx.message.clone());
                     tx.sign(&[signer], blockhash);
-                    (sig, tx)
-                })
-                .collect::<HashMap<Signature, Transaction>>();
+                });
         }
 
         let futs = signatures_to_transactions.iter().map(|(_sig, tx)| async {
