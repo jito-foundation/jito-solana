@@ -15,7 +15,10 @@ use {
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
-    solana_rpc_client_api::client_error::Error,
+    solana_rpc_client_api::{
+        client_error::{Error, ErrorKind},
+        request::RpcRequest,
+    },
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
@@ -41,6 +44,7 @@ use {
         TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
         TIP_ACCOUNT_SEED_7,
     },
+    tokio::time::sleep,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -490,10 +494,31 @@ pub async fn sign_and_send_transactions_with_retries(
                 });
         }
 
-        let futs = signatures_to_transactions.iter().map(|(_sig, tx)| async {
-            let result = rpc_client.send_and_confirm_transaction(tx).await;
-            (tx.signatures[0], result)
-        });
+        let futs = signatures_to_transactions
+            .iter()
+            .map(|(sig, tx)| async move {
+                let res = match rpc_client.send_transaction(tx).await {
+                    Ok(_sig) => {
+                        info!("sent transaction: {_sig:?}");
+                        sleep(Duration::from_secs(5)).await;
+
+                        match rpc_client.confirm_transaction(sig).await {
+                            Ok(true) => Ok(()),
+                            Ok(false) => Err(Error::new_with_request(
+                                ErrorKind::Custom("transaction failed to confirm".to_string()),
+                                RpcRequest::SendTransaction,
+                            )),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(e) => {
+                        error!("error sending transaction {sig:?} error: {e:?}");
+                        Err(e)
+                    }
+                };
+
+                (*sig, res)
+            });
 
         errors = futures::future::join_all(futs)
             .await
