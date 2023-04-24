@@ -458,7 +458,7 @@ pub fn derive_tip_distribution_account_address(
 pub async fn sign_and_send_transactions_with_retries(
     signer: &Keypair,
     rpc_client: &RpcClient,
-    mut transactions: Vec<Transaction>,
+    transactions: Vec<Transaction>,
     max_retry_duration: Duration,
 ) -> HashMap<Signature, Error> {
     let mut errors = HashMap::default();
@@ -466,10 +466,13 @@ pub async fn sign_and_send_transactions_with_retries(
         .get_latest_blockhash()
         .await
         .expect("fetch latest blockhash");
+
     let mut signatures_to_transactions = transactions
-        .clone()
         .into_iter()
-        .map(|tx| (tx.signatures[0], tx))
+        .map(|mut tx| {
+            tx.sign(&[signer], blockhash);
+            (tx.signatures[0], tx)
+        })
         .collect::<HashMap<Signature, Transaction>>();
 
     let start = Instant::now();
@@ -479,13 +482,17 @@ pub async fn sign_and_send_transactions_with_retries(
                 .get_latest_blockhash()
                 .await
                 .expect("fetch latest blockhash");
+            signatures_to_transactions = signatures_to_transactions
+                .into_iter()
+                .map(|(sig, tx)| {
+                    let mut tx = Transaction::new_unsigned(tx.message);
+                    tx.sign(&[signer], blockhash);
+                    (sig, tx)
+                })
+                .collect::<HashMap<Signature, Transaction>>();
         }
 
-        transactions
-            .iter_mut()
-            .for_each(|tx| tx.sign(&[signer], blockhash));
-
-        let futs = transactions.iter().map(|tx| async {
+        let futs = signatures_to_transactions.iter().map(|(_sig, tx)| async {
             let result = rpc_client.send_and_confirm_transaction(tx).await;
             (tx.signatures[0], result)
         });
@@ -507,15 +514,6 @@ pub async fn sign_and_send_transactions_with_retries(
                 (sig, e)
             })
             .collect::<HashMap<_, _>>();
-
-        transactions = signatures_to_transactions
-            .iter()
-            .map(|(_sig, tx)| {
-                let mut tx = Transaction::new_unsigned(tx.message.clone());
-                tx.sign(&[signer], blockhash);
-                tx
-            })
-            .collect::<Vec<_>>();
     }
 
     errors
