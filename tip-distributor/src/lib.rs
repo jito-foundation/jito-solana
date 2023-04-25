@@ -15,12 +15,16 @@ use {
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
+    solana_rpc_client_api::{
+        client_error::{Error, ErrorKind},
+        request::RpcRequest,
+    },
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
-        signature::Signature,
+        signature::{Keypair, Signature},
         stake_history::Epoch,
         transaction::Transaction,
     },
@@ -455,59 +459,87 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
-pub async fn send_transactions_with_retry(
+pub async fn sign_and_send_transactions_with_retries(
+    signer: &Keypair,
     rpc_client: &RpcClient,
-    transactions: &[Transaction],
-    max_send_duration: Duration,
-) -> usize {
-    let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
-        .iter()
-        .map(|tx| (tx.signatures[0], tx.clone()))
-        .collect();
+    transactions: Vec<Transaction>,
+    max_retry_duration: Duration,
+) -> HashMap<Signature, Error> {
+    let mut errors = HashMap::default();
+    let mut blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("fetch latest blockhash");
+
+    let mut signatures_to_transactions = transactions
+        .into_iter()
+        .map(|mut tx| {
+            tx.sign(&[signer], blockhash);
+            (tx.signatures[0], tx)
+        })
+        .collect::<HashMap<Signature, Transaction>>();
 
     let start = Instant::now();
-    while !transactions_to_send.is_empty() && start.elapsed() < max_send_duration {
-        info!("sending {} transactions", transactions_to_send.len());
-
-        for (signature, tx) in &transactions_to_send {
-            match rpc_client.send_transaction(tx).await {
-                Ok(send_tx_sig) => {
-                    info!("send transaction: {:?}", send_tx_sig);
-                }
-                Err(e) => {
-                    error!("error sending transaction {:?} error: {:?}", signature, e);
-                }
-            }
+    while start.elapsed() < max_retry_duration && !signatures_to_transactions.is_empty() {
+        if start.elapsed() > Duration::from_secs(60) {
+            blockhash = rpc_client
+                .get_latest_blockhash()
+                .await
+                .expect("fetch latest blockhash");
+            signatures_to_transactions
+                .iter_mut()
+                .for_each(|(_sig, tx)| {
+                    *tx = Transaction::new_unsigned(tx.message.clone());
+                    tx.sign(&[signer], blockhash);
+                });
         }
 
-        sleep(Duration::from_secs(10)).await;
+        let futs = signatures_to_transactions
+            .iter()
+            .map(|(sig, tx)| async move {
+                let res = match rpc_client.send_transaction(tx).await {
+                    Ok(_sig) => {
+                        info!("sent transaction: {_sig:?}");
+                        sleep(Duration::from_secs(5)).await;
 
-        let mut signatures_confirmed: Vec<Signature> = Vec::new();
-        for signature in transactions_to_send.keys() {
-            match rpc_client.confirm_transaction(signature).await {
-                Ok(true) => {
-                    info!("confirmed signature: {:?}", signature);
-                    signatures_confirmed.push(*signature);
-                }
-                Ok(false) => {
-                    info!("didn't confirmed signature: {:?}", signature);
-                }
-                Err(e) => {
-                    error!(
-                        "error confirming signature: {:?}, signature: {:?}",
-                        signature, e
-                    );
-                }
-            }
-        }
+                        match rpc_client.confirm_transaction(sig).await {
+                            Ok(true) => Ok(()),
+                            Ok(false) => Err(Error::new_with_request(
+                                ErrorKind::Custom("transaction failed to confirm".to_string()),
+                                RpcRequest::SendTransaction,
+                            )),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(e) => {
+                        error!("error sending transaction {sig:?} error: {e:?}");
+                        Err(e)
+                    }
+                };
 
-        info!("confirmed {} signatures", signatures_confirmed.len());
-        for sig in signatures_confirmed {
-            transactions_to_send.remove(&sig);
-        }
+                (*sig, res)
+            });
+
+        errors = futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .filter(|(sig, result)| {
+                if result.is_err() {
+                    true
+                } else {
+                    let _ = signatures_to_transactions.remove(sig);
+                    false
+                }
+            })
+            .map(|(sig, result)| {
+                let e = result.err().unwrap();
+                warn!("error sending transaction: [error={e}, signature={sig}]");
+                (sig, e)
+            })
+            .collect::<HashMap<_, _>>();
     }
 
-    transactions_to_send.len()
+    errors
 }
 
 mod pubkey_string_conversion {

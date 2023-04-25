@@ -1,6 +1,6 @@
 use {
     crate::{
-        read_json_from_file, send_transactions_with_retry, GeneratedMerkleTree,
+        read_json_from_file, sign_and_send_transactions_with_retries, GeneratedMerkleTree,
         GeneratedMerkleTreeCollection,
     },
     anchor_lang::AccountDeserialize,
@@ -39,8 +39,7 @@ pub fn upload_merkle_root(
     rpc_url: &str,
     tip_distribution_program_id: &Pubkey,
 ) -> Result<(), MerkleRootUploadError> {
-    // max amount of time before blockhash expires
-    const MAX_RETRY_DURATION: Duration = Duration::from_secs(60);
+    const MAX_RETRY_DURATION: Duration = Duration::from_secs(600);
 
     let merkle_tree: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
@@ -58,11 +57,6 @@ pub fn upload_merkle_root(
     runtime.block_on(async move {
         let rpc_client =
             RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
-        let recent_blockhash = rpc_client
-            .get_latest_blockhash()
-            .await
-            .expect("get blockhash");
-
         let trees: Vec<GeneratedMerkleTree> = merkle_tree
             .generated_merkle_trees
             .into_iter()
@@ -124,17 +118,15 @@ pub fn upload_merkle_root(
                         tip_distribution_account: tree.tip_distribution_account,
                     },
                 );
-                Transaction::new_signed_with_payer(
+                Transaction::new_with_payer(
                     &[ix],
                     Some(&keypair.pubkey()),
-                    &[&keypair],
-                    recent_blockhash,
                 )
             })
             .collect();
-        let num_failed_txs = send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
-        if num_failed_txs != 0 {
-            panic!("failed to send {num_failed_txs} transactions");
+        let failed_transactions = sign_and_send_transactions_with_retries(&keypair, &rpc_client, transactions, MAX_RETRY_DURATION).await;
+        if !failed_transactions.is_empty() {
+            panic!("failed to send {} transactions", failed_transactions.len());
         }
     });
 
