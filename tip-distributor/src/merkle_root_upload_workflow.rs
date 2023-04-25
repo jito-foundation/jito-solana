@@ -39,8 +39,7 @@ pub fn upload_merkle_root(
     rpc_url: &str,
     tip_distribution_program_id: &Pubkey,
 ) -> Result<(), MerkleRootUploadError> {
-    // max amount of time before blockhash expires
-    const MAX_RETRY_DURATION: Duration = Duration::from_secs(300);
+    const MAX_RETRY_DURATION: Duration = Duration::from_secs(600);
 
     let merkle_tree: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");

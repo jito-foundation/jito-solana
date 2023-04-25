@@ -38,8 +38,7 @@ pub fn claim_mev_tips(
     tip_distribution_program_id: &Pubkey,
     keypair_path: &PathBuf,
 ) -> Result<(), ClaimMevError> {
-    // roughly how long before blockhash expires
-    const MAX_RETRY_DURATION: Duration = Duration::from_secs(300);
+    const MAX_RETRY_DURATION: Duration = Duration::from_secs(600);
 
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
