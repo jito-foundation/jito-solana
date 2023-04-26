@@ -522,7 +522,7 @@ pub async fn sign_and_send_transactions_with_retries(
                     }
                     Err(e) => {
                         error!("error sending transaction {sig:?} error: {e:?}");
-                        if e == AlreadyProcessed {
+                        if let ErrorKind::TransactionError(AlreadyProcessed) = e.kind {
                             Ok(())
                         } else {
                             Err(e)
