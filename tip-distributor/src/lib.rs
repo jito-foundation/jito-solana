@@ -33,6 +33,7 @@ use {
         fs::File,
         io::BufReader,
         path::PathBuf,
+        sync::Arc,
         time::{Duration, Instant},
     },
     tip_distribution::{
@@ -465,6 +466,10 @@ pub async fn sign_and_send_transactions_with_retries(
     transactions: Vec<Transaction>,
     max_retry_duration: Duration,
 ) -> HashMap<Signature, Error> {
+    use tokio::sync::Semaphore;
+    const MAX_CONCURRENT_RPC_CALLS: usize = 50;
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
+
     let mut errors = HashMap::default();
     let mut blockhash = rpc_client
         .get_latest_blockhash()
@@ -494,14 +499,18 @@ pub async fn sign_and_send_transactions_with_retries(
                 });
         }
 
-        let futs = signatures_to_transactions
-            .iter()
-            .map(|(sig, tx)| async move {
+        let futs = signatures_to_transactions.iter().map(|(sig, tx)| {
+            let s1 = semaphore.clone();
+            let s2 = semaphore.clone();
+            async move {
+                let permit = s1.acquire_owned().await.unwrap();
                 let res = match rpc_client.send_transaction(tx).await {
                     Ok(_sig) => {
                         info!("sent transaction: {_sig:?}");
+                        drop(permit);
                         sleep(Duration::from_secs(5)).await;
 
+                        let _permit = s2.acquire_owned().await.unwrap();
                         match rpc_client.confirm_transaction(sig).await {
                             Ok(true) => Ok(()),
                             Ok(false) => Err(Error::new_with_request(
@@ -518,7 +527,8 @@ pub async fn sign_and_send_transactions_with_retries(
                 };
 
                 (*sig, res)
-            });
+            }
+        });
 
         errors = futures::future::join_all(futs)
             .await
