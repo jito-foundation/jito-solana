@@ -507,7 +507,7 @@ pub async fn sign_and_send_transactions_with_retries(
                     Ok(_sig) => {
                         info!("sent transaction: {_sig:?}");
                         drop(permit);
-                        sleep(Duration::from_secs(5)).await;
+                        sleep(Duration::from_secs(10)).await;
 
                         let _permit = semaphore.acquire_owned().await.unwrap();
                         match rpc_client.confirm_transaction(sig).await {
@@ -519,15 +519,20 @@ pub async fn sign_and_send_transactions_with_retries(
                             Err(e) => Err(e),
                         }
                     }
-                    Err(e) => {
-                        error!("error sending transaction {sig:?} error: {e:?}");
+                    Err(e) => Err(e),
+                };
+
+                let res = res
+                    .err()
+                    .map(|e| {
                         if let ErrorKind::TransactionError(AlreadyProcessed) = e.kind {
                             Ok(())
                         } else {
+                            error!("error sending transaction {sig:?} error: {e:?}");
                             Err(e)
                         }
-                    }
-                };
+                    })
+                    .unwrap_or(Ok(()));
 
                 (*sig, res)
             }
