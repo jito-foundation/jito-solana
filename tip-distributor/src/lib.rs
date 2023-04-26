@@ -500,17 +500,16 @@ pub async fn sign_and_send_transactions_with_retries(
         }
 
         let futs = signatures_to_transactions.iter().map(|(sig, tx)| {
-            let s1 = semaphore.clone();
-            let s2 = semaphore.clone();
+            let semaphore = semaphore.clone();
             async move {
-                let permit = s1.acquire_owned().await.unwrap();
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let res = match rpc_client.send_transaction(tx).await {
                     Ok(_sig) => {
                         info!("sent transaction: {_sig:?}");
                         drop(permit);
                         sleep(Duration::from_secs(5)).await;
 
-                        let _permit = s2.acquire_owned().await.unwrap();
+                        let _permit = semaphore.acquire_owned().await.unwrap();
                         match rpc_client.confirm_transaction(sig).await {
                             Ok(true) => Ok(()),
                             Ok(false) => Err(Error::new_with_request(
