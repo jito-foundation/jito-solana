@@ -26,7 +26,7 @@ use {
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::Transaction,
+        transaction::{Transaction, TransactionError::AlreadyProcessed},
     },
     std::{
         collections::HashMap,
@@ -522,7 +522,11 @@ pub async fn sign_and_send_transactions_with_retries(
                     }
                     Err(e) => {
                         error!("error sending transaction {sig:?} error: {e:?}");
-                        Err(e)
+                        if e == AlreadyProcessed {
+                            Ok(())
+                        } else {
+                            Err(e)
+                        }
                     }
                 };
 
