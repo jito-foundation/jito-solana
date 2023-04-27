@@ -48,7 +48,7 @@ pub fn claim_mev_tips(
         Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
 
     let rpc_client =
-        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
+        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::finalized());
 
     let runtime = Builder::new_multi_thread()
         .worker_threads(16)

@@ -26,13 +26,14 @@ use {
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::Transaction,
+        transaction::{Transaction, TransactionError::AlreadyProcessed},
     },
     std::{
         collections::HashMap,
         fs::File,
         io::BufReader,
         path::PathBuf,
+        sync::Arc,
         time::{Duration, Instant},
     },
     tip_distribution::{
@@ -465,6 +466,10 @@ pub async fn sign_and_send_transactions_with_retries(
     transactions: Vec<Transaction>,
     max_retry_duration: Duration,
 ) -> HashMap<Signature, Error> {
+    use tokio::sync::Semaphore;
+    const MAX_CONCURRENT_RPC_CALLS: usize = 50;
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
+
     let mut errors = HashMap::default();
     let mut blockhash = rpc_client
         .get_latest_blockhash()
@@ -494,14 +499,17 @@ pub async fn sign_and_send_transactions_with_retries(
                 });
         }
 
-        let futs = signatures_to_transactions
-            .iter()
-            .map(|(sig, tx)| async move {
+        let futs = signatures_to_transactions.iter().map(|(sig, tx)| {
+            let semaphore = semaphore.clone();
+            async move {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let res = match rpc_client.send_transaction(tx).await {
                     Ok(_sig) => {
                         info!("sent transaction: {_sig:?}");
-                        sleep(Duration::from_secs(5)).await;
+                        drop(permit);
+                        sleep(Duration::from_secs(10)).await;
 
+                        let _permit = semaphore.acquire_owned().await.unwrap();
                         match rpc_client.confirm_transaction(sig).await {
                             Ok(true) => Ok(()),
                             Ok(false) => Err(Error::new_with_request(
@@ -511,14 +519,24 @@ pub async fn sign_and_send_transactions_with_retries(
                             Err(e) => Err(e),
                         }
                     }
-                    Err(e) => {
-                        error!("error sending transaction {sig:?} error: {e:?}");
-                        Err(e)
-                    }
+                    Err(e) => Err(e),
                 };
 
+                let res = res
+                    .err()
+                    .map(|e| {
+                        if let ErrorKind::TransactionError(AlreadyProcessed) = e.kind {
+                            Ok(())
+                        } else {
+                            error!("error sending transaction {sig:?} error: {e:?}");
+                            Err(e)
+                        }
+                    })
+                    .unwrap_or(Ok(()));
+
                 (*sig, res)
-            });
+            }
+        });
 
         errors = futures::future::join_all(futs)
             .await
