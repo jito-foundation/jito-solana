@@ -355,6 +355,11 @@ impl BlockEngineStage {
         block_engine_stats: &mut BlockEngineStageStats,
     ) -> crate::proxy::Result<()> {
         if let Some(batch) = resp.batch {
+            if batch.packets.is_empty() {
+                saturating_add_assign!(block_engine_stats.num_empty_packets, 1);
+                return Ok(());
+            }
+
             let packet_batch = PacketBatch::new(
                 batch
                     .packets
