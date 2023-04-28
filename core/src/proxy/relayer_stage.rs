@@ -328,6 +328,11 @@ impl RelayerStage {
                 saturating_add_assign!(relayer_stats.num_empty_messages, 1);
             }
             Some(relayer::subscribe_packets_response::Msg::Batch(proto_batch)) => {
+                if proto_batch.packets.is_empty() {
+                    saturating_add_assign!(relayer_stats.num_empty_messages, 1);
+                    return Ok(());
+                }
+
                 let packet_batch = PacketBatch::new(
                     proto_batch
                         .packets
