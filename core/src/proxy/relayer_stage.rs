@@ -10,22 +10,24 @@
 
 use {
     crate::{
-        backoff::BackoffStrategy,
         proto_packet_to_packet,
         proxy::{
-            auth::{token_manager::auth_tokens_update_loop, AuthInterceptor},
+            auth::{generate_auth_tokens, maybe_refresh_auth_tokens, AuthInterceptor},
             HeartbeatEvent, ProxyError,
         },
         sigverify::SigverifyTracerPacketStats,
     },
     crossbeam_channel::Sender,
     jito_protos::proto::{
-        auth::Token,
+        auth::{auth_service_client::AuthServiceClient, Token},
         relayer::{self, relayer_client::RelayerClient},
     },
     solana_gossip::cluster_info::ClusterInfo,
     solana_perf::packet::PacketBatch,
-    solana_sdk::saturating_add_assign,
+    solana_sdk::{
+        saturating_add_assign,
+        signature::{Keypair, Signer},
+    },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::{
@@ -35,13 +37,16 @@ use {
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
-    tokio::time::{interval, sleep},
+    tokio::time::{interval, sleep, timeout},
     tonic::{
         codegen::InterceptedService,
         transport::{Channel, Endpoint},
         Streaming,
     },
 };
+
+const CONNECTION_TIMEOUT_S: u64 = 10;
+const CONNECTION_BACKOFF_S: u64 = 5;
 
 #[derive(Default)]
 struct RelayerStageStats {
@@ -96,15 +101,6 @@ impl RelayerStage {
         verified_packet_tx: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: Arc<AtomicBool>,
     ) -> Self {
-        let RelayerConfig {
-            auth_service_endpoint,
-            backend_endpoint,
-            expected_heartbeat_interval,
-            oldest_allowed_heartbeat,
-            trust_packets,
-        } = relayer_config;
-
-        let access_token = Arc::new(Mutex::new(Token::default()));
         let thread = Builder::new()
             .name("relayer-stage".into())
             .spawn(move || {
@@ -113,21 +109,12 @@ impl RelayerStage {
                     .build()
                     .unwrap();
 
-                rt.spawn(auth_tokens_update_loop(
-                    auth_service_endpoint,
-                    access_token.clone(),
-                    cluster_info.clone(),
-                    exit.clone(),
-                ));
                 rt.block_on(Self::start(
-                    access_token,
+                    relayer_config,
+                    cluster_info,
                     heartbeat_tx,
-                    expected_heartbeat_interval,
-                    oldest_allowed_heartbeat,
                     packet_tx,
-                    backend_endpoint,
                     verified_packet_tx,
-                    trust_packets,
                     exit,
                 ));
             })
@@ -147,93 +134,152 @@ impl RelayerStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn start(
-        access_token: Arc<Mutex<Token>>,
+        relayer_config: RelayerConfig,
+        cluster_info: Arc<ClusterInfo>,
         heartbeat_tx: Sender<HeartbeatEvent>,
-        expected_heartbeat_interval: Duration,
-        oldest_allowed_heartbeat: Duration,
         packet_tx: Sender<PacketBatch>,
-        relayer_endpoint: Endpoint,
         verified_packet_tx: Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        trust_packets: bool,
         exit: Arc<AtomicBool>,
     ) {
-        const WAIT_FOR_FIRST_AUTH: Duration = Duration::from_secs(5);
+        const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
+        const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
+        let mut error_count: u64 = 0;
 
-        let mut wait_count: usize = 0;
-        let mut stream_error_count: usize = 0;
-        let mut connect_error_count: usize = 0;
-        while access_token.lock().unwrap().value.is_empty() {
-            if exit.load(Ordering::Relaxed) {
-                return;
-            }
-            wait_count += 1;
-            datapoint_info!(
-                "relayer_stage-wait_for_auth",
-                ("wait_count", wait_count, i64)
-            );
-            sleep(WAIT_FOR_FIRST_AUTH).await;
-        }
-
-        let mut backoff = BackoffStrategy::new();
         while !exit.load(Ordering::Relaxed) {
-            match relayer_endpoint.connect().await {
-                Ok(channel) => {
-                    match Self::start_consuming_relayer_packets(
-                        &mut backoff,
-                        RelayerClient::with_interceptor(
-                            channel,
-                            AuthInterceptor::new(access_token.clone()),
-                        ),
-                        &heartbeat_tx,
-                        expected_heartbeat_interval,
-                        oldest_allowed_heartbeat,
-                        &packet_tx,
-                        &verified_packet_tx,
-                        trust_packets,
-                        &exit,
-                    )
-                    .await
-                    {
-                        Ok(_) => {}
-                        Err(e) => {
-                            stream_error_count += 1;
-                            datapoint_error!(
-                                "relayer_stage-stream_error",
-                                ("count", stream_error_count, i64),
-                                ("error", e.to_string(), String),
-                            );
-                        }
+            if let Err(e) = Self::connect_auth_and_stream(
+                &relayer_config,
+                &cluster_info,
+                &heartbeat_tx,
+                &packet_tx,
+                &verified_packet_tx,
+                &exit,
+                &CONNECTION_TIMEOUT,
+            )
+            .await
+            {
+                match e {
+                    // This error is frequent on hot spares, and the parsed string does not work
+                    // with datapoints (incorrect escaping).
+                    ProxyError::AuthenticationPermissionDenied => {
+                        warn!("block engine permission denied. not on leader schedule. ignore if hot-spare.")
+                    }
+                    e => {
+                        error_count += 1;
+                        datapoint_warn!(
+                            "relayer_stage-proxy_error",
+                            ("count", error_count, i64),
+                            ("error", e.to_string(), String),
+                        );
                     }
                 }
-                Err(e) => {
-                    connect_error_count += 1;
-                    datapoint_error!(
-                        "relayer_stage-connect_error",
-                        ("count", connect_error_count, i64),
-                        ("error", e.to_string(), String),
-                    );
-                }
+                sleep(CONNECTION_BACKOFF).await;
             }
-            sleep(Duration::from_millis(backoff.next_wait())).await;
         }
     }
 
-    async fn start_consuming_relayer_packets(
-        backoff: &mut BackoffStrategy,
-        mut client: RelayerClient<InterceptedService<Channel, AuthInterceptor>>,
+    async fn connect_auth_and_stream(
+        relayer_config: &RelayerConfig,
+        cluster_info: &Arc<ClusterInfo>,
         heartbeat_tx: &Sender<HeartbeatEvent>,
-        expected_heartbeat_interval: Duration,
-        oldest_allowed_heartbeat: Duration,
         packet_tx: &Sender<PacketBatch>,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        trust_packets: bool,
         exit: &Arc<AtomicBool>,
+        connection_timeout: &Duration,
+    ) -> crate::proxy::Result<()> {
+        // Get a copy of configs here in case they have changed at runtime
+        let keypair = cluster_info.keypair().clone();
+
+        debug!(
+            "connecting to auth: {:?}",
+            relayer_config.auth_service_endpoint.uri()
+        );
+        let auth_channel = timeout(
+            *connection_timeout,
+            relayer_config.auth_service_endpoint.connect(),
+        )
+        .await
+        .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+        .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+
+        let mut auth_client = AuthServiceClient::new(auth_channel);
+
+        debug!("generating authentication token");
+        let (access_token, refresh_token) = timeout(
+            *connection_timeout,
+            generate_auth_tokens(&mut auth_client, &keypair),
+        )
+        .await
+        .map_err(|_| ProxyError::AuthenticationTimeout)??;
+
+        datapoint_info!(
+            "relayer_stage-tokens_generated",
+            (
+                "url",
+                relayer_config.auth_service_endpoint.uri().to_string(),
+                String
+            ),
+            ("count", 1, i64),
+        );
+
+        debug!(
+            "connecting to relayer: {:?}",
+            relayer_config.backend_endpoint.uri()
+        );
+        let relayer_channel = timeout(
+            *connection_timeout,
+            relayer_config.backend_endpoint.connect(),
+        )
+        .await
+        .map_err(|_| ProxyError::RelayerConnectionTimeout)?
+        .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
+
+        let access_token = Arc::new(Mutex::new(access_token));
+        let relayer_client = RelayerClient::with_interceptor(
+            relayer_channel,
+            AuthInterceptor::new(access_token.clone()),
+        );
+
+        Self::start_consuming_relayer_packets(
+            relayer_client,
+            heartbeat_tx,
+            packet_tx,
+            verified_packet_tx,
+            relayer_config,
+            &exit,
+            auth_client,
+            access_token,
+            refresh_token,
+            keypair,
+            cluster_info,
+            connection_timeout,
+        )
+        .await
+    }
+
+    async fn start_consuming_relayer_packets(
+        mut client: RelayerClient<InterceptedService<Channel, AuthInterceptor>>,
+        heartbeat_tx: &Sender<HeartbeatEvent>,
+        packet_tx: &Sender<PacketBatch>,
+        verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
+        relayer_config: &RelayerConfig,
+        exit: &Arc<AtomicBool>,
+        auth_client: AuthServiceClient<Channel>,
+        access_token: Arc<Mutex<Token>>,
+        refresh_token: Token,
+        keypair: Arc<Keypair>,
+        cluster_info: &Arc<ClusterInfo>,
+        connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         let heartbeat_event: HeartbeatEvent = {
-            let tpu_config = client
-                .get_tpu_configs(relayer::GetTpuConfigsRequest {})
-                .await?
-                .into_inner();
+            let tpu_config = timeout(
+                *connection_timeout,
+                client.get_tpu_configs(relayer::GetTpuConfigsRequest {}),
+            )
+            .await
+            .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
+            .map_err(|e| ProxyError::MethodError(e.to_string()))?
+            .into_inner();
+
             let tpu_addr = tpu_config
                 .tpu
                 .ok_or_else(|| ProxyError::MissingTpuSocket("tpu".into()))?;
@@ -249,24 +295,29 @@ impl RelayerStage {
             (tpu_socket, tpu_forward_socket)
         };
 
-        let packet_stream = client
-            .subscribe_packets(relayer::SubscribePacketsRequest {})
-            .await?
-            .into_inner();
-
-        // assume it's all good here
-        backoff.reset();
+        let packet_stream = timeout(
+            *connection_timeout,
+            client.subscribe_packets(relayer::SubscribePacketsRequest {}),
+        )
+        .await
+        .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
+        .map_err(|e| ProxyError::MethodError(e.to_string()))?
+        .into_inner();
 
         Self::consume_packet_stream(
             heartbeat_event,
             heartbeat_tx,
-            expected_heartbeat_interval,
-            oldest_allowed_heartbeat,
             packet_stream,
             packet_tx,
-            trust_packets,
+            relayer_config,
             verified_packet_tx,
             exit,
+            auth_client,
+            access_token,
+            refresh_token,
+            keypair,
+            cluster_info,
+            connection_timeout,
         )
         .await
     }
@@ -274,21 +325,31 @@ impl RelayerStage {
     async fn consume_packet_stream(
         heartbeat_event: HeartbeatEvent,
         heartbeat_tx: &Sender<HeartbeatEvent>,
-        expected_heartbeat_interval: Duration,
-        oldest_allowed_heartbeat: Duration,
         mut packet_stream: Streaming<relayer::SubscribePacketsResponse>,
         packet_tx: &Sender<PacketBatch>,
-        trust_packets: bool,
+        relayer_config: &RelayerConfig,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
+        mut auth_client: AuthServiceClient<Channel>,
+        access_token: Arc<Mutex<Token>>,
+        mut refresh_token: Token,
+        keypair: Arc<Keypair>,
+        cluster_info: &Arc<ClusterInfo>,
+        connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
+        let refresh_within_s: u64 = METRICS_TICK.as_secs().saturating_mul(3).saturating_div(2);
 
         let mut relayer_stats = RelayerStageStats::default();
         let mut metrics_tick = interval(METRICS_TICK);
 
-        let mut heartbeat_check_interval = interval(expected_heartbeat_interval);
+        let mut num_full_refreshes: u64 = 1;
+        let mut num_refresh_access_token: u64 = 0;
+
+        let mut heartbeat_check_interval = interval(relayer_config.expected_heartbeat_interval);
         let mut last_heartbeat_ts = Instant::now();
+
+        let auth_uri_string = relayer_config.auth_service_endpoint.uri().to_string();
 
         info!("connected to packet stream");
 
@@ -296,20 +357,50 @@ impl RelayerStage {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, trust_packets, verified_packet_tx, &mut relayer_stats)?;
+                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, relayer_config.trust_packets, verified_packet_tx, &mut relayer_stats)?;
                 }
                 _ = heartbeat_check_interval.tick() => {
-                    if last_heartbeat_ts.elapsed() > oldest_allowed_heartbeat {
+                    if last_heartbeat_ts.elapsed() > relayer_config.oldest_allowed_heartbeat {
                         return Err(ProxyError::HeartbeatExpired);
                     }
                 }
                 _ = metrics_tick.tick() => {
                     relayer_stats.report();
                     relayer_stats = RelayerStageStats::default();
+
+                    if cluster_info.id() != keypair.pubkey() {
+                        return Err(ProxyError::AuthenticationConnectionError("Validator ID Changed".to_string()));
+                    }
+
+                    let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
+                        &access_token,
+                        &refresh_token,
+                        &cluster_info,
+                        connection_timeout,
+                        refresh_within_s,
+                    ).await?;
+
+                    if let Some(new_token) = maybe_new_access {
+                        num_refresh_access_token += 1;
+                        datapoint_info!(
+                            "relayer_stage-refresh_access_token",
+                            ("url", auth_uri_string, String),
+                            ("count", num_refresh_access_token, i64),
+                        );
+                        *access_token.lock().unwrap() = new_token;
+                    }
+                    if let Some(new_token) = maybe_new_refresh {
+                        num_full_refreshes += 1;
+                        datapoint_info!(
+                            "relayer_stage-tokens_generated",
+                            ("url", auth_uri_string, String),
+                            ("count", num_full_refreshes, i64),
+                        );
+                        refresh_token = new_token;
+                    }
                 }
             }
         }
-
         Ok(())
     }
 
