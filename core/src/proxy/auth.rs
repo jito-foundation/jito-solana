@@ -98,8 +98,6 @@ pub async fn generate_auth_tokens(
 }
 
 /// Tries to refresh the access token or run full-reauth if needed.
-/// This method writes to access_token if refresh is done.
-/// It overwrites the refresh token if full-reauth is run.
 pub async fn maybe_refresh_auth_tokens(
     auth_service_client: &mut AuthServiceClient<Channel>,
     access_token: &Arc<Mutex<Token>>,
