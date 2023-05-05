@@ -52,4 +52,49 @@ pub enum ProxyError {
 
     #[error("invalid gRPC data: {0:?}")]
     InvalidData(String),
+
+    #[error("timeout: {0:?}")]
+    ConnectionError(#[from] tonic::transport::Error),
+
+    #[error("AuthenticationConnectionTimeout")]
+    AuthenticationConnectionTimeout,
+
+    #[error("AuthenticationTimeout")]
+    AuthenticationTimeout,
+
+    #[error("AuthenticationConnectionError: {0:?}")]
+    AuthenticationConnectionError(String),
+
+    #[error("BlockEngineConnectionTimeout")]
+    BlockEngineConnectionTimeout,
+
+    #[error("BlockEngineTimeout")]
+    BlockEngineTimeout,
+
+    #[error("BlockEngineConnectionError: {0:?}")]
+    BlockEngineConnectionError(String),
+
+    #[error("RelayerConnectionTimeout")]
+    RelayerConnectionTimeout,
+
+    #[error("RelayerTimeout")]
+    RelayerEngineTimeout,
+
+    #[error("RelayerConnectionError: {0:?}")]
+    RelayerConnectionError(String),
+
+    #[error("AuthenticationError: {0:?}")]
+    AuthenticationError(String),
+
+    #[error("AuthenticationPermissionDenied")]
+    AuthenticationPermissionDenied,
+
+    #[error("BadAuthenticationToken: {0:?}")]
+    BadAuthenticationToken(String),
+
+    #[error("MethodTimeout: {0:?}")]
+    MethodTimeout(String),
+
+    #[error("MethodError: {0:?}")]
+    MethodError(String),
 }
