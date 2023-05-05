@@ -276,7 +276,7 @@ impl RelayerStage {
                 client.get_tpu_configs(relayer::GetTpuConfigsRequest {}),
             )
             .await
-            .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
+            .map_err(|_| ProxyError::MethodTimeout("relayer_get_tpu_configs".to_string()))?
             .map_err(|e| ProxyError::MethodError(e.to_string()))?
             .into_inner();
 
