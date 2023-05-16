@@ -71,9 +71,9 @@ pub struct Tpu {
     fetch_stage: FetchStage,
     sigverify_stage: SigVerifyStage,
     vote_sigverify_stage: SigVerifyStage,
-    maybe_relayer_stage: Option<RelayerStage>,
-    maybe_block_engine_stage: Option<BlockEngineStage>,
-    maybe_fetch_stage_manager: Option<FetchStageManager>,
+    relayer_stage: RelayerStage,
+    block_engine_stage: BlockEngineStage,
+    fetch_stage_manager: FetchStageManager,
     banking_stage: BankingStage,
     cluster_info_vote_listener: ClusterInfoVoteListener,
     broadcast_stage: BroadcastStage,
@@ -113,8 +113,8 @@ impl Tpu {
         keypair: &Keypair,
         log_messages_bytes_limit: Option<usize>,
         staked_nodes: &Arc<RwLock<StakedNodes>>,
-        maybe_block_engine_config: Option<BlockEngineConfig>,
-        maybe_relayer_config: Option<RelayerConfig>,
+        block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+        relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Option<SocketAddr>,
         shared_staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
@@ -130,16 +130,10 @@ impl Tpu {
             transactions_forwards_quic: transactions_forwards_quic_sockets,
         } = sockets;
 
+        // Packets from fetch stage and quic server are intercepted and sent through fetch_stage_manager
+        // If relayer is connected, packets are dropped. If not, packets are forwarded on to packet_sender
         let (packet_intercept_sender, packet_intercept_receiver) = unbounded();
         let (packet_sender, packet_receiver) = unbounded();
-
-        // If there's a relayer, we need to redirect packets to the interceptor
-        // If not, they can flow straight through
-        let packet_send_channel = if maybe_relayer_config.is_some() {
-            packet_intercept_sender
-        } else {
-            packet_sender.clone()
-        };
 
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let (forwarded_packet_sender, forwarded_packet_receiver) = unbounded();
@@ -148,7 +142,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit,
-            &packet_send_channel,
+            &packet_intercept_sender,
             &vote_packet_sender,
             &forwarded_packet_sender,
             forwarded_packet_receiver,
@@ -192,7 +186,7 @@ impl Tpu {
             transactions_quic_sockets,
             keypair,
             cluster_info.my_contact_info().tpu.ip(),
-            packet_send_channel,
+            packet_intercept_sender,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
@@ -239,38 +233,33 @@ impl Tpu {
         }));
 
         let (bundle_sender, bundle_receiver) = unbounded();
-        let maybe_block_engine_stage = maybe_block_engine_config.map(|block_engine_config| {
-            BlockEngineStage::new(
-                block_engine_config,
-                bundle_sender,
-                cluster_info.clone(),
-                packet_sender.clone(),
-                verified_sender.clone(),
-                exit.clone(),
-                &block_builder_fee_info,
-            )
-        });
+        let block_engine_stage = BlockEngineStage::new(
+            block_engine_config,
+            bundle_sender,
+            cluster_info.clone(),
+            packet_sender.clone(),
+            verified_sender.clone(),
+            exit.clone(),
+            &block_builder_fee_info,
+        );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
-        let maybe_fetch_stage_manager = maybe_relayer_config.as_ref().map(|_| {
-            FetchStageManager::new(
-                cluster_info.clone(),
-                heartbeat_rx,
-                packet_intercept_receiver,
-                packet_sender.clone(),
-                exit.clone(),
-            )
-        });
-        let maybe_relayer_stage = maybe_relayer_config.map(|relayer_config| {
-            RelayerStage::new(
-                relayer_config,
-                cluster_info.clone(),
-                heartbeat_tx,
-                packet_sender,
-                verified_sender,
-                exit.clone(),
-            )
-        });
+        let fetch_stage_manager = FetchStageManager::new(
+            cluster_info.clone(),
+            heartbeat_rx,
+            packet_intercept_receiver,
+            packet_sender.clone(),
+            exit.clone(),
+        );
+
+        let relayer_stage = RelayerStage::new(
+            relayer_config,
+            cluster_info.clone(),
+            heartbeat_tx,
+            packet_sender,
+            verified_sender,
+            exit.clone(),
+        );
 
         let (verified_gossip_vote_packets_sender, verified_gossip_vote_packets_receiver) =
             unbounded();
@@ -345,9 +334,9 @@ impl Tpu {
             fetch_stage,
             sigverify_stage,
             vote_sigverify_stage,
-            maybe_block_engine_stage,
-            maybe_relayer_stage,
-            maybe_fetch_stage_manager,
+            block_engine_stage,
+            relayer_stage,
+            fetch_stage_manager,
             banking_stage,
             cluster_info_vote_listener,
             broadcast_stage,
@@ -375,15 +364,9 @@ impl Tpu {
             self.bundle_stage.join(),
         ];
 
-        if let Some(relayer_stage) = self.maybe_relayer_stage {
-            relayer_stage.join()?;
-        }
-        if let Some(block_engine_stage) = self.maybe_block_engine_stage {
-            block_engine_stage.join()?;
-        }
-        if let Some(fetch_stage_manager) = self.maybe_fetch_stage_manager {
-            fetch_stage_manager.join()?;
-        }
+        self.relayer_stage.join()?;
+        self.block_engine_stage.join()?;
+        self.fetch_stage_manager.join()?;
 
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
