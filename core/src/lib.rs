@@ -10,7 +10,6 @@
 
 pub mod accounts_hash_verifier;
 pub mod ancestor_hashes_service;
-mod backoff;
 pub mod banking_stage;
 pub mod broadcast_stage;
 pub mod bundle_account_locker;
