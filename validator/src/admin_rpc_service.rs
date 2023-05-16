@@ -298,7 +298,7 @@ impl AdminRpc for AdminRpcImpl {
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
 
-        if block_engine_url.contains("http") {
+        if block_engine_url.contains("http") || block_engine_url.is_empty() {
             meta.with_post_init(|post_init| {
                 *post_init.block_engine_config.lock().unwrap() = BlockEngineConfig {
                     block_engine_url,
@@ -359,7 +359,7 @@ impl AdminRpc for AdminRpcImpl {
     ) -> Result<()> {
         debug!("set_relayer_config request received");
 
-        if relayer_url.contains("http") {
+        if relayer_url.contains("http") || relayer_url.is_empty() {
             meta.with_post_init(|post_init| {
                 let expected_heartbeat_interval =
                     Duration::from_millis(expected_heartbeat_interval_ms);
