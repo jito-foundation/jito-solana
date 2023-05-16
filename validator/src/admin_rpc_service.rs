@@ -7,7 +7,10 @@ use {
     log::*,
     serde::{Deserialize, Serialize},
     solana_core::{
-        consensus::Tower, tower_storage::TowerStorage, validator::ValidatorStartProgress,
+        consensus::Tower,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
+        tower_storage::TowerStorage,
+        validator::ValidatorStartProgress,
     },
     solana_gossip::{
         cluster_info::ClusterInfo, legacy_contact_info::LegacyContactInfo as ContactInfo,
@@ -22,7 +25,7 @@ use {
         fmt::{self, Display},
         net::SocketAddr,
         path::{Path, PathBuf},
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
         thread::{self, Builder},
         time::{Duration, SystemTime},
     },
@@ -33,6 +36,8 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub cluster_info: Arc<ClusterInfo>,
     pub bank_forks: Arc<RwLock<BankForks>>,
     pub vote_account: Pubkey,
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
 }
 
 #[derive(Clone)]
@@ -179,6 +184,24 @@ pub trait AdminRpc {
 
     #[rpc(meta, name = "contactInfo")]
     fn contact_info(&self, meta: Self::Metadata) -> Result<AdminRpcContactInfo>;
+
+    #[rpc(meta, name = "setBlockEngineConfig")]
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        trust_packets: bool,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setRelayerConfig")]
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        trust_packets: bool,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()>;
 }
 
 pub struct AdminRpcImpl;
@@ -263,6 +286,29 @@ impl AdminRpc for AdminRpcImpl {
         Ok(())
     }
 
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        trust_packets: bool,
+    ) -> Result<()> {
+        debug!("set_block_engine_config request received");
+
+        if block_engine_url.contains("http") {
+            meta.with_post_init(|post_init| {
+                *post_init.block_engine_config.lock().unwrap() = BlockEngineConfig {
+                    block_engine_url,
+                    trust_packets,
+                };
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "block_engine_url must point to an http(s) connection.",
+            ))
+        }
+    }
+
     fn set_identity(
         &self,
         meta: Self::Metadata,
@@ -297,6 +343,39 @@ impl AdminRpc for AdminRpcImpl {
         })?;
 
         AdminRpcImpl::set_identity_keypair(meta, identity_keypair, require_tower)
+    }
+
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        trust_packets: bool,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()> {
+        debug!("set_relayer_config request received");
+
+        if relayer_url.contains("http") {
+            meta.with_post_init(|post_init| {
+                let expected_heartbeat_interval =
+                    Duration::from_millis(expected_heartbeat_interval_ms);
+
+                let oldest_allowed_heartbeat =
+                    Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+
+                *post_init.relayer_config.lock().unwrap() = RelayerConfig {
+                    relayer_url,
+                    expected_heartbeat_interval,
+                    oldest_allowed_heartbeat,
+                    trust_packets,
+                };
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "relayer_url must point to an http(s) connection.",
+            ))
+        }
     }
 
     fn contact_info(&self, meta: Self::Metadata) -> Result<AdminRpcContactInfo> {
