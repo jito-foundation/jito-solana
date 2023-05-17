@@ -1841,7 +1841,7 @@ pub fn main() {
                 .long("block-engine-address")
                 .value_name("block_engine_address")
                 .takes_value(true)
-                .help("Address of the block engine")
+                .help("Deprecated: Address of the block engine's grpc.")
                 .conflicts_with("block_engine_url")
         )
         .arg(
@@ -1849,7 +1849,7 @@ pub fn main() {
                 .long("block-engine-auth-service-address")
                 .value_name("block_engine_auth_service_address")
                 .takes_value(true)
-                .help("Address of the block engine's authentication service.")
+                .help("Deprecated: Address of the block engine's authentication service.")
                 .conflicts_with("block_engine_url")
         )
         .arg(
@@ -1857,7 +1857,7 @@ pub fn main() {
                 .long("relayer-auth-service-address")
                 .value_name("relayer_auth_service_address")
                 .takes_value(true)
-                .help("Address of the block engine's authentication service.")
+                .help("Deprecated: Address of the block engine's authentication service.")
                 .conflicts_with("relayer_url")
         )
         .arg(
@@ -1865,7 +1865,7 @@ pub fn main() {
                 .long("relayer-address")
                 .value_name("relayer_address")
                 .takes_value(true)
-                .help("Address of the relayer")
+                .help("Deprecated: Address of the relayer grpc.")
                 .conflicts_with("relayer_url")
         )
         .arg(
@@ -2059,7 +2059,23 @@ pub fn main() {
                         .long("block-engine-url")
                         .help("Block engine url.  Set to empty string to disable block engine connection.")
                         .takes_value(true)
-                        .required(true)
+                        .required(false)
+                )
+                .arg(
+                    Arg::with_name("block_engine_address")
+                        .long("block-engine-address")
+                        .value_name("block_engine_address")
+                        .takes_value(true)
+                        .help("Deprecated: Address of the block engine's grpc.")
+                        .conflicts_with("block_engine_url")
+                )
+                .arg(
+                    Arg::with_name("block_engine_auth_service_address")
+                        .long("block-engine-auth-service-address")
+                        .value_name("block_engine_auth_service_address")
+                        .takes_value(true)
+                        .help("Deprecated: Address of the block engine's authentication service.")
+                        .conflicts_with("block_engine_url")
                 )
                 .arg(
                     Arg::with_name("trust_block_engine_packets")
@@ -2110,6 +2126,22 @@ pub fn main() {
                         .help("Relayer url. Set to empty string to disable relayer connection.")
                         .takes_value(true)
                         .required(true)
+                )
+                .arg(
+                    Arg::with_name("relayer_auth_service_address")
+                        .long("relayer-auth-service-address")
+                        .value_name("relayer_auth_service_address")
+                        .takes_value(true)
+                        .help("Deprecated: Address of the block engine's authentication service.")
+                        .conflicts_with("relayer_url")
+                )
+                .arg(
+                    Arg::with_name("relayer_address")
+                        .long("relayer-address")
+                        .value_name("relayer_address")
+                        .takes_value(true)
+                        .help("Deprecated: Address of the relayer grpc.")
+                        .conflicts_with("relayer_url")
                 )
                 .arg(
                     Arg::with_name("trust_relayer_packets")
@@ -2319,14 +2351,29 @@ pub fn main() {
             return;
         }
         ("set-block-engine-config", Some(subcommand_matches)) => {
-            let block_engine_url = value_t_or_exit!(subcommand_matches, "block_engine_url", String);
+            let (auth_service_addr, backend_addr) = if subcommand_matches.is_present("relayer_url")
+            {
+                let block_engine_url =
+                    value_t_or_exit!(subcommand_matches, "block_engine_url", String);
+                (block_engine_url.clone(), block_engine_url)
+            } else {
+                let auth_addr = value_t_or_exit!(
+                    subcommand_matches,
+                    "block_engine_auth_service_address",
+                    String
+                );
+                let backend_addr =
+                    value_t_or_exit!(subcommand_matches, "block_engine_address", String);
+                (auth_addr, backend_addr)
+            };
+
             let trust_packets = subcommand_matches.is_present("trust_block_engine_packets");
             let admin_client = admin_rpc_service::connect(&ledger_path);
             admin_rpc_service::runtime()
                 .block_on(async move {
                     admin_client
                         .await?
-                        .set_block_engine_config(block_engine_url, trust_packets)
+                        .set_block_engine_config(auth_service_addr, backend_addr, trust_packets)
                         .await
                 })
                 .unwrap_or_else(|err| {
@@ -2399,7 +2446,16 @@ pub fn main() {
             return;
         }
         ("set-relayer-config", Some(subcommand_matches)) => {
-            let relayer_url = value_t_or_exit!(subcommand_matches, "relayer_url", String);
+            let (auth_service_addr, backend_addr) = if subcommand_matches.is_present("relayer_url")
+            {
+                let relayer_url = value_t_or_exit!(subcommand_matches, "relayer_url", String);
+                (relayer_url.clone(), relayer_url)
+            } else {
+                (
+                    value_t_or_exit!(subcommand_matches, "relayer_auth_service_address", String),
+                    value_t_or_exit!(subcommand_matches, "relayer_address", String),
+                )
+            };
             let trust_packets = subcommand_matches.is_present("trust_relayer_packets");
             let expected_heartbeat_interval_ms: u64 =
                 value_of(subcommand_matches, "relayer_expected_heartbeat_interval_ms").unwrap();
@@ -2411,7 +2467,8 @@ pub fn main() {
                     admin_client
                         .await?
                         .set_relayer_config(
-                            relayer_url,
+                            auth_service_addr,
+                            backend_addr,
                             trust_packets,
                             expected_heartbeat_interval_ms,
                             max_failed_heartbeats,
@@ -2817,35 +2874,32 @@ pub fn main() {
 
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
+
     let mut block_engine_config = BlockEngineConfig {
         trust_packets: matches.is_present("trust_block_engine_packets"),
         ..Default::default()
     };
     if matches.is_present("block_engine_url") {
-        block_engine_config.block_engine_url =
+        let url: String =
             value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url");
+        block_engine_config.auth_service_addr = url.clone();
+        block_engine_config.backend_addr = url;
     } else {
-        let error_msg = "Specifying seperate auth and backend addresses for block engine is deprecated.  Recommended to use --block_engine_url instead.\
-                    If using block_engine_auth_service_address and block_engine_address, they must both be provided and set to the same value.";
         match (
             matches.is_present("block_engine_auth_service_address"),
             matches.is_present("block_engine_address"),
         ) {
             (true, true) => {
-                let auth_addr: String = value_of(&matches, "block_engine_auth_service_address")
-                    .expect("couldn't parse block_engine_auth_service_address");
-                let backend_addr: String = value_of(&matches, "block_engine_address")
+                block_engine_config.auth_service_addr =
+                    value_of(&matches, "block_engine_auth_service_address")
+                        .expect("couldn't parse block_engine_auth_service_address");
+                block_engine_config.backend_addr = value_of(&matches, "block_engine_address")
                     .expect("couldn't parse block_engine_address");
-                if auth_addr != backend_addr {
-                    eprintln!("{}", error_msg);
-                    exit(1);
-                } else {
-                    block_engine_config.block_engine_url = backend_addr;
-                }
             }
             (false, false) => {}
             _ => {
-                eprintln!("{}", error_msg);
+                eprintln!("Specifying seperate auth and backend addresses for block engine is deprecated.  Recommended to use --block_engine_url instead.\
+                    If using block_engine_auth_service_address and block_engine_address, they must both be provided.");
                 exit(1);
             }
         }
@@ -2856,30 +2910,25 @@ pub fn main() {
         ..Default::default()
     };
     if matches.is_present("relayer_url") {
-        relayer_config.relayer_url =
-            value_of(&matches, "relayer_url").expect("couldn't parse relayer_url");
+        let url: String = value_of(&matches, "relayer_url").expect("couldn't parse relayer_url");
+        relayer_config.auth_service_addr = url.clone();
+        relayer_config.backend_addr = url;
     } else {
-        let error_msg = "Specifying seperate auth and backend addresses for relayer is deprecated.  Recommended to use --relayer_url instead.\
-                    If using relayer_auth_service_address and relayer_address, they must both be provided and set to the same value.";
         match (
             matches.is_present("relayer_auth_service_address"),
             matches.is_present("relayer_address"),
         ) {
             (true, true) => {
-                let auth_addr: String = value_of(&matches, "relayer_auth_service_address")
-                    .expect("couldn't parse relayer_auth_service_address");
-                let backend_addr: String =
+                relayer_config.auth_service_addr =
+                    value_of(&matches, "relayer_auth_service_address")
+                        .expect("couldn't parse relayer_auth_service_address");
+                relayer_config.backend_addr =
                     value_of(&matches, "relayer_address").expect("couldn't parse relayer_address");
-                if auth_addr != backend_addr {
-                    eprintln!("{}", error_msg);
-                    exit(1);
-                } else {
-                    relayer_config.relayer_url = backend_addr;
-                }
             }
             (false, false) => {}
             _ => {
-                eprintln!("{}", error_msg);
+                eprintln!("Specifying seperate auth and backend addresses for relayer is deprecated.  Recommended to use --relayer_url instead.\
+                    If using relayer_auth_service_address and relayer_address, they must both be provided.");
                 exit(1);
             }
         }

@@ -68,8 +68,11 @@ impl RelayerStageStats {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RelayerConfig {
-    /// Relayer URL
-    pub relayer_url: String,
+    /// Auth Service Address
+    pub auth_service_addr: String,
+
+    /// Block Engine Address
+    pub backend_addr: String,
 
     /// Interval at which heartbeats are expected.
     pub expected_heartbeat_interval: Duration,
@@ -192,22 +195,14 @@ impl RelayerStage {
         let keypair = cluster_info.keypair().clone();
         let local_config = relayer_config.lock().unwrap().clone();
 
-        let mut auth_service_endpoint = Endpoint::from_shared(local_config.relayer_url.clone())
-            .map_err(|_| {
+        let mut auth_service_endpoint =
+            Endpoint::from_shared(local_config.auth_service_addr.clone()).map_err(|_| {
                 ProxyError::AuthenticationConnectionError(format!(
                     "invalid relayer url value: {}",
-                    local_config.relayer_url
+                    local_config.auth_service_addr
                 ))
             })?;
-        let mut backend_endpoint = Endpoint::from_shared(local_config.relayer_url.clone())
-            .map_err(|_| {
-                ProxyError::RelayerConnectionError(format!(
-                    "invalid relayer url value: {}",
-                    local_config.relayer_url
-                ))
-            })?
-            .tcp_keepalive(Some(Duration::from_secs(60)));
-        if local_config.relayer_url.contains("https") {
+        if local_config.auth_service_addr.contains("https") {
             auth_service_endpoint = auth_service_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -215,6 +210,16 @@ impl RelayerStage {
                         "failed to set tls_config for relayer auth service".to_string(),
                     )
                 })?;
+        }
+        let mut backend_endpoint = Endpoint::from_shared(local_config.backend_addr.clone())
+            .map_err(|_| {
+                ProxyError::RelayerConnectionError(format!(
+                    "invalid relayer url value: {}",
+                    local_config.backend_addr
+                ))
+            })?
+            .tcp_keepalive(Some(Duration::from_secs(60)));
+        if local_config.backend_addr.contains("https") {
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -224,7 +229,7 @@ impl RelayerStage {
                 })?;
         }
 
-        debug!("connecting to auth: {:?}", local_config.relayer_url);
+        debug!("connecting to auth: {:?}", local_config.auth_service_addr);
         let auth_channel = timeout(*connection_timeout, auth_service_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -242,11 +247,11 @@ impl RelayerStage {
 
         datapoint_info!(
             "relayer_stage-tokens_generated",
-            ("url", local_config.relayer_url, String),
+            ("url", local_config.auth_service_addr, String),
             ("count", 1, i64),
         );
 
-        debug!("connecting to relayer: {:?}", local_config.relayer_url);
+        debug!("connecting to relayer: {:?}", local_config.backend_addr);
         let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::RelayerConnectionTimeout)?
@@ -411,7 +416,7 @@ impl RelayerStage {
                         num_refresh_access_token += 1;
                         datapoint_info!(
                             "relayer_stage-refresh_access_token",
-                            ("url", &local_config.relayer_url, String),
+                            ("url", &local_config.auth_service_addr, String),
                             ("count", num_refresh_access_token, i64),
                         );
                         *access_token.lock().unwrap() = new_token;
@@ -420,7 +425,7 @@ impl RelayerStage {
                         num_full_refreshes += 1;
                         datapoint_info!(
                             "relayer_stage-tokens_generated",
-                            ("url", &local_config.relayer_url, String),
+                            ("url", &local_config.auth_service_addr, String),
                             ("count", num_full_refreshes, i64),
                         );
                         refresh_token = new_token;
@@ -484,7 +489,11 @@ impl RelayerStage {
     }
 
     fn validate_relayer_config(config: &RelayerConfig) -> bool {
-        if config.relayer_url.is_empty() {
+        if config.auth_service_addr.is_empty() {
+            warn!("Can't connect to relayer auth. Missing or invalid url.");
+            return false;
+        }
+        if config.backend_addr.is_empty() {
             warn!("Can't connect to relayer. Missing or invalid url.");
             return false;
         }

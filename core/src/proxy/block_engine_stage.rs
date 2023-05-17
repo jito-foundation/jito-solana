@@ -74,8 +74,11 @@ pub struct BlockBuilderFeeInfo {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockEngineConfig {
-    /// Block Engine URL
-    pub block_engine_url: String,
+    /// Auth Service Address
+    pub auth_service_addr: String,
+
+    /// Block Engine Address
+    pub backend_addr: String,
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
@@ -198,22 +201,13 @@ impl BlockEngineStage {
         let local_config = &block_engine_config.lock().unwrap().clone();
 
         let mut auth_service_endpoint =
-            Endpoint::from_shared(local_config.block_engine_url.clone()).map_err(|_| {
+            Endpoint::from_shared(local_config.auth_service_addr.clone()).map_err(|_| {
                 ProxyError::AuthenticationConnectionError(format!(
                     "invalid block engine url value: {}",
-                    local_config.block_engine_url
+                    local_config.auth_service_addr
                 ))
             })?;
-        let mut backend_endpoint = Endpoint::from_shared(local_config.block_engine_url.clone())
-            .map_err(|_| {
-                ProxyError::BlockEngineConnectionError(format!(
-                    "invalid block engine url value: {}",
-                    local_config.block_engine_url
-                ))
-            })?
-            .tcp_keepalive(Some(Duration::from_secs(60)));
-
-        if local_config.block_engine_url.contains("https") {
+        if local_config.auth_service_addr.contains("https") {
             auth_service_endpoint = auth_service_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -221,6 +215,17 @@ impl BlockEngineStage {
                         "failed to set tls_config for block engine auth service".to_string(),
                     )
                 })?;
+        }
+        let mut backend_endpoint = Endpoint::from_shared(local_config.backend_addr.clone())
+            .map_err(|_| {
+                ProxyError::BlockEngineConnectionError(format!(
+                    "invalid block engine url value: {}",
+                    local_config.backend_addr
+                ))
+            })?
+            .tcp_keepalive(Some(Duration::from_secs(60)));
+
+        if local_config.backend_addr.contains("https") {
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -230,7 +235,7 @@ impl BlockEngineStage {
                 })?;
         }
 
-        debug!("connecting to auth: {:?}", &local_config.block_engine_url);
+        debug!("connecting to auth: {:?}", &local_config.auth_service_addr);
         let auth_channel = timeout(*connection_timeout, auth_service_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -248,13 +253,13 @@ impl BlockEngineStage {
 
         datapoint_info!(
             "block_engine_stage-tokens_generated",
-            ("url", &local_config.block_engine_url, String),
+            ("url", &local_config.auth_service_addr, String),
             ("count", 1, i64),
         );
 
         debug!(
             "connecting to block engine: {:?}",
-            &local_config.block_engine_url
+            &local_config.backend_addr
         );
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
@@ -423,7 +428,7 @@ impl BlockEngineStage {
                         num_refresh_access_token += 1;
                         datapoint_info!(
                             "block_engine_stage-refresh_access_token",
-                            ("url", &local_config.block_engine_url, String),
+                            ("url", &local_config.auth_service_addr, String),
                             ("count", num_refresh_access_token, i64),
                         );
                         *access_token.lock().unwrap() = new_token;
@@ -432,7 +437,7 @@ impl BlockEngineStage {
                         num_full_refreshes += 1;
                         datapoint_info!(
                             "block_engine_stage-tokens_generated",
-                            ("url", &local_config.block_engine_url, String),
+                            ("url", &local_config.auth_service_addr, String),
                             ("count", num_full_refreshes, i64),
                         );
                         refresh_token = new_token;
@@ -533,6 +538,6 @@ impl BlockEngineStage {
     }
 
     fn validate_block_engine_config(config: &BlockEngineConfig) -> bool {
-        !config.block_engine_url.is_empty()
+        !config.auth_service_addr.is_empty() && !config.auth_service_addr.is_empty()
     }
 }

@@ -189,7 +189,8 @@ pub trait AdminRpc {
     fn set_block_engine_config(
         &self,
         meta: Self::Metadata,
-        block_engine_url: String,
+        auth_service_addr: String,
+        backend_addr: String,
         trust_packets: bool,
     ) -> Result<()>;
 
@@ -197,7 +198,8 @@ pub trait AdminRpc {
     fn set_relayer_config(
         &self,
         meta: Self::Metadata,
-        relayer_url: String,
+        auth_service_addr: String,
+        backend_addr: String,
         trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
@@ -289,24 +291,30 @@ impl AdminRpc for AdminRpcImpl {
     fn set_block_engine_config(
         &self,
         meta: Self::Metadata,
-        block_engine_url: String,
+        auth_service_addr: String,
+        backend_addr: String,
         trust_packets: bool,
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
 
-        if block_engine_url.contains("http") || block_engine_url.is_empty() {
-            meta.with_post_init(|post_init| {
-                *post_init.block_engine_config.lock().unwrap() = BlockEngineConfig {
-                    block_engine_url,
-                    trust_packets,
-                };
-                Ok(())
-            })
-        } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
-                "block_engine_url must point to an http(s) connection.",
-            ))
+        if !(backend_addr.contains("http") || backend_addr.is_empty()) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
+                "block_engine_address must point to an http(s) connection.",
+            ));
         }
+        if !(auth_service_addr.contains("http") || auth_service_addr.is_empty()) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
+                "block_engine_auth_service_address must point to an http(s) connection.",
+            ));
+        }
+        meta.with_post_init(|post_init| {
+            *post_init.block_engine_config.lock().unwrap() = BlockEngineConfig {
+                auth_service_addr,
+                backend_addr,
+                trust_packets,
+            };
+            Ok(())
+        })
     }
 
     fn set_identity(
@@ -348,34 +356,39 @@ impl AdminRpc for AdminRpcImpl {
     fn set_relayer_config(
         &self,
         meta: Self::Metadata,
-        relayer_url: String,
+        auth_service_addr: String,
+        backend_addr: String,
         trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
     ) -> Result<()> {
         debug!("set_relayer_config request received");
 
-        if relayer_url.contains("http") || relayer_url.is_empty() {
-            meta.with_post_init(|post_init| {
-                let expected_heartbeat_interval =
-                    Duration::from_millis(expected_heartbeat_interval_ms);
-
-                let oldest_allowed_heartbeat =
-                    Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
-
-                *post_init.relayer_config.lock().unwrap() = RelayerConfig {
-                    relayer_url,
-                    expected_heartbeat_interval,
-                    oldest_allowed_heartbeat,
-                    trust_packets,
-                };
-                Ok(())
-            })
-        } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
-                "relayer_url must point to an http(s) connection.",
-            ))
+        if !(backend_addr.contains("http") || backend_addr.is_empty()) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
+                "relayer_address must point to an http(s) connection.",
+            ));
         }
+        if !(auth_service_addr.contains("http") || auth_service_addr.is_empty()) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
+                "relayer_auth_service_address must point to an http(s) connection.",
+            ));
+        }
+        meta.with_post_init(|post_init| {
+            let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+
+            let oldest_allowed_heartbeat =
+                Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+
+            *post_init.relayer_config.lock().unwrap() = RelayerConfig {
+                auth_service_addr,
+                backend_addr,
+                expected_heartbeat_interval,
+                oldest_allowed_heartbeat,
+                trust_packets,
+            };
+            Ok(())
+        })
     }
 
     fn contact_info(&self, meta: Self::Metadata) -> Result<AdminRpcContactInfo> {
