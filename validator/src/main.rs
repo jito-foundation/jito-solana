@@ -2363,14 +2363,9 @@ pub fn main() {
             let relayer_url = value_t_or_exit!(subcommand_matches, "relayer_url", String);
             let trust_packets = subcommand_matches.is_present("trust_relayer_packets");
             let expected_heartbeat_interval_ms: u64 =
-                value_of(subcommand_matches, "relayer_expected_heartbeat_interval_ms").unwrap_or(
-                    DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS
-                        .parse()
-                        .unwrap(),
-                );
+                value_of(subcommand_matches, "relayer_expected_heartbeat_interval_ms").unwrap();
             let max_failed_heartbeats: u64 =
-                value_of(subcommand_matches, "relayer_max_failed_heartbeats")
-                    .unwrap_or(DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS.parse().unwrap());
+                value_of(subcommand_matches, "relayer_max_failed_heartbeats").unwrap();
             let admin_client = admin_rpc_service::connect(&ledger_path);
             admin_rpc_service::runtime()
                 .block_on(async move {
@@ -2768,7 +2763,10 @@ pub fn main() {
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
-    let mut block_engine_config = BlockEngineConfig::default();
+    let mut block_engine_config = BlockEngineConfig {
+        trust_packets: matches.is_present("trust_block_engine_packets"),
+        ..Default::default()
+    };
     if matches.is_present("block_engine_url") {
         block_engine_config.block_engine_url =
             value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url");
@@ -2798,9 +2796,11 @@ pub fn main() {
             }
         }
     }
-    block_engine_config.trust_packets = matches.is_present("trust_block_engine_packets");
 
-    let mut relayer_config = RelayerConfig::default();
+    let mut relayer_config = RelayerConfig {
+        trust_packets: matches.is_present("trust_relayer_packets"),
+        ..Default::default()
+    };
     if matches.is_present("relayer_url") {
         relayer_config.relayer_url =
             value_of(&matches, "relayer_url").expect("couldn't parse relayer_url");
@@ -2830,26 +2830,19 @@ pub fn main() {
             }
         }
     }
-    relayer_config.trust_packets = matches.is_present("trust_relayer_packets");
 
     let expected_heartbeat_interval_ms: u64 =
-        value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap_or(
-            DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS
-                .parse()
-                .unwrap(),
-        );
+        value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
     let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
     relayer_config.expected_heartbeat_interval = expected_heartbeat_interval;
 
-    let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats")
-        .unwrap_or(DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS.parse().unwrap());
+    let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats").unwrap();
     assert!(
         max_failed_heartbeats > 0,
         "relayer-max-failed-heartbeats must be greater than zero"
     );
-    let oldest_allowed_heartbeat =
+    relayer_config.oldest_allowed_heartbeat =
         Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
-    relayer_config.oldest_allowed_heartbeat = oldest_allowed_heartbeat;
 
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),

@@ -47,7 +47,6 @@ use {
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
 const CONNECTION_BACKOFF_S: u64 = 5;
-const CONFIG_BACKOFF_S: u64 = 30;
 
 #[derive(Default)]
 struct RelayerStageStats {
@@ -100,7 +99,7 @@ impl RelayerStage {
         exit: Arc<AtomicBool>,
     ) -> Self {
         let thread = Builder::new()
-            .name("relayer-stage".into())
+            .name("relayer-stage".to_string())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -141,15 +140,14 @@ impl RelayerStage {
     ) {
         const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
         const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
-        const CONFIG_BACKOFF: Duration = Duration::from_secs(CONFIG_BACKOFF_S);
 
         let mut error_count: u64 = 0;
 
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
-            // Use if!/else here to avoid extra CONFIG_BACKOFF wait on successful termination
+            // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
             if !Self::validate_relayer_config(&relayer_config.lock().unwrap()) {
-                sleep(CONFIG_BACKOFF).await;
+                sleep(CONNECTION_BACKOFF).await;
             } else if let Err(e) = Self::connect_auth_and_stream(
                 &relayer_config,
                 &cluster_info,
@@ -196,13 +194,17 @@ impl RelayerStage {
 
         let mut auth_service_endpoint = Endpoint::from_shared(local_config.relayer_url.clone())
             .map_err(|_| {
-                ProxyError::AuthenticationConnectionError(
-                    "invalid relayer url value".parse().unwrap(),
-                )
+                ProxyError::AuthenticationConnectionError(format!(
+                    "invalid relayer url value: {}",
+                    local_config.relayer_url
+                ))
             })?;
         let mut backend_endpoint = Endpoint::from_shared(local_config.relayer_url.clone())
             .map_err(|_| {
-                ProxyError::RelayerConnectionError("invalid relayer url value".parse().unwrap())
+                ProxyError::RelayerConnectionError(format!(
+                    "invalid relayer url value: {}",
+                    local_config.relayer_url
+                ))
             })?
             .tcp_keepalive(Some(Duration::from_secs(60)));
         if local_config.relayer_url.contains("https") {
@@ -210,18 +212,14 @@ impl RelayerStage {
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
                     ProxyError::AuthenticationConnectionError(
-                        "failed to set tls_config for relayer auth service"
-                            .parse()
-                            .unwrap(),
+                        "failed to set tls_config for relayer auth service".to_string(),
                     )
                 })?;
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
                     ProxyError::RelayerConnectionError(
-                        "failed to set tls_config for relayer service"
-                            .parse()
-                            .unwrap(),
+                        "failed to set tls_config for relayer service".to_string(),
                     )
                 })?;
         }
@@ -306,10 +304,10 @@ impl RelayerStage {
 
             let tpu_addr = tpu_config
                 .tpu
-                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu".into()))?;
+                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu".to_string()))?;
             let tpu_forward_addr = tpu_config
                 .tpu_forward
-                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu_fwd".into()))?;
+                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu_fwd".to_string()))?;
 
             let tpu_ip = IpAddr::from(tpu_addr.ip.parse::<Ipv4Addr>()?);
             let tpu_forward_ip = IpAddr::from(tpu_forward_addr.ip.parse::<Ipv4Addr>()?);
@@ -394,11 +392,11 @@ impl RelayerStage {
                     relayer_stats = RelayerStageStats::default();
 
                     if cluster_info.id() != keypair.pubkey() {
-                        return Err(ProxyError::AuthenticationConnectionError("Validator ID Changed".to_string()));
+                        return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
                     if *global_config.lock().unwrap() != *local_config {
-                        return Err(ProxyError::AuthenticationConnectionError("Relayer Config Changed".to_string()));
+                        return Err(ProxyError::AuthenticationConnectionError("relayer config changed".to_string()));
                     }
 
                     let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
