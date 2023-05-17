@@ -2770,31 +2770,6 @@ pub fn main() {
     if matches.is_present("block_engine_url") {
         block_engine_config.block_engine_url =
             value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url");
-    } else {
-        let error_msg = "Specifying seperate auth and backend addresses for block engine is deprecated.  Recommended to use --block_engine_url instead.\
-                    If using block_engine_auth_service_address and block_engine_address, they must both be provided and set to the same value.";
-        match (
-            matches.is_present("block_engine_auth_service_address"),
-            matches.is_present("block_engine_address"),
-        ) {
-            (true, true) => {
-                let auth_addr: String = value_of(&matches, "block_engine_auth_service_address")
-                    .expect("couldn't parse block_engine_auth_service_address");
-                let backend_addr: String = value_of(&matches, "block_engine_address")
-                    .expect("couldn't parse block_engine_address");
-                if auth_addr != backend_addr {
-                    eprintln!("{}", error_msg);
-                    exit(1);
-                } else {
-                    block_engine_config.block_engine_url = backend_addr;
-                }
-            }
-            (false, false) => {}
-            _ => {
-                eprintln!("{}", error_msg);
-                exit(1);
-            }
-        }
     }
 
     let mut relayer_config = RelayerConfig {
@@ -2804,35 +2779,13 @@ pub fn main() {
     if matches.is_present("relayer_url") {
         relayer_config.relayer_url =
             value_of(&matches, "relayer_url").expect("couldn't parse relayer_url");
-    } else {
-        let error_msg = "Specifying seperate auth and backend addresses for relayer is deprecated.  Recommended to use --relayer_url instead.\
-                    If using relayer_auth_service_address and relayer_address, they must both be provided and set to the same value.";
-        match (
-            matches.is_present("relayer_auth_service_address"),
-            matches.is_present("relayer_address"),
-        ) {
-            (true, true) => {
-                let auth_addr: String = value_of(&matches, "relayer_auth_service_address")
-                    .expect("couldn't parse relayer_auth_service_address");
-                let backend_addr: String =
-                    value_of(&matches, "relayer_address").expect("couldn't parse relayer_address");
-                if auth_addr != backend_addr {
-                    eprintln!("{}", error_msg);
-                    exit(1);
-                } else {
-                    relayer_config.relayer_url = backend_addr;
-                }
-            }
-            (false, false) => {}
-            _ => {
-                eprintln!("{}", error_msg);
-                exit(1);
-            }
-        }
     }
-
     let expected_heartbeat_interval_ms: u64 =
         value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+    assert!(
+        max_failed_heartbeats > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
     let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
     relayer_config.expected_heartbeat_interval = expected_heartbeat_interval;
 
