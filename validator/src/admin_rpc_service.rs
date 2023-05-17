@@ -307,9 +307,10 @@ impl AdminRpc for AdminRpcImpl {
                 Ok(())
             })
         } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
-                "block_engine_url must point to an http(s) connection.",
-            ))
+            Err(jsonrpc_core::error::Error::invalid_params(format!(
+                "invalid block_engine_url: {} - must point to an http(s) connection or empty string.", 
+                block_engine_url
+            )))
         }
     }
 
@@ -376,9 +377,10 @@ impl AdminRpc for AdminRpcImpl {
                 Ok(())
             })
         } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
-                "relayer_url must point to an http(s) connection.",
-            ))
+            Err(jsonrpc_core::error::Error::invalid_params(format!(
+                "invalid relayer_url: {} - must point to an http(s) connection or empty string.",
+                relayer_url
+            )))
         }
     }
 

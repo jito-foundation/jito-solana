@@ -2783,7 +2783,7 @@ pub fn main() {
     let expected_heartbeat_interval_ms: u64 =
         value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
     assert!(
-        max_failed_heartbeats > 0,
+        expected_heartbeat_interval_ms > 0,
         "relayer-max-failed-heartbeats must be greater than zero"
     );
     let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
