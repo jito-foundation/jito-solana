@@ -46,7 +46,6 @@ use {
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
 const CONNECTION_BACKOFF_S: u64 = 5;
-const CONFIG_BACKOFF_S: u64 = 30;
 
 #[derive(Default)]
 struct BlockEngineStageStats {
@@ -103,7 +102,7 @@ impl BlockEngineStage {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
         let thread = Builder::new()
-            .name("block-engine-stage".into())
+            .name("block-engine-stage".to_string())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -145,14 +144,13 @@ impl BlockEngineStage {
     ) {
         const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
         const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
-        const CONFIG_BACKOFF: Duration = Duration::from_secs(CONFIG_BACKOFF_S);
         let mut error_count: u64 = 0;
 
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
-            // Use if!/else here to avoid extra CONFIG_BACKOFF wait on successful termination
+            // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
             if !Self::validate_block_engine_config(&block_engine_config.lock().unwrap()) {
-                sleep(CONFIG_BACKOFF).await;
+                sleep(CONNECTION_BACKOFF).await;
             } else if let Err(e) = Self::connect_auth_and_stream(
                 &block_engine_config,
                 &cluster_info,
@@ -201,15 +199,17 @@ impl BlockEngineStage {
 
         let mut auth_service_endpoint =
             Endpoint::from_shared(local_config.block_engine_url.clone()).map_err(|_| {
-                ProxyError::AuthenticationConnectionError(
-                    "invalid block engine url value".parse().unwrap(),
-                )
+                ProxyError::AuthenticationConnectionError(format!(
+                    "invalid block engine url value: {}",
+                    local_config.block_engine_url
+                ))
             })?;
         let mut backend_endpoint = Endpoint::from_shared(local_config.block_engine_url.clone())
             .map_err(|_| {
-                ProxyError::BlockEngineConnectionError(
-                    "invalid block engine url value".parse().unwrap(),
-                )
+                ProxyError::BlockEngineConnectionError(format!(
+                    "invalid block engine url value: {}",
+                    local_config.block_engine_url
+                ))
             })?
             .tcp_keepalive(Some(Duration::from_secs(60)));
 
@@ -218,18 +218,14 @@ impl BlockEngineStage {
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
                     ProxyError::AuthenticationConnectionError(
-                        "failed to set tls_config for block engine auth service"
-                            .parse()
-                            .unwrap(),
+                        "failed to set tls_config for block engine auth service".to_string(),
                     )
                 })?;
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
                     ProxyError::BlockEngineConnectionError(
-                        "failed to set tls_config for block engine service"
-                            .parse()
-                            .unwrap(),
+                        "failed to set tls_config for block engine service".to_string(),
                     )
                 })?;
         }
@@ -408,11 +404,11 @@ impl BlockEngineStage {
                     block_engine_stats = BlockEngineStageStats::default();
 
                     if cluster_info.id() != keypair.pubkey() {
-                        return Err(ProxyError::AuthenticationConnectionError("Validator ID Changed".to_string()));
+                        return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
                     if *global_config.lock().unwrap() != *local_config {
-                        return Err(ProxyError::AuthenticationConnectionError("Block Engine Config Changed".to_string()));
+                        return Err(ProxyError::AuthenticationConnectionError("block engine config changed".to_string()));
                     }
 
                     let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
