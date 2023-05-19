@@ -8,7 +8,10 @@ use {
     serde::{Deserialize, Serialize},
     solana_core::{
         consensus::Tower,
-        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
+        proxy::{
+            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         tower_storage::TowerStorage,
         validator::ValidatorStartProgress,
     },
@@ -296,25 +299,24 @@ impl AdminRpc for AdminRpcImpl {
         trust_packets: bool,
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
-
-        if !(backend_addr.contains("http") || backend_addr.is_empty()) {
-            return Err(jsonrpc_core::error::Error::invalid_params(
-                "block_engine_address must point to an http(s) connection.",
-            ));
+        let config = BlockEngineConfig {
+            auth_service_addr,
+            backend_addr,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if BlockEngineStage::is_valid_block_engine_config(&config)
+            || (config.auth_service_addr.is_empty() && config.backend_addr.is_empty())
+        {
+            meta.with_post_init(|post_init| {
+                *post_init.block_engine_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set block engine config. see logs for details.",
+            ))
         }
-        if !(auth_service_addr.contains("http") || auth_service_addr.is_empty()) {
-            return Err(jsonrpc_core::error::Error::invalid_params(
-                "block_engine_auth_service_address must point to an http(s) connection.",
-            ));
-        }
-        meta.with_post_init(|post_init| {
-            *post_init.block_engine_config.lock().unwrap() = BlockEngineConfig {
-                auth_service_addr,
-                backend_addr,
-                trust_packets,
-            };
-            Ok(())
-        })
     }
 
     fn set_identity(
@@ -363,32 +365,29 @@ impl AdminRpc for AdminRpcImpl {
         max_failed_heartbeats: u64,
     ) -> Result<()> {
         debug!("set_relayer_config request received");
-
-        if !(backend_addr.contains("http") || backend_addr.is_empty()) {
-            return Err(jsonrpc_core::error::Error::invalid_params(
-                "relayer_address must point to an http(s) connection.",
-            ));
+        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+        let oldest_allowed_heartbeat =
+            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+        let config = RelayerConfig {
+            auth_service_addr,
+            backend_addr,
+            expected_heartbeat_interval,
+            oldest_allowed_heartbeat,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if RelayerStage::is_valid_relayer_config(&config)
+            || (config.auth_service_addr.is_empty() && config.backend_addr.is_empty())
+        {
+            meta.with_post_init(|post_init| {
+                *post_init.relayer_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set relayer config. see logs for details.",
+            ))
         }
-        if !(auth_service_addr.contains("http") || auth_service_addr.is_empty()) {
-            return Err(jsonrpc_core::error::Error::invalid_params(
-                "relayer_auth_service_address must point to an http(s) connection.",
-            ));
-        }
-        meta.with_post_init(|post_init| {
-            let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
-
-            let oldest_allowed_heartbeat =
-                Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
-
-            *post_init.relayer_config.lock().unwrap() = RelayerConfig {
-                auth_service_addr,
-                backend_addr,
-                expected_heartbeat_interval,
-                oldest_allowed_heartbeat,
-                trust_packets,
-            };
-            Ok(())
-        })
     }
 
     fn contact_info(&self, meta: Self::Metadata) -> Result<AdminRpcContactInfo> {

@@ -74,10 +74,10 @@ pub struct BlockBuilderFeeInfo {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockEngineConfig {
-    /// Auth Service Address
+    /// Address to the external auth-service responsible for generating access tokens.
     pub auth_service_addr: String,
 
-    /// Block Engine Address
+    /// Block Engine grpc Address
     pub backend_addr: String,
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
@@ -152,7 +152,7 @@ impl BlockEngineStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            if !Self::validate_block_engine_config(&block_engine_config.lock().unwrap()) {
+            if !Self::is_valid_block_engine_config(&block_engine_config.lock().unwrap()) {
                 sleep(CONNECTION_BACKOFF).await;
             } else if let Err(e) = Self::connect_auth_and_stream(
                 &block_engine_config,
@@ -198,7 +198,7 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
-        let local_config = &block_engine_config.lock().unwrap().clone();
+        let local_config = block_engine_config.lock().unwrap().clone();
 
         let mut auth_service_endpoint =
             Endpoint::from_shared(local_config.auth_service_addr.clone()).map_err(|_| {
@@ -207,7 +207,7 @@ impl BlockEngineStage {
                     local_config.auth_service_addr
                 ))
             })?;
-        if local_config.auth_service_addr.contains("https") {
+        if local_config.auth_service_addr.starts_with("https") {
             auth_service_endpoint = auth_service_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -225,7 +225,7 @@ impl BlockEngineStage {
             })?
             .tcp_keepalive(Some(Duration::from_secs(60)));
 
-        if local_config.backend_addr.contains("https") {
+        if local_config.backend_addr.starts_with("https") {
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -235,7 +235,7 @@ impl BlockEngineStage {
                 })?;
         }
 
-        debug!("connecting to auth: {:?}", &local_config.auth_service_addr);
+        debug!("connecting to auth: {}", &local_config.auth_service_addr);
         let auth_channel = timeout(*connection_timeout, auth_service_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -257,10 +257,7 @@ impl BlockEngineStage {
             ("count", 1, i64),
         );
 
-        debug!(
-            "connecting to block engine: {:?}",
-            &local_config.backend_addr
-        );
+        debug!("connecting to block engine: {}", &local_config.backend_addr);
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
@@ -276,7 +273,7 @@ impl BlockEngineStage {
             bundle_tx,
             block_engine_client,
             packet_tx,
-            local_config,
+            &local_config,
             block_engine_config,
             verified_packet_tx,
             exit,
@@ -296,8 +293,8 @@ impl BlockEngineStage {
         bundle_tx: &Sender<Vec<PacketBundle>>,
         mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
         packet_tx: &Sender<PacketBatch>,
-        local_config: &BlockEngineConfig,
-        global_config: &Arc<Mutex<BlockEngineConfig>>,
+        local_config: &BlockEngineConfig, // local copy of config with current connections
+        global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
@@ -371,8 +368,8 @@ impl BlockEngineStage {
         ),
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
-        local_config: &BlockEngineConfig,
-        global_config: &Arc<Mutex<BlockEngineConfig>>,
+        local_config: &BlockEngineConfig, // local copy of config with current connections
+        global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
@@ -537,7 +534,29 @@ impl BlockEngineStage {
         Ok(())
     }
 
-    fn validate_block_engine_config(config: &BlockEngineConfig) -> bool {
-        !config.auth_service_addr.is_empty() && !config.auth_service_addr.is_empty()
+    pub fn is_valid_block_engine_config(config: &BlockEngineConfig) -> bool {
+        if config.auth_service_addr.is_empty() {
+            warn!("can't connect to block_engine auth. missing url.");
+            return false;
+        }
+        if config.backend_addr.is_empty() {
+            warn!("can't connect to block engine. missing  url.");
+            return false;
+        }
+        if let Err(e) = Endpoint::from_str(&config.auth_service_addr) {
+            error!(
+                "can't connect to block engine. error creating block engine auth endpoint - {}",
+                e.to_string()
+            );
+            return false;
+        }
+        if let Err(e) = Endpoint::from_str(&config.backend_addr) {
+            error!(
+                "can't connect to block engine. error creating block engine endpoint - {}",
+                e.to_string()
+            );
+            return false;
+        }
+        true
     }
 }

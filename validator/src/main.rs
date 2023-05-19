@@ -1,5 +1,4 @@
 #![allow(clippy::integer_arithmetic)]
-
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
 use {
@@ -1841,7 +1840,7 @@ pub fn main() {
                 .long("block-engine-address")
                 .value_name("block_engine_address")
                 .takes_value(true)
-                .help("Deprecated: Address of the block engine's grpc.")
+                .help("Deprecated: Please use block_engine_url.")
                 .conflicts_with("block_engine_url")
         )
         .arg(
@@ -1849,7 +1848,7 @@ pub fn main() {
                 .long("block-engine-auth-service-address")
                 .value_name("block_engine_auth_service_address")
                 .takes_value(true)
-                .help("Deprecated: Address of the block engine's authentication service.")
+                .help("Deprecated: Please use block_engine_url.")
                 .conflicts_with("block_engine_url")
         )
         .arg(
@@ -1857,7 +1856,7 @@ pub fn main() {
                 .long("relayer-auth-service-address")
                 .value_name("relayer_auth_service_address")
                 .takes_value(true)
-                .help("Deprecated: Address of the block engine's authentication service.")
+                .help("Deprecated: Please use relayer_url.")
                 .conflicts_with("relayer_url")
         )
         .arg(
@@ -1865,7 +1864,7 @@ pub fn main() {
                 .long("relayer-address")
                 .value_name("relayer_address")
                 .takes_value(true)
-                .help("Deprecated: Address of the relayer grpc.")
+                .help("Deprecated: Please use relayer_url.")
                 .conflicts_with("relayer_url")
         )
         .arg(
@@ -2068,6 +2067,7 @@ pub fn main() {
                         .takes_value(true)
                         .help("Deprecated: Address of the block engine's grpc.")
                         .conflicts_with("block_engine_url")
+                        .required(false)
                 )
                 .arg(
                     Arg::with_name("block_engine_auth_service_address")
@@ -2076,6 +2076,7 @@ pub fn main() {
                         .takes_value(true)
                         .help("Deprecated: Address of the block engine's authentication service.")
                         .conflicts_with("block_engine_url")
+                        .required(false)
                 )
                 .arg(
                     Arg::with_name("trust_block_engine_packets")
@@ -2125,7 +2126,7 @@ pub fn main() {
                         .long("relayer-url")
                         .help("Relayer url. Set to empty string to disable relayer connection.")
                         .takes_value(true)
-                        .required(true)
+                        .required(false)
                 )
                 .arg(
                     Arg::with_name("relayer_auth_service_address")
@@ -2134,6 +2135,7 @@ pub fn main() {
                         .takes_value(true)
                         .help("Deprecated: Address of the block engine's authentication service.")
                         .conflicts_with("relayer_url")
+                        .required(false)
                 )
                 .arg(
                     Arg::with_name("relayer_address")
@@ -2142,6 +2144,7 @@ pub fn main() {
                         .takes_value(true)
                         .help("Deprecated: Address of the relayer grpc.")
                         .conflicts_with("relayer_url")
+                        .required(false)
                 )
                 .arg(
                     Arg::with_name("trust_relayer_packets")
@@ -2351,21 +2354,21 @@ pub fn main() {
             return;
         }
         ("set-block-engine-config", Some(subcommand_matches)) => {
-            let (auth_service_addr, backend_addr) = if subcommand_matches.is_present("relayer_url")
-            {
-                let block_engine_url =
-                    value_t_or_exit!(subcommand_matches, "block_engine_url", String);
-                (block_engine_url.clone(), block_engine_url)
-            } else {
-                let auth_addr = value_t_or_exit!(
-                    subcommand_matches,
-                    "block_engine_auth_service_address",
-                    String
-                );
-                let backend_addr =
-                    value_t_or_exit!(subcommand_matches, "block_engine_address", String);
-                (auth_addr, backend_addr)
-            };
+            let (auth_service_addr, backend_addr) =
+                if subcommand_matches.is_present("block_engine_url") {
+                    let block_engine_url =
+                        value_t_or_exit!(subcommand_matches, "block_engine_url", String);
+                    (block_engine_url.clone(), block_engine_url)
+                } else {
+                    let auth_addr = value_t_or_exit!(
+                        subcommand_matches,
+                        "block_engine_auth_service_address",
+                        String
+                    );
+                    let backend_addr =
+                        value_t_or_exit!(subcommand_matches, "block_engine_address", String);
+                    (auth_addr, backend_addr)
+                };
 
             let trust_packets = subcommand_matches.is_present("trust_block_engine_packets");
             let admin_client = admin_rpc_service::connect(&ledger_path);
@@ -2876,8 +2879,9 @@ pub fn main() {
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
     let mut block_engine_config = BlockEngineConfig {
+        auth_service_addr: "".to_string(),
+        backend_addr: "".to_string(),
         trust_packets: matches.is_present("trust_block_engine_packets"),
-        ..Default::default()
     };
     if matches.is_present("block_engine_url") {
         let url: String =
@@ -2905,9 +2909,26 @@ pub fn main() {
         }
     }
 
+    // Defaults are set in cli definition, safe to use unwrap() here
+    let expected_heartbeat_interval_ms: u64 =
+        value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+    let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats").unwrap();
+    assert!(
+        expected_heartbeat_interval_ms > 0,
+        "expected_heartbeat_interval_ms must be greater than zero"
+    );
+    assert!(
+        max_failed_heartbeats > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
     let mut relayer_config = RelayerConfig {
+        auth_service_addr: "".to_string(),
+        backend_addr: "".to_string(),
+        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+        oldest_allowed_heartbeat: Duration::from_millis(
+            max_failed_heartbeats * expected_heartbeat_interval_ms,
+        ),
         trust_packets: matches.is_present("trust_relayer_packets"),
-        ..Default::default()
     };
     if matches.is_present("relayer_url") {
         let url: String = value_of(&matches, "relayer_url").expect("couldn't parse relayer_url");
@@ -2933,19 +2954,6 @@ pub fn main() {
             }
         }
     }
-
-    let expected_heartbeat_interval_ms: u64 =
-        value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
-    let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
-    relayer_config.expected_heartbeat_interval = expected_heartbeat_interval;
-
-    let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats").unwrap();
-    assert!(
-        max_failed_heartbeats > 0,
-        "relayer-max-failed-heartbeats must be greater than zero"
-    );
-    relayer_config.oldest_allowed_heartbeat =
-        Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
 
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
