@@ -2763,39 +2763,40 @@ pub fn main() {
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
-    let mut block_engine_config = BlockEngineConfig {
+    let block_engine_config = BlockEngineConfig {
+        block_engine_url: if matches.is_present("block_engine_url") {
+            value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url")
+        } else {
+            "".to_string()
+        },
         trust_packets: matches.is_present("trust_block_engine_packets"),
-        ..Default::default()
     };
-    if matches.is_present("block_engine_url") {
-        block_engine_config.block_engine_url =
-            value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url");
-    }
 
-    let mut relayer_config = RelayerConfig {
-        trust_packets: matches.is_present("trust_relayer_packets"),
-        ..Default::default()
-    };
-    if matches.is_present("relayer_url") {
-        relayer_config.relayer_url =
-            value_of(&matches, "relayer_url").expect("couldn't parse relayer_url");
-    }
+    // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms: u64 =
         value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
     assert!(
         expected_heartbeat_interval_ms > 0,
         "relayer-max-failed-heartbeats must be greater than zero"
     );
-    let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
-    relayer_config.expected_heartbeat_interval = expected_heartbeat_interval;
-
     let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats").unwrap();
     assert!(
         max_failed_heartbeats > 0,
         "relayer-max-failed-heartbeats must be greater than zero"
     );
-    relayer_config.oldest_allowed_heartbeat =
-        Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+
+    let relayer_config = RelayerConfig {
+        relayer_url: if matches.is_present("relayer_url") {
+            value_of(&matches, "relayer_url").expect("couldn't parse relayer_url")
+        } else {
+            "".to_string()
+        },
+        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+        oldest_allowed_heartbeat: Duration::from_millis(
+            max_failed_heartbeats * expected_heartbeat_interval_ms,
+        ),
+        trust_packets: matches.is_present("trust_relayer_packets"),
+    };
 
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
@@ -3452,30 +3453,6 @@ fn process_account_indexes(matches: &ArgMatches) -> AccountSecondaryIndexes {
 // avoid breaking validator startup commands
 fn get_deprecated_arguments() -> Vec<Arg<'static, 'static>> {
     vec![
-        Arg::with_name("block_engine_address")
-            .long("block-engine-address")
-            .value_name("block_engine_address")
-            .takes_value(true)
-            .help("Address of the block engine")
-            .conflicts_with("block_engine_url"),
-        Arg::with_name("block_engine_auth_service_address")
-            .long("block-engine-auth-service-address")
-            .value_name("block_engine_auth_service_address")
-            .takes_value(true)
-            .help("Address of the block engine's authentication service.")
-            .conflicts_with("block_engine_url"),
-        Arg::with_name("relayer_auth_service_address")
-            .long("relayer-auth-service-address")
-            .value_name("relayer_auth_service_address")
-            .takes_value(true)
-            .help("Address of the block engine's authentication service.")
-            .conflicts_with("relayer_url"),
-        Arg::with_name("relayer_address")
-            .long("relayer-address")
-            .value_name("relayer_address")
-            .takes_value(true)
-            .help("Address of the relayer")
-            .conflicts_with("relayer_url"),
         Arg::with_name("accounts_db_caching_enabled")
             .long("accounts-db-caching-enabled")
             .conflicts_with("no_accounts_db_caching")
@@ -3580,10 +3557,6 @@ lazy_static! {
             "Vote account sanity checks are no longer performed by default.",
         ),
         ("no_rocksdb_compaction", ""),
-        ("block_engine_address", "You can now use a single endpoint to connect to the block-engine. Please use block-engine-url."),
-        ("block_engine_auth_service_address", "You can now use a single endpoint to connect to the block-engine. Please use block-engine-url."),
-        ("relayer_address", ""),
-        ("relayer_auth_service_address", ""),
     ];
 }
 

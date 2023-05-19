@@ -8,7 +8,10 @@ use {
     serde::{de::Deserializer, Deserialize, Serialize},
     solana_core::{
         consensus::Tower,
-        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
+        proxy::{
+            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         tower_storage::TowerStorage,
         validator::ValidatorStartProgress,
     },
@@ -297,20 +300,20 @@ impl AdminRpc for AdminRpcImpl {
         trust_packets: bool,
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
-
-        if block_engine_url.contains("http") || block_engine_url.is_empty() {
+        let config = BlockEngineConfig {
+            block_engine_url,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if BlockEngineStage::is_valid_block_engine_config(&config) {
             meta.with_post_init(|post_init| {
-                *post_init.block_engine_config.lock().unwrap() = BlockEngineConfig {
-                    block_engine_url,
-                    trust_packets,
-                };
+                *post_init.block_engine_config.lock().unwrap() = config;
                 Ok(())
             })
         } else {
-            Err(jsonrpc_core::error::Error::invalid_params(format!(
-                "invalid block_engine_url: {} - must point to an http(s) connection or empty string.", 
-                block_engine_url
-            )))
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set block engine config. see logs for details.",
+            ))
         }
     }
 
@@ -359,28 +362,25 @@ impl AdminRpc for AdminRpcImpl {
         max_failed_heartbeats: u64,
     ) -> Result<()> {
         debug!("set_relayer_config request received");
-
-        if relayer_url.contains("http") || relayer_url.is_empty() {
+        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+        let oldest_allowed_heartbeat =
+            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+        let config = RelayerConfig {
+            relayer_url,
+            expected_heartbeat_interval,
+            oldest_allowed_heartbeat,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if RelayerStage::is_valid_relayer_config(&config) {
             meta.with_post_init(|post_init| {
-                let expected_heartbeat_interval =
-                    Duration::from_millis(expected_heartbeat_interval_ms);
-
-                let oldest_allowed_heartbeat =
-                    Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
-
-                *post_init.relayer_config.lock().unwrap() = RelayerConfig {
-                    relayer_url,
-                    expected_heartbeat_interval,
-                    oldest_allowed_heartbeat,
-                    trust_packets,
-                };
+                *post_init.relayer_config.lock().unwrap() = config;
                 Ok(())
             })
         } else {
-            Err(jsonrpc_core::error::Error::invalid_params(format!(
-                "invalid relayer_url: {} - must point to an http(s) connection or empty string.",
-                relayer_url
-            )))
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set relayer config. see logs for details.",
+            ))
         }
     }
 

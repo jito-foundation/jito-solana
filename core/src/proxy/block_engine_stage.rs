@@ -149,7 +149,7 @@ impl BlockEngineStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            if !Self::validate_block_engine_config(&block_engine_config.lock().unwrap()) {
+            if !Self::is_valid_block_engine_config(&block_engine_config.lock().unwrap()) {
                 sleep(CONNECTION_BACKOFF).await;
             } else if let Err(e) = Self::connect_auth_and_stream(
                 &block_engine_config,
@@ -195,7 +195,7 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
-        let local_config = &block_engine_config.lock().unwrap().clone();
+        let local_config = block_engine_config.lock().unwrap().clone();
 
         let mut auth_service_endpoint =
             Endpoint::from_shared(local_config.block_engine_url.clone()).map_err(|_| {
@@ -213,7 +213,7 @@ impl BlockEngineStage {
             })?
             .tcp_keepalive(Some(Duration::from_secs(60)));
 
-        if local_config.block_engine_url.contains("https") {
+        if local_config.block_engine_url.starts_with("https") {
             auth_service_endpoint = auth_service_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -230,7 +230,7 @@ impl BlockEngineStage {
                 })?;
         }
 
-        debug!("connecting to auth: {:?}", &local_config.block_engine_url);
+        debug!("connecting to auth: {}", local_config.block_engine_url);
         let auth_channel = timeout(*connection_timeout, auth_service_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -248,13 +248,13 @@ impl BlockEngineStage {
 
         datapoint_info!(
             "block_engine_stage-tokens_generated",
-            ("url", &local_config.block_engine_url, String),
+            ("url", local_config.block_engine_url, String),
             ("count", 1, i64),
         );
 
         debug!(
-            "connecting to block engine: {:?}",
-            &local_config.block_engine_url
+            "connecting to block engine: {}",
+            local_config.block_engine_url
         );
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
@@ -271,7 +271,7 @@ impl BlockEngineStage {
             bundle_tx,
             block_engine_client,
             packet_tx,
-            local_config,
+            &local_config,
             block_engine_config,
             verified_packet_tx,
             exit,
@@ -291,8 +291,8 @@ impl BlockEngineStage {
         bundle_tx: &Sender<Vec<PacketBundle>>,
         mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
         packet_tx: &Sender<PacketBatch>,
-        local_config: &BlockEngineConfig,
-        global_config: &Arc<Mutex<BlockEngineConfig>>,
+        local_config: &BlockEngineConfig, // local copy of config with current connections
+        global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
@@ -366,8 +366,8 @@ impl BlockEngineStage {
         ),
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
-        local_config: &BlockEngineConfig,
-        global_config: &Arc<Mutex<BlockEngineConfig>>,
+        local_config: &BlockEngineConfig, // local copy of config with current connections
+        global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
@@ -532,7 +532,18 @@ impl BlockEngineStage {
         Ok(())
     }
 
-    fn validate_block_engine_config(config: &BlockEngineConfig) -> bool {
-        !config.block_engine_url.is_empty()
+    pub fn is_valid_block_engine_config(config: &BlockEngineConfig) -> bool {
+        if config.block_engine_url.is_empty() {
+            warn!("can't connect to block_engine. missing block_engine_url.");
+            return false;
+        }
+        if let Err(e) = Endpoint::from_str(&config.block_engine_url) {
+            error!(
+                "can't connect to block engine. error creating block engine endpoint - {}",
+                e.to_string()
+            );
+            return false;
+        }
+        true
     }
 }
