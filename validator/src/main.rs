@@ -1,5 +1,4 @@
 #![allow(clippy::integer_arithmetic)]
-
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
 use {
@@ -1788,13 +1787,13 @@ pub fn main() {
         .arg(
             Arg::with_name("block_engine_url")
                 .long("block-engine-url")
-                .help("Block engine url")
+                .help("Block engine url.  Set to empty string to disable block engine connection.")
                 .takes_value(true)
         )
         .arg(
             Arg::with_name("relayer_url")
                 .long("relayer-url")
-                .help("Relayer url")
+                .help("Relayer url. Set to empty string to disable relayer connection.")
                 .takes_value(true)
         )
         .arg(

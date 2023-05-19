@@ -193,13 +193,6 @@ impl RelayerStage {
         let keypair = cluster_info.keypair().clone();
         let local_config = relayer_config.lock().unwrap().clone();
 
-        let mut auth_service_endpoint = Endpoint::from_shared(local_config.relayer_url.clone())
-            .map_err(|_| {
-                ProxyError::AuthenticationConnectionError(format!(
-                    "invalid relayer url value: {}",
-                    local_config.relayer_url
-                ))
-            })?;
         let mut backend_endpoint = Endpoint::from_shared(local_config.relayer_url.clone())
             .map_err(|_| {
                 ProxyError::RelayerConnectionError(format!(
@@ -209,13 +202,6 @@ impl RelayerStage {
             })?
             .tcp_keepalive(Some(Duration::from_secs(60)));
         if local_config.relayer_url.starts_with("https") {
-            auth_service_endpoint = auth_service_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .map_err(|_| {
-                    ProxyError::AuthenticationConnectionError(
-                        "failed to set tls_config for relayer auth service".to_string(),
-                    )
-                })?;
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -226,7 +212,7 @@ impl RelayerStage {
         }
 
         debug!("connecting to auth: {}", local_config.relayer_url);
-        let auth_channel = timeout(*connection_timeout, auth_service_endpoint.connect())
+        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
             .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
