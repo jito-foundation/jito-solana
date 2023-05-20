@@ -127,8 +127,8 @@ impl FetchStageManager {
                                 Self::set_tpu_addresses(&cluster_info, tpu_addr, tpu_forward_addr);
                             }
                         } else {
-                            // see comment on heartbeat_sender clone in new()
-                            unreachable!();
+                                warn!("relayer heartbeat receiver disconnected, shutting down");
+                                return;
                         }
                     }
                     recv(metrics_tick) -> _ => {

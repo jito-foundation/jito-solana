@@ -10,7 +10,10 @@ use {
         },
     },
     solana_client::rpc_client::RpcClient,
-    solana_core::tower_storage::FileTowerStorage,
+    solana_core::{
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
+        tower_storage::FileTowerStorage,
+    },
     solana_faucet::faucet::{run_local_faucet_with_port, FAUCET_PORT},
     solana_rpc::{
         rpc::{JsonRpcConfig, RpcBigtableConfig},
@@ -39,7 +42,7 @@ use {
         net::{IpAddr, Ipv4Addr, SocketAddr},
         path::{Path, PathBuf},
         process::exit,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
         time::{Duration, SystemTime, UNIX_EPOCH},
     },
 };
@@ -828,6 +831,8 @@ fn main() {
                     bank_forks: test_validator.bank_forks(),
                     cluster_info: test_validator.cluster_info(),
                     vote_account: test_validator.vote_account_address(),
+                    block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+                    relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
                 });
             if let Some(dashboard) = dashboard {
                 dashboard.run(Duration::from_millis(250));

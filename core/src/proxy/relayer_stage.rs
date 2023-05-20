@@ -30,6 +30,7 @@ use {
     },
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, Mutex,
@@ -66,13 +67,13 @@ impl RelayerStageStats {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RelayerConfig {
     /// Address to the external auth-service responsible for generating access tokens.
-    pub auth_service_endpoint: Endpoint,
+    pub auth_service_addr: String,
 
-    /// Primary backend endpoint.
-    pub backend_endpoint: Endpoint,
+    /// Relayer grpc Address
+    pub backend_addr: String,
 
     /// Interval at which heartbeats are expected.
     pub expected_heartbeat_interval: Duration,
@@ -90,7 +91,7 @@ pub struct RelayerStage {
 
 impl RelayerStage {
     pub fn new(
-        relayer_config: RelayerConfig,
+        relayer_config: Arc<Mutex<RelayerConfig>>,
         // The keypair stored here is used to sign auth challenges.
         cluster_info: Arc<ClusterInfo>,
         // Channel that server-sent heartbeats are piped through.
@@ -102,7 +103,7 @@ impl RelayerStage {
         exit: Arc<AtomicBool>,
     ) -> Self {
         let thread = Builder::new()
-            .name("relayer-stage".into())
+            .name("relayer-stage".to_string())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -134,7 +135,7 @@ impl RelayerStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn start(
-        relayer_config: RelayerConfig,
+        relayer_config: Arc<Mutex<RelayerConfig>>,
         cluster_info: Arc<ClusterInfo>,
         heartbeat_tx: Sender<HeartbeatEvent>,
         packet_tx: Sender<PacketBatch>,
@@ -146,7 +147,11 @@ impl RelayerStage {
         let mut error_count: u64 = 0;
 
         while !exit.load(Ordering::Relaxed) {
-            if let Err(e) = Self::connect_auth_and_stream(
+            // Wait until a valid config is supplied (either initially or by admin rpc)
+            // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
+            if !Self::is_valid_relayer_config(&relayer_config.lock().unwrap()) {
+                sleep(CONNECTION_BACKOFF).await;
+            } else if let Err(e) = Self::connect_auth_and_stream(
                 &relayer_config,
                 &cluster_info,
                 &heartbeat_tx,
@@ -161,7 +166,7 @@ impl RelayerStage {
                     // This error is frequent on hot spares, and the parsed string does not work
                     // with datapoints (incorrect escaping).
                     ProxyError::AuthenticationPermissionDenied => {
-                        warn!("block engine permission denied. not on leader schedule. ignore if hot-spare.")
+                        warn!("relayer permission denied. not on leader schedule. ignore if hot-spare.")
                     }
                     e => {
                         error_count += 1;
@@ -178,7 +183,7 @@ impl RelayerStage {
     }
 
     async fn connect_auth_and_stream(
-        relayer_config: &RelayerConfig,
+        relayer_config: &Arc<Mutex<RelayerConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
@@ -188,18 +193,47 @@ impl RelayerStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
+        let local_config = relayer_config.lock().unwrap().clone();
 
-        debug!(
-            "connecting to auth: {:?}",
-            relayer_config.auth_service_endpoint.uri()
-        );
-        let auth_channel = timeout(
-            *connection_timeout,
-            relayer_config.auth_service_endpoint.connect(),
-        )
-        .await
-        .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-        .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+        let mut auth_service_endpoint =
+            Endpoint::from_shared(local_config.auth_service_addr.clone()).map_err(|_| {
+                ProxyError::AuthenticationConnectionError(format!(
+                    "invalid relayer url value: {}",
+                    local_config.auth_service_addr
+                ))
+            })?;
+        if local_config.auth_service_addr.starts_with("https") {
+            auth_service_endpoint = auth_service_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .map_err(|_| {
+                    ProxyError::AuthenticationConnectionError(
+                        "failed to set tls_config for relayer auth service".to_string(),
+                    )
+                })?;
+        }
+        let mut backend_endpoint = Endpoint::from_shared(local_config.backend_addr.clone())
+            .map_err(|_| {
+                ProxyError::RelayerConnectionError(format!(
+                    "invalid relayer url value: {}",
+                    local_config.backend_addr
+                ))
+            })?
+            .tcp_keepalive(Some(Duration::from_secs(60)));
+        if local_config.backend_addr.starts_with("https") {
+            backend_endpoint = backend_endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .map_err(|_| {
+                    ProxyError::RelayerConnectionError(
+                        "failed to set tls_config for relayer service".to_string(),
+                    )
+                })?;
+        }
+
+        debug!("connecting to auth: {}", local_config.auth_service_addr);
+        let auth_channel = timeout(*connection_timeout, auth_service_endpoint.connect())
+            .await
+            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -213,25 +247,15 @@ impl RelayerStage {
 
         datapoint_info!(
             "relayer_stage-tokens_generated",
-            (
-                "url",
-                relayer_config.auth_service_endpoint.uri().to_string(),
-                String
-            ),
+            ("url", local_config.auth_service_addr, String),
             ("count", 1, i64),
         );
 
-        debug!(
-            "connecting to relayer: {:?}",
-            relayer_config.backend_endpoint.uri()
-        );
-        let relayer_channel = timeout(
-            *connection_timeout,
-            relayer_config.backend_endpoint.connect(),
-        )
-        .await
-        .map_err(|_| ProxyError::RelayerConnectionTimeout)?
-        .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
+        debug!("connecting to relayer: {}", local_config.backend_addr);
+        let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
+            .await
+            .map_err(|_| ProxyError::RelayerConnectionTimeout)?
+            .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(
@@ -244,8 +268,9 @@ impl RelayerStage {
             heartbeat_tx,
             packet_tx,
             verified_packet_tx,
+            &local_config,
             relayer_config,
-            &exit,
+            exit,
             auth_client,
             access_token,
             refresh_token,
@@ -256,12 +281,14 @@ impl RelayerStage {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn start_consuming_relayer_packets(
         mut client: RelayerClient<InterceptedService<Channel, AuthInterceptor>>,
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
-        relayer_config: &RelayerConfig,
+        local_config: &RelayerConfig, // local copy of config with current connections
+        global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
         exit: &Arc<AtomicBool>,
         auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
@@ -282,10 +309,10 @@ impl RelayerStage {
 
             let tpu_addr = tpu_config
                 .tpu
-                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu".into()))?;
+                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu".to_string()))?;
             let tpu_forward_addr = tpu_config
                 .tpu_forward
-                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu_fwd".into()))?;
+                .ok_or_else(|| ProxyError::MissingTpuSocket("tpu_fwd".to_string()))?;
 
             let tpu_ip = IpAddr::from(tpu_addr.ip.parse::<Ipv4Addr>()?);
             let tpu_forward_ip = IpAddr::from(tpu_forward_addr.ip.parse::<Ipv4Addr>()?);
@@ -309,7 +336,8 @@ impl RelayerStage {
             heartbeat_tx,
             packet_stream,
             packet_tx,
-            relayer_config,
+            local_config,
+            global_config,
             verified_packet_tx,
             exit,
             auth_client,
@@ -322,12 +350,14 @@ impl RelayerStage {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn consume_packet_stream(
         heartbeat_event: HeartbeatEvent,
         heartbeat_tx: &Sender<HeartbeatEvent>,
         mut packet_stream: Streaming<relayer::SubscribePacketsResponse>,
         packet_tx: &Sender<PacketBatch>,
-        relayer_config: &RelayerConfig,
+        local_config: &RelayerConfig, // local copy of config with current connections
+        global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
         verified_packet_tx: &Sender<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>,
         exit: &Arc<AtomicBool>,
         mut auth_client: AuthServiceClient<Channel>,
@@ -341,15 +371,13 @@ impl RelayerStage {
         let refresh_within_s: u64 = METRICS_TICK.as_secs().saturating_mul(3).saturating_div(2);
 
         let mut relayer_stats = RelayerStageStats::default();
-        let mut metrics_tick = interval(METRICS_TICK);
+        let mut metrics_and_auth_tick = interval(METRICS_TICK);
 
         let mut num_full_refreshes: u64 = 1;
         let mut num_refresh_access_token: u64 = 0;
 
-        let mut heartbeat_check_interval = interval(relayer_config.expected_heartbeat_interval);
+        let mut heartbeat_check_interval = interval(local_config.expected_heartbeat_interval);
         let mut last_heartbeat_ts = Instant::now();
-
-        let auth_uri_string = relayer_config.auth_service_endpoint.uri().to_string();
 
         info!("connected to packet stream");
 
@@ -357,25 +385,29 @@ impl RelayerStage {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, relayer_config.trust_packets, verified_packet_tx, &mut relayer_stats)?;
+                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, local_config.trust_packets, verified_packet_tx, &mut relayer_stats)?;
                 }
                 _ = heartbeat_check_interval.tick() => {
-                    if last_heartbeat_ts.elapsed() > relayer_config.oldest_allowed_heartbeat {
+                    if last_heartbeat_ts.elapsed() > local_config.oldest_allowed_heartbeat {
                         return Err(ProxyError::HeartbeatExpired);
                     }
                 }
-                _ = metrics_tick.tick() => {
+                _ = metrics_and_auth_tick.tick() => {
                     relayer_stats.report();
                     relayer_stats = RelayerStageStats::default();
 
                     if cluster_info.id() != keypair.pubkey() {
-                        return Err(ProxyError::AuthenticationConnectionError("Validator ID Changed".to_string()));
+                        return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
+                    }
+
+                    if *global_config.lock().unwrap() != *local_config {
+                        return Err(ProxyError::AuthenticationConnectionError("relayer config changed".to_string()));
                     }
 
                     let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
                         &access_token,
                         &refresh_token,
-                        &cluster_info,
+                        cluster_info,
                         connection_timeout,
                         refresh_within_s,
                     ).await?;
@@ -384,7 +416,7 @@ impl RelayerStage {
                         num_refresh_access_token += 1;
                         datapoint_info!(
                             "relayer_stage-refresh_access_token",
-                            ("url", auth_uri_string, String),
+                            ("url", &local_config.auth_service_addr, String),
                             ("count", num_refresh_access_token, i64),
                         );
                         *access_token.lock().unwrap() = new_token;
@@ -393,7 +425,7 @@ impl RelayerStage {
                         num_full_refreshes += 1;
                         datapoint_info!(
                             "relayer_stage-tokens_generated",
-                            ("url", auth_uri_string, String),
+                            ("url", &local_config.auth_service_addr, String),
                             ("count", num_full_refreshes, i64),
                         );
                         refresh_token = new_token;
@@ -454,5 +486,39 @@ impl RelayerStage {
             }
         }
         Ok(())
+    }
+
+    pub fn is_valid_relayer_config(config: &RelayerConfig) -> bool {
+        if config.auth_service_addr.is_empty() {
+            warn!("can't connect to relayer auth. missing url.");
+            return false;
+        }
+        if config.backend_addr.is_empty() {
+            warn!("can't connect to relayer. missing url.");
+            return false;
+        }
+        if config.oldest_allowed_heartbeat.is_zero() {
+            error!("can't connect to relayer. oldest allowed heartbeat must be greater than 0.");
+            return false;
+        }
+        if config.expected_heartbeat_interval.is_zero() {
+            error!("can't connect to relayer. expected heartbeat interval must be greater than 0.");
+            return false;
+        }
+        if let Err(e) = Endpoint::from_str(&config.auth_service_addr) {
+            error!(
+                "can't connect to relayer. error creating relayer auth endpoint - {}",
+                e.to_string()
+            );
+            return false;
+        }
+        if let Err(e) = Endpoint::from_str(&config.backend_addr) {
+            error!(
+                "can't connect to relayer. error creating relayer endpoint - {}",
+                e.to_string()
+            );
+            return false;
+        }
+        true
     }
 }
