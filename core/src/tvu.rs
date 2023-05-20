@@ -458,7 +458,7 @@ pub mod tests {
             None,
             &Arc::new(ConnectionCache::default()),
             &_ignored_prioritization_fee_cache,
-            None,
+            Arc::new(RwLock::new(None)),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);

@@ -180,10 +180,22 @@ impl StandardBroadcastRun {
         let brecv = Arc::new(Mutex::new(brecv));
 
         //data
-        let _ = self.transmit(&srecv, cluster_info, sock, bank_forks, None);
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            sock,
+            bank_forks,
+            &Arc::new(RwLock::new(None)),
+        );
         let _ = self.record(&brecv, blockstore);
         //coding
-        let _ = self.transmit(&srecv, cluster_info, sock, bank_forks, None);
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            sock,
+            bank_forks,
+            &Arc::new(RwLock::new(None)),
+        );
         let _ = self.record(&brecv, blockstore);
         Ok(())
     }

@@ -636,7 +636,7 @@ pub mod test {
             blockstore.clone(),
             bank_forks,
             StandardBroadcastRun::new(0),
-            None,
+            Arc::new(RwLock::new(None)),
         );
 
         MockBroadcastStage {
