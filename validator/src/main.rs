@@ -1946,7 +1946,7 @@ pub fn main() {
                 .long("shred-receiver-address")
                 .value_name("SHRED_RECEIVER_ADDRESS")
                 .takes_value(true)
-                .help("Shred receiver listening address")
+                .help("Validator will forward all shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
         )
         .arg(
             Arg::with_name("log_messages_bytes_limit")
@@ -2167,6 +2167,18 @@ pub fn main() {
                         .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
                         .required(false)
                         .default_value(DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS)
+                )
+        )
+        .subcommand(
+            SubCommand::with_name("set-shred-receiver-address")
+                .about("Changes shred receiver address")
+                .arg(
+                    Arg::with_name("shred_receiver_address")
+                        .long("shred-receiver-address")
+                        .value_name("SHRED_RECEIVER_ADDRESS")
+                        .takes_value(true)
+                        .help("Validator will forward all shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
+                        .required(true)
                 )
         )
         .subcommand(
@@ -2480,6 +2492,17 @@ pub fn main() {
                 })
                 .unwrap_or_else(|err| {
                     println!("set relayer config failed: {}", err);
+                    exit(1);
+                });
+            return;
+        }
+        ("set-shred-receiver-address", Some(subcommand_matches)) => {
+            let addr = value_t_or_exit!(subcommand_matches, "shred_receiver_address", String);
+            let admin_client = admin_rpc_service::connect(&ledger_path);
+            admin_rpc_service::runtime()
+                .block_on(async move { admin_client.await?.set_shred_receiver_address(addr).await })
+                .unwrap_or_else(|err| {
+                    println!("set shred receiver address failed: {}", err);
                     exit(1);
                 });
             return;
@@ -3091,9 +3114,11 @@ pub fn main() {
         relayer_config: Arc::new(Mutex::new(relayer_config)),
         block_engine_config: Arc::new(Mutex::new(block_engine_config)),
         tip_manager_config,
-        shred_receiver_address: matches
-            .value_of("shred_receiver_address")
-            .map(|address| SocketAddr::from_str(address).expect("shred_receiver_address invalid")),
+        shred_receiver_address: Arc::new(RwLock::new(
+            matches
+                .value_of("shred_receiver_address")
+                .map(|addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid")),
+        )),
         preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
             .unwrap_or(DEFAULT_PREALLOCATED_BUNDLE_COST),
         ..ValidatorConfig::default()
@@ -3529,6 +3554,7 @@ pub fn main() {
             vote_account,
             relayer_config: validator_config.relayer_config,
             block_engine_config: validator_config.block_engine_config,
+            shred_receiver_address: validator_config.shred_receiver_address,
         });
 
     if let Some(filename) = init_complete_file {
