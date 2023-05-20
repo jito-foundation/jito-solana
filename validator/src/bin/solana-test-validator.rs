@@ -863,6 +863,7 @@ fn main() {
                     vote_account: test_validator.vote_account_address(),
                     block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
                     relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+                    shred_receiver_address: Arc::new(RwLock::new(None)),
                 });
             if let Some(dashboard) = dashboard {
                 dashboard.run(Duration::from_millis(250));

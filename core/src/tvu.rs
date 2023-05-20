@@ -131,7 +131,7 @@ impl Tvu {
         log_messages_bytes_limit: Option<usize>,
         connection_cache: &Arc<ConnectionCache>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
-        shred_receiver_addr: Option<SocketAddr>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let TvuSockets {
             repair: repair_socket,
