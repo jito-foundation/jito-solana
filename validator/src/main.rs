@@ -91,10 +91,9 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
         time::{Duration, SystemTime},
     },
-    tonic::transport::Endpoint,
 };
 
 #[cfg(not(target_env = "msvc"))]
@@ -115,6 +114,8 @@ const DEFAULT_MIN_SNAPSHOT_DOWNLOAD_SPEED: u64 = 10485760;
 const MAX_SNAPSHOT_DOWNLOAD_ABORT: u32 = 5;
 const MILLIS_PER_SECOND: u64 = 1000;
 const DEFAULT_PREALLOCATED_BUNDLE_COST: u64 = 3000000;
+const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: &str = "500";
+const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: &str = "3";
 
 fn monitor_validator(ledger_path: &Path) {
     let dashboard = Dashboard::new(ledger_path, None, None).unwrap_or_else(|err| {
@@ -1786,13 +1787,13 @@ pub fn main() {
         .arg(
             Arg::with_name("block_engine_url")
                 .long("block-engine-url")
-                .help("Block engine url")
+                .help("Block engine url.  Set to empty string to disable block engine connection.")
                 .takes_value(true)
         )
         .arg(
             Arg::with_name("relayer_url")
                 .long("relayer-url")
-                .help("Relayer url")
+                .help("Relayer url. Set to empty string to disable relayer connection.")
                 .takes_value(true)
         )
         .arg(
@@ -1806,12 +1807,14 @@ pub fn main() {
                 .long("relayer-expected-heartbeat-interval-ms")
                 .takes_value(true)
                 .help("Interval at which the Relayer is expected to send heartbeat messages.")
+                .default_value(DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS)
         )
         .arg(
             Arg::with_name("relayer_max_failed_heartbeats")
                 .long("relayer-max-failed-heartbeats")
                 .takes_value(true)
                 .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
+                .default_value(DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS)
         )
         .arg(
             Arg::with_name("trust_block_engine_packets")
@@ -1971,6 +1974,23 @@ pub fn main() {
             .about("Run the validator")
         )
         .subcommand(
+            SubCommand::with_name("set-block-engine-config")
+                .about("Set configuration for connection to a block engine")
+                .arg(
+                    Arg::with_name("block_engine_url")
+                        .long("block-engine-url")
+                        .help("Block engine url.  Set to empty string to disable block engine connection.")
+                        .takes_value(true)
+                        .required(true)
+                )
+                .arg(
+                    Arg::with_name("trust_block_engine_packets")
+                        .long("trust-block-engine-packets")
+                        .takes_value(false)
+                        .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
+                )
+        )
+        .subcommand(
             SubCommand::with_name("set-identity")
             .about("Set the validator identity")
             .arg(
@@ -2002,6 +2022,39 @@ pub fn main() {
                     .help("New filter using the same format as the RUST_LOG environment variable")
             )
             .after_help("Note: the new filter only applies to the currently running validator instance")
+        )
+        .subcommand(
+            SubCommand::with_name("set-relayer-config")
+                .about("Set configuration for connection to a relayer")
+                .arg(
+                    Arg::with_name("relayer_url")
+                        .long("relayer-url")
+                        .help("Relayer url. Set to empty string to disable relayer connection.")
+                        .takes_value(true)
+                        .required(true)
+                )
+                .arg(
+                    Arg::with_name("trust_relayer_packets")
+                        .long("trust-relayer-packets")
+                        .takes_value(false)
+                        .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
+                )
+                .arg(
+                    Arg::with_name("relayer_expected_heartbeat_interval_ms")
+                        .long("relayer-expected-heartbeat-interval-ms")
+                        .takes_value(true)
+                        .help("Interval at which the Relayer is expected to send heartbeat messages.")
+                        .required(false)
+                        .default_value(DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS)
+                )
+                .arg(
+                    Arg::with_name("relayer_max_failed_heartbeats")
+                        .long("relayer-max-failed-heartbeats")
+                        .takes_value(true)
+                        .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
+                        .required(false)
+                        .default_value(DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS)
+                )
         )
         .subcommand(
             SubCommand::with_name("staked-nodes-overrides")
@@ -2225,6 +2278,23 @@ pub fn main() {
                 });
             return;
         }
+        ("set-block-engine-config", Some(subcommand_matches)) => {
+            let block_engine_url = value_t_or_exit!(subcommand_matches, "block_engine_url", String);
+            let trust_packets = subcommand_matches.is_present("trust_block_engine_packets");
+            let admin_client = admin_rpc_service::connect(&ledger_path);
+            admin_rpc_service::runtime()
+                .block_on(async move {
+                    admin_client
+                        .await?
+                        .set_block_engine_config(block_engine_url, trust_packets)
+                        .await
+                })
+                .unwrap_or_else(|err| {
+                    println!("set block engine config failed: {}", err);
+                    exit(1);
+                });
+            return;
+        }
         ("set-identity", Some(subcommand_matches)) => {
             let require_tower = subcommand_matches.is_present("require_tower");
 
@@ -2284,6 +2354,32 @@ pub fn main() {
                 .block_on(async move { admin_client.await?.set_log_filter(filter).await })
                 .unwrap_or_else(|err| {
                     println!("set log filter failed: {}", err);
+                    exit(1);
+                });
+            return;
+        }
+        ("set-relayer-config", Some(subcommand_matches)) => {
+            let relayer_url = value_t_or_exit!(subcommand_matches, "relayer_url", String);
+            let trust_packets = subcommand_matches.is_present("trust_relayer_packets");
+            let expected_heartbeat_interval_ms: u64 =
+                value_of(subcommand_matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+            let max_failed_heartbeats: u64 =
+                value_of(subcommand_matches, "relayer_max_failed_heartbeats").unwrap();
+            let admin_client = admin_rpc_service::connect(&ledger_path);
+            admin_rpc_service::runtime()
+                .block_on(async move {
+                    admin_client
+                        .await?
+                        .set_relayer_config(
+                            relayer_url,
+                            trust_packets,
+                            expected_heartbeat_interval_ms,
+                            max_failed_heartbeats,
+                        )
+                        .await
+                })
+                .unwrap_or_else(|err| {
+                    println!("set relayer config failed: {}", err);
                     exit(1);
                 });
             return;
@@ -2666,91 +2762,40 @@ pub fn main() {
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 
-    let is_block_engine_enabled = matches.is_present("block_engine_url")
-        || matches.is_present("block_engine_address")
-        || matches.is_present("block_engine_auth_service_address")
-        || matches.is_present("trust_block_engine_packets");
-    let maybe_block_engine_config = is_block_engine_enabled.then(|| {
-        let addr: String = value_of(&matches, "block_engine_url").unwrap_or_else(|| {
-            value_of(&matches, "block_engine_auth_service_address")
-                .expect("missing block-engine-url")
-        });
-        let mut auth_service_endpoint =
-            Endpoint::from_shared(addr.clone()).expect("invalid block-engine-url value");
-        if addr.contains("https") {
-            auth_service_endpoint = auth_service_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .expect("failed to set tls_config");
-        }
+    let block_engine_config = BlockEngineConfig {
+        block_engine_url: if matches.is_present("block_engine_url") {
+            value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url")
+        } else {
+            "".to_string()
+        },
+        trust_packets: matches.is_present("trust_block_engine_packets"),
+    };
 
-        let addr: String = value_of(&matches, "block_engine_url").unwrap_or_else(|| {
-            value_of(&matches, "block_engine_address").expect("missing block-engine-url")
-        });
-        let mut backend_endpoint = Endpoint::from_shared(addr.clone())
-            .expect("invalid block-engine-address value")
-            .tcp_keepalive(Some(Duration::from_secs(60)));
-        if addr.contains("https") {
-            backend_endpoint = backend_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .expect("failed to set tls_config");
-        }
+    // Defaults are set in cli definition, safe to use unwrap() here
+    let expected_heartbeat_interval_ms: u64 =
+        value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+    assert!(
+        expected_heartbeat_interval_ms > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
+    let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats").unwrap();
+    assert!(
+        max_failed_heartbeats > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
 
-        BlockEngineConfig {
-            auth_service_endpoint,
-            backend_endpoint,
-            trust_packets: matches.is_present("trust_block_engine_packets"),
-        }
-    });
-
-    let is_relayer_enabled = matches.is_present("relayer_url")
-        || matches.is_present("relayer_auth_service_address")
-        || matches.is_present("relayer_address")
-        || matches.is_present("trust_relayer_packets")
-        || matches.is_present("relayer_expected_heartbeat_interval_ms")
-        || matches.is_present("relayer_max_failed_heartbeats");
-    let maybe_relayer_config = is_relayer_enabled.then(|| {
-        let addr: String = value_of(&matches, "relayer_url").unwrap_or_else(|| {
-            value_of(&matches, "relayer_auth_service_address").expect("missing relayer-url")
-        });
-        let mut auth_service_endpoint =
-            Endpoint::from_shared(addr.clone()).expect("invalid relayer-url value");
-        if addr.contains("https") {
-            auth_service_endpoint = auth_service_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .expect("failed to set tls_config");
-        }
-
-        let addr: String = value_of(&matches, "relayer_url")
-            .unwrap_or_else(|| value_of(&matches, "relayer_address").expect("missing relayer-url"));
-        let mut backend_endpoint =
-            Endpoint::from_shared(addr.clone()).expect("invalid relayer-address value");
-        if addr.contains("https") {
-            backend_endpoint = backend_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .expect("failed to set tls_config");
-        }
-
-        let expected_heartbeat_interval_ms =
-            value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap_or(500);
-        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
-
-        let max_failed_heartbeats =
-            value_of(&matches, "relayer_max_failed_heartbeats").unwrap_or(3);
-        assert!(
-            max_failed_heartbeats > 0,
-            "relayer-max-failed-heartbeats must be greater than zero"
-        );
-        let oldest_allowed_heartbeat =
-            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
-
-        RelayerConfig {
-            auth_service_endpoint,
-            backend_endpoint,
-            expected_heartbeat_interval,
-            oldest_allowed_heartbeat,
-            trust_packets: matches.is_present("trust_relayer_packets"),
-        }
-    });
+    let relayer_config = RelayerConfig {
+        relayer_url: if matches.is_present("relayer_url") {
+            value_of(&matches, "relayer_url").expect("couldn't parse relayer_url")
+        } else {
+            "".to_string()
+        },
+        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+        oldest_allowed_heartbeat: Duration::from_millis(
+            max_failed_heartbeats * expected_heartbeat_interval_ms,
+        ),
+        trust_packets: matches.is_present("trust_relayer_packets"),
+    };
 
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
@@ -2885,8 +2930,8 @@ pub fn main() {
             log_messages_bytes_limit: value_of(&matches, "log_messages_bytes_limit"),
             ..RuntimeConfig::default()
         },
-        maybe_relayer_config,
-        maybe_block_engine_config,
+        relayer_config: Arc::new(Mutex::new(relayer_config)),
+        block_engine_config: Arc::new(Mutex::new(block_engine_config)),
         tip_manager_config,
         shred_receiver_address: matches
             .value_of("shred_receiver_address")
@@ -3339,6 +3384,8 @@ pub fn main() {
             bank_forks: validator.bank_forks.clone(),
             cluster_info: validator.cluster_info.clone(),
             vote_account,
+            relayer_config: validator_config.relayer_config,
+            block_engine_config: validator_config.block_engine_config,
         });
 
     if let Some(filename) = init_complete_file {
@@ -3405,30 +3452,6 @@ fn process_account_indexes(matches: &ArgMatches) -> AccountSecondaryIndexes {
 // avoid breaking validator startup commands
 fn get_deprecated_arguments() -> Vec<Arg<'static, 'static>> {
     vec![
-        Arg::with_name("block_engine_address")
-            .long("block-engine-address")
-            .value_name("block_engine_address")
-            .takes_value(true)
-            .help("Address of the block engine")
-            .conflicts_with("block_engine_url"),
-        Arg::with_name("block_engine_auth_service_address")
-            .long("block-engine-auth-service-address")
-            .value_name("block_engine_auth_service_address")
-            .takes_value(true)
-            .help("Address of the block engine's authentication service.")
-            .conflicts_with("block_engine_url"),
-        Arg::with_name("relayer_auth_service_address")
-            .long("relayer-auth-service-address")
-            .value_name("relayer_auth_service_address")
-            .takes_value(true)
-            .help("Address of the block engine's authentication service.")
-            .conflicts_with("relayer_url"),
-        Arg::with_name("relayer_address")
-            .long("relayer-address")
-            .value_name("relayer_address")
-            .takes_value(true)
-            .help("Address of the relayer")
-            .conflicts_with("relayer_url"),
         Arg::with_name("accounts_db_caching_enabled")
             .long("accounts-db-caching-enabled")
             .conflicts_with("no_accounts_db_caching")
@@ -3533,10 +3556,6 @@ lazy_static! {
             "Vote account sanity checks are no longer performed by default.",
         ),
         ("no_rocksdb_compaction", ""),
-        ("block_engine_address", "You can now use a single endpoint to connect to the block-engine. Please use block-engine-url."),
-        ("block_engine_auth_service_address", "You can now use a single endpoint to connect to the block-engine. Please use block-engine-url."),
-        ("relayer_address", ""),
-        ("relayer_auth_service_address", ""),
     ];
 }
 
