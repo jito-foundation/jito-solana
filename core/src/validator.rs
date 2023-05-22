@@ -180,7 +180,8 @@ pub struct ValidatorConfig {
     pub runtime_config: RuntimeConfig,
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-    pub shred_receiver_address: Option<SocketAddr>,
+    // Using Option inside RwLock is ugly, but only convenient way to allow toggle on/off
+    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
 }
@@ -248,7 +249,7 @@ impl Default for ValidatorConfig {
             runtime_config: RuntimeConfig::default(),
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
-            shred_receiver_address: None,
+            shred_receiver_address: Arc::new(RwLock::new(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
         }
@@ -1039,7 +1040,7 @@ impl Validator {
             config.runtime_config.log_messages_bytes_limit,
             &connection_cache,
             &prioritization_fee_cache,
-            config.shred_receiver_address,
+            config.shred_receiver_address.clone(),
         );
 
         let tpu = Tpu::new(
@@ -1078,7 +1079,7 @@ impl Validator {
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
-            config.shred_receiver_address,
+            config.shred_receiver_address.clone(),
             tpu_enable_udp,
             config.preallocated_bundle_cost,
         );

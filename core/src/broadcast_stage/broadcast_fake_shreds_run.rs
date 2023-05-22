@@ -3,7 +3,6 @@ use {
     solana_entry::entry::Entry,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
     solana_sdk::{hash::Hash, signature::Keypair},
-    std::net::SocketAddr,
 };
 
 #[derive(Clone)]
@@ -133,7 +132,7 @@ impl BroadcastRun for BroadcastFakeShredsRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         _bank_forks: &RwLock<BankForks>,
-        _shred_receiver_addr: Option<SocketAddr>,
+        _shred_receiver_addr: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()> {
         for (data_shreds, batch_info) in receiver.lock().unwrap().iter() {
             let fake = batch_info.is_some();

@@ -121,7 +121,7 @@ fn bench_retransmitter(bencher: &mut Bencher) {
         shreds_receiver,
         Arc::default(), // solana_rpc::max_slots::MaxSlots
         None,
-        None,
+        Arc::new(RwLock::new(None)),
     );
 
     let mut index = 0;

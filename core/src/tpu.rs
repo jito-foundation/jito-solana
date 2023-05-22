@@ -113,7 +113,7 @@ impl Tpu {
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
-        shred_receiver_address: Option<SocketAddr>,
+        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         tpu_enable_udp: bool,
         preallocated_bundle_cost: u64,
     ) -> Self {
