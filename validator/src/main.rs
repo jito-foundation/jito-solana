@@ -1946,7 +1946,7 @@ pub fn main() {
                 .long("shred-receiver-address")
                 .value_name("SHRED_RECEIVER_ADDRESS")
                 .takes_value(true)
-                .help("Validator will forward all shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
+                .help("Validator will forward all shreds to this address in addition to normal turbine operation. Omit or set to empty string to disable.")
         )
         .arg(
             Arg::with_name("log_messages_bytes_limit")
