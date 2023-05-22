@@ -234,7 +234,6 @@ mod tests {
             system_transaction::transfer, transaction::VersionedTransaction,
         },
         std::{collections::HashSet, sync::Arc},
-        uuid::Uuid,
     };
 
     #[test]
@@ -266,11 +265,11 @@ mod tests {
 
         let packet_bundle0 = PacketBundle {
             batch: PacketBatch::new(vec![Packet::from_data(None, &tx0).unwrap()]),
-            uuid: Uuid::new_v4(),
+            bundle_id: tx0.signatures[0].to_string(),
         };
         let packet_bundle1 = PacketBundle {
             batch: PacketBatch::new(vec![Packet::from_data(None, &tx1).unwrap()]),
-            uuid: Uuid::new_v4(),
+            bundle_id: tx1.signatures[0].to_string(),
         };
 
         let mut transaction_errors = TransactionErrorMetrics::default();

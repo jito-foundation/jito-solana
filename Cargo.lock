@@ -5485,7 +5485,6 @@ dependencies = [
  "tonic 0.5.2",
  "tonic-build 0.5.2",
  "trees",
- "uuid",
 ]
 
 [[package]]
@@ -6663,7 +6662,6 @@ dependencies = [
  "thiserror",
  "tiny-bip39",
  "uriparse",
- "uuid",
  "wasm-bindgen",
 ]
 
@@ -8354,16 +8352,6 @@ name = "utf8-width"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5190c9442dcdaf0ddd50f37420417d219ae5261bbf5db120d0f9bab996c9cba1"
-
-[[package]]
-name = "uuid"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "feb41e78f93363bb2df8b0e86a2ca30eed7806ea16ea0c790d757cf93f79be83"
-dependencies = [
- "getrandom 0.2.8",
- "rand 0.8.5",
-]
 
 [[package]]
 name = "valuable"

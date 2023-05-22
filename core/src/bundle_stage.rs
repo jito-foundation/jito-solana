@@ -63,7 +63,6 @@ use {
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
-    uuid::Uuid,
 };
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
@@ -406,8 +405,8 @@ impl BundleStage {
                 &bank_start.working_bank,
             );
             warn!(
-                "bundle dropped, qos rate limit. uuid: {} bundle_cost: {},  block_cost: {}",
-                sanitized_bundle.uuid,
+                "bundle dropped, qos rate limit. bundle_id: {} bundle_cost: {},  block_cost: {}",
+                sanitized_bundle.bundle_id,
                 tx_costs.iter().map(|c| c.sum()).sum::<u64>(),
                 &bank_start
                     .working_bank
@@ -1162,7 +1161,7 @@ impl BundleStage {
                 tip_manager,
                 cluster_info,
             )?,
-            uuid: Uuid::default(),
+            bundle_id: String::default(),
         };
         if !initialize_tip_accounts_bundle.transactions.is_empty() {
             debug!("initialize tip account");
@@ -1244,7 +1243,7 @@ impl BundleStage {
 
             let change_tip_receiver_bundle = SanitizedBundle {
                 transactions: vec![change_tip_receiver_tx],
-                uuid: Uuid::default(),
+                bundle_id: String::default(),
             };
             let locked_change_tip_receiver_bundle = bundle_account_locker
                 .prepare_locked_bundle(&change_tip_receiver_bundle, &bank_start.working_bank)
@@ -1705,7 +1704,6 @@ mod tests {
             },
         },
         std::{collections::HashSet, sync::atomic::Ordering},
-        uuid::Uuid,
     };
 
     const TEST_MAX_RETRY_DURATION: Duration = Duration::from_millis(500);
@@ -1870,13 +1868,14 @@ mod tests {
         let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
         let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
         let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
+        let bundle_id = tx.signatures[0].to_string();
         let packet = Packet::from_data(None, tx).unwrap();
 
         (
             genesis_config,
             PacketBundle {
                 batch: PacketBatch::new(vec![packet]),
-                uuid: Uuid::new_v4(),
+                bundle_id,
             },
         )
     }
@@ -1903,7 +1902,7 @@ mod tests {
 
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, Some(vec![LowComputeBudget])),
@@ -1936,7 +1935,7 @@ mod tests {
         .unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
 
         assert_eq!(
@@ -1970,7 +1969,7 @@ mod tests {
         .unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![successful_packet, failed_packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
 
         assert_eq!(
@@ -1996,7 +1995,7 @@ mod tests {
         .unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
 
         assert_eq!(
@@ -2023,7 +2022,7 @@ mod tests {
         .unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, None),
@@ -2092,9 +2091,9 @@ mod tests {
         // push and pop tx0
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
-        info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
+        info!("test_bundle_max_retries uuid: {:?}", bundle.bundle_id);
 
         let sanitized_bundle = get_sanitized_bundle(
             &bundle,

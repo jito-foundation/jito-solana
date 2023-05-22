@@ -122,7 +122,7 @@ pub fn get_sanitized_bundle(
 
     Ok(SanitizedBundle {
         transactions,
-        uuid: packet_bundle.uuid,
+        bundle_id: packet_bundle.bundle_id,
     })
 }
 
@@ -176,7 +176,6 @@ mod tests {
             transaction::{SanitizedTransaction, Transaction, VersionedTransaction},
         },
         std::{collections::HashSet, sync::Arc},
-        uuid::Uuid,
     };
 
     #[test]
@@ -197,11 +196,12 @@ mod tests {
             1,
             genesis_config.hash(),
         ));
+        let bundle_id = tx.get_signature().to_string();
         let packet = Packet::from_data(None, &tx).unwrap();
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         let mut transaction_errors = TransactionErrorMetrics::default();
@@ -238,11 +238,12 @@ mod tests {
             1,
             genesis_config.hash(),
         ));
+        let bundle_id = tx.get_signature().to_string();
         let packet = Packet::from_data(None, &tx).unwrap();
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         let consensus_accounts_cache = HashSet::from([kp.pubkey()]);
@@ -275,12 +276,13 @@ mod tests {
             1,
             genesis_config.hash(),
         ));
+        let bundle_id = tx.get_signature().to_string();
         let packet = Packet::from_data(None, &tx).unwrap();
 
         // bundle with a duplicate transaction
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet.clone(), packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         // fails to pop because bundle it locks the same transaction twice
@@ -309,11 +311,12 @@ mod tests {
 
         let tx =
             VersionedTransaction::from(transfer(&mint_keypair, &kp.pubkey(), 1, Hash::default()));
+        let bundle_id = tx.get_signature().to_string();
         let packet = Packet::from_data(None, &tx).unwrap();
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet.clone(), packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         // fails to pop because bundle has bad blockhash
@@ -346,11 +349,12 @@ mod tests {
             1,
             genesis_config.hash(),
         ));
+        let bundle_id = tx.get_signature().to_string();
         let packet = Packet::from_data(None, &tx).unwrap();
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet.clone()]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         let mut transaction_errors = TransactionErrorMetrics::default();
@@ -376,7 +380,7 @@ mod tests {
         // try to process the same one again shall fail
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         assert!(get_sanitized_bundle(
@@ -418,12 +422,12 @@ mod tests {
                 genesis_config.hash(),
             ))
             .unwrap();
-
+        let bundle_id = tx.signature().to_string();
         let packet = Packet::from_data(None, &tx.to_versioned_transaction()).unwrap();
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         // fails to pop because bundle mentions tip program
@@ -453,12 +457,12 @@ mod tests {
                 genesis_config.hash(),
             ))
             .unwrap();
-
+        let bundle_id = tx.signature().to_string();
         let packet = Packet::from_data(None, &tx.to_versioned_transaction()).unwrap();
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id,
         };
 
         let mut transaction_errors = TransactionErrorMetrics::default();
@@ -480,7 +484,7 @@ mod tests {
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![]),
-            uuid: Uuid::new_v4(),
+            bundle_id: String::default(),
         };
         // fails to pop because empty bundle
         let mut transaction_errors = TransactionErrorMetrics::default();
@@ -517,7 +521,7 @@ mod tests {
         });
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(packets.collect()),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
         // fails to pop because too many packets in a bundle
         let mut transaction_errors = TransactionErrorMetrics::default();
@@ -554,7 +558,7 @@ mod tests {
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
 
         // fails to pop because one of the packets is marked as discard
@@ -599,7 +603,7 @@ mod tests {
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: Uuid::new_v4(),
         };
         let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(

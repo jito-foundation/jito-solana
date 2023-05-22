@@ -3,7 +3,6 @@ use {
     solana_entry::entry::Entry,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
     solana_sdk::{hash::Hash, signature::Keypair},
-    std::net::SocketAddr,
 };
 
 #[derive(Clone)]
