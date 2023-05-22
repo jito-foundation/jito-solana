@@ -86,7 +86,7 @@ impl BroadcastStageType {
         blockstore: Arc<Blockstore>,
         bank_forks: Arc<RwLock<BankForks>>,
         shred_version: u16,
-        shred_receiver_addr: Option<SocketAddr>,
+        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     ) -> BroadcastStage {
         match self {
             BroadcastStageType::Standard => BroadcastStage::new(
@@ -98,7 +98,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 StandardBroadcastRun::new(shred_version),
-                shred_receiver_addr,
+                shred_receiver_address,
             ),
 
             BroadcastStageType::FailEntryVerification => BroadcastStage::new(
@@ -110,7 +110,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 FailEntryVerificationBroadcastRun::new(shred_version),
-                None,
+                Arc::new(RwLock::new(None)),
             ),
 
             BroadcastStageType::BroadcastFakeShreds => BroadcastStage::new(
@@ -122,7 +122,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 BroadcastFakeShredsRun::new(0, shred_version),
-                None,
+                Arc::new(RwLock::new(None)),
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -134,7 +134,7 @@ impl BroadcastStageType {
                 blockstore,
                 bank_forks,
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
-                None,
+                Arc::new(RwLock::new(None)),
             ),
         }
     }
@@ -155,7 +155,7 @@ trait BroadcastRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
-        shred_receiver_addr: Option<SocketAddr>,
+        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &Mutex<RecordReceiver>, blockstore: &Blockstore) -> Result<()>;
 }
@@ -251,7 +251,7 @@ impl BroadcastStage {
         blockstore: Arc<Blockstore>,
         bank_forks: Arc<RwLock<BankForks>>,
         broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
-        shred_receiver_addr: Option<SocketAddr>,
+        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -283,6 +283,7 @@ impl BroadcastStage {
             let mut bs_transmit = broadcast_stage_run.clone();
             let cluster_info = cluster_info.clone();
             let bank_forks = bank_forks.clone();
+            let shred_receiver_address = shred_receiver_address.clone();
             let t = Builder::new()
                 .name("solBroadcastTx".to_string())
                 .spawn(move || loop {
@@ -291,7 +292,7 @@ impl BroadcastStage {
                         &cluster_info,
                         &sock,
                         &bank_forks,
-                        shred_receiver_addr,
+                        &shred_receiver_address,
                     );
                     let res = Self::handle_error(res, "solana-broadcaster-transmit");
                     if let Some(res) = res {
@@ -408,7 +409,7 @@ pub fn broadcast_shreds(
     cluster_info: &ClusterInfo,
     bank_forks: &RwLock<BankForks>,
     socket_addr_space: &SocketAddrSpace,
-    shred_receiver_addr: Option<SocketAddr>,
+    shred_receiver_address: &Option<SocketAddr>,
 ) -> Result<()> {
     let mut result = Ok(());
     let mut shred_select = Measure::start("shred_select");
@@ -418,7 +419,7 @@ pub fn broadcast_shreds(
     };
     let packets: Vec<_> = shreds
         .iter()
-        .filter_map(|s| Some((s.payload(), shred_receiver_addr?)))
+        .filter_map(|s| Some((s.payload(), (*shred_receiver_address)?)))
         .chain(
             shreds
                 .iter()
@@ -635,7 +636,7 @@ pub mod test {
             blockstore.clone(),
             bank_forks,
             StandardBroadcastRun::new(0),
-            None,
+            Arc::new(RwLock::new(None)),
         );
 
         MockBroadcastStage {

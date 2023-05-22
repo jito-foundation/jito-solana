@@ -28,6 +28,7 @@ use {
         fmt::{self, Display},
         net::SocketAddr,
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{Arc, Mutex, RwLock},
         thread::{self, Builder},
         time::{Duration, SystemTime},
@@ -41,6 +42,7 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub vote_account: Pubkey,
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
 }
 
 #[derive(Clone)]
@@ -209,6 +211,9 @@ pub trait AdminRpc {
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
     ) -> Result<()>;
+
+    #[rpc(meta, name = "setShredReceiverAddress")]
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()>;
 }
 
 pub struct AdminRpcImpl;
@@ -382,6 +387,24 @@ impl AdminRpc for AdminRpcImpl {
                 "failed to set relayer config. see logs for details.",
             ))
         }
+    }
+
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
+        let shred_receiver_address = if addr.is_empty() {
+            None
+        } else {
+            Some(SocketAddr::from_str(&addr).map_err(|_| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address: {}",
+                    addr
+                ))
+            })?)
+        };
+
+        meta.with_post_init(|post_init| {
+            *post_init.shred_receiver_address.write().unwrap() = shred_receiver_address;
+            Ok(())
+        })
     }
 
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()> {

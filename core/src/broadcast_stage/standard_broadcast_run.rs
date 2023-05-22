@@ -180,10 +180,22 @@ impl StandardBroadcastRun {
         let brecv = Arc::new(Mutex::new(brecv));
 
         //data
-        let _ = self.transmit(&srecv, cluster_info, sock, bank_forks, None);
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            sock,
+            bank_forks,
+            &Arc::new(RwLock::new(None)),
+        );
         let _ = self.record(&brecv, blockstore);
         //coding
-        let _ = self.transmit(&srecv, cluster_info, sock, bank_forks, None);
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            sock,
+            bank_forks,
+            &Arc::new(RwLock::new(None)),
+        );
         let _ = self.record(&brecv, blockstore);
         Ok(())
     }
@@ -378,7 +390,7 @@ impl StandardBroadcastRun {
         shreds: Arc<Vec<Shred>>,
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
-        shred_receiver_addr: Option<SocketAddr>,
+        shred_receiver_addr: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats::default();
@@ -464,7 +476,7 @@ impl BroadcastRun for StandardBroadcastRun {
         cluster_info: &ClusterInfo,
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
-        shred_receiver_addr: Option<SocketAddr>,
+        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.lock().unwrap().recv()?;
         self.broadcast(
@@ -473,7 +485,7 @@ impl BroadcastRun for StandardBroadcastRun {
             shreds,
             batch_info,
             bank_forks,
-            shred_receiver_addr,
+            &shred_receiver_address.read().unwrap(),
         )
     }
     fn record(&mut self, receiver: &Mutex<RecordReceiver>, blockstore: &Blockstore) -> Result<()> {
