@@ -41,7 +41,6 @@ use {
         transport::{Channel, Endpoint},
         Status, Streaming,
     },
-    uuid::Uuid,
 };
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
@@ -478,7 +477,7 @@ impl BlockEngineStage {
                             .map(proto_packet_to_packet)
                             .collect(),
                     ),
-                    uuid: Uuid::from_str(&bundle.uuid).ok()?,
+                    bundle_id: bundle.uuid,
                 })
             })
             .collect();
