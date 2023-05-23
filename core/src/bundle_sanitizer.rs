@@ -199,7 +199,7 @@ mod tests {
         ));
         let packet = Packet::from_data(None, &tx).unwrap();
         let tx_signature = tx.signatures[0];
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
@@ -238,7 +238,7 @@ mod tests {
             genesis_config.hash(),
         ));
         let packet = Packet::from_data(None, &tx).unwrap();
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
@@ -276,7 +276,7 @@ mod tests {
             genesis_config.hash(),
         ));
         let packet = Packet::from_data(None, &tx).unwrap();
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         // bundle with a duplicate transaction
         let packet_bundle = PacketBundle {
@@ -311,7 +311,7 @@ mod tests {
         let tx =
             VersionedTransaction::from(transfer(&mint_keypair, &kp.pubkey(), 1, Hash::default()));
         let packet = Packet::from_data(None, &tx).unwrap();
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet.clone(), packet]),
@@ -349,7 +349,7 @@ mod tests {
             genesis_config.hash(),
         ));
         let packet = Packet::from_data(None, &tx).unwrap();
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet.clone()]),
@@ -421,7 +421,7 @@ mod tests {
         ));
         tx.sanitize(false).unwrap();
         let packet = Packet::from_data(None, &tx).unwrap();
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
@@ -455,7 +455,7 @@ mod tests {
         ));
         tx.sanitize(false).unwrap();
         let packet = Packet::from_data(None, &tx).unwrap();
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
@@ -557,7 +557,7 @@ mod tests {
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            bundle_id: derive_bundle_id(&vec![tx]),
+            bundle_id: derive_bundle_id(&[tx]),
         };
 
         // fails to pop because one of the packets is marked as discard
@@ -602,7 +602,7 @@ mod tests {
 
         let packet_bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            bundle_id: derive_bundle_id(&vec![tx]),
+            bundle_id: derive_bundle_id(&[tx]),
         };
         let mut transaction_errors = TransactionErrorMetrics::default();
         assert!(get_sanitized_bundle(
