@@ -63,7 +63,6 @@ use {
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
-    uuid::Uuid,
 };
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(10);
@@ -406,8 +405,8 @@ impl BundleStage {
                 &bank_start.working_bank,
             );
             warn!(
-                "bundle dropped, qos rate limit. uuid: {} bundle_cost: {},  block_cost: {}",
-                sanitized_bundle.uuid,
+                "bundle dropped, qos rate limit. bundle_id: {} bundle_cost: {},  block_cost: {}",
+                sanitized_bundle.bundle_id,
                 tx_costs.iter().map(|c| c.sum()).sum::<u64>(),
                 &bank_start
                     .working_bank
@@ -1162,7 +1161,7 @@ impl BundleStage {
                 tip_manager,
                 cluster_info,
             )?,
-            uuid: Uuid::default(),
+            bundle_id: String::default(),
         };
         if !initialize_tip_accounts_bundle.transactions.is_empty() {
             debug!("initialize tip account");
@@ -1244,7 +1243,7 @@ impl BundleStage {
 
             let change_tip_receiver_bundle = SanitizedBundle {
                 transactions: vec![change_tip_receiver_tx],
-                uuid: Uuid::default(),
+                bundle_id: String::default(),
             };
             let locked_change_tip_receiver_bundle = bundle_account_locker
                 .prepare_locked_bundle(&change_tip_receiver_bundle, &bank_start.working_bank)
@@ -1687,8 +1686,11 @@ mod tests {
         solana_perf::packet::PacketBatch,
         solana_poh::poh_recorder::create_test_recorder,
         solana_sdk::{
-            bundle::error::BundleExecutionError::{
-                ExceedsCostModel, PohMaxHeightError, TransactionFailure,
+            bundle::{
+                error::BundleExecutionError::{
+                    ExceedsCostModel, PohMaxHeightError, TransactionFailure,
+                },
+                sanitized::derive_bundle_id,
             },
             compute_budget::ComputeBudgetInstruction,
             genesis_config::GenesisConfig,
@@ -1705,7 +1707,6 @@ mod tests {
             },
         },
         std::{collections::HashSet, sync::atomic::Ordering},
-        uuid::Uuid,
     };
 
     const TEST_MAX_RETRY_DURATION: Duration = Duration::from_millis(500);
@@ -1869,14 +1870,19 @@ mod tests {
         let ix_mint_a = system_instruction::transfer(&mint_keypair.pubkey(), &kp_a.pubkey(), 1);
         let ix_mint_b = system_instruction::transfer(&mint_keypair.pubkey(), &kp_b.pubkey(), 1);
         let message = Message::new(&[ix_mint_a, ix_mint_b], Some(&mint_keypair.pubkey()));
-        let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
-        let packet = Packet::from_data(None, tx).unwrap();
+        let tx = VersionedTransaction::from(Transaction::new(
+            &[&mint_keypair],
+            message,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
+        let bundle_id = derive_bundle_id(&vec![tx]);
 
         (
             genesis_config,
             PacketBundle {
                 batch: PacketBatch::new(vec![packet]),
-                uuid: Uuid::new_v4(),
+                bundle_id,
             },
         )
     }
@@ -1898,12 +1904,16 @@ mod tests {
             ],
             Some(&mint_keypair.pubkey()),
         );
-        let tx = Transaction::new(&[&mint_keypair], message, genesis_config.hash());
-        let packet = Packet::from_data(None, tx).unwrap();
+        let tx = VersionedTransaction::from(Transaction::new(
+            &[&mint_keypair],
+            message,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
 
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: derive_bundle_id(&vec![tx]),
         };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, Some(vec![LowComputeBudget])),
@@ -1922,21 +1932,18 @@ mod tests {
         let kp_a = Keypair::new();
         let kp_nonce = Keypair::new();
         let kp_nonce_authority = Keypair::new();
-        let packet = Packet::from_data(
-            None,
-            system_transaction::nonced_transfer(
-                &mint_keypair,
-                &kp_a.pubkey(),
-                1,
-                &kp_nonce.pubkey(),
-                &kp_nonce_authority,
-                genesis_config.hash(),
-            ),
-        )
-        .unwrap();
+        let tx = VersionedTransaction::from(system_transaction::nonced_transfer(
+            &mint_keypair,
+            &kp_a.pubkey(),
+            1,
+            &kp_nonce.pubkey(),
+            &kp_nonce_authority,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: derive_bundle_id(&vec![tx]),
         };
 
         assert_eq!(
@@ -1958,19 +1965,22 @@ mod tests {
 
         let kp_a = Keypair::new();
         let kp_b = Keypair::new();
-        let successful_packet = Packet::from_data(
-            None,
-            system_transaction::transfer(&mint_keypair, &kp_b.pubkey(), 1, genesis_config.hash()),
-        )
-        .unwrap();
-        let failed_packet = Packet::from_data(
-            None,
-            system_transaction::transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()),
-        )
-        .unwrap();
+
+        let successful_tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp_b.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let failed_tx =
+            VersionedTransaction::from(transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()));
+
+        let successful_packet = Packet::from_data(None, &successful_tx).unwrap();
+        let failed_packet = Packet::from_data(None, &failed_tx).unwrap();
+
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![successful_packet, failed_packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: derive_bundle_id(&vec![successful_tx, failed_tx]),
         };
 
         assert_eq!(
@@ -1989,14 +1999,12 @@ mod tests {
 
         let kp_a = Keypair::new();
         let kp_b = Keypair::new();
-        let packet = Packet::from_data(
-            None,
-            system_transaction::transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()),
-        )
-        .unwrap();
+        let tx =
+            VersionedTransaction::from(transfer(&kp_a, &kp_b.pubkey(), 1, genesis_config.hash()));
+        let packet = Packet::from_data(None, &tx).unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: derive_bundle_id(&vec![tx]),
         };
 
         assert_eq!(
@@ -2016,14 +2024,16 @@ mod tests {
         genesis_config.ticks_per_slot = 1; // Reduce ticks so that POH fails
 
         let kp_b = Keypair::new();
-        let packet = Packet::from_data(
-            None,
-            system_transaction::transfer(&mint_keypair, &kp_b.pubkey(), 1, genesis_config.hash()),
-        )
-        .unwrap();
+        let tx = VersionedTransaction::from(transfer(
+            &mint_keypair,
+            &kp_b.pubkey(),
+            1,
+            genesis_config.hash(),
+        ));
+        let packet = Packet::from_data(None, &tx).unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            uuid: Uuid::new_v4(),
+            bundle_id: derive_bundle_id(&vec![tx]),
         };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, None),
@@ -2091,10 +2101,10 @@ mod tests {
 
         // push and pop tx0
         let bundle = PacketBundle {
-            batch: PacketBatch::new(vec![Packet::from_data(None, tx0).unwrap()]),
-            uuid: Uuid::new_v4(),
+            batch: PacketBatch::new(vec![Packet::from_data(None, &tx0).unwrap()]),
+            bundle_id: derive_bundle_id(&vec![tx0]),
         };
-        info!("test_bundle_max_retries uuid: {:?}", bundle.uuid);
+        info!("test_bundle_max_retries uuid: {:?}", bundle.bundle_id);
 
         let sanitized_bundle = get_sanitized_bundle(
             &bundle,
