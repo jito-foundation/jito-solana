@@ -79,7 +79,6 @@ tokio = { version = "~1.14.1", features = ["full"] }
 tokio-stream = "0.1.8"
 tonic = { version = "0.5.2", features = ["tls"] }
 trees = "0.4.2"
-uuid = { version = "1.0.0", features = ["v4", "fast-rng"] }
 
 [dev-dependencies]
 matches = "0.1.9"
