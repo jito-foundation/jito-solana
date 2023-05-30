@@ -1878,7 +1878,7 @@ mod tests {
             genesis_config.hash(),
         ));
         let packet = Packet::from_data(None, &tx).unwrap();
-        let bundle_id = derive_bundle_id(&vec![tx]);
+        let bundle_id = derive_bundle_id(&[tx]);
 
         (
             genesis_config,
@@ -1915,7 +1915,7 @@ mod tests {
 
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            bundle_id: derive_bundle_id(&vec![tx]),
+            bundle_id: derive_bundle_id(&[tx]),
         };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, Some(vec![LowComputeBudget])),
@@ -1945,7 +1945,7 @@ mod tests {
         let packet = Packet::from_data(None, &tx).unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            bundle_id: derive_bundle_id(&vec![tx]),
+            bundle_id: derive_bundle_id(&[tx]),
         };
 
         assert_eq!(
@@ -1982,7 +1982,7 @@ mod tests {
 
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![successful_packet, failed_packet]),
-            bundle_id: derive_bundle_id(&vec![successful_tx, failed_tx]),
+            bundle_id: derive_bundle_id(&[successful_tx, failed_tx]),
         };
 
         assert_eq!(
@@ -2006,7 +2006,7 @@ mod tests {
         let packet = Packet::from_data(None, &tx).unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            bundle_id: derive_bundle_id(&vec![tx]),
+            bundle_id: derive_bundle_id(&[tx]),
         };
 
         assert_eq!(
@@ -2035,7 +2035,7 @@ mod tests {
         let packet = Packet::from_data(None, &tx).unwrap();
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![packet]),
-            bundle_id: derive_bundle_id(&vec![tx]),
+            bundle_id: derive_bundle_id(&[tx]),
         };
         assert_eq!(
             test_single_bundle(genesis_config, bundle, None),
@@ -2104,7 +2104,7 @@ mod tests {
         // push and pop tx0
         let bundle = PacketBundle {
             batch: PacketBatch::new(vec![Packet::from_data(None, &tx0).unwrap()]),
-            bundle_id: derive_bundle_id(&vec![tx0]),
+            bundle_id: derive_bundle_id(&[tx0]),
         };
         info!("test_bundle_max_retries uuid: {:?}", bundle.bundle_id);
 
