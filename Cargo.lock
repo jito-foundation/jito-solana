@@ -5383,7 +5383,6 @@ dependencies = [
  "tonic 0.5.2",
  "tonic-build 0.5.2",
  "trees",
- "uuid",
 ]
 
 [[package]]
@@ -6461,7 +6460,6 @@ dependencies = [
  "thiserror",
  "tiny-bip39",
  "uriparse",
- "uuid",
  "wasm-bindgen",
 ]
 
@@ -8078,16 +8076,6 @@ name = "utf8-width"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cf7d77f457ef8dfa11e4cd5933c5ddb5dc52a94664071951219a97710f0a32b"
-
-[[package]]
-name = "uuid"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "345444e32442451b267fc254ae85a209c64be56d2890e601a0c37ff0c3c5ecd2"
-dependencies = [
- "getrandom 0.2.3",
- "rand 0.8.5",
-]
 
 [[package]]
 name = "vcpkg"
