@@ -6669,7 +6669,7 @@ dependencies = [
 
 [[package]]
 name = "solana-tip-distributor"
-version = "1.15.0"
+version = "1.14.21"
 dependencies = [
  "anchor-lang",
  "clap 3.2.25",
