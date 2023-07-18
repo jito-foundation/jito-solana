@@ -1,3 +1,4 @@
+use num_traits::Saturating;
 use {
     crate::{
         derive_tip_distribution_account_address, derive_tip_payment_pubkeys, Config, StakeMeta,
@@ -247,7 +248,8 @@ pub fn generate_stake_meta_collection(
 
             let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
                 let actual_len = tda.account_data.data().len();
-                let expected_len = 8 + size_of::<TipDistributionAccount>();
+                let expected_len: usize =
+                    8_usize.saturating_add(size_of::<TipDistributionAccount>());
                 if actual_len != expected_len {
                     warn!("len mismatch actual={actual_len}, expected={expected_len}");
                 }

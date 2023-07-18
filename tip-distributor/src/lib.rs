@@ -80,7 +80,7 @@ fn emit_inconsistent_tree_node_amount_dp(
     rpc_client: &SyncRpcClient,
 ) {
     let actual_claims: u64 = tree_nodes.iter().map(|t| t.amount).sum();
-    let tda = rpc_client.get_account(&tip_distribution_account).unwrap();
+    let tda = rpc_client.get_account(tip_distribution_account).unwrap();
     let min_rent = rpc_client
         .get_minimum_balance_for_rent_exemption(tda.data.len())
         .unwrap();
@@ -131,7 +131,7 @@ impl GeneratedMerkleTreeCollection {
                         emit_inconsistent_tree_node_amount_dp(
                             &tree_nodes[..],
                             &tda.tip_distribution_pubkey,
-                            &rpc_client,
+                            rpc_client,
                         );
                     }
                 }
