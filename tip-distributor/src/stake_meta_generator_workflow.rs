@@ -1,4 +1,3 @@
-use num_traits::Saturating;
 use {
     crate::{
         derive_tip_distribution_account_address, derive_tip_payment_pubkeys, Config, StakeMeta,
