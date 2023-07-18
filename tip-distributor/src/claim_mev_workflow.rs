@@ -1,8 +1,10 @@
 use {
-    crate::{read_json_from_file, send_transactions_with_retry, GeneratedMerkleTreeCollection},
+    crate::{
+        read_json_from_file, sign_and_send_transactions_with_retries, GeneratedMerkleTreeCollection,
+    },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     log::{debug, info, warn},
-    solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
+    solana_client::{client_error, nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
         stake::state::StakeState, system_program,
@@ -35,8 +37,7 @@ pub fn claim_mev_tips(
     tip_distribution_program_id: &Pubkey,
     keypair_path: &PathBuf,
 ) -> Result<(), ClaimMevError> {
-    // roughly how long before blockhash expires
-    const MAX_RETRY_DURATION: Duration = Duration::from_secs(60);
+    const MAX_RETRY_DURATION: Duration = Duration::from_secs(600);
 
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
@@ -46,7 +47,7 @@ pub fn claim_mev_tips(
         Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
 
     let rpc_client =
-        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
+        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::finalized());
 
     let runtime = Builder::new_multi_thread()
         .worker_threads(16)
@@ -54,10 +55,9 @@ pub fn claim_mev_tips(
         .build()
         .unwrap();
 
-    let mut transactions = Vec::new();
+    let mut instructions = Vec::new();
 
     runtime.block_on(async move {
-        let blockhash = rpc_client.get_latest_blockhash().await.expect("read blockhash");
         let start_balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
         // heuristic to make sure we have enough funds to cover the rent costs if epoch has many validators
         {
@@ -99,7 +99,7 @@ pub fn claim_mev_tips(
                         continue;
                     }
                     // expected to not find ClaimStatus account, don't skip
-                    Err(solana_client::client_error::ClientError { kind: solana_client::client_error::ClientErrorKind::RpcError(RpcError::ForUser(err)), .. }) if err.starts_with("AccountNotFound") => {}
+                    Err(client_error::ClientError { kind: client_error::ClientErrorKind::RpcError(RpcError::ForUser(err)), .. }) if err.starts_with("AccountNotFound") => {}
                     Err(err) => panic!("Unexpected RPC Error: {}", err),
                 }
 
@@ -112,7 +112,7 @@ pub fn claim_mev_tips(
                     below_min_rent_count = below_min_rent_count.checked_add(1).unwrap();
                     continue;
                 }
-                let ix = Instruction {
+                instructions.push(Instruction {
                     program_id: *tip_distribution_program_id,
                     data: tip_distribution::instruction::Claim {
                         proof: node.proof.unwrap(),
@@ -127,23 +127,23 @@ pub fn claim_mev_tips(
                         payer: keypair.pubkey(),
                         system_program: system_program::id(),
                     }.to_account_metas(None),
-                };
-                let transaction = Transaction::new_signed_with_payer(
-                    &[ix],
-                    Some(&keypair.pubkey()),
-                    &[&keypair],
-                    blockhash,
-                );
-                info!("claiming for pubkey: {}, tx: {:?}", node.claimant, transaction);
-                transactions.push(transaction);
+                });
             }
         }
 
+        let transactions = instructions.into_iter().map(|ix|{
+            Transaction::new_with_payer(
+                &[ix],
+                Some(&keypair.pubkey()),
+            )
+        }).collect::<Vec<_>>();
+
         info!("Sending {} tip claim transactions. {} tried sending zero lamports, {} would be below minimum rent",
             &transactions.len(), zero_lamports_count, below_min_rent_count);
-        let num_failed_txs = send_transactions_with_retry(&rpc_client, &transactions, MAX_RETRY_DURATION).await;
-        if num_failed_txs != 0 {
-            panic!("failed to send {num_failed_txs} transactions");
+
+        let failed_transactions = sign_and_send_transactions_with_retries(&keypair, &rpc_client, transactions, MAX_RETRY_DURATION).await;
+        if !failed_transactions.is_empty() {
+            panic!("failed to send {} transactions", failed_transactions.len());
         }
     });
 

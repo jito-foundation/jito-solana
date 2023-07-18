@@ -30,6 +30,7 @@ use {
         fmt::{Debug, Display, Formatter},
         fs::File,
         io::{BufWriter, Write},
+        mem::size_of,
         path::{Path, PathBuf},
         sync::Arc,
     },
@@ -130,7 +131,7 @@ fn write_to_json_file(
     let file = File::create(out_path)?;
     let mut writer = BufWriter::new(file);
     let json = serde_json::to_string_pretty(&stake_meta_coll).unwrap();
-    let _ = writer.write(json.as_bytes())?;
+    let _ = writer.write_all(json.as_bytes())?;
     writer.flush()?;
 
     Ok(())
@@ -206,12 +207,12 @@ pub fn generate_stake_meta_collection(
                 bank.epoch(),
             )
             .0;
-            let tda = bank
-                .get_account(&tip_distribution_pubkey)
-                .map(|mut account_data| {
-                    let tip_distribution_account =
-                        TipDistributionAccount::try_deserialize(&mut account_data.data())
-                            .expect("deserialized TipDistributionAccount");
+            let tda = if let Some(mut account_data) = bank.get_account(&tip_distribution_pubkey) {
+                // TDAs may be funded with lamports and therefore exist in the bank, but would fail the deserialization step
+                // if the buffer is yet to be allocated thru the init call to the program.
+                if let Ok(tip_distribution_account) =
+                    TipDistributionAccount::try_deserialize(&mut account_data.data())
+                {
                     // this snapshot might have tips that weren't claimed by the time the epoch is over
                     // assume that it will eventually be cranked and credit the excess to this account
                     if tip_distribution_pubkey == tip_receiver {
@@ -222,12 +223,17 @@ pub fn generate_stake_meta_collection(
                                 .expect("tip overflow"),
                         );
                     }
-                    TipDistributionAccountWrapper {
+                    Some(TipDistributionAccountWrapper {
                         tip_distribution_account,
                         account_data,
                         tip_distribution_pubkey,
-                    }
-                });
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             Ok(((*vote_pubkey, vote_account), tda))
         })
         .collect::<Result<_, StakeMetaGeneratorError>>()?;
@@ -240,6 +246,11 @@ pub fn generate_stake_meta_collection(
             });
 
             let maybe_tip_distribution_meta = if let Some(tda) = maybe_tda {
+                let actual_len = tda.account_data.data().len();
+                let expected_len = 8 + size_of::<TipDistributionAccount>();
+                if actual_len != expected_len {
+                    warn!("len mismatch actual={actual_len}, expected={expected_len}");
+                }
                 let rent_exempt_amount =
                     bank.get_minimum_balance_for_rent_exemption(tda.account_data.data().len());
 
@@ -251,13 +262,15 @@ pub fn generate_stake_meta_collection(
                 None
             };
 
+            let vote_state = vote_account.vote_state().as_ref().unwrap();
             delegations.sort();
             stake_metas.push(StakeMeta {
                 maybe_tip_distribution_meta,
+                validator_node_pubkey: vote_state.node_pubkey,
                 validator_vote_account: vote_pubkey,
                 delegations,
                 total_delegated,
-                commission: vote_account.vote_state().as_ref().unwrap().commission,
+                commission: vote_state.commission,
             });
         } else {
             warn!(
@@ -684,6 +697,7 @@ mod tests {
                     validator_fee_bps: tda_0_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_0.node_keypair.pubkey(),
             },
         );
         expected_stake_metas.insert(
@@ -709,6 +723,7 @@ mod tests {
                     validator_fee_bps: tda_1_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_1.node_keypair.pubkey(),
             },
         );
         expected_stake_metas.insert(
@@ -734,6 +749,7 @@ mod tests {
                     validator_fee_bps: tda_2_fields.1,
                 }),
                 commission: 0,
+                validator_node_pubkey: validator_keypairs_2.node_keypair.pubkey(),
             },
         );
 

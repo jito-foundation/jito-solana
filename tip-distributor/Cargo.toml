@@ -1,13 +1,13 @@
 [package]
 name = "solana-tip-distributor"
-version = "1.14.21"
+version = "1.15.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Collection of binaries used to distribute MEV rewards to delegators and validators."
 
 [dependencies]
 anchor-lang = { path = "../anchor/lang" }
-clap = { version = "3", features = ["derive", "env"] }
+clap = { version = "3.1.18", features = ["derive", "env"] }
 env_logger = "0.9.0"
 futures = "0.3.21"
 im = "15.1.0"
@@ -20,8 +20,8 @@ solana-client = { path = "../client", version = "=1.14.21" }
 solana-genesis-utils = { path = "../genesis-utils", version = "=1.14.21" }
 solana-ledger = { path = "../ledger", version = "=1.14.21" }
 solana-merkle-tree = { path = "../merkle-tree", version = "=1.14.21" }
+solana-metrics = { path = "../metrics", version = "=1.14.21" }
 solana-program = { path = "../sdk/program", version = "=1.14.21" }
-solana-rpc = { path = "../rpc", version = "=1.14.21" }
 solana-runtime = { path = "../runtime", version = "=1.14.21" }
 solana-sdk = { path = "../sdk", version = "=1.14.21" }
 solana-stake-program = { path = "../programs/stake", version = "=1.14.21" }

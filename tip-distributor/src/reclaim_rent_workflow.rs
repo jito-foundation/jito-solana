@@ -1,5 +1,5 @@
 use {
-    crate::send_transactions_with_retry,
+    crate::sign_and_send_transactions_with_retries,
     anchor_lang::AccountDeserialize,
     log::info,
     solana_client::nonblocking::rpc_client::RpcClient,
@@ -145,14 +145,7 @@ pub async fn reclaim_rent(
             )
             .collect::<Vec<_>>()
             .chunks(4)
-            .map(|instructions| {
-                Transaction::new_signed_with_payer(
-                    instructions,
-                    Some(&signer.pubkey()),
-                    &[&signer],
-                    recent_blockhash,
-                )
-            })
+            .map(|instructions| Transaction::new_with_payer(instructions, Some(&signer.pubkey())))
             .collect::<Vec<_>>();
         info!("create close_tip_distribution_account transactions took {}us, closing {} tip distribution accounts", now.elapsed().as_micros(), close_tda_txs.len());
 
@@ -160,14 +153,15 @@ pub async fn reclaim_rent(
     }
 
     info!("sending {} transactions", transactions.len());
-    let num_failed_txs = send_transactions_with_retry(
+    let failed_txs = sign_and_send_transactions_with_retries(
+        &signer,
         &rpc_client,
-        transactions.as_slice(),
-        Duration::from_secs(60),
+        transactions,
+        Duration::from_secs(300),
     )
     .await;
-    if num_failed_txs != 0 {
-        panic!("failed to send {num_failed_txs} transactions");
+    if !failed_txs.is_empty() {
+        panic!("failed to send {} transactions", failed_txs.len());
     }
 
     Ok(())

@@ -10,24 +10,31 @@ use {
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     anchor_lang::Id,
-    log::{error, info},
+    log::*,
     serde::{de::DeserializeOwned, Deserialize, Serialize},
-    solana_client::nonblocking::rpc_client::RpcClient,
+    solana_client::{
+        client_error::{ClientError, ClientErrorKind},
+        nonblocking::rpc_client::RpcClient,
+        rpc_client::RpcClient as SyncRpcClient,
+        rpc_request::RpcRequest,
+    },
     solana_merkle_tree::MerkleTree,
+    solana_metrics::{datapoint_error, datapoint_warn},
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
-        signature::Signature,
+        signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::Transaction,
+        transaction::{Transaction, TransactionError::AlreadyProcessed},
     },
     std::{
         collections::HashMap,
         fs::File,
         io::BufReader,
         path::PathBuf,
+        sync::Arc,
         time::{Duration, Instant},
     },
     tip_distribution::{
@@ -67,9 +74,47 @@ pub struct TipPaymentPubkeys {
     tip_pdas: Vec<Pubkey>,
 }
 
+fn emit_inconsistent_tree_node_amount_dp(
+    tree_nodes: &[TreeNode],
+    tip_distribution_account: &Pubkey,
+    rpc_client: &SyncRpcClient,
+) {
+    let actual_claims: u64 = tree_nodes.iter().map(|t| t.amount).sum();
+    let tda = rpc_client.get_account(&tip_distribution_account).unwrap();
+    let min_rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(tda.data.len())
+        .unwrap();
+
+    let expected_claims = tda.lamports.checked_sub(min_rent).unwrap();
+    if actual_claims == expected_claims {
+        return;
+    }
+
+    if actual_claims > expected_claims {
+        datapoint_error!(
+            "tip-distributor",
+            (
+                "actual_claims_exceeded",
+                format!("tip_distribution_account={tip_distribution_account},actual_claims={actual_claims}, expected_claims={expected_claims}"),
+                String
+            ),
+        );
+    } else {
+        datapoint_warn!(
+            "tip-distributor",
+            (
+                "actual_claims_below",
+                format!("tip_distribution_account={tip_distribution_account},actual_claims={actual_claims}, expected_claims={expected_claims}"),
+                String
+            ),
+        );
+    }
+}
+
 impl GeneratedMerkleTreeCollection {
     pub fn new_from_stake_meta_collection(
         stake_meta_coll: StakeMetaCollection,
+        maybe_rpc_client: Option<SyncRpcClient>,
     ) -> Result<GeneratedMerkleTreeCollection, MerkleRootGeneratorError> {
         let generated_merkle_trees = stake_meta_coll
             .stake_metas
@@ -80,6 +125,16 @@ impl GeneratedMerkleTreeCollection {
                     Err(e) => return Some(Err(e)),
                     Ok(maybe_tree_nodes) => maybe_tree_nodes,
                 }?;
+
+                if let Some(rpc_client) = &maybe_rpc_client {
+                    if let Some(tda) = stake_meta.maybe_tip_distribution_meta.as_ref() {
+                        emit_inconsistent_tree_node_amount_dp(
+                            &tree_nodes[..],
+                            &tda.tip_distribution_pubkey,
+                            &rpc_client,
+                        );
+                    }
+                }
 
                 let hashed_nodes: Vec<[u8; 32]> =
                     tree_nodes.iter().map(|n| n.hash().to_bytes()).collect();
@@ -239,11 +294,6 @@ impl TreeNode {
                     .collect::<Result<Vec<TreeNode>, MerkleRootGeneratorError>>()?,
             );
 
-            let total_claim_amount = tree_nodes.iter().fold(0u64, |sum, tree_node| {
-                sum.checked_add(tree_node.amount).unwrap()
-            });
-            assert!(total_claim_amount < stake_meta.total_delegated);
-
             Ok(Some(tree_nodes))
         } else {
             Ok(None)
@@ -281,6 +331,9 @@ pub struct StakeMetaCollection {
 pub struct StakeMeta {
     #[serde(with = "pubkey_string_conversion")]
     pub validator_vote_account: Pubkey,
+
+    #[serde(with = "pubkey_string_conversion")]
+    pub validator_node_pubkey: Pubkey,
 
     /// The validator's tip-distribution meta if it exists.
     pub maybe_tip_distribution_meta: Option<TipDistributionMeta>,
@@ -408,59 +461,106 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
-pub async fn send_transactions_with_retry(
+pub async fn sign_and_send_transactions_with_retries(
+    signer: &Keypair,
     rpc_client: &RpcClient,
-    transactions: &[Transaction],
-    max_send_duration: Duration,
-) -> usize {
-    let mut transactions_to_send: HashMap<Signature, Transaction> = transactions
-        .iter()
-        .map(|tx| (tx.signatures[0], tx.clone()))
-        .collect();
+    transactions: Vec<Transaction>,
+    max_retry_duration: Duration,
+) -> HashMap<Signature, ClientError> {
+    use tokio::sync::Semaphore;
+    const MAX_CONCURRENT_RPC_CALLS: usize = 50;
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
+
+    let mut errors = HashMap::default();
+    let mut blockhash = rpc_client
+        .get_latest_blockhash()
+        .await
+        .expect("fetch latest blockhash");
+
+    let mut signatures_to_transactions = transactions
+        .into_iter()
+        .map(|mut tx| {
+            tx.sign(&[signer], blockhash);
+            (tx.signatures[0], tx)
+        })
+        .collect::<HashMap<Signature, Transaction>>();
 
     let start = Instant::now();
-    while !transactions_to_send.is_empty() && start.elapsed() < max_send_duration {
-        info!("sending {} transactions", transactions_to_send.len());
+    while start.elapsed() < max_retry_duration && !signatures_to_transactions.is_empty() {
+        if start.elapsed() > Duration::from_secs(60) {
+            blockhash = rpc_client
+                .get_latest_blockhash()
+                .await
+                .expect("fetch latest blockhash");
+            signatures_to_transactions
+                .iter_mut()
+                .for_each(|(_sig, tx)| {
+                    *tx = Transaction::new_unsigned(tx.message.clone());
+                    tx.sign(&[signer], blockhash);
+                });
+        }
 
-        for (signature, tx) in &transactions_to_send {
-            match rpc_client.send_transaction(tx).await {
-                Ok(send_tx_sig) => {
-                    info!("send transaction: {:?}", send_tx_sig);
-                }
-                Err(e) => {
-                    error!("error sending transaction {:?} error: {:?}", signature, e);
-                }
+        let futs = signatures_to_transactions.iter().map(|(sig, tx)| {
+            let semaphore = semaphore.clone();
+            async move {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let res = match rpc_client.send_transaction(tx).await {
+                    Ok(_sig) => {
+                        info!("sent transaction: {_sig:?}");
+                        drop(permit);
+                        sleep(Duration::from_secs(10)).await;
+
+                        let _permit = semaphore.acquire_owned().await.unwrap();
+                        match rpc_client.confirm_transaction(sig).await {
+                            Ok(true) => Ok(()),
+                            Ok(false) => Err(ClientError::new_with_request(
+                                ClientErrorKind::Custom(
+                                    "transaction failed to confirm".to_string(),
+                                ),
+                                RpcRequest::SendTransaction,
+                            )),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(e) => Err(e),
+                };
+
+                let res = res
+                    .err()
+                    .map(|e| {
+                        if let ClientErrorKind::TransactionError(AlreadyProcessed) = e.kind {
+                            Ok(())
+                        } else {
+                            error!("error sending transaction {sig:?} error: {e:?}");
+                            Err(e)
+                        }
+                    })
+                    .unwrap_or(Ok(()));
+
+                (*sig, res)
             }
-        }
+        });
 
-        sleep(Duration::from_secs(10)).await;
-
-        let mut signatures_confirmed: Vec<Signature> = Vec::new();
-        for signature in transactions_to_send.keys() {
-            match rpc_client.confirm_transaction(signature).await {
-                Ok(true) => {
-                    info!("confirmed signature: {:?}", signature);
-                    signatures_confirmed.push(*signature);
+        errors = futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .filter(|(sig, result)| {
+                if result.is_err() {
+                    true
+                } else {
+                    let _ = signatures_to_transactions.remove(sig);
+                    false
                 }
-                Ok(false) => {
-                    info!("didn't confirmed signature: {:?}", signature);
-                }
-                Err(e) => {
-                    error!(
-                        "error confirming signature: {:?}, signature: {:?}",
-                        signature, e
-                    );
-                }
-            }
-        }
-
-        info!("confirmed #{} signatures", signatures_confirmed.len());
-        for sig in signatures_confirmed {
-            transactions_to_send.remove(&sig);
-        }
+            })
+            .map(|(sig, result)| {
+                let e = result.err().unwrap();
+                warn!("error sending transaction: [error={e}, signature={sig}]");
+                (sig, e)
+            })
+            .collect::<HashMap<_, _>>();
     }
 
-    transactions_to_send.len()
+    errors
 }
 
 mod pubkey_string_conversion {
@@ -569,10 +669,14 @@ mod tests {
         let validator_vote_account_0 = Pubkey::new_unique();
         let validator_vote_account_1 = Pubkey::new_unique();
 
+        let validator_id_0 = Pubkey::new_unique();
+        let validator_id_1 = Pubkey::new_unique();
+
         let stake_meta_collection = StakeMetaCollection {
             stake_metas: vec![
                 StakeMeta {
                     validator_vote_account: validator_vote_account_0,
+                    validator_node_pubkey: validator_id_0,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority,
                         tip_distribution_pubkey: tda_0,
@@ -598,6 +702,7 @@ mod tests {
                 },
                 StakeMeta {
                     validator_vote_account: validator_vote_account_1,
+                    validator_node_pubkey: validator_id_1,
                     maybe_tip_distribution_meta: Some(TipDistributionMeta {
                         merkle_root_upload_authority,
                         tip_distribution_pubkey: tda_1,
@@ -623,13 +728,14 @@ mod tests {
                 },
             ],
             tip_distribution_program_id: Pubkey::new_unique(),
-            bank_hash: solana_sdk::hash::Hash::new_unique().to_string(),
+            bank_hash: Hash::new_unique().to_string(),
             epoch: 100,
             slot: 2_000_000,
         };
 
         let merkle_tree_collection = GeneratedMerkleTreeCollection::new_from_stake_meta_collection(
             stake_meta_collection.clone(),
+            None,
         )
         .unwrap();
 

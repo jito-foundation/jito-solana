@@ -29,6 +29,10 @@ struct Args {
     #[clap(long, env)]
     keypair_path: PathBuf,
 
+    /// High timeout b/c of get_program_accounts call
+    #[clap(long, env, default_value_t = 180)]
+    rpc_timeout_secs: u64,
+
     /// Specifies whether to reclaim rent on behalf of validators from respective TDAs.
     #[clap(long, env)]
     should_reclaim_tdas: bool,
@@ -44,8 +48,7 @@ fn main() {
     if let Err(e) = runtime.block_on(reclaim_rent(
         RpcClient::new_with_timeout_and_commitment(
             args.rpc_url,
-            // High timeout b/c of get_program_accounts call
-            Duration::from_secs(60),
+            Duration::from_secs(args.rpc_timeout_secs),
             CommitmentConfig::confirmed(),
         ),
         args.tip_distribution_program_id,
