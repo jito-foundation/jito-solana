@@ -2726,7 +2726,6 @@ checksum = "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
 dependencies = [
  "autocfg",
  "hashbrown 0.12.3",
- "rayon",
 ]
 
 [[package]]
@@ -2737,6 +2736,7 @@ checksum = "d5477fe2230a79769d8dc68e0eabf5437907c0457a5614a9e8dddb67f65eb65d"
 dependencies = [
  "equivalent",
  "hashbrown 0.14.0",
+ "rayon",
 ]
 
 [[package]]
@@ -5690,7 +5690,7 @@ dependencies = [
  "crossbeam-channel",
  "futures 0.3.28",
  "futures-util",
- "indexmap 1.9.3",
+ "indexmap 2.0.0",
  "indicatif",
  "log",
  "quinn",
@@ -5770,7 +5770,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "futures-util",
- "indexmap 1.9.3",
+ "indexmap 2.0.0",
  "indicatif",
  "log",
  "rand 0.7.3",
@@ -6086,7 +6086,7 @@ dependencies = [
  "clap 2.33.3",
  "crossbeam-channel",
  "flate2",
- "indexmap 1.9.3",
+ "indexmap 2.0.0",
  "itertools",
  "log",
  "lru",
@@ -7116,7 +7116,7 @@ dependencies = [
  "crossbeam-channel",
  "futures-util",
  "histogram",
- "indexmap 1.9.3",
+ "indexmap 2.0.0",
  "itertools",
  "libc",
  "log",
@@ -7236,7 +7236,7 @@ dependencies = [
  "console",
  "csv",
  "ctrlc",
- "indexmap 1.9.3",
+ "indexmap 2.0.0",
  "indicatif",
  "pickledb",
  "serde",
@@ -7265,7 +7265,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "futures-util",
- "indexmap 1.9.3",
+ "indexmap 2.0.0",
  "indicatif",
  "log",
  "rand 0.7.3",
