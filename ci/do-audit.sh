@@ -18,6 +18,9 @@ while [[ -n $1 ]]; do
 done
 
 cargo_audit_ignores=(
+  # Not too severe. Main issue is don't create keypair from independently derived public and private keys.
+  --ignore RUSTSEC-2022-0093
+
   # `net2` crate has been deprecated; use `socket2` instead
   #
   # Blocked on https://github.com/paritytech/jsonrpc/issues/575
