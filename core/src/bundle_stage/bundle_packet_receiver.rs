@@ -715,7 +715,7 @@ mod tests {
         // in the same order they were originally
         let bank = &bank_forks.read().unwrap().working_bank();
         let new_bank = Arc::new(Bank::new_from_parent(
-            bank,
+            bank.clone(),
             bank.collector_id(),
             bank.slot() + 1,
         ));
@@ -835,7 +835,7 @@ mod tests {
         // create new bank then call process_bundles again, expect to see [bundles1,bundles2]
         let bank = &bank_forks.read().unwrap().working_bank();
         let new_bank = Arc::new(Bank::new_from_parent(
-            bank,
+            bank.clone(),
             bank.collector_id(),
             bank.slot() + 1,
         ));
