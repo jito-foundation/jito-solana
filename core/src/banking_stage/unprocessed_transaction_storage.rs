@@ -1230,7 +1230,7 @@ impl BundleStorage {
 
         sanitized_bundles
             .into_iter()
-            .zip(bundle_execution_results.into_iter())
+            .zip(bundle_execution_results)
             .for_each(
                 |((deserialized_bundle, sanitized_bundle), result)| match result {
                     Ok(_) => {

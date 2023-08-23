@@ -326,7 +326,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let parent = Arc::new(Bank::new_no_wallclock_throttle_for_tests(&genesis_config));
         let vote_only_bank = Arc::new(Bank::new_from_parent_with_options(
-            &parent,
+            parent,
             &Pubkey::new_unique(),
             1,
             NewBankOptions {

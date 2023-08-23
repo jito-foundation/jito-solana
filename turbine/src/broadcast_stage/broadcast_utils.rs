@@ -49,9 +49,12 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
     // Drain channel
     while last_tick_height != bank.max_tick_height() {
         let Ok(WorkingBankEntry {
-                   bank: try_bank,
-                   entries_ticks: new_entries_ticks,
-               }) = receiver.try_recv() else { break };
+            bank: try_bank,
+            entries_ticks: new_entries_ticks,
+        }) = receiver.try_recv()
+        else {
+            break;
+        };
         // If the bank changed, that implies the previous slot was interrupted and we do not have to
         // broadcast its entries.
         if try_bank.slot() != bank.slot() {
@@ -72,9 +75,12 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
         && serialized_batch_byte_count < target_serialized_batch_byte_count
     {
         let Ok(WorkingBankEntry {
-               bank: try_bank,
-               entries_ticks: new_entries_ticks,
-           }) = receiver.recv_deadline(coalesce_start + ENTRY_COALESCE_DURATION) else { break };
+            bank: try_bank,
+            entries_ticks: new_entries_ticks,
+        }) = receiver.recv_deadline(coalesce_start + ENTRY_COALESCE_DURATION)
+        else {
+            break;
+        };
         // If the bank changed, that implies the previous slot was interrupted and we do not have to
         // broadcast its entries.
         if try_bank.slot() != bank.slot() {

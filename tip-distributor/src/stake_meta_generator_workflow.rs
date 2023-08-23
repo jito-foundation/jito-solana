@@ -578,7 +578,7 @@ mod tests {
             bank.squash();
 
             Arc::new(Bank::new_from_parent(
-                bank,
+                bank.clone(),
                 &Pubkey::default(),
                 bank.get_slots_in_epoch(bank.epoch()) + bank.slot(),
             ))

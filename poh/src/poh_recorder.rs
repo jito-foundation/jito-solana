@@ -175,7 +175,7 @@ impl TransactionRecorder {
                 .collect::<Vec<_>>());
             record_transactions_timings.hash_us = hash_us;
 
-            let hashes_transactions: Vec<_> = hashes.into_iter().zip(batches.into_iter()).collect();
+            let hashes_transactions: Vec<_> = hashes.into_iter().zip(batches).collect();
 
             let (res, poh_record_us) = measure_us!(self.record(bank_slot, hashes_transactions));
             record_transactions_timings.poh_record_us = poh_record_us;
