@@ -102,6 +102,7 @@ solana-program-runtime = { workspace = true }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
 solana-sdk = { workspace = true, features = ["dev-context-only-utils"] }
 solana-program-test = { workspace = true }
+solana-sdk = { workspace = true, features = ["dev-context-only-utils"] }
 solana-stake-program = { workspace = true }
 static_assertions = { workspace = true }
 systemstat = { workspace = true }

@@ -30,7 +30,7 @@ impl ConsensusCacheUpdater {
                 .flat_map(|v| v.vote_accounts.clone());
 
             // vote_account
-            consensus_accounts.extend(vote_accounts.into_iter());
+            consensus_accounts.extend(vote_accounts);
             // authorized_voter_pubkey
             consensus_accounts.extend(epoch_stakes.epoch_authorized_voters().keys());
             // node_keypair

@@ -463,7 +463,7 @@ pub fn load_and_execute_bundle<'a>(
 
 fn get_account_transactions(
     bank: &Bank,
-    account_overrides: &mut AccountOverrides,
+    account_overrides: &AccountOverrides,
     accounts: &[Option<Vec<Pubkey>>],
     batch: &TransactionBatch,
 ) -> Vec<Option<Vec<(Pubkey, AccountSharedData)>>> {
