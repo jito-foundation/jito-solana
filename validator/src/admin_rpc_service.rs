@@ -942,7 +942,6 @@ mod tests {
         },
         std::{
             collections::HashSet,
-            str::FromStr,
             sync::{atomic::AtomicBool, Mutex},
         },
     };
