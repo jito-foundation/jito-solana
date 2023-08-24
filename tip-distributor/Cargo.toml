@@ -14,7 +14,7 @@ im = "15.1.0"
 itertools = "0.10.3"
 log = "0.4.17"
 num-traits = "0.2.15"
-serde = "1.0.137"
+serde = "1.0.186"
 serde_json = "1.0.81"
 solana-accounts-db = { workspace = true }
 solana-client = { workspace = true }
