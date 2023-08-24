@@ -159,11 +159,8 @@ impl FetchStageManager {
         tpu_address: SocketAddr,
         tpu_forward_address: SocketAddr,
     ) -> Result<(), contact_info::Error> {
-        let mut new_contact_info = cluster_info.my_contact_info();
-        // TODO (LB): double check protocol!!!!!!
-        new_contact_info.set_tpu(tpu_address)?;
-        new_contact_info.set_tpu_forwards(tpu_forward_address)?;
-        cluster_info.set_my_contact_info(new_contact_info);
+        cluster_info.set_tpu(tpu_address)?;
+        cluster_info.set_tpu_forwards(tpu_forward_address)?;
         Ok(())
     }
 
