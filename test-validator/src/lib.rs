@@ -969,6 +969,7 @@ impl TestValidator {
             vec![],
             &validator_config,
             true, // should_check_duplicate_instance
+            None,
             rpc_to_plugin_manager_receiver,
             config.start_progress.clone(),
             socket_addr_space,

@@ -5841,6 +5841,7 @@ dependencies = [
  "solana-rpc",
  "solana-rpc-client-api",
  "solana-runtime",
+ "solana-runtime-plugin",
  "solana-sdk",
  "solana-send-transaction-service",
  "solana-stake-program",
@@ -6931,6 +6932,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-runtime-plugin"
+version = "1.16.19"
+dependencies = [
+ "crossbeam-channel",
+ "json5",
+ "jsonrpc-core",
+ "jsonrpc-core-client",
+ "jsonrpc-derive",
+ "jsonrpc-ipc-server",
+ "jsonrpc-server-utils",
+ "libloading",
+ "log",
+ "solana-runtime",
+ "solana-sdk",
+ "thiserror",
+]
+
+[[package]]
 name = "solana-sdk"
 version = "1.16.19"
 dependencies = [
@@ -7410,6 +7429,7 @@ dependencies = [
  "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-runtime",
+ "solana-runtime-plugin",
  "solana-sdk",
  "solana-send-transaction-service",
  "solana-storage-bigtable",

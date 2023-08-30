@@ -99,6 +99,10 @@ use {
             self, clean_orphaned_account_snapshot_dirs, move_and_async_delete_path_contents,
         },
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
+        runtime_plugin_service::RuntimePluginService,
+    },
     solana_sdk::{
         clock::Slot,
         epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
@@ -482,6 +486,10 @@ impl Validator {
         cluster_entrypoints: Vec<ContactInfo>,
         config: &ValidatorConfig,
         should_check_duplicate_instance: bool,
+        runtime_plugin_configs_and_request_rx: Option<(
+            Vec<PathBuf>,
+            Receiver<RuntimePluginManagerRpcRequest>,
+        )>,
         rpc_to_plugin_manager_receiver: Option<Receiver<GeyserPluginManagerRequest>>,
         start_progress: Arc<RwLock<ValidatorStartProgress>>,
         socket_addr_space: SocketAddrSpace,
@@ -502,10 +510,9 @@ impl Validator {
             }
         }
 
-        let mut bank_notification_senders = Vec::new();
-
         let exit = Arc::new(AtomicBool::new(false));
 
+        let mut bank_notification_senders = Vec::new();
         let geyser_plugin_service =
             if let Some(geyser_plugin_config_files) = &config.on_start_geyser_plugin_config_files {
                 let (confirmed_bank_sender, confirmed_bank_receiver) = unbounded();
@@ -851,14 +858,25 @@ impl Validator {
                 None
             };
 
-        let mut block_commitment_cache = BlockCommitmentCache::default();
         let bank_forks_guard = bank_forks.read().unwrap();
+        let mut block_commitment_cache = BlockCommitmentCache::default();
         block_commitment_cache.initialize_slots(
             bank_forks_guard.working_bank().slot(),
             bank_forks_guard.root(),
         );
         drop(bank_forks_guard);
         let block_commitment_cache = Arc::new(RwLock::new(block_commitment_cache));
+
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .unwrap();
+        }
 
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
@@ -2369,6 +2387,7 @@ mod tests {
             vec![LegacyContactInfo::try_from(&leader_node.info).unwrap()],
             &config,
             true, // should_check_duplicate_instance
+            None,
             None, // rpc_to_plugin_manager_receiver
             start_progress.clone(),
             SocketAddrSpace::Unspecified,
@@ -2467,7 +2486,8 @@ mod tests {
                     Arc::new(RwLock::new(vec![Arc::new(vote_account_keypair)])),
                     vec![LegacyContactInfo::try_from(&leader_node.info).unwrap()],
                     &config,
-                    true, // should_check_duplicate_instance.
+                    true, // should_check_duplicate_instance
+                    None,
                     None, // rpc_to_plugin_manager_receiver
                     Arc::new(RwLock::new(ValidatorStartProgress::default())),
                     SocketAddrSpace::Unspecified,
