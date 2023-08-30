@@ -35,6 +35,7 @@ members = [
     "geyser-plugin-manager",
     "gossip",
     "install",
+    "jito-plugin",
     "jito-protos",
     "keygen",
     "ledger",

@@ -1,0 +1,12 @@
+[package]
+name = "jito-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+json5 = { workspace = true }
+jsonrpc-core = { workspace = true }
+libloading = { workspace = true }
+log = { workspace = true }
+solana-runtime = { workspace = true }
+thiserror = { workspace = true }
