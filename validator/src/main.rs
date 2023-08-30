@@ -1,10 +1,12 @@
 #![allow(clippy::arithmetic_side_effects)]
+
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
 use {
     clap::{crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit, ArgMatches},
     console::style,
     crossbeam_channel::unbounded,
+    jsonrpc_server_utils::tokio::runtime::Runtime,
     log::*,
     rand::{seq::SliceRandom, thread_rng},
     solana_accounts_db::{
@@ -57,6 +59,10 @@ use {
             ArchiveFormat, SnapshotVersion,
         },
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service,
+        runtime_plugin_admin_rpc_service::RuntimePluginAdminRpcRequestMetadata,
+    },
     solana_sdk::{
         clock::{Slot, DEFAULT_S_PER_SLOT},
         commitment_config::CommitmentConfig,
@@ -85,7 +91,7 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{Arc, Mutex, RwLock},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         time::{Duration, SystemTime},
     },
 };
@@ -664,6 +670,92 @@ pub fn main() {
                             admin_rpc_service::runtime()
                                 .block_on(async {
                                     admin_client
+                                        .await?
+                                        .reload_plugin(name.clone(), config.clone())
+                                        .await
+                                })
+                                .unwrap_or_else(|err| {
+                                    println!("Failed to reload plugin {name}: {err:?}");
+                                    exit(1);
+                                });
+                            println!("Successfully reloaded plugin: {name}");
+                        }
+                    }
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
+        ("runtime-plugin", Some(plugin_subcommand_matches)) => {
+            let runtime_plugin_rpc_client = runtime_plugin_admin_rpc_service::connect(&ledger_path);
+            let runtime = Runtime::new().unwrap();
+            match plugin_subcommand_matches.subcommand() {
+                ("list", _) => {
+                    let plugins = runtime
+                        .block_on(
+                            async move { runtime_plugin_rpc_client.await?.list_plugins().await },
+                        )
+                        .unwrap_or_else(|err| {
+                            println!("Failed to list plugins: {err}");
+                            exit(1);
+                        });
+                    if !plugins.is_empty() {
+                        println!("Currently the following plugins are loaded:");
+                        for (plugin, i) in plugins.into_iter().zip(1..) {
+                            println!("  {i}) {plugin}");
+                        }
+                    } else {
+                        println!("There are currently no plugins loaded");
+                    }
+                    return;
+                }
+                ("unload", Some(subcommand_matches)) => {
+                    if let Ok(name) = value_t!(subcommand_matches, "name", String) {
+                        runtime
+                            .block_on(async {
+                                runtime_plugin_rpc_client
+                                    .await?
+                                    .unload_plugin(name.clone())
+                                    .await
+                            })
+                            .unwrap_or_else(|err| {
+                                println!("Failed to unload plugin {name}: {err:?}");
+                                exit(1);
+                            });
+                        println!("Successfully unloaded plugin: {name}");
+                    }
+                    return;
+                }
+                ("load", Some(subcommand_matches)) => {
+                    if let Ok(config) = value_t!(subcommand_matches, "config", String) {
+                        let name = runtime
+                            .block_on(async {
+                                runtime_plugin_rpc_client
+                                    .await?
+                                    .load_plugin(config.clone())
+                                    .await
+                            })
+                            .unwrap_or_else(|err| {
+                                println!("Failed to load plugin {config}: {err:?}");
+                                exit(1);
+                            });
+                        println!("Successfully loaded plugin: {name}");
+                    }
+                    return;
+                }
+                ("reload", Some(subcommand_matches)) => {
+                    if let Ok(name) = value_t!(subcommand_matches, "name", String) {
+                        if let Ok(config) = value_t!(subcommand_matches, "config", String) {
+                            println!(
+                                "This command does not work as intended on some systems.\
+                                To correctly reload an existing plugin make sure to:\
+                                    1. Rename the new plugin binary file.\
+                                    2. Unload the previous version.\
+                                    3. Load the new, renamed binary using the 'Load' command."
+                            );
+                            runtime
+                                .block_on(async {
+                                    runtime_plugin_rpc_client
                                         .await?
                                         .reload_plugin(name.clone(), config.clone())
                                         .await
@@ -1814,6 +1906,31 @@ pub fn main() {
         },
     );
 
+    let runtime_plugin_config_and_rpc_rx = {
+        let plugin_exit = Arc::new(AtomicBool::new(false));
+        let (rpc_request_sender, rpc_request_receiver) = unbounded();
+        solana_runtime_plugin::runtime_plugin_admin_rpc_service::run(
+            &ledger_path,
+            RuntimePluginAdminRpcRequestMetadata {
+                rpc_request_sender,
+                validator_exit: validator_config.validator_exit.clone(),
+            },
+            plugin_exit,
+        );
+
+        if matches.is_present("runtime_plugin_config") {
+            (
+                values_t_or_exit!(matches, "runtime_plugin_config", String)
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                rpc_request_receiver,
+            )
+        } else {
+            (vec![], rpc_request_receiver)
+        }
+    };
+
     let gossip_host: IpAddr = matches
         .value_of("gossip_host")
         .map(|gossip_host| {
@@ -1979,6 +2096,7 @@ pub fn main() {
         cluster_entrypoints,
         &validator_config,
         should_check_duplicate_instance,
+        Some(runtime_plugin_config_and_rpc_rx),
         rpc_to_plugin_manager_receiver,
         start_progress,
         socket_addr_space,

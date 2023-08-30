@@ -1184,6 +1184,14 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .help("Specify the configuration file for the Geyser plugin."),
         )
         .arg(
+            Arg::with_name("runtime_plugin_config")
+                .long("runtime-plugin-config")
+                .value_name("FILE")
+                .takes_value(true)
+                .multiple(true)
+                .help("Specify the configuration file for a Runtime plugin."),
+        )
+        .arg(
             Arg::with_name("snapshot_archive_format")
                 .long("snapshot-archive-format")
                 .alias("snapshot-compression") // Legacy name used by Solana v1.5.x and older
@@ -1697,6 +1705,48 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(
             SubCommand::with_name("run")
                 .about("Run the validator")
+        )
+        .subcommand(
+            SubCommand::with_name("runtime-plugin")
+                .about("Manage and view runtime plugins")
+                .setting(AppSettings::SubcommandRequiredElseHelp)
+                .setting(AppSettings::InferSubcommands)
+                .subcommand(
+                    SubCommand::with_name("list")
+                        .about("List all current running runtime plugins")
+                )
+                .subcommand(
+                    SubCommand::with_name("unload")
+                        .about("Unload a particular runtime plugin. You must specify the runtime plugin name")
+                        .arg(
+                            Arg::with_name("name")
+                                .required(true)
+                                .takes_value(true)
+                        )
+                )
+                .subcommand(
+                    SubCommand::with_name("reload")
+                        .about("Reload a particular runtime plugin. You must specify the runtime plugin name and the new config path")
+                        .arg(
+                            Arg::with_name("name")
+                                .required(true)
+                                .takes_value(true)
+                        )
+                        .arg(
+                            Arg::with_name("config")
+                                .required(true)
+                                .takes_value(true)
+                        )
+                )
+                .subcommand(
+                    SubCommand::with_name("load")
+                        .about("Load a new gesyer plugin. You must specify the config path. Fails if overwriting (use reload)")
+                        .arg(
+                            Arg::with_name("config")
+                                .required(true)
+                                .takes_value(true)
+                        )
+                )
         )
         .subcommand(
             SubCommand::with_name("plugin")
@@ -2644,6 +2694,14 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                 .takes_value(true)
                 .multiple(true)
                 .help("Specify the configuration file for the Geyser plugin."),
+        )
+        .arg(
+            Arg::with_name("runtime_plugin_config")
+                .long("runtime-plugin-config")
+                .value_name("FILE")
+                .takes_value(true)
+                .multiple(true)
+                .help("Specify the configuration file for a Runtime plugin."),
         )
         .arg(
             Arg::with_name("deactivate_feature")
