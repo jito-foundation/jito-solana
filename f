@@ -7,7 +7,7 @@ set -eux
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-GIT_SHA="$(git describe --always --dirty)"
+GIT_SHA="$(git rev-parse --short HEAD)"
 
 echo "Git hash: $GIT_SHA"
 
