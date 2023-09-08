@@ -7,6 +7,7 @@ SOLANA_CONFIG_DIR=./config
 if [[ ! -d $SOLANA_CONFIG_DIR ]]; then
   echo "New Config! Generating Identities"
   mkdir $SOLANA_CONFIG_DIR
+
   $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/a/identity.json
   $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/a/stake-account.json
   $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/a/vote-account.json
@@ -14,6 +15,10 @@ if [[ ! -d $SOLANA_CONFIG_DIR ]]; then
   $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/b/identity.json
   $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/b/stake-account.json
   $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/b/vote-account.json
+
+  $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/c/identity.json
+  $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/c/stake-account.json
+  $SOLANA_KEYGEN new --no-passphrase -so "$SOLANA_CONFIG_DIR"/c/vote-account.json
 fi
 
 NDEBUG=1 ./multinode-demo/setup.sh \
@@ -24,7 +29,11 @@ NDEBUG=1 ./multinode-demo/setup.sh \
   --bootstrap-validator \
   "$SOLANA_CONFIG_DIR"/b/identity.json \
   "$SOLANA_CONFIG_DIR"/b/vote-account.json \
-  "$SOLANA_CONFIG_DIR"/b/stake-account.json
+  "$SOLANA_CONFIG_DIR"/b/stake-account.json \
+  --bootstrap-validator \
+  "$SOLANA_CONFIG_DIR"/c/identity.json \
+  "$SOLANA_CONFIG_DIR"/c/vote-account.json \
+  "$SOLANA_CONFIG_DIR"/c/stake-account.json
 
 cargo run --bin solana-ledger-tool -- -l config/bootstrap-validator/ create-snapshot 0
 NDEBUG=1 ./multinode-demo/faucet.sh
