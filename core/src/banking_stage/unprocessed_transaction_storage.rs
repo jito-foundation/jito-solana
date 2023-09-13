@@ -203,6 +203,9 @@ fn consume_scan_should_process_packet(
             .iter()
             .any(|key| blacklisted_accounts.contains(key))
         {
+            payload
+                .message_hash_to_transaction
+                .remove(packet.message_hash());
             ProcessingDecision::Never
         } else if payload.account_locks.try_locking(message) {
             payload.sanitized_transactions.push(sanitized_transaction);
