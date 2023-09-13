@@ -2796,7 +2796,7 @@ dependencies = [
 
 [[package]]
 name = "jito-protos"
-version = "1.16.13"
+version = "1.16.15"
 dependencies = [
  "bytes",
  "prost 0.11.9",
@@ -5470,7 +5470,7 @@ dependencies = [
 
 [[package]]
 name = "solana-bundle"
-version = "1.16.13"
+version = "1.16.15"
 dependencies = [
  "assert_matches",
  "itertools",
@@ -7180,7 +7180,7 @@ dependencies = [
 
 [[package]]
 name = "solana-tip-distributor"
-version = "1.16.13"
+version = "1.16.15"
 dependencies = [
  "anchor-lang",
  "clap 4.3.19",
