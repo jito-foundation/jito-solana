@@ -193,15 +193,10 @@ fn consume_scan_should_process_packet(
             bank.get_transaction_account_lock_limit(),
         )
         .is_err()
-        {
-            payload
-                .message_hash_to_transaction
-                .remove(packet.message_hash());
-            ProcessingDecision::Never
-        } else if message
-            .account_keys()
-            .iter()
-            .any(|key| blacklisted_accounts.contains(key))
+            || message
+                .account_keys()
+                .iter()
+                .any(|key| blacklisted_accounts.contains(key))
         {
             payload
                 .message_hash_to_transaction
