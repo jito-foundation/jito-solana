@@ -40,12 +40,13 @@ pub enum JitoPluginManagerError {
 }
 
 pub struct JitoPluginManager {
-    plugin: Option<(Box<dyn JitoPlugin>, Library)>,
+    plugins: Vec<Box<dyn JitoPlugin>>,
+    libs: Vec<Library>,
     bank_forks: Arc<RwLock<BankForks>>,
 }
 
 impl JitoPluginManager {
-    /// This method allows dynamic loading of the Jito plugin.
+    /// This method allows dynamic loading of a Jito plugin.
     pub fn load_plugin(
         plugin_config_path: impl AsRef<Path>,
         bank_forks: &Arc<RwLock<BankForks>>,
@@ -77,16 +78,23 @@ impl JitoPluginManager {
             })?;
 
         Ok(Self {
-            plugin: Some((jito_plugin, lib)),
+            plugins: vec![jito_plugin],
+            libs: vec![lib],
             bank_forks: bank_forks.clone(),
         })
     }
 
-    /// Unload the plugin and loaded plugin libraries, making sure to fire
+    /// Unloads the plugins and loaded plugin libraries, making sure to fire
     /// their `on_plugin_unload()` methods so they can do any necessary cleanup.
     pub fn unload(&mut self) {
-        self.plugin.as_mut().map(|p| p.0.on_unload());
-        self.plugin = None;
+        for mut plugin in self.plugins.drain(..) {
+            info!("Unloading plugin for {:?}", plugin.name());
+            plugin.on_unload();
+        }
+
+        for lib in self.libs.drain(..) {
+            drop(lib);
+        }
     }
 
     pub fn reload_plugin(&mut self, config_file: &str) -> JsonRpcResult<()> {
