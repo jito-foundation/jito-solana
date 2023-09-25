@@ -85,22 +85,10 @@ while [[ -n $1 ]]; do
       vote_account=$2
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 == --relayer-address ]]; then
-      args+=("$1" "$2")
-      shift 2
     elif [[ $1 == --block-engine-url ]]; then
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 == --block-engine-address ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --block-engine-auth-service-address ]]; then
-      args+=("$1" "$2")
-      shift 2
     elif [[ $1 == --relayer-url ]]; then
-      args+=("$1" "$2")
-      shift 2
-    elif [[ $1 == --relayer-auth-service-address ]]; then
       args+=("$1" "$2")
       shift 2
     elif [[ $1 = --merkle-root-upload-authority ]]; then
@@ -211,6 +199,24 @@ while [[ -n $1 ]]; do
       shift
     elif [[ $1 == --skip-require-tower ]]; then
       maybeRequireTower=false
+      shift
+    elif [[ $1 == --rpc-pubsub-enable-block-subscription ]]; then
+      args+=("$1")
+      shift
+    elif [[ $1 == --geyser-plugin-config ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --trust-relayer-packets ]]; then
+      args+=("$1")
+      shift
+    elif [[ $1 == --rpc-threads ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --shred-receiver-address ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --trust-block-engine-packets ]]; then
+      args+=("$1")
       shift
     elif [[ $1 = -h ]]; then
       usage "$@"
