@@ -14,10 +14,8 @@ RUST_LOG=INFO,solana_core::bundle_stage=DEBUG \
   NDEBUG=1 ./multinode-demo/bootstrap-validator.sh \
   --wait-for-supermajority 0 \
   --expected-bank-hash "$BANK_HASH" \
-  --block-engine-address http://127.0.0.1:1003 \
-  --block-engine-auth-service-address http://127.0.0.1:1005 \
-  --relayer-auth-service-address http://127.0.0.1:11226 \
-  --relayer-address http://127.0.0.1:11226 \
+  --block-engine-url http://127.0.0.1 \
+  --relayer-url http://127.0.0.1:11226 \
   --rpc-pubsub-enable-block-subscription \
   --enable-rpc-transaction-history \
   --tip-payment-program-pubkey T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt \

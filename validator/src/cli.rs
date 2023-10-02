@@ -1883,22 +1883,6 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
             }
         }));
     add_arg!(
-        Arg::with_name("block_engine_address")
-            .long("block-engine-address")
-            .value_name("block_engine_address")
-            .takes_value(true)
-            .help("Deprecated: Please use block_engine_url.")
-            .conflicts_with("block_engine_url"),
-        replaced_by: "block-engine-url");
-    add_arg!(
-        Arg::with_name("block_engine_auth_service_address")
-                .long("block-engine-auth-service-address")
-                .value_name("block_engine_auth_service_address")
-                .takes_value(true)
-                .help("Deprecated: Please use block_engine_url.")
-                .conflicts_with("block_engine_url"),
-        replaced_by: "block-engine-url");
-    add_arg!(
         Arg::with_name("disable_quic_servers")
             .long("disable-quic-servers")
             .takes_value(false),
@@ -1965,22 +1949,6 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
         .long("no-rocksdb-compaction")
         .takes_value(false)
         .help("Disable manual compaction of the ledger database"));
-    add_arg!(
-        Arg::with_name("relayer_address")
-                .long("relayer-address")
-                .value_name("relayer_address")
-                .takes_value(true)
-                .help("Deprecated: Please use relayer_url.")
-                .conflicts_with("relayer_url"),
-        replaced_by: "relayer-url");
-    add_arg!(
-        Arg::with_name("relayer_auth_service_address")
-                .long("relayer-auth-service-address")
-                .value_name("relayer_auth_service_address")
-                .takes_value(true)
-                .help("Deprecated: Please use relayer_url.")
-                .conflicts_with("relayer_url"),
-        replaced_by: "relayer-url");
     add_arg!(Arg::with_name("rocksdb_compaction_interval")
         .long("rocksdb-compaction-interval-slots")
         .value_name("ROCKSDB_COMPACTION_INTERVAL_SLOTS")
