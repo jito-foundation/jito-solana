@@ -915,7 +915,7 @@ impl PohRecorder {
                     {
                         let entries_tick_heights: Vec<(Entry, u64)> = entries
                             .into_iter()
-                            .zip(transactions.into_iter())
+                            .zip(transactions)
                             .map(|(poh_entry, transactions)| {
                                 (
                                     Entry {

@@ -9401,8 +9401,7 @@ impl AccountsDb {
                 for root in &slots {
                     self.accounts_index.add_root(*root);
                 }
-                self.accounts_index
-                    .add_uncleaned_roots(uncleaned_roots.into_iter());
+                self.accounts_index.add_uncleaned_roots(uncleaned_roots);
 
                 self.set_storage_count_and_alive_bytes(storage_info, &mut timings);
             }

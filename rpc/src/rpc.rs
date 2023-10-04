@@ -3268,13 +3268,16 @@ pub mod utils {
         crate::rpc::encode_account,
         jsonrpc_core::Error,
         solana_account_decoder::{UiAccount, UiAccountEncoding},
-        solana_bundle::bundle_execution::{LoadAndExecuteBundleError, LoadAndExecuteBundleOutput},
+        solana_bundle::{
+            bundle_execution::{LoadAndExecuteBundleError, LoadAndExecuteBundleOutput},
+            BundleExecutionError,
+        },
         solana_rpc_client_api::{
-            config::{RpcSimulateBundleConfig, RpcSimulateTransactionAccountsConfig},
-            response::{
-                RpcBundleSimulationSummary, RpcSimulateBundleResult,
-                RpcSimulateBundleTransactionResult,
+            bundles::{
+                RpcBundleExecutionError, RpcBundleSimulationSummary, RpcSimulateBundleConfig,
+                RpcSimulateBundleResult, RpcSimulateBundleTransactionResult,
             },
+            config::RpcSimulateTransactionAccountsConfig,
         },
         solana_sdk::{account::AccountSharedData, pubkey::Pubkey},
         std::str::FromStr,
@@ -3298,26 +3301,27 @@ pub mod utils {
         }
     }
 
-    // create a [RpcSimulateBundleResult] from a given bank [BundleSimulationResult]
     pub fn rpc_bundle_result_from_bank_result(
         bundle_execution_result: LoadAndExecuteBundleOutput,
         rpc_config: RpcSimulateBundleConfig,
     ) -> Result<RpcSimulateBundleResult, Error> {
         let summary = match bundle_execution_result.result() {
             Ok(_) => RpcBundleSimulationSummary::Succeeded,
-            Err(LoadAndExecuteBundleError::LockError { .. })
-            | Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(_))
-            | Err(LoadAndExecuteBundleError::InvalidPreOrPostAccounts) => {
-                // shouldn't ever hit this case bc caller checks against these errors
-                unreachable!();
+            Err(e) => {
+                let tx_signature = match e {
+                    LoadAndExecuteBundleError::TransactionError { signature, .. }
+                    | LoadAndExecuteBundleError::LockError { signature, .. } => {
+                        Some(signature.to_string())
+                    }
+                    _ => None,
+                };
+                RpcBundleSimulationSummary::Failed {
+                    error: RpcBundleExecutionError::from(BundleExecutionError::TransactionFailure(
+                        e.clone(),
+                    )),
+                    tx_signature,
+                }
             }
-            Err(LoadAndExecuteBundleError::TransactionError {
-                signature,
-                execution_result: _, // TODO (LB): can attach results here
-            }) => RpcBundleSimulationSummary::Failed {
-                error: (),
-                tx_signature: signature.to_string(),
-            },
         };
 
         let mut transaction_results = Vec::new();
@@ -3335,15 +3339,16 @@ pub mod utils {
                 let account_config = rpc_config
                     .pre_execution_accounts_configs
                     .get(transaction_results.len())
-                    .ok_or_else(|| Error::invalid_params("the length of pre_execution_accounts_configs must match the number of transactions"))?.as_ref().ok_or_else(|| Error::invalid_params("the length of pre_execution_accounts_configs must match the number of transactions"))?;
+                    .ok_or_else(|| Error::invalid_params("the length of pre_execution_accounts_configs must match the number of transactions"))?;
+                let account_encoding = account_config
+                    .as_ref()
+                    .and_then(|config| config.encoding)
+                    .unwrap_or(UiAccountEncoding::Base64);
 
                 let pre_execution_accounts = if let Some(pre_tx_accounts) =
                     bundle_output.pre_tx_execution_accounts().get(index)
                 {
-                    try_encode_accounts(
-                        pre_tx_accounts,
-                        account_config.encoding.unwrap_or(UiAccountEncoding::Base64),
-                    )?
+                    try_encode_accounts(pre_tx_accounts, account_encoding)?
                 } else {
                     None
                 };
@@ -3351,10 +3356,7 @@ pub mod utils {
                 let post_execution_accounts = if let Some(post_tx_accounts) =
                     bundle_output.post_tx_execution_accounts().get(index)
                 {
-                    try_encode_accounts(
-                        post_tx_accounts,
-                        account_config.encoding.unwrap_or(UiAccountEncoding::Base64),
-                    )?
+                    try_encode_accounts(post_tx_accounts, account_encoding)?
                 } else {
                     None
                 };
@@ -3412,6 +3414,10 @@ pub mod rpc_full {
         crate::rpc::utils::{account_configs_to_accounts, rpc_bundle_result_from_bank_result},
         jsonrpc_core::ErrorCode,
         solana_bundle::bundle_execution::{load_and_execute_bundle, LoadAndExecuteBundleError},
+        solana_rpc_client_api::bundles::{
+            RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
+            SimulationSlotConfig,
+        },
         solana_sdk::{
             bundle::{derive_bundle_id, SanitizedBundle},
             clock::MAX_PROCESSING_AGE,
