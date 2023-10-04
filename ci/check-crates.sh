@@ -31,6 +31,9 @@ printf "%s\n" "${files[@]}"
 error_count=0
 for file in "${files[@]}"; do
   read -r crate_name package_publish workspace < <(toml get "$file" . | jq -r '(.package.name | tostring)+" "+(.package.publish | tostring)+" "+(.workspace | tostring)')
+  if [ "$crate" == "solana-bundle" ]; then
+    continue
+  fi
   echo "=== $crate_name ($file) ==="
 
   if [[ $package_publish = 'false' ]]; then

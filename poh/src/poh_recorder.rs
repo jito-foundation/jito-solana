@@ -14,6 +14,11 @@ use {
     crate::{leader_bank_notifier::LeaderBankNotifier, poh_service::PohService},
     crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, SendError, Sender, TrySendError},
     log::*,
+    serde::{
+        de::Error,
+        ser::{Serialize, Serializer},
+        Deserialize, Deserializer,
+    },
     solana_entry::{
         entry::{hash_transactions, Entry},
         poh::Poh,
@@ -58,6 +63,36 @@ pub enum PohRecorderError {
 
     #[error("send WorkingBankEntry error")]
     SendError(#[from] SendError<WorkingBankEntry>),
+}
+
+impl Serialize for PohRecorderError {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let ser = match self {
+            Self::MaxHeightReached => "PohMaxHeightReached",
+            Self::MinHeightNotReached => "PohMinHeightNotReached",
+            Self::SendError(_) => {
+                return Err(serde::ser::Error::custom(
+                    "SendError variant cannot be serialized",
+                ))
+            }
+        };
+        serializer.serialize_str(&ser)
+    }
+}
+
+impl<'de> Deserialize<'de> for PohRecorderError {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let deser = String::deserialize(deserializer)?;
+        Ok(match deser.as_str() {
+            "PohMaxHeightReached" => Self::MaxHeightReached,
+            "PohMinHeightNotReached" => Self::MinHeightNotReached,
+            _ => {
+                return Err(Error::custom(format!(
+                    "Failed to deserialize string: {deser}"
+                )))
+            }
+        })
+    }
 }
 
 pub type Result<T> = std::result::Result<T, PohRecorderError>;

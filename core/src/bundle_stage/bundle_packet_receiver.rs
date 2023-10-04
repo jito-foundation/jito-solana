@@ -166,14 +166,11 @@ mod tests {
     use {
         super::*,
         crate::{
-            bundle_stage::{
-                bundle_account_locker::BundleAccountLockerError, result::BundleExecutionError,
-            },
-            tip_manager::TipPaymentError,
+            bundle_stage::bundle_account_locker::BundleAccountLockerError, tip_manager::TipError,
         },
         crossbeam_channel::unbounded,
         rand::{thread_rng, RngCore},
-        solana_bundle::bundle_execution::LoadAndExecuteBundleError,
+        solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
         solana_ledger::genesis_utils::create_genesis_config,
         solana_perf::packet::PacketBatch,
         solana_poh::poh_recorder::PohRecorderError,
@@ -474,7 +471,7 @@ mod tests {
                 let mut results = vec![Ok(()); bundles_to_process.len()];
 
                 (bank_processing_done_index..bundles_to_process.len()).for_each(|index| {
-                    results[index] = Err(BundleExecutionError::BankProcessingDone);
+                    results[index] = Err(BundleExecutionError::BankProcessingTimeLimitReached);
                 });
                 results
             }
@@ -538,7 +535,7 @@ mod tests {
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
                 vec![
-                    Err(BundleExecutionError::ExecutionError(
+                    Err(BundleExecutionError::TransactionFailure(
                         LoadAndExecuteBundleError::ProcessingTimeExceeded(Duration::from_secs(1)),
                     ));
                     bundles_to_process.len()
@@ -591,7 +588,7 @@ mod tests {
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
                 vec![
-                    Err(BundleExecutionError::TipError(TipPaymentError::LockError));
+                    Err(BundleExecutionError::TipError(TipError::LockError));
                     bundles_to_process.len()
                 ]
             }

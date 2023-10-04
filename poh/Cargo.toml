@@ -13,6 +13,7 @@ edition = { workspace = true }
 core_affinity = { workspace = true }
 crossbeam-channel = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
 solana-entry = { workspace = true }
 solana-ledger = { workspace = true }
 solana-measure = { workspace = true }

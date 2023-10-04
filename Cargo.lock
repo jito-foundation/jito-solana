@@ -5683,13 +5683,16 @@ dependencies = [
 name = "solana-bundle"
 version = "1.17.0"
 dependencies = [
+ "anchor-lang",
  "assert_matches",
  "itertools",
  "log",
+ "serde",
  "solana-accounts-db",
  "solana-ledger",
  "solana-logger",
  "solana-measure",
+ "solana-poh",
  "solana-program-runtime",
  "solana-runtime",
  "solana-sdk",
@@ -6724,6 +6727,7 @@ dependencies = [
  "log",
  "matches",
  "rand 0.8.5",
+ "serde",
  "solana-entry",
  "solana-ledger",
  "solana-logger",
@@ -7044,6 +7048,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account-decoder",
+ "solana-bundle",
  "solana-sdk",
  "solana-transaction-status",
  "solana-version",

@@ -10,15 +10,17 @@ use {
             bundle_reserved_space_manager::BundleReservedSpaceManager,
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             committer::Committer,
-            result::{BundleExecutionError, BundleExecutionResult},
         },
         consensus_cache_updater::ConsensusCacheUpdater,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
-        tip_manager::{TipManager, TipPaymentError},
+        tip_manager::TipManager,
     },
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
-    solana_bundle::bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+    solana_bundle::{
+        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+        BundleExecutionError, BundleExecutionResult, TipError,
+    },
     solana_cost_model::transaction_cost::TransactionCost,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::{measure, measure_us},
@@ -246,7 +248,9 @@ impl BundleConsumer {
                         .increment_process_packets_transactions_us(measure);
                     r
                 }
-                Err(e) => Err(e.into()),
+                Err(_) => {
+                    Err(BundleExecutionError::LockError)
+                }
             })
             .collect::<Vec<_>>());
 
@@ -283,7 +287,7 @@ impl BundleConsumer {
             &bank_start.bank_creation_time,
             bank_start.working_bank.ns_per_slot,
         ) {
-            return Err(BundleExecutionError::BankProcessingDone);
+            return Err(BundleExecutionError::BankProcessingTimeLimitReached);
         }
 
         if Self::bundle_touches_tip_pdas(
@@ -364,7 +368,7 @@ impl BundleConsumer {
 
             let locked_init_tip_programs_bundle = bundle_account_locker
                 .prepare_locked_bundle(&bundle, &bank_start.working_bank)
-                .map_err(|_| BundleExecutionError::TipError(TipPaymentError::LockError))?;
+                .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
             Self::update_qos_and_execute_record_commit_bundle(
                 committer,
@@ -386,7 +390,7 @@ impl BundleConsumer {
                     locked_init_tip_programs_bundle.sanitized_bundle().bundle_id,
                     e
                 );
-                BundleExecutionError::TipError(TipPaymentError::InitializeProgramsError)
+                BundleExecutionError::TipError(TipError::InitializeProgramsError)
             })?;
 
             bundle_stage_leader_metrics
@@ -417,7 +421,7 @@ impl BundleConsumer {
 
             let locked_tip_crank_bundle = bundle_account_locker
                 .prepare_locked_bundle(&bundle, &bank_start.working_bank)
-                .map_err(|_| BundleExecutionError::TipError(TipPaymentError::LockError))?;
+                .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
             Self::update_qos_and_execute_record_commit_bundle(
                 committer,
@@ -439,7 +443,7 @@ impl BundleConsumer {
                     locked_tip_crank_bundle.sanitized_bundle().bundle_id,
                     e
                 );
-                BundleExecutionError::TipError(TipPaymentError::CrankTipError)
+                BundleExecutionError::TipError(TipError::CrankTipError)
             })?;
 
             bundle_stage_leader_metrics
@@ -555,7 +559,7 @@ impl BundleConsumer {
             .accumulate_process_transactions_summary(&ProcessTransactionsSummary {
                 reached_max_poh_height: matches!(
                     result.result,
-                    Err(BundleExecutionError::BankProcessingDone)
+                    Err(BundleExecutionError::BankProcessingTimeLimitReached)
                         | Err(BundleExecutionError::PohRecordError(_))
                 ),
                 transactions_attempted_execution_count: sanitized_bundle.transactions.len(),

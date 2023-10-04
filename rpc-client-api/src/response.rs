@@ -2,6 +2,7 @@ use {
     crate::client_error,
     serde::{Deserialize, Deserializer, Serialize, Serializer},
     solana_account_decoder::{parse_token::UiTokenAmount, UiAccount},
+    solana_bundle::BundleExecutionError,
     solana_sdk::{
         clock::{Epoch, Slot, UnixTimestamp},
         fee_calculator::{FeeCalculator, FeeRateGovernor},
@@ -377,13 +378,13 @@ pub struct RpcIdentity {
     pub identity: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum RpcBundleSimulationSummary {
-    /// error and offending transaction signature
+    /// error and offending transaction signature if applicable
     Failed {
-        error: (),
-        tx_signature: String,
+        error: BundleExecutionError,
+        tx_signature: Option<String>,
     },
     Succeeded,
 }

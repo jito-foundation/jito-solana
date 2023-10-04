@@ -4,10 +4,11 @@ use {
         solana_program::hash::Hash, AccountDeserialize, InstructionData, ToAccountMetas,
     },
     log::warn,
+    solana_bundle::TipError,
     solana_runtime::bank::Bank,
     solana_sdk::{
         account::ReadableAccount,
-        bundle::{derive_bundle_id_from_sanizited_transactions, SanitizedBundle},
+        bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle},
         instruction::Instruction,
         pubkey::Pubkey,
         signature::Keypair,
@@ -17,7 +18,6 @@ use {
         transaction::{SanitizedTransaction, Transaction},
     },
     std::{collections::HashSet, sync::Arc},
-    thiserror::Error,
     tip_distribution::sdk::{
         derive_config_account_address, derive_tip_distribution_account_address,
         instruction::{
@@ -33,25 +33,7 @@ use {
     },
 };
 
-pub type Result<T> = std::result::Result<T, TipPaymentError>;
-
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
-pub enum TipPaymentError {
-    #[error("account is missing from bank: {0}")]
-    AccountMissing(Pubkey),
-
-    #[error("Anchor error: {0}")]
-    AnchorError(String),
-
-    #[error("Lock error")]
-    LockError,
-
-    #[error("Error executing initialize programs")]
-    InitializeProgramsError,
-
-    #[error("Error cranking tip programs")]
-    CrankTipError,
-}
+pub type Result<T> = std::result::Result<T, TipError>;
 
 #[derive(Debug, Clone)]
 struct TipPaymentProgramInfo {
@@ -216,7 +198,7 @@ impl TipManager {
     pub fn get_tip_payment_config_account(&self, bank: &Bank) -> Result<Config> {
         let config_data = bank
             .get_account(&self.tip_payment_program_info.config_pda_bump.0)
-            .ok_or(TipPaymentError::AccountMissing(
+            .ok_or(TipError::AccountMissing(
                 self.tip_payment_program_info.config_pda_bump.0,
             ))?;
 
@@ -536,7 +518,7 @@ impl TipManager {
         if transactions.is_empty() {
             None
         } else {
-            let bundle_id = derive_bundle_id_from_sanizited_transactions(&transactions);
+            let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
             Some(SanitizedBundle {
                 transactions,
                 bundle_id,
@@ -591,7 +573,7 @@ impl TipManager {
         if transactions.is_empty() {
             Ok(None)
         } else {
-            let bundle_id = derive_bundle_id_from_sanizited_transactions(&transactions);
+            let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
             Ok(Some(SanitizedBundle {
                 transactions,
                 bundle_id,
