@@ -519,12 +519,14 @@ pub async fn sign_and_send_transactions_with_retries(
                         Err(e) => {
                             match e.kind {
                                 // Already claimed, skip.
-                                ErrorKind::TransactionError(TransactionError::AlreadyProcessed) => {
-                                    Ok(())
-                                }
-
-                                // Already claimed, skip.
-                                ErrorKind::RpcError(RpcError::RpcResponseError {
+                                ErrorKind::TransactionError(TransactionError::AlreadyProcessed)
+                                | ErrorKind::TransactionError(
+                                    TransactionError::InstructionError(
+                                        0,
+                                        InstructionError::Custom(0),
+                                    ),
+                                )
+                                | ErrorKind::RpcError(RpcError::RpcResponseError {
                                     data:
                                         RpcResponseErrorData::SendTransactionPreflightFailure(
                                             RpcSimulateTransactionResult {
