@@ -1,16 +1,13 @@
-use crate::{MAX_CONCURRENT_RPC_CALLS, MAX_FETCH_RETRIES, MAX_RETRY_DURATION, MAX_SEND_RETRIES};
-use solana_metrics::datapoint_error;
-use std::sync::Arc;
-use tokio::sync::Semaphore;
 use {
     crate::{
-        read_json_from_file, sign_and_send_transactions_with_retries, GeneratedMerkleTreeCollection,
+        read_json_from_file, sign_and_send_transactions_with_retries,
+        GeneratedMerkleTreeCollection, MAX_FETCH_RETRIES,
     },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
     log::{debug, info, warn},
     solana_client::nonblocking::rpc_client::RpcClient,
-    solana_metrics::{datapoint_info, datapoint_warn},
+    solana_metrics::{datapoint_error, datapoint_info, datapoint_warn},
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
         stake::state::StakeState, system_program,
@@ -27,10 +24,12 @@ use {
     std::{
         collections::HashMap,
         path::PathBuf,
+        sync::Arc,
         time::{Duration, Instant},
     },
     thiserror::Error,
     tip_distribution::state::*,
+    tokio::sync::Semaphore,
 };
 
 #[derive(Error, Debug)]
@@ -47,10 +46,11 @@ pub async fn claim_mev_tips(
     rpc_url: String,
     tip_distribution_program_id: &Pubkey,
     keypair_path: &PathBuf,
+    max_loop_retries: u64,
+    max_loop_duration: Duration,
+    max_concurrent_rpc_reqs: usize,
+    txn_send_batch_size: usize,
 ) -> Result<(), ClaimMevError> {
-    /// Number of instructions in a transaction
-    const TRANSACTION_IX_BATCH_SIZE: usize = 1;
-
     let transaction_prepare_start = Instant::now();
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
@@ -82,6 +82,7 @@ pub async fn claim_mev_tips(
     let account_fetch_start = Instant::now();
     let tdas = get_batched_accounts(
         &rpc_client,
+        max_concurrent_rpc_reqs,
         merkle_trees
             .generated_merkle_trees
             .iter()
@@ -128,6 +129,7 @@ pub async fn claim_mev_tips(
     // track balances only
     let claimants = get_batched_accounts(
         &rpc_client,
+        max_concurrent_rpc_reqs,
         tree_nodes
             .iter()
             .map(|tree_node| tree_node.claimant)
@@ -148,6 +150,7 @@ pub async fn claim_mev_tips(
 
     let claim_statuses = get_batched_accounts(
         &rpc_client,
+        max_concurrent_rpc_reqs,
         tree_nodes
             .iter()
             .map(|tree_node| tree_node.claim_status_pubkey)
@@ -269,16 +272,7 @@ pub async fn claim_mev_tips(
 
     let mut transactions = instructions
         .into_iter()
-        .chunks(TRANSACTION_IX_BATCH_SIZE)
-        .into_iter() // 1.4MM compute vs 0.2MM
-        .map(|ix| {
-            let mut ixs = Vec::with_capacity(TRANSACTION_IX_BATCH_SIZE + 1);
-            // ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(
-            //     solana_program_runtime::compute_budget::MAX_COMPUTE_UNIT_LIMIT,
-            // ));
-            ixs.extend(ix);
-            Transaction::new_with_payer(&ixs, Some(&keypair.pubkey()))
-        })
+        .map(|ix| Transaction::new_with_payer(&[ix], Some(&keypair.pubkey())))
         .collect::<Vec<_>>();
     let transaction_prepare_elapsed = transaction_prepare_start.elapsed();
 
@@ -306,15 +300,17 @@ pub async fn claim_mev_tips(
             transactions.len());
     let mut retries = 0;
     let mut failed_transactions = HashMap::new();
-    while !transactions.is_empty() && retries < MAX_SEND_RETRIES {
+    while !transactions.is_empty() && retries < max_loop_retries {
         let transactions_len = transactions.len();
         let send_start = Instant::now();
         let (to_process_transactions, new_failed_transactions) =
             sign_and_send_transactions_with_retries(
                 &keypair,
                 &rpc_client,
+                max_concurrent_rpc_reqs,
                 transactions,
-                MAX_RETRY_DURATION,
+                txn_send_batch_size,
+                max_loop_duration,
             )
             .await;
 
@@ -344,7 +340,7 @@ pub async fn claim_mev_tips(
     }
     if !failed_transactions.is_empty() {
         panic!(
-            "Failed after {MAX_SEND_RETRIES} retries. {} remaining mev claim transactions, {} failed requests.",
+            "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {} failed requests.",
             transactions.len(),
             failed_transactions.len()
         );
@@ -356,12 +352,12 @@ pub async fn claim_mev_tips(
 /// Fetch accounts in parallel batches with retries.
 async fn get_batched_accounts(
     rpc_client: &RpcClient,
+    max_concurrent_rpc_reqs: usize,
     pubkeys: Vec<Pubkey>,
 ) -> solana_rpc_client_api::client_error::Result<HashMap<Pubkey, Option<Account>>> {
     const FAIL_DELAY: Duration = Duration::from_millis(100);
 
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
-    // let mut claimant_accounts = Vec::with_capacity(pubkeys.len());
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_reqs));
     let futs = pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS).map(|pubkeys| {
         let semaphore = semaphore.clone();
 

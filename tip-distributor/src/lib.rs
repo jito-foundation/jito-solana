@@ -4,10 +4,6 @@ pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
-use rand::Rng;
-
-use solana_program::instruction::InstructionError;
-use solana_sdk::transaction::TransactionError;
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -15,10 +11,12 @@ use {
     },
     anchor_lang::Id,
     log::*,
+    rand::Rng,
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
+    solana_program::instruction::InstructionError,
     solana_rpc_client_api::client_error::{Error, ErrorKind},
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
@@ -27,7 +25,7 @@ use {
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::Transaction,
+        transaction::{Transaction, TransactionError},
     },
     std::{
         collections::HashMap,
@@ -461,20 +459,18 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
-pub const MAX_SEND_RETRIES: usize = 5;
 pub const MAX_FETCH_RETRIES: usize = 5;
-pub const MAX_RETRY_DURATION: Duration = Duration::from_secs(10 * 60); // 10 min
-pub const MAX_CONCURRENT_RPC_CALLS: usize = 100;
-pub const SEND_BATCH_SIZE: usize = 128;
 
 /// Returns unprocessed transactions, along with errors from failed transactions
 pub async fn sign_and_send_transactions_with_retries(
     signer: &Keypair,
     rpc_client: &RpcClient,
+    max_concurrent_rpc_reqs: usize,
     transactions: Vec<Transaction>,
-    max_retry_duration: Duration,
+    txn_send_batch_size: usize,
+    max_loop_duration: Duration,
 ) -> (Vec<Transaction>, HashMap<Signature, Error>) {
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_reqs));
     let mut rng = rand::thread_rng();
     let mut errors = HashMap::default();
     let mut blockhash = rpc_client
@@ -488,7 +484,7 @@ pub async fn sign_and_send_transactions_with_retries(
         .collect::<HashMap<Vec<u8>, Transaction>>();
 
     let start = Instant::now();
-    while start.elapsed() < max_retry_duration && !transactions_to_process.is_empty() {
+    while start.elapsed() < max_loop_duration && !transactions_to_process.is_empty() {
         // ensure we always have a recent blockhash
         if start.elapsed() > Duration::from_secs(60) {
             blockhash = rpc_client
@@ -497,17 +493,17 @@ pub async fn sign_and_send_transactions_with_retries(
                 .expect("fetch latest blockhash");
         }
         info!(
-            "Sending {SEND_BATCH_SIZE} of {} transactions to claim mev tips",
+            "Sending {txn_send_batch_size} of {} transactions to claim mev tips",
             transactions_to_process.len()
         );
         let start_range = rng.gen_range(
             0,
-            (transactions_to_process.len() as i64 - SEND_BATCH_SIZE as i64).max(0) as usize,
+            (transactions_to_process.len() as i64 - txn_send_batch_size as i64).max(0) as usize,
         );
         let send_futs = transactions_to_process
             .iter()
             .skip(start_range)
-            .take(SEND_BATCH_SIZE)
+            .take(txn_send_batch_size)
             .map(|(hash, txn)| {
                 let semaphore = semaphore.clone();
                 async move {

@@ -155,7 +155,9 @@ pub async fn reclaim_rent(
     let (_to_process, failed_transactions) = sign_and_send_transactions_with_retries(
         &signer,
         &rpc_client,
+        usize::MAX,
         transactions,
+        usize::MAX,
         Duration::from_secs(300),
     )
     .await;
