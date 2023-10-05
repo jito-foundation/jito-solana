@@ -93,7 +93,7 @@ pub async fn claim_mev_tips(
     .into_iter()
     .filter_map(|(pubkey, maybe_account)| {
         let account = match maybe_account {
-            Some(a) => a,
+            Some(account) => account,
             None => {
                 datapoint_warn!(
                     "claim_mev_workflow-account_error",
@@ -125,6 +125,7 @@ pub async fn claim_mev_tips(
     })
     .collect::<HashMap<Pubkey, TipDistributionAccount>>();
 
+    // track balances only
     let claimants = get_batched_accounts(
         &rpc_client,
         tree_nodes
@@ -135,24 +136,15 @@ pub async fn claim_mev_tips(
     .await
     .unwrap()
     .into_iter()
-    .filter_map(|(pubkey, maybe_account)| {
-        let account = match maybe_account {
-            Some(a) => a,
-            None => {
-                datapoint_warn!(
-                    "claim_mev_workflow-account_error",
-                    ("pubkey", pubkey.to_string(), String),
-                    ("account_type", "claimant", String),
-                    ("error", 1, i64),
-                    ("err_type", "fetch_claimant", String),
-                    ("err_str", "Failed to fetch claimant Account", String)
-                );
-                return None;
-            }
-        };
-        Some((pubkey, account))
+    .map(|(pubkey, maybe_account)| {
+        (
+            pubkey,
+            maybe_account
+                .map(|account| account.lamports)
+                .unwrap_or_default(),
+        )
     })
-    .collect::<HashMap<Pubkey, Account>>();
+    .collect::<HashMap<Pubkey, u64>>();
 
     let claim_statuses = get_batched_accounts(
         &rpc_client,
@@ -206,7 +198,7 @@ pub async fn claim_mev_tips(
                 Some(None) => {} // expected to not find ClaimStatus account, don't skip
             };
             let current_balance = match claimants.get(&node.claimant) {
-                Some(account) => account.lamports,
+                Some(balance) => balance,
                 None => panic!(
                     "Claimant not found in cache for pubkey: {:?}",
                     node.claimant
