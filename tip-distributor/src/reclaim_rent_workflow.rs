@@ -152,15 +152,15 @@ pub async fn reclaim_rent(
     }
 
     info!("sending {} transactions", transactions.len());
-    let failed_txs = sign_and_send_transactions_with_retries(
+    let (_to_process, failed_transactions) = sign_and_send_transactions_with_retries(
         &signer,
         &rpc_client,
         transactions,
         Duration::from_secs(300),
     )
     .await;
-    if !failed_txs.is_empty() {
-        panic!("failed to send {} transactions", failed_txs.len());
+    if !failed_transactions.is_empty() {
+        panic!("failed to send {} transactions", failed_transactions.len());
     }
 
     Ok(())

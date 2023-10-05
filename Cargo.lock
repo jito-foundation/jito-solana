@@ -7198,6 +7198,7 @@ dependencies = [
  "solana-merkle-tree",
  "solana-metrics",
  "solana-program",
+ "solana-program-runtime",
  "solana-rpc-client-api",
  "solana-runtime",
  "solana-sdk",

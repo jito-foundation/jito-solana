@@ -8,20 +8,22 @@ description = "Collection of binaries used to distribute MEV rewards to delegato
 [dependencies]
 anchor-lang = { workspace = true }
 clap = { version = "4.1.11", features = ["derive", "env"] }
-env_logger = "0.9.0"
-futures = "0.3.21"
-im = "15.1.0"
-itertools = "0.10.3"
-log = "0.4.17"
-num-traits = "0.2.15"
-serde = "1.0.137"
-serde_json = "1.0.81"
+env_logger = { workspace = true }
+futures = { workspace = true }
+im = { workspace = true }
+itertools = { workspace = true }
+log = { workspace = true }
+num-traits = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+solana-accounts-db = { workspace = true }
 solana-client = { workspace = true }
 solana-genesis-utils = { workspace = true }
 solana-ledger = { workspace = true }
 solana-merkle-tree = { workspace = true }
 solana-metrics = { workspace = true }
 solana-program = { workspace = true }
+solana-program-runtime = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-runtime = { workspace = true }
 solana-sdk = { workspace = true }
@@ -29,7 +31,7 @@ solana-stake-program = { workspace = true }
 thiserror = { workspace = true }
 tip-distribution = { workspace = true }
 tip-payment = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "full"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [[bin]]
 name = "solana-stake-meta-generator"
