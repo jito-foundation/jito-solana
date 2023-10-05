@@ -1,11 +1,8 @@
 //! This binary claims MEV tips.
 
 use {
-    clap::Parser,
-    log::*,
-    solana_sdk::pubkey::Pubkey,
-    solana_tip_distributor::claim_mev_workflow::claim_mev_tips,
-    std::{path::PathBuf, str::FromStr},
+    clap::Parser, log::*, solana_sdk::pubkey::Pubkey,
+    solana_tip_distributor::claim_mev_workflow::claim_mev_tips, std::path::PathBuf,
 };
 
 #[derive(Parser, Debug)]
@@ -21,29 +18,28 @@ struct Args {
 
     /// Tip distribution program ID
     #[arg(long, env)]
-    tip_distribution_program_id: String,
+    tip_distribution_program_id: Pubkey,
 
     /// Path to keypair
     #[arg(long, env)]
     keypair_path: PathBuf,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
-    info!("Starting to claim mev tips...");
-
     let args: Args = Args::parse();
-
-    let tip_distribution_program_id = Pubkey::from_str(&args.tip_distribution_program_id)
-        .expect("valid tip_distribution_program_id");
+    info!("Starting to claim mev tips...");
 
     if let Err(e) = claim_mev_tips(
         &args.merkle_trees_path,
         &args.rpc_url,
-        &tip_distribution_program_id,
+        &args.tip_distribution_program_id,
         &args.keypair_path,
-    ) {
-        panic!("error claiming mev tips: {:?}", e);
+    )
+    .await
+    {
+        panic!("error claiming mev tips: {e:?}");
     }
     info!(
         "done claiming mev tips from file {:?}",

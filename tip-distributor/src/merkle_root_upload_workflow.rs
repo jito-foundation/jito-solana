@@ -124,7 +124,9 @@ pub fn upload_merkle_root(
                 )
             })
             .collect();
-        let failed_transactions = sign_and_send_transactions_with_retries(&keypair, &rpc_client, transactions, MAX_RETRY_DURATION).await;
+
+        let (_to_process, failed_transactions) = sign_and_send_transactions_with_retries(
+&keypair, &rpc_client, transactions, MAX_RETRY_DURATION).await;
         if !failed_transactions.is_empty() {
             panic!("failed to send {} transactions", failed_transactions.len());
         }
