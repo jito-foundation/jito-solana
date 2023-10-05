@@ -24,7 +24,7 @@ use {
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::{Transaction},
+        transaction::Transaction,
     },
     std::{
         collections::HashMap,
@@ -491,7 +491,10 @@ pub async fn sign_and_send_transactions_with_retries(
                 .await
                 .expect("fetch latest blockhash");
         }
-
+        info!(
+            "Sending {} transactions to claim mev tips",
+            transactions_to_process.len()
+        );
         let send_futs = transactions_to_process.iter().map(|(hash, txn)| {
             let semaphore = semaphore.clone();
             async move {
@@ -504,7 +507,7 @@ pub async fn sign_and_send_transactions_with_retries(
                         Ok(())
                     }
                     Err(e) if matches!(&e.kind, ErrorKind::TransactionError(BlockhashNotFound)) => {
-                        Err(e)
+                        Err(e) // transaction got held up too long, retry
                     }
                     Err(e) => {
                         error!(
