@@ -344,7 +344,8 @@ pub async fn claim_mev_tips(
     }
     if !failed_transactions.is_empty() {
         panic!(
-            "Failed to send {} mev claim transactions",
+            "Failed after {MAX_SEND_RETRIES} retries. {} remaining mev claim transactions, {} failed requests.",
+            transactions.len(),
             failed_transactions.len()
         );
     }
