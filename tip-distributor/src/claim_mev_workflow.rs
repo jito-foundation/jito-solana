@@ -79,6 +79,7 @@ pub async fn claim_mev_tips(
         Vec::with_capacity(tree_nodes.iter().filter(|node| node.amount > 0).count());
 
     // fetch all accounts up front
+    info!("Starting to fetch accounts");
     let account_fetch_start = Instant::now();
     let tdas = get_batched_accounts(
         &rpc_client,
@@ -273,9 +274,9 @@ pub async fn claim_mev_tips(
         .into_iter() // 1.4MM compute vs 0.2MM
         .map(|ix| {
             let mut ixs = Vec::with_capacity(TRANSACTION_IX_BATCH_SIZE + 1);
-            ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(
-                solana_program_runtime::compute_budget::MAX_COMPUTE_UNIT_LIMIT,
-            ));
+            // ixs.push(ComputeBudgetInstruction::set_compute_unit_limit(
+            //     solana_program_runtime::compute_budget::MAX_COMPUTE_UNIT_LIMIT,
+            // ));
             ixs.extend(ix);
             Transaction::new_with_payer(&ixs, Some(&keypair.pubkey()))
         })
