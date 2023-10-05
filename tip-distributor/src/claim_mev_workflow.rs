@@ -9,7 +9,7 @@ use {
     solana_metrics::{datapoint_info, datapoint_warn},
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
-        stake::state::StakeStateV2, system_program,
+        stake::state::StakeState, system_program,
     },
     solana_rpc_client_api::request::MAX_MULTIPLE_ACCOUNTS,
     solana_sdk::{
@@ -66,7 +66,7 @@ pub async fn claim_mev_tips(
         .collect_vec();
     let tree_node_count = tree_nodes.len();
     let stake_acct_min_rent = rpc_client
-        .get_minimum_balance_for_rent_exemption(StakeStateV2::size_of())
+        .get_minimum_balance_for_rent_exemption(StakeState::size_of())
         .await
         .expect("Failed to calculate min rent");
     let mut skipped_merkle_root_count: usize = 0;
