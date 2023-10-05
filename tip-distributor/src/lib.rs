@@ -17,7 +17,11 @@ use {
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
     solana_program::instruction::InstructionError,
-    solana_rpc_client_api::client_error::{Error, ErrorKind},
+    solana_rpc_client_api::{
+        client_error::{Error, ErrorKind},
+        request::{RpcError, RpcResponseErrorData},
+        response::RpcSimulateTransactionResult,
+    },
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
         clock::Slot,
@@ -515,13 +519,25 @@ pub async fn sign_and_send_transactions_with_retries(
                         Err(e) => {
                             match e.kind {
                                 // Already claimed, skip.
-                                ErrorKind::TransactionError(TransactionError::AlreadyProcessed)
-                                | ErrorKind::TransactionError(
-                                    TransactionError::InstructionError(
-                                        0,
-                                        InstructionError::Custom(0),
-                                    ),
-                                ) => Ok(()),
+                                ErrorKind::TransactionError(TransactionError::AlreadyProcessed) => {
+                                    Ok(())
+                                }
+
+                                // Already claimed, skip.
+                                ErrorKind::RpcError(RpcError::RpcResponseError {
+                                    data:
+                                        RpcResponseErrorData::SendTransactionPreflightFailure(
+                                            RpcSimulateTransactionResult {
+                                                err:
+                                                    Some(TransactionError::InstructionError(
+                                                        0,
+                                                        InstructionError::Custom(0),
+                                                    )),
+                                                ..
+                                            },
+                                        ),
+                                    ..
+                                }) => Ok(()),
 
                                 // transaction got held up too long and blockhash expired. retry txn
                                 ErrorKind::TransactionError(
