@@ -465,7 +465,7 @@ pub const MAX_SEND_RETRIES: usize = 5;
 pub const MAX_FETCH_RETRIES: usize = 5;
 pub const MAX_RETRY_DURATION: Duration = Duration::from_secs(10 * 60); // 10 min
 pub const MAX_CONCURRENT_RPC_CALLS: usize = 100;
-pub const SEND_BATCH_SIZE: usize = 256;
+pub const SEND_BATCH_SIZE: usize = 128;
 
 /// Returns unprocessed transactions, along with errors from failed transactions
 pub async fn sign_and_send_transactions_with_retries(
