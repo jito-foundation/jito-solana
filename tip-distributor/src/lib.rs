@@ -5,7 +5,9 @@ pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
 use rand::Rng;
-use solana_sdk::transaction::TransactionError::{AlreadyProcessed, BlockhashNotFound};
+
+use solana_program::instruction::InstructionError;
+use solana_sdk::transaction::TransactionError;
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -515,17 +517,31 @@ pub async fn sign_and_send_transactions_with_retries(
                     let res = match rpc_client.send_and_confirm_transaction(&txn).await {
                         Ok(_) => Ok(()),
                         Err(e)
-                            if matches!(&e.kind, ErrorKind::TransactionError(AlreadyProcessed)) =>
+                            if matches!(
+                                &e.kind,
+                                ErrorKind::TransactionError(TransactionError::AlreadyProcessed)
+                            ) =>
                         {
                             Ok(())
                         }
                         Err(e)
                             if matches!(
                                 &e.kind,
-                                ErrorKind::TransactionError(BlockhashNotFound)
+                                ErrorKind::TransactionError(TransactionError::BlockhashNotFound)
                             ) =>
                         {
-                            Err(e) // transaction got held up too long, retry
+                            Err(e) // transaction got held up too long and blockhash expired. retry txn
+                        }
+                        Err(e)
+                            if matches!(
+                                &e.kind,
+                                ErrorKind::TransactionError(TransactionError::InstructionError(
+                                    0,
+                                    InstructionError::Custom(0)
+                                ))
+                            ) =>
+                        {
+                            Ok(()) // Already claimed, skip.
                         }
                         Err(e) => {
                             error!(
