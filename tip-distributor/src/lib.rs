@@ -516,39 +516,30 @@ pub async fn sign_and_send_transactions_with_retries(
                     txn.sign(&[signer], blockhash); // just in time signing
                     let res = match rpc_client.send_and_confirm_transaction(&txn).await {
                         Ok(_) => Ok(()),
-                        Err(e)
-                            if matches!(
-                                &e.kind,
-                                ErrorKind::TransactionError(TransactionError::AlreadyProcessed)
-                            ) =>
-                        {
-                            Ok(())
-                        }
-                        Err(e)
-                            if matches!(
-                                &e.kind,
-                                ErrorKind::TransactionError(TransactionError::BlockhashNotFound)
-                            ) =>
-                        {
-                            Err(e) // transaction got held up too long and blockhash expired. retry txn
-                        }
-                        Err(e)
-                            if matches!(
-                                &e.kind,
-                                ErrorKind::TransactionError(TransactionError::InstructionError(
-                                    0,
-                                    InstructionError::Custom(0)
-                                ))
-                            ) =>
-                        {
-                            Ok(()) // Already claimed, skip.
-                        }
                         Err(e) => {
-                            error!(
-                                "Error sending transaction. Signature: {}, Error: {e:?}",
-                                txn.signatures[0]
-                            );
-                            Err(e)
+                            match e.kind {
+                                // Already claimed, skip.
+                                ErrorKind::TransactionError(TransactionError::AlreadyProcessed)
+                                | ErrorKind::TransactionError(
+                                    TransactionError::InstructionError(
+                                        0,
+                                        InstructionError::Custom(0),
+                                    ),
+                                ) => Ok(()),
+
+                                // transaction got held up too long and blockhash expired. retry txn
+                                ErrorKind::TransactionError(
+                                    TransactionError::BlockhashNotFound,
+                                ) => Err(e),
+
+                                _ => {
+                                    error!(
+                                        "Error sending transaction. Signature: {}, Error: {e:?}",
+                                        txn.signatures[0]
+                                    );
+                                    Err(e)
+                                }
+                            }
                         }
                     };
 
