@@ -1,3 +1,7 @@
+use crate::{MAX_CONCURRENT_RPC_CALLS, MAX_FETCH_RETRIES, MAX_RETRY_DURATION, MAX_SEND_RETRIES};
+use solana_metrics::datapoint_error;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use {
     crate::{
         read_json_from_file, sign_and_send_transactions_with_retries, GeneratedMerkleTreeCollection,
@@ -41,12 +45,11 @@ pub enum ClaimMevError {
 
 pub async fn claim_mev_tips(
     merkle_root_path: &PathBuf,
-    rpc_url: &str,
+    rpc_url: String,
     tip_distribution_program_id: &Pubkey,
     keypair_path: &PathBuf,
 ) -> Result<(), ClaimMevError> {
-    const MAX_SEND_RETRIES: usize = 5;
-    const MAX_RETRY_DURATION: Duration = Duration::from_secs(10 * 60); // 10 min
+    /// Number of instructions in a transaction
     const TRANSACTION_IX_BATCH_SIZE: usize = 7;
 
     let transaction_prepare_start = Instant::now();
@@ -56,8 +59,7 @@ pub async fn claim_mev_tips(
 
     let tip_distribution_config =
         Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
-    let rpc_client =
-        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::finalized());
+    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
 
     let tree_nodes = merkle_trees
         .generated_merkle_trees
@@ -76,6 +78,7 @@ pub async fn claim_mev_tips(
     let mut instructions =
         Vec::with_capacity(tree_nodes.iter().filter(|node| node.amount > 0).count());
 
+    // fetch all accounts up front
     let account_fetch_start = Instant::now();
     let tdas = get_batched_accounts(
         &rpc_client,
@@ -95,7 +98,7 @@ pub async fn claim_mev_tips(
                 datapoint_warn!(
                     "claim_mev_workflow-account_error",
                     ("pubkey", pubkey.to_string(), String),
-                    ("pubkey_type", "tip_distribution_account", String),
+                    ("account_type", "tip_distribution_account", String),
                     ("error", 1, i64),
                     ("err_type", "fetch", String),
                     ("err_str", "Failed to fetch Account", String)
@@ -110,7 +113,7 @@ pub async fn claim_mev_tips(
                 datapoint_warn!(
                     "claim_mev_workflow-account_error",
                     ("pubkey", pubkey.to_string(), String),
-                    ("pubkey_type", "tip_distribution_account", String),
+                    ("account_type", "tip_distribution_account", String),
                     ("error", 1, i64),
                     ("err_type", "deserialize_tip_distribution_account", String),
                     ("err_str", e.to_string(), String)
@@ -139,7 +142,7 @@ pub async fn claim_mev_tips(
                 datapoint_warn!(
                     "claim_mev_workflow-account_error",
                     ("pubkey", pubkey.to_string(), String),
-                    ("pubkey_type", "claimant", String),
+                    ("account_type", "claimant", String),
                     ("error", 1, i64),
                     ("err_type", "fetch_claimant", String),
                     ("err_str", "Failed to fetch claimant Account", String)
@@ -162,6 +165,7 @@ pub async fn claim_mev_tips(
     .unwrap();
     let account_fetch_elapsed = account_fetch_start.elapsed();
 
+    // prepare instructions to transfer to all claimants
     for tree in merkle_trees.generated_merkle_trees {
         let fetched_tip_distribution_account = match tdas.get(&tree.tip_distribution_account) {
             Some(account) => account,
@@ -244,7 +248,7 @@ pub async fn claim_mev_tips(
         let start_balance = rpc_client
             .get_balance(&keypair.pubkey())
             .await
-            .expect("failed to get balance");
+            .expect("Failed to get starting balance");
         // most amounts are for 0 lamports. had 1736 non-zero claims out of 164742
         let min_rent_per_claim = rpc_client
             .get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE)
@@ -355,27 +359,51 @@ pub async fn claim_mev_tips(
 
     Ok(())
 }
+
+/// Fetch accounts in parallel batches with retries.
 async fn get_batched_accounts(
     rpc_client: &RpcClient,
     pubkeys: Vec<Pubkey>,
 ) -> solana_rpc_client_api::client_error::Result<HashMap<Pubkey, Option<Account>>> {
-    const MAX_RETRIES: u32 = 5;
     const FAIL_DELAY: Duration = Duration::from_millis(100);
-    let mut claimant_accounts = Vec::with_capacity(pubkeys.len());
-    for chunk in pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS) {
-        let mut retries = 0;
-        loop {
-            match rpc_client.get_multiple_accounts(chunk).await {
-                Ok(accts) => claimant_accounts.extend(accts),
-                Err(e) => {
-                    retries += 1;
-                    if retries == MAX_RETRIES {
-                        return Err(e);
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
+    // let mut claimant_accounts = Vec::with_capacity(pubkeys.len());
+    let futs = pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS).map(|pubkeys| {
+        let semaphore = semaphore.clone();
+
+        async move {
+            let _permit = semaphore.acquire_owned().await.unwrap(); // wait until our turn
+            let mut retries = 0;
+            loop {
+                match rpc_client.get_multiple_accounts(pubkeys).await {
+                    Ok(accts) => return Ok(accts),
+                    Err(e) => {
+                        retries += 1;
+                        if retries == MAX_FETCH_RETRIES {
+                            datapoint_error!(
+                                "claim_mev_workflow-get_batched_accounts_error",
+                                ("pubkeys", format!("{pubkeys:?}"), String),
+                                ("error", 1, i64),
+                                ("err_type", "fetch_account", String),
+                                ("err_str", e.to_string(), String)
+                            );
+                            return Err(e);
+                        }
+                        tokio::time::sleep(FAIL_DELAY).await;
                     }
-                    tokio::time::sleep(FAIL_DELAY).await;
                 }
             }
         }
-    }
+    });
+
+    let claimant_accounts = futures::future::join_all(futs)
+        .await
+        .into_iter()
+        .collect::<solana_rpc_client_api::client_error::Result<Vec<Vec<Option<Account>>>>>()? // fail on single error
+        .into_iter()
+        .flatten()
+        .collect_vec();
+
     Ok(pubkeys.into_iter().zip(claimant_accounts).collect())
 }

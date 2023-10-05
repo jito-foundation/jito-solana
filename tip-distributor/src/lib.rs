@@ -457,7 +457,11 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
+pub const MAX_SEND_RETRIES: usize = 5;
+pub const MAX_FETCH_RETRIES: usize = 5;
+pub const MAX_RETRY_DURATION: Duration = Duration::from_secs(10 * 60); // 10 min
 pub const MAX_CONCURRENT_RPC_CALLS: usize = 50;
+
 /// Returns unprocessed transactions, along with errors from failed transactions
 pub async fn sign_and_send_transactions_with_retries(
     signer: &Keypair,

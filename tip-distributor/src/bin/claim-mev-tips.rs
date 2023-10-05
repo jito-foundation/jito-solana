@@ -33,7 +33,7 @@ async fn main() {
 
     if let Err(e) = claim_mev_tips(
         &args.merkle_trees_path,
-        &args.rpc_url,
+        args.rpc_url,
         &args.tip_distribution_program_id,
         &args.keypair_path,
     )
