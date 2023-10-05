@@ -4,6 +4,7 @@ pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
+use rand::Rng;
 use solana_sdk::transaction::TransactionError::{AlreadyProcessed, BlockhashNotFound};
 use {
     crate::{
@@ -472,6 +473,7 @@ pub async fn sign_and_send_transactions_with_retries(
     max_retry_duration: Duration,
 ) -> (Vec<Transaction>, HashMap<Signature, Error>) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
+    let mut rng = rand::thread_rng();
     let mut errors = HashMap::default();
     let mut blockhash = rpc_client
         .get_latest_blockhash()
@@ -496,8 +498,13 @@ pub async fn sign_and_send_transactions_with_retries(
             "Sending {SEND_BATCH_SIZE} of {} transactions to claim mev tips",
             transactions_to_process.len()
         );
+        let start_range = rng.gen_range(
+            0,
+            (transactions_to_process.len() as i64 - SEND_BATCH_SIZE as i64).max(0) as usize,
+        );
         let send_futs = transactions_to_process
             .iter()
+            .skip(start_range)
             .take(SEND_BATCH_SIZE)
             .map(|(hash, txn)| {
                 let semaphore = semaphore.clone();
