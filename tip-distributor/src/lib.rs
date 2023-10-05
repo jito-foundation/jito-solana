@@ -462,6 +462,7 @@ pub const MAX_SEND_RETRIES: usize = 5;
 pub const MAX_FETCH_RETRIES: usize = 5;
 pub const MAX_RETRY_DURATION: Duration = Duration::from_secs(10 * 60); // 10 min
 pub const MAX_CONCURRENT_RPC_CALLS: usize = 100;
+pub const SEND_BATCH_SIZE: usize = 1_000;
 
 /// Returns unprocessed transactions, along with errors from failed transactions
 pub async fn sign_and_send_transactions_with_retries(
@@ -495,32 +496,42 @@ pub async fn sign_and_send_transactions_with_retries(
             "Sending {} transactions to claim mev tips",
             transactions_to_process.len()
         );
-        let send_futs = transactions_to_process.iter().map(|(hash, txn)| {
-            let semaphore = semaphore.clone();
-            async move {
-                let _permit = semaphore.acquire_owned().await.unwrap(); // wait until our turn
-                let mut txn = txn.clone();
-                txn.sign(&[signer], blockhash); // just in time signing
-                let res = match rpc_client.send_and_confirm_transaction(&txn).await {
-                    Ok(_) => Ok(()),
-                    Err(e) if matches!(&e.kind, ErrorKind::TransactionError(AlreadyProcessed)) => {
-                        Ok(())
-                    }
-                    Err(e) if matches!(&e.kind, ErrorKind::TransactionError(BlockhashNotFound)) => {
-                        Err(e) // transaction got held up too long, retry
-                    }
-                    Err(e) => {
-                        error!(
-                            "Error sending transaction. Signature: {}, Error: {e:?}",
-                            txn.signatures[0]
-                        );
+        let send_futs = transactions_to_process
+            .iter()
+            .take(SEND_BATCH_SIZE)
+            .map(|(hash, txn)| {
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire_owned().await.unwrap(); // wait until our turn
+                    let mut txn = txn.clone();
+                    txn.sign(&[signer], blockhash); // just in time signing
+                    let res = match rpc_client.send_and_confirm_transaction(&txn).await {
+                        Ok(_) => Ok(()),
                         Err(e)
-                    }
-                };
+                            if matches!(&e.kind, ErrorKind::TransactionError(AlreadyProcessed)) =>
+                        {
+                            Ok(())
+                        }
+                        Err(e)
+                            if matches!(
+                                &e.kind,
+                                ErrorKind::TransactionError(BlockhashNotFound)
+                            ) =>
+                        {
+                            Err(e) // transaction got held up too long, retry
+                        }
+                        Err(e) => {
+                            error!(
+                                "Error sending transaction. Signature: {}, Error: {e:?}",
+                                txn.signatures[0]
+                            );
+                            Err(e)
+                        }
+                    };
 
-                (hash.clone(), txn, res)
-            }
-        });
+                    (hash.clone(), txn, res)
+                }
+            });
 
         let send_res = futures::future::join_all(send_futs).await;
         let new_errors = send_res
