@@ -493,7 +493,7 @@ pub async fn sign_and_send_transactions_with_retries(
                 .expect("fetch latest blockhash");
         }
         info!(
-            "Sending {} transactions to claim mev tips",
+            "Sending {SEND_BATCH_SIZE} of {} transactions to claim mev tips",
             transactions_to_process.len()
         );
         let send_futs = transactions_to_process
