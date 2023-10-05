@@ -1,4 +1,3 @@
-use solana_transaction_status::PreBalanceInfo;
 use {
     super::leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
     itertools::Itertools,
@@ -17,7 +16,7 @@ use {
         transaction_batch::TransactionBatch,
     },
     solana_sdk::saturating_add_assign,
-    solana_transaction_status::token_balances::TransactionTokenBalancesSet,
+    solana_transaction_status::{token_balances::TransactionTokenBalancesSet, PreBalanceInfo},
     solana_vote::vote_sender_types::ReplayVoteSender,
     std::sync::Arc,
 };

@@ -2,7 +2,6 @@
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
 
-use solana_sdk::pubkey::Pubkey;
 use {
     self::{
         committer::Committer,
@@ -30,7 +29,7 @@ use {
     solana_perf::{data_budget::DataBudget, packet::PACKETS_PER_BATCH},
     solana_poh::poh_recorder::PohRecorder,
     solana_runtime::{bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache},
-    solana_sdk::timing::AtomicInterval,
+    solana_sdk::{pubkey::Pubkey, timing::AtomicInterval},
     solana_vote::vote_sender_types::ReplayVoteSender,
     std::{
         cmp,

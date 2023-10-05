@@ -1,4 +1,3 @@
-use solana_vote::vote_sender_types::ReplayVoteSender;
 use {
     crate::banking_stage::{
         committer::CommitTransactionDetails,
@@ -18,6 +17,7 @@ use {
         token_balances::{TransactionTokenBalances, TransactionTokenBalancesSet},
         PreBalanceInfo,
     },
+    solana_vote::vote_sender_types::ReplayVoteSender,
     std::sync::Arc,
 };
 

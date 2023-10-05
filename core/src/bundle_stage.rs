@@ -1,6 +1,5 @@
 //! The `bundle_stage` processes bundles, which are list of transactions to be executed
 //! sequentially and atomically.
-use solana_vote::vote_sender_types::ReplayVoteSender;
 use {
     crate::{
         banking_stage::{
@@ -26,6 +25,7 @@ use {
     solana_poh::poh_recorder::PohRecorder,
     solana_runtime::{bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache},
     solana_sdk::timing::AtomicInterval,
+    solana_vote::vote_sender_types::ReplayVoteSender,
     std::{
         collections::VecDeque,
         sync::{

@@ -782,6 +782,7 @@ mod tests {
             tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         },
         crossbeam_channel::{unbounded, Receiver},
+        jito_tip_distribution::sdk::derive_tip_distribution_account_address,
         rand::{thread_rng, RngCore},
         solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
         solana_cost_model::{block_cost_limits::MAX_BLOCK_UNITS, cost_model::CostModel},
@@ -829,7 +830,6 @@ mod tests {
             thread::{Builder, JoinHandle},
             time::Duration,
         },
-        tip_distribution::sdk::derive_tip_distribution_account_address,
     };
 
     struct TestFixture {

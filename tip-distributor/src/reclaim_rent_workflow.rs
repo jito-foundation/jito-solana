@@ -1,6 +1,17 @@
 use {
     crate::sign_and_send_transactions_with_retries,
     anchor_lang::AccountDeserialize,
+    jito_tip_distribution::{
+        sdk::{
+            derive_config_account_address,
+            instruction::{
+                close_claim_status_ix, close_tip_distribution_account_ix, CloseClaimStatusAccounts,
+                CloseClaimStatusArgs, CloseTipDistributionAccountArgs,
+                CloseTipDistributionAccounts,
+            },
+        },
+        state::{ClaimStatus, Config, TipDistributionAccount},
+    },
     log::info,
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_program::pubkey::Pubkey,
@@ -11,17 +22,6 @@ use {
     std::{
         error::Error,
         time::{Duration, Instant},
-    },
-    tip_distribution::{
-        sdk::{
-            derive_config_account_address,
-            instruction::{
-                close_claim_status_ix, close_tip_distribution_account_ix, CloseClaimStatusAccounts,
-                CloseClaimStatusArgs, CloseTipDistributionAccountArgs,
-                CloseTipDistributionAccounts,
-            },
-        },
-        state::{ClaimStatus, Config, TipDistributionAccount},
     },
 };
 

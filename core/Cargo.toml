@@ -28,6 +28,8 @@ futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
+jito-tip-distribution = { workspace = true }
+jito-tip-payment = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
@@ -82,8 +84,6 @@ strum_macros = { workspace = true }
 sys-info = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tip-distribution = { workspace = true }
-tip-payment = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
 trees = { workspace = true }

@@ -3,6 +3,7 @@ use {
         read_json_from_file, sign_and_send_transactions_with_retries, GeneratedMerkleTreeCollection,
     },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
+    jito_tip_distribution::state::*,
     log::{debug, info, warn},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
     solana_program::{
@@ -19,7 +20,6 @@ use {
     },
     std::{path::PathBuf, time::Duration},
     thiserror::Error,
-    tip_distribution::state::*,
     tokio::runtime::Builder,
 };
 
@@ -115,12 +115,12 @@ pub fn claim_mev_tips(
                 }
                 instructions.push(Instruction {
                     program_id: *tip_distribution_program_id,
-                    data: tip_distribution::instruction::Claim {
+                    data: jito_tip_distribution::instruction::Claim {
                         proof: node.proof.unwrap(),
                         amount: node.amount,
                         bump: node.claim_status_bump,
                     }.data(),
-                    accounts: tip_distribution::accounts::Claim {
+                    accounts: jito_tip_distribution::accounts::Claim {
                         config: tip_distribution_config,
                         tip_distribution_account: tree.tip_distribution_account,
                         claimant: node.claimant,

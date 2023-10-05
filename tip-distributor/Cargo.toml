@@ -12,6 +12,8 @@ env_logger = "0.9.0"
 futures = "0.3.21"
 im = "15.1.0"
 itertools = "0.10.3"
+jito-tip-distribution = { workspace = true }
+jito-tip-payment = { workspace = true }
 log = "0.4.17"
 num-traits = "0.2.15"
 serde = "1.0.137"
@@ -29,8 +31,6 @@ solana-sdk = { workspace = true }
 solana-stake-program = { workspace = true }
 solana-vote = { workspace = true }
 thiserror = { workspace = true }
-tip-distribution = { workspace = true }
-tip-payment = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "full"] }
 
 [dev-dependencies]

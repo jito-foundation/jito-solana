@@ -4,6 +4,10 @@ use {
         GeneratedMerkleTreeCollection,
     },
     anchor_lang::AccountDeserialize,
+    jito_tip_distribution::{
+        sdk::instruction::{upload_merkle_root_ix, UploadMerkleRootAccounts, UploadMerkleRootArgs},
+        state::{Config, TipDistributionAccount},
+    },
     log::{error, info},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_program::{
@@ -17,10 +21,6 @@ use {
     },
     std::{path::PathBuf, time::Duration},
     thiserror::Error,
-    tip_distribution::{
-        sdk::instruction::{upload_merkle_root_ix, UploadMerkleRootAccounts, UploadMerkleRootArgs},
-        state::{Config, TipDistributionAccount},
-    },
     tokio::runtime::Builder,
 };
 

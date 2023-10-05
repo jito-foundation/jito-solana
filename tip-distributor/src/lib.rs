@@ -10,6 +10,15 @@ use {
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     anchor_lang::Id,
+    jito_tip_distribution::{
+        program::JitoTipDistribution,
+        state::{ClaimStatus, TipDistributionAccount},
+    },
+    jito_tip_payment::{
+        Config, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
+        TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
+        TIP_ACCOUNT_SEED_7,
+    },
     log::*,
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
@@ -35,15 +44,6 @@ use {
         path::PathBuf,
         sync::Arc,
         time::{Duration, Instant},
-    },
-    tip_distribution::{
-        program::TipDistribution,
-        state::{ClaimStatus, TipDistributionAccount},
-    },
-    tip_payment::{
-        Config, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
-        TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
-        TIP_ACCOUNT_SEED_7,
     },
     tokio::time::sleep,
 };
@@ -244,7 +244,7 @@ impl TreeNode {
                     &stake_meta.validator_vote_account.to_bytes(),
                     &tip_distribution_meta.tip_distribution_pubkey.to_bytes(),
                 ],
-                &TipDistribution::id(),
+                &JitoTipDistribution::id(),
             );
             let mut tree_nodes = vec![TreeNode {
                 claimant: stake_meta.validator_vote_account,
@@ -278,7 +278,7 @@ impl TreeNode {
                                 &delegation.stake_account_pubkey.to_bytes(),
                                 &tip_distribution_meta.tip_distribution_pubkey.to_bytes(),
                             ],
-                            &TipDistribution::id(),
+                            &JitoTipDistribution::id(),
                         );
                         Ok(TreeNode {
                             claimant: delegation.stake_account_pubkey,
@@ -594,7 +594,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use {super::*, tip_distribution::merkle_proof};
+    use {super::*, jito_tip_distribution::merkle_proof};
 
     #[test]
     fn test_merkle_tree_verify() {
@@ -606,7 +606,7 @@ mod tests {
             .map(|(claimant, tda)| {
                 Pubkey::find_program_address(
                     &[ClaimStatus::SEED, &claimant.to_bytes(), &tda.to_bytes()],
-                    &TipDistribution::id(),
+                    &JitoTipDistribution::id(),
                 )
             })
             .collect::<Vec<(Pubkey, u8)>>();
@@ -758,7 +758,7 @@ mod tests {
         .map(|(claimant, tda)| {
             Pubkey::find_program_address(
                 &[ClaimStatus::SEED, &claimant.to_bytes(), &tda.to_bytes()],
-                &TipDistribution::id(),
+                &JitoTipDistribution::id(),
             )
         })
         .collect::<Vec<(Pubkey, u8)>>();

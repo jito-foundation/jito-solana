@@ -348,6 +348,12 @@ mod tests {
         super::*,
         crate::derive_tip_distribution_account_address,
         anchor_lang::AccountSerialize,
+        jito_tip_distribution::state::TipDistributionAccount,
+        jito_tip_payment::{
+            InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
+            TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
+            TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
+        },
         solana_runtime::genesis_utils::{
             create_genesis_config_with_vote_accounts, GenesisConfigInfo, ValidatorVoteKeypairs,
         },
@@ -365,12 +371,6 @@ mod tests {
             transaction::Transaction,
         },
         solana_stake_program::stake_state,
-        tip_distribution::state::TipDistributionAccount,
-        tip_payment::{
-            InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
-            TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
-            TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
-        },
     };
 
     #[test]

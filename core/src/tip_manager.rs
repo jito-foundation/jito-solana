@@ -3,6 +3,19 @@ use {
     anchor_lang::{
         solana_program::hash::Hash, AccountDeserialize, InstructionData, ToAccountMetas,
     },
+    jito_tip_distribution::sdk::{
+        derive_config_account_address, derive_tip_distribution_account_address,
+        instruction::{
+            initialize_ix, initialize_tip_distribution_account_ix, InitializeAccounts,
+            InitializeArgs, InitializeTipDistributionAccountAccounts,
+            InitializeTipDistributionAccountArgs,
+        },
+    },
+    jito_tip_payment::{
+        Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
+        TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
+        TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
+    },
     log::warn,
     solana_runtime::bank::Bank,
     solana_sdk::{
@@ -18,19 +31,6 @@ use {
     },
     std::{collections::HashSet, sync::Arc},
     thiserror::Error,
-    tip_distribution::sdk::{
-        derive_config_account_address, derive_tip_distribution_account_address,
-        instruction::{
-            initialize_ix, initialize_tip_distribution_account_ix, InitializeAccounts,
-            InitializeArgs, InitializeTipDistributionAccountAccounts,
-            InitializeTipDistributionAccountArgs,
-        },
-    },
-    tip_payment::{
-        Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
-        TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
-        TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
-    },
 };
 
 pub type Result<T> = std::result::Result<T, TipPaymentError>;
@@ -231,7 +231,7 @@ impl TipManager {
     ) -> SanitizedTransaction {
         let init_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
-            data: tip_payment::instruction::Initialize {
+            data: jito_tip_payment::instruction::Initialize {
                 _bumps: InitBumps {
                     config: self.tip_payment_program_info.config_pda_bump.1,
                     tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.1,
@@ -245,7 +245,7 @@ impl TipManager {
                 },
             }
             .data(),
-            accounts: tip_payment::accounts::Initialize {
+            accounts: jito_tip_payment::accounts::Initialize {
                 config: self.tip_payment_program_info.config_pda_bump.0,
                 tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
                 tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
@@ -416,8 +416,8 @@ impl TipManager {
     ) -> SanitizedTransaction {
         let change_tip_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
-            data: tip_payment::instruction::ChangeTipReceiver {}.data(),
-            accounts: tip_payment::accounts::ChangeTipReceiver {
+            data: jito_tip_payment::instruction::ChangeTipReceiver {}.data(),
+            accounts: jito_tip_payment::accounts::ChangeTipReceiver {
                 config: self.tip_payment_program_info.config_pda_bump.0,
                 old_tip_receiver: *old_tip_receiver,
                 new_tip_receiver: *new_tip_receiver,
@@ -436,11 +436,11 @@ impl TipManager {
         };
         let change_block_builder_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
-            data: tip_payment::instruction::ChangeBlockBuilder {
+            data: jito_tip_payment::instruction::ChangeBlockBuilder {
                 block_builder_commission,
             }
             .data(),
-            accounts: tip_payment::accounts::ChangeBlockBuilder {
+            accounts: jito_tip_payment::accounts::ChangeBlockBuilder {
                 config: self.tip_payment_program_info.config_pda_bump.0,
                 tip_receiver: *new_tip_receiver, // tip receiver will have just changed in previous ix
                 old_block_builder: *old_block_builder,

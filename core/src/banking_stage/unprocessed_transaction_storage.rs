@@ -1,4 +1,3 @@
-use solana_measure::{measure, measure_us};
 use {
     super::{
         forward_packet_batches_by_accounts::ForwardPacketBatchesByAccounts,
@@ -24,6 +23,7 @@ use {
     itertools::Itertools,
     min_max_heap::MinMaxHeap,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
+    solana_measure::{measure, measure_us},
     solana_runtime::bank::Bank,
     solana_sdk::{
         bundle::SanitizedBundle,
