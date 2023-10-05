@@ -4,6 +4,7 @@ pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
+use solana_sdk::transaction::TransactionError::{AlreadyProcessed, BlockhashNotFound};
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -23,7 +24,7 @@ use {
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::{Transaction, TransactionError::AlreadyProcessed},
+        transaction::{Transaction},
     },
     std::{
         collections::HashMap,
@@ -460,7 +461,7 @@ pub fn derive_tip_distribution_account_address(
 pub const MAX_SEND_RETRIES: usize = 5;
 pub const MAX_FETCH_RETRIES: usize = 5;
 pub const MAX_RETRY_DURATION: Duration = Duration::from_secs(10 * 60); // 10 min
-pub const MAX_CONCURRENT_RPC_CALLS: usize = 50;
+pub const MAX_CONCURRENT_RPC_CALLS: usize = 100;
 
 /// Returns unprocessed transactions, along with errors from failed transactions
 pub async fn sign_and_send_transactions_with_retries(
@@ -470,7 +471,6 @@ pub async fn sign_and_send_transactions_with_retries(
     max_retry_duration: Duration,
 ) -> (Vec<Transaction>, HashMap<Signature, Error>) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
-
     let mut errors = HashMap::default();
     let mut blockhash = rpc_client
         .get_latest_blockhash()
@@ -500,8 +500,11 @@ pub async fn sign_and_send_transactions_with_retries(
                 txn.sign(&[signer], blockhash); // just in time signing
                 let res = match rpc_client.send_and_confirm_transaction(&txn).await {
                     Ok(_) => Ok(()),
-                    Err(e) if matches!(e.kind, ErrorKind::TransactionError(AlreadyProcessed)) => {
+                    Err(e) if matches!(&e.kind, ErrorKind::TransactionError(AlreadyProcessed)) => {
                         Ok(())
+                    }
+                    Err(e) if matches!(&e.kind, ErrorKind::TransactionError(BlockhashNotFound)) => {
+                        Err(e)
                     }
                     Err(e) => {
                         error!(
@@ -519,14 +522,9 @@ pub async fn sign_and_send_transactions_with_retries(
         let send_res = futures::future::join_all(send_futs).await;
         let new_errors = send_res
             .into_iter()
-            .filter_map(|(hash, txn, result)| {
-                if let Err(e) = result {
-                    warn!(
-                        "Error sending transaction: [error={e}, signature={}]",
-                        txn.signatures[0]
-                    );
-                    Some((txn.signatures[0], e))
-                } else {
+            .filter_map(|(hash, txn, result)| match result {
+                Err(e) => Some((txn.signatures[0], e)),
+                Ok(..) => {
                     let _ = transactions_to_process.remove(&hash);
                     None
                 }

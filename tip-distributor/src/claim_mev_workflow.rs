@@ -19,7 +19,6 @@ use {
     solana_sdk::{
         account::Account,
         commitment_config::CommitmentConfig,
-        compute_budget::ComputeBudgetInstruction,
         instruction::Instruction,
         pubkey::Pubkey,
         signature::{read_keypair_file, Signer},
