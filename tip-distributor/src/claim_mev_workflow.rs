@@ -50,7 +50,7 @@ pub async fn claim_mev_tips(
     keypair_path: &PathBuf,
 ) -> Result<(), ClaimMevError> {
     /// Number of instructions in a transaction
-    const TRANSACTION_IX_BATCH_SIZE: usize = 7;
+    const TRANSACTION_IX_BATCH_SIZE: usize = 3;
 
     let transaction_prepare_start = Instant::now();
     let merkle_trees: GeneratedMerkleTreeCollection =
