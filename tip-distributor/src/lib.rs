@@ -485,7 +485,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
     ));
     let mut rng = rand::thread_rng();
     transactions.shuffle(&mut rng);
-    let (tx, rx) = async_channel::bounded::<(Transaction,)>(2 * rpc_clients.len());
+    let (tx, rx) = async_channel::bounded::<Transaction>(2 * rpc_clients.len());
     let dispatcher_handle = {
         let blockhash_rpc_client = blockhash_rpc_client.clone();
         let tx = tx.clone();
@@ -505,8 +505,9 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
                         transactions.len()
                     );
                 }
-                if let Some(txn) = transactions.pop() {
-                    tx.send((txn,)).await.unwrap();
+                match transactions.pop() {
+                    Some(txn) => tx.send(txn).await.unwrap(),
+                    None => break,
                 }
             }
             drop(tx);
@@ -523,12 +524,12 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             let error_count = error_count.clone();
             let blockhash = blockhash.clone();
             tokio::spawn(async move {
-                while let Ok((txn,)) = rx.recv().await {
+                while let Ok(txn) = rx.recv().await {
                     let (_signed_txn, res) =
                         signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
                             .await;
                     if res.is_err() {
-                        tx.send((txn,)).await.unwrap(); // retry txn
+                        tx.send(txn).await.unwrap(); // retry txn
                         error_count.fetch_add(1, Ordering::Relaxed);
                     }
                 }

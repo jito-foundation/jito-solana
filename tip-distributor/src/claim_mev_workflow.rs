@@ -1,9 +1,6 @@
 use crate::sign_and_send_transactions_with_retries_multi_rpc;
 use {
-    crate::{
-        read_json_from_file,
-        GeneratedMerkleTreeCollection, TreeNode, MAX_FETCH_RETRIES,
-    },
+    crate::{read_json_from_file, GeneratedMerkleTreeCollection, TreeNode, MAX_FETCH_RETRIES},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
     log::{debug, info},
@@ -167,7 +164,7 @@ pub async fn claim_mev_tips(
 
     // Try sending txns to RPC
     let mut retries = 0;
-    let mut failed_transactions = 0;
+    let mut failed_transaction_count = 0;
     loop {
         let transaction_prepare_start = Instant::now();
         let (
@@ -222,7 +219,7 @@ pub async fn claim_mev_tips(
 
         info!("Sending {} tip claim transactions. {zero_lamports_count} would transfer zero lamports, {below_min_rent_count} would be below minimum rent",transactions.len());
         let send_start = Instant::now();
-        let (remaining_transactions, new_failed_transactions) =
+        let (remaining_transactions, new_failed_transaction_count) =
             sign_and_send_transactions_with_retries_multi_rpc(
                 &keypair,
                 &blockhash_rpc_client,
@@ -245,24 +242,30 @@ pub async fn claim_mev_tips(
                 remaining_transactions.len(),
                 i64
             ),
-            ("failed_transaction_count", new_failed_transactions, i64),
+            (
+                "failed_transaction_count",
+                new_failed_transaction_count,
+                i64
+            ),
             ("send_latency_us", send_start.elapsed().as_micros(), i64),
         );
 
-        failed_transactions += new_failed_transactions;
-        retries += 1;
+        if remaining_transactions.is_empty() {
+            info!(
+                "Finished after {:?}, {max_loop_retries} retries. {} remaining mev claim transactions, {failed_transaction_count} failed requests.",
+               account_fetch_start.elapsed(), remaining_transactions.len(),
 
-        if retries >= max_loop_retries {
-            if !remaining_transactions.is_empty() {
-                panic!(
-                    "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {} failed requests.",
-                    remaining_transactions.len(),
-                    failed_transactions
-                );
-            }
-
-            info!("Finished after {:?}", account_fetch_start.elapsed());
+            );
             return Ok(());
+        }
+
+        failed_transaction_count += new_failed_transaction_count;
+        retries += 1;
+        if retries >= max_loop_retries {
+            panic!(
+                    "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {failed_transaction_count} failed requests.",
+                    remaining_transactions.len(),
+                );
         }
     }
 }
