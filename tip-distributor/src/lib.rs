@@ -500,10 +500,13 @@ pub async fn sign_and_send_transactions_with_retries(
             "Sending {txn_send_batch_size} of {} transactions to claim mev tips",
             transactions_to_process.len()
         );
-        let start_range = rng.gen_range(
-            0,
-            (transactions_to_process.len() as i64 - txn_send_batch_size as i64).max(0) as usize,
-        );
+        // randomize to handle multiple instances
+        let start_range = if transactions_to_process.len() < txn_send_batch_size {
+            transactions_to_process.len()
+        } else {
+            rng.gen_range(0, transactions_to_process.len() - txn_send_batch_size)
+        };
+
         let send_futs = transactions_to_process
             .iter()
             .skip(start_range)

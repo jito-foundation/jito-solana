@@ -1,3 +1,5 @@
+use crate::TreeNode;
+
 use {
     crate::{
         read_json_from_file, sign_and_send_transactions_with_retries,
@@ -5,7 +7,7 @@ use {
     },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
-    log::{debug, info, warn},
+    log::{debug, info},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_metrics::{datapoint_error, datapoint_info, datapoint_warn},
     solana_program::{
@@ -51,13 +53,10 @@ pub async fn claim_mev_tips(
     max_concurrent_rpc_reqs: usize,
     txn_send_batch_size: usize,
 ) -> Result<(), ClaimMevError> {
-    let transaction_prepare_start = Instant::now();
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
     let keypair = read_keypair_file(keypair_path).expect("read keypair file");
-
-    let tip_distribution_config =
-        Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
+    let payer_pubkey = keypair.pubkey();
     let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
 
     let tree_nodes = merkle_trees
@@ -65,17 +64,10 @@ pub async fn claim_mev_tips(
         .iter()
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
-    let tree_node_count = tree_nodes.len();
     let stake_acct_min_rent = rpc_client
         .get_minimum_balance_for_rent_exemption(StakeState::size_of())
         .await
         .expect("Failed to calculate min rent");
-    let mut skipped_merkle_root_count: usize = 0;
-    let mut zero_lamports_count: usize = 0;
-    let mut already_claimed_count: usize = 0;
-    let mut below_min_rent_count: usize = 0;
-    let mut instructions =
-        Vec::with_capacity(tree_nodes.iter().filter(|node| node.amount > 0).count());
 
     // fetch all accounts up front
     info!("Starting to fetch accounts");
@@ -160,8 +152,136 @@ pub async fn claim_mev_tips(
     .unwrap();
     let account_fetch_elapsed = account_fetch_start.elapsed();
 
+    // Try sending txns to RPC
+    let mut retries = 0;
+    let mut transactions_len = 0;
+    let mut failed_transactions = HashMap::new();
+    loop {
+        if retries >= max_loop_retries {
+            break;
+        }
+        let transaction_prepare_start = Instant::now();
+        let (
+            skipped_merkle_root_count,
+            zero_lamports_count,
+            already_claimed_count,
+            below_min_rent_count,
+            transactions,
+        ) = build_transactions(
+            tip_distribution_program_id,
+            &merkle_trees,
+            &payer_pubkey,
+            &tree_nodes,
+            stake_acct_min_rent,
+            &tdas,
+            &claimants,
+            &claim_statuses,
+        );
+        datapoint_info!(
+            "claim_mev_workflow-prepare_transactions",
+            ("tree_node_count", tree_nodes.len(), i64),
+            ("tda_count", tdas.len(), i64),
+            ("claimant_count", claimants.len(), i64),
+            ("claim_status_count", claim_statuses.len(), i64),
+            ("skipped_merkle_root_count", skipped_merkle_root_count, i64),
+            ("zero_lamports_count", zero_lamports_count, i64),
+            ("already_claimed_count", already_claimed_count, i64),
+            ("below_min_rent_count", below_min_rent_count, i64),
+            ("transaction_count", transactions.len(), i64),
+            (
+                "account_fetch_latency_us",
+                account_fetch_elapsed.as_micros(),
+                i64
+            ),
+            (
+                "latency_us",
+                transaction_prepare_start.elapsed().as_micros(),
+                i64
+            ),
+        );
+
+        if transactions.is_empty() {
+            return Ok(());
+        }
+        transactions_len = transactions.len();
+
+        if let Some((start_balance, desired_balance, sol_to_deposit)) =
+            is_sufficient_balance(&payer_pubkey, &rpc_client, transactions.len() as u64).await
+        {
+            panic!("Expected to have at least {desired_balance} lamports in {payer_pubkey}. Current balance is {start_balance} lamports. Deposit {sol_to_deposit} SOL to continue.");
+        }
+
+        info!("Sending {transactions_len} tip claim transactions. {zero_lamports_count} would transfer zero lamports, {below_min_rent_count} would be below minimum rent");
+
+        let send_start = Instant::now();
+        let (remaining_transactions, new_failed_transactions) =
+            sign_and_send_transactions_with_retries(
+                &keypair,
+                &rpc_client,
+                max_concurrent_rpc_reqs,
+                transactions,
+                txn_send_batch_size,
+                max_loop_duration,
+            )
+            .await;
+
+        datapoint_info!(
+            "claim_mev_workflow-send_transactions",
+            ("transaction_count", transactions_len, i64),
+            (
+                "successful_transaction_count",
+                transactions_len - remaining_transactions.len(),
+                i64
+            ),
+            (
+                "remaining_transaction_count",
+                remaining_transactions.len(),
+                i64
+            ),
+            (
+                "failed_transaction_count",
+                new_failed_transactions.len(),
+                i64
+            ),
+            ("send_latency_us", send_start.elapsed().as_micros(), i64),
+        );
+
+        failed_transactions.extend(new_failed_transactions);
+        retries += 1;
+    }
+
+    if !failed_transactions.is_empty() {
+        panic!(
+            "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {} failed requests.",
+            transactions_len,
+            failed_transactions.len()
+        );
+    }
+
+    Ok(())
+}
+
+fn build_transactions(
+    tip_distribution_program_id: &Pubkey,
+    merkle_trees: &GeneratedMerkleTreeCollection,
+    payer_pubkey: &Pubkey,
+    tree_nodes: &[&TreeNode],
+    stake_acct_min_rent: u64,
+    tdas: &HashMap<Pubkey, TipDistributionAccount>,
+    claimants: &HashMap<Pubkey, u64>,
+    claim_statuses: &HashMap<Pubkey, Option<Account>>,
+) -> (usize, usize, usize, usize, Vec<Transaction>) {
+    let tip_distribution_config =
+        Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
+    let mut skipped_merkle_root_count: usize = 0;
+    let mut zero_lamports_count: usize = 0;
+    let mut already_claimed_count: usize = 0;
+    let mut below_min_rent_count: usize = 0;
+    let mut instructions =
+        Vec::with_capacity(tree_nodes.iter().filter(|node| node.amount > 0).count());
+
     // prepare instructions to transfer to all claimants
-    for tree in merkle_trees.generated_merkle_trees {
+    for tree in &merkle_trees.generated_merkle_trees {
         let fetched_tip_distribution_account = match tdas.get(&tree.tip_distribution_account) {
             Some(account) => account,
             None => panic!(
@@ -179,7 +299,7 @@ pub async fn claim_mev_tips(
             skipped_merkle_root_count = skipped_merkle_root_count.checked_add(1).unwrap();
             continue;
         }
-        for node in tree.tree_nodes {
+        for node in &tree.tree_nodes {
             if node.amount == 0 {
                 zero_lamports_count = zero_lamports_count.checked_add(1).unwrap();
                 continue;
@@ -219,7 +339,7 @@ pub async fn claim_mev_tips(
             instructions.push(Instruction {
                 program_id: *tip_distribution_program_id,
                 data: tip_distribution::instruction::Claim {
-                    proof: node.proof.unwrap(),
+                    proof: node.proof.clone().unwrap(),
                     amount: node.amount,
                     bump: node.claim_status_bump,
                 }
@@ -229,124 +349,64 @@ pub async fn claim_mev_tips(
                     tip_distribution_account: tree.tip_distribution_account,
                     claimant: node.claimant,
                     claim_status: node.claim_status_pubkey,
-                    payer: keypair.pubkey(),
+                    payer: *payer_pubkey,
                     system_program: system_program::id(),
                 }
                 .to_account_metas(None),
             });
         }
     }
-    let instructions_len = instructions.len();
 
-    // balance check heuristic to make sure we have enough funds to cover the rent costs if epoch has many validators
-    {
-        let start_balance = rpc_client
-            .get_balance(&keypair.pubkey())
-            .await
-            .expect("Failed to get starting balance");
-        // most amounts are for 0 lamports. had 1736 non-zero claims out of 164742
-        let min_rent_per_claim = rpc_client
-            .get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE)
-            .await
-            .expect("Failed to calculate min rent");
-        let desired_balance = (instructions_len as u64)
-            .checked_mul(
-                min_rent_per_claim
-                    .checked_add(DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE)
-                    .unwrap(),
-            )
-            .unwrap();
-        if start_balance < desired_balance {
-            let sol_to_deposit = desired_balance
-                .checked_sub(start_balance)
-                .unwrap()
-                .checked_add(LAMPORTS_PER_SOL)
-                .unwrap()
-                .checked_sub(1)
-                .unwrap()
-                .checked_div(LAMPORTS_PER_SOL)
-                .unwrap(); // rounds up to nearest sol
-            panic!("Expected to have at least {desired_balance} lamports in {}, current balance is {start_balance} lamports. Deposit {sol_to_deposit} SOL to continue.", &keypair.pubkey());
-        }
-    }
-
-    let mut transactions = instructions
+    let transactions = instructions
         .into_iter()
-        .map(|ix| Transaction::new_with_payer(&[ix], Some(&keypair.pubkey())))
+        .map(|ix| Transaction::new_with_payer(&[ix], Some(payer_pubkey)))
         .collect::<Vec<_>>();
-    let transaction_prepare_elapsed = transaction_prepare_start.elapsed();
+    (
+        skipped_merkle_root_count,
+        zero_lamports_count,
+        already_claimed_count,
+        below_min_rent_count,
+        transactions,
+    )
+}
 
-    datapoint_info!(
-        "claim_mev_workflow-prepare_transactions",
-        ("tree_node_count", tree_node_count, i64),
-        ("tda_count", tdas.len(), i64),
-        ("claimant_count", claimants.len(), i64),
-        ("claim_status_count", claim_statuses.len(), i64),
-        ("skipped_merkle_root_count", skipped_merkle_root_count, i64),
-        ("zero_lamports_count", zero_lamports_count, i64),
-        ("already_claimed_count", already_claimed_count, i64),
-        ("below_min_rent_count", below_min_rent_count, i64),
-        ("instruction_count", instructions_len, i64),
-        ("transaction_count", transactions.len(), i64),
-        (
-            "account_fetch_latency_us",
-            account_fetch_elapsed.as_micros(),
-            i64
-        ),
-        ("latency_us", transaction_prepare_elapsed.as_micros(), i64),
-    );
-
-    info!("Sending {} tip claim transactions. {zero_lamports_count} tried sending zero lamports, {below_min_rent_count} would be below minimum rent",
-            transactions.len());
-    let mut retries = 0;
-    let mut failed_transactions = HashMap::new();
-    while !transactions.is_empty() && retries < max_loop_retries {
-        let transactions_len = transactions.len();
-        let send_start = Instant::now();
-        let (to_process_transactions, new_failed_transactions) =
-            sign_and_send_transactions_with_retries(
-                &keypair,
-                &rpc_client,
-                max_concurrent_rpc_reqs,
-                transactions,
-                txn_send_batch_size,
-                max_loop_duration,
-            )
-            .await;
-
-        datapoint_info!(
-            "claim_mev_workflow-send_transactions",
-            ("transaction_count", transactions_len, i64),
-            (
-                "successful_transaction_count",
-                transactions_len - to_process_transactions.len(),
-                i64
-            ),
-            (
-                "remaining_transaction_count",
-                to_process_transactions.len(),
-                i64
-            ),
-            (
-                "failed_transaction_count",
-                new_failed_transactions.len(),
-                i64
-            ),
-            ("send_latency_us", send_start.elapsed().as_micros(), i64),
-        );
-        transactions = to_process_transactions;
-        failed_transactions.extend(new_failed_transactions);
-        retries += 1;
+/// heuristic to make sure we have enough funds to cover the rent costs if epoch has many validators
+/// If insufficient funds, returns start balance, desired balance, and amount of sol to deposit
+async fn is_sufficient_balance(
+    payer: &Pubkey,
+    rpc_client: &RpcClient,
+    instruction_count: u64,
+) -> Option<(u64, u64, u64)> {
+    let start_balance = rpc_client
+        .get_balance(payer)
+        .await
+        .expect("Failed to get starting balance");
+    // most amounts are for 0 lamports. had 1736 non-zero claims out of 164742
+    let min_rent_per_claim = rpc_client
+        .get_minimum_balance_for_rent_exemption(ClaimStatus::SIZE)
+        .await
+        .expect("Failed to calculate min rent");
+    let desired_balance = instruction_count
+        .checked_mul(
+            min_rent_per_claim
+                .checked_add(DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE)
+                .unwrap(),
+        )
+        .unwrap();
+    if start_balance < desired_balance {
+        let sol_to_deposit = desired_balance
+            .checked_sub(start_balance)
+            .unwrap()
+            .checked_add(LAMPORTS_PER_SOL)
+            .unwrap()
+            .checked_sub(1)
+            .unwrap()
+            .checked_div(LAMPORTS_PER_SOL)
+            .unwrap(); // rounds up to nearest sol
+        Some((start_balance, desired_balance, sol_to_deposit))
+    } else {
+        None
     }
-    if !failed_transactions.is_empty() {
-        panic!(
-            "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {} failed requests.",
-            transactions.len(),
-            failed_transactions.len()
-        );
-    }
-
-    Ok(())
 }
 
 /// Fetch accounts in parallel batches with retries.
