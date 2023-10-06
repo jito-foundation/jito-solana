@@ -1,6 +1,7 @@
+use crate::sign_and_send_transactions_with_retries_multi_rpc;
 use {
     crate::{
-        read_json_from_file, sign_and_send_transactions_with_retries,
+        read_json_from_file,
         GeneratedMerkleTreeCollection, TreeNode, MAX_FETCH_RETRIES,
     },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
@@ -44,17 +45,31 @@ pub enum ClaimMevError {
 pub async fn claim_mev_tips(
     merkle_root_path: &PathBuf,
     rpc_url: String,
+    rpc_connection_count: u64,
     tip_distribution_program_id: &Pubkey,
     keypair_path: &PathBuf,
     max_loop_retries: u64,
     max_loop_duration: Duration,
     max_concurrent_rpc_reqs: usize,
-    txn_send_batch_size: usize,
 ) -> Result<(), ClaimMevError> {
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
-    let keypair = read_keypair_file(keypair_path).expect("read keypair file");
+    let keypair = Arc::new(read_keypair_file(keypair_path).expect("read keypair file"));
     let payer_pubkey = keypair.pubkey();
+    let blockhash_rpc_client = Arc::new(RpcClient::new_with_commitment(
+        rpc_url.clone(),
+        CommitmentConfig::finalized(),
+    ));
+    let rpc_clients = Arc::new(
+        (0..rpc_connection_count)
+            .map(|_| {
+                Arc::new(RpcClient::new_with_commitment(
+                    rpc_url.clone(),
+                    CommitmentConfig::finalized(),
+                ))
+            })
+            .collect_vec(),
+    );
     let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
 
     let tree_nodes = merkle_trees
@@ -152,7 +167,7 @@ pub async fn claim_mev_tips(
 
     // Try sending txns to RPC
     let mut retries = 0;
-    let mut failed_transactions = HashMap::new();
+    let mut failed_transactions = 0;
     loop {
         let transaction_prepare_start = Instant::now();
         let (
@@ -208,12 +223,11 @@ pub async fn claim_mev_tips(
         info!("Sending {} tip claim transactions. {zero_lamports_count} would transfer zero lamports, {below_min_rent_count} would be below minimum rent",transactions.len());
         let send_start = Instant::now();
         let (remaining_transactions, new_failed_transactions) =
-            sign_and_send_transactions_with_retries(
+            sign_and_send_transactions_with_retries_multi_rpc(
                 &keypair,
-                &rpc_client,
-                max_concurrent_rpc_reqs,
+                &blockhash_rpc_client,
+                &rpc_clients,
                 transactions,
-                txn_send_batch_size,
                 max_loop_duration,
             )
             .await;
@@ -231,15 +245,11 @@ pub async fn claim_mev_tips(
                 remaining_transactions.len(),
                 i64
             ),
-            (
-                "failed_transaction_count",
-                new_failed_transactions.len(),
-                i64
-            ),
+            ("failed_transaction_count", new_failed_transactions, i64),
             ("send_latency_us", send_start.elapsed().as_micros(), i64),
         );
 
-        failed_transactions.extend(new_failed_transactions);
+        failed_transactions += new_failed_transactions;
         retries += 1;
 
         if retries >= max_loop_retries {
@@ -247,7 +257,7 @@ pub async fn claim_mev_tips(
                 panic!(
                     "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {} failed requests.",
                     remaining_transactions.len(),
-                    failed_transactions.len()
+                    failed_transactions
                 );
             }
 

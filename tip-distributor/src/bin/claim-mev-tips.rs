@@ -27,20 +27,20 @@ struct Args {
     #[arg(long, env)]
     keypair_path: PathBuf,
 
+    /// Number of unique connections to the RPC server
+    #[arg(long, env, default_value_t = 10)]
+    rpc_connection_count: u64,
+
     #[arg(long, env, default_value_t = 5)]
     max_loop_retries: u64,
 
-    /// Limits how long before send loop runs before stopping. Defaults to 30 mins
-    #[arg(long, env, default_value_t = 30*60)]
+    /// Limits how long before send loop runs before stopping. Defaults to 10 mins
+    #[arg(long, env, default_value_t = 10*60)]
     max_loop_duration_secs: u64,
 
-    /// Rate-limits the maximum number of RPC requests
+    /// Rate-limits the maximum number of requests per RPC connection
     #[arg(long, env, default_value_t = 100)]
     max_concurrent_rpc_reqs: usize,
-
-    /// Number of transactions to send to RPC at a time.
-    #[arg(long, env, default_value_t = 64)]
-    txn_send_batch_size: usize,
 }
 
 #[tokio::main]
@@ -52,12 +52,12 @@ async fn main() {
     if let Err(e) = claim_mev_tips(
         &args.merkle_trees_path,
         args.rpc_url,
+        args.rpc_connection_count,
         &args.tip_distribution_program_id,
         &args.keypair_path,
         args.max_loop_retries,
         Duration::from_secs(args.max_loop_duration_secs),
         args.max_concurrent_rpc_reqs,
-        args.txn_send_batch_size,
     )
     .await
     {

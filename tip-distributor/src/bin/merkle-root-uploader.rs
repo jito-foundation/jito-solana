@@ -3,7 +3,7 @@ use {
     log::info,
     solana_sdk::pubkey::Pubkey,
     solana_tip_distributor::merkle_root_upload_workflow::upload_merkle_root,
-    std::{path::PathBuf, str::FromStr},
+    std::{path::PathBuf},
 };
 
 #[derive(Parser, Debug)]
@@ -23,7 +23,15 @@ struct Args {
 
     /// Tip distribution program ID
     #[arg(long, env)]
-    tip_distribution_program_id: String,
+    tip_distribution_program_id: Pubkey,
+
+    /// Rate-limits the maximum number of requests per RPC connection
+    #[arg(long, env, default_value_t = 100)]
+    max_concurrent_rpc_reqs: usize,
+
+    /// Number of transactions to send to RPC at a time.
+    #[arg(long, env, default_value_t = 64)]
+    txn_send_batch_size: usize,
 }
 
 fn main() {
@@ -31,15 +39,14 @@ fn main() {
 
     let args: Args = Args::parse();
 
-    let tip_distribution_program_id = Pubkey::from_str(&args.tip_distribution_program_id)
-        .expect("valid tip_distribution_program_id");
-
     info!("starting merkle root uploader...");
     if let Err(e) = upload_merkle_root(
         &args.merkle_root_path,
         &args.keypair_path,
         &args.rpc_url,
-        &tip_distribution_program_id,
+        &args.tip_distribution_program_id,
+        args.max_concurrent_rpc_reqs,
+        args.txn_send_batch_size,
     ) {
         panic!("failed to upload merkle roots: {:?}", e);
     }

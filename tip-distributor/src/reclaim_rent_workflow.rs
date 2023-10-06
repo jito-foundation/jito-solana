@@ -29,6 +29,8 @@ pub async fn reclaim_rent(
     rpc_client: RpcClient,
     tip_distribution_program_id: Pubkey,
     signer: Keypair,
+    max_concurrent_rpc_reqs: usize,
+    txn_send_batch_size: usize,
     // Optionally reclaim TipDistributionAccount rents on behalf of validators.
     should_reclaim_tdas: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -152,17 +154,21 @@ pub async fn reclaim_rent(
     }
 
     info!("sending {} transactions", transactions.len());
-    let (_to_process, failed_transactions) = sign_and_send_transactions_with_retries(
+    let (to_process, failed_transactions) = sign_and_send_transactions_with_retries(
         &signer,
         &rpc_client,
-        usize::MAX,
+        max_concurrent_rpc_reqs,
         transactions,
-        usize::MAX,
+        txn_send_batch_size,
         Duration::from_secs(300),
     )
     .await;
-    if !failed_transactions.is_empty() {
-        panic!("failed to send {} transactions", failed_transactions.len());
+    if !to_process.is_empty() {
+        panic!(
+            "{} remaining mev claim transactions, {} failed requests.",
+            to_process.len(),
+            failed_transactions.len()
+        );
     }
 
     Ok(())

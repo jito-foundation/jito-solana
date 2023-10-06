@@ -38,6 +38,8 @@ pub fn upload_merkle_root(
     keypair_path: &PathBuf,
     rpc_url: &str,
     tip_distribution_program_id: &Pubkey,
+    max_concurrent_rpc_reqs: usize,
+    txn_send_batch_size: usize,
 ) -> Result<(), MerkleRootUploadError> {
     const MAX_RETRY_DURATION: Duration = Duration::from_secs(600);
 
@@ -125,16 +127,10 @@ pub fn upload_merkle_root(
             })
             .collect();
 
-        let (_to_process, failed_transactions) = sign_and_send_transactions_with_retries(
-&keypair, &rpc_client,
-
-usize::MAX,
-transactions,
-usize::MAX,
-
-MAX_RETRY_DURATION).await;
-        if !failed_transactions.is_empty() {
-            panic!("failed to send {} transactions", failed_transactions.len());
+        let (to_process, failed_transactions) = sign_and_send_transactions_with_retries(
+            &keypair, &rpc_client, max_concurrent_rpc_reqs, transactions, txn_send_batch_size, MAX_RETRY_DURATION).await;
+        if !to_process.is_empty() {
+            panic!("{} remaining mev claim transactions, {} failed requests.", to_process.len(), failed_transactions.len());
         }
     });
 

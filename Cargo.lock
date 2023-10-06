@@ -7183,6 +7183,7 @@ name = "solana-tip-distributor"
 version = "1.16.15"
 dependencies = [
  "anchor-lang",
+ "async-channel",
  "clap 4.3.19",
  "env_logger",
  "futures 0.3.28",
