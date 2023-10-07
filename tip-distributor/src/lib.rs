@@ -489,7 +489,6 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
     let (tx, rx) = async_channel::bounded::<Transaction>(2 * rpc_clients.len());
     let dispatcher_handle = {
         let blockhash_rpc_client = blockhash_rpc_client.clone();
-        let tx = tx.clone();
         let blockhash = blockhash.clone();
         tokio::spawn(async move {
             let start = Instant::now();
