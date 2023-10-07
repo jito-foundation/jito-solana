@@ -39,7 +39,7 @@ struct Args {
     max_loop_duration_secs: u64,
 
     /// Rate-limits the maximum number of requests per RPC connection
-    #[arg(long, env, default_value_t = 100)]
+    #[arg(long, env, default_value_t = 200)]
     max_concurrent_rpc_reqs: usize,
 }
 
