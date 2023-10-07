@@ -491,15 +491,16 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
         let tx = tx.clone();
         let blockhash = blockhash.clone();
         tokio::spawn(async move {
-            let mut start = Instant::now();
+            let start = Instant::now();
+            let mut last_blockhash_update = Instant::now();
             while start.elapsed() < max_loop_duration && !transactions.is_empty() {
                 // ensure we always have a recent blockhash
-                if start.elapsed() > Duration::from_secs(60) {
+                if last_blockhash_update.elapsed() > Duration::from_secs(60) {
                     *blockhash.write().await = blockhash_rpc_client
                         .get_latest_blockhash()
                         .await
                         .expect("fetch latest blockhash");
-                    start = Instant::now();
+                    last_blockhash_update = Instant::now();
                     info!(
                         "Sending {} transactions to claim mev tips",
                         transactions.len()
@@ -510,6 +511,11 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
                     None => break,
                 }
             }
+
+            info!(
+                "Exit dispatcher loop. {} transactions remain",
+                transactions.len()
+            );
             drop(tx);
             transactions
         })
@@ -518,19 +524,19 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
         .iter()
         .map(|rpc_client| {
             let signer = signer.clone();
-            let tx = tx.clone();
             let rx = rx.clone();
             let rpc_client = rpc_client.clone();
             let error_count = error_count.clone();
             let blockhash = blockhash.clone();
             tokio::spawn(async move {
                 while let Ok(txn) = rx.recv().await {
-                    let (_signed_txn, res) =
-                        signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
-                            .await;
-                    if res.is_err() {
-                        tx.send(txn).await.unwrap(); // retry txn
-                        error_count.fetch_add(1, Ordering::Relaxed);
+                    loop {
+                        let (_signed_txn, res) =
+                            signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
+                                .await;
+                        if res.is_err() {
+                            error_count.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
             })
