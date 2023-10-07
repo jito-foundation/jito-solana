@@ -1,4 +1,4 @@
-use crate::sign_and_send_transactions_with_retries_multi_rpc;
+use crate::{sign_and_send_transactions_with_retries_multi_rpc, FAIL_DELAY};
 use {
     crate::{read_json_from_file, GeneratedMerkleTreeCollection, TreeNode, MAX_FETCH_RETRIES},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
@@ -424,8 +424,6 @@ async fn get_batched_accounts(
     max_concurrent_rpc_reqs: usize,
     pubkeys: Vec<Pubkey>,
 ) -> solana_rpc_client_api::client_error::Result<HashMap<Pubkey, Option<Account>>> {
-    const FAIL_DELAY: Duration = Duration::from_millis(100);
-
     let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_reqs));
     let futs = pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS).map(|pubkeys| {
         let semaphore = semaphore.clone();
