@@ -496,7 +496,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             let mut last_blockhash_update = Instant::now();
             while start.elapsed() < max_loop_duration && !transactions.is_empty() {
                 // ensure we always have a recent blockhash
-                if last_blockhash_update.elapsed() > Duration::from_secs(60) {
+                if last_blockhash_update.elapsed() > Duration::from_secs(30) {
                     *blockhash.write().await = blockhash_rpc_client
                         .get_latest_blockhash()
                         .await
