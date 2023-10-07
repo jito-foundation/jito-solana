@@ -515,7 +515,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             }
 
             info!(
-                "Exit dispatcher loop. {} transactions remain",
+                "Exited dispatcher thread. {} transactions remain",
                 transactions.len()
             );
             drop(tx);
@@ -531,9 +531,11 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             let error_count = error_count.clone();
             let blockhash = blockhash.clone();
             tokio::spawn(async move {
+                let mut iterations = 0;
                 while let Ok(txn) = rx.recv().await {
                     let mut retries = 0;
                     while retries < MAX_RETRIES {
+                        iterations += 1;
                         let (_signed_txn, res) =
                             signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
                                 .await;
@@ -547,6 +549,8 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
                         }
                     }
                 }
+
+                info!("Exited send thread. Ran {iterations} times.");
             })
         })
         .collect_vec();
