@@ -466,7 +466,7 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
-pub const MAX_FETCH_RETRIES: usize = 5;
+pub const MAX_RETRIES: usize = 5;
 pub const FAIL_DELAY: Duration = Duration::from_millis(100);
 
 /// Returns unprocessed transactions, along with fail count
@@ -531,13 +531,15 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             let blockhash = blockhash.clone();
             tokio::spawn(async move {
                 while let Ok(txn) = rx.recv().await {
-                    loop {
+                    let mut retries = 0;
+                    while retries < MAX_RETRIES {
                         let (_signed_txn, res) =
                             signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
                                 .await;
                         match res {
                             Ok(_) => break,
                             Err(_) => {
+                                retries += 1;
                                 error_count.fetch_add(1, Ordering::Relaxed);
                                 tokio::time::sleep(FAIL_DELAY).await;
                             }

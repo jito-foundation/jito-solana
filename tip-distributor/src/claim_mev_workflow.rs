@@ -1,6 +1,6 @@
 use crate::{sign_and_send_transactions_with_retries_multi_rpc, FAIL_DELAY};
 use {
-    crate::{read_json_from_file, GeneratedMerkleTreeCollection, TreeNode, MAX_FETCH_RETRIES},
+    crate::{read_json_from_file, GeneratedMerkleTreeCollection, TreeNode, MAX_RETRIES},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
     log::{debug, info},
@@ -436,7 +436,7 @@ async fn get_batched_accounts(
                     Ok(accts) => return Ok(accts),
                     Err(e) => {
                         retries += 1;
-                        if retries == MAX_FETCH_RETRIES {
+                        if retries == MAX_RETRIES {
                             datapoint_error!(
                                 "claim_mev_workflow-get_batched_accounts_error",
                                 ("pubkeys", format!("{pubkeys:?}"), String),
