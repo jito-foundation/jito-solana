@@ -28,7 +28,7 @@ struct Args {
     keypair_path: PathBuf,
 
     /// Number of unique connections to the RPC server
-    #[arg(long, env, default_value_t = 10)]
+    #[arg(long, env, default_value_t = 100)]
     rpc_connection_count: u64,
 
     #[arg(long, env, default_value_t = 5)]

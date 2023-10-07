@@ -497,15 +497,16 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             while start.elapsed() < max_loop_duration && !transactions.is_empty() {
                 // ensure we always have a recent blockhash
                 if last_blockhash_update.elapsed() > Duration::from_secs(30) {
-                    *blockhash.write().await = blockhash_rpc_client
+                    let hash = blockhash_rpc_client
                         .get_latest_blockhash()
                         .await
                         .expect("fetch latest blockhash");
-                    last_blockhash_update = Instant::now();
                     info!(
-                        "Sending {} transactions to claim mev tips",
+                        "Got hash {hash:?}. Sending {} transactions to claim mev tips",
                         transactions.len()
                     );
+                    *blockhash.write().await = hash;
+                    last_blockhash_update = Instant::now();
                 }
                 match transactions.pop() {
                     Some(txn) => tx.send(txn).await.unwrap(),
