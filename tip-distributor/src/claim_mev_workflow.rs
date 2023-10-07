@@ -62,19 +62,18 @@ pub async fn claim_mev_tips(
             .map(|_| {
                 Arc::new(RpcClient::new_with_commitment(
                     rpc_url.clone(),
-                    CommitmentConfig::finalized(),
+                    CommitmentConfig::confirmed(),
                 ))
             })
             .collect_vec(),
     );
-    let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::finalized());
 
     let tree_nodes = merkle_trees
         .generated_merkle_trees
         .iter()
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
-    let stake_acct_min_rent = rpc_client
+    let stake_acct_min_rent = blockhash_rpc_client
         .get_minimum_balance_for_rent_exemption(StakeState::size_of())
         .await
         .expect("Failed to calculate min rent");
@@ -83,7 +82,7 @@ pub async fn claim_mev_tips(
     info!("Starting to fetch accounts");
     let account_fetch_start = Instant::now();
     let tdas = get_batched_accounts(
-        &rpc_client,
+        &blockhash_rpc_client,
         max_concurrent_rpc_reqs,
         merkle_trees
             .generated_merkle_trees
@@ -130,7 +129,7 @@ pub async fn claim_mev_tips(
 
     // track balances only
     let claimants = get_batched_accounts(
-        &rpc_client,
+        &blockhash_rpc_client,
         max_concurrent_rpc_reqs,
         tree_nodes
             .iter()
@@ -151,7 +150,7 @@ pub async fn claim_mev_tips(
     .collect::<HashMap<Pubkey, u64>>();
 
     let claim_statuses = get_batched_accounts(
-        &rpc_client,
+        &blockhash_rpc_client,
         max_concurrent_rpc_reqs,
         tree_nodes
             .iter()
@@ -210,8 +209,12 @@ pub async fn claim_mev_tips(
             return Ok(());
         }
 
-        if let Some((start_balance, desired_balance, sol_to_deposit)) =
-            is_sufficient_balance(&payer_pubkey, &rpc_client, transactions.len() as u64).await
+        if let Some((start_balance, desired_balance, sol_to_deposit)) = is_sufficient_balance(
+            &payer_pubkey,
+            &blockhash_rpc_client,
+            transactions.len() as u64,
+        )
+        .await
         {
             panic!("Expected to have at least {desired_balance} lamports in {payer_pubkey}. Current balance is {start_balance} lamports. Deposit {sol_to_deposit} SOL to continue.");
         }
