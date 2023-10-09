@@ -1,7 +1,6 @@
 use {
     itertools::izip,
-    log::{debug, trace},
-    serde::{Deserialize, Serialize},
+    log::*,
     solana_accounts_db::{
         account_overrides::AccountOverrides, accounts::TransactionLoadResult,
         transaction_results::TransactionExecutionResult,
@@ -76,18 +75,26 @@ impl<'a> LoadAndExecuteBundleOutput<'a> {
     }
 }
 
-#[derive(Clone, Debug, Error, Serialize, Deserialize)]
+#[derive(Clone, Debug, Error)]
 pub enum LoadAndExecuteBundleError {
-    #[error("The bundle processing time was exceeded")]
+    #[error("Bundle execution timed out")]
     ProcessingTimeExceeded(Duration),
 
-    #[error("A transaction in the bundle encountered a lock error")]
+    #[error(
+        "A transaction in the bundle encountered a lock error: [signature={:?}, transaction_error={:?}]",
+        signature,
+        transaction_error
+    )]
     LockError {
         signature: Signature,
         transaction_error: TransactionError,
     },
 
-    #[error("A transaction in the bundle failed to execute")]
+    #[error(
+        "A transaction in the bundle failed to execute: [signature={:?}, execution_result={:?}",
+        signature,
+        execution_result
+    )]
     TransactionError {
         signature: Signature,
         // Box reduces the size between variants in the Error

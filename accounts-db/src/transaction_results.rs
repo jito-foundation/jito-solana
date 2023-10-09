@@ -29,13 +29,11 @@ pub struct TransactionResults {
 /// is what should be checked to detect a successful transaction. This
 /// enum provides a convenience method `Self::was_executed_successfully` to
 /// make such checks hard to do incorrectly.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub enum TransactionExecutionResult {
     Executed {
         details: TransactionExecutionDetails,
-        #[serde(skip)]
         programs_modified_by_tx: Box<LoadedProgramsForTxBatch>,
-        #[serde(skip)]
         programs_updated_only_for_global_cache: Box<LoadedProgramsForTxBatch>,
     },
     NotExecuted(TransactionError),
@@ -71,7 +69,7 @@ impl TransactionExecutionResult {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct TransactionExecutionDetails {
     pub status: transaction::Result<()>,
     pub log_messages: Option<Vec<String>>,
@@ -84,7 +82,7 @@ pub struct TransactionExecutionDetails {
     pub accounts_data_len_delta: i64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub enum DurableNonceFee {
     Valid(u64),
     Invalid,
@@ -112,7 +110,7 @@ impl DurableNonceFee {
 /// transaction instruction
 pub type InnerInstructions = Vec<InnerInstruction>;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InnerInstruction {
     pub instruction: CompiledInstruction,
     /// Invocation stack height of this instruction. Instruction stack height

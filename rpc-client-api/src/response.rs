@@ -2,7 +2,6 @@ use {
     crate::client_error,
     serde::{Deserialize, Deserializer, Serialize, Serializer},
     solana_account_decoder::{parse_token::UiTokenAmount, UiAccount},
-    solana_bundle::BundleExecutionError,
     solana_sdk::{
         clock::{Epoch, Slot, UnixTimestamp},
         fee_calculator::{FeeCalculator, FeeRateGovernor},
@@ -378,24 +377,6 @@ pub struct RpcIdentity {
     pub identity: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum RpcBundleSimulationSummary {
-    /// error and offending transaction signature if applicable
-    Failed {
-        error: BundleExecutionError,
-        tx_signature: Option<String>,
-    },
-    Succeeded,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct RpcSimulateBundleResult {
-    pub summary: RpcBundleSimulationSummary,
-    pub transaction_results: Vec<RpcSimulateBundleTransactionResult>,
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcVote {
@@ -448,18 +429,6 @@ pub struct RpcVoteAccountInfo {
 pub struct RpcSignatureConfirmation {
     pub confirmations: usize,
     pub status: Result<()>,
-}
-
-// TODO: consolidate with [RpcSimulateTransactionResult]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RpcSimulateBundleTransactionResult {
-    pub err: Option<TransactionError>,
-    pub logs: Option<Vec<String>>,
-    pub pre_execution_accounts: Option<Vec<UiAccount>>,
-    pub post_execution_accounts: Option<Vec<UiAccount>>,
-    pub units_consumed: Option<u64>,
-    pub return_data: Option<UiTransactionReturnData>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

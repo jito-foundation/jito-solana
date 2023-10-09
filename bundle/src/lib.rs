@@ -38,7 +38,7 @@ impl From<anchor_lang::error::Error> for TipError {
 
 pub type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
 
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
+#[derive(Error, Debug, Clone)]
 pub enum BundleExecutionError {
     #[error("The bank has hit the max allotted time for processing transactions")]
     BankProcessingTimeLimitReached,
@@ -49,7 +49,7 @@ pub enum BundleExecutionError {
     #[error("Runtime error while executing the bundle: {0}")]
     TransactionFailure(#[from] LoadAndExecuteBundleError),
 
-    #[error("Error locking bundle because the transaction is malformed")]
+    #[error("Error locking bundle because a transaction is malformed")]
     LockError,
 
     #[error("PoH record error: {0}")]

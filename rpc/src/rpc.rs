@@ -3277,11 +3277,11 @@ pub mod utils {
             BundleExecutionError,
         },
         solana_rpc_client_api::{
-            config::{RpcSimulateBundleConfig, RpcSimulateTransactionAccountsConfig},
-            response::{
-                RpcBundleSimulationSummary, RpcSimulateBundleResult,
-                RpcSimulateBundleTransactionResult,
+            bundles::{
+                RpcBundleExecutionError, RpcBundleSimulationSummary, RpcSimulateBundleConfig,
+                RpcSimulateBundleResult, RpcSimulateBundleTransactionResult,
             },
+            config::RpcSimulateTransactionAccountsConfig,
         },
         solana_sdk::{account::AccountSharedData, pubkey::Pubkey},
         std::str::FromStr,
@@ -3320,7 +3320,9 @@ pub mod utils {
                     _ => None,
                 };
                 RpcBundleSimulationSummary::Failed {
-                    error: BundleExecutionError::TransactionFailure(e.clone()),
+                    error: RpcBundleExecutionError::from(BundleExecutionError::TransactionFailure(
+                        e.clone(),
+                    )),
                     tx_signature,
                 }
             }
@@ -3417,6 +3419,10 @@ pub mod rpc_full {
         crate::rpc::utils::{account_configs_to_accounts, rpc_bundle_result_from_bank_result},
         jsonrpc_core::ErrorCode,
         solana_bundle::bundle_execution::{load_and_execute_bundle, LoadAndExecuteBundleError},
+        solana_rpc_client_api::bundles::{
+            RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
+            SimulationSlotConfig,
+        },
         solana_sdk::{
             bundle::{derive_bundle_id, SanitizedBundle},
             clock::MAX_PROCESSING_AGE,
