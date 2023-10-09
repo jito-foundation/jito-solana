@@ -165,12 +165,11 @@ impl BundleReceiver {
 mod tests {
     use {
         super::*,
-        crate::{
-            bundle_stage::bundle_account_locker::BundleAccountLockerError, tip_manager::TipError,
-        },
         crossbeam_channel::unbounded,
         rand::{thread_rng, RngCore},
-        solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
+        solana_bundle::{
+            bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, TipError,
+        },
         solana_ledger::genesis_utils::create_genesis_config,
         solana_perf::packet::PacketBatch,
         solana_poh::poh_recorder::PohRecorderError,
@@ -637,12 +636,7 @@ mod tests {
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
             |bundles_to_process, _stats| {
-                vec![
-                    Err(BundleExecutionError::LockError(
-                        BundleAccountLockerError::LockingError
-                    ));
-                    bundles_to_process.len()
-                ]
+                vec![Err(BundleExecutionError::LockError); bundles_to_process.len()]
             }
         ));
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);

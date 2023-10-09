@@ -91,6 +91,7 @@ serde_json = { workspace = true }
 serial_test = { workspace = true }
 solana-accounts-db = { workspace = true }
 # See order-crates-for-publishing.py for using this unusual `path = "."`
+solana-bundle = { workspace = true }
 solana-core = { path = ".", features = ["dev-context-only-utils"] }
 solana-logger = { workspace = true }
 solana-program-runtime = { workspace = true }
