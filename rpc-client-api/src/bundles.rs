@@ -3,8 +3,8 @@
 use {
     crate::config::RpcSimulateTransactionAccountsConfig,
     solana_account_decoder::UiAccount,
-    solana_accounts_db::transaction_results::TransactionExecutionResult,
     solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
+    solana_runtime::bank::TransactionExecutionResult,
     solana_sdk::{
         clock::Slot,
         commitment_config::{CommitmentConfig, CommitmentLevel},

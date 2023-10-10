@@ -6803,6 +6803,7 @@ dependencies = [
  "serde_json",
  "solana-account-decoder",
  "solana-bundle",
+ "solana-runtime",
  "solana-sdk",
  "solana-transaction-status",
  "solana-version",
