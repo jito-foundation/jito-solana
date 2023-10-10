@@ -13,7 +13,7 @@ use {
         leader_slot_banking_stage_timing_metrics::LeaderExecuteAndCommitTimings,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         qos_service::QosService,
-        tip_manager::{TipManager, TipPaymentError},
+        tip_manager::TipManager,
         unprocessed_transaction_storage::UnprocessedTransactionStorage,
     },
     solana_bundle::{

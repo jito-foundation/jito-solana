@@ -1,6 +1,5 @@
 use {
     crate::{
-        bundle_stage::result::BundleExecutionError,
         immutable_deserialized_bundle::DeserializedBundleError,
         leader_slot_banking_stage_metrics::{self, LeaderSlotMetricsTracker},
     },
