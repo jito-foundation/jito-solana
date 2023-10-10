@@ -7203,6 +7203,7 @@ name = "solana-tip-distributor"
 version = "1.16.17"
 dependencies = [
  "anchor-lang",
+ "async-channel",
  "clap 4.1.11",
  "env_logger",
  "futures 0.3.28",
@@ -7212,6 +7213,7 @@ dependencies = [
  "jito-tip-payment",
  "log",
  "num-traits",
+ "rand 0.7.3",
  "serde",
  "serde_json",
  "solana-client",
@@ -7220,6 +7222,7 @@ dependencies = [
  "solana-merkle-tree",
  "solana-metrics",
  "solana-program",
+ "solana-program-runtime",
  "solana-rpc-client-api",
  "solana-runtime",
  "solana-sdk",

@@ -10,6 +10,7 @@ use {
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     anchor_lang::Id,
+    itertools::Itertools,
     jito_tip_distribution::{
         program::JitoTipDistribution,
         state::{ClaimStatus, TipDistributionAccount},
@@ -20,13 +21,16 @@ use {
         TIP_ACCOUNT_SEED_7,
     },
     log::*,
+    rand::prelude::SliceRandom,
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
+    solana_program::instruction::InstructionError,
     solana_rpc_client_api::{
         client_error::{Error, ErrorKind},
-        request::RpcRequest,
+        request::{RpcError, RpcResponseErrorData},
+        response::RpcSimulateTransactionResult,
     },
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
@@ -35,17 +39,23 @@ use {
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::{Transaction, TransactionError::AlreadyProcessed},
+        transaction::{
+            Transaction,
+            TransactionError::{self},
+        },
     },
     std::{
         collections::HashMap,
         fs::File,
         io::BufReader,
         path::PathBuf,
-        sync::Arc,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
         time::{Duration, Instant},
     },
-    tokio::time::sleep,
+    tokio::sync::{RwLock, Semaphore},
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -460,104 +470,212 @@ pub fn derive_tip_distribution_account_address(
     )
 }
 
+pub const MAX_RETRIES: usize = 5;
+pub const FAIL_DELAY: Duration = Duration::from_millis(100);
+
+/// Returns unprocessed transactions, along with fail count
+pub async fn sign_and_send_transactions_with_retries_multi_rpc(
+    signer: &Arc<Keypair>,
+    blockhash_rpc_client: &Arc<RpcClient>,
+    rpc_clients: &Arc<Vec<Arc<RpcClient>>>,
+    mut transactions: Vec<Transaction>,
+    max_loop_duration: Duration,
+) -> (Vec<Transaction>, u64) {
+    let error_count = Arc::new(AtomicU64::default());
+    let blockhash = Arc::new(RwLock::new(
+        blockhash_rpc_client
+            .get_latest_blockhash()
+            .await
+            .expect("fetch latest blockhash"),
+    ));
+    let mut rng = rand::thread_rng();
+    transactions.shuffle(&mut rng); // shuffle to avoid sending same txns as other claim-tip processes
+    let (tx, rx) = async_channel::bounded::<Transaction>(2 * rpc_clients.len());
+    let dispatcher_handle = {
+        let blockhash_rpc_client = blockhash_rpc_client.clone();
+        let blockhash = blockhash.clone();
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let mut last_blockhash_update = Instant::now();
+            while start.elapsed() < max_loop_duration && !transactions.is_empty() {
+                // ensure we always have a recent blockhash
+                if last_blockhash_update.elapsed() > Duration::from_secs(30) {
+                    let hash = blockhash_rpc_client
+                        .get_latest_blockhash()
+                        .await
+                        .expect("fetch latest blockhash");
+                    info!(
+                        "Got hash {hash:?}. Sending {} transactions to claim mev tips.",
+                        transactions.len()
+                    );
+                    *blockhash.write().await = hash;
+                    last_blockhash_update = Instant::now();
+                }
+                match transactions.pop() {
+                    Some(txn) => tx.send(txn).await.unwrap(),
+                    None => break,
+                }
+            }
+
+            info!(
+                "Exited dispatcher thread. {} transactions remain.",
+                transactions.len()
+            );
+            drop(tx);
+            transactions
+        })
+    };
+    let send_handles = rpc_clients
+        .iter()
+        .map(|rpc_client| {
+            let signer = signer.clone();
+            let rx = rx.clone();
+            let rpc_client = rpc_client.clone();
+            let error_count = error_count.clone();
+            let blockhash = blockhash.clone();
+            tokio::spawn(async move {
+                let mut iterations = 0;
+                while let Ok(txn) = rx.recv().await {
+                    let mut retries = 0;
+                    while retries < MAX_RETRIES {
+                        iterations += 1;
+                        let (_signed_txn, res) =
+                            signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
+                                .await;
+                        match res {
+                            Ok(_) => break,
+                            Err(_) => {
+                                retries += 1;
+                                error_count.fetch_add(1, Ordering::Relaxed);
+                                tokio::time::sleep(FAIL_DELAY).await;
+                            }
+                        }
+                    }
+                }
+
+                info!("Exited send thread. Ran {iterations} times.");
+            })
+        })
+        .collect_vec();
+
+    for handle in send_handles {
+        if let Err(e) = handle.await {
+            warn!("Error joining handle: {e:?}")
+        }
+    }
+    let transactions = dispatcher_handle.await.unwrap();
+    (transactions, error_count.load(Ordering::Relaxed))
+}
+
 pub async fn sign_and_send_transactions_with_retries(
     signer: &Keypair,
     rpc_client: &RpcClient,
+    max_concurrent_rpc_get_reqs: usize,
     transactions: Vec<Transaction>,
-    max_retry_duration: Duration,
-) -> HashMap<Signature, Error> {
-    use tokio::sync::Semaphore;
-    const MAX_CONCURRENT_RPC_CALLS: usize = 50;
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RPC_CALLS));
-
+    txn_send_batch_size: usize,
+    max_loop_duration: Duration,
+) -> (Vec<Transaction>, HashMap<Signature, Error>) {
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_get_reqs));
     let mut errors = HashMap::default();
     let mut blockhash = rpc_client
         .get_latest_blockhash()
         .await
         .expect("fetch latest blockhash");
-
-    let mut signatures_to_transactions = transactions
+    // track unsigned txns
+    let mut transactions_to_process = transactions
         .into_iter()
-        .map(|mut tx| {
-            tx.sign(&[signer], blockhash);
-            (tx.signatures[0], tx)
-        })
-        .collect::<HashMap<Signature, Transaction>>();
+        .map(|txn| (txn.message_data(), txn))
+        .collect::<HashMap<Vec<u8>, Transaction>>();
 
     let start = Instant::now();
-    while start.elapsed() < max_retry_duration && !signatures_to_transactions.is_empty() {
+    while start.elapsed() < max_loop_duration && !transactions_to_process.is_empty() {
+        // ensure we always have a recent blockhash
         if start.elapsed() > Duration::from_secs(60) {
             blockhash = rpc_client
                 .get_latest_blockhash()
                 .await
                 .expect("fetch latest blockhash");
-            signatures_to_transactions
-                .iter_mut()
-                .for_each(|(_sig, tx)| {
-                    *tx = Transaction::new_unsigned(tx.message.clone());
-                    tx.sign(&[signer], blockhash);
-                });
         }
+        info!(
+            "Sending {txn_send_batch_size} of {} transactions to claim mev tips",
+            transactions_to_process.len()
+        );
+        let send_futs = transactions_to_process
+            .iter()
+            .take(txn_send_batch_size)
+            .map(|(hash, txn)| {
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire_owned().await.unwrap(); // wait until our turn
+                    let (txn, res) = signed_send(signer, rpc_client, blockhash, txn.clone()).await;
+                    (hash.clone(), txn, res)
+                }
+            });
 
-        let futs = signatures_to_transactions.iter().map(|(sig, tx)| {
-            let semaphore = semaphore.clone();
-            async move {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let res = match rpc_client.send_transaction(tx).await {
-                    Ok(sig) => {
-                        info!("sent transaction: {sig:?}");
-                        drop(permit);
-                        sleep(Duration::from_secs(10)).await;
-
-                        let _permit = semaphore.acquire_owned().await.unwrap();
-                        match rpc_client.confirm_transaction(&sig).await {
-                            Ok(true) => Ok(()),
-                            Ok(false) => Err(Error::new_with_request(
-                                ErrorKind::Custom("transaction failed to confirm".to_string()),
-                                RpcRequest::SendTransaction,
-                            )),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Err(e) => Err(e),
-                };
-
-                let res = res
-                    .err()
-                    .map(|e| {
-                        if let ErrorKind::TransactionError(AlreadyProcessed) = e.kind {
-                            Ok(())
-                        } else {
-                            error!("error sending transaction {sig:?} error: {e:?}");
-                            Err(e)
-                        }
-                    })
-                    .unwrap_or(Ok(()));
-
-                (*sig, res)
-            }
-        });
-
-        errors = futures::future::join_all(futs)
-            .await
+        let send_res = futures::future::join_all(send_futs).await;
+        let new_errors = send_res
             .into_iter()
-            .filter(|(sig, result)| {
-                if result.is_err() {
-                    true
-                } else {
-                    let _ = signatures_to_transactions.remove(sig);
-                    false
+            .filter_map(|(hash, txn, result)| match result {
+                Err(e) => Some((txn.signatures[0], e)),
+                Ok(..) => {
+                    let _ = transactions_to_process.remove(&hash);
+                    None
                 }
             })
-            .map(|(sig, result)| {
-                let e = result.err().unwrap();
-                warn!("error sending transaction: [error={e}, signature={sig}]");
-                (sig, e)
-            })
             .collect::<HashMap<_, _>>();
+
+        errors.extend(new_errors);
     }
 
-    errors
+    (transactions_to_process.values().cloned().collect(), errors)
+}
+async fn signed_send(
+    signer: &Keypair,
+    rpc_client: &RpcClient,
+    blockhash: Hash,
+    mut txn: Transaction,
+) -> (Transaction, solana_rpc_client_api::client_error::Result<()>) {
+    txn.sign(&[signer], blockhash); // just in time signing
+    let res = match rpc_client.send_and_confirm_transaction(&txn).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            match e.kind {
+                // Already claimed, skip.
+                ErrorKind::TransactionError(TransactionError::AlreadyProcessed)
+                | ErrorKind::TransactionError(TransactionError::InstructionError(
+                    0,
+                    InstructionError::Custom(0),
+                ))
+                | ErrorKind::RpcError(RpcError::RpcResponseError {
+                    data:
+                        RpcResponseErrorData::SendTransactionPreflightFailure(
+                            RpcSimulateTransactionResult {
+                                err:
+                                    Some(TransactionError::InstructionError(
+                                        0,
+                                        InstructionError::Custom(0),
+                                    )),
+                                ..
+                            },
+                        ),
+                    ..
+                }) => Ok(()),
+
+                // transaction got held up too long and blockhash expired. retry txn
+                ErrorKind::TransactionError(TransactionError::BlockhashNotFound) => Err(e),
+
+                _ => {
+                    error!(
+                        "Error sending transaction. Signature: {}, Error: {e:?}",
+                        txn.signatures[0]
+                    );
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    (txn, res)
 }
 
 mod pubkey_string_conversion {

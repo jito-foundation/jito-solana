@@ -8,7 +8,7 @@ use {
         commitment_config::CommitmentConfig, pubkey::Pubkey, signature::read_keypair_file,
     },
     solana_tip_distributor::reclaim_rent_workflow::reclaim_rent,
-    std::{path::PathBuf, str::FromStr, time::Duration},
+    std::{path::PathBuf, time::Duration},
     tokio::runtime::Runtime,
 };
 
@@ -22,7 +22,7 @@ struct Args {
     rpc_url: String,
 
     /// Tip distribution program ID.
-    #[arg(long, env, value_parser = Pubkey::from_str)]
+    #[arg(long, env)]
     tip_distribution_program_id: Pubkey,
 
     /// The keypair signing and paying for transactions.
@@ -32,6 +32,14 @@ struct Args {
     /// High timeout b/c of get_program_accounts call
     #[arg(long, env, default_value_t = 180)]
     rpc_timeout_secs: u64,
+
+    /// Rate-limits the maximum number of requests per RPC connection
+    #[arg(long, env, default_value_t = 100)]
+    max_concurrent_rpc_get_reqs: usize,
+
+    /// Number of transactions to send to RPC at a time.
+    #[arg(long, env, default_value_t = 64)]
+    txn_send_batch_size: usize,
 
     /// Specifies whether to reclaim rent on behalf of validators from respective TDAs.
     #[arg(long, env)]
@@ -53,6 +61,8 @@ fn main() {
         ),
         args.tip_distribution_program_id,
         read_keypair_file(&args.keypair_path).expect("read keypair file"),
+        args.max_concurrent_rpc_get_reqs,
+        args.txn_send_batch_size,
         args.should_reclaim_tdas,
     )) {
         panic!("error reclaiming rent: {e:?}");
