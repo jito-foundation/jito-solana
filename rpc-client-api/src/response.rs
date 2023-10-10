@@ -379,24 +379,6 @@ pub struct RpcIdentity {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum RpcBundleSimulationSummary {
-    /// error and offending transaction signature
-    Failed {
-        error: (),
-        tx_signature: String,
-    },
-    Succeeded,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct RpcSimulateBundleResult {
-    pub summary: RpcBundleSimulationSummary,
-    pub transaction_results: Vec<RpcSimulateBundleTransactionResult>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct RpcVote {
     /// Vote account address, as base-58 encoded string
     pub vote_pubkey: String,
@@ -447,18 +429,6 @@ pub struct RpcVoteAccountInfo {
 pub struct RpcSignatureConfirmation {
     pub confirmations: usize,
     pub status: Result<()>,
-}
-
-// TODO: consolidate with [RpcSimulateTransactionResult]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RpcSimulateBundleTransactionResult {
-    pub err: Option<TransactionError>,
-    pub logs: Option<Vec<String>>,
-    pub pre_execution_accounts: Option<Vec<UiAccount>>,
-    pub post_execution_accounts: Option<Vec<UiAccount>>,
-    pub units_consumed: Option<u64>,
-    pub return_data: Option<UiTransactionReturnData>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

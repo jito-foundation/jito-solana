@@ -15,14 +15,13 @@ use {
         BankingStageStats, FilterForwardingResults, ForwardOption,
     },
     crate::{
-        bundle_stage::{
-            bundle_stage_leader_metrics::BundleStageLeaderMetrics, result::BundleExecutionError,
-        },
+        bundle_stage::bundle_stage_leader_metrics::BundleStageLeaderMetrics,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
     },
     itertools::Itertools,
     min_max_heap::MinMaxHeap,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
+    solana_bundle::BundleExecutionError,
     solana_measure::{measure, measure_us},
     solana_runtime::bank::Bank,
     solana_sdk::{
@@ -1233,19 +1232,22 @@ impl BundleStorage {
                         debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
                         // yippee
                     }
-                    Err(BundleExecutionError::PohRecordError(_)) => {
+                    Err(BundleExecutionError::PohRecordError(e)) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
-                        debug!("bundle={} poh record error", sanitized_bundle.bundle_id);
+                        debug!(
+                            "bundle={} poh record error: {e:?}",
+                            sanitized_bundle.bundle_id
+                        );
                         rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
-                    Err(BundleExecutionError::BankProcessingDone) => {
+                    Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
                         // buffer the bundle to the front of the queue to be attempted next slot
                         debug!("bundle={} bank processing done", sanitized_bundle.bundle_id);
                         rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
-                    Err(BundleExecutionError::ExecutionError(e)) => {
+                    Err(BundleExecutionError::TransactionFailure(e)) => {
                         debug!(
                             "bundle={} execution error: {:?}",
                             sanitized_bundle.bundle_id, e
@@ -1262,7 +1264,7 @@ impl BundleStorage {
                         // Tip errors are _typically_ due to misconfiguration (except for poh record error, bank processing error, exceeds cost model)
                         // in order to prevent buffering too many bundles, we'll just drop the bundle
                     }
-                    Err(BundleExecutionError::LockError(_e)) => {
+                    Err(BundleExecutionError::LockError) => {
                         // lock errors are irrecoverable due to malformed transactions
                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
                     }

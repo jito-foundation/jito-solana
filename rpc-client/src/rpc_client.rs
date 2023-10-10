@@ -28,6 +28,7 @@ use {
         UiAccount, UiAccountEncoding,
     },
     solana_rpc_client_api::{
+        bundles::{RpcSimulateBundleConfig, RpcSimulateBundleResult},
         client_error::{Error as ClientError, ErrorKind, Result as ClientResult},
         config::{RpcAccountInfoConfig, *},
         request::{RpcRequest, TokenAccountsFilter},
