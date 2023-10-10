@@ -29,7 +29,7 @@ pub async fn reclaim_rent(
     rpc_client: RpcClient,
     tip_distribution_program_id: Pubkey,
     signer: Keypair,
-    max_concurrent_rpc_reqs: usize,
+    max_concurrent_rpc_get_reqs: usize,
     txn_send_batch_size: usize,
     // Optionally reclaim TipDistributionAccount rents on behalf of validators.
     should_reclaim_tdas: bool,
@@ -157,7 +157,7 @@ pub async fn reclaim_rent(
     let (to_process, failed_transactions) = sign_and_send_transactions_with_retries(
         &signer,
         &rpc_client,
-        max_concurrent_rpc_reqs,
+        max_concurrent_rpc_get_reqs,
         transactions,
         txn_send_batch_size,
         Duration::from_secs(300),

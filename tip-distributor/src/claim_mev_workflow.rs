@@ -1,6 +1,8 @@
-use crate::{sign_and_send_transactions_with_retries_multi_rpc, FAIL_DELAY};
 use {
-    crate::{read_json_from_file, GeneratedMerkleTreeCollection, TreeNode, MAX_RETRIES},
+    crate::{
+        read_json_from_file, sign_and_send_transactions_with_retries_multi_rpc,
+        GeneratedMerkleTreeCollection, TreeNode, FAIL_DELAY, MAX_RETRIES,
+    },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
     log::{debug, info},
@@ -43,11 +45,11 @@ pub async fn claim_mev_tips(
     merkle_root_path: &PathBuf,
     rpc_url: String,
     rpc_connection_count: u64,
+    max_concurrent_rpc_get_reqs: usize,
     tip_distribution_program_id: &Pubkey,
     keypair_path: &PathBuf,
     max_loop_retries: u64,
     max_loop_duration: Duration,
-    max_concurrent_rpc_reqs: usize,
 ) -> Result<(), ClaimMevError> {
     let merkle_trees: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
@@ -83,7 +85,7 @@ pub async fn claim_mev_tips(
     let account_fetch_start = Instant::now();
     let tdas = get_batched_accounts(
         &blockhash_rpc_client,
-        max_concurrent_rpc_reqs,
+        max_concurrent_rpc_get_reqs,
         merkle_trees
             .generated_merkle_trees
             .iter()
@@ -130,7 +132,7 @@ pub async fn claim_mev_tips(
     // track balances only
     let claimants = get_batched_accounts(
         &blockhash_rpc_client,
-        max_concurrent_rpc_reqs,
+        max_concurrent_rpc_get_reqs,
         tree_nodes
             .iter()
             .map(|tree_node| tree_node.claimant)
@@ -151,7 +153,7 @@ pub async fn claim_mev_tips(
 
     let claim_statuses = get_batched_accounts(
         &blockhash_rpc_client,
-        max_concurrent_rpc_reqs,
+        max_concurrent_rpc_get_reqs,
         tree_nodes
             .iter()
             .map(|tree_node| tree_node.claim_status_pubkey)
@@ -199,7 +201,7 @@ pub async fn claim_mev_tips(
                 i64
             ),
             (
-                "latency_us",
+                "transaction_prepare_latency_us",
                 transaction_prepare_start.elapsed().as_micros(),
                 i64
             ),
@@ -220,7 +222,7 @@ pub async fn claim_mev_tips(
         }
         let transactions_len = transactions.len();
 
-        info!("Sending {} tip claim transactions. {zero_lamports_count} would transfer zero lamports, {below_min_rent_count} would be below minimum rent",transactions.len());
+        info!("Sending {} tip claim transactions. {zero_lamports_count} would transfer zero lamports, {below_min_rent_count} would be below minimum rent", transactions.len());
         let send_start = Instant::now();
         let (remaining_transactions, new_failed_transaction_count) =
             sign_and_send_transactions_with_retries_multi_rpc(
@@ -254,11 +256,7 @@ pub async fn claim_mev_tips(
         );
 
         if remaining_transactions.is_empty() {
-            info!(
-                "Finished after {:?}, {max_loop_retries} retries. {} remaining mev claim transactions, {failed_transaction_count} failed requests.",
-               account_fetch_start.elapsed(), remaining_transactions.len(),
-
-            );
+            info!("Finished claiming tips. {max_loop_retries} retries. {} remaining mev claim transactions, {failed_transaction_count} failed requests.", remaining_transactions.len());
             return Ok(());
         }
 
@@ -266,9 +264,9 @@ pub async fn claim_mev_tips(
         retries += 1;
         if retries >= max_loop_retries {
             panic!(
-                    "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {failed_transaction_count} failed requests.",
-                    remaining_transactions.len(),
-                );
+                "Failed after {max_loop_retries} retries. {} remaining mev claim transactions, {failed_transaction_count} failed requests.",
+                remaining_transactions.len(),
+            );
         }
     }
 }
@@ -424,10 +422,10 @@ async fn is_sufficient_balance(
 /// Fetch accounts in parallel batches with retries.
 async fn get_batched_accounts(
     rpc_client: &RpcClient,
-    max_concurrent_rpc_reqs: usize,
+    max_concurrent_rpc_get_reqs: usize,
     pubkeys: Vec<Pubkey>,
 ) -> solana_rpc_client_api::client_error::Result<HashMap<Pubkey, Option<Account>>> {
-    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_reqs));
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_get_reqs));
     let futs = pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS).map(|pubkeys| {
         let semaphore = semaphore.clone();
 

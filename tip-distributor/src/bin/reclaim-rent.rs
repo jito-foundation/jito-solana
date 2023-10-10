@@ -35,7 +35,7 @@ struct Args {
 
     /// Rate-limits the maximum number of requests per RPC connection
     #[arg(long, env, default_value_t = 100)]
-    max_concurrent_rpc_reqs: usize,
+    max_concurrent_rpc_get_reqs: usize,
 
     /// Number of transactions to send to RPC at a time.
     #[arg(long, env, default_value_t = 64)]
@@ -61,7 +61,7 @@ fn main() {
         ),
         args.tip_distribution_program_id,
         read_keypair_file(&args.keypair_path).expect("read keypair file"),
-        args.max_concurrent_rpc_reqs,
+        args.max_concurrent_rpc_get_reqs,
         args.txn_send_batch_size,
         args.should_reclaim_tdas,
     )) {

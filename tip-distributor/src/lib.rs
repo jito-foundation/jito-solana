@@ -3,18 +3,15 @@ pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
-use itertools::Itertools;
-use rand::seq::SliceRandom;
-
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::RwLock;
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     anchor_lang::Id,
+    itertools::Itertools,
     log::*,
+    rand::seq::SliceRandom,
     serde::{de::DeserializeOwned, Deserialize, Serialize},
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
@@ -39,7 +36,10 @@ use {
         fs::File,
         io::BufReader,
         path::PathBuf,
-        sync::Arc,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
         time::{Duration, Instant},
     },
     tip_distribution::{
@@ -51,7 +51,7 @@ use {
         TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
         TIP_ACCOUNT_SEED_7,
     },
-    tokio::sync::Semaphore,
+    tokio::sync::{RwLock, Semaphore},
 };
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
@@ -485,7 +485,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             .expect("fetch latest blockhash"),
     ));
     let mut rng = rand::thread_rng();
-    transactions.shuffle(&mut rng);
+    transactions.shuffle(&mut rng); // shuffle to avoid sending same txns as other claim-tip processes
     let (tx, rx) = async_channel::bounded::<Transaction>(2 * rpc_clients.len());
     let dispatcher_handle = {
         let blockhash_rpc_client = blockhash_rpc_client.clone();
@@ -501,7 +501,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
                         .await
                         .expect("fetch latest blockhash");
                     info!(
-                        "Got hash {hash:?}. Sending {} transactions to claim mev tips",
+                        "Got hash {hash:?}. Sending {} transactions to claim mev tips.",
                         transactions.len()
                     );
                     *blockhash.write().await = hash;
@@ -514,7 +514,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             }
 
             info!(
-                "Exited dispatcher thread. {} transactions remain",
+                "Exited dispatcher thread. {} transactions remain.",
                 transactions.len()
             );
             drop(tx);
@@ -566,12 +566,12 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
 pub async fn sign_and_send_transactions_with_retries(
     signer: &Keypair,
     rpc_client: &RpcClient,
-    max_concurrent_rpc_reqs: usize,
+    max_concurrent_rpc_get_reqs: usize,
     transactions: Vec<Transaction>,
     txn_send_batch_size: usize,
     max_loop_duration: Duration,
 ) -> (Vec<Transaction>, HashMap<Signature, Error>) {
-    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_reqs));
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_get_reqs));
     let mut errors = HashMap::default();
     let mut blockhash = rpc_client
         .get_latest_blockhash()

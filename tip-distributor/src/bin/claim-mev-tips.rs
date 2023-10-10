@@ -5,7 +5,10 @@ use {
     log::*,
     solana_sdk::pubkey::Pubkey,
     solana_tip_distributor::claim_mev_workflow::claim_mev_tips,
-    std::{path::PathBuf, time::Duration},
+    std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    },
 };
 
 #[derive(Parser, Debug)]
@@ -27,9 +30,13 @@ struct Args {
     #[arg(long, env)]
     keypair_path: PathBuf,
 
-    /// Number of unique connections to the RPC server
+    /// Number of unique connections to the RPC server for sending txns
     #[arg(long, env, default_value_t = 100)]
-    rpc_connection_count: u64,
+    rpc_send_connection_count: u64,
+
+    /// Rate-limits the maximum number of requests per RPC connection
+    #[arg(long, env, default_value_t = 200)]
+    max_concurrent_rpc_get_reqs: usize,
 
     #[arg(long, env, default_value_t = 5)]
     max_loop_retries: u64,
@@ -37,10 +44,6 @@ struct Args {
     /// Limits how long before send loop runs before stopping. Defaults to 10 mins
     #[arg(long, env, default_value_t = 10*60)]
     max_loop_duration_secs: u64,
-
-    /// Rate-limits the maximum number of requests per RPC connection
-    #[arg(long, env, default_value_t = 200)]
-    max_concurrent_rpc_reqs: usize,
 }
 
 #[tokio::main]
@@ -48,23 +51,25 @@ async fn main() {
     env_logger::init();
     let args: Args = Args::parse();
     info!("Starting to claim mev tips...");
+    let start = Instant::now();
 
     if let Err(e) = claim_mev_tips(
         &args.merkle_trees_path,
         args.rpc_url,
-        args.rpc_connection_count,
+        args.rpc_send_connection_count,
+        args.max_concurrent_rpc_get_reqs,
         &args.tip_distribution_program_id,
         &args.keypair_path,
         args.max_loop_retries,
         Duration::from_secs(args.max_loop_duration_secs),
-        args.max_concurrent_rpc_reqs,
     )
     .await
     {
-        panic!("error claiming mev tips: {e:?}");
+        panic!("Error claiming mev tips: {e:?}");
     }
     info!(
-        "done claiming mev tips from file {:?}",
-        args.merkle_trees_path
+        "Done claiming mev tips from file {:?} after {:?}",
+        args.merkle_trees_path,
+        start.elapsed()
     );
 }

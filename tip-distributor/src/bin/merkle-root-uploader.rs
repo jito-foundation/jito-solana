@@ -1,9 +1,6 @@
 use {
-    clap::Parser,
-    log::info,
-    solana_sdk::pubkey::Pubkey,
-    solana_tip_distributor::merkle_root_upload_workflow::upload_merkle_root,
-    std::{path::PathBuf},
+    clap::Parser, log::info, solana_sdk::pubkey::Pubkey,
+    solana_tip_distributor::merkle_root_upload_workflow::upload_merkle_root, std::path::PathBuf,
 };
 
 #[derive(Parser, Debug)]
@@ -27,7 +24,7 @@ struct Args {
 
     /// Rate-limits the maximum number of requests per RPC connection
     #[arg(long, env, default_value_t = 100)]
-    max_concurrent_rpc_reqs: usize,
+    max_concurrent_rpc_get_reqs: usize,
 
     /// Number of transactions to send to RPC at a time.
     #[arg(long, env, default_value_t = 64)]
@@ -45,7 +42,7 @@ fn main() {
         &args.keypair_path,
         &args.rpc_url,
         &args.tip_distribution_program_id,
-        args.max_concurrent_rpc_reqs,
+        args.max_concurrent_rpc_get_reqs,
         args.txn_send_batch_size,
     ) {
         panic!("failed to upload merkle roots: {:?}", e);
