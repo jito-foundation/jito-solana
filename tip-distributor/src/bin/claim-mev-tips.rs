@@ -1,5 +1,6 @@
 //! This binary claims MEV tips.
 
+use solana_metrics::{datapoint_error, datapoint_info};
 use {
     clap::Parser,
     log::*,
@@ -53,7 +54,7 @@ async fn main() {
     info!("Starting to claim mev tips...");
     let start = Instant::now();
 
-    if let Err(e) = claim_mev_tips(
+    match claim_mev_tips(
         &args.merkle_trees_path,
         args.rpc_url,
         args.rpc_send_connection_count,
@@ -65,11 +66,25 @@ async fn main() {
     )
     .await
     {
-        panic!("Error claiming mev tips: {e:?}");
+        Err(e) => datapoint_error!(
+            "claim_mev_workflow-claim_error",
+            ("error", 1, i64),
+            ("err_str", e.to_string(), String),
+            (
+                "merkle_trees_path",
+                args.merkle_trees_path.to_string_lossy(),
+                String
+            ),
+            ("latency_us", start.elapsed().as_micros(), i64),
+        ),
+        Ok(()) => datapoint_info!(
+            "claim_mev_workflow-claim_completion",
+            (
+                "merkle_trees_path",
+                args.merkle_trees_path.to_string_lossy(),
+                String
+            ),
+            ("latency_us", start.elapsed().as_micros(), i64),
+        ),
     }
-    info!(
-        "Done claiming mev tips from file {:?} after {:?}",
-        args.merkle_trees_path,
-        start.elapsed()
-    );
 }
