@@ -4,7 +4,7 @@ use {
         immutable_deserialized_bundle::DeserializedBundleError,
         leader_slot_banking_stage_metrics::{self, LeaderSlotMetricsTracker},
     },
-    solana_bundle::bundle_execution::LoadAndExecuteBundleError,
+    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
     solana_poh::poh_recorder::BankStart,
     solana_sdk::{bundle::SanitizedBundle, clock::Slot, saturating_add_assign},
 };
@@ -215,18 +215,18 @@ impl BundleStageStatsMetricsTracker {
                     saturating_add_assign!(bundle_stage_metrics.execution_results_ok, 1);
                 }
                 Err(BundleExecutionError::PohRecordError(_))
-                | Err(BundleExecutionError::BankProcessingDone) => {
+                | Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
                     saturating_add_assign!(
                         bundle_stage_metrics.execution_results_poh_max_height,
                         1
                     );
                 }
-                Err(BundleExecutionError::ExecutionError(
+                Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::ProcessingTimeExceeded(_),
                 )) => {
                     saturating_add_assign!(bundle_stage_metrics.num_execution_timeouts, 1);
                 }
-                Err(BundleExecutionError::ExecutionError(
+                Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::TransactionError { .. },
                 )) => {
                     saturating_add_assign!(
@@ -234,10 +234,10 @@ impl BundleStageStatsMetricsTracker {
                         1
                     );
                 }
-                Err(BundleExecutionError::ExecutionError(
+                Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::LockError { .. },
                 ))
-                | Err(BundleExecutionError::LockError(_)) => {
+                | Err(BundleExecutionError::LockError) => {
                     saturating_add_assign!(bundle_stage_metrics.num_lock_errors, 1);
                 }
                 Err(BundleExecutionError::ExceedsCostModel) => {
@@ -249,7 +249,7 @@ impl BundleStageStatsMetricsTracker {
                 Err(BundleExecutionError::TipError(_)) => {
                     saturating_add_assign!(bundle_stage_metrics.execution_results_tip_errors, 1);
                 }
-                Err(BundleExecutionError::ExecutionError(
+                Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts,
                 )) => {
                     saturating_add_assign!(bundle_stage_metrics.bad_argument, 1);

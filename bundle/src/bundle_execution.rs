@@ -1,6 +1,6 @@
 use {
     itertools::izip,
-    log::{debug, trace},
+    log::*,
     solana_ledger::token_balances::collect_token_balances,
     solana_measure::{measure::Measure, measure_us},
     solana_program_runtime::timings::ExecuteTimings,
@@ -77,16 +77,24 @@ impl<'a> LoadAndExecuteBundleOutput<'a> {
 
 #[derive(Clone, Debug, Error)]
 pub enum LoadAndExecuteBundleError {
-    #[error("The bundle processing time was exceeded")]
+    #[error("Bundle execution timed out")]
     ProcessingTimeExceeded(Duration),
 
-    #[error("A transaction in the bundle encountered a lock error")]
+    #[error(
+        "A transaction in the bundle encountered a lock error: [signature={:?}, transaction_error={:?}]",
+        signature,
+        transaction_error
+    )]
     LockError {
         signature: Signature,
         transaction_error: TransactionError,
     },
 
-    #[error("A transaction in the bundle failed to execute")]
+    #[error(
+        "A transaction in the bundle failed to execute: [signature={:?}, execution_result={:?}",
+        signature,
+        execution_result
+    )]
     TransactionError {
         signature: Signature,
         // Box reduces the size between variants in the Error
@@ -318,7 +326,7 @@ pub fn load_and_execute_bundle<'a>(
         });
         saturating_add_assign!(metrics.collect_balances_us, collect_balances_us);
 
-        let end = max(
+        let end = min(
             chunk_start.saturating_add(batch.sanitized_transactions().len()),
             pre_execution_accounts.len(),
         );
@@ -495,7 +503,7 @@ mod tests {
         solana_ledger::genesis_utils::create_genesis_config,
         solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
         solana_sdk::{
-            bundle::{derive_bundle_id_from_sanizited_transactions, SanitizedBundle},
+            bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle},
             clock::MAX_PROCESSING_AGE,
             pubkey::Pubkey,
             signature::{Keypair, Signer},
@@ -525,7 +533,7 @@ mod tests {
             .map(|tx| SanitizedTransaction::try_from_legacy_transaction(tx.clone()).unwrap())
             .collect();
 
-        let bundle_id = derive_bundle_id_from_sanizited_transactions(&transactions);
+        let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
 
         SanitizedBundle {
             transactions,
