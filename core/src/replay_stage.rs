@@ -1731,9 +1731,7 @@ impl ReplayStage {
 
             (r_bank_forks.root(), bank_hashes)
         };
-        for (duplicate_slot, bank_hash) in
-            new_duplicate_slots.into_iter().zip(bank_hashes.into_iter())
-        {
+        for (duplicate_slot, bank_hash) in new_duplicate_slots.into_iter().zip(bank_hashes) {
             // WindowService should only send the signal once per slot
             let duplicate_state = DuplicateState::new_from_state(
                 duplicate_slot,

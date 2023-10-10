@@ -376,10 +376,7 @@ mod tests {
                 Arc::new(data_budget),
             );
             let unprocessed_packet_batches: UnprocessedPacketBatches =
-                UnprocessedPacketBatches::from_iter(
-                    vec![deserialized_packet.clone()].into_iter(),
-                    1,
-                );
+                UnprocessedPacketBatches::from_iter(vec![deserialized_packet.clone()], 1);
             let stats = BankingStageStats::default();
             forwarder.handle_forwarding(
                 &mut UnprocessedTransactionStorage::new_transaction_storage(

@@ -1469,10 +1469,8 @@ pub mod tests {
                             .map(|store| db.get_unique_accounts_from_storage(store))
                             .collect::<Vec<_>>();
 
-                        let accounts_per_storage = infos
-                            .iter()
-                            .zip(original_results.into_iter())
-                            .collect::<Vec<_>>();
+                        let accounts_per_storage =
+                            infos.iter().zip(original_results).collect::<Vec<_>>();
 
                         let accounts_to_combine =
                             db.calc_accounts_to_combine(&accounts_per_storage);
@@ -1641,10 +1639,7 @@ pub mod tests {
                 .map(|store| db.get_unique_accounts_from_storage(store))
                 .collect::<Vec<_>>();
             assert_eq!(original_results.first().unwrap().stored_accounts.len(), 2);
-            let accounts_per_storage = infos
-                .iter()
-                .zip(original_results.into_iter())
-                .collect::<Vec<_>>();
+            let accounts_per_storage = infos.iter().zip(original_results).collect::<Vec<_>>();
 
             let accounts_to_combine = db.calc_accounts_to_combine(&accounts_per_storage);
             let slots_vec = slots.collect::<Vec<_>>();

@@ -3346,8 +3346,7 @@ pub mod utils {
                     .ok_or_else(|| Error::invalid_params("the length of pre_execution_accounts_configs must match the number of transactions"))?;
                 let account_encoding = account_config
                     .as_ref()
-                    .map(|config| config.encoding)
-                    .flatten()
+                    .and_then(|config| config.encoding)
                     .unwrap_or(UiAccountEncoding::Base64);
 
                 let pre_execution_accounts = if let Some(pre_tx_accounts) =

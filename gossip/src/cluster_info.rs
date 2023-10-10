@@ -3370,11 +3370,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remote_nodes.len(), packets.len());
-        for (packet, (_, socket), pong) in izip!(
-            packets.into_iter(),
-            remote_nodes.into_iter(),
-            pongs.into_iter()
-        ) {
+        for (packet, (_, socket), pong) in izip!(packets.into_iter(), remote_nodes, pongs) {
             assert_eq!(packet.meta().socket_addr(), socket);
             let bytes = serialize(&pong).unwrap();
             match packet.deserialize_slice(..).unwrap() {
