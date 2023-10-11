@@ -37,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
@@ -84,6 +86,8 @@ jobs:
           ]
     steps:
       - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
@@ -133,6 +137,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
