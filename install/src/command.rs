@@ -501,7 +501,6 @@ fn add_to_path(new_path: &str) -> bool {
                     fn append_file(dest: &Path, line: &str) -> io::Result<()> {
                         use std::io::Write;
                         let mut dest_file = fs::OpenOptions::new()
-                            .write(true)
                             .append(true)
                             .create(true)
                             .open(dest)?;
@@ -573,7 +572,7 @@ pub fn init(
 
 fn github_release_download_url(release_semver: &str) -> String {
     format!(
-        "https://github.com/solana-labs/solana/releases/download/v{}/solana-release-{}.tar.bz2",
+        "https://github.com/jito-foundation/jito-solana/releases/download/v{}/solana-release-{}.tar.bz2",
         release_semver,
         crate::build_env::TARGET
     )
@@ -581,7 +580,7 @@ fn github_release_download_url(release_semver: &str) -> String {
 
 fn release_channel_download_url(release_channel: &str) -> String {
     format!(
-        "https://release.solana.com/{}/solana-release-{}.tar.bz2",
+        "https://release.jito.wtf/{}/solana-release-{}.tar.bz2",
         release_channel,
         crate::build_env::TARGET
     )
@@ -589,7 +588,7 @@ fn release_channel_download_url(release_channel: &str) -> String {
 
 fn release_channel_version_url(release_channel: &str) -> String {
     format!(
-        "https://release.solana.com/{}/solana-release-{}.yml",
+        "https://release.jito.wtf/{}/solana-release-{}.yml",
         release_channel,
         crate::build_env::TARGET
     )
@@ -906,7 +905,7 @@ fn check_for_newer_github_release(
 
     while page == 1 || releases.len() == PER_PAGE {
         let url = reqwest::Url::parse_with_params(
-            "https://api.github.com/repos/solana-labs/solana/releases",
+            "https://api.github.com/repos/jito-foundation/jito-solana/releases",
             &[
                 ("per_page", &format!("{PER_PAGE}")),
                 ("page", &format!("{page}")),
@@ -968,58 +967,62 @@ pub fn update(config_file: &str, check_only: bool) -> Result<bool, String> {
 pub fn init_or_update(config_file: &str, is_init: bool, check_only: bool) -> Result<bool, String> {
     let mut config = Config::load(config_file)?;
 
-    let semver_update_type = if is_init {
-        SemverUpdateType::Fixed
-    } else {
-        SemverUpdateType::Patch
-    };
-
     let (updated_version, download_url_and_sha256, release_dir) = if let Some(explicit_release) =
         &config.explicit_release
     {
         match explicit_release {
             ExplicitRelease::Semver(current_release_semver) => {
-                let progress_bar = new_spinner_progress_bar();
-                progress_bar.set_message(format!("{LOOKING_GLASS}Checking for updates..."));
+                let release_dir = config.release_dir(current_release_semver);
+                if is_init && release_dir.exists() {
+                    (current_release_semver.to_owned(), None, release_dir)
+                } else {
+                    let progress_bar = new_spinner_progress_bar();
+                    progress_bar.set_message(format!("{LOOKING_GLASS}Checking for updates..."));
 
-                let github_release = check_for_newer_github_release(
-                    current_release_semver,
-                    semver_update_type,
-                    is_init,
-                )?;
+                    let semver_update_type = if is_init {
+                        SemverUpdateType::Fixed
+                    } else {
+                        SemverUpdateType::Patch
+                    };
+                    let github_release = check_for_newer_github_release(
+                        current_release_semver,
+                        semver_update_type,
+                        is_init,
+                    )?;
 
-                progress_bar.finish_and_clear();
+                    progress_bar.finish_and_clear();
 
-                match github_release {
-                    None => {
-                        return Err(format!("Unknown release: {current_release_semver}"));
-                    }
-                    Some(release_semver) => {
-                        if release_semver == *current_release_semver {
-                            if let Ok(active_release_version) = load_release_version(
-                                &config.active_release_dir().join("version.yml"),
-                            ) {
-                                if format!("v{current_release_semver}")
-                                    == active_release_version.channel
-                                {
-                                    println!(
+                    match github_release {
+                        None => {
+                            return Err(format!("Unknown release: {current_release_semver}"));
+                        }
+                        Some(release_semver) => {
+                            if release_semver == *current_release_semver {
+                                if let Ok(active_release_version) = load_release_version(
+                                    &config.active_release_dir().join("version.yml"),
+                                ) {
+                                    if format!("v{current_release_semver}")
+                                        == active_release_version.channel
+                                    {
+                                        println!(
                                         "Install is up to date. {release_semver} is the latest compatible release"
                                     );
-                                    return Ok(false);
+                                        return Ok(false);
+                                    }
                                 }
                             }
-                        }
-                        config.explicit_release =
-                            Some(ExplicitRelease::Semver(release_semver.clone()));
+                            config.explicit_release =
+                                Some(ExplicitRelease::Semver(release_semver.clone()));
 
-                        let release_dir = config.release_dir(&release_semver);
-                        let download_url_and_sha256 = if release_dir.exists() {
-                            // Release already present in the cache
-                            None
-                        } else {
-                            Some((github_release_download_url(&release_semver), None))
-                        };
-                        (release_semver, download_url_and_sha256, release_dir)
+                            let release_dir = config.release_dir(&release_semver);
+                            let download_url_and_sha256 = if release_dir.exists() {
+                                // Release already present in the cache
+                                None
+                            } else {
+                                Some((github_release_download_url(&release_semver), None))
+                            };
+                            (release_semver, download_url_and_sha256, release_dir)
+                        }
                     }
                 }
             }
