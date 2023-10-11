@@ -1,0 +1,23 @@
+[package]
+name = "solana-runtime-plugin"
+publish = false
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[dependencies]
+crossbeam-channel = { workspace = true }
+json5 = { workspace = true }
+jsonrpc-core = { workspace = true }
+jsonrpc-core-client = { workspace = true, features = ["ipc"] }
+jsonrpc-derive = { workspace = true }
+jsonrpc-ipc-server = { workspace = true }
+jsonrpc-server-utils = { workspace = true }
+libloading = { workspace = true }
+log = { workspace = true }
+solana-runtime = { workspace = true }
+solana-sdk = { workspace = true }
+thiserror = { workspace = true }
