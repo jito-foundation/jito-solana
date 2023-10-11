@@ -36,12 +36,22 @@ impl<T> OptionalContext<T> {
     }
 }
 
+pub type BatchRpcResult<T> = client_error::Result<Vec<BatchResponse<T>>>;
 pub type RpcResult<T> = client_error::Result<Response<T>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcResponseContext {
     pub slot: Slot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<RpcApiVersion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRpcResponseContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<Slot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_version: Option<RpcApiVersion>,
 }
@@ -90,6 +100,12 @@ impl RpcResponseContext {
             api_version: Some(RpcApiVersion::default()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchResponse<T> {
+    pub id: u64,
+    pub result: Response<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

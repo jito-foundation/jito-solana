@@ -126,11 +126,14 @@ fn try_drain_iter<T>(work: T, receiver: &Receiver<T>) -> impl Iterator<Item = T>
 mod tests {
     use {
         super::*,
-        crate::banking_stage::{
-            committer::Committer,
-            qos_service::QosService,
-            scheduler_messages::{TransactionBatchId, TransactionId},
-            tests::{create_slow_genesis_config, sanitize_transactions, simulate_poh},
+        crate::{
+            banking_stage::{
+                committer::Committer,
+                qos_service::QosService,
+                scheduler_messages::{TransactionBatchId, TransactionId},
+                tests::{create_slow_genesis_config, sanitize_transactions, simulate_poh},
+            },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         crossbeam_channel::unbounded,
         solana_ledger::{
@@ -145,6 +148,7 @@ mod tests {
         },
         solana_vote::vote_sender_types::ReplayVoteReceiver,
         std::{
+            collections::HashSet,
             sync::{atomic::AtomicBool, RwLock},
             thread::JoinHandle,
         },
@@ -202,7 +206,14 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            HashSet::default(),
+            BundleAccountLocker::default(),
+        );
 
         let (consume_sender, consume_receiver) = unbounded();
         let (consumed_sender, consumed_receiver) = unbounded();
