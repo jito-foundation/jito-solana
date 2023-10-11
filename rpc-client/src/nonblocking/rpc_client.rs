@@ -33,6 +33,10 @@ use {
         UiAccount, UiAccountData, UiAccountEncoding,
     },
     solana_rpc_client_api::{
+        bundles::{
+            RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
+            SimulationSlotConfig,
+        },
         client_error::{
             Error as ClientError, ErrorKind as ClientErrorKind, Result as ClientResult,
         },
