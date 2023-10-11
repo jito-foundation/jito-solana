@@ -31,6 +31,7 @@ serde_json = { workspace = true }
 soketto = { workspace = true }
 solana-account-decoder = { workspace = true }
 solana-accounts-db = { workspace = true }
+solana-bundle = { workspace = true }
 solana-client = { workspace = true }
 solana-entry = { workspace = true }
 solana-faucet = { workspace = true }
@@ -40,6 +41,7 @@ solana-measure = { workspace = true }
 solana-metrics = { workspace = true }
 solana-perf = { workspace = true }
 solana-poh = { workspace = true }
+solana-program-runtime = { workspace = true }
 solana-rayon-threadlimit = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-runtime = { workspace = true }
