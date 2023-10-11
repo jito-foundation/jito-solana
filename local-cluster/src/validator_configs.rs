@@ -69,6 +69,11 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         block_production_method: config.block_production_method.clone(),
         generator_config: config.generator_config.clone(),
         use_snapshot_archives_at_startup: config.use_snapshot_archives_at_startup,
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_address: config.shred_receiver_address.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        preallocated_bundle_cost: config.preallocated_bundle_cost,
     }
 }
 
