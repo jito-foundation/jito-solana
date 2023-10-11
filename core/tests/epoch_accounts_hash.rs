@@ -444,6 +444,7 @@ fn test_snapshots_have_expected_epoch_accounts_hash() {
                 if let Some(full_snapshot_archive_info) =
                     snapshot_utils::get_highest_full_snapshot_archive_info(
                         &snapshot_config.full_snapshot_archives_dir,
+                        None,
                     )
                 {
                     if full_snapshot_archive_info.slot() == bank.slot() {
@@ -563,6 +564,7 @@ fn test_background_services_request_handling_for_epoch_accounts_hash() {
             info!("Taking full snapshot...");
             while snapshot_utils::get_highest_full_snapshot_archive_slot(
                 &snapshot_config.full_snapshot_archives_dir,
+                None,
             ) != Some(bank.slot())
             {
                 trace!("waiting for full snapshot...");
