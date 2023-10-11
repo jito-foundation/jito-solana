@@ -539,6 +539,7 @@ fn test_concurrent_snapshot_packaging(
                 // Wait until the package has been archived by SnapshotPackagerService
                 while snapshot_utils::get_highest_full_snapshot_archive_slot(
                     &full_snapshot_archives_dir,
+                    None,
                 )
                 .is_none()
                 {
@@ -1064,6 +1065,7 @@ fn test_snapshots_with_background_services(
                 &snapshot_test_config
                     .snapshot_config
                     .full_snapshot_archives_dir,
+                None,
             ) != Some(slot)
             {
                 assert!(
@@ -1082,6 +1084,7 @@ fn test_snapshots_with_background_services(
                     .snapshot_config
                     .incremental_snapshot_archives_dir,
                 last_full_snapshot_slot.unwrap(),
+                None,
             ) != Some(slot)
             {
                 assert!(
