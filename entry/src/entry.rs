@@ -231,7 +231,7 @@ pub fn hash_transactions(transactions: &[VersionedTransaction]) -> Hash {
         .iter()
         .flat_map(|tx| tx.signatures.iter())
         .collect();
-    let merkle_tree = MerkleTree::new(&signatures);
+    let merkle_tree = MerkleTree::new(&signatures, false);
     if let Some(root_hash) = merkle_tree.get_root() {
         *root_hash
     } else {
