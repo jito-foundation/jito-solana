@@ -401,27 +401,10 @@ impl DurableNonceFee {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum BundleSimulationSummary {
-    // error and transaction signature responsible
-    Failed {
-        error: (), //BundleExecutionError,
-        tx_signature: Signature,
-    },
-    Succeeded,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccountData {
     pub pubkey: Pubkey,
     pub data: AccountSharedData,
-}
-
-#[derive(Clone)]
-pub struct BundleSimulationResult {
-    /// Gives high level summary of bundle.
-    pub summary: (), //BundleSimulationSummary,
-    pub transaction_results: Vec<BundleTransactionSimulationResult>,
 }
 
 #[derive(Clone)]

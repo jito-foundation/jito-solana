@@ -24,7 +24,7 @@ pub fn derive_bundle_id(transactions: &[VersionedTransaction]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub fn derive_bundle_id_from_sanizited_transactions(
+pub fn derive_bundle_id_from_sanitized_transactions(
     transactions: &[SanitizedTransaction],
 ) -> String {
     let mut hasher = Sha256::new();
