@@ -119,16 +119,16 @@ for file in "${TARBALL_BASENAME}"-$TARGET.tar.bz2 "${TARBALL_BASENAME}"-$TARGET.
 
   if [[ -n $BUILDKITE ]]; then
     echo --- AWS S3 Store: "$file"
-    upload-s3-artifact "/solana/$file" s3://release.solana.com/"$CHANNEL_OR_TAG"/"$file"
+    upload-s3-artifact "/solana/$file" s3://release.jito.wtf/"$CHANNEL_OR_TAG"/"$file"
 
     echo Published to:
-    $DRYRUN ci/format-url.sh https://release.solana.com/"$CHANNEL_OR_TAG"/"$file"
+    $DRYRUN ci/format-url.sh https://release.jito.wtf/"$CHANNEL_OR_TAG"/"$file"
 
     if [[ -n $TAG ]]; then
       ci/upload-github-release-asset.sh "$file"
     fi
   elif [[ -n $TRAVIS ]]; then
-    # .travis.yml uploads everything in the travis-s3-upload/ directory to release.solana.com
+    # .travis.yml uploads everything in the travis-s3-upload/ directory to release.jito.wtf
     mkdir -p travis-s3-upload/"$CHANNEL_OR_TAG"
     cp -v "$file" travis-s3-upload/"$CHANNEL_OR_TAG"/
 

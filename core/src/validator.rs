@@ -16,6 +16,7 @@ use {
         },
         ledger_metric_report_service::LedgerMetricReportService,
         poh_timing_report_service::PohTimingReportService,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{self, serve_repair::ServeRepair, serve_repair_service::ServeRepairService},
         rewards_recorder_service::{RewardsRecorderSender, RewardsRecorderService},
         sample_performance_service::SamplePerformanceService,
@@ -25,6 +26,7 @@ use {
         system_monitor_service::{
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
+        tip_manager::TipManagerConfig,
         tpu::{Tpu, TpuSockets, DEFAULT_TPU_COALESCE},
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
@@ -104,6 +106,10 @@ use {
             self, clean_orphaned_account_snapshot_dirs, move_and_async_delete_path_contents,
         },
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
+        runtime_plugin_service::RuntimePluginService,
+    },
     solana_sdk::{
         clock::Slot,
         epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
@@ -125,7 +131,7 @@ use {
         path::{Path, PathBuf},
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{sleep, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -260,6 +266,12 @@ pub struct ValidatorConfig {
     pub block_production_method: BlockProductionMethod,
     pub generator_config: Option<GeneratorConfig>,
     pub use_snapshot_archives_at_startup: UseSnapshotArchivesAtStartup,
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    // Using Option inside RwLock is ugly, but only convenient way to allow toggle on/off
+    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub preallocated_bundle_cost: u64,
 }
 
 impl Default for ValidatorConfig {
@@ -328,6 +340,11 @@ impl Default for ValidatorConfig {
             block_production_method: BlockProductionMethod::default(),
             generator_config: None,
             use_snapshot_archives_at_startup: UseSnapshotArchivesAtStartup::default(),
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            shred_receiver_address: Arc::new(RwLock::new(None)),
+            tip_manager_config: TipManagerConfig::default(),
+            preallocated_bundle_cost: u64::default(),
         }
     }
 }
@@ -491,6 +508,10 @@ impl Validator {
         tpu_connection_pool_size: usize,
         tpu_enable_udp: bool,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+        runtime_plugin_configs_and_request_rx: Option<(
+            Vec<PathBuf>,
+            Receiver<RuntimePluginManagerRpcRequest>,
+        )>,
     ) -> Result<Self, String> {
         let id = identity_keypair.pubkey();
         assert_eq!(&id, node.info.pubkey());
@@ -875,6 +896,17 @@ impl Validator {
             None,
         ));
 
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .map_err(|e| format!("Failed to start runtime plugin service: {e:?}"))?;
+        }
+
         let max_slots = Arc::new(MaxSlots::default());
         let (completed_data_sets_sender, completed_data_sets_receiver) =
             bounded(MAX_COMPLETED_DATA_SETS_IN_CHANNEL);
@@ -1081,6 +1113,9 @@ impl Validator {
             cluster_info: cluster_info.clone(),
             vote_account: *vote_account,
             repair_whitelist: config.repair_whitelist.clone(),
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_address: config.shred_receiver_address.clone(),
         });
 
         let waited_for_supermajority = wait_for_supermajority(
@@ -1275,6 +1310,7 @@ impl Validator {
             turbine_quic_endpoint_sender.clone(),
             turbine_quic_endpoint_receiver,
             repair_quic_endpoint_sender,
+            config.shred_receiver_address.clone(),
         )?;
 
         let tpu = Tpu::new(
@@ -1318,6 +1354,11 @@ impl Validator {
             &prioritization_fee_cache,
             config.block_production_method.clone(),
             config.generator_config.clone(),
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_address.clone(),
+            config.preallocated_bundle_cost,
         );
 
         let cluster_type = bank_forks.read().unwrap().root_bank().cluster_type();
@@ -1795,6 +1836,7 @@ fn load_blockstore(
                 .map(|service| service.sender()),
             accounts_update_notifier,
             exit,
+            true,
         );
 
     // Before replay starts, set the callbacks in each of the banks in BankForks so that
@@ -2486,6 +2528,7 @@ mod tests {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         assert_eq!(
@@ -2563,7 +2606,7 @@ mod tests {
                     Arc::new(RwLock::new(vec![Arc::new(vote_account_keypair)])),
                     vec![LegacyContactInfo::try_from(&leader_node.info).unwrap()],
                     &config,
-                    true, // should_check_duplicate_instance.
+                    true, // should_check_duplicate_instance
                     None, // rpc_to_plugin_manager_receiver
                     Arc::new(RwLock::new(ValidatorStartProgress::default())),
                     SocketAddrSpace::Unspecified,
@@ -2571,6 +2614,7 @@ mod tests {
                     DEFAULT_TPU_CONNECTION_POOL_SIZE,
                     DEFAULT_TPU_ENABLE_UDP,
                     Arc::new(RwLock::new(None)),
+                    None,
                 )
                 .expect("assume successful validator start")
             })
