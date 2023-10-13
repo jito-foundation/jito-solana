@@ -4,7 +4,7 @@ use {
 };
 
 /// Encapsulates overridden accounts, typically used for transaction simulations
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AccountOverrides {
     accounts: HashMap<Pubkey, AccountSharedData>,
 }
