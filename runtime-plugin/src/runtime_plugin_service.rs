@@ -52,7 +52,9 @@ impl RuntimePluginService {
     }
 
     pub fn join(self) {
-        self.rpc_thread.join().unwrap();
+        if let Err(e) = self.rpc_thread.join() {
+            error!("error joining rpc thread: {e:?}");
+        }
         self.plugin_manager.write().unwrap().unload_all_plugins();
     }
 
