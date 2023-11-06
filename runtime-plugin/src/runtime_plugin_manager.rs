@@ -125,13 +125,11 @@ impl RuntimePluginManager {
 
     pub(crate) fn unload_plugin(&mut self, name: &str) -> JsonRpcResult<()> {
         // Check if any plugin names match this one
-        let idx = if let Some(idx) = self
+        let Some(idx) = self
             .plugins
             .iter()
             .position(|plugin| plugin.name().eq(name))
-        {
-            idx
-        } else {
+        else {
             // If we don't find one return an error
             return Err(jsonrpc_core::error::Error {
                 code: ErrorCode::InvalidRequest,
@@ -149,13 +147,11 @@ impl RuntimePluginManager {
     /// Reloads an existing plugin.
     pub(crate) fn reload_plugin(&mut self, name: &str, config_file: &str) -> JsonRpcResult<()> {
         // Check if any plugin names match this one
-        let idx = if let Some(idx) = self
+        let Some(idx) = self
             .plugins
             .iter()
             .position(|plugin| plugin.name().eq(name))
-        {
-            idx
-        } else {
+        else {
             // If we don't find one return an error
             return Err(jsonrpc_core::error::Error {
                 code: ErrorCode::InvalidRequest,
