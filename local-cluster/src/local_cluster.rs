@@ -272,7 +272,6 @@ impl LocalCluster {
             vec![],
             &leader_config,
             true, // should_check_duplicate_instance
-            None,
             None, // rpc_to_plugin_manager_receiver
             Arc::new(RwLock::new(ValidatorStartProgress::default())),
             socket_addr_space,
@@ -280,6 +279,7 @@ impl LocalCluster {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
 
@@ -488,7 +488,6 @@ impl LocalCluster {
             vec![LegacyContactInfo::try_from(&self.entry_point_info).unwrap()],
             &config,
             true, // should_check_duplicate_instance
-            None,
             None, // rpc_to_plugin_manager_receiver
             Arc::new(RwLock::new(ValidatorStartProgress::default())),
             socket_addr_space,
@@ -496,6 +495,7 @@ impl LocalCluster {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
 
@@ -882,7 +882,6 @@ impl Cluster for LocalCluster {
                 .unwrap_or_default(),
             &safe_clone_config(&cluster_validator_info.config),
             true, // should_check_duplicate_instance
-            None,
             None, // rpc_to_plugin_manager_receiver
             Arc::new(RwLock::new(ValidatorStartProgress::default())),
             socket_addr_space,
@@ -890,6 +889,7 @@ impl Cluster for LocalCluster {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         cluster_validator_info.validator = Some(restarted_node);

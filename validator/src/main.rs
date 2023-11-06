@@ -2085,7 +2085,6 @@ pub fn main() {
         cluster_entrypoints,
         &validator_config,
         should_check_duplicate_instance,
-        Some(runtime_plugin_config_and_rpc_rx),
         rpc_to_plugin_manager_receiver,
         start_progress,
         socket_addr_space,
@@ -2093,6 +2092,7 @@ pub fn main() {
         tpu_connection_pool_size,
         tpu_enable_udp,
         admin_service_post_init,
+        Some(runtime_plugin_config_and_rpc_rx),
     )
     .unwrap_or_else(|e| {
         error!("Failed to start validator: {:?}", e);

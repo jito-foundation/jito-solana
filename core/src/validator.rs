@@ -486,10 +486,6 @@ impl Validator {
         cluster_entrypoints: Vec<ContactInfo>,
         config: &ValidatorConfig,
         should_check_duplicate_instance: bool,
-        runtime_plugin_configs_and_request_rx: Option<(
-            Vec<PathBuf>,
-            Receiver<RuntimePluginManagerRpcRequest>,
-        )>,
         rpc_to_plugin_manager_receiver: Option<Receiver<GeyserPluginManagerRequest>>,
         start_progress: Arc<RwLock<ValidatorStartProgress>>,
         socket_addr_space: SocketAddrSpace,
@@ -497,6 +493,10 @@ impl Validator {
         tpu_connection_pool_size: usize,
         tpu_enable_udp: bool,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+        runtime_plugin_configs_and_request_rx: Option<(
+            Vec<PathBuf>,
+            Receiver<RuntimePluginManagerRpcRequest>,
+        )>,
     ) -> Result<Self, String> {
         let id = identity_keypair.pubkey();
         assert_eq!(&id, node.info.pubkey());
@@ -867,17 +867,6 @@ impl Validator {
         drop(bank_forks_guard);
         let block_commitment_cache = Arc::new(RwLock::new(block_commitment_cache));
 
-        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
-            RuntimePluginService::start(
-                &runtime_plugin_configs,
-                request_rx,
-                bank_forks.clone(),
-                block_commitment_cache.clone(),
-                exit.clone(),
-            )
-            .unwrap();
-        }
-
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
 
@@ -892,6 +881,17 @@ impl Validator {
             &config.pubsub_config,
             None,
         ));
+
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .map_err(|e| format!("Failed to start runtime plugin service: {e:?}"))?;
+        }
 
         let max_slots = Arc::new(MaxSlots::default());
         let (completed_data_sets_sender, completed_data_sets_receiver) =
@@ -2387,7 +2387,6 @@ mod tests {
             vec![LegacyContactInfo::try_from(&leader_node.info).unwrap()],
             &config,
             true, // should_check_duplicate_instance
-            None,
             None, // rpc_to_plugin_manager_receiver
             start_progress.clone(),
             SocketAddrSpace::Unspecified,
@@ -2395,6 +2394,7 @@ mod tests {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         assert_eq!(
@@ -2487,7 +2487,6 @@ mod tests {
                     vec![LegacyContactInfo::try_from(&leader_node.info).unwrap()],
                     &config,
                     true, // should_check_duplicate_instance
-                    None,
                     None, // rpc_to_plugin_manager_receiver
                     Arc::new(RwLock::new(ValidatorStartProgress::default())),
                     SocketAddrSpace::Unspecified,
@@ -2495,6 +2494,7 @@ mod tests {
                     DEFAULT_TPU_CONNECTION_POOL_SIZE,
                     DEFAULT_TPU_ENABLE_UDP,
                     Arc::new(RwLock::new(None)),
+                    None,
                 )
                 .expect("assume successful validator start")
             })
