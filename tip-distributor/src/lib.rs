@@ -536,11 +536,11 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             let error_count = error_count.clone();
             let blockhash = blockhash.clone();
             tokio::spawn(async move {
-                let mut iterations = 0;
+                let mut iterations = 0usize;
                 while let Ok(txn) = transactions_receiver.recv() {
                     let mut retries = 0usize;
                     while retries < MAX_RETRIES {
-                        iterations += 1;
+                        iterations = iterations.saturating_add(1);
                         let (_signed_txn, res) =
                             signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
                                 .await;
