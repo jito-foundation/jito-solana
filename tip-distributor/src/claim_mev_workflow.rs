@@ -309,7 +309,7 @@ fn build_transactions(
     merkle_trees: &GeneratedMerkleTreeCollection,
     payer_pubkey: &Pubkey,
     tree_nodes: &[&TreeNode],
-    stake_acct_min_rent: u64,
+    minimum_rent: u64,
     tdas: &HashMap<Pubkey, TipDistributionAccount>,
     claimants: &HashMap<Pubkey, u64>,
     claim_statuses: &HashMap<Pubkey, Option<Account>>,
@@ -364,8 +364,8 @@ fn build_transactions(
             // some older accounts can be rent-paying
             // any new transfers will need to make the account rent-exempt (runtime enforced)
             let balance_with_tip = current_balance.checked_add(node.amount).unwrap();
-            if balance_with_tip < stake_acct_min_rent {
-                debug!("Current balance + tip claim amount of {balance_with_tip} is less than required rent-exempt of {stake_acct_min_rent} for pubkey: {}. Skipping.", node.claimant);
+            if balance_with_tip < minimum_rent {
+                debug!("Current balance + tip claim amount of {balance_with_tip} is less than required rent-exempt of {minimum_rent} for pubkey: {}. Skipping.", node.claimant);
                 below_min_rent_count = below_min_rent_count.checked_add(1).unwrap();
                 continue;
             }
