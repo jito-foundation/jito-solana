@@ -11,7 +11,7 @@ use {
     solana_metrics::{datapoint_info, datapoint_warn},
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
-        stake::state::StakeState, system_program,
+        system_program,
     },
     solana_sdk::{
         account::Account,
@@ -99,8 +99,8 @@ pub async fn claim_mev_tips(
         .iter()
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
-    let stake_acct_min_rent = blockhash_rpc_client
-        .get_minimum_balance_for_rent_exemption(StakeState::size_of())
+    let minimum_rent = blockhash_rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
         .await
         .expect("Failed to calculate min rent");
 
@@ -204,7 +204,7 @@ pub async fn claim_mev_tips(
             &merkle_trees,
             &payer_pubkey,
             &tree_nodes,
-            stake_acct_min_rent,
+            minimum_rent,
             &tdas,
             &claimants,
             &claim_statuses,
