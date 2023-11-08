@@ -269,7 +269,8 @@ pub async fn claim_mev_tips(
                 max_loop_duration,
             )
             .await;
-        failed_transaction_count += new_failed_transaction_count;
+        failed_transaction_count =
+            failed_transaction_count.saturating_add(new_failed_transaction_count);
 
         datapoint_info!(
             "claim_mev_workflow-send_transactions",
@@ -278,7 +279,7 @@ pub async fn claim_mev_tips(
             ("transaction_count", transactions_len, i64),
             (
                 "successful_transaction_count",
-                transactions_len - remaining_transaction_count,
+                transactions_len.saturating_sub(remaining_transaction_count),
                 i64
             ),
             (
@@ -301,7 +302,7 @@ pub async fn claim_mev_tips(
                 failed_transaction_count,
             });
         }
-        retries += 1;
+        retries = retries.saturating_add(1);
     }
 }
 
