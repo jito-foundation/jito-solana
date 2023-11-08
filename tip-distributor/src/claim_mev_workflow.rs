@@ -122,20 +122,17 @@ pub async fn claim_mev_tips(
     .map_err(ClaimMevError::MaxFetchRetriesExceeded)?
     .into_iter()
     .filter_map(|(pubkey, maybe_account)| {
-        let account = match maybe_account {
-            Some(account) => account,
-            None => {
-                datapoint_warn!(
-                    "claim_mev_workflow-account_error",
-                    ("epoch", merkle_trees.epoch, i64),
-                    ("pubkey", pubkey.to_string(), String),
-                    ("account_type", "tip_distribution_account", String),
-                    ("error", 1, i64),
-                    ("err_type", "fetch", String),
-                    ("err_str", "Failed to fetch TipDistributionAccount", String)
-                );
-                return None;
-            }
+        let Some(account) = maybe_account else {
+            datapoint_warn!(
+                "claim_mev_workflow-account_error",
+                ("epoch", merkle_trees.epoch, i64),
+                ("pubkey", pubkey.to_string(), String),
+                ("account_type", "tip_distribution_account", String),
+                ("error", 1, i64),
+                ("err_type", "fetch", String),
+                ("err_str", "Failed to fetch TipDistributionAccount", String)
+            );
+            return None;
         };
 
         let account = match TipDistributionAccount::try_deserialize(&mut account.data.as_slice()) {
