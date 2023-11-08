@@ -328,9 +328,9 @@ fn build_transactions(
 
     // prepare instructions to transfer to all claimants
     for tree in &merkle_trees.generated_merkle_trees {
-        let fetched_tip_distribution_account = match tdas.get(&tree.tip_distribution_account) {
-            Some(account) => account,
-            None => return Err(TDANotFound(tree.tip_distribution_account)),
+        let Some(fetched_tip_distribution_account) = tdas.get(&tree.tip_distribution_account)
+        else {
+            return Err(TDANotFound(tree.tip_distribution_account));
         };
         // only claim for ones that have merkle root on-chain
         if fetched_tip_distribution_account.merkle_root.is_none() {
@@ -360,9 +360,8 @@ fn build_transactions(
                 }
                 None => return Err(ClaimantNotFound(node.claim_status_pubkey)),
             };
-            let current_balance = match claimants.get(&node.claimant) {
-                Some(balance) => balance,
-                None => return Err(ClaimantNotFound(node.claimant)),
+            let Some(current_balance) = claimants.get(&node.claimant) else {
+                return Err(ClaimantNotFound(node.claimant));
             };
 
             // some older accounts can be rent-paying
