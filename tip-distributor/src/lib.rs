@@ -538,7 +538,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             tokio::spawn(async move {
                 let mut iterations = 0;
                 while let Ok(txn) = transactions_receiver.recv() {
-                    let mut retries = 0;
+                    let mut retries = 0usize;
                     while retries < MAX_RETRIES {
                         iterations += 1;
                         let (_signed_txn, res) =
@@ -1029,7 +1029,7 @@ async fn get_batched_accounts(
 
         async move {
             let _permit = semaphore.acquire_owned().await.unwrap(); // wait until our turn
-            let mut retries = 0;
+            let mut retries = 0usize;
             loop {
                 match rpc_client.get_multiple_accounts(pubkeys).await {
                     Ok(accts) => return Ok(accts),
