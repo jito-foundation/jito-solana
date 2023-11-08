@@ -45,7 +45,7 @@ pub async fn reclaim_rent(
 ) -> Result<(), ClaimMevError> {
     let blockhash_rpc_client = Arc::new(RpcClient::new_with_timeout_and_commitment(
         rpc_url.clone(),
-        Duration::from_secs(3 * 60),
+        Duration::from_secs(180), // 3 mins
         CommitmentConfig::finalized(),
     ));
     let rpc_clients = Arc::new(
@@ -97,7 +97,8 @@ pub async fn reclaim_rent(
                 max_loop_duration,
             )
             .await;
-        failed_transaction_count += new_failed_transaction_count;
+        failed_transaction_count =
+            failed_transaction_count.saturating_add(new_failed_transaction_count);
 
         datapoint_info!(
             "claim_mev_workflow-send_reclaim_rent_transactions",
@@ -105,7 +106,7 @@ pub async fn reclaim_rent(
             ("transaction_count", transactions_len, i64),
             (
                 "successful_transaction_count",
-                transactions_len - remaining_transaction_count,
+                transactions_len.saturating_sub(remaining_transaction_count),
                 i64
             ),
             (
@@ -128,7 +129,7 @@ pub async fn reclaim_rent(
                 failed_transaction_count,
             });
         }
-        retries += 1;
+        retries = retries.saturating_add(1);
     }
 }
 

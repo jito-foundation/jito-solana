@@ -547,7 +547,7 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
                         match res {
                             Ok(_) => break,
                             Err(_) => {
-                                retries += 1;
+                                retries = retries.saturating_add(1);
                                 error_count.fetch_add(1, Ordering::Relaxed);
                                 tokio::time::sleep(FAIL_DELAY).await;
                             }
@@ -1034,7 +1034,7 @@ async fn get_batched_accounts(
                 match rpc_client.get_multiple_accounts(pubkeys).await {
                     Ok(accts) => return Ok(accts),
                     Err(e) => {
-                        retries += 1;
+                        retries = retries.saturating_add(1);
                         if retries == MAX_RETRIES {
                             datapoint_error!(
                                 "claim_mev_workflow-get_batched_accounts_error",
