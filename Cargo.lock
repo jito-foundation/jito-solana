@@ -7681,6 +7681,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "solana-accounts-db",
  "solana-client",
  "solana-genesis-utils",
  "solana-ledger",
