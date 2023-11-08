@@ -8,7 +8,7 @@ use {
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_request::RpcError},
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
-        stake::state::StakeStateV2, system_program,
+        stake::state::StakeState, system_program,
     },
     solana_rpc_client_api::client_error,
     solana_sdk::{
@@ -72,7 +72,7 @@ pub fn claim_mev_tips(
                        desired_balance, &keypair.pubkey(), start_balance, sol_to_deposit)
             }
         }
-        let stake_acct_min_rent = rpc_client.get_minimum_balance_for_rent_exemption(StakeStateV2::size_of()).await.expect("Failed to calculate min rent");
+        let stake_acct_min_rent = rpc_client.get_minimum_balance_for_rent_exemption(StakeState::size_of()).await.expect("Failed to calculate min rent");
         let mut below_min_rent_count: usize = 0;
         let mut zero_lamports_count: usize = 0;
         for tree in merkle_trees.generated_merkle_trees {
