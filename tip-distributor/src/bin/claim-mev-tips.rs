@@ -1,4 +1,4 @@
-///! This binary claims MEV tips.
+//! This binary claims MEV tips.
 use {
     clap::Parser,
     gethostname::gethostname,
