@@ -25,8 +25,8 @@ solana-accounts-db = { workspace = true }
 solana-client = { workspace = true }
 solana-genesis-utils = { workspace = true }
 solana-ledger = { workspace = true }
-solana-merkle-tree = { workspace = true }
 solana-measure = { workspace = true }
+solana-merkle-tree = { workspace = true }
 solana-metrics = { workspace = true }
 solana-program = { workspace = true }
 solana-program-runtime = { workspace = true }
