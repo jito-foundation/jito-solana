@@ -313,15 +313,28 @@ fn build_transactions(
     tdas: &HashMap<Pubkey, TipDistributionAccount>,
     claimants: &HashMap<Pubkey, u64>,
     claim_statuses: &HashMap<Pubkey, Option<Account>>,
-) -> Result<(usize, usize, usize, usize, Vec<Transaction>), ClaimMevError> {
+) -> Result<
+    (
+        usize, /* skipped_merkle_root_count */
+        usize, /* zero_lamports_count */
+        usize, /* already_claimed_count */
+        usize, /* below_min_rent_count */
+        Vec<Transaction>,
+    ),
+    ClaimMevError,
+> {
     let tip_distribution_config =
         Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
     let mut skipped_merkle_root_count: usize = 0;
     let mut zero_lamports_count: usize = 0;
     let mut already_claimed_count: usize = 0;
     let mut below_min_rent_count: usize = 0;
-    let mut instructions =
-        Vec::with_capacity(tree_nodes.iter().filter(|node| node.amount > 0).count());
+    let mut instructions = Vec::with_capacity(
+        tree_nodes
+            .iter()
+            .filter(|node| node.amount >= minimum_rent)
+            .count(),
+    );
 
     // prepare instructions to transfer to all claimants
     for tree in &merkle_trees.generated_merkle_trees {
@@ -363,9 +376,9 @@ fn build_transactions(
 
             // some older accounts can be rent-paying
             // any new transfers will need to make the account rent-exempt (runtime enforced)
-            let balance_with_tip = current_balance.checked_add(node.amount).unwrap();
-            if balance_with_tip < minimum_rent {
-                debug!("Current balance + tip claim amount of {balance_with_tip} is less than required rent-exempt of {minimum_rent} for pubkey: {}. Skipping.", node.claimant);
+            let new_balance = current_balance.checked_add(node.amount).unwrap();
+            if new_balance < minimum_rent {
+                debug!("Current balance + claim amount of {balance_with_tip} is less than required rent-exempt of {minimum_rent} for pubkey: {}. Skipping.", node.claimant);
                 below_min_rent_count = below_min_rent_count.checked_add(1).unwrap();
                 continue;
             }
