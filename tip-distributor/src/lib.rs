@@ -480,7 +480,10 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
     rpc_clients: &Arc<Vec<Arc<RpcClient>>>,
     mut transactions: Vec<Transaction>,
     max_loop_duration: Duration,
-) -> (usize, usize) {
+) -> (
+    usize, /* remaining txn count */
+    usize, /* failed txn count */
+) {
     let error_count = Arc::new(AtomicUsize::default());
     let blockhash = Arc::new(RwLock::new(
         blockhash_rpc_client
