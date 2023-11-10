@@ -27,8 +27,15 @@ out into the PDA until some slot in epoch N + 1. Due to this we cannot rely on t
 in the PDAs. We use the bank solely to take a snapshot of delegations, but an RPC node to fetch the PDA lamports for more up-to-date data.
 
 ### merkle-root-generator
-This script accepts a path to the above JSON file as one of its arguments, and generates a merkle-root. It'll optionally upload the root
-on-chain if specified. Additionally, it'll spit the generated merkle trees out into a JSON file.
+This script accepts a path to the above JSON file as one of its arguments, and generates a merkle-root into a JSON file.
+
+### merkle-root-uploader
+Uploads the root on-chain.
+
+### claim-mev-tips
+This reads the file outputted by `merkle-root-generator` and finds all eligible accounts to receive mev tips. Transactions
+are created and sent to the RPC server.
+
 
 ## How it works?
 In order to use this library as the merkle root creator one must follow the following steps:
@@ -38,6 +45,8 @@ In order to use this library as the merkle root creator one must follow the foll
    1. The snapshot created at `${WHERE_TO_CREATE_SNAPSHOT}` will have the highest slot of `${YOUR_SLOT}`, assuming you downloaded the correct snapshot.
 4. Run `stake-meta-generator --ledger-path ${WHERE_TO_CREATE_SNAPSHOT} --tip-distribution-program-id ${PUBKEY} --out-path ${JSON_OUT_PATH} --snapshot-slot ${SLOT} --rpc-url ${URL}`
    1. Note: `${WHERE_TO_CREATE_SNAPSHOT}` must be the same in steps 3 & 4.
-5. Run `merkle-root-generator --path-to-my-keypair ${KEYPAIR_PATH} --stake-meta-coll-path ${STAKE_META_COLLECTION_JSON} --rpc-url ${URL} --upload-roots ${BOOL} --force-upload-root ${BOOL}`
+5. Run `merkle-root-generator --stake-meta-coll-path ${STAKE_META_COLLECTION_JSON} --rpc-url ${URL} --out-path ${MERKLE_ROOT_PATH}`
+6. Run `merkle-root-uploader --out-path ${MERKLE_ROOT_PATH} --keypair-path ${KEYPAIR_PATH} --rpc-url ${URL} --tip-distribution-program-id ${PROGRAM_ID}`
+7. Run `solana-claim-mev-tips --merkle-trees-path /solana/ledger/autosnapshot/merkle-tree-221615999.json --rpc-url ${URL} --tip-distribution-program-id ${PROGRAM_ID} --keypair-path ${KEYPAIR_PATH}`
 
 Voila!
