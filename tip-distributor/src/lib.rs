@@ -4,6 +4,9 @@ pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
+use solana_program::rent::{
+    ACCOUNT_STORAGE_OVERHEAD, DEFAULT_EXEMPTION_THRESHOLD, DEFAULT_LAMPORTS_PER_BYTE_YEAR,
+};
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -1064,4 +1067,11 @@ async fn get_batched_accounts(
         .collect_vec();
 
     Ok(pubkeys.into_iter().zip(claimant_accounts).collect())
+}
+
+/// Calculates the minimum balance needed to be rent-exempt
+/// taken from: https://github.com/jito-foundation/jito-solana/blob/d1ba42180d0093dd59480a77132477323a8e3f88/sdk/program/src/rent.rs#L78
+pub fn minimum_balance(data_len: usize) -> u64 {
+    (((ACCOUNT_STORAGE_OVERHEAD + data_len as u64) * DEFAULT_LAMPORTS_PER_BYTE_YEAR) as f64
+        * DEFAULT_EXEMPTION_THRESHOLD) as u64
 }

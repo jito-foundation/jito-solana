@@ -1,3 +1,4 @@
+use crate::minimum_balance;
 use {
     crate::{
         claim_mev_workflow::ClaimMevError::{ClaimantNotFound, InsufficientBalance, TDANotFound},
@@ -99,10 +100,6 @@ pub async fn claim_mev_tips(
         .iter()
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
-    let minimum_rent = blockhash_rpc_client
-        .get_minimum_balance_for_rent_exemption(0)
-        .await
-        .expect("Failed to calculate min rent");
 
     // fetch all accounts up front
     info!(
@@ -154,7 +151,7 @@ pub async fn claim_mev_tips(
     })
     .collect::<HashMap<Pubkey, TipDistributionAccount>>();
 
-    // track balances only
+    // track balances and account len to make sure account is rent-exempt after transfer
     let claimants = crate::get_batched_accounts(
         &blockhash_rpc_client,
         max_concurrent_rpc_get_reqs,
@@ -170,11 +167,11 @@ pub async fn claim_mev_tips(
         (
             pubkey,
             maybe_account
-                .map(|account| account.lamports)
+                .map(|account| (account.lamports, account.data.len()))
                 .unwrap_or_default(),
         )
     })
-    .collect::<HashMap<Pubkey, u64>>();
+    .collect::<HashMap<Pubkey, (u64, usize)>>();
 
     // Refresh claimants + Try sending txns to RPC
     let mut retries = 0;
@@ -204,7 +201,6 @@ pub async fn claim_mev_tips(
             &merkle_trees,
             &payer_pubkey,
             &tree_nodes,
-            minimum_rent,
             &tdas,
             &claimants,
             &claim_statuses,
@@ -309,9 +305,8 @@ fn build_transactions(
     merkle_trees: &GeneratedMerkleTreeCollection,
     payer_pubkey: &Pubkey,
     tree_nodes: &[&TreeNode],
-    minimum_rent: u64,
     tdas: &HashMap<Pubkey, TipDistributionAccount>,
-    claimants: &HashMap<Pubkey, u64>,
+    claimants: &HashMap<Pubkey, (u64 /* lamports */, usize /* allocated bytes */)>,
     claim_statuses: &HashMap<Pubkey, Option<Account>>,
 ) -> Result<
     (
@@ -329,12 +324,8 @@ fn build_transactions(
     let mut zero_lamports_count: usize = 0;
     let mut already_claimed_count: usize = 0;
     let mut below_min_rent_count: usize = 0;
-    let mut instructions = Vec::with_capacity(
-        tree_nodes
-            .iter()
-            .filter(|node| node.amount >= minimum_rent)
-            .count(),
-    );
+    let mut instructions =
+        Vec::with_capacity(tree_nodes.iter().filter(|node| node.amount > 0).count());
 
     // prepare instructions to transfer to all claimants
     for tree in &merkle_trees.generated_merkle_trees {
@@ -370,15 +361,16 @@ fn build_transactions(
                 }
                 None => return Err(ClaimantNotFound(node.claim_status_pubkey)),
             };
-            let Some(current_balance) = claimants.get(&node.claimant) else {
+            let Some((current_balance, allocated_bytes)) = claimants.get(&node.claimant) else {
                 return Err(ClaimantNotFound(node.claimant));
             };
 
             // some older accounts can be rent-paying
             // any new transfers will need to make the account rent-exempt (runtime enforced)
             let new_balance = current_balance.checked_add(node.amount).unwrap();
+            let minimum_rent = minimum_balance(*allocated_bytes);
             if new_balance < minimum_rent {
-                debug!("Current balance + claim amount of {balance_with_tip} is less than required rent-exempt of {minimum_rent} for pubkey: {}. Skipping.", node.claimant);
+                debug!("Current balance + claim amount of {new_balance} is less than required rent-exempt of {minimum_rent} for pubkey: {}. Skipping.", node.claimant);
                 below_min_rent_count = below_min_rent_count.checked_add(1).unwrap();
                 continue;
             }
