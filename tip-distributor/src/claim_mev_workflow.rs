@@ -1,8 +1,8 @@
-use crate::minimum_balance;
 use {
     crate::{
         claim_mev_workflow::ClaimMevError::{ClaimantNotFound, InsufficientBalance, TDANotFound},
-        sign_and_send_transactions_with_retries_multi_rpc, GeneratedMerkleTreeCollection, TreeNode,
+        minimum_balance, sign_and_send_transactions_with_retries_multi_rpc,
+        GeneratedMerkleTreeCollection, TreeNode,
     },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
