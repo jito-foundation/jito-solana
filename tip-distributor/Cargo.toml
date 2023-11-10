@@ -4,6 +4,7 @@ version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
 description = "Collection of binaries used to distribute MEV rewards to delegators and validators."
+publish = false
 
 [dependencies]
 anchor-lang = { workspace = true }
