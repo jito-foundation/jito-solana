@@ -26,7 +26,12 @@ use {
     solana_client::{nonblocking::rpc_client::RpcClient, rpc_client::RpcClient as SyncRpcClient},
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
-    solana_program::instruction::InstructionError,
+    solana_program::{
+        instruction::InstructionError,
+        rent::{
+            ACCOUNT_STORAGE_OVERHEAD, DEFAULT_EXEMPTION_THRESHOLD, DEFAULT_LAMPORTS_PER_BYTE_YEAR,
+        },
+    },
     solana_rpc_client_api::{
         client_error::{Error, ErrorKind},
         request::{RpcError, RpcResponseErrorData, MAX_MULTIPLE_ACCOUNTS},
@@ -480,7 +485,10 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
     rpc_clients: &Arc<Vec<Arc<RpcClient>>>,
     mut transactions: Vec<Transaction>,
     max_loop_duration: Duration,
-) -> (usize, usize) {
+) -> (
+    usize, /* remaining txn count */
+    usize, /* failed txn count */
+) {
     let error_count = Arc::new(AtomicUsize::default());
     let blockhash = Arc::new(RwLock::new(
         blockhash_rpc_client
@@ -536,18 +544,18 @@ pub async fn sign_and_send_transactions_with_retries_multi_rpc(
             let error_count = error_count.clone();
             let blockhash = blockhash.clone();
             tokio::spawn(async move {
-                let mut iterations = 0;
+                let mut iterations = 0usize;
                 while let Ok(txn) = transactions_receiver.recv() {
-                    let mut retries = 0;
+                    let mut retries = 0usize;
                     while retries < MAX_RETRIES {
-                        iterations += 1;
+                        iterations = iterations.saturating_add(1);
                         let (_signed_txn, res) =
                             signed_send(&signer, &rpc_client, *blockhash.read().await, txn.clone())
                                 .await;
                         match res {
                             Ok(_) => break,
                             Err(_) => {
-                                retries += 1;
+                                retries = retries.saturating_add(1);
                                 error_count.fetch_add(1, Ordering::Relaxed);
                                 tokio::time::sleep(FAIL_DELAY).await;
                             }
@@ -689,6 +697,63 @@ async fn signed_send(
     };
 
     (txn, res)
+}
+
+/// Fetch accounts in parallel batches with retries.
+async fn get_batched_accounts(
+    rpc_client: &RpcClient,
+    max_concurrent_rpc_get_reqs: usize,
+    pubkeys: Vec<Pubkey>,
+) -> solana_rpc_client_api::client_error::Result<HashMap<Pubkey, Option<Account>>> {
+    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_get_reqs));
+    let futs = pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS).map(|pubkeys| {
+        let semaphore = semaphore.clone();
+
+        async move {
+            let _permit = semaphore.acquire_owned().await.unwrap(); // wait until our turn
+            let mut retries = 0usize;
+            loop {
+                match rpc_client.get_multiple_accounts(pubkeys).await {
+                    Ok(accts) => return Ok(accts),
+                    Err(e) => {
+                        retries = retries.saturating_add(1);
+                        if retries == MAX_RETRIES {
+                            datapoint_error!(
+                                "claim_mev_workflow-get_batched_accounts_error",
+                                ("pubkeys", format!("{pubkeys:?}"), String),
+                                ("error", 1, i64),
+                                ("err_type", "fetch_account", String),
+                                ("err_str", e.to_string(), String)
+                            );
+                            return Err(e);
+                        }
+                        tokio::time::sleep(FAIL_DELAY).await;
+                    }
+                }
+            }
+        }
+    });
+
+    let claimant_accounts = futures::future::join_all(futs)
+        .await
+        .into_iter()
+        .collect::<solana_rpc_client_api::client_error::Result<Vec<Vec<Option<Account>>>>>()? // fail on single error
+        .into_iter()
+        .flatten()
+        .collect_vec();
+
+    Ok(pubkeys.into_iter().zip(claimant_accounts).collect())
+}
+
+/// Calculates the minimum balance needed to be rent-exempt
+/// taken from: https://github.com/jito-foundation/jito-solana/blob/d1ba42180d0093dd59480a77132477323a8e3f88/sdk/program/src/rent.rs#L78
+pub fn minimum_balance(data_len: usize) -> u64 {
+    ((((ACCOUNT_STORAGE_OVERHEAD
+        .checked_add(data_len as u64)
+        .unwrap())
+    .checked_mul(DEFAULT_LAMPORTS_PER_BYTE_YEAR))
+    .unwrap() as f64)
+        * DEFAULT_EXEMPTION_THRESHOLD) as u64
 }
 
 mod pubkey_string_conversion {
@@ -1015,50 +1080,4 @@ mod tests {
                 assert_eq!(expected_gmt.merkle_root, actual_gmt.merkle_root);
             });
     }
-}
-
-/// Fetch accounts in parallel batches with retries.
-async fn get_batched_accounts(
-    rpc_client: &RpcClient,
-    max_concurrent_rpc_get_reqs: usize,
-    pubkeys: Vec<Pubkey>,
-) -> solana_rpc_client_api::client_error::Result<HashMap<Pubkey, Option<Account>>> {
-    let semaphore = Arc::new(Semaphore::new(max_concurrent_rpc_get_reqs));
-    let futs = pubkeys.chunks(MAX_MULTIPLE_ACCOUNTS).map(|pubkeys| {
-        let semaphore = semaphore.clone();
-
-        async move {
-            let _permit = semaphore.acquire_owned().await.unwrap(); // wait until our turn
-            let mut retries = 0;
-            loop {
-                match rpc_client.get_multiple_accounts(pubkeys).await {
-                    Ok(accts) => return Ok(accts),
-                    Err(e) => {
-                        retries += 1;
-                        if retries == MAX_RETRIES {
-                            datapoint_error!(
-                                "claim_mev_workflow-get_batched_accounts_error",
-                                ("pubkeys", format!("{pubkeys:?}"), String),
-                                ("error", 1, i64),
-                                ("err_type", "fetch_account", String),
-                                ("err_str", e.to_string(), String)
-                            );
-                            return Err(e);
-                        }
-                        tokio::time::sleep(FAIL_DELAY).await;
-                    }
-                }
-            }
-        }
-    });
-
-    let claimant_accounts = futures::future::join_all(futs)
-        .await
-        .into_iter()
-        .collect::<solana_rpc_client_api::client_error::Result<Vec<Vec<Option<Account>>>>>()? // fail on single error
-        .into_iter()
-        .flatten()
-        .collect_vec();
-
-    Ok(pubkeys.into_iter().zip(claimant_accounts).collect())
 }

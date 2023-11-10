@@ -4,6 +4,7 @@ version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
 description = "Collection of binaries used to distribute MEV rewards to delegators and validators."
+publish = false
 
 [dependencies]
 anchor-lang = { workspace = true }
@@ -24,8 +25,8 @@ serde_json = { workspace = true }
 solana-client = { workspace = true }
 solana-genesis-utils = { workspace = true }
 solana-ledger = { workspace = true }
-solana-merkle-tree = { workspace = true }
 solana-measure = { workspace = true }
+solana-merkle-tree = { workspace = true }
 solana-metrics = { workspace = true }
 solana-program = { workspace = true }
 solana-program-runtime = { workspace = true }

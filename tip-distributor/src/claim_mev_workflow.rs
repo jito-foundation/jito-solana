@@ -1,7 +1,8 @@
 use {
     crate::{
         claim_mev_workflow::ClaimMevError::{ClaimantNotFound, InsufficientBalance, TDANotFound},
-        sign_and_send_transactions_with_retries_multi_rpc, GeneratedMerkleTreeCollection, TreeNode,
+        minimum_balance, sign_and_send_transactions_with_retries_multi_rpc,
+        GeneratedMerkleTreeCollection, TreeNode,
     },
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
@@ -11,7 +12,7 @@ use {
     solana_metrics::{datapoint_info, datapoint_warn},
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
-        stake::state::StakeState, system_program,
+        system_program,
     },
     solana_sdk::{
         account::Account,
@@ -99,10 +100,6 @@ pub async fn claim_mev_tips(
         .iter()
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
-    let stake_acct_min_rent = blockhash_rpc_client
-        .get_minimum_balance_for_rent_exemption(StakeState::size_of())
-        .await
-        .expect("Failed to calculate min rent");
 
     // fetch all accounts up front
     info!(
@@ -122,20 +119,17 @@ pub async fn claim_mev_tips(
     .map_err(ClaimMevError::MaxFetchRetriesExceeded)?
     .into_iter()
     .filter_map(|(pubkey, maybe_account)| {
-        let account = match maybe_account {
-            Some(account) => account,
-            None => {
-                datapoint_warn!(
-                    "claim_mev_workflow-account_error",
-                    ("epoch", merkle_trees.epoch, i64),
-                    ("pubkey", pubkey.to_string(), String),
-                    ("account_type", "tip_distribution_account", String),
-                    ("error", 1, i64),
-                    ("err_type", "fetch", String),
-                    ("err_str", "Failed to fetch TipDistributionAccount", String)
-                );
-                return None;
-            }
+        let Some(account) = maybe_account else {
+            datapoint_warn!(
+                "claim_mev_workflow-account_error",
+                ("epoch", merkle_trees.epoch, i64),
+                ("pubkey", pubkey.to_string(), String),
+                ("account_type", "tip_distribution_account", String),
+                ("error", 1, i64),
+                ("err_type", "fetch", String),
+                ("err_str", "Failed to fetch TipDistributionAccount", String)
+            );
+            return None;
         };
 
         let account = match TipDistributionAccount::try_deserialize(&mut account.data.as_slice()) {
@@ -157,7 +151,7 @@ pub async fn claim_mev_tips(
     })
     .collect::<HashMap<Pubkey, TipDistributionAccount>>();
 
-    // track balances only
+    // track balances and account len to make sure account is rent-exempt after transfer
     let claimants = crate::get_batched_accounts(
         &blockhash_rpc_client,
         max_concurrent_rpc_get_reqs,
@@ -173,11 +167,11 @@ pub async fn claim_mev_tips(
         (
             pubkey,
             maybe_account
-                .map(|account| account.lamports)
+                .map(|account| (account.lamports, account.data.len()))
                 .unwrap_or_default(),
         )
     })
-    .collect::<HashMap<Pubkey, u64>>();
+    .collect::<HashMap<Pubkey, (u64, usize)>>();
 
     // Refresh claimants + Try sending txns to RPC
     let mut retries = 0;
@@ -207,7 +201,6 @@ pub async fn claim_mev_tips(
             &merkle_trees,
             &payer_pubkey,
             &tree_nodes,
-            stake_acct_min_rent,
             &tdas,
             &claimants,
             &claim_statuses,
@@ -269,7 +262,8 @@ pub async fn claim_mev_tips(
                 max_loop_duration,
             )
             .await;
-        failed_transaction_count += new_failed_transaction_count;
+        failed_transaction_count =
+            failed_transaction_count.saturating_add(new_failed_transaction_count);
 
         datapoint_info!(
             "claim_mev_workflow-send_transactions",
@@ -278,7 +272,7 @@ pub async fn claim_mev_tips(
             ("transaction_count", transactions_len, i64),
             (
                 "successful_transaction_count",
-                transactions_len - remaining_transaction_count,
+                transactions_len.saturating_sub(remaining_transaction_count),
                 i64
             ),
             (
@@ -301,7 +295,7 @@ pub async fn claim_mev_tips(
                 failed_transaction_count,
             });
         }
-        retries += 1;
+        retries = retries.saturating_add(1);
     }
 }
 
@@ -311,11 +305,19 @@ fn build_transactions(
     merkle_trees: &GeneratedMerkleTreeCollection,
     payer_pubkey: &Pubkey,
     tree_nodes: &[&TreeNode],
-    stake_acct_min_rent: u64,
     tdas: &HashMap<Pubkey, TipDistributionAccount>,
-    claimants: &HashMap<Pubkey, u64>,
+    claimants: &HashMap<Pubkey, (u64 /* lamports */, usize /* allocated bytes */)>,
     claim_statuses: &HashMap<Pubkey, Option<Account>>,
-) -> Result<(usize, usize, usize, usize, Vec<Transaction>), ClaimMevError> {
+) -> Result<
+    (
+        usize, /* skipped_merkle_root_count */
+        usize, /* zero_lamports_count */
+        usize, /* already_claimed_count */
+        usize, /* below_min_rent_count */
+        Vec<Transaction>,
+    ),
+    ClaimMevError,
+> {
     let tip_distribution_config =
         Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
     let mut skipped_merkle_root_count: usize = 0;
@@ -327,9 +329,9 @@ fn build_transactions(
 
     // prepare instructions to transfer to all claimants
     for tree in &merkle_trees.generated_merkle_trees {
-        let fetched_tip_distribution_account = match tdas.get(&tree.tip_distribution_account) {
-            Some(account) => account,
-            None => return Err(TDANotFound(tree.tip_distribution_account)),
+        let Some(fetched_tip_distribution_account) = tdas.get(&tree.tip_distribution_account)
+        else {
+            return Err(TDANotFound(tree.tip_distribution_account));
         };
         // only claim for ones that have merkle root on-chain
         if fetched_tip_distribution_account.merkle_root.is_none() {
@@ -359,16 +361,16 @@ fn build_transactions(
                 }
                 None => return Err(ClaimantNotFound(node.claim_status_pubkey)),
             };
-            let current_balance = match claimants.get(&node.claimant) {
-                Some(balance) => balance,
-                None => return Err(ClaimantNotFound(node.claimant)),
+            let Some((current_balance, allocated_bytes)) = claimants.get(&node.claimant) else {
+                return Err(ClaimantNotFound(node.claimant));
             };
 
             // some older accounts can be rent-paying
             // any new transfers will need to make the account rent-exempt (runtime enforced)
-            let balance_with_tip = current_balance.checked_add(node.amount).unwrap();
-            if balance_with_tip < stake_acct_min_rent {
-                debug!("Current balance + tip claim amount of {balance_with_tip} is less than required rent-exempt of {stake_acct_min_rent} for pubkey: {}. Skipping.", node.claimant);
+            let new_balance = current_balance.checked_add(node.amount).unwrap();
+            let minimum_rent = minimum_balance(*allocated_bytes);
+            if new_balance < minimum_rent {
+                debug!("Current balance + claim amount of {new_balance} is less than required rent-exempt of {minimum_rent} for pubkey: {}. Skipping.", node.claimant);
                 below_min_rent_count = below_min_rent_count.checked_add(1).unwrap();
                 continue;
             }
