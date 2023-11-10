@@ -230,7 +230,7 @@ indicatif = "0.17.7"
 Inflector = "0.11.4"
 itertools = "0.10.5"
 jemallocator = { package = "tikv-jemallocator", version = "0.4.1", features = ["unprefixed_malloc_on_supported_platforms"] }
-js-sys = "0.3.64"
+js-sys = "0.3.65"
 jito-protos = { path = "jito-protos", version = "=1.18.0" }
 jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
 jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
