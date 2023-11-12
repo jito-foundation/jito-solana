@@ -77,7 +77,8 @@ impl AccountsHashVerifier {
                     )) = Self::get_next_accounts_package(
                         &accounts_package_sender,
                         &accounts_package_receiver,
-                    ) else {
+                    )
+                    else {
                         std::thread::sleep(LOOP_LIMITER);
                         continue;
                     };
