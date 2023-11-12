@@ -3795,6 +3795,7 @@ pub mod rpc_full {
                 commitment: preflight_commitment,
                 min_context_slot,
             })?;
+
             let transaction = sanitize_transaction(unsanitized_tx, preflight_bank)?;
             let signature = *transaction.signature();
 
