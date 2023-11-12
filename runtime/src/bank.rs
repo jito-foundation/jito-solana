@@ -4402,13 +4402,14 @@ impl Bank {
         transaction: SanitizedTransaction,
     ) -> TransactionSimulationResult {
         let account_keys = transaction.message().account_keys();
+        let number_of_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
         let batch = self.prepare_unlocked_batch_from_single_tx(&transaction);
         let mut timings = ExecuteTimings::default();
 
         let LoadAndExecuteTransactionsOutput {
             loaded_transactions,
-            execution_results,
+            mut execution_results,
             ..
         } = self.load_and_execute_transactions(
             &batch,
@@ -4424,42 +4425,43 @@ impl Bank {
             None,
         );
 
-        Self::build_transaction_simulation_result(&loaded_transactions[0], &execution_results[0])
-    }
-
-    fn build_transaction_simulation_result(
-        loaded_transaction_result: &TransactionLoadResult,
-        execution_result: &TransactionExecutionResult,
-    ) -> TransactionSimulationResult {
-        let (logs, return_data, units_consumed, result) = match execution_result {
-            TransactionExecutionResult::Executed { details, .. } => {
-                let log_messages = if let Some(ref log_messages) = details.log_messages {
-                    log_messages.clone()
-                } else {
-                    vec![]
-                };
-
-                (
-                    log_messages,
-                    details.return_data.as_ref().cloned(),
-                    details.executed_units,
-                    execution_result.flattened_result(),
-                )
-            }
-            TransactionExecutionResult::NotExecuted(_) => {
-                (vec![], None, 0, execution_result.flattened_result())
-            }
-        };
-
-        let post_simulation_accounts = loaded_transaction_result
+        let post_simulation_accounts = loaded_transactions
+            .into_iter()
+            .next()
+            .unwrap()
             .0
-            .as_ref()
             .ok()
-            .map(|tx| tx.accounts.clone())
+            .map(|loaded_transaction| {
+                loaded_transaction
+                    .accounts
+                    .into_iter()
+                    .take(number_of_accounts)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
 
+        let units_consumed = timings
+            .details
+            .per_program_timings
+            .iter()
+            .fold(0, |acc: u64, (_, program_timing)| {
+                acc.saturating_add(program_timing.accumulated_units)
+            });
+
+        debug!("simulate_transaction: {:?}", timings);
+
+        let execution_result = execution_results.pop().unwrap();
+        let flattened_result = execution_result.flattened_result();
+        let (logs, return_data) = match execution_result {
+            TransactionExecutionResult::Executed { details, .. } => {
+                (details.log_messages, details.return_data)
+            }
+            TransactionExecutionResult::NotExecuted(_) => (None, None),
+        };
+        let logs = logs.unwrap_or_default();
+
         TransactionSimulationResult {
-            result,
+            result: flattened_result,
             logs,
             post_simulation_accounts,
             units_consumed,
