@@ -4366,7 +4366,12 @@ impl Bank {
         let mut account_locks = AccountLocks::default();
         let lock_results =
             Accounts::lock_accounts_sequential(&mut account_locks, tx_account_locks_results);
-        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+        let mut batch = TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions));
+        // this is required to ensure that accounts aren't unlocked accidentally, which can be problematic during replay.
+        // more specifically, during process_entries, if the lock counts are accidentally decremented,
+        // one might end up replaying a block incorrectly
+        batch.set_needs_unlock(false);
+        batch
     }
 
     /// Prepare a transaction batch from a single transaction without locking accounts
