@@ -106,6 +106,10 @@ use {
             self, clean_orphaned_account_snapshot_dirs, move_and_async_delete_path_contents,
         },
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
+        runtime_plugin_service::RuntimePluginService,
+    },
     solana_sdk::{
         clock::Slot,
         epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
@@ -505,6 +509,10 @@ impl Validator {
         tpu_connection_pool_size: usize,
         tpu_enable_udp: bool,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+        runtime_plugin_configs_and_request_rx: Option<(
+            Vec<PathBuf>,
+            Receiver<RuntimePluginManagerRpcRequest>,
+        )>,
     ) -> Result<Self, String> {
         let id = identity_keypair.pubkey();
         assert_eq!(&id, node.info.pubkey());
@@ -888,6 +896,17 @@ impl Validator {
             &config.pubsub_config,
             None,
         ));
+
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .map_err(|e| format!("Failed to start runtime plugin service: {e:?}"))?;
+        }
 
         let max_slots = Arc::new(MaxSlots::default());
         let (completed_data_sets_sender, completed_data_sets_receiver) =
@@ -2512,6 +2531,7 @@ mod tests {
             DEFAULT_TPU_CONNECTION_POOL_SIZE,
             DEFAULT_TPU_ENABLE_UDP,
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         assert_eq!(
@@ -2589,7 +2609,7 @@ mod tests {
                     Arc::new(RwLock::new(vec![Arc::new(vote_account_keypair)])),
                     vec![LegacyContactInfo::try_from(&leader_node.info).unwrap()],
                     &config,
-                    true, // should_check_duplicate_instance.
+                    true, // should_check_duplicate_instance
                     None, // rpc_to_plugin_manager_receiver
                     Arc::new(RwLock::new(ValidatorStartProgress::default())),
                     SocketAddrSpace::Unspecified,
@@ -2597,6 +2617,7 @@ mod tests {
                     DEFAULT_TPU_CONNECTION_POOL_SIZE,
                     DEFAULT_TPU_ENABLE_UDP,
                     Arc::new(RwLock::new(None)),
+                    None,
                 )
                 .expect("assume successful validator start")
             })

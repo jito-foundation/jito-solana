@@ -1,0 +1,19 @@
+[package]
+name = "solana-runtime-plugin"
+version = "1.18.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+crossbeam-channel = { workspace = true }
+json5 = { workspace = true }
+jsonrpc-core = { workspace = true }
+jsonrpc-core-client = { workspace = true, features = ["ipc"] }
+jsonrpc-derive = { workspace = true }
+jsonrpc-ipc-server = { workspace = true }
+jsonrpc-server-utils = { workspace = true }
+libloading = { workspace = true }
+log = { workspace = true }
+solana-runtime = { workspace = true }
+solana-sdk = { workspace = true }
+thiserror = { workspace = true }
