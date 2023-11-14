@@ -10,6 +10,10 @@ pub struct AccountOverrides {
 }
 
 impl AccountOverrides {
+    pub fn upsert_account_overrides(&mut self, other: AccountOverrides) {
+        self.accounts.extend(other.accounts);
+    }
+
     pub fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
         match account {
             Some(account) => self.accounts.insert(*pubkey, account),
