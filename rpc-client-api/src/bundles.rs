@@ -8,7 +8,6 @@ use {
     solana_sdk::{
         clock::Slot,
         commitment_config::{CommitmentConfig, CommitmentLevel},
-        signature::Signature,
         transaction::TransactionError,
     },
     solana_transaction_status::{UiTransactionEncoding, UiTransactionReturnData},
@@ -49,8 +48,15 @@ pub enum RpcBundleExecutionError {
     #[error("Tip payment error: {0}")]
     TipError(String),
 
-    #[error("A transaction in the bundle failed to execute: [signature={0}, error={1}]")]
-    TransactionFailure(Signature, String),
+    #[error(
+        "A transaction in the bundle failed to execute: [signature={0}, errormsg={1}, error={2:?}, log_messages={3:?}]"
+    )]
+    TransactionFailure(
+        String,
+        String,
+        Option<TransactionError>,
+        Option<Vec<String>>,
+    ),
 }
 
 impl From<BundleExecutionError> for RpcBundleExecutionError {
@@ -68,22 +74,35 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
                     LoadAndExecuteBundleError::LockError {
                         signature,
                         transaction_error,
-                    } => Self::TransactionFailure(signature, transaction_error.to_string()),
+                    } => Self::TransactionFailure(
+                        signature.to_string(),
+                        transaction_error.to_string(),
+                        Some(transaction_error),
+                        None,
+                    ),
                     LoadAndExecuteBundleError::TransactionError {
                         signature,
                         execution_result,
                     } => match *execution_result {
                         TransactionExecutionResult::Executed { details, .. } => {
-                            let err_msg = if let Err(e) = details.status {
-                                e.to_string()
+                            let (err_msg, e) = if let Err(e) = details.status {
+                                (e.to_string(), Some(e))
                             } else {
-                                "Unknown error".to_string()
+                                ("Unknown error".to_string(), None)
                             };
-                            Self::TransactionFailure(signature, err_msg)
+                            Self::TransactionFailure(
+                                signature.to_string(),
+                                err_msg,
+                                e,
+                                details.log_messages,
+                            )
                         }
-                        TransactionExecutionResult::NotExecuted(e) => {
-                            Self::TransactionFailure(signature, e.to_string())
-                        }
+                        TransactionExecutionResult::NotExecuted(e) => Self::TransactionFailure(
+                            signature.to_string(),
+                            e.to_string(),
+                            Some(e),
+                            None,
+                        ),
                     },
                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                         Self::InvalidPreOrPostAccounts
