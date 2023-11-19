@@ -158,7 +158,7 @@ impl ClusterQuerySubCommands for App<'_, '_> {
                     .takes_value(true)
                     .value_name("BLOCKHASH")
                     .validator(is_hash)
-                    .help("Query fees for BLOCKHASH instead of the the most recent blockhash")
+                    .help("Query fees for BLOCKHASH instead of the most recent blockhash")
             ),
         )
         .subcommand(
@@ -229,7 +229,7 @@ impl ClusterQuerySubCommands for App<'_, '_> {
                 Arg::with_name("print_accounts")
                     .long("print-accounts")
                     .takes_value(false)
-                    .help("Print list of non-circualting account addresses")
+                    .help("Print list of non-circulating account addresses")
             ),
         )
         .subcommand(
@@ -737,7 +737,7 @@ pub fn process_catchup(
         if node_json_rpc_url.is_some() && node_json_rpc_url != gussed_default {
             // go to new line to leave this message on console
             println!(
-                "Prefering explicitly given rpc ({}) as us, \
+                "Preferring explicitly given rpc ({}) as us, \
                  although --our-localhost is given\n",
                 node_json_rpc_url.as_ref().unwrap()
             );
@@ -754,7 +754,7 @@ pub fn process_catchup(
             (if node_pubkey.is_some() && node_pubkey != guessed_default {
                 // go to new line to leave this message on console
                 println!(
-                    "Prefering explicitly given node pubkey ({}) as us, \
+                    "Preferring explicitly given node pubkey ({}) as us, \
                      although --our-localhost is given\n",
                     node_pubkey.unwrap()
                 );
