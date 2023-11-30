@@ -56,7 +56,7 @@ impl BundleReservedSpaceManager {
 
     /// return true if the bank is still in the period where block_cost_limits is reduced
     pub fn is_in_reserved_tick_period(&self, bank: &Bank) -> bool {
-        bank.tick_height() % (bank.ticks_per_slot()) < self.reserved_ticks
+        bank.tick_height() % bank.ticks_per_slot() < self.reserved_ticks
     }
 
     /// return the block_cost_limits as determined by the tick height of the bank
