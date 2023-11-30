@@ -1128,24 +1128,26 @@ impl BundleStorage {
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
         push_back: bool,
     ) -> InsertPacketBundlesSummary {
-        let mut num_bundles_inserted: usize = 0;
-        let mut num_packets_inserted: usize = 0;
-        let mut num_bundles_dropped: usize = 0;
-        let mut num_packets_dropped: usize = 0;
+        let bundles_to_insert_count = deque.capacity() - deque.len();
+        let num_bundles_dropped = deserialized_bundles.len() - bundles_to_insert_count;
+        let num_packets_inserted = deserialized_bundles
+            .iter()
+            .take(bundles_to_insert_count)
+            .map(|b| b.len())
+            .sum::<usize>();
+        let num_packets_dropped = deserialized_bundles
+            .iter()
+            .skip(bundles_to_insert_count)
+            .map(|b| b.len())
+            .sum::<usize>();
 
-        for bundle in deserialized_bundles {
-            if deque.capacity() == deque.len() {
-                saturating_add_assign!(num_bundles_dropped, 1);
-                saturating_add_assign!(num_packets_dropped, bundle.len());
-            } else {
-                saturating_add_assign!(num_bundles_inserted, 1);
-                saturating_add_assign!(num_packets_inserted, bundle.len());
-                if push_back {
-                    deque.push_back(bundle);
-                } else {
-                    deque.push_front(bundle)
-                }
-            }
+        let to_insert = deserialized_bundles
+            .into_iter()
+            .take(bundles_to_insert_count);
+        if push_back {
+            deque.extend(to_insert)
+        } else {
+            to_insert.for_each(|b| deque.push_front(b));
         }
 
         InsertPacketBundlesSummary {
@@ -1154,7 +1156,7 @@ impl BundleStorage {
                 num_dropped_tracer_packets: 0,
             }
             .into(),
-            num_bundles_inserted,
+            num_bundles_inserted: bundles_to_insert_count,
             num_packets_inserted,
             num_bundles_dropped,
         }
