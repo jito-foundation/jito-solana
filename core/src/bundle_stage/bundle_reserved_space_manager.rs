@@ -56,7 +56,7 @@ impl BundleReservedSpaceManager {
 
     /// return true if the bank is still in the period where block_cost_limits is reduced
     pub fn is_in_reserved_tick_period(&self, bank: &Bank) -> bool {
-        bank.tick_height() < self.reserved_ticks
+        bank.tick_height() % (bank.ticks_per_slot()) < self.reserved_ticks
     }
 
     /// return the block_cost_limits as determined by the tick height of the bank
@@ -82,8 +82,10 @@ impl BundleReservedSpaceManager {
 mod tests {
     use {
         crate::bundle_stage::bundle_reserved_space_manager::BundleReservedSpaceManager,
-        solana_ledger::genesis_utils::create_genesis_config, solana_runtime::bank::Bank,
-        solana_sdk::hash::Hash, std::sync::Arc,
+        solana_ledger::genesis_utils::create_genesis_config,
+        solana_runtime::bank::Bank,
+        solana_sdk::{hash::Hash, pubkey::Pubkey},
+        std::sync::Arc,
     };
 
     #[test]
@@ -184,6 +186,43 @@ mod tests {
         assert_eq!(
             bank.read_cost_tracker().unwrap().block_cost_limit(),
             block_cost_limits
+        );
+    }
+
+    #[test]
+    fn test_block_limits_after_first_slot() {
+        const BUNDLE_BLOCK_COST_LIMITS_RESERVATION: u64 = 100;
+
+        let genesis_config_info = create_genesis_config(100);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config_info.genesis_config));
+
+        for _ in 0..genesis_config_info.genesis_config.ticks_per_slot {
+            bank.register_tick(&Hash::default());
+        }
+        assert!(bank.is_complete());
+        bank.freeze();
+
+        let bank1 = Arc::new(Bank::new_from_parent(bank, &Pubkey::default(), 1));
+
+        // Prints: bank1: 1, tick_height: 64, max_tick_height: 128
+        // println!(
+        //     "bank1: {}, tick_height: {}, max_tick_height: {}",
+        //     bank1.slot(),
+        //     bank1.tick_height(),
+        //     bank1.max_tick_height()
+        // );
+
+        let block_cost_limits = bank1.read_cost_tracker().unwrap().block_cost_limit();
+        let mut reserved_space = BundleReservedSpaceManager::new(
+            block_cost_limits,
+            BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
+            5,
+        );
+        reserved_space.tick(&bank1);
+
+        assert_eq!(
+            bank1.read_cost_tracker().unwrap().block_cost_limit(),
+            block_cost_limits - BUNDLE_BLOCK_COST_LIMITS_RESERVATION
         );
     }
 }
