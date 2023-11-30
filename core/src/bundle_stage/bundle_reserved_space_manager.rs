@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_block_limits_after_first_slot() {
         const BUNDLE_BLOCK_COST_LIMITS_RESERVATION: u64 = 100;
-
+        const RESERVED_TICKS: u64 = 5;
         let genesis_config_info = create_genesis_config(100);
         let bank = Arc::new(Bank::new_for_tests(&genesis_config_info.genesis_config));
 
@@ -201,28 +201,39 @@ mod tests {
         }
         assert!(bank.is_complete());
         bank.freeze();
+        assert_eq!(
+            bank.read_cost_tracker().unwrap().block_cost_limit(),
+            solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
+        );
 
-        let bank1 = Arc::new(Bank::new_from_parent(bank, &Pubkey::default(), 1));
+        let bank1 = Arc::new(Bank::new_from_parent(bank.clone(), &Pubkey::default(), 1));
+        assert_eq!(bank1.slot(), 1);
+        assert_eq!(bank1.tick_height(), 64);
+        assert_eq!(bank1.max_tick_height(), 128);
 
-        // Prints: bank1: 1, tick_height: 64, max_tick_height: 128
-        // println!(
-        //     "bank1: {}, tick_height: {}, max_tick_height: {}",
-        //     bank1.slot(),
-        //     bank1.tick_height(),
-        //     bank1.max_tick_height()
-        // );
-
+        // reserve space
         let block_cost_limits = bank1.read_cost_tracker().unwrap().block_cost_limit();
         let mut reserved_space = BundleReservedSpaceManager::new(
             block_cost_limits,
             BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
-            5,
+            RESERVED_TICKS,
         );
         reserved_space.tick(&bank1);
 
+        // wait for reservation to be over
+        (0..RESERVED_TICKS).for_each(|_| {
+            bank1.register_tick(&Hash::default());
+            assert_eq!(
+                bank1.read_cost_tracker().unwrap().block_cost_limit(),
+                block_cost_limits - BUNDLE_BLOCK_COST_LIMITS_RESERVATION
+            );
+        });
+        reserved_space.tick(&bank1);
+
+        // after reservation, revert back to normal limit
         assert_eq!(
             bank1.read_cost_tracker().unwrap().block_cost_limit(),
-            block_cost_limits - BUNDLE_BLOCK_COST_LIMITS_RESERVATION
+            solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
         );
     }
 }
