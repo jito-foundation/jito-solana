@@ -213,7 +213,7 @@ impl RelayerStage {
                 })?;
         }
 
-        debug!("connecting to auth: {}", local_config.relayer_url);
+        debug!("connecting to auth: {}", local_relayer_config.relayer_url);
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -231,11 +231,14 @@ impl RelayerStage {
 
         datapoint_info!(
             "relayer_stage-tokens_generated",
-            ("url", local_config.relayer_url, String),
+            ("url", local_relayer_config.relayer_url, String),
             ("count", 1, i64),
         );
 
-        debug!("connecting to relayer: {}", local_config.relayer_url);
+        debug!(
+            "connecting to relayer: {}",
+            local_relayer_config.relayer_url
+        );
         let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::RelayerConnectionTimeout)?
