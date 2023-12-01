@@ -148,9 +148,11 @@ impl BlockEngineStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            if !Self::is_valid_block_engine_config(&block_engine_config.lock().unwrap()) {
+            let local_block_engine_config = block_engine_config.lock().unwrap().clone();
+            if !Self::is_valid_block_engine_config(&local_block_engine_config) {
                 sleep(CONNECTION_BACKOFF).await;
             } else if let Err(e) = Self::connect_auth_and_stream(
+                &local_block_engine_config,
                 &block_engine_config,
                 &cluster_info,
                 &bundle_tx,
@@ -183,7 +185,8 @@ impl BlockEngineStage {
     }
 
     async fn connect_auth_and_stream(
-        block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
+        local_block_engine_config: &BlockEngineConfig,
+        global_block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
@@ -194,17 +197,20 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
-        let local_config = block_engine_config.lock().unwrap().clone();
 
-        let mut backend_endpoint = Endpoint::from_shared(local_config.block_engine_url.clone())
-            .map_err(|_| {
-                ProxyError::BlockEngineConnectionError(format!(
-                    "invalid block engine url value: {}",
-                    local_config.block_engine_url
-                ))
-            })?
-            .tcp_keepalive(Some(Duration::from_secs(60)));
-        if local_config.block_engine_url.starts_with("https") {
+        let mut backend_endpoint =
+            Endpoint::from_shared(local_block_engine_config.block_engine_url.clone())
+                .map_err(|_| {
+                    ProxyError::BlockEngineConnectionError(format!(
+                        "invalid block engine url value: {}",
+                        local_block_engine_config.block_engine_url
+                    ))
+                })?
+                .tcp_keepalive(Some(Duration::from_secs(60)));
+        if local_block_engine_config
+            .block_engine_url
+            .starts_with("https")
+        {
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -214,7 +220,10 @@ impl BlockEngineStage {
                 })?;
         }
 
-        debug!("connecting to auth: {}", local_config.block_engine_url);
+        debug!(
+            "connecting to auth: {}",
+            local_block_engine_config.block_engine_url
+        );
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -232,13 +241,13 @@ impl BlockEngineStage {
 
         datapoint_info!(
             "block_engine_stage-tokens_generated",
-            ("url", local_config.block_engine_url, String),
+            ("url", local_block_engine_config.block_engine_url, String),
             ("count", 1, i64),
         );
 
         debug!(
             "connecting to block engine: {}",
-            local_config.block_engine_url
+            local_block_engine_config.block_engine_url
         );
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
@@ -255,8 +264,8 @@ impl BlockEngineStage {
             bundle_tx,
             block_engine_client,
             packet_tx,
-            &local_config,
-            block_engine_config,
+            local_block_engine_config,
+            global_block_engine_config,
             banking_packet_sender,
             exit,
             block_builder_fee_info,
