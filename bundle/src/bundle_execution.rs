@@ -523,7 +523,7 @@ mod tests {
 
     fn create_simple_test_bank(lamports: u64) -> (GenesisConfigInfo, Arc<Bank>) {
         let genesis_config_info = create_genesis_config(lamports);
-        let bank = Arc::new(Bank::new_for_tests(&genesis_config_info.genesis_config));
+        let (bank, _) = Bank::new_with_bank_forks_for_tests(&genesis_config_info.genesis_config);
         (genesis_config_info, bank)
     }
 
@@ -588,7 +588,7 @@ mod tests {
 
         // check to make sure there was one batch returned with one transaction that was the same that was put in
         assert_eq!(execution_result.bundle_transaction_results.len(), 1);
-        let tx_result = execution_result.bundle_transaction_results.get(0).unwrap();
+        let tx_result = execution_result.bundle_transaction_results.first().unwrap();
         assert_eq!(tx_result.transactions.len(), 1);
         assert_eq!(tx_result.transactions[0], bundle.transactions[0]);
 
@@ -603,14 +603,14 @@ mod tests {
         let execution_result = tx_result
             .load_and_execute_transactions_output
             .execution_results
-            .get(0)
+            .first()
             .unwrap();
         assert!(execution_result.was_executed());
         assert!(execution_result.was_executed_successfully());
 
         // Make sure the post-balances are correct
         assert_eq!(tx_result.pre_balance_info.native.len(), 1);
-        let post_tx_sol_balances = tx_result.post_balance_info.0.get(0).unwrap();
+        let post_tx_sol_balances = tx_result.post_balance_info.0.first().unwrap();
 
         let minter_message_index =
             find_account_index(&transactions[0], &genesis_config_info.mint_keypair.pubkey())

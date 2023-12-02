@@ -633,6 +633,7 @@ impl BankingStage {
         Self { bank_thread_hdls }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_thread_local_multi_iterator_thread(
         id: u32,
         packet_receiver: BankingPacketReceiver,
@@ -1311,7 +1312,7 @@ mod tests {
                 bank,
                 entries_ticks,
             } = entry_receiver.recv().unwrap();
-            let entry = &entries_ticks.get(0).unwrap().0;
+            let entry = &entries_ticks.first().unwrap().0;
             assert_eq!(entry.transactions, txs);
 
             // Once bank is set to a new bank (setting bank.slot() + 1 in record_transactions),

@@ -290,10 +290,11 @@ impl BundleConsumer {
             return Err(BundleExecutionError::BankProcessingTimeLimitReached);
         }
 
-        if Self::bundle_touches_tip_pdas(
-            locked_bundle.sanitized_bundle(),
-            &tip_manager.get_tip_accounts(),
-        ) && bank_start.working_bank.slot() != *last_tip_updated_slot
+        if bank_start.working_bank.slot() != *last_tip_updated_slot
+            && Self::bundle_touches_tip_pdas(
+                locked_bundle.sanitized_bundle(),
+                &tip_manager.get_tip_accounts(),
+            )
         {
             let start = Instant::now();
             let result = Self::handle_tip_programs(
@@ -810,7 +811,6 @@ mod tests {
         solana_sdk::{
             bundle::{derive_bundle_id, SanitizedBundle},
             clock::MAX_PROCESSING_AGE,
-            feature_set::delay_visibility_of_program_deployment,
             fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
             genesis_config::ClusterType,
             hash::Hash,
@@ -936,9 +936,9 @@ mod tests {
 
         // workaround for https://github.com/solana-labs/solana/issues/30085
         // the test can deploy and use spl_programs in the genensis slot without waiting for the next one
-        let mut bank = Bank::new_for_tests(&genesis_config);
-        bank.deactivate_feature(&delay_visibility_of_program_deployment::id());
-        let bank = Arc::new(bank);
+        let (bank, _) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+        let bank = Arc::new(Bank::new_from_parent(bank, &Pubkey::default(), 1));
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(

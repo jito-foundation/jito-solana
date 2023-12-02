@@ -394,7 +394,7 @@ mod tests {
             vec![INITIAL_VALIDATOR_STAKES; 3],
         );
 
-        let bank = Bank::new_for_tests(&genesis_config);
+        let (mut bank, _) = Bank::new_with_bank_forks_for_tests(&genesis_config);
 
         /* 2. Seed the Bank with [TipDistributionAccount]'s */
         let merkle_root_upload_authority = Pubkey::new_unique();
@@ -585,7 +585,6 @@ mod tests {
             ))
         }
 
-        let mut bank = Arc::new(bank);
         let mut stake_pubkeys = validator_0_delegations
             .iter()
             .map(|v| v.stake_account_pubkey)

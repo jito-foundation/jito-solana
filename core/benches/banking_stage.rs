@@ -118,7 +118,14 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
     );
     let (s, _r) = unbounded();
     let committer = Committer::new(None, s, Arc::new(PrioritizationFeeCache::new(0u64)));
-    let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+    let consumer = Consumer::new(
+        committer,
+        recorder,
+        QosService::new(1),
+        None,
+        HashSet::default(),
+        BundleAccountLocker::default(),
+    );
     // This tests the performance of buffering packets.
     // If the packet buffers are copied, performance will be poor.
     bencher.iter(move || {
@@ -311,6 +318,8 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         Arc::new(ConnectionCache::new("connection_cache_test")),
         bank_forks,
         &Arc::new(PrioritizationFeeCache::new(0u64)),
+        HashSet::default(),
+        BundleAccountLocker::default(),
     );
 
     let chunk_len = verified.len() / CHUNKS;

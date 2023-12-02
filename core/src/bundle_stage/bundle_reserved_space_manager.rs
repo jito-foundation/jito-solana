@@ -82,10 +82,8 @@ impl BundleReservedSpaceManager {
 mod tests {
     use {
         crate::bundle_stage::bundle_reserved_space_manager::BundleReservedSpaceManager,
-        solana_ledger::genesis_utils::create_genesis_config,
-        solana_runtime::bank::Bank,
-        solana_sdk::{hash::Hash, pubkey::Pubkey},
-        std::sync::{Arc, RwLock},
+        solana_ledger::genesis_utils::create_genesis_config, solana_runtime::bank::Bank,
+        solana_sdk::pubkey::Pubkey, std::sync::Arc,
     };
 
     #[test]

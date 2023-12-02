@@ -1036,7 +1036,7 @@ mod tests {
             }) = entry_receiver.recv()
             {
                 assert!(entries_ticks.len() == 1);
-                let entry = &entries_ticks.get(0).unwrap().0;
+                let entry = &entries_ticks.first().unwrap().0;
                 if !entry.is_tick() {
                     trace!("got entry");
                     assert_eq!(entry.transactions.len(), transactions.len());
