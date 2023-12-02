@@ -290,10 +290,11 @@ impl BundleConsumer {
             return Err(BundleExecutionError::BankProcessingTimeLimitReached);
         }
 
-        if Self::bundle_touches_tip_pdas(
-            locked_bundle.sanitized_bundle(),
-            &tip_manager.get_tip_accounts(),
-        ) && bank_start.working_bank.slot() != *last_tip_updated_slot
+        if bank_start.working_bank.slot() != *last_tip_updated_slot
+            && Self::bundle_touches_tip_pdas(
+                locked_bundle.sanitized_bundle(),
+                &tip_manager.get_tip_accounts(),
+            )
         {
             let start = Instant::now();
             let result = Self::handle_tip_programs(
