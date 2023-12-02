@@ -147,9 +147,11 @@ impl RelayerStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            if !Self::is_valid_relayer_config(&relayer_config.lock().unwrap()) {
+            let local_relayer_config = relayer_config.lock().unwrap().clone();
+            if !Self::is_valid_relayer_config(&local_relayer_config) {
                 sleep(CONNECTION_BACKOFF).await;
             } else if let Err(e) = Self::connect_auth_and_stream(
+                &local_relayer_config,
                 &relayer_config,
                 &cluster_info,
                 &heartbeat_tx,
@@ -181,7 +183,8 @@ impl RelayerStage {
     }
 
     async fn connect_auth_and_stream(
-        relayer_config: &Arc<Mutex<RelayerConfig>>,
+        local_relayer_config: &RelayerConfig,
+        global_relayer_config: &Arc<Mutex<RelayerConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
@@ -191,17 +194,16 @@ impl RelayerStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
-        let local_config = relayer_config.lock().unwrap().clone();
 
-        let mut backend_endpoint = Endpoint::from_shared(local_config.relayer_url.clone())
+        let mut backend_endpoint = Endpoint::from_shared(local_relayer_config.relayer_url.clone())
             .map_err(|_| {
                 ProxyError::RelayerConnectionError(format!(
                     "invalid relayer url value: {}",
-                    local_config.relayer_url
+                    local_relayer_config.relayer_url
                 ))
             })?
             .tcp_keepalive(Some(Duration::from_secs(60)));
-        if local_config.relayer_url.starts_with("https") {
+        if local_relayer_config.relayer_url.starts_with("https") {
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
@@ -211,7 +213,7 @@ impl RelayerStage {
                 })?;
         }
 
-        debug!("connecting to auth: {}", local_config.relayer_url);
+        debug!("connecting to auth: {}", local_relayer_config.relayer_url);
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
@@ -229,11 +231,14 @@ impl RelayerStage {
 
         datapoint_info!(
             "relayer_stage-tokens_generated",
-            ("url", local_config.relayer_url, String),
+            ("url", local_relayer_config.relayer_url, String),
             ("count", 1, i64),
         );
 
-        debug!("connecting to relayer: {}", local_config.relayer_url);
+        debug!(
+            "connecting to relayer: {}",
+            local_relayer_config.relayer_url
+        );
         let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::RelayerConnectionTimeout)?
@@ -250,8 +255,8 @@ impl RelayerStage {
             heartbeat_tx,
             packet_tx,
             banking_packet_sender,
-            &local_config,
-            relayer_config,
+            local_relayer_config,
+            global_relayer_config,
             exit,
             auth_client,
             access_token,
