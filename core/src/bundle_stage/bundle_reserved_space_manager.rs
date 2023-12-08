@@ -206,7 +206,7 @@ mod tests {
             solana_runtime::block_cost_limits::MAX_BLOCK_UNITS,
         );
 
-        let bank1 = Arc::new(Bank::new_from_parent(&bank.clone(), &Pubkey::default(), 1));
+        let bank1 = Arc::new(Bank::new_from_parent(&bank, &Pubkey::default(), 1));
         assert_eq!(bank1.slot(), 1);
         assert_eq!(bank1.tick_height(), 64);
         assert_eq!(bank1.max_tick_height(), 128);
