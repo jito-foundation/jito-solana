@@ -203,10 +203,10 @@ mod tests {
         bank.freeze();
         assert_eq!(
             bank.read_cost_tracker().unwrap().block_cost_limit(),
-            solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
+            solana_runtime::block_cost_limits::MAX_BLOCK_UNITS,
         );
 
-        let bank1 = Arc::new(Bank::new_from_parent(bank.clone(), &Pubkey::default(), 1));
+        let bank1 = Arc::new(Bank::new_from_parent(&bank.clone(), &Pubkey::default(), 1));
         assert_eq!(bank1.slot(), 1);
         assert_eq!(bank1.tick_height(), 64);
         assert_eq!(bank1.max_tick_height(), 128);
@@ -233,7 +233,7 @@ mod tests {
         // after reservation, revert back to normal limit
         assert_eq!(
             bank1.read_cost_tracker().unwrap().block_cost_limit(),
-            solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
+            solana_runtime::block_cost_limits::MAX_BLOCK_UNITS,
         );
     }
 }
