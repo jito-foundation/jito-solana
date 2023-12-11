@@ -15,7 +15,7 @@ use {
         prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
     },
-    solana_sdk::{saturating_add_assign, transaction::SanitizedTransaction},
+    solana_sdk::{hash::Hash, saturating_add_assign, transaction::SanitizedTransaction},
     solana_transaction_status::{
         token_balances::{TransactionTokenBalances, TransactionTokenBalancesSet},
         PreBalanceInfo,
@@ -58,13 +58,12 @@ impl Committer {
     pub(crate) fn commit_bundle<'a>(
         &self,
         bundle_execution_output: &'a mut LoadAndExecuteBundleOutput<'a>,
+        last_blockhash: Hash,
+        lamports_per_signature: u64,
         mut starting_transaction_index: Option<usize>,
         bank: &Arc<Bank>,
         execute_and_commit_timings: &mut LeaderExecuteAndCommitTimings,
     ) -> (u64, CommitBundleDetails) {
-        let (last_blockhash, lamports_per_signature) =
-            bank.last_blockhash_and_lamports_per_signature();
-
         let transaction_output = bundle_execution_output.bundle_transaction_results_mut();
 
         let (commit_transaction_details, commit_times): (Vec<_>, Vec<_>) = transaction_output
