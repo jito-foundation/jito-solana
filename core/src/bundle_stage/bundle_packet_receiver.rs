@@ -223,13 +223,17 @@ mod tests {
 
     fn assert_bundles_same(
         packet_bundles: &[PacketBundle],
-        bundles_to_process: &[(ImmutableDeserializedBundle, SanitizedBundle)],
+        bundles_to_process: &[(
+            u8, /* attempts remaining */
+            ImmutableDeserializedBundle,
+            SanitizedBundle,
+        )],
     ) {
         assert_eq!(packet_bundles.len(), bundles_to_process.len());
         packet_bundles
             .iter()
             .zip(bundles_to_process.iter())
-            .for_each(|(packet_bundle, (_, sanitized_bundle))| {
+            .for_each(|(packet_bundle, (_, _, sanitized_bundle))| {
                 assert_eq!(packet_bundle.bundle_id, sanitized_bundle.bundle_id);
                 assert_eq!(
                     packet_bundle.batch.len(),

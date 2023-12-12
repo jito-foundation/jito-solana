@@ -200,7 +200,11 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         reserved_space: &BundleReservedSpaceManager,
-        bundles: &[(ImmutableDeserializedBundle, SanitizedBundle)],
+        bundles: &[(
+            u8, /* attempts remaining */
+            ImmutableDeserializedBundle,
+            SanitizedBundle,
+        )],
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Vec<Result<(), BundleExecutionError>> {
@@ -212,7 +216,7 @@ impl BundleConsumer {
         let (locked_bundle_results, locked_bundles_elapsed) = measure!(
             bundles
                 .iter()
-                .map(|(_, sanitized_bundle)| {
+                .map(|(_, _, sanitized_bundle)| {
                     bundle_account_locker
                         .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
                 })
@@ -778,7 +782,7 @@ impl BundleConsumer {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use {
         crate::{
             bundle_stage::{
@@ -843,14 +847,15 @@ mod tests {
         },
     };
 
-    struct TestFixture {
-        genesis_config_info: GenesisConfigInfo,
-        leader_keypair: Keypair,
-        bank: Arc<Bank>,
-        exit: Arc<AtomicBool>,
-        poh_recorder: Arc<RwLock<PohRecorder>>,
-        poh_simulator: JoinHandle<()>,
-        entry_receiver: Receiver<WorkingBankEntry>,
+    pub struct TestFixture {
+        pub genesis_config_info: GenesisConfigInfo,
+        pub leader_keypair: Keypair,
+        pub bank: Arc<Bank>,
+        pub blockstore: Arc<Blockstore>,
+        pub exit: Arc<AtomicBool>,
+        pub poh_recorder: Arc<RwLock<PohRecorder>>,
+        pub poh_simulator: JoinHandle<()>,
+        pub entry_receiver: Receiver<WorkingBankEntry>,
     }
 
     pub(crate) fn simulate_poh(
@@ -914,7 +919,7 @@ mod tests {
         (exit, poh_recorder, poh_simulator, entry_receiver)
     }
 
-    fn create_test_fixture(mint_sol: u64) -> TestFixture {
+    pub fn create_test_fixture(mint_sol: u64) -> TestFixture {
         let mint_keypair = Keypair::new();
         let leader_keypair = Keypair::new();
         let voting_keypair = Keypair::new();
@@ -941,7 +946,7 @@ mod tests {
         genesis_config.ticks_per_slot *= 8;
 
         // workaround for https://github.com/solana-labs/solana/issues/30085
-        // the test can deploy and use spl_programs in the genensis slot without waiting for the next one
+        // the test can deploy and use spl_programs in the genesis slot without waiting for the next one
         let (bank, _) = Bank::new_with_bank_forks_for_tests(&genesis_config);
 
         let bank = Arc::new(Bank::new_from_parent(bank, &Pubkey::default(), 1));
@@ -953,7 +958,7 @@ mod tests {
         );
 
         let (exit, poh_recorder, poh_simulator, entry_receiver) =
-            create_test_recorder(&bank, blockstore, Some(PohConfig::default()), None);
+            create_test_recorder(&bank, blockstore.clone(), Some(PohConfig::default()), None);
 
         let validator_pubkey = voting_keypair.pubkey();
         TestFixture {
@@ -965,6 +970,7 @@ mod tests {
             },
             leader_keypair,
             bank,
+            blockstore,
             exit,
             poh_recorder,
             poh_simulator,
@@ -1008,7 +1014,7 @@ mod tests {
             .collect()
     }
 
-    fn get_tip_manager(vote_account: &Pubkey) -> TipManager {
+    pub fn get_tip_manager(vote_account: &Pubkey) -> TipManager {
         TipManager::new(TipManagerConfig {
             tip_payment_program_id: Pubkey::from_str("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt")
                 .unwrap(),
@@ -1032,6 +1038,7 @@ mod tests {
             genesis_config_info,
             leader_keypair,
             bank,
+            blockstore: _,
             exit,
             poh_recorder,
             poh_simulator,
@@ -1187,6 +1194,7 @@ mod tests {
             genesis_config_info,
             leader_keypair,
             bank,
+            blockstore: _,
             exit,
             poh_recorder,
             poh_simulator,
@@ -1371,6 +1379,7 @@ mod tests {
             genesis_config_info,
             leader_keypair,
             bank,
+            blockstore: _,
             exit,
             poh_recorder,
             poh_simulator,
