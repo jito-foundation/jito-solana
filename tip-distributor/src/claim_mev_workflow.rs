@@ -17,6 +17,7 @@ use {
     solana_sdk::{
         account::Account,
         commitment_config::CommitmentConfig,
+        compute_budget::ComputeBudgetInstruction,
         instruction::Instruction,
         pubkey::Pubkey,
         signature::{Keypair, Signer},
@@ -78,6 +79,7 @@ pub async fn claim_mev_tips(
     keypair: Arc<Keypair>,
     max_loop_retries: u64,
     max_loop_duration: Duration,
+    micro_lamports_per_compute_unit: u64,
 ) -> Result<(), ClaimMevError> {
     let payer_pubkey = keypair.pubkey();
     let blockhash_rpc_client = Arc::new(RpcClient::new_with_commitment(
@@ -204,6 +206,7 @@ pub async fn claim_mev_tips(
             &tdas,
             &claimants,
             &claim_statuses,
+            micro_lamports_per_compute_unit,
         )?;
         datapoint_info!(
             "claim_mev_workflow-prepare_transactions",
@@ -308,6 +311,7 @@ fn build_transactions(
     tdas: &HashMap<Pubkey, TipDistributionAccount>,
     claimants: &HashMap<Pubkey, (u64 /* lamports */, usize /* allocated bytes */)>,
     claim_statuses: &HashMap<Pubkey, Option<Account>>,
+    micro_lamports_per_compute_unit: u64,
 ) -> Result<
     (
         usize, /* skipped_merkle_root_count */
@@ -397,7 +401,11 @@ fn build_transactions(
 
     let transactions = instructions
         .into_iter()
-        .map(|ix| Transaction::new_with_payer(&[ix], Some(payer_pubkey)))
+        .map(|claim_ix| {
+            let priority_fee_ix =
+                ComputeBudgetInstruction::set_compute_unit_price(micro_lamports_per_compute_unit);
+            Transaction::new_with_payer(&[priority_fee_ix, claim_ix], Some(payer_pubkey))
+        })
         .collect::<Vec<_>>();
     Ok((
         skipped_merkle_root_count,
