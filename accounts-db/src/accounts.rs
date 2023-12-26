@@ -2029,7 +2029,7 @@ mod tests {
 
         let durable_nonce = DurableNonce::from_blockhash(&Hash::new_unique());
         let accounts_db = AccountsDb::new_single_for_tests();
-        let accounts = Accounts::new(Arc::new(accounts_db));
+        let _accounts = Accounts::new(Arc::new(accounts_db));
         let txs = vec![tx];
         let execution_results = vec![new_execution_result(
             Err(TransactionError::InstructionError(
@@ -2138,7 +2138,7 @@ mod tests {
 
         let durable_nonce = DurableNonce::from_blockhash(&Hash::new_unique());
         let accounts_db = AccountsDb::new_single_for_tests();
-        let accounts = Accounts::new(Arc::new(accounts_db));
+        let _accounts = Accounts::new(Arc::new(accounts_db));
         let txs = vec![tx];
         let execution_results = vec![new_execution_result(
             Err(TransactionError::InstructionError(
