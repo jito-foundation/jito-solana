@@ -23,6 +23,7 @@ use {
     solana_program::pubkey::Pubkey,
     solana_sdk::{
         commitment_config::CommitmentConfig,
+        compute_budget::ComputeBudgetInstruction,
         signature::{Keypair, Signer},
         transaction::Transaction,
     },
@@ -42,6 +43,7 @@ pub async fn reclaim_rent(
     max_loop_duration: Duration,
     // Optionally reclaim TipDistributionAccount rents on behalf of validators.
     should_reclaim_tdas: bool,
+    micro_lamports_per_compute_unit: u64,
 ) -> Result<(), ClaimMevError> {
     let blockhash_rpc_client = Arc::new(RpcClient::new_with_timeout_and_commitment(
         rpc_url.clone(),
@@ -67,6 +69,7 @@ pub async fn reclaim_rent(
             &tip_distribution_program_id,
             &signer_pubkey,
             should_reclaim_tdas,
+            micro_lamports_per_compute_unit,
         )
         .await?;
         datapoint_info!(
@@ -138,6 +141,7 @@ async fn build_transactions(
     tip_distribution_program_id: &Pubkey,
     signer_pubkey: &Pubkey,
     should_reclaim_tdas: bool,
+    micro_lamports_per_compute_unit: u64,
 ) -> Result<(Vec<Transaction>, Duration, Duration), ClaimMevError> {
     info!("Fetching program accounts");
     let (accounts, get_pa_elapsed) = measure!(
@@ -197,7 +201,13 @@ async fn build_transactions(
         })
         .collect::<Vec<_>>()
         .chunks(4)
-        .map(|instructions| Transaction::new_with_payer(instructions, Some(signer_pubkey)))
+        .map(|close_claim_status_instructions| {
+            let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_price(
+                micro_lamports_per_compute_unit,
+            )];
+            instructions.extend(close_claim_status_instructions.to_vec());
+            Transaction::new_with_payer(&instructions, Some(signer_pubkey))
+        })
         .collect::<Vec<_>>();
 
     info!(

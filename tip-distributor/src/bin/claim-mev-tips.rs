@@ -60,6 +60,10 @@ struct Args {
     /// Specifies whether to reclaim rent on behalf of validators from respective TDAs.
     #[arg(long, env)]
     should_reclaim_tdas: bool,
+
+    /// The price to pay per compute unit aka "Priority Fee".
+    #[arg(long, env, default_value_t = 1)]
+    micro_lamports_per_compute_unit: u64,
 }
 
 #[tokio::main]
@@ -90,6 +94,7 @@ async fn main() -> Result<(), ClaimMevError> {
         keypair.clone(),
         args.max_loop_retries,
         max_loop_duration,
+        args.micro_lamports_per_compute_unit,
     )
     .await
     {
@@ -133,6 +138,7 @@ async fn main() -> Result<(), ClaimMevError> {
             args.max_loop_retries,
             max_loop_duration,
             args.should_reclaim_tdas,
+            args.micro_lamports_per_compute_unit,
         )
         .await
         {
