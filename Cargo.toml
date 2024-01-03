@@ -143,7 +143,7 @@ edition = "2021"
 Inflector = "0.11.4"
 aquamarine = "0.3.2"
 aes-gcm-siv = "0.10.3"
-ahash = "0.8.6"
+ahash = "0.8.7"
 anyhow = "1.0.75"
 anchor-lang = { path = "anchor/lang" }
 ark-bn254 = "0.4.0"
