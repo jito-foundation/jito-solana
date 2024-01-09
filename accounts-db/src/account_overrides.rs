@@ -10,6 +10,10 @@ pub struct AccountOverrides {
 }
 
 impl AccountOverrides {
+    pub fn new(accounts: HashMap<Pubkey, AccountSharedData>) -> Self {
+        AccountOverrides { accounts }
+    }
+
     pub fn upsert_account_overrides(&mut self, other: AccountOverrides) {
         self.accounts.extend(other.accounts);
     }

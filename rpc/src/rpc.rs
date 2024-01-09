@@ -1,4 +1,8 @@
 //! The `rpc` module implements the Solana RPC interface.
+
+use solana_accounts_db::account_overrides::AccountOverrides;
+
+use crate::account_resolver;
 use {
     crate::{
         max_slots::MaxSlots, optimistically_confirmed_bank_tracker::OptimisticallyConfirmedBank,
@@ -432,7 +436,7 @@ impl JsonRpcRequestProcessor {
         })?;
         let encoding = encoding.unwrap_or(UiAccountEncoding::Binary);
 
-        let response = get_encoded_account(&bank, pubkey, encoding, data_slice)?;
+        let response = get_encoded_account(&bank, pubkey, encoding, data_slice, None)?;
         Ok(new_response(&bank, response))
     }
 
@@ -455,7 +459,7 @@ impl JsonRpcRequestProcessor {
 
         let accounts = pubkeys
             .into_iter()
-            .map(|pubkey| get_encoded_account(&bank, &pubkey, encoding, data_slice))
+            .map(|pubkey| get_encoded_account(&bank, &pubkey, encoding, data_slice, None))
             .collect::<Result<Vec<_>>>()?;
         Ok(new_response(&bank, accounts))
     }
@@ -2288,19 +2292,43 @@ fn get_encoded_account(
     pubkey: &Pubkey,
     encoding: UiAccountEncoding,
     data_slice: Option<UiDataSliceConfig>,
+    // only used for simulation results
+    account_overrides: Option<&AccountOverrides>,
 ) -> Result<Option<UiAccount>> {
-    match bank.get_account(pubkey) {
+    match account_resolver::get_account_from_overwrites_or_bank(pubkey, bank, account_overrides) {
         Some(account) => {
-            let response = if is_known_spl_token_id(account.owner())
-                && encoding == UiAccountEncoding::JsonParsed
-            {
-                get_parsed_token_account(bank, pubkey, account)
-            } else {
-                encode_account(&account, pubkey, encoding, data_slice)?
-            };
+            let response = get_encoded_account_inner(
+                account,
+                bank,
+                pubkey,
+                encoding,
+                data_slice,
+                account_overrides,
+            )?;
             Ok(Some(response))
         }
         None => Ok(None),
+    }
+}
+
+fn get_encoded_account_inner(
+    account: AccountSharedData,
+    bank: &Bank,
+    pubkey: &Pubkey,
+    encoding: UiAccountEncoding,
+    data_slice: Option<UiDataSliceConfig>,
+    // only used for simulation results
+    account_overrides: Option<&AccountOverrides>,
+) -> Result<UiAccount> {
+    if is_known_spl_token_id(account.owner()) && encoding == UiAccountEncoding::JsonParsed {
+        Ok(get_parsed_token_account(
+            bank,
+            pubkey,
+            account,
+            account_overrides,
+        ))
+    } else {
+        encode_account(&account, pubkey, encoding, data_slice)
     }
 }
 
@@ -3952,19 +3980,23 @@ pub mod rpc_full {
                 if result.is_err() {
                     Some(vec![None; config_accounts.addresses.len()])
                 } else {
+                    let post_simulation_accounts_map: HashMap<_, _> =
+                        post_simulation_accounts.into_iter().collect();
+                    let account_overrides = AccountOverrides::new(post_simulation_accounts_map);
+
                     Some(
                         config_accounts
                             .addresses
                             .iter()
                             .map(|address_str| {
-                                let address = verify_pubkey(address_str)?;
-                                post_simulation_accounts
-                                    .iter()
-                                    .find(|(key, _account)| key == &address)
-                                    .map(|(pubkey, account)| {
-                                        encode_account(account, pubkey, accounts_encoding, None)
-                                    })
-                                    .transpose()
+                                let pubkey = verify_pubkey(address_str)?;
+                                get_encoded_account(
+                                    bank,
+                                    &pubkey,
+                                    accounts_encoding,
+                                    None,
+                                    Some(&account_overrides),
+                                )
                             })
                             .collect::<Result<Vec<_>>>()?,
                     )
