@@ -815,11 +815,12 @@ mod tests {
             prioritization_fee_cache::PrioritizationFeeCache,
         },
         solana_sdk::{
-            bundle::{derive_bundle_id, SanitizedBundle},
+            bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle},
             clock::MAX_PROCESSING_AGE,
             fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
             genesis_config::ClusterType,
             hash::Hash,
+            message::SimpleAddressLoader,
             native_token::sol_to_lamports,
             packet::Packet,
             poh_config::PohConfig,
@@ -827,7 +828,9 @@ mod tests {
             rent::Rent,
             signature::{Keypair, Signer},
             system_transaction::transfer,
-            transaction::{SanitizedTransaction, TransactionError, VersionedTransaction},
+            transaction::{
+                MessageHash, SanitizedTransaction, TransactionError, VersionedTransaction,
+            },
             vote::state::VoteState,
         },
         solana_streamer::socket::SocketAddrSpace,
@@ -983,21 +986,34 @@ mod tests {
 
         (0..num_bundles)
             .map(|_| {
-                let transfers: Vec<_> = (0..num_packets_per_bundle)
+                let (sanitized_transactions, versioned_transactions): (Vec<_>, Vec<_>) = (0
+                    ..num_packets_per_bundle)
                     .map(|_| {
-                        VersionedTransaction::from(transfer(
+                        let transaction = VersionedTransaction::from(transfer(
                             mint_keypair,
                             &mint_keypair.pubkey(),
                             rng.next_u64() % max_transfer_amount,
                             hash,
-                        ))
+                        ));
+                        (
+                            SanitizedTransaction::try_create(
+                                transaction.clone(),
+                                MessageHash::Compute,
+                                None,
+                                SimpleAddressLoader::Disabled,
+                            )
+                            .unwrap(),
+                            transaction,
+                        )
                     })
-                    .collect();
-                let bundle_id = derive_bundle_id(&transfers);
+                    .unzip();
+
+                let bundle_id =
+                    derive_bundle_id_from_sanitized_transactions(&sanitized_transactions);
 
                 PacketBundle {
                     batch: PacketBatch::new(
-                        transfers
+                        versioned_transactions
                             .iter()
                             .map(|tx| Packet::from_data(None, tx).unwrap())
                             .collect(),

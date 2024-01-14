@@ -3422,7 +3422,7 @@ pub mod rpc_full {
             SimulationSlotConfig,
         },
         solana_sdk::{
-            bundle::{derive_bundle_id, SanitizedBundle},
+            bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle},
             clock::MAX_PROCESSING_AGE,
             message::{SanitizedVersionedMessage, VersionedMessage},
         },
@@ -4057,13 +4057,13 @@ pub mod rpc_full {
                 });
             }
 
-            let bundle_id = derive_bundle_id(&decoded_transactions);
+            let sanitized_transactions = decoded_transactions
+                .into_iter()
+                .map(|tx| sanitize_transaction(tx, bank.as_ref()))
+                .collect::<Result<Vec<SanitizedTransaction>>>()?;
             let sanitized_bundle = SanitizedBundle {
-                transactions: decoded_transactions
-                    .into_iter()
-                    .map(|tx| sanitize_transaction(tx, bank.as_ref()))
-                    .collect::<Result<Vec<SanitizedTransaction>>>()?,
-                bundle_id,
+                bundle_id: derive_bundle_id_from_sanitized_transactions(&sanitized_transactions),
+                transactions: sanitized_transactions,
             };
 
             if !config.skip_sig_verify {

@@ -175,12 +175,13 @@ mod tests {
         solana_poh::poh_recorder::PohRecorderError,
         solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
         solana_sdk::{
-            bundle::{derive_bundle_id, SanitizedBundle},
+            bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle},
             hash::Hash,
+            message::SimpleAddressLoader,
             packet::Packet,
             signature::{Keypair, Signer},
             system_transaction::transfer,
-            transaction::VersionedTransaction,
+            transaction::{MessageHash, SanitizedTransaction, VersionedTransaction},
         },
         std::collections::{HashSet, VecDeque},
     };
@@ -196,21 +197,33 @@ mod tests {
 
         (0..num_bundles)
             .map(|_| {
-                let transfers: Vec<_> = (0..num_packets_per_bundle)
+                let (sanitized_transactions, versioned_transactions): (Vec<_>, Vec<_>) = (0
+                    ..num_packets_per_bundle)
                     .map(|_| {
-                        VersionedTransaction::from(transfer(
+                        let transaction = VersionedTransaction::from(transfer(
                             mint_keypair,
                             &mint_keypair.pubkey(),
                             rng.next_u64(),
                             hash,
-                        ))
+                        ));
+                        (
+                            SanitizedTransaction::try_create(
+                                transaction.clone(),
+                                MessageHash::Compute,
+                                None,
+                                SimpleAddressLoader::Disabled,
+                            )
+                            .unwrap(),
+                            transaction,
+                        )
                     })
-                    .collect();
-                let bundle_id = derive_bundle_id(&transfers);
+                    .unzip();
+                let bundle_id =
+                    derive_bundle_id_from_sanitized_transactions(&sanitized_transactions);
 
                 PacketBundle {
                     batch: PacketBatch::new(
-                        transfers
+                        versioned_transactions
                             .iter()
                             .map(|tx| Packet::from_data(None, tx).unwrap())
                             .collect(),
