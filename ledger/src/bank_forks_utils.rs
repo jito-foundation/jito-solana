@@ -138,7 +138,7 @@ pub fn load_bank_forks(
             snapshot_utils::get_highest_incremental_snapshot_archive_info(
                 &snapshot_config.incremental_snapshot_archives_dir,
                 full_snapshot_archive_info.slot(),
-                None,
+                halt_at_slot,
             );
 
         Some((

@@ -7601,6 +7601,7 @@ dependencies = [
  "solana-runtime",
  "solana-sdk",
  "solana-stake-program",
+ "solana-transaction-status",
  "solana-vote",
  "thiserror",
  "tokio",

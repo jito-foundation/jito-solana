@@ -1,10 +1,9 @@
 use {
     crate::{
-        claim_mev_workflow::ClaimMevError, reclaim_rent_workflow::ClaimMevError::AnchorError,
-        sign_and_send_transactions_with_retries_multi_rpc,
+        claim_mev_workflow::ClaimMevError, get_batched_accounts,
+        reclaim_rent_workflow::ClaimMevError::AnchorError, send_until_blockhash_expires,
     },
     anchor_lang::AccountDeserialize,
-    itertools::Itertools,
     jito_tip_distribution::{
         sdk::{
             derive_config_account_address,
@@ -16,12 +15,14 @@ use {
         },
         state::{ClaimStatus, Config, TipDistributionAccount},
     },
-    log::info,
+    log::{info, warn},
+    rand::{prelude::SliceRandom, thread_rng},
     solana_client::nonblocking::rpc_client::RpcClient,
-    solana_measure::measure,
     solana_metrics::datapoint_info,
-    solana_program::pubkey::Pubkey,
+    solana_program::{clock::Epoch, pubkey::Pubkey},
+    solana_rpc_client_api::config::RpcSimulateTransactionConfig,
     solana_sdk::{
+        account::Account,
         commitment_config::CommitmentConfig,
         compute_budget::ComputeBudgetInstruction,
         signature::{Keypair, Signer},
@@ -36,165 +37,228 @@ use {
 /// Clear old ClaimStatus accounts
 pub async fn reclaim_rent(
     rpc_url: String,
-    rpc_send_connection_count: u64,
     tip_distribution_program_id: Pubkey,
     signer: Arc<Keypair>,
-    max_loop_retries: u64,
     max_loop_duration: Duration,
     // Optionally reclaim TipDistributionAccount rents on behalf of validators.
     should_reclaim_tdas: bool,
-    micro_lamports_per_compute_unit: u64,
+    micro_lamports: u64,
 ) -> Result<(), ClaimMevError> {
-    let blockhash_rpc_client = Arc::new(RpcClient::new_with_timeout_and_commitment(
+    let rpc_client = RpcClient::new_with_timeout_and_commitment(
         rpc_url.clone(),
-        Duration::from_secs(180), // 3 mins
-        CommitmentConfig::finalized(),
-    ));
-    let rpc_clients = Arc::new(
-        (0..rpc_send_connection_count)
-            .map(|_| {
-                Arc::new(RpcClient::new_with_commitment(
-                    rpc_url.clone(),
-                    CommitmentConfig::confirmed(),
-                ))
-            })
-            .collect_vec(),
+        Duration::from_secs(300),
+        CommitmentConfig::processed(),
     );
-    let mut retries = 0;
-    let mut failed_transaction_count = 0usize;
-    let signer_pubkey = signer.pubkey();
-    loop {
-        let (transactions, get_pa_elapsed, transaction_prepare_elaspsed) = build_transactions(
-            blockhash_rpc_client.clone(),
-            &tip_distribution_program_id,
-            &signer_pubkey,
-            should_reclaim_tdas,
-            micro_lamports_per_compute_unit,
-        )
+
+    let start = Instant::now();
+
+    let accounts = rpc_client
+        .get_program_accounts(&tip_distribution_program_id)
         .await?;
+
+    let config_pubkey = derive_config_account_address(&tip_distribution_program_id).0;
+    let config_account = rpc_client.get_account(&config_pubkey).await?;
+    let config_account =
+        Config::try_deserialize(&mut config_account.data.as_slice()).map_err(AnchorError)?;
+
+    let epoch = rpc_client.get_epoch_info().await?.epoch;
+    let mut claim_status_pubkeys_to_expire =
+        find_expired_claim_status_accounts(&accounts, epoch, signer.pubkey());
+    let mut tda_pubkeys_to_expire = find_expired_tda_accounts(&accounts, epoch);
+
+    while start.elapsed() <= max_loop_duration {
+        let mut transactions = build_close_claim_status_transactions(
+            &claim_status_pubkeys_to_expire,
+            tip_distribution_program_id,
+            config_pubkey,
+            micro_lamports,
+            signer.pubkey(),
+        );
+        if should_reclaim_tdas {
+            transactions.extend(build_close_tda_transactions(
+                &tda_pubkeys_to_expire,
+                tip_distribution_program_id,
+                config_pubkey,
+                &config_account,
+                signer.pubkey(),
+            ));
+        }
+
         datapoint_info!(
             "claim_mev_workflow-prepare_rent_reclaim_transactions",
-            ("attempt", retries, i64),
             ("transaction_count", transactions.len(), i64),
-            ("account_fetch_latency_us", get_pa_elapsed.as_micros(), i64),
-            (
-                "transaction_prepare_latency_us",
-                transaction_prepare_elaspsed.as_micros(),
-                i64
-            ),
         );
-        let transactions_len = transactions.len();
+
         if transactions.is_empty() {
-            info!("Finished reclaim rent after {retries} retries, {failed_transaction_count} failed requests.");
+            info!("Finished reclaim rent!");
             return Ok(());
         }
 
-        info!("Sending {} rent reclaim transactions", transactions.len());
-        let send_start = Instant::now();
-        let (remaining_transaction_count, new_failed_transaction_count) =
-            sign_and_send_transactions_with_retries_multi_rpc(
-                &signer,
-                &blockhash_rpc_client,
-                &rpc_clients,
-                transactions,
-                max_loop_duration,
+        transactions.shuffle(&mut thread_rng());
+        let transactions: Vec<_> = transactions.into_iter().take(10_000).collect();
+        let blockhash = rpc_client.get_latest_blockhash().await?;
+        send_until_blockhash_expires(&rpc_client, transactions, blockhash, &signer).await?;
+
+        // can just refresh calling get_multiple_accounts since these operations should be subtractive and not additive
+        let claim_status_pubkeys: Vec<_> = claim_status_pubkeys_to_expire
+            .iter()
+            .map(|(pubkey, _)| *pubkey)
+            .collect();
+        claim_status_pubkeys_to_expire = get_batched_accounts(&rpc_client, &claim_status_pubkeys)
+            .await?
+            .into_iter()
+            .filter_map(|(pubkey, account)| Some((pubkey, account?)))
+            .collect();
+
+        let tda_pubkeys: Vec<_> = tda_pubkeys_to_expire
+            .iter()
+            .map(|(pubkey, _)| *pubkey)
+            .collect();
+        tda_pubkeys_to_expire = get_batched_accounts(&rpc_client, &tda_pubkeys)
+            .await?
+            .into_iter()
+            .filter_map(|(pubkey, account)| Some((pubkey, account?)))
+            .collect();
+    }
+
+    // one final refresh before double checking everything
+    let claim_status_pubkeys: Vec<_> = claim_status_pubkeys_to_expire
+        .iter()
+        .map(|(pubkey, _)| *pubkey)
+        .collect();
+    claim_status_pubkeys_to_expire = get_batched_accounts(&rpc_client, &claim_status_pubkeys)
+        .await?
+        .into_iter()
+        .filter_map(|(pubkey, account)| Some((pubkey, account?)))
+        .collect();
+
+    let tda_pubkeys: Vec<_> = tda_pubkeys_to_expire
+        .iter()
+        .map(|(pubkey, _)| *pubkey)
+        .collect();
+    tda_pubkeys_to_expire = get_batched_accounts(&rpc_client, &tda_pubkeys)
+        .await?
+        .into_iter()
+        .filter_map(|(pubkey, account)| Some((pubkey, account?)))
+        .collect();
+
+    let mut transactions = build_close_claim_status_transactions(
+        &claim_status_pubkeys_to_expire,
+        tip_distribution_program_id,
+        config_pubkey,
+        micro_lamports,
+        signer.pubkey(),
+    );
+    if should_reclaim_tdas {
+        transactions.extend(build_close_tda_transactions(
+            &tda_pubkeys_to_expire,
+            tip_distribution_program_id,
+            config_pubkey,
+            &config_account,
+            signer.pubkey(),
+        ));
+    }
+
+    if transactions.is_empty() {
+        return Ok(());
+    }
+
+    // if more transactions left, we'll simulate them all to make sure its not an uncaught error
+    let mut is_error = false;
+    let mut error_str = String::new();
+    for tx in &transactions {
+        match rpc_client
+            .simulate_transaction_with_config(
+                tx,
+                RpcSimulateTransactionConfig {
+                    sig_verify: false,
+                    replace_recent_blockhash: true,
+                    commitment: Some(CommitmentConfig::processed()),
+                    ..RpcSimulateTransactionConfig::default()
+                },
             )
-            .await;
-        failed_transaction_count =
-            failed_transaction_count.saturating_add(new_failed_transaction_count);
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                error_str = e.to_string();
+                is_error = true;
 
-        datapoint_info!(
-            "claim_mev_workflow-send_reclaim_rent_transactions",
-            ("attempt", retries, i64),
-            ("transaction_count", transactions_len, i64),
-            (
-                "successful_transaction_count",
-                transactions_len.saturating_sub(remaining_transaction_count),
-                i64
-            ),
-            (
-                "remaining_transaction_count",
-                remaining_transaction_count,
-                i64
-            ),
-            (
-                "failed_transaction_count",
-                new_failed_transaction_count,
-                i64
-            ),
-            ("send_latency_us", send_start.elapsed().as_micros(), i64),
-        );
-
-        if retries >= max_loop_retries {
-            return Err(ClaimMevError::MaxSendTransactionRetriesExceeded {
-                attempts: max_loop_retries,
-                remaining_transaction_count,
-                failed_transaction_count,
-            });
+                match e.get_transaction_error() {
+                    None => {
+                        break;
+                    }
+                    Some(e) => {
+                        warn!("transaction error. tx: {:?} error: {:?}", tx, e);
+                        break;
+                    }
+                }
+            }
         }
-        retries = retries.saturating_add(1);
+    }
+
+    if is_error {
+        Err(ClaimMevError::UncaughtError { e: error_str })
+    } else {
+        Err(ClaimMevError::NotFinished {
+            transactions_left: transactions.len(),
+        })
     }
 }
 
-async fn build_transactions(
-    rpc_client: Arc<RpcClient>,
-    tip_distribution_program_id: &Pubkey,
-    signer_pubkey: &Pubkey,
-    should_reclaim_tdas: bool,
-    micro_lamports_per_compute_unit: u64,
-) -> Result<(Vec<Transaction>, Duration, Duration), ClaimMevError> {
-    info!("Fetching program accounts");
-    let (accounts, get_pa_elapsed) = measure!(
-        rpc_client
-            .get_program_accounts(tip_distribution_program_id)
-            .await?
-    );
-    info!(
-        "Fetch get_program_accounts took {:?} and fetched {} accounts",
-        get_pa_elapsed.as_duration(),
-        accounts.len()
-    );
-
-    info!("Fetching current_epoch");
-    let current_epoch = rpc_client.get_epoch_info().await?.epoch;
-    info!("Fetch current_epoch: {current_epoch}");
-
-    info!("Fetching Config account");
-    let config_pubkey = derive_config_account_address(tip_distribution_program_id).0;
-    let (config_account, elapsed) = measure!(rpc_client.get_account(&config_pubkey).await?);
-    info!("Fetch Config account took {:?}", elapsed.as_duration());
-    let config_account: Config =
-        Config::try_deserialize(&mut config_account.data.as_slice()).map_err(AnchorError)?;
-
-    info!("Filtering for ClaimStatus accounts");
-    let claim_status_accounts: Vec<(Pubkey, ClaimStatus)> = accounts
+fn find_expired_claim_status_accounts(
+    accounts: &[(Pubkey, Account)],
+    epoch: Epoch,
+    payer: Pubkey,
+) -> Vec<(Pubkey, Account)> {
+    accounts
         .iter()
         .filter_map(|(pubkey, account)| {
             let claim_status = ClaimStatus::try_deserialize(&mut account.data.as_slice()).ok()?;
-            Some((*pubkey, claim_status))
+            if claim_status.claim_status_payer.eq(&payer) && epoch > claim_status.expires_at {
+                Some((*pubkey, account.clone()))
+            } else {
+                None
+            }
         })
-        .filter(|(_, claim_status): &(Pubkey, ClaimStatus)| {
-            // Only return claim statuses that we've paid for and ones that are expired to avoid transaction failures.
-            claim_status.claim_status_payer.eq(signer_pubkey)
-                && current_epoch > claim_status.expires_at
-        })
-        .collect::<Vec<_>>();
-    info!(
-        "{} ClaimStatus accounts eligible for rent reclaim",
-        claim_status_accounts.len()
-    );
+        .collect()
+}
 
-    info!("Creating CloseClaimStatusAccounts transactions");
-    let transaction_now = Instant::now();
-    let mut transactions = claim_status_accounts
-        .into_iter()
-        .map(|(claim_status_pubkey, claim_status)| {
+fn find_expired_tda_accounts(
+    accounts: &[(Pubkey, Account)],
+    epoch: Epoch,
+) -> Vec<(Pubkey, Account)> {
+    accounts
+        .iter()
+        .filter_map(|(pubkey, account)| {
+            let tda = TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).ok()?;
+            if epoch > tda.expires_at {
+                Some((*pubkey, account.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Assumes accounts is already pre-filtered with checks to ensure the account can be closed
+fn build_close_claim_status_transactions(
+    accounts: &[(Pubkey, Account)],
+    tip_distribution_program_id: Pubkey,
+    config: Pubkey,
+    microlamports: u64,
+    payer: Pubkey,
+) -> Vec<Transaction> {
+    accounts
+        .iter()
+        .map(|(claim_status_pubkey, account)| {
+            let claim_status = ClaimStatus::try_deserialize(&mut account.data.as_slice()).unwrap();
             close_claim_status_ix(
-                *tip_distribution_program_id,
+                tip_distribution_program_id,
                 CloseClaimStatusArgs,
                 CloseClaimStatusAccounts {
-                    config: config_pubkey,
-                    claim_status: claim_status_pubkey,
+                    config,
+                    claim_status: *claim_status_pubkey,
                     claim_status_payer: claim_status.claim_status_payer,
                 },
             )
@@ -203,55 +267,44 @@ async fn build_transactions(
         .chunks(4)
         .map(|close_claim_status_instructions| {
             let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_price(
-                micro_lamports_per_compute_unit,
+                microlamports,
             )];
             instructions.extend(close_claim_status_instructions.to_vec());
-            Transaction::new_with_payer(&instructions, Some(signer_pubkey))
+            Transaction::new_with_payer(&instructions, Some(&payer))
         })
-        .collect::<Vec<_>>();
+        .collect()
+}
 
-    info!(
-        "Create CloseClaimStatusAccounts transactions took {:?}",
-        transaction_now.elapsed()
-    );
+fn build_close_tda_transactions(
+    accounts: &[(Pubkey, Account)],
+    tip_distribution_program_id: Pubkey,
+    config_pubkey: Pubkey,
+    config: &Config,
+    payer: Pubkey,
+) -> Vec<Transaction> {
+    let instructions: Vec<_> = accounts
+        .iter()
+        .map(|(pubkey, account)| {
+            let tda =
+                TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).unwrap();
+            close_tip_distribution_account_ix(
+                tip_distribution_program_id,
+                CloseTipDistributionAccountArgs {
+                    _epoch: tda.epoch_created_at,
+                },
+                CloseTipDistributionAccounts {
+                    config: config_pubkey,
+                    tip_distribution_account: *pubkey,
+                    validator_vote_account: tda.validator_vote_account,
+                    expired_funds_account: config.expired_funds_account,
+                    signer: payer,
+                },
+            )
+        })
+        .collect();
 
-    if should_reclaim_tdas {
-        info!("Creating CloseTipDistributionAccounts transactions");
-        let now = Instant::now();
-        let close_tda_txs = accounts
-            .into_iter()
-            .filter_map(|(pubkey, account)| {
-                let tda =
-                    TipDistributionAccount::try_deserialize(&mut account.data.as_slice()).ok()?;
-                Some((pubkey, tda))
-            })
-            .filter(|(_, tda): &(Pubkey, TipDistributionAccount)| current_epoch > tda.expires_at)
-            .map(|(tip_distribution_account, tda)| {
-                close_tip_distribution_account_ix(
-                    *tip_distribution_program_id,
-                    CloseTipDistributionAccountArgs {
-                        _epoch: tda.epoch_created_at,
-                    },
-                    CloseTipDistributionAccounts {
-                        config: config_pubkey,
-                        tip_distribution_account,
-                        validator_vote_account: tda.validator_vote_account,
-                        expired_funds_account: config_account.expired_funds_account,
-                        signer: *signer_pubkey,
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-            .chunks(4)
-            .map(|instructions| Transaction::new_with_payer(instructions, Some(signer_pubkey)))
-            .collect::<Vec<_>>();
-        info!("Create CloseTipDistributionAccounts transactions took {:?}, closing {} tip distribution accounts", now.elapsed(), close_tda_txs.len());
-
-        transactions.extend(close_tda_txs);
-    }
-    Ok((
-        transactions,
-        get_pa_elapsed.as_duration(),
-        transaction_now.elapsed(),
-    ))
+    instructions
+        .chunks(4)
+        .map(|ix_chunk| Transaction::new_with_payer(ix_chunk, Some(&payer)))
+        .collect()
 }
