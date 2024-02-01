@@ -572,7 +572,7 @@ pub fn init(
 
 fn github_release_download_url(release_semver: &str) -> String {
     format!(
-        "https://github.com/solana-labs/solana/releases/download/v{}/solana-release-{}.tar.bz2",
+        "https://github.com/jito-foundation/jito-solana/releases/download/v{}/solana-release-{}.tar.bz2",
         release_semver,
         crate::build_env::TARGET
     )
@@ -905,7 +905,7 @@ fn check_for_newer_github_release(
 
     while page == 1 || releases.len() == PER_PAGE {
         let url = reqwest::Url::parse_with_params(
-            "https://api.github.com/repos/solana-labs/solana/releases",
+            "https://api.github.com/repos/jito-foundation/jito-solana/releases",
             &[
                 ("per_page", &format!("{PER_PAGE}")),
                 ("page", &format!("{page}")),
