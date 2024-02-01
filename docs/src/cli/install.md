@@ -19,11 +19,11 @@ on your preferred workflow:
 - Open your favorite Terminal application
 
 - Install the Solana release
-  [LATEST_SOLANA_RELEASE_VERSION](https://github.com/solana-labs/solana/releases/tag/LATEST_SOLANA_RELEASE_VERSION)
+  [LATEST_SOLANA_RELEASE_VERSION](https://github.com/jito-foundation/jito-solana/releases/tag/LATEST_SOLANA_RELEASE_VERSION)
   on your machine by running:
 
 ```bash
-sh -c "$(curl -sSfL https://release.solana.com/LATEST_SOLANA_RELEASE_VERSION/install)"
+sh -c "$(curl -sSfL https://release.jito.wtf/LATEST_SOLANA_RELEASE_VERSION/install)"
 ```
 
 - You can replace `LATEST_SOLANA_RELEASE_VERSION` with the release tag matching
@@ -37,7 +37,7 @@ downloading LATEST_SOLANA_RELEASE_VERSION installer
 Configuration: /home/solana/.config/solana/install/config.yml
 Active release directory: /home/solana/.local/share/solana/install/active_release
 * Release version: LATEST_SOLANA_RELEASE_VERSION
-* Release URL: https://github.com/solana-labs/solana/releases/download/LATEST_SOLANA_RELEASE_VERSION/solana-release-x86_64-unknown-linux-gnu.tar.bz2
+* Release URL: https://github.com/jito-foundation/jito-solana/releases/download/LATEST_SOLANA_RELEASE_VERSION/solana-release-x86_64-unknown-linux-gnu.tar.bz2
 Update successful
 ```
 
@@ -73,7 +73,7 @@ solana --version
   installer into a temporary directory:
 
 ```bash
-cmd /c "curl https://release.solana.com/LATEST_SOLANA_RELEASE_VERSION/solana-install-init-x86_64-pc-windows-msvc.exe --output C:\solana-install-tmp\solana-install-init.exe --create-dirs"
+cmd /c "curl https://release.jito.wtf/LATEST_SOLANA_RELEASE_VERSION/solana-install-init-x86_64-pc-windows-msvc.exe --output C:\solana-install-tmp\solana-install-init.exe --create-dirs"
 ```
 
 - Copy and paste the following command, then press Enter to install the latest
@@ -107,7 +107,7 @@ manually download and install the binaries.
 ### Linux
 
 Download the binaries by navigating to
-[https://github.com/solana-labs/solana/releases/latest](https://github.com/solana-labs/solana/releases/latest),
+[https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
 download **solana-release-x86_64-unknown-linux-gnu.tar.bz2**, then extract the
 archive:
 
@@ -120,7 +120,7 @@ export PATH=$PWD/bin:$PATH
 ### MacOS
 
 Download the binaries by navigating to
-[https://github.com/solana-labs/solana/releases/latest](https://github.com/solana-labs/solana/releases/latest),
+[https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
 download **solana-release-x86_64-apple-darwin.tar.bz2**, then extract the
 archive:
 
@@ -133,7 +133,7 @@ export PATH=$PWD/bin:$PATH
 ### Windows
 
 - Download the binaries by navigating to
-  [https://github.com/solana-labs/solana/releases/latest](https://github.com/solana-labs/solana/releases/latest),
+  [https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
   download **solana-release-x86_64-pc-windows-msvc.tar.bz2**, then extract the
   archive using WinZip or similar.
 
@@ -241,7 +241,7 @@ above.
 
 After installing the prerequisites, proceed with building Solana from source,
 navigate to
-[Solana's GitHub releases page](https://github.com/solana-labs/solana/releases/latest),
+[Solana's GitHub releases page](https://github.com/jito-foundation/jito-solana/releases/latest),
 and download the **Source Code** archive. Extract the code and build the
 binaries with:
 
