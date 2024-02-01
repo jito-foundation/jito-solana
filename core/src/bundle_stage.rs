@@ -5,7 +5,7 @@ use {
         banking_stage::{
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
-            unprocessed_transaction_storage::UnprocessedTransactionStorage,
+            unprocessed_transaction_storage::{BundleStorage, UnprocessedTransactionStorage},
         },
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
@@ -266,8 +266,8 @@ impl BundleStage {
         let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
 
         let unprocessed_bundle_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(1_000),
-            VecDeque::with_capacity(1_000),
+            VecDeque::with_capacity(BundleStorage::BUNDLE_STORAGE_CAPACITY),
+            VecDeque::with_capacity(BundleStorage::BUNDLE_STORAGE_CAPACITY),
         );
 
         let reserved_ticks = poh_recorder

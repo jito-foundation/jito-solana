@@ -1104,6 +1104,7 @@ pub struct BundleStorage {
 }
 
 impl BundleStorage {
+    pub const BUNDLE_STORAGE_CAPACITY: usize = 1000;
     fn is_empty(&self) -> bool {
         self.unprocessed_bundle_storage.is_empty()
     }
@@ -1152,7 +1153,7 @@ impl BundleStorage {
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
         push_back: bool,
     ) -> InsertPacketBundlesSummary {
-        let deque_bundle_free_space = deque.capacity() - deque.len();
+        let deque_bundle_free_space = Self::BUNDLE_STORAGE_CAPACITY - deque.len();
         let bundles_to_insert_count =
             std::cmp::min(deque_bundle_free_space, deserialized_bundles.len());
         let num_bundles_dropped = deserialized_bundles.len() - bundles_to_insert_count;
