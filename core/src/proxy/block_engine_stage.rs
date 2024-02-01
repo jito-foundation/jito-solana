@@ -193,7 +193,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
-    ) -> crate::proxy::ProxyResult<()> {
+    ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
 
@@ -294,7 +294,7 @@ impl BlockEngineStage {
         connection_timeout: &Duration,
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
-    ) -> crate::proxy::ProxyResult<()> {
+    ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
             client.subscribe_packets(block_engine::SubscribePacketsRequest {}),
@@ -369,7 +369,7 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
-    ) -> crate::proxy::ProxyResult<()> {
+    ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
         let refresh_within_s: u64 = METRICS_TICK.as_secs().saturating_mul(3).saturating_div(2);
@@ -453,7 +453,7 @@ impl BlockEngineStage {
         maybe_bundles_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
         bundle_sender: &Sender<Vec<PacketBundle>>,
         block_engine_stats: &mut BlockEngineStageStats,
-    ) -> crate::proxy::ProxyResult<()> {
+    ) -> crate::proxy::Result<()> {
         let bundles_response = maybe_bundles_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
         let bundles: Vec<PacketBundle> = bundles_response
             .bundles
@@ -491,7 +491,7 @@ impl BlockEngineStage {
         banking_packet_sender: &BankingPacketSender,
         trust_packets: bool,
         block_engine_stats: &mut BlockEngineStageStats,
-    ) -> crate::proxy::ProxyResult<()> {
+    ) -> crate::proxy::Result<()> {
         if let Some(batch) = resp.batch {
             if batch.packets.is_empty() {
                 saturating_add_assign!(block_engine_stats.num_empty_packets, 1);
