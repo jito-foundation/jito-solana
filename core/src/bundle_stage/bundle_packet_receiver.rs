@@ -337,7 +337,7 @@ mod tests {
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
             |bundles_to_process, _stats| {
-                // make sure the first 10 bundles are the ones to process
+                // make sure the first 1000 bundles are the ones to process
                 assert_bundles_same(
                     &bundles[0..BundleStorage::BUNDLE_STORAGE_CAPACITY],
                     bundles_to_process,
