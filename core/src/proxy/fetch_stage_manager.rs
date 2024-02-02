@@ -1,5 +1,5 @@
 use {
-    crate::proxy::{relayer_stage::RelayerConfig, HeartbeatEvent, ProxyError, Result},
+    crate::proxy::{relayer_stage::RelayerConfig, HeartbeatEvent, ProxyError, ProxyResult},
     crossbeam_channel::{select, tick, Receiver, Sender},
     solana_client::connection_cache::Protocol,
     solana_gossip::{cluster_info::ClusterInfo, contact_info},
@@ -79,8 +79,9 @@ impl FetchStageManager {
         packet_intercept_rx: &Receiver<PacketBatch>,
         packet_tx: &Sender<PacketBatch>,
         exit: &Arc<AtomicBool>,
-    ) -> Result<()> {
+    ) -> ProxyResult<()> {
         // Contact info to gossip to the network if no heartbeats are received from relayer
+
         let my_fallback_contact_info = cluster_info.my_contact_info();
         let local_relayer_config = global_relayer_config.lock().unwrap().clone();
 

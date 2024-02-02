@@ -192,7 +192,7 @@ impl RelayerStage {
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         connection_timeout: &Duration,
-    ) -> crate::proxy::Result<()> {
+    ) -> crate::proxy::ProxyResult<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
 
@@ -284,7 +284,7 @@ impl RelayerStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
-    ) -> crate::proxy::Result<()> {
+    ) -> crate::proxy::ProxyResult<()> {
         let heartbeat_event: HeartbeatEvent = {
             let tpu_config = timeout(
                 *connection_timeout,
@@ -354,7 +354,7 @@ impl RelayerStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
-    ) -> crate::proxy::Result<()> {
+    ) -> crate::proxy::ProxyResult<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         let refresh_within_s: u64 = METRICS_TICK.as_secs().saturating_mul(3).saturating_div(2);
 
@@ -433,7 +433,7 @@ impl RelayerStage {
         trust_packets: bool,
         banking_packet_sender: &BankingPacketSender,
         relayer_stats: &mut RelayerStageStats,
-    ) -> crate::proxy::Result<()> {
+    ) -> crate::proxy::ProxyResult<()> {
         match subscribe_packets_resp.msg {
             None => {
                 saturating_add_assign!(relayer_stats.num_empty_messages, 1);

@@ -21,7 +21,7 @@ use {
     tonic::Status,
 };
 
-pub type Result<T> = std::result::Result<T, ProxyError>;
+pub type ProxyResult<T> = Result<T, ProxyError>;
 type HeartbeatEvent = (SocketAddr, SocketAddr);
 
 #[derive(Error, Debug)]
