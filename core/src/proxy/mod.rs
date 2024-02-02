@@ -16,15 +16,12 @@ pub mod fetch_stage_manager;
 pub mod relayer_stage;
 
 use {
-    std::{
-        net::{AddrParseError, SocketAddr},
-        result,
-    },
+    std::net::{AddrParseError, SocketAddr},
     thiserror::Error,
     tonic::Status,
 };
 
-type Result<T> = result::Result<T, ProxyError>;
+pub type ProxyResult<T> = Result<T, ProxyError>;
 type HeartbeatEvent = (SocketAddr, SocketAddr);
 
 #[derive(Error, Debug)]
@@ -74,6 +71,9 @@ pub enum ProxyError {
     #[error("BlockEngineConnectionError: {0:?}")]
     BlockEngineConnectionError(String),
 
+    #[error("BlockEngineConfigChanged")]
+    BlockEngineConfigChanged,
+
     #[error("RelayerConnectionTimeout")]
     RelayerConnectionTimeout,
 
@@ -82,6 +82,9 @@ pub enum ProxyError {
 
     #[error("RelayerConnectionError: {0:?}")]
     RelayerConnectionError(String),
+
+    #[error("RelayerConfigChanged")]
+    RelayerConfigChanged,
 
     #[error("AuthenticationError: {0:?}")]
     AuthenticationError(String),

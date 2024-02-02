@@ -242,6 +242,7 @@ impl Tpu {
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
+            relayer_config.clone(),
             cluster_info.clone(),
             heartbeat_rx,
             packet_intercept_receiver,

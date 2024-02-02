@@ -45,7 +45,7 @@ pub async fn generate_auth_tokens(
     auth_service_client: &mut AuthServiceClient<Channel>,
     // used to sign challenges
     keypair: &Keypair,
-) -> crate::proxy::Result<(
+) -> crate::proxy::ProxyResult<(
     Token, /* access_token */
     Token, /* refresh_token */
 )> {
@@ -105,7 +105,7 @@ pub async fn maybe_refresh_auth_tokens(
     cluster_info: &Arc<ClusterInfo>,
     connection_timeout: &Duration,
     refresh_within_s: u64,
-) -> crate::proxy::Result<(
+) -> crate::proxy::ProxyResult<(
     Option<Token>, // access token
     Option<Token>, // refresh token
 )> {
@@ -159,7 +159,7 @@ pub async fn maybe_refresh_auth_tokens(
 pub async fn refresh_access_token(
     auth_service_client: &mut AuthServiceClient<Channel>,
     refresh_token: &Token,
-) -> crate::proxy::Result<Token> {
+) -> crate::proxy::ProxyResult<Token> {
     let response = auth_service_client
         .refresh_access_token(RefreshAccessTokenRequest {
             refresh_token: refresh_token.value.clone(),
@@ -172,7 +172,7 @@ pub async fn refresh_access_token(
 /// An invalid token is one where any of its fields are None or the token itself is None.
 /// Performs the necessary validations on the auth tokens before returning,
 /// i.e. it is safe to call .unwrap() on the token fields from the call-site.
-fn get_validated_token(maybe_token: Option<Token>) -> crate::proxy::Result<Token> {
+fn get_validated_token(maybe_token: Option<Token>) -> crate::proxy::ProxyResult<Token> {
     let token = maybe_token
         .ok_or_else(|| ProxyError::BadAuthenticationToken("received a null token".to_string()))?;
     if token.expires_at_utc.is_none() {
