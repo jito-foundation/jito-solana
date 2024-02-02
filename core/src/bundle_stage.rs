@@ -5,7 +5,7 @@ use {
         banking_stage::{
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
-            unprocessed_transaction_storage::{BundleStorage, UnprocessedTransactionStorage},
+            unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
@@ -27,7 +27,6 @@ use {
     solana_sdk::timing::AtomicInterval,
     solana_vote::vote_sender_types::ReplayVoteSender,
     std::{
-        collections::VecDeque,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
@@ -265,10 +264,7 @@ impl BundleStage {
         );
         let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
 
-        let unprocessed_bundle_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(BundleStorage::BUNDLE_STORAGE_CAPACITY),
-            VecDeque::with_capacity(BundleStorage::BUNDLE_STORAGE_CAPACITY),
-        );
+        let unprocessed_bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let reserved_ticks = poh_recorder
             .read()

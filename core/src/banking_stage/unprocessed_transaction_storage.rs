@@ -286,14 +286,15 @@ impl UnprocessedTransactionStorage {
         })
     }
 
-    pub fn new_bundle_storage(
-        unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
-        cost_model_failed_bundles: VecDeque<ImmutableDeserializedBundle>,
-    ) -> Self {
+    pub fn new_bundle_storage() -> Self {
         Self::BundleStorage(BundleStorage {
             last_update_slot: Slot::default(),
-            unprocessed_bundle_storage,
-            cost_model_buffered_bundle_storage: cost_model_failed_bundles,
+            unprocessed_bundle_storage: VecDeque::with_capacity(
+                BundleStorage::BUNDLE_STORAGE_CAPACITY,
+            ),
+            cost_model_buffered_bundle_storage: VecDeque::with_capacity(
+                BundleStorage::BUNDLE_STORAGE_CAPACITY,
+            ),
         })
     }
 
