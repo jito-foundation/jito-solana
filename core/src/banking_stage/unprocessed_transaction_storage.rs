@@ -1154,9 +1154,15 @@ impl BundleStorage {
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
         push_back: bool,
     ) -> InsertPacketBundlesSummary {
-        let deque_free_space = Self::BUNDLE_STORAGE_CAPACITY - deque.len();
+        // deque should be initialized with size [Self::BUNDLE_STORAGE_CAPACITY]
+        let deque_free_space = Self::BUNDLE_STORAGE_CAPACITY
+            .checked_sub(deque.len())
+            .unwrap();
         let bundles_to_insert_count = std::cmp::min(deque_free_space, deserialized_bundles.len());
-        let num_bundles_dropped = deserialized_bundles.len() - bundles_to_insert_count;
+        let num_bundles_dropped = deserialized_bundles
+            .len()
+            .checked_sub(bundles_to_insert_count)
+            .unwrap();
         let num_packets_inserted = deserialized_bundles
             .iter()
             .take(bundles_to_insert_count)
