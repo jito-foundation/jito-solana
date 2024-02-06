@@ -27,7 +27,6 @@ use {
     solana_sdk::timing::AtomicInterval,
     solana_vote::vote_sender_types::ReplayVoteSender,
     std::{
-        collections::VecDeque,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
@@ -265,10 +264,7 @@ impl BundleStage {
         );
         let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
 
-        let unprocessed_bundle_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(1_000),
-            VecDeque::with_capacity(1_000),
-        );
+        let unprocessed_bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let reserved_ticks = poh_recorder
             .read()
