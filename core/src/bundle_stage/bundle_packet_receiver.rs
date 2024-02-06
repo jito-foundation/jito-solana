@@ -165,6 +165,7 @@ impl BundleReceiver {
 mod tests {
     use {
         super::*,
+        crate::banking_stage::unprocessed_transaction_storage::BundleStorage,
         crossbeam_channel::unbounded,
         rand::{thread_rng, RngCore},
         solana_bundle::{
@@ -182,7 +183,7 @@ mod tests {
             system_transaction::transfer,
             transaction::VersionedTransaction,
         },
-        std::collections::{HashSet, VecDeque},
+        std::collections::HashSet,
     };
 
     /// Makes `num_bundles` random bundles with `num_packets_per_bundle` packets per bundle.
@@ -249,10 +250,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(1_000),
-            VecDeque::with_capacity(1_000),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
@@ -303,15 +301,18 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
 
-        let bundles = make_random_bundles(&mint_keypair, 15, 2, genesis_config.hash());
+        // send 5 more than capacity
+        let bundles = make_random_bundles(
+            &mint_keypair,
+            BundleStorage::BUNDLE_STORAGE_CAPACITY + 5,
+            2,
+            genesis_config.hash(),
+        );
 
         sender.send(bundles.clone()).unwrap();
 
@@ -325,9 +326,9 @@ mod tests {
         assert!(result.is_ok());
 
         let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
-        // 15 bundles were sent, but the capacity is 10
-        assert_eq!(bundle_storage.unprocessed_bundles_len(), 10);
-        assert_eq!(bundle_storage.unprocessed_packets_len(), 20);
+        // 1005 bundles were sent, but the capacity is 1000
+        assert_eq!(bundle_storage.unprocessed_bundles_len(), 1000);
+        assert_eq!(bundle_storage.unprocessed_packets_len(), 2000);
         assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 0);
         assert_eq!(bundle_storage.cost_model_buffered_packets_len(), 0);
 
@@ -336,8 +337,11 @@ mod tests {
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
             |bundles_to_process, _stats| {
-                // make sure the first 10 bundles are the ones to process
-                assert_bundles_same(&bundles[0..10], bundles_to_process);
+                // make sure the first 1000 bundles are the ones to process
+                assert_bundles_same(
+                    &bundles[0..BundleStorage::BUNDLE_STORAGE_CAPACITY],
+                    bundles_to_process,
+                );
                 (0..bundles_to_process.len()).map(|_| Ok(())).collect()
             }
         ));
@@ -356,10 +360,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
@@ -426,10 +427,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
@@ -494,10 +492,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
@@ -545,10 +540,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
@@ -594,10 +586,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
@@ -639,10 +628,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
@@ -719,16 +705,18 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, bank_forks.clone(), Some(5));
 
-        // send 15 bundles across the queue
-        let bundles0 = make_random_bundles(&mint_keypair, 5, 2, genesis_config.hash());
+        // send 500 bundles across the queue
+        let bundles0 = make_random_bundles(
+            &mint_keypair,
+            BundleStorage::BUNDLE_STORAGE_CAPACITY / 2,
+            2,
+            genesis_config.hash(),
+        );
         sender.send(bundles0.clone()).unwrap();
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
@@ -754,11 +742,16 @@ mod tests {
             }
         ));
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);
-        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 5);
+        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 500);
 
-        let bundles1 = make_random_bundles(&mint_keypair, 5, 2, genesis_config.hash());
+        let bundles1 = make_random_bundles(
+            &mint_keypair,
+            BundleStorage::BUNDLE_STORAGE_CAPACITY / 2,
+            2,
+            genesis_config.hash(),
+        );
         sender.send(bundles1.clone()).unwrap();
-        // should get 5 more bundles + cost model buffered length should be 10
+        // should get 500 more bundles, cost model buffered length should be 1000
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
@@ -778,9 +771,10 @@ mod tests {
             }
         ));
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);
-        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 10);
+        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 1000); // full now
 
-        let bundles2 = make_random_bundles(&mint_keypair, 5, 2, genesis_config.hash());
+        // send 10 bundles to go over capacity
+        let bundles2 = make_random_bundles(&mint_keypair, 10, 2, genesis_config.hash());
         sender.send(bundles2.clone()).unwrap();
 
         // this set will get dropped from cost model buffered bundles
@@ -803,7 +797,7 @@ mod tests {
             }
         ));
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);
-        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 10);
+        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 1000);
 
         // create new bank then call process_bundles again, expect to see [bundles1,bundles2]
         let bank = bank_forks.read().unwrap().working_bank();

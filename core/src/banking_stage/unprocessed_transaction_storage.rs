@@ -286,14 +286,15 @@ impl UnprocessedTransactionStorage {
         })
     }
 
-    pub fn new_bundle_storage(
-        unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
-        cost_model_failed_bundles: VecDeque<ImmutableDeserializedBundle>,
-    ) -> Self {
+    pub fn new_bundle_storage() -> Self {
         Self::BundleStorage(BundleStorage {
             last_update_slot: Slot::default(),
-            unprocessed_bundle_storage,
-            cost_model_buffered_bundle_storage: cost_model_failed_bundles,
+            unprocessed_bundle_storage: VecDeque::with_capacity(
+                BundleStorage::BUNDLE_STORAGE_CAPACITY,
+            ),
+            cost_model_buffered_bundle_storage: VecDeque::with_capacity(
+                BundleStorage::BUNDLE_STORAGE_CAPACITY,
+            ),
         })
     }
 
@@ -1131,6 +1132,7 @@ pub struct BundleStorage {
 }
 
 impl BundleStorage {
+    pub const BUNDLE_STORAGE_CAPACITY: usize = 1000;
     fn is_empty(&self) -> bool {
         self.unprocessed_bundle_storage.is_empty()
     }
@@ -1179,24 +1181,33 @@ impl BundleStorage {
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
         push_back: bool,
     ) -> InsertPacketBundlesSummary {
-        let mut num_bundles_inserted: usize = 0;
-        let mut num_packets_inserted: usize = 0;
-        let mut num_bundles_dropped: usize = 0;
-        let mut num_packets_dropped: usize = 0;
+        // deque should be initialized with size [Self::BUNDLE_STORAGE_CAPACITY]
+        let deque_free_space = Self::BUNDLE_STORAGE_CAPACITY
+            .checked_sub(deque.len())
+            .unwrap();
+        let bundles_to_insert_count = std::cmp::min(deque_free_space, deserialized_bundles.len());
+        let num_bundles_dropped = deserialized_bundles
+            .len()
+            .checked_sub(bundles_to_insert_count)
+            .unwrap();
+        let num_packets_inserted = deserialized_bundles
+            .iter()
+            .take(bundles_to_insert_count)
+            .map(|b| b.len())
+            .sum::<usize>();
+        let num_packets_dropped = deserialized_bundles
+            .iter()
+            .skip(bundles_to_insert_count)
+            .map(|b| b.len())
+            .sum::<usize>();
 
-        for bundle in deserialized_bundles {
-            if deque.capacity() == deque.len() {
-                saturating_add_assign!(num_bundles_dropped, 1);
-                saturating_add_assign!(num_packets_dropped, bundle.len());
-            } else {
-                saturating_add_assign!(num_bundles_inserted, 1);
-                saturating_add_assign!(num_packets_inserted, bundle.len());
-                if push_back {
-                    deque.push_back(bundle);
-                } else {
-                    deque.push_front(bundle)
-                }
-            }
+        let to_insert = deserialized_bundles
+            .into_iter()
+            .take(bundles_to_insert_count);
+        if push_back {
+            deque.extend(to_insert)
+        } else {
+            to_insert.for_each(|b| deque.push_front(b));
         }
 
         InsertPacketBundlesSummary {
@@ -1205,7 +1216,7 @@ impl BundleStorage {
                 num_dropped_tracer_packets: 0,
             }
             .into(),
-            num_bundles_inserted,
+            num_bundles_inserted: bundles_to_insert_count,
             num_packets_inserted,
             num_bundles_dropped,
         }
