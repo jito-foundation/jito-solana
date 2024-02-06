@@ -837,7 +837,7 @@ mod tests {
             transaction_error_metrics::TransactionErrorMetrics,
         },
         std::{
-            collections::{HashSet, VecDeque},
+            collections::HashSet,
             str::FromStr,
             sync::{
                 atomic::{AtomicBool, Ordering},
@@ -1091,10 +1091,7 @@ mod tests {
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
-        let mut bundle_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
 
         let mut packet_bundles = make_random_overlapping_bundles(
@@ -1244,10 +1241,7 @@ mod tests {
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
-        let mut bundle_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            VecDeque::with_capacity(10),
-            VecDeque::with_capacity(10),
-        );
+        let mut bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
         // MAIN LOGIC
 
