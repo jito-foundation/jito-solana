@@ -138,7 +138,7 @@ jobs:
         run: |
           git checkout ${{ matrix.branch }}
           git reset --hard ${{ env.REBASE_BRANCH }}
-      - name: Push untouched %{{ matrix.branch }} at a moment in time
+      - name: Push rebased %{{ matrix.branch }} upstream
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
