@@ -36,6 +36,7 @@ jobs:
           ref: ${{ matrix.branch }}
           submodules: recursive
           fetch-depth: 0
+          token: ${{ secrets.JITO_SOLANA_RELEASE_TOKEN }}
       - name: Add upstream
         run: git remote add upstream https://github.com/solana-labs/solana.git
       - name: Fetch upstream
@@ -101,7 +102,7 @@ jobs:
               exit 1
             fi
 
-            state=$(echo $response | jq -r '.[0].state')
+            state=$(echo $response | jq --exit-status -r '.[0].state')
             echo "Current build state: $state"
 
             # Check if the state is one of the finished states
@@ -151,7 +152,7 @@ jobs:
       - name: Push rebased %{{ matrix.branch }} upstream
         uses: ad-m/github-push-action@master
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.JITO_SOLANA_RELEASE_TOKEN }}
           branch: ${{ matrix.branch }}
           force: true
       - name: Send success update
