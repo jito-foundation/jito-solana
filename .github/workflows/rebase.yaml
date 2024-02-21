@@ -16,7 +16,7 @@
 # It will also run CI and wait for it to pass before performing the force push to v1.17.
 # In the event there's a failure in the process, it's reported to slack and the job stops.
 
-name: "Rebase Jito-Solana from upstream solana-labs/solana"
+name: "Rebase jito-solana from upstream solana-labs/solana"
 
 on:
   push:
@@ -143,15 +143,6 @@ jobs:
           else
             echo "The remote HEAD matches the local REBASE_SHA at the beginning of CI. Proceeding."
           fi
-      - name: Send success update
-        uses: slackapi/slack-github-action@v1.25.0
-        with:
-          payload: |
-            {
-              "text": "Nightly rebase on branch ${{ matrix.branch }}\nStatus: CI success\nBranch: ${{ env.REBASE_BRANCH}}\nBuild: https://buildkite.com/jito/jito-solana/builds?commit=${{ env.REBASE_SHA }}"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       - name: Reset ${{ matrix.branch }} to ${{ env.REBASE_BRANCH }}
         run: |
           git checkout ${{ matrix.branch }}
@@ -160,4 +151,14 @@ jobs:
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ matrix.branch }}
           force: true
+      - name: Send success update
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          payload: |
+            {
+              "text": "Nightly rebase on branch ${{ matrix.branch }}\nStatus: CI success, rebased, and pushed\nBranch: ${{ env.REBASE_BRANCH}}\nBuild: https://buildkite.com/jito/jito-solana/builds?commit=${{ env.REBASE_SHA }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
