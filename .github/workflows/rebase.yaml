@@ -1,3 +1,21 @@
+# This workflow runs a periodic rebase process, pulling in updates from an upstream repository
+# The workflow for rebasing a jito-solana branch to a solana labs branch locally is typically:
+# $ git checkout v1.17
+# $ git pull --rebase # --rebase needed locally
+# $ git branch -D lb/v1.17_rebase # deletes branch from last v1.17 rebase
+# $ git checkout -b lb/v1.17_rebase
+# $ git fetch upstream
+# $ git rebase upstream/v1.17 # rebase + fix merge conflicts
+# $ git rebase --continue
+# $ git push origin +lb/v1.17_rebase # force needed to overwrite remote. wait for CI, fix if any issues
+# $ git checkout v1.17
+# $ git reset --hard lb/v1.17_rebase
+# $ git push origin +v1.17
+#
+# This workflow automates this process, with periodic status updates over slack.
+# It will also run CI and wait for it to pass before performing the force push to v1.17.
+# In the event there's a failure in the process, it's reported to slack and the job stops.
+
 name: "Rebase Jito-Solana from upstream solana-labs/solana"
 
 on:
