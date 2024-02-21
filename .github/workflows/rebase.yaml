@@ -134,3 +134,12 @@ jobs:
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      - name: Reset ${{ matrix.branch }} to ${{ env.REBASE_BRANCH }}
+        run: |
+          git checkout ${{ matrix.branch }}
+          git reset --hard ${{ env.REBASE_BRANCH }}
+      - name: Push untouched %{{ matrix.branch }} at a moment in time
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          force: true
