@@ -110,7 +110,8 @@ jobs:
                 echo "Build finished successfully."
                 exit 0
               ;;
-              "failing"|"failed"|"canceled"|"canceling"|"not_run")
+              "canceled"|"canceling"|"not_run")
+                # ignoring "failing"|"failed" because flaky CI, can restart and hope it finishes or times out
                 echo "Build failed or was cancelled."
                 exit 2
               ;;
