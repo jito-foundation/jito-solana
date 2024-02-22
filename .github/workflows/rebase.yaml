@@ -21,6 +21,7 @@ name: "Rebase jito-solana from upstream solana-labs/solana"
 on:
   schedule:
     - cron: "0 18 * * 1-5"
+
 jobs:
   rebase:
     runs-on: ubuntu-latest
