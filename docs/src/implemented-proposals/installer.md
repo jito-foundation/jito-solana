@@ -13,7 +13,7 @@ This document proposes an easy to use software install and updater that can be u
 The easiest install method for supported platforms:
 
 ```bash
-$ curl -sSf https://raw.githubusercontent.com/solana-labs/solana/v1.0.0/install/solana-install-init.sh | sh
+$ curl -sSf https://raw.githubusercontent.com/jito-foundation/jito-solana/v1.0.0/install/solana-install-init.sh | sh
 ```
 
 This script will check github for the latest tagged release and download and run the `solana-install-init` binary from there.

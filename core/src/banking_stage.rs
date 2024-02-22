@@ -122,19 +122,19 @@ impl BankingStageStats {
             .load(Ordering::Relaxed) as u64
             + self.dropped_packets_count.load(Ordering::Relaxed) as u64
             + self
-            .dropped_duplicated_packets_count
-            .load(Ordering::Relaxed) as u64
+                .dropped_duplicated_packets_count
+                .load(Ordering::Relaxed) as u64
             + self.dropped_forward_packets_count.load(Ordering::Relaxed) as u64
             + self.newly_buffered_packets_count.load(Ordering::Relaxed) as u64
             + self.current_buffered_packets_count.load(Ordering::Relaxed) as u64
             + self.rebuffered_packets_count.load(Ordering::Relaxed) as u64
             + self.consumed_buffered_packets_count.load(Ordering::Relaxed) as u64
             + self
-            .consume_buffered_packets_elapsed
-            .load(Ordering::Relaxed)
+                .consume_buffered_packets_elapsed
+                .load(Ordering::Relaxed)
             + self
-            .receive_and_buffer_packets_elapsed
-            .load(Ordering::Relaxed)
+                .receive_and_buffer_packets_elapsed
+                .load(Ordering::Relaxed)
             + self.filter_pending_packets_elapsed.load(Ordering::Relaxed)
             + self.packet_conversion_elapsed.load(Ordering::Relaxed)
             + self.transaction_processing_elapsed.load(Ordering::Relaxed)
@@ -1250,7 +1250,7 @@ mod tests {
                     20,
                     start_hash,
                 ))
-                    .unwrap();
+                .unwrap();
             }
 
             // Send a bunch of votes and transfers
@@ -1309,17 +1309,17 @@ mod tests {
                 (tpu_packet_batches, tpu_vote_sender),
                 (gossip_packet_batches, gossip_vote_sender),
             ]
-                .into_iter()
-                .map(|(packet_batches, sender)| {
-                    Builder::new()
-                        .spawn(move || {
-                            sender
-                                .send(BankingPacketBatch::new((packet_batches, None)))
-                                .unwrap()
-                        })
-                        .unwrap()
-                })
-                .for_each(|handle| handle.join().unwrap());
+            .into_iter()
+            .map(|(packet_batches, sender)| {
+                Builder::new()
+                    .spawn(move || {
+                        sender
+                            .send(BankingPacketBatch::new((packet_batches, None)))
+                            .unwrap()
+                    })
+                    .unwrap()
+            })
+            .for_each(|handle| handle.join().unwrap());
 
             banking_stage.join().unwrap();
             exit.store(true, Ordering::Relaxed);
