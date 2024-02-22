@@ -20,7 +20,7 @@ name: "Rebase jito-solana from upstream solana-labs/solana"
 
 on:
   schedule:
-    - cron: "0 18 * * 1-5"
+    - cron: "30 18 * * 1-5"
 
 jobs:
   rebase:
@@ -31,6 +31,7 @@ jobs:
           - master
           - v1.18
           - v1.17
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,9 +54,10 @@ jobs:
           git config --global user.email "infra@jito.wtf"
           git config --global user.name "Jito Infrastructure"
       - name: Rebase
+        id: rebase
         run: git rebase upstream/${{ matrix.branch }}
       - name: Send warning for rebase error
-        if: failure()
+        if: failure() && steps.rebase.outcome == 'failure'
         uses: slackapi/slack-github-action@v1.25.0
         with:
           payload: |
@@ -65,6 +67,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       - name: Check if rebase applied
+        id: check_rebase_applied
         run: |
           PRE_REBASE_SHA=$(git rev-parse ${{ matrix.branch }})
           POST_REBASE_SHA=$(git rev-parse HEAD)
@@ -75,7 +78,7 @@ jobs:
             echo "Rebase applied successfully."
           fi
       - name: Send warning for rebase error
-        if: failure()
+        if: failure() && steps.check_rebase_applied.outcome == 'failure'
         uses: slackapi/slack-github-action@v1.25.0
         with:
           payload: |
@@ -94,6 +97,7 @@ jobs:
       - name: Wait for buildkite to start build
         run: sleep 20
       - name: Wait for buildkite to finish
+        id: wait_for_buildkite
         timeout-minutes: 300
         run: |
           while true; do
@@ -123,7 +127,7 @@ jobs:
           done
       - name: Send failure update
         uses: slackapi/slack-github-action@v1.25.0
-        if: failure()
+        if: failure() && steps.wait_for_buildkite.outcome == 'failure'
         with:
           payload: |
             {
