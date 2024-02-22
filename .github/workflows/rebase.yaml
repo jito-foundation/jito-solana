@@ -19,16 +19,16 @@
 name: "Rebase jito-solana from upstream solana-labs/solana"
 
 on:
-  push:
-
+  schedule:
+    - cron: "0 18 * * 1-5"
 jobs:
   rebase:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         branch:
-          #          - master
-#          - v1.18
+          - master
+          - v1.18
           - v1.17
     steps:
       - uses: actions/checkout@v4
