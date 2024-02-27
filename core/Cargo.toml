@@ -34,6 +34,7 @@ lazy_static = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
 min-max-heap = { workspace = true }
+num_cpus = { workspace = true }
 num_enum = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
