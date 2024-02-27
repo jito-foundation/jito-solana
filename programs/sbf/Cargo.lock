@@ -5979,6 +5979,7 @@ dependencies = [
  "jsonrpc-core-client",
  "jsonrpc-derive",
  "jsonrpc-ipc-server",
+ "jsonrpc-server-utils",
  "libloading",
  "log",
  "solana-runtime",
