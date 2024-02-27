@@ -43,7 +43,8 @@ use {
         block_error::BlockError,
         blockstore::Blockstore,
         blockstore_processor::{
-            self, BlockstoreProcessorError, ConfirmationProgress, TransactionStatusSender,
+            self, BankTransactionExecutor, BankTransactionExecutorHandle, BlockstoreProcessorError,
+            ConfirmationProgress, TransactionStatusSender,
         },
         entry_notifier_service::EntryNotifierSender,
         leader_schedule_cache::LeaderScheduleCache,
@@ -52,6 +53,7 @@ use {
     solana_measure::measure::Measure,
     solana_poh::poh_recorder::{PohLeaderStatus, PohRecorder, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
     solana_program_runtime::timings::ExecuteTimings,
+    solana_rayon_threadlimit::get_thread_count,
     solana_rpc::{
         optimistically_confirmed_bank_tracker::{BankNotification, BankNotificationSenderConfig},
         rpc_subscriptions::RpcSubscriptions,
@@ -284,6 +286,7 @@ pub struct ReplayTiming {
     generate_new_bank_forks_write_lock_us: u64,
     replay_blockstore_us: u64, //< When processing forks concurrently, only captures the longest fork
 }
+
 impl ReplayTiming {
     #[allow(clippy::too_many_arguments)]
     fn update(
@@ -472,6 +475,7 @@ impl ReplayTiming {
 pub struct ReplayStage {
     t_replay: JoinHandle<()>,
     commitment_service: AggregateCommitmentService,
+    bank_executor: BankTransactionExecutor,
 }
 
 impl ReplayStage {
@@ -532,6 +536,11 @@ impl ReplayStage {
             wait_to_vote_slot,
             replay_slots_concurrently,
         } = config;
+
+        let bank_executor =
+            BankTransactionExecutor::new(get_thread_count(), &prioritization_fee_cache);
+
+        let executor_handle = bank_executor.handle();
 
         trace!("replay stage");
         // Start the replay stage loop
@@ -658,6 +667,7 @@ impl ReplayStage {
                     replay_slots_concurrently,
                     &prioritization_fee_cache,
                     &mut purge_repair_slot_counter,
+                    &executor_handle,
                 );
                 replay_active_banks_time.stop();
 
@@ -1114,6 +1124,7 @@ impl ReplayStage {
         Ok(Self {
             t_replay,
             commitment_service,
+            bank_executor,
         })
     }
 
@@ -1381,8 +1392,8 @@ impl ReplayStage {
                             return false;
                         } else if frozen_hash == Hash::default()
                             && !progress.is_dead(*duplicate_slot).expect(
-                                "If slot exists in BankForks must exist in the progress map",
-                            )
+                            "If slot exists in BankForks must exist in the progress map",
+                        )
                         {
                             warn!(
                                 "Trying to dump unfrozen slot {} that is not dead",
@@ -2057,6 +2068,7 @@ impl ReplayStage {
         verify_recyclers: &VerifyRecyclers,
         log_messages_bytes_limit: Option<usize>,
         prioritization_fee_cache: &PrioritizationFeeCache,
+        executor_handle: &BankTransactionExecutorHandle,
     ) -> result::Result<usize, BlockstoreProcessorError> {
         let mut w_replay_stats = replay_stats.write().unwrap();
         let mut w_replay_progress = replay_progress.write().unwrap();
@@ -2064,20 +2076,24 @@ impl ReplayStage {
         // All errors must lead to marking the slot as dead, otherwise,
         // the `check_slot_agrees_with_cluster()` called by `replay_active_banks()`
         // will break!
-        blockstore_processor::confirm_slot(
-            blockstore,
-            bank,
-            &mut w_replay_stats,
-            &mut w_replay_progress,
-            false,
-            transaction_status_sender,
-            entry_notification_sender,
-            Some(replay_vote_sender),
-            verify_recyclers,
-            false,
-            log_messages_bytes_limit,
-            prioritization_fee_cache,
-        )?;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(50)
+            && blockstore_processor::confirm_slot(
+                blockstore,
+                bank,
+                &mut w_replay_stats,
+                &mut w_replay_progress,
+                false,
+                transaction_status_sender,
+                entry_notification_sender,
+                Some(replay_vote_sender),
+                verify_recyclers,
+                false,
+                log_messages_bytes_limit,
+                prioritization_fee_cache,
+                executor_handle,
+            )?
+        {}
         let tx_count_after = w_replay_progress.num_txs;
         let tx_count = tx_count_after - tx_count_before;
         Ok(tx_count)
@@ -2628,6 +2644,7 @@ impl ReplayStage {
         log_messages_bytes_limit: Option<usize>,
         active_bank_slots: &[Slot],
         prioritization_fee_cache: &PrioritizationFeeCache,
+        executor_handle: &BankTransactionExecutorHandle,
     ) -> Vec<ReplaySlotFromBlockstore> {
         // Make mutable shared structures thread safe.
         let progress = RwLock::new(progress);
@@ -2705,6 +2722,7 @@ impl ReplayStage {
                             &verify_recyclers.clone(),
                             log_messages_bytes_limit,
                             prioritization_fee_cache,
+                            executor_handle,
                         );
                         replay_blockstore_time.stop();
                         replay_result.replay_result = Some(blockstore_result);
@@ -2737,12 +2755,14 @@ impl ReplayStage {
         log_messages_bytes_limit: Option<usize>,
         bank_slot: Slot,
         prioritization_fee_cache: &PrioritizationFeeCache,
+        executor_handle: &BankTransactionExecutorHandle,
     ) -> ReplaySlotFromBlockstore {
         let mut replay_result = ReplaySlotFromBlockstore {
             is_slot_dead: false,
             bank_slot,
             replay_result: None,
         };
+
         let my_pubkey = &my_pubkey.clone();
         trace!("Replay active bank: slot {}", bank_slot);
         if progress.get(&bank_slot).map(|p| p.is_dead).unwrap_or(false) {
@@ -2788,6 +2808,7 @@ impl ReplayStage {
                     &verify_recyclers.clone(),
                     log_messages_bytes_limit,
                     prioritization_fee_cache,
+                    executor_handle,
                 );
                 replay_blockstore_time.stop();
                 replay_result.replay_result = Some(blockstore_result);
@@ -3044,6 +3065,7 @@ impl ReplayStage {
         replay_slots_concurrently: bool,
         prioritization_fee_cache: &PrioritizationFeeCache,
         purge_repair_slot_counter: &mut PurgeRepairSlotCounter,
+        executor_handle: &BankTransactionExecutorHandle,
     ) -> bool /* completed a bank */ {
         let active_bank_slots = bank_forks.read().unwrap().active_bank_slots();
         let num_active_banks = active_bank_slots.len();
@@ -3068,6 +3090,7 @@ impl ReplayStage {
                     log_messages_bytes_limit,
                     &active_bank_slots,
                     prioritization_fee_cache,
+                    executor_handle,
                 )
             } else {
                 active_bank_slots
@@ -3087,6 +3110,7 @@ impl ReplayStage {
                             log_messages_bytes_limit,
                             *bank_slot,
                             prioritization_fee_cache,
+                            executor_handle,
                         )
                     })
                     .collect()
@@ -3393,10 +3417,10 @@ impl ReplayStage {
                             // Last vote did not land
                             {
                                 my_latest_landed_vote < last_voted_slot
-                                    // If we are already voting at the tip, there is nothing we can do.
-                                    && last_voted_slot < heaviest_bank_on_same_voted_fork.slot()
-                                    // Last vote outside slot hashes of the tip of fork
-                                    && !heaviest_bank_on_same_voted_fork
+                                        // If we are already voting at the tip, there is nothing we can do.
+                                        && last_voted_slot < heaviest_bank_on_same_voted_fork.slot()
+                                        // Last vote outside slot hashes of the tip of fork
+                                        && !heaviest_bank_on_same_voted_fork
                                         .is_in_slot_hashes_history(&last_voted_slot)
                             }
                             None => false,
@@ -4107,6 +4131,7 @@ impl ReplayStage {
 
     pub fn join(self) -> thread::Result<()> {
         self.commitment_service.join()?;
+        self.bank_executor.join()?;
         self.t_replay.join().map(|_| ())
     }
 }
@@ -4829,6 +4854,9 @@ pub(crate) mod tests {
             blockstore.insert_shreds(shreds, None, false).unwrap();
             let block_commitment_cache = Arc::new(RwLock::new(BlockCommitmentCache::default()));
             let exit = Arc::new(AtomicBool::new(false));
+            let priotization_fee_cache = Arc::new(PrioritizationFeeCache::new(0u64));
+            let bank_executor = BankTransactionExecutor::new(1, &priotization_fee_cache);
+
             let res = ReplayStage::replay_blockstore_into_bank(
                 &bank1,
                 &blockstore,
@@ -4839,8 +4867,11 @@ pub(crate) mod tests {
                 &replay_vote_sender,
                 &VerifyRecyclers::default(),
                 None,
-                &PrioritizationFeeCache::new(0u64),
+                &priotization_fee_cache,
+                &bank_executor.handle(),
             );
+            bank_executor.join().unwrap();
+
             let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
             let max_complete_rewards_slot = Arc::new(AtomicU64::default());
             let rpc_subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
@@ -5289,7 +5320,7 @@ pub(crate) mod tests {
         // Fill banks with votes
         for vote in votes {
             assert!(vote_simulator
-                .simulate_vote(vote, &my_node_pubkey, &mut tower,)
+                .simulate_vote(vote, &my_node_pubkey, &mut tower)
                 .is_empty());
         }
 
@@ -5351,14 +5382,14 @@ pub(crate) mod tests {
         // >= 4 + NUM_CONSECUTIVE_LEADER_SLOTS, or if we reset to < 4
         assert!(!ReplayStage::should_retransmit(
             poh_slot,
-            &mut last_retransmit_slot
+            &mut last_retransmit_slot,
         ));
         assert_eq!(last_retransmit_slot, 4);
 
         for poh_slot in 4..4 + NUM_CONSECUTIVE_LEADER_SLOTS {
             assert!(!ReplayStage::should_retransmit(
                 poh_slot,
-                &mut last_retransmit_slot
+                &mut last_retransmit_slot,
             ));
             assert_eq!(last_retransmit_slot, 4);
         }
@@ -5367,7 +5398,7 @@ pub(crate) mod tests {
         last_retransmit_slot = 4;
         assert!(ReplayStage::should_retransmit(
             poh_slot,
-            &mut last_retransmit_slot
+            &mut last_retransmit_slot,
         ));
         assert_eq!(last_retransmit_slot, poh_slot);
 
@@ -5375,7 +5406,7 @@ pub(crate) mod tests {
         last_retransmit_slot = 4;
         assert!(ReplayStage::should_retransmit(
             poh_slot,
-            &mut last_retransmit_slot
+            &mut last_retransmit_slot,
         ));
         assert_eq!(last_retransmit_slot, poh_slot);
     }
@@ -6343,11 +6374,11 @@ pub(crate) mod tests {
         bank_forks.write().unwrap().remove(2);
         assert!(check_map_eq(
             &ancestors,
-            &bank_forks.read().unwrap().ancestors()
+            &bank_forks.read().unwrap().ancestors(),
         ));
         assert!(check_map_eq(
             &descendants,
-            &bank_forks.read().unwrap().descendants()
+            &bank_forks.read().unwrap().descendants(),
         ));
 
         // Try to purge the root
@@ -8266,7 +8297,7 @@ pub(crate) mod tests {
             failures,
             vec![
                 HeaviestForkFailures::FailedSwitchThreshold(4, 0, 30000),
-                HeaviestForkFailures::LockedOut(4)
+                HeaviestForkFailures::LockedOut(4),
             ]
         );
 
@@ -8285,7 +8316,7 @@ pub(crate) mod tests {
             failures,
             vec![
                 HeaviestForkFailures::FailedSwitchThreshold(4, 0, 30000),
-                HeaviestForkFailures::LockedOut(4)
+                HeaviestForkFailures::LockedOut(4),
             ]
         );
     }
@@ -8345,7 +8376,7 @@ pub(crate) mod tests {
 
         assert_eq!(vote_fork, None);
         assert_eq!(reset_fork, Some(4));
-        assert_eq!(failures, vec![HeaviestForkFailures::LockedOut(4),]);
+        assert_eq!(failures, vec![HeaviestForkFailures::LockedOut(4)]);
 
         let (vote_fork, reset_fork, failures) = run_compute_and_select_forks(
             &bank_forks,
@@ -8358,7 +8389,7 @@ pub(crate) mod tests {
 
         assert_eq!(vote_fork, None);
         assert_eq!(reset_fork, Some(4));
-        assert_eq!(failures, vec![HeaviestForkFailures::LockedOut(4),]);
+        assert_eq!(failures, vec![HeaviestForkFailures::LockedOut(4)]);
     }
 
     #[test]

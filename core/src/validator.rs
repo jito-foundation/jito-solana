@@ -211,7 +211,8 @@ pub struct ValidatorConfig {
     pub rpc_config: JsonRpcConfig,
     /// Specifies which plugins to start up with
     pub on_start_geyser_plugin_config_files: Option<Vec<PathBuf>>,
-    pub rpc_addrs: Option<(SocketAddr, SocketAddr)>, // (JsonRpc, JsonRpcPubSub)
+    pub rpc_addrs: Option<(SocketAddr, SocketAddr)>,
+    // (JsonRpc, JsonRpcPubSub)
     pub pubsub_config: PubSubConfig,
     pub snapshot_config: SnapshotConfig,
     pub max_ledger_shreds: Option<u64>,
@@ -221,10 +222,14 @@ pub struct ValidatorConfig {
     pub fixed_leader_schedule: Option<FixedSchedule>,
     pub wait_for_supermajority: Option<Slot>,
     pub new_hard_forks: Option<Vec<Slot>>,
-    pub known_validators: Option<HashSet<Pubkey>>, // None = trust all
-    pub repair_validators: Option<HashSet<Pubkey>>, // None = repair from all
-    pub repair_whitelist: Arc<RwLock<HashSet<Pubkey>>>, // Empty = repair with all
-    pub gossip_validators: Option<HashSet<Pubkey>>, // None = gossip with all
+    pub known_validators: Option<HashSet<Pubkey>>,
+    // None = trust all
+    pub repair_validators: Option<HashSet<Pubkey>>,
+    // None = repair from all
+    pub repair_whitelist: Arc<RwLock<HashSet<Pubkey>>>,
+    // Empty = repair with all
+    pub gossip_validators: Option<HashSet<Pubkey>>,
+    // None = gossip with all
     pub accounts_hash_fault_injector: Option<AccountsHashFaultInjector>,
     pub accounts_hash_interval_slots: u64,
     pub max_genesis_archive_unpacked_size: u64,
@@ -378,7 +383,8 @@ impl ValidatorConfig {
 // having to watch log messages.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ValidatorStartProgress {
-    Initializing, // Catch all, default state
+    Initializing,
+    // Catch all, default state
     SearchingForRpcService,
     DownloadingSnapshot {
         slot: Slot,
@@ -392,7 +398,8 @@ pub enum ValidatorStartProgress {
         max_slot: Slot,
     },
     StartingServices,
-    Halted, // Validator halted due to `--dev-halt-at-slot` argument
+    Halted,
+    // Validator halted due to `--dev-halt-at-slot` argument
     WaitingForSupermajority {
         slot: Slot,
         gossip_stake_percent: u64,
@@ -2731,7 +2738,7 @@ mod tests {
 
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(300, 200),
-            100
+            100,
         ));
 
         let default_accounts_hash_interval =
@@ -2739,62 +2746,62 @@ mod tests {
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS
+                snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
             ),
             default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            default_accounts_hash_interval
+            default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            default_accounts_hash_interval
+            default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            Slot::MAX
+            Slot::MAX,
         ));
 
         assert!(!is_snapshot_config_valid(&new_snapshot_config(0, 100), 100));
         assert!(!is_snapshot_config_valid(&new_snapshot_config(100, 0), 100));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(42, 100),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 42),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 100),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 200),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(444, 200),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(400, 222),
-            100
+            100,
         ));
 
         assert!(is_snapshot_config_valid(
             &SnapshotConfig::new_load_only(),
-            100
+            100,
         ));
         assert!(is_snapshot_config_valid(
             &SnapshotConfig {
@@ -2802,7 +2809,7 @@ mod tests {
                 incremental_snapshot_archive_interval_slots: 37,
                 ..SnapshotConfig::new_load_only()
             },
-            100
+            100,
         ));
         assert!(is_snapshot_config_valid(
             &SnapshotConfig {
@@ -2810,7 +2817,7 @@ mod tests {
                 incremental_snapshot_archive_interval_slots: DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
                 ..SnapshotConfig::new_load_only()
             },
-            100
+            100,
         ));
     }
 
