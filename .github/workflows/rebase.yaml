@@ -20,7 +20,7 @@ name: "Rebase jito-solana from upstream solana-labs/solana"
 
 on:
   schedule:
-    - cron: "00 19 * * 1-5"
+    - cron: "15 19 * * 1-5"
 
 jobs:
   rebase:
@@ -94,6 +94,8 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ env.REBASE_BRANCH }}
+      - name: Wait for buildkite to start build
+        run: sleep 300
       - name: Wait for buildkite to finish
         id: wait_for_buildkite
         timeout-minutes: 300
@@ -101,10 +103,8 @@ jobs:
           while true; do
             response=$(curl -s -f -H "Authorization: Bearer ${{ secrets.BUILDKITE_TOKEN }}" "https://api.buildkite.com/v2/organizations/jito/pipelines/jito-solana/builds?commit=${{ env.REBASE_SHA }}")
             if [ $? -ne 0 ]; then
-              # Buildkite occasionally takes awhile to start the job. Assume it starts and let the job time out if not
               echo "Curl request failed."
-              sleep 30
-              continue
+              exit 1
             fi
 
             state=$(echo $response | jq --exit-status -r '.[0].state')
