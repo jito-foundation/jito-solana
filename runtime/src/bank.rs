@@ -4412,7 +4412,11 @@ impl Bank {
         }
     }
 
-    fn get_account_overrides_for_simulation(&self, account_keys: &AccountKeys) -> AccountOverrides {
+    // NOTE: Do not revert this back to private during rebases.
+    pub fn get_account_overrides_for_simulation(
+        &self,
+        account_keys: &AccountKeys,
+    ) -> AccountOverrides {
         let mut account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {

@@ -81,9 +81,9 @@ pub enum LoadAndExecuteBundleError {
     ProcessingTimeExceeded(Duration),
 
     #[error(
-        "A transaction in the bundle encountered a lock error: [signature={:?}, transaction_error={:?}]",
-        signature,
-        transaction_error
+    "A transaction in the bundle encountered a lock error: [signature={:?}, transaction_error={:?}]",
+    signature,
+    transaction_error
     )]
     LockError {
         signature: Signature,
@@ -251,8 +251,20 @@ pub fn load_and_execute_bundle<'a>(
             metrics: BundleExecutionMetrics::default(),
         };
     }
+
     let mut binding = AccountOverrides::default();
     let account_overrides = account_overrides.unwrap_or(&mut binding);
+    if is_simulation {
+        bundle
+            .transactions
+            .iter()
+            .map(|tx| tx.message().account_keys())
+            .for_each(|account_keys| {
+                account_overrides.upsert_account_overrides(
+                    bank.get_account_overrides_for_simulation(&account_keys),
+                );
+            });
+    }
 
     let mut chunk_start = 0;
     let start_time = Instant::now();
@@ -347,6 +359,7 @@ pub fn load_and_execute_bundle<'a>(
                 &mut metrics.execute_timings,
                 Some(account_overrides),
                 *log_messages_bytes_limit,
+                true
             ));
         debug!(
             "bundle id: {} loaded_transactions: {:?}",
