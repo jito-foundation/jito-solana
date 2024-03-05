@@ -247,6 +247,7 @@ fn new_execution_result(
             return_data: None,
             executed_units: 0,
             accounts_data_len_delta: 0,
+            post_accounts: Vec::new(),
         },
         programs_modified_by_tx: Box::<LoadedProgramsForTxBatch>::default(),
     }

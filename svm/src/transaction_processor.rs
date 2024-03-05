@@ -735,7 +735,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         }
         let status = status.map(|_| ());
 
-        loaded_transaction.accounts = accounts;
+        loaded_transaction.accounts = accounts.clone();
         saturating_add_assign!(
             timings.details.total_account_count,
             loaded_transaction.accounts.len() as u64
@@ -758,6 +758,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                 return_data,
                 executed_units,
                 accounts_data_len_delta,
+                post_accounts: accounts,
             },
             programs_modified_by_tx: Box::new(programs_modified_by_tx),
         }
