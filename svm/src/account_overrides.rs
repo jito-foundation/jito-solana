@@ -10,6 +10,10 @@ pub struct AccountOverrides {
 }
 
 impl AccountOverrides {
+    pub fn new(accounts: HashMap<Pubkey, AccountSharedData>) -> Self {
+        AccountOverrides { accounts }
+    }
+
     pub fn upsert_account_overrides(&mut self, other: AccountOverrides) {
         self.accounts.extend(other.accounts);
     }
@@ -32,6 +36,10 @@ impl AccountOverrides {
     /// Gets the account if it's found in the list of overrides
     pub fn get(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
         self.accounts.get(pubkey)
+    }
+
+    pub fn get_accounts(&self) -> HashMap<Pubkey, AccountSharedData> {
+        self.accounts.clone()
     }
 }
 

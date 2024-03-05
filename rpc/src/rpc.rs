@@ -3290,7 +3290,7 @@ pub mod rpc_accounts_scan {
 
 pub mod utils {
     use {
-        crate::rpc::encode_account,
+        crate::rpc::{encode_account, get_encoded_account},
         jsonrpc_core::Error,
         solana_account_decoder::{UiAccount, UiAccountEncoding},
         solana_bundle::{
@@ -3304,7 +3304,10 @@ pub mod utils {
             },
             config::RpcSimulateTransactionAccountsConfig,
         },
+        solana_runtime::bank::Bank,
         solana_sdk::{account::AccountSharedData, pubkey::Pubkey},
+        solana_svm::account_overrides::AccountOverrides,
+        std::collections::HashMap,
         std::str::FromStr,
     };
 
@@ -3313,12 +3316,27 @@ pub mod utils {
     fn try_encode_accounts(
         accounts: &Option<Vec<(Pubkey, AccountSharedData)>>,
         encoding: UiAccountEncoding,
+        bank: &Bank,
+        account_overrides: Option<&AccountOverrides>,
     ) -> Result<Option<Vec<UiAccount>>, Error> {
         if let Some(accounts) = accounts {
+            let overwrite_accounts = account_overrides.map(|a| AccountOverrides::get_accounts(a));
             Ok(Some(
                 accounts
                     .iter()
-                    .map(|(pubkey, account)| encode_account(account, pubkey, encoding, None))
+                    .map(|(pubkey, account)| {
+                        get_encoded_account(
+                            bank,
+                            pubkey,
+                            encoding,
+                            None,
+                            overwrite_accounts.as_ref(),
+                        )
+                        .and_then(|ui_account| match ui_account {
+                            Some(acc) => Ok(acc),
+                            None => encode_account(account, pubkey, encoding, None),
+                        })
+                    })
                     .collect::<Result<Vec<UiAccount>, Error>>()?,
             ))
         } else {
@@ -3329,6 +3347,7 @@ pub mod utils {
     pub fn rpc_bundle_result_from_bank_result(
         bundle_execution_result: LoadAndExecuteBundleOutput,
         rpc_config: RpcSimulateBundleConfig,
+        bank: &Bank,
     ) -> Result<RpcSimulateBundleResult, Error> {
         let summary = match bundle_execution_result.result() {
             Ok(_) => RpcBundleSimulationSummary::Succeeded,
@@ -3350,6 +3369,7 @@ pub mod utils {
         };
 
         let mut transaction_results = Vec::new();
+        let account_overrides: &mut AccountOverrides = &mut AccountOverrides::new(HashMap::new());
         for bundle_output in bundle_execution_result.bundle_transaction_results() {
             for (index, execution_result) in bundle_output
                 .execution_results()
@@ -3373,15 +3393,35 @@ pub mod utils {
                 let pre_execution_accounts = if let Some(pre_tx_accounts) =
                     bundle_output.pre_tx_execution_accounts().get(index)
                 {
-                    try_encode_accounts(pre_tx_accounts, account_encoding)?
+                    try_encode_accounts(
+                        pre_tx_accounts,
+                        account_encoding,
+                        bank,
+                        Some(&account_overrides),
+                    )?
                 } else {
                     None
                 };
 
+                // update account_overrides for this transaction
+                let post_simulation_accounts_map: HashMap<_, _> =
+                    details.post_accounts.clone().into_iter().collect();
+                let account_overrides_transaction =
+                    AccountOverrides::new(post_simulation_accounts_map);
+                AccountOverrides::upsert_account_overrides(
+                    account_overrides,
+                    account_overrides_transaction,
+                );
+
                 let post_execution_accounts = if let Some(post_tx_accounts) =
                     bundle_output.post_tx_execution_accounts().get(index)
                 {
-                    try_encode_accounts(post_tx_accounts, account_encoding)?
+                    try_encode_accounts(
+                        post_tx_accounts,
+                        account_encoding,
+                        bank,
+                        Some(&account_overrides),
+                    )?
                 } else {
                     None
                 };
@@ -4161,7 +4201,7 @@ pub mod rpc_full {
             }
 
             let rpc_bundle_result =
-                rpc_bundle_result_from_bank_result(bundle_execution_result, config)?;
+                rpc_bundle_result_from_bank_result(bundle_execution_result, config, &bank)?;
 
             Ok(new_response(&bank, rpc_bundle_result))
         }
