@@ -1,3 +1,4 @@
+pub mod bundle_tips;
 pub mod claim_mev_workflow;
 pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
@@ -6,7 +7,7 @@ pub mod stake_meta_generator_workflow;
 
 use {
     crate::{
-        merkle_root_generator_workflow::MerkleRootGeneratorError,
+        bundle_tips::BundleError, merkle_root_generator_workflow::MerkleRootGeneratorError,
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     anchor_lang::Id,
@@ -35,22 +36,18 @@ use {
     },
     solana_rpc_client_api::{
         client_error::{Error, ErrorKind},
-        config::RpcSendTransactionConfig,
         request::{RpcError, RpcResponseErrorData, MAX_MULTIPLE_ACCOUNTS},
         response::RpcSimulateTransactionResult,
     },
     solana_sdk::{
         account::{Account, AccountSharedData, ReadableAccount},
         clock::Slot,
-        commitment_config::{CommitmentConfig, CommitmentLevel},
+        commitment_config::CommitmentConfig,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::{
-            Transaction,
-            TransactionError::{self},
-        },
+        transaction::{Transaction, TransactionError},
     },
     solana_transaction_status::TransactionStatus,
     std::{
@@ -572,42 +569,29 @@ pub async fn send_until_blockhash_expires(
         let mut is_blockhash_not_found = false;
 
         for (signature, tx) in &claim_transactions {
-            match rpc_client
-                .send_transaction_with_config(
-                    tx,
-                    RpcSendTransactionConfig {
-                        skip_preflight: false,
-                        preflight_commitment: Some(CommitmentLevel::Confirmed),
-                        max_retries: Some(2),
-                        ..RpcSendTransactionConfig::default()
-                    },
-                )
-                .await
+            match bundle_tips::send_bundle(
+                &[&tx],
+                "https://mainnet.block-engine.jito.wtf:443/api/v1/bundles",
+            )
+            .await
             {
                 Ok(_) => {
                     check_signatures.insert(*signature);
                 }
-                Err(e) => match e.get_transaction_error() {
-                    Some(TransactionError::BlockhashNotFound) => {
+                Err(e) => match e {
+                    BundleError::BlockhashNotFound => {
                         is_blockhash_not_found = true;
                         break;
                     }
-                    Some(TransactionError::AlreadyProcessed) => {
+                    BundleError::AlreadyProcessed => {
                         already_processed.insert(*tx.get_signature());
                     }
-                    Some(e) => {
+                    e => {
                         warn!(
                             "TransactionError sending signature: {} error: {:?} tx: {:?}",
                             tx.get_signature(),
                             e,
                             tx
-                        );
-                    }
-                    None => {
-                        warn!(
-                            "Unknown error sending transaction signature: {} error: {:?}",
-                            tx.get_signature(),
-                            e
                         );
                     }
                 },
