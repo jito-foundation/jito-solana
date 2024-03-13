@@ -1,5 +1,6 @@
 use std::clone;
 
+use log::warn;
 use reqwest::{header::HeaderMap, redirect::Policy, Client, Error, Response};
 use serde_json::{json, Value};
 use solana_sdk::{bs58, transaction::Transaction};
@@ -86,9 +87,6 @@ fn generate_error_code(result: &Value) -> BundleError {
             if err.contains("bundle contains an already processed transaction") {
                 return BundleError::AlreadyProcessed;
             }
-            if err.contains("bundle contains an already processed transaction") {
-                return BundleError::AlreadyProcessed;
-            }
             if err.contains("bundle contains an expired blockhash") {
                 return BundleError::BlockhashNotFound;
             }
@@ -97,7 +95,8 @@ fn generate_error_code(result: &Value) -> BundleError {
             }
             return BundleError::Other;
         }
-        Some(_) => {
+        Some(err) => {
+            warn!("err: {:?}", err.to_string());
             return BundleError::HttpResponseJsonParseFailed;
         }
         None => {
@@ -148,17 +147,25 @@ pub async fn send_bundle(transactions: &[&Transaction], url: &str) -> Result<Str
     .await
     .map_err(|_| BundleError::HttpResponseMalformed)?;
 
-    let result: Value = serde_json::from_str(response.as_str())
-        .map_err(|_| BundleError::HttpResponseJsonParseFailed)?;
+    let result: Value = serde_json::from_str(response.as_str()).map_err(|err| {
+        warn!("err: {:?}", err.to_string());
+        BundleError::HttpResponseJsonParseFailed
+    })?;
 
     // If bundle id present, check the value, else make sure the error is the expected one
     match result.get("result") {
         Some(Value::String(bundle_id)) => {
             return Ok(bundle_id.clone());
         }
-        Some(_) => {
+        Some(val) => {
+            warn!("err: {:?}", val.to_string());
             return Err(BundleError::HttpResponseJsonParseFailed);
         }
-        None => Err(generate_error_code(&result)),
+        None => {
+            let err = generate_error_code(&result);
+            warn!("err: {:?}", err.to_string());
+
+            Err(err)
+        }
     }
 }
