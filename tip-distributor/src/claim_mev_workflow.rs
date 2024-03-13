@@ -300,8 +300,6 @@ fn build_mev_claim_transactions(
         Pubkey::find_program_address(&[Config::SEED], &tip_distribution_program_id).0;
 
     let mut instructions = Vec::with_capacity(claimants.len());
-    let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
-    instructions.push(transfer(&payer_pubkey, &tip_account, 10000));
 
     for tree in &merkle_trees.generated_merkle_trees {
         if tree.max_total_claim == 0 {
@@ -351,12 +349,16 @@ fn build_mev_claim_transactions(
         }
     }
 
+    let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
+
     // TODO (LB): see if we can do >1 claim here
     let transactions: Vec<Transaction> = instructions
         .into_iter()
         .map(|claim_ix| {
-            let priority_fee_ix = ComputeBudgetInstruction::set_compute_unit_price(micro_lamports);
-            Transaction::new_with_payer(&[priority_fee_ix, claim_ix], Some(&payer_pubkey))
+            Transaction::new_with_payer(
+                &[claim_ix, transfer(&payer_pubkey, &tip_account, 10000)],
+                Some(&payer_pubkey),
+            )
         })
         .collect();
 
