@@ -1,3 +1,5 @@
+use std::clone;
+
 use reqwest::{header::HeaderMap, redirect::Policy, Client, Error, Response};
 use serde_json::{json, Value};
 use solana_sdk::{bs58, transaction::Transaction};
@@ -104,6 +106,13 @@ fn generate_error_code(result: &Value) -> BundleError {
     }
 }
 
+/// Converts a VersionedTransaction to a protobuf packet
+pub fn proto_packet_from_versioned_tx(
+    tx: &solana_sdk::transaction::VersionedTransaction,
+) -> Vec<u8> {
+    bincode::serialize(tx).expect("serializes")
+}
+
 async fn send_json_rpc_request(
     url: &str,
     payload: String,
@@ -120,7 +129,10 @@ pub async fn send_bundle(transactions: &[&Transaction], url: &str) -> Result<Str
     let mut bundle = Vec::new();
     for transaction in transactions {
         bundle.push(Value::String(
-            bs58::encode(transaction.message_data()).into_string(),
+            bs58::encode(proto_packet_from_versioned_tx(
+                &solana_sdk::transaction::VersionedTransaction::from((*transaction).clone()),
+            ))
+            .into_string(),
         ))
     }
 

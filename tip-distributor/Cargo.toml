@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 anchor-lang = { workspace = true }
+bincode = "1.3.3"
 clap = { version = "4.1.11", features = ["derive", "env"] }
 crossbeam-channel = { workspace = true }
 env_logger = { workspace = true }

@@ -7574,6 +7574,7 @@ name = "solana-tip-distributor"
 version = "1.17.24"
 dependencies = [
  "anchor-lang",
+ "bincode",
  "clap 4.3.21",
  "crossbeam-channel",
  "env_logger",
