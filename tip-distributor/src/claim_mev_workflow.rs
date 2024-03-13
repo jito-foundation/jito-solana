@@ -355,10 +355,8 @@ fn build_mev_claim_transactions(
     let transactions: Vec<Transaction> = instructions
         .into_iter()
         .map(|claim_ix| {
-            Transaction::new_with_payer(
-                &[claim_ix, transfer(&payer_pubkey, &tip_account, 10000)],
-                Some(&payer_pubkey),
-            )
+            let tip_ix = transfer(&payer_pubkey, &tip_account, 10000);
+            Transaction::new_with_payer(&[tip_ix, claim_ix], Some(&payer_pubkey))
         })
         .collect();
 
