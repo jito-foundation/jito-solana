@@ -7,6 +7,7 @@ use {
     rand::{prelude::SliceRandom, thread_rng},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_metrics::datapoint_info,
+    solana_program::system_instruction::transfer,
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
         system_program,
@@ -21,6 +22,7 @@ use {
         signature::{Keypair, Signer},
         transaction::Transaction,
     },
+    std::str::FromStr,
     std::{
         collections::HashMap,
         sync::Arc,
@@ -298,6 +300,9 @@ fn build_mev_claim_transactions(
         Pubkey::find_program_address(&[Config::SEED], &tip_distribution_program_id).0;
 
     let mut instructions = Vec::with_capacity(claimants.len());
+    let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
+    instructions.push(transfer(&payer_pubkey, &tip_account, 10000));
+
     for tree in &merkle_trees.generated_merkle_trees {
         if tree.max_total_claim == 0 {
             continue;
