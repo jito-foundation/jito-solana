@@ -631,7 +631,6 @@ pub async fn send_until_blockhash_expires(
                                 tx
                             );
                         }
-                        break;
                     }
                 },
             }
