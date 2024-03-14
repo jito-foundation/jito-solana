@@ -576,9 +576,9 @@ pub async fn send_until_blockhash_expires(
 
     let mut start = Instant::now();
 
-    while rpc_client
-        .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
-        .await?
+    // while rpc_client
+    //     .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
+    //     .await?
     {
         // let mut check_signatures = HashSet::with_capacity(claim_transactions.len());
         // let mut already_processed = HashSet::with_capacity(claim_transactions.len());
