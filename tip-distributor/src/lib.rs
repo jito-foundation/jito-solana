@@ -613,6 +613,7 @@ pub async fn send_until_blockhash_expires(
                 }
                 Err(e) => match e {
                     BundleError::BlockhashNotFound => {
+                        error!("!!!!!!!!!!!!!!!   Blockhash Not Found or Invalid - Break Out of Loop!!!!!!!!!!!!");
                         is_blockhash_not_found = true;
                         break;
                     }
@@ -630,7 +631,6 @@ pub async fn send_until_blockhash_expires(
                                 tx
                             );
                         }
-                        is_blockhash_not_found = true;
                         break;
                     }
                 },
