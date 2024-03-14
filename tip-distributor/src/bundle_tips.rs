@@ -121,9 +121,6 @@ async fn send_json_rpc_request(
     client.post(url).headers(headers).body(payload).send().await
 }
 
-// validation steps and the block hash validation, the next step is to forward to validators
-// At this point, we can have two options forward successful or the jito leader
-// fails to be the next before the bundle expires
 pub async fn send_bundle(transactions: &[&Transaction], url: &str) -> Result<String, BundleError> {
     let mut bundle = Vec::new();
     for transaction in transactions {

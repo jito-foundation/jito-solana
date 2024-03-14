@@ -5,10 +5,10 @@ pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
-use std::str::FromStr;
 use rand::distributions::Alphanumeric;
 use rand::distributions::DistString;
 use solana_sdk::signature::Signer;
+use std::str::FromStr;
 use {
     crate::{
         bundle_tips::BundleError, merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -34,9 +34,6 @@ use {
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
     solana_program::system_instruction::transfer,
-    solana_sdk::{
-        instruction::{AccountMeta, Instruction},
-    },
     solana_program::{
         instruction::InstructionError,
         rent::{
@@ -48,6 +45,7 @@ use {
         request::{RpcError, RpcResponseErrorData, MAX_MULTIPLE_ACCOUNTS},
         response::RpcSimulateTransactionResult,
     },
+    solana_sdk::instruction::{AccountMeta, Instruction},
     solana_sdk::{
         account::{Account, AccountSharedData, ReadableAccount},
         clock::Slot,
@@ -583,14 +581,28 @@ pub async fn send_until_blockhash_expires(
         let mut is_blockhash_not_found = false;
         let bundle_transactions: Vec<(&Signature, &Transaction)> =
             claim_transactions.iter().collect();
+        let round_robin_urls = [
+            "https://ny.mainnet.block-engine.jito.wtf:443/api/v1/bundles",
+            "https://frankfurt.mainnet.block-engine.jito.wtf:443/api/v1/bundles",
+            "https://amsterdam.mainnet.block-engine.jito.wtf:443/api/v1/bundles",
+            "https://frankfurt.mainnet.block-engine.jito.wtf:443/api/v1/bundles",
+        ];
 
-        for tx_chunks in bundle_transactions.chunks(4) {
+        let mut start = Instant::now();
+
+        for (i, tx_chunks) in bundle_transactions.chunks(4).enumerate() {
             // want: 4 txns at a time
             let (sigs, mut txs): (Vec<&Signature>, Vec<&Transaction>) =
                 tx_chunks.iter().map(|&(a, b)| (a, b)).unzip();
 
-            let tip_tx = Transaction::new_signed_with_payer(&[
-                    build_memo( Alphanumeric.sample_string(&mut rand::thread_rng(), 64).as_bytes(), &[]),
+            let tip_tx = Transaction::new_signed_with_payer(
+                &[
+                    build_memo(
+                        Alphanumeric
+                            .sample_string(&mut rand::thread_rng(), 64)
+                            .as_bytes(),
+                        &[],
+                    ),
                     transfer(&keypair.pubkey(), &tip_account, 1000000),
                 ],
                 Some(&keypair.pubkey()),
@@ -598,42 +610,42 @@ pub async fn send_until_blockhash_expires(
                 blockhash,
             );
 
-            txs.insert(0,&tip_tx);
+            txs.insert(0, &tip_tx);
 
-            match bundle_tips::send_bundle(
-                &txs,
-                "https://mainnet.block-engine.jito.wtf:443/api/v1/bundles",
-            )
-            .await
+            match bundle_tips::send_bundle(&txs, round_robin_urls[i % round_robin_urls.len()]).await
             {
                 Ok(_) => {
                     for signature in sigs {
                         check_signatures.insert(*signature);
                     }
                 }
-                Err(e) => match e {
-                    BundleError::BlockhashNotFound => {
-                        error!("!!!!!!!!!!!!!!!   Blockhash Not Found or Invalid - Break Out of Loop!!!!!!!!!!!!");
-                        is_blockhash_not_found = true;
+                Err(e) => {
+                    if start.elapsed() > Duration::from_secs(120) {
                         break;
                     }
-                    BundleError::AlreadyProcessed => {
-                        for tx in txs {
-                            already_processed.insert(*tx.get_signature());
+                    match e {
+                        BundleError::BlockhashNotFound => {
+                            error!("!!!!!!!!!!!!!!!   Blockhash Not Found or Invalid - Break Out of Loop!!!!!!!!!!!!");
+                            is_blockhash_not_found = true;
+                            break;
+                        }
+                        BundleError::AlreadyProcessed => {
+                            for tx in txs {
+                                already_processed.insert(*tx.get_signature());
+                            }
+                        }
+                        e => {
+                            for tx in txs {
+                                warn!(
+                                    "TransactionError sending signature: {} error: {:?} tx: {:?}",
+                                    tx.get_signature(),
+                                    e,
+                                    tx
+                                );
+                            }
                         }
                     }
-                    e => {
-                        for tx in txs {
-                            warn!(
-                                "TransactionError sending signature: {} error: {:?} tx: {:?}",
-                                tx.get_signature(),
-                                e,
-                                tx
-                            );
-                        }
-                        break;
-                    }
-                },
+                }
             }
         }
 
@@ -789,7 +801,6 @@ where
     let reader = BufReader::new(file);
     serde_json::from_reader(reader)
 }
-
 
 pub fn build_memo(memo: &[u8], signer_pubkeys: &[&Pubkey]) -> Instruction {
     Instruction {
