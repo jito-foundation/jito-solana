@@ -569,8 +569,7 @@ pub async fn send_until_blockhash_expires(
         })
         .collect();
 
-    let bundle_transactions: Vec<(&Signature, &Transaction)> =
-        claim_transactions.iter().collect();
+    let bundle_transactions: Vec<(&Signature, &Transaction)> = claim_transactions.iter().collect();
 
     let txs_requesting_send = claim_transactions.len();
     let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
@@ -620,8 +619,7 @@ pub async fn send_until_blockhash_expires(
                     //     check_signatures.insert(*signature);
                     // }
                 }
-                Err(e) => {
-                    warn!("{:?}",e);
+                Err(_e) => {
                     // if start.elapsed() > Duration::from_secs(120) {
                     //     is_blockhash_not_found = true;
                     //     break;

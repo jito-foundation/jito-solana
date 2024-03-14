@@ -73,7 +73,7 @@ where
 }
 
 fn generate_error_code(result: &Value) -> BundleError {
-    warn!("err: {:?}", result);
+    warn!("json rpc err: {:?}", result);
     match result.get("error") {
         Some(Value::String(err)) => {
             if err.contains("bundle exceeds max transaction length") {
@@ -96,7 +96,7 @@ fn generate_error_code(result: &Value) -> BundleError {
             }
             return BundleError::Other;
         }
-        Some(err) => {
+        Some(_) => {
             return BundleError::HttpResponseJsonParseFailed;
         }
         None => {
@@ -139,13 +139,23 @@ pub async fn send_bundle(transactions: &[&Transaction], url: &str) -> Result<Str
         generate_json_rpc_headers(),
     )
     .await
-    .map_err(|_| BundleError::HttpSendFailed)?
+    .map_err(|err| {
+        warn!("http send failed: err {:?}", err);
+        BundleError::HttpSendFailed
+    })?
     .text()
     .await
-    .map_err(|_| BundleError::HttpResponseMalformed)?;
+    .map_err(|err| {
+        warn!("http response could not be parsed to text : err {:?}", err);
+        BundleError::HttpResponseMalformed
+    })?;
 
     let result: Value = serde_json::from_str(response.as_str()).map_err(|err| {
-        warn!("err: {:?}, response: {:?}", err.to_string(), response);
+        warn!(
+            "err deserialization: {:?}, response: {:?}",
+            err.to_string(),
+            response
+        );
         BundleError::HttpResponseJsonParseFailed
     })?;
 
@@ -155,13 +165,11 @@ pub async fn send_bundle(transactions: &[&Transaction], url: &str) -> Result<Str
             return Ok(bundle_id.clone());
         }
         Some(val) => {
-            warn!("err: {:?}", val.to_string());
+            warn!("err result: {:?} not string: {:?}", result, val.to_string());
             return Err(BundleError::HttpResponseJsonParseFailed);
         }
         None => {
             let err = generate_error_code(&result);
-            warn!("err: {:?}", err.to_string());
-
             Err(err)
         }
     }
