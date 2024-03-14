@@ -73,6 +73,7 @@ where
 }
 
 fn generate_error_code(result: &Value) -> BundleError {
+    warn!("err: {:?}", result);
     match result.get("error") {
         Some(Value::String(err)) => {
             if err.contains("bundle exceeds max transaction length") {
@@ -96,7 +97,6 @@ fn generate_error_code(result: &Value) -> BundleError {
             return BundleError::Other;
         }
         Some(err) => {
-            warn!("err: {:?}", err.to_string());
             return BundleError::HttpResponseJsonParseFailed;
         }
         None => {
@@ -148,7 +148,7 @@ pub async fn send_bundle(transactions: &[&Transaction], url: &str) -> Result<Str
     .map_err(|_| BundleError::HttpResponseMalformed)?;
 
     let result: Value = serde_json::from_str(response.as_str()).map_err(|err| {
-        warn!("err: {:?}", err.to_string());
+        warn!("err: {:?}, response: {:?}", err.to_string(), response);
         BundleError::HttpResponseJsonParseFailed
     })?;
 
