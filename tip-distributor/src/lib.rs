@@ -603,7 +603,7 @@ pub async fn send_until_blockhash_expires(
                             .as_bytes(),
                         &[],
                     ),
-                    transfer(&keypair.pubkey(), &tip_account, 1000000),
+                    transfer(&keypair.pubkey(), &tip_account, 1),
                 ],
                 Some(&keypair.pubkey()),
                 &[keypair],
@@ -621,6 +621,7 @@ pub async fn send_until_blockhash_expires(
                 }
                 Err(e) => {
                     if start.elapsed() > Duration::from_secs(120) {
+                        is_blockhash_not_found = true;
                         break;
                     }
                     match e {
@@ -649,7 +650,7 @@ pub async fn send_until_blockhash_expires(
             }
         }
 
-        sleep(Duration::from_secs(10)).await;
+        // sleep(Duration::from_secs(10)).await;
 
         let signatures: Vec<Signature> = check_signatures.iter().cloned().collect();
         let statuses = get_batched_signatures_statuses(rpc_client, &signatures).await?;
