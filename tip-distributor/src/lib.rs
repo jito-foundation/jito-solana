@@ -572,13 +572,15 @@ pub async fn send_until_blockhash_expires(
     let txs_requesting_send = claim_transactions.len();
     let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
 
+    let mut start = Instant::now();
+
     while rpc_client
         .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
         .await?
     {
-        let mut check_signatures = HashSet::with_capacity(claim_transactions.len());
-        let mut already_processed = HashSet::with_capacity(claim_transactions.len());
-        let mut is_blockhash_not_found = false;
+        // let mut check_signatures = HashSet::with_capacity(claim_transactions.len());
+        // let mut already_processed = HashSet::with_capacity(claim_transactions.len());
+        // let mut is_blockhash_not_found = false;
         let bundle_transactions: Vec<(&Signature, &Transaction)> =
             claim_transactions.iter().collect();
         let round_robin_urls = [
@@ -588,11 +590,9 @@ pub async fn send_until_blockhash_expires(
             "https://frankfurt.mainnet.block-engine.jito.wtf:443/api/v1/bundles",
         ];
 
-        let mut start = Instant::now();
-
         for (i, tx_chunks) in bundle_transactions.chunks(4).enumerate() {
             // want: 4 txns at a time
-            let (sigs, mut txs): (Vec<&Signature>, Vec<&Transaction>) =
+            let (_sigs, mut txs): (Vec<&Signature>, Vec<&Transaction>) =
                 tx_chunks.iter().map(|&(a, b)| (a, b)).unzip();
 
             let tip_tx = Transaction::new_signed_with_payer(
@@ -615,66 +615,70 @@ pub async fn send_until_blockhash_expires(
             match bundle_tips::send_bundle(&txs, round_robin_urls[i % round_robin_urls.len()]).await
             {
                 Ok(_) => {
-                    for signature in sigs {
-                        check_signatures.insert(*signature);
-                    }
+                    // for signature in sigs {
+                    //     check_signatures.insert(*signature);
+                    // }
                 }
                 Err(e) => {
-                    if start.elapsed() > Duration::from_secs(120) {
-                        is_blockhash_not_found = true;
-                        break;
-                    }
-                    match e {
-                        BundleError::BlockhashNotFound => {
-                            error!("!!!!!!!!!!!!!!!   Blockhash Not Found or Invalid - Break Out of Loop!!!!!!!!!!!!");
-                            is_blockhash_not_found = true;
-                            break;
-                        }
-                        BundleError::AlreadyProcessed => {
-                            for tx in txs {
-                                already_processed.insert(*tx.get_signature());
-                            }
-                        }
-                        e => {
-                            for tx in txs {
-                                warn!(
-                                    "TransactionError sending signature: {} error: {:?} tx: {:?}",
-                                    tx.get_signature(),
-                                    e,
-                                    tx
-                                );
-                            }
-                        }
-                    }
+                    warn!("{:?}",e);
+                    break;
+                    // if start.elapsed() > Duration::from_secs(120) {
+                    //     is_blockhash_not_found = true;
+                    //     break;
+                    // }
+                    // match e {
+                    //     BundleError::BlockhashNotFound => {
+                    //         error!("!!!!!!!!!!!!!!!   Blockhash Not Found or Invalid - Break Out of Loop!!!!!!!!!!!!");
+                    //         is_blockhash_not_found = true;
+                    //         break;
+                    //     }
+                    //     BundleError::AlreadyProcessed => {
+                    //         for tx in txs {
+                    //             already_processed.insert(*tx.get_signature());
+                    //         }
+                    //     }
+                    //     e => {
+                    //         for tx in txs {
+                    //             warn!(
+                    //                 "TransactionError sending signature: {} error: {:?} tx: {:?}",
+                    //                 tx.get_signature(),
+                    //                 e,
+                    //                 tx
+                    //             );
+                    //         }
+                    //     }
+                    // }
                 }
             }
         }
 
         // sleep(Duration::from_secs(10)).await;
 
-        let signatures: Vec<Signature> = check_signatures.iter().cloned().collect();
-        let statuses = get_batched_signatures_statuses(rpc_client, &signatures).await?;
-
-        for (signature, maybe_status) in &statuses {
-            if let Some(_status) = maybe_status {
-                claim_transactions.remove(signature);
-                check_signatures.remove(signature);
-            }
-        }
-
-        for signature in already_processed {
-            claim_transactions.remove(&signature);
-        }
-
-        if claim_transactions.is_empty() || is_blockhash_not_found {
-            break;
-        }
+        // let signatures: Vec<Signature> = check_signatures.iter().cloned().collect();
+        // let statuses = get_batched_signatures_statuses(rpc_client, &signatures).await?;
+        //
+        // for (signature, maybe_status) in &statuses {
+        //     if let Some(_status) = maybe_status {
+        //         claim_transactions.remove(signature);
+        //         check_signatures.remove(signature);
+        //     }
+        // }
+        //
+        // for signature in already_processed {
+        //     claim_transactions.remove(&signature);
+        // }
+        //
+        // if claim_transactions.is_empty() || is_blockhash_not_found {
+        //     break;
+        // }
     }
 
-    let num_landed = txs_requesting_send
-        .checked_sub(claim_transactions.len())
-        .unwrap();
-    info!("num_landed: {:?}", num_landed);
+    // let num_landed = txs_requesting_send
+    //     .checked_sub(claim_transactions.len())
+    //     .unwrap();
+    // info!("num_landed: {:?}", num_landed);
+
+    info!("Middle Loop Iteration End!!!!!!!");
 
     Ok(())
 }
