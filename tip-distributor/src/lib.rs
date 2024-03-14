@@ -591,7 +591,7 @@ pub async fn send_until_blockhash_expires(
 
             let tip_tx = Transaction::new_signed_with_payer(&[
                     build_memo( Alphanumeric.sample_string(&mut rand::thread_rng(), 64).as_bytes(), &[]),
-                    transfer(&keypair.pubkey(), &tip_account, 100000),
+                    transfer(&keypair.pubkey(), &tip_account, 1000000),
                 ],
                 Some(&keypair.pubkey()),
                 &[keypair],
@@ -630,6 +630,8 @@ pub async fn send_until_blockhash_expires(
                                 tx
                             );
                         }
+                        is_blockhash_not_found = true;
+                        break;
                     }
                 },
             }
