@@ -603,7 +603,7 @@ pub async fn send_until_blockhash_expires(
                             .as_bytes(),
                         &[],
                     ),
-                    transfer(&keypair.pubkey(), &tip_account, 10000),
+                    transfer(&keypair.pubkey(), &tip_account, 100000),
                 ],
                 Some(&keypair.pubkey()),
                 &[keypair],
