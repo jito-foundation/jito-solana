@@ -5,6 +5,10 @@ pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
+use std::str::FromStr;
+use rand::distributions::Alphanumeric;
+use rand::distributions::DistString;
+use solana_sdk::signature::Signer;
 use {
     crate::{
         bundle_tips::BundleError, merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -29,6 +33,10 @@ use {
     },
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
+    solana_program::system_instruction::transfer,
+    solana_sdk::{
+        instruction::{AccountMeta, Instruction},
+    },
     solana_program::{
         instruction::InstructionError,
         rent::{
@@ -61,6 +69,10 @@ use {
     },
     tokio::{sync::Semaphore, time::sleep},
 };
+
+mod spl_memo_3_0 {
+    solana_sdk::declare_id!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+}
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct GeneratedMerkleTreeCollection {
@@ -560,6 +572,7 @@ pub async fn send_until_blockhash_expires(
         .collect();
 
     let txs_requesting_send = claim_transactions.len();
+    let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
 
     while rpc_client
         .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
@@ -571,10 +584,21 @@ pub async fn send_until_blockhash_expires(
         let bundle_transactions: Vec<(&Signature, &Transaction)> =
             claim_transactions.iter().collect();
 
-        for tx_chunks in bundle_transactions.chunks(5) {
-            // want: 5 txns at a time
-            let (sigs, txs): (Vec<&Signature>, Vec<&Transaction>) =
+        for tx_chunks in bundle_transactions.chunks(4) {
+            // want: 4 txns at a time
+            let (sigs, mut txs): (Vec<&Signature>, Vec<&Transaction>) =
                 tx_chunks.iter().map(|&(a, b)| (a, b)).unzip();
+
+            let tip_tx = Transaction::new_signed_with_payer(&[
+                    build_memo( Alphanumeric.sample_string(&mut rand::thread_rng(), 64).as_bytes(), &[]),
+                    transfer(&keypair.pubkey(), &tip_account, 1),
+                ],
+                Some(&keypair.pubkey()),
+                &[keypair],
+                blockhash,
+            );
+
+            txs.insert(0,&tip_tx);
 
             match bundle_tips::send_bundle(
                 &txs,
@@ -762,6 +786,18 @@ where
     let file = File::open(path).unwrap();
     let reader = BufReader::new(file);
     serde_json::from_reader(reader)
+}
+
+
+pub fn build_memo(memo: &[u8], signer_pubkeys: &[&Pubkey]) -> Instruction {
+    Instruction {
+        program_id: spl_memo_3_0::id(),
+        accounts: signer_pubkeys
+            .iter()
+            .map(|&pubkey| AccountMeta::new_readonly(*pubkey, true))
+            .collect(),
+        data: memo.to_vec(),
+    }
 }
 
 #[cfg(test)]

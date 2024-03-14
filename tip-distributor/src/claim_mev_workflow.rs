@@ -7,7 +7,6 @@ use {
     rand::{prelude::SliceRandom, thread_rng},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_metrics::datapoint_info,
-    solana_program::system_instruction::transfer,
     solana_program::{
         fee_calculator::DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE, native_token::LAMPORTS_PER_SOL,
         system_program,
@@ -349,14 +348,11 @@ fn build_mev_claim_transactions(
         }
     }
 
-    let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
-
     // TODO (LB): see if we can do >1 claim here
     let transactions: Vec<Transaction> = instructions
         .into_iter()
         .map(|claim_ix| {
-            let tip_ix = transfer(&payer_pubkey, &tip_account, 1);
-            Transaction::new_with_payer(&[tip_ix, claim_ix], Some(&payer_pubkey))
+            Transaction::new_with_payer(&[claim_ix], Some(&payer_pubkey))
         })
         .collect();
 
