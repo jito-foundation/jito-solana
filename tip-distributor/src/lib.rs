@@ -11,6 +11,7 @@ use {
         stake_meta_generator_workflow::StakeMetaGeneratorError::CheckedMathError,
     },
     anchor_lang::Id,
+    itertools::Itertools,
     jito_tip_distribution::{
         program::JitoTipDistribution,
         state::{ClaimStatus, TipDistributionAccount},
@@ -567,16 +568,24 @@ pub async fn send_until_blockhash_expires(
         let mut check_signatures = HashSet::with_capacity(claim_transactions.len());
         let mut already_processed = HashSet::with_capacity(claim_transactions.len());
         let mut is_blockhash_not_found = false;
+        let bundle_transactions: Vec<(&Signature, &Transaction)> =
+            claim_transactions.iter().collect();
 
-        for (signature, tx) in &claim_transactions {
+        for tx_chunks in bundle_transactions.chunks(5) {
+            // want: 5 txns at a time
+            let (sigs, txs): (Vec<&Signature>, Vec<&Transaction>) =
+                tx_chunks.iter().map(|&(a, b)| (a, b)).unzip();
+
             match bundle_tips::send_bundle(
-                &[&tx],
+                &txs,
                 "https://mainnet.block-engine.jito.wtf:443/api/v1/bundles",
             )
             .await
             {
                 Ok(_) => {
-                    check_signatures.insert(*signature);
+                    for signature in sigs {
+                        check_signatures.insert(*signature);
+                    }
                 }
                 Err(e) => match e {
                     BundleError::BlockhashNotFound => {
@@ -584,15 +593,19 @@ pub async fn send_until_blockhash_expires(
                         break;
                     }
                     BundleError::AlreadyProcessed => {
-                        already_processed.insert(*tx.get_signature());
+                        for tx in txs {
+                            already_processed.insert(*tx.get_signature());
+                        }
                     }
                     e => {
-                        warn!(
-                            "TransactionError sending signature: {} error: {:?} tx: {:?}",
-                            tx.get_signature(),
-                            e,
-                            tx
-                        );
+                        for tx in txs {
+                            warn!(
+                                "TransactionError sending signature: {} error: {:?} tx: {:?}",
+                                tx.get_signature(),
+                                e,
+                                tx
+                            );
+                        }
                     }
                 },
             }
