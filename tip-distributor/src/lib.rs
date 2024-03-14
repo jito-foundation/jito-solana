@@ -574,7 +574,7 @@ pub async fn send_until_blockhash_expires(
     let txs_requesting_send = claim_transactions.len();
     let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
 
-    // let mut start = Instant::now();
+    let mut start = Instant::now();
 
     while rpc_client
         .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
@@ -620,10 +620,9 @@ pub async fn send_until_blockhash_expires(
                     // }
                 }
                 Err(_e) => {
-                    // if start.elapsed() > Duration::from_secs(120) {
-                    //     is_blockhash_not_found = true;
-                    //     break;
-                    // }
+                    if start.elapsed() > Duration::from_secs(120) {
+                        break;
+                    }
                     // match e {
                     //     BundleError::BlockhashNotFound => {
                     //         error!("!!!!!!!!!!!!!!!   Blockhash Not Found or Invalid - Break Out of Loop!!!!!!!!!!!!");
