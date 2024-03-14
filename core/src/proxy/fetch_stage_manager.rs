@@ -108,10 +108,10 @@ impl FetchStageManager {
                             fetch_connected = true;
                             pending_disconnect = false;
 
-                            // unwrap safe here bc contact_info.tpu(Protocol::QUIC) and contact_info.tpu_forwards(Protocol::QUIC)
-                            // are checked on startup
-                            if let Err(e) = Self::set_tpu_addresses(&cluster_info, my_fallback_contact_info.tpu(Protocol::QUIC).unwrap(), my_fallback_contact_info.tpu_forwards(Protocol::QUIC).unwrap()) {
-                                error!("error setting tpu or tpu_fwd to ({:?}, {:?}), error: {:?}", my_fallback_contact_info.tpu(Protocol::QUIC).unwrap(), my_fallback_contact_info.tpu_forwards(Protocol::QUIC).unwrap(), e);
+                            // yes, using UDP here is extremely confusing for the validator
+                            // since the entire network is running QUIC. However, it's correct.
+                            if let Err(e) = Self::set_tpu_addresses(&cluster_info, my_fallback_contact_info.tpu(Protocol::UDP).unwrap(), my_fallback_contact_info.tpu_forwards(Protocol::UDP).unwrap()) {
+                                error!("error setting tpu or tpu_fwd to ({:?}, {:?}), error: {:?}", my_fallback_contact_info.tpu(Protocol::UDP).unwrap(), my_fallback_contact_info.tpu_forwards(Protocol::UDP).unwrap(), e);
                             }
                             heartbeats_received = 0;
                         }
