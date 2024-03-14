@@ -3,7 +3,9 @@
     since = "1.18.0",
     note = "Please use `solana_sdk::inner_instruction` types instead"
 )]
+use solana_sdk::account::AccountSharedData;
 pub use solana_sdk::inner_instruction::{InnerInstruction, InnerInstructionsList};
+use solana_sdk::pubkey::Pubkey;
 use {
     solana_program_runtime::loaded_programs::LoadedProgramsForTxBatch,
     solana_sdk::{
@@ -80,6 +82,7 @@ pub struct TransactionExecutionDetails {
     /// The change in accounts data len for this transaction.
     /// NOTE: This value is valid IFF `status` is `Ok`.
     pub accounts_data_len_delta: i64,
+    pub post_accounts: Vec<(Pubkey, AccountSharedData)>,
 }
 
 #[derive(Debug, Clone)]
