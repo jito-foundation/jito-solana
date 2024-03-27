@@ -19,9 +19,9 @@
 name: "Rebase jito-solana from upstream solana-labs/solana"
 
 on:
-  push:
-#  schedule:
-#    - cron: "15 19 * * 1-5"
+  #  push:
+  schedule:
+    - cron: "30 18 * * 1-5"
 
 jobs:
   rebase:
