@@ -43,13 +43,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ matrix.branch }} # TODO (LB): need to add rebase branch here?
           submodules: recursive
+          fetch-depth: 0
           token: ${{ secrets.JITO_SOLANA_RELEASE_TOKEN }}
-      - run: git checkout ${{ matrix.branch }} && git submodule update -i -r
       - name: Add upstream
         run: git remote add upstream https://github.com/solana-labs/solana.git
       - name: Fetch upstream
         run: git fetch upstream
+      - name: Fetch origin
+        run: git fetch origin
       - name: Set REBASE_BRANCH
         run: echo "REBASE_BRANCH=ci/nightly/${{ matrix.branch }}/$(date +'%Y-%m-%d-%H-%M')" >> $GITHUB_ENV
       - name: echo $REBASE_BRANCH
