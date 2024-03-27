@@ -19,18 +19,26 @@
 name: "Rebase jito-solana from upstream solana-labs/solana"
 
 on:
-  schedule:
-    - cron: "15 19 * * 1-5"
+  push:
+#  schedule:
+#    - cron: "15 19 * * 1-5"
 
 jobs:
   rebase:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        branch:
-          - master
-          - v1.18
-          - v1.17
+        include:
+          - branch: master
+            rebase: upstream/master
+          - branch: v1.18
+            rebase: upstream/v1.18
+          - branch: v1.17
+            rebase: upstream/v1.17
+            # note: this will always be a day behind because we're rebasing from the previous day's rebase
+            # and NOT upstream
+          - branch: v1.17-fast-replay
+            rebase: v1.17
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +50,7 @@ jobs:
       - name: Add upstream
         run: git remote add upstream https://github.com/solana-labs/solana.git
       - name: Fetch upstream
-        run: git fetch upstream ${{ matrix.branch }}
+        run: git fetch upstream
       - name: Set REBASE_BRANCH
         run: echo "REBASE_BRANCH=ci/nightly/${{ matrix.branch }}/$(date +'%Y-%m-%d-%H-%M')" >> $GITHUB_ENV
       - name: echo $REBASE_BRANCH
@@ -55,7 +63,7 @@ jobs:
           git config --global user.name "Jito Infrastructure"
       - name: Rebase
         id: rebase
-        run: git rebase upstream/${{ matrix.branch }}
+        run: git rebase ${{ matrix.rebase }}
       - name: Send warning for rebase error
         if: failure() && steps.rebase.outcome == 'failure'
         uses: slackapi/slack-github-action@v1.25.0
