@@ -38,7 +38,7 @@ jobs:
             # note: this will always be a day behind because we're rebasing from the previous day's rebase
             # and NOT upstream
           - branch: v1.17-fast-replay
-            rebase: v1.17
+            rebase: origin/v1.17
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
