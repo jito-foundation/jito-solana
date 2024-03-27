@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.branch }} # TODO (LB): need to add rebase branch here?
+          ref: ${{ matrix.branch }}
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.JITO_SOLANA_RELEASE_TOKEN }}
