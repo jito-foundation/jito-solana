@@ -43,10 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.branch }}
           submodules: recursive
-          fetch-depth: 0
           token: ${{ secrets.JITO_SOLANA_RELEASE_TOKEN }}
+      - run: git checkout ${{ matrix.branch }} && git submodule update -i -r
       - name: Add upstream
         run: git remote add upstream https://github.com/solana-labs/solana.git
       - name: Fetch upstream
@@ -162,7 +161,7 @@ jobs:
         run: |
           git checkout ${{ matrix.branch }}
           git reset --hard ${{ env.REBASE_BRANCH }}
-      - name: Push rebased %{{ matrix.branch }} upstream
+      - name: Push rebased %{{ matrix.branch }}
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.JITO_SOLANA_RELEASE_TOKEN }}
