@@ -475,7 +475,6 @@ impl ReplayTiming {
 pub struct ReplayStage {
     t_replay: JoinHandle<()>,
     commitment_service: AggregateCommitmentService,
-    bank_executor: BankTransactionExecutor,
 }
 
 impl ReplayStage {
@@ -539,8 +538,6 @@ impl ReplayStage {
 
         let bank_executor =
             BankTransactionExecutor::new(get_thread_count(), &prioritization_fee_cache);
-
-        let executor_handle = bank_executor.handle();
 
         trace!("replay stage");
         // Start the replay stage loop
@@ -617,6 +614,7 @@ impl ReplayStage {
             loop {
                 // Stop getting entries if we get exit signal
                 if exit.load(Ordering::Relaxed) {
+                    let _ = bank_executor.join();
                     break;
                 }
 
@@ -667,7 +665,7 @@ impl ReplayStage {
                     replay_slots_concurrently,
                     &prioritization_fee_cache,
                     &mut purge_repair_slot_counter,
-                    &executor_handle,
+                    &bank_executor,
                 );
                 replay_active_banks_time.stop();
 
@@ -1124,7 +1122,6 @@ impl ReplayStage {
         Ok(Self {
             t_replay,
             commitment_service,
-            bank_executor,
         })
     }
 
@@ -2644,7 +2641,7 @@ impl ReplayStage {
         log_messages_bytes_limit: Option<usize>,
         active_bank_slots: &[Slot],
         prioritization_fee_cache: &PrioritizationFeeCache,
-        executor_handle: &BankTransactionExecutorHandle,
+        bank_executor: &BankTransactionExecutor,
     ) -> Vec<ReplaySlotFromBlockstore> {
         // Make mutable shared structures thread safe.
         let progress = RwLock::new(progress);
@@ -2711,6 +2708,8 @@ impl ReplayStage {
                     if bank.collector_id() != my_pubkey {
                         let mut replay_blockstore_time =
                             Measure::start("replay_blockstore_into_bank");
+                        // each thread gets their own handle so results are sent back to the correct place
+                        let executor_handle = bank_executor.handle();
                         let blockstore_result = Self::replay_blockstore_into_bank(
                             &bank,
                             blockstore,
@@ -2722,7 +2721,7 @@ impl ReplayStage {
                             &verify_recyclers.clone(),
                             log_messages_bytes_limit,
                             prioritization_fee_cache,
-                            executor_handle,
+                            &executor_handle,
                         );
                         replay_blockstore_time.stop();
                         replay_result.replay_result = Some(blockstore_result);
@@ -3065,7 +3064,7 @@ impl ReplayStage {
         replay_slots_concurrently: bool,
         prioritization_fee_cache: &PrioritizationFeeCache,
         purge_repair_slot_counter: &mut PurgeRepairSlotCounter,
-        executor_handle: &BankTransactionExecutorHandle,
+        bank_executor: &BankTransactionExecutor,
     ) -> bool /* completed a bank */ {
         let active_bank_slots = bank_forks.read().unwrap().active_bank_slots();
         let num_active_banks = active_bank_slots.len();
@@ -3090,9 +3089,10 @@ impl ReplayStage {
                     log_messages_bytes_limit,
                     &active_bank_slots,
                     prioritization_fee_cache,
-                    executor_handle,
+                    bank_executor,
                 )
             } else {
+                let executor_handle = bank_executor.handle();
                 active_bank_slots
                     .iter()
                     .map(|bank_slot| {
@@ -3110,7 +3110,7 @@ impl ReplayStage {
                             log_messages_bytes_limit,
                             *bank_slot,
                             prioritization_fee_cache,
-                            executor_handle,
+                            &executor_handle,
                         )
                     })
                     .collect()
@@ -4131,7 +4131,6 @@ impl ReplayStage {
 
     pub fn join(self) -> thread::Result<()> {
         self.commitment_service.join()?;
-        self.bank_executor.join()?;
         self.t_replay.join().map(|_| ())
     }
 }
