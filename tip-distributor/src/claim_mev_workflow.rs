@@ -154,16 +154,18 @@ pub async fn claim_mev_tips(
     );
 
     let start = Instant::now();
-    while start.elapsed() <= max_loop_duration {
-        let mut all_claim_transactions = get_claim_transactions_for_valid_unclaimed(
-            &rpc_client,
-            merkle_trees,
-            tip_distribution_program_id,
-            micro_lamports,
-            keypair.pubkey(),
-        )
-        .await?;
+    let mut all_claim_transactions = get_claim_transactions_for_valid_unclaimed(
+        &rpc_client,
+        merkle_trees,
+        tip_distribution_program_id,
+        micro_lamports,
+        keypair.pubkey(),
+    )
+    .await?;
 
+    all_claim_transactions.shuffle(&mut thread_rng());
+
+    while start.elapsed() <= max_loop_duration {
         datapoint_info!(
             "claim_mev_tips-send_summary",
             ("claim_transactions_left", all_claim_transactions.len(), i64),
@@ -173,7 +175,6 @@ pub async fn claim_mev_tips(
             return Ok(());
         }
 
-        all_claim_transactions.shuffle(&mut thread_rng());
         let transactions: Vec<_> = all_claim_transactions.into_iter().take(1000).collect();
 
         // only check balance for the ones we need to currently send since reclaim rent running in parallel
@@ -351,9 +352,7 @@ fn build_mev_claim_transactions(
     // TODO (LB): see if we can do >1 claim here
     let transactions: Vec<Transaction> = instructions
         .into_iter()
-        .map(|claim_ix| {
-            Transaction::new_with_payer(&[claim_ix], Some(&payer_pubkey))
-        })
+        .map(|claim_ix| Transaction::new_with_payer(&[claim_ix], Some(&payer_pubkey)))
         .collect();
 
     transactions
