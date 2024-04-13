@@ -900,7 +900,6 @@ mod tests {
             bank.clone(),
             Some((4, 4)),
             bank.ticks_per_slot(),
-            &Pubkey::default(),
             blockstore,
             &leader_schedule_cache,
             &poh_config,
@@ -1041,9 +1040,6 @@ mod tests {
             entry_receiver,
         } = create_test_fixture(1_000_000);
         let recorder = poh_recorder.read().unwrap().new_recorder();
-
-        let status = poh_recorder.read().unwrap().reached_leader_slot();
-        info!("status: {:?}", status);
 
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let committer = Committer::new(
