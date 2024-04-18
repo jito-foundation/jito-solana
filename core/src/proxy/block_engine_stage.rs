@@ -173,10 +173,10 @@ impl BlockEngineStage {
             .await
             {
                 match e {
-                    // This error is frequent on hot spares, and the parsed string does not work
+                    // This error is frequent on hot spares and on new validators, and the parsed string does not work
                     // with datapoints (incorrect escaping).
                     ProxyError::AuthenticationPermissionDenied => {
-                        warn!("block engine permission denied. not on leader schedule. ignore if hot-spare.")
+                        warn!("block engine permission denied. not on leader schedule. ignore if hot-spare or new validator.")
                     }
                     e => {
                         error_count += 1;
