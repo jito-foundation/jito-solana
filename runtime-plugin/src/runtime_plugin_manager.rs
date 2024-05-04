@@ -14,10 +14,10 @@ use {
 
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimePluginManagerError {
-    #[error("Cannot open the the plugin config file")]
+    #[error("Cannot open the plugin config file")]
     CannotOpenConfigFile(String),
 
-    #[error("Cannot read the the plugin config file")]
+    #[error("Cannot read the plugin config file")]
     CannotReadConfigFile(String),
 
     #[error("The config file is not in a valid Json format")]
