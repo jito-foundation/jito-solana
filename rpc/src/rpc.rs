@@ -3320,7 +3320,7 @@ pub mod utils {
         account_overrides: Option<&AccountOverrides>,
     ) -> Result<Option<Vec<UiAccount>>, Error> {
         if let Some(accounts) = accounts {
-            let overwrite_accounts = account_overrides.map(|a| AccountOverrides::get_accounts(a));
+            let overwrite_accounts = account_overrides.map(AccountOverrides::get_accounts);
             Ok(Some(
                 accounts
                     .iter()
@@ -3397,7 +3397,7 @@ pub mod utils {
                         pre_tx_accounts,
                         account_encoding,
                         bank,
-                        Some(&account_overrides),
+                        Some(account_overrides),
                     )?
                 } else {
                     None
@@ -3420,7 +3420,7 @@ pub mod utils {
                         post_tx_accounts,
                         account_encoding,
                         bank,
-                        Some(&account_overrides),
+                        Some(account_overrides),
                     )?
                 } else {
                     None
