@@ -13,7 +13,7 @@ use {
     crossbeam_channel::{unbounded, Receiver, Sender},
     itertools::Itertools,
     log::*,
-    nohash_hasher::IntSet,
+    nohash::IntSet,
     rayon::ThreadPool,
     scopeguard::defer,
     solana_accounts_db::{
@@ -246,6 +246,31 @@ impl BankTransactionExecutorHandle {
             .enumerate()
             .map(|(idx, (_tx_idx, tx))| (tx.signature(), idx))
             .collect();
+
+        // signature_indices is reduced to a hashmap, which can cause a collision if two transactions
+        // have the same signature. This would be a bad block, so we check for that here.
+        if signature_indices.len() != transactions.len() {
+            // find duplicate signature in transactions
+            let mut seen = HashSet::new();
+            for (_, transaction) in transactions {
+                if !seen.insert(transaction.signature()) {
+                    let err = TransactionError::AlreadyProcessed;
+                    warn!(
+                        "Unexpected validator error: {:?}, transaction: {:?}",
+                        err, transaction
+                    );
+                    datapoint_error!(
+                        "validator_process_entry_error",
+                        (
+                            "error",
+                            format!("error: {err:?}, transaction: {transaction:?}"),
+                            String
+                        )
+                    );
+                    return Err(TransactionError::AlreadyProcessed);
+                }
+            }
+        }
 
         let receiver = self.response_receiver();
 

@@ -25,7 +25,7 @@ lazy_static = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
-nohash-hasher = { workspace = true }
+nohash = { workspace = true }
 num_cpus = { workspace = true }
 num_enum = { workspace = true }
 prost = { workspace = true }
