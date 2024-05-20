@@ -108,9 +108,6 @@ impl BundleReceiver {
 
         bundle_stage_stats.increment_num_bundles_received(bundle_count as u64);
         bundle_stage_stats.increment_num_packets_received(packet_count as u64);
-        bundle_stage_leader_metrics
-            .leader_slot_metrics_tracker()
-            .increment_total_new_valid_packets(packet_count as u64);
 
         debug!(
             "@{:?} bundles: {} txs: {} id: {}",
