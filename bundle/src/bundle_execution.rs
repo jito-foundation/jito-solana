@@ -266,8 +266,7 @@ pub fn load_and_execute_bundle<'a>(
                     bank.get_account_overrides_for_simulation(&account_keys),
                 );
 
-                // NOTE (seg): If simulating on an unfrozen bank, then take a snapshot of all accounts to minimize chance of race condition.
-                // State constantly changing is still an issue and needs to be resolved.
+                // An unfrozen bank's state is always changing. Need to take a snapshot of accounts to avoid race conditions.
                 if !bank.is_frozen() {
                     for pk in account_keys.iter() {
                         // Save on a disk read.
