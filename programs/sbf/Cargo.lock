@@ -6011,7 +6011,6 @@ dependencies = [
  "solana-sbf-rust-realloc",
  "solana-sbf-rust-realloc-invoke",
  "solana-sdk",
- "solana-svm",
  "solana-transaction-status",
  "solana_rbpf",
  "walkdir",
