@@ -97,6 +97,7 @@ solana-sbf-rust-invoke = { workspace = true }
 solana-sbf-rust-realloc = { workspace = true, features = ["default"] }
 solana-sbf-rust-realloc-invoke = { workspace = true }
 solana-sdk = { workspace = true }
+solana-svm = { workspace = true }
 solana-transaction-status = { workspace = true }
 solana_rbpf = { workspace = true }
 
