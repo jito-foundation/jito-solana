@@ -141,6 +141,7 @@ pub async fn get_claim_transactions_for_valid_unclaimed(
 pub async fn claim_mev_tips(
     merkle_trees: &GeneratedMerkleTreeCollection,
     rpc_url: String,
+    rpc_sender_url: String,
     tip_distribution_program_id: Pubkey,
     keypair: Arc<Keypair>,
     max_loop_duration: Duration,
@@ -151,6 +152,7 @@ pub async fn claim_mev_tips(
         Duration::from_secs(300),
         CommitmentConfig::confirmed(),
     );
+    let rpc_sender_client = RpcClient::new(rpc_sender_url);
 
     let start = Instant::now();
     while start.elapsed() <= max_loop_duration {
@@ -188,7 +190,14 @@ pub async fn claim_mev_tips(
         }
 
         let blockhash = rpc_client.get_latest_blockhash().await?;
-        let _ = send_until_blockhash_expires(&rpc_client, transactions, blockhash, &keypair).await;
+        let _ = send_until_blockhash_expires(
+            &rpc_client,
+            &rpc_sender_client,
+            transactions,
+            blockhash,
+            &keypair,
+        )
+        .await;
     }
 
     let transactions = get_claim_transactions_for_valid_unclaimed(
