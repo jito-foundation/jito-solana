@@ -33,6 +33,10 @@ struct Args {
     #[arg(long, env, default_value = "http://localhost:8899")]
     rpc_url: String,
 
+    /// RPC to send transactions through
+    #[arg(long, env)]
+    sender_rpc_url: Option<String>,
+
     /// Tip distribution program ID
     #[arg(long, env)]
     tip_distribution_program_id: Pubkey,
@@ -61,6 +65,7 @@ struct Args {
 async fn start_mev_claim_process(
     merkle_trees: GeneratedMerkleTreeCollection,
     rpc_url: String,
+    rpc_sender_url: String,
     tip_distribution_program_id: Pubkey,
     signer: Arc<Keypair>,
     max_loop_duration: Duration,
@@ -71,6 +76,7 @@ async fn start_mev_claim_process(
     match claim_mev_tips(
         &merkle_trees,
         rpc_url,
+        rpc_sender_url,
         tip_distribution_program_id,
         signer,
         max_loop_duration,
@@ -155,6 +161,9 @@ async fn main() -> Result<(), ClaimMevError> {
         read_json_from_file(&args.merkle_trees_path).expect("read GeneratedMerkleTreeCollection");
     let max_loop_duration = Duration::from_secs(args.max_retry_duration_secs);
 
+    let sender_rpc_url = args.sender_rpc_url.unwrap_or(args.rpc_url.clone());
+    info!("using {} to send transactions", sender_rpc_url);
+
     info!(
         "Starting to claim mev tips for epoch: {}",
         merkle_trees.epoch
@@ -165,6 +174,7 @@ async fn main() -> Result<(), ClaimMevError> {
     futs.push(tokio::spawn(start_mev_claim_process(
         merkle_trees,
         args.rpc_url.clone(),
+        sender_rpc_url,
         args.tip_distribution_program_id,
         keypair.clone(),
         max_loop_duration,
