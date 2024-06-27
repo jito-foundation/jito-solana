@@ -1,8 +1,9 @@
+use crate::send_until_blockhash_expires;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use std::sync::Arc;
+use std::time::Instant;
 use {
-    crate::{
-        read_json_from_file, sign_and_send_transactions_with_retries, GeneratedMerkleTree,
-        GeneratedMerkleTreeCollection,
-    },
+    crate::{read_json_from_file, GeneratedMerkleTree, GeneratedMerkleTreeCollection},
     anchor_lang::AccountDeserialize,
     jito_tip_distribution::{
         sdk::instruction::{upload_merkle_root_ix, UploadMerkleRootAccounts, UploadMerkleRootArgs},
@@ -21,7 +22,6 @@ use {
     },
     std::{path::PathBuf, time::Duration},
     thiserror::Error,
-    tokio::runtime::Builder,
 };
 
 #[derive(Error, Debug)]
@@ -31,58 +31,67 @@ pub enum MerkleRootUploadError {
 
     #[error(transparent)]
     JsonError(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    RpcError(#[from] solana_client::client_error::ClientError),
 }
 
-pub fn upload_merkle_root(
+pub async fn upload_merkle_root(
     merkle_root_path: &PathBuf,
     keypair_path: &PathBuf,
     rpc_url: &str,
     tip_distribution_program_id: &Pubkey,
-    max_concurrent_rpc_get_reqs: usize,
-    txn_send_batch_size: usize,
+    _max_concurrent_rpc_get_reqs: usize,
+    _txn_send_batch_size: usize,
+    api_key: Option<String>,
 ) -> Result<(), MerkleRootUploadError> {
     const MAX_RETRY_DURATION: Duration = Duration::from_secs(600);
 
     let merkle_tree: GeneratedMerkleTreeCollection =
         read_json_from_file(merkle_root_path).expect("read GeneratedMerkleTreeCollection");
-    let keypair = read_keypair_file(keypair_path).expect("read keypair file");
+    let keypair = Arc::new(read_keypair_file(keypair_path).expect("read keypair file"));
 
     let tip_distribution_config =
         Pubkey::find_program_address(&[Config::SEED], tip_distribution_program_id).0;
 
-    let runtime = Builder::new_multi_thread()
-        .worker_threads(16)
-        .enable_all()
-        .build()
-        .expect("build runtime");
+    let rpc_client =
+        RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
+    let trees: Vec<GeneratedMerkleTree> = merkle_tree
+        .generated_merkle_trees
+        .into_iter()
+        .filter(|tree| tree.merkle_root_upload_authority == keypair.pubkey())
+        .collect();
 
-    runtime.block_on(async move {
-        let rpc_client =
-            RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed());
-        let trees: Vec<GeneratedMerkleTree> = merkle_tree
-            .generated_merkle_trees
-            .into_iter()
-            .filter(|tree| tree.merkle_root_upload_authority == keypair.pubkey())
-            .collect();
+    info!("num trees to upload: {:?}", trees.len());
 
-        info!("num trees to upload: {:?}", trees.len());
-
-        // heuristic to make sure we have enough funds to cover execution, assumes all trees need updating 
-        {
-            let initial_balance = rpc_client.get_balance(&keypair.pubkey()).await.expect("failed to get balance");
-            let desired_balance = (trees.len() as u64).checked_mul(DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE).unwrap();
-            if initial_balance < desired_balance {
-                let sol_to_deposit = desired_balance.checked_sub(initial_balance).unwrap().checked_add(LAMPORTS_PER_SOL).unwrap().checked_sub(1).unwrap().checked_div(LAMPORTS_PER_SOL).unwrap(); // rounds up to nearest sol
-                panic!("Expected to have at least {} lamports in {}, current balance is {} lamports, deposit {} SOL to continue.",
-                       desired_balance, &keypair.pubkey(), initial_balance, sol_to_deposit)
-            }
+    // heuristic to make sure we have enough funds to cover execution, assumes all trees need updating
+    {
+        let initial_balance = rpc_client.get_balance(&keypair.pubkey()).await?;
+        let desired_balance = (trees.len() as u64)
+            .checked_mul(DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE)
+            .unwrap();
+        if initial_balance < desired_balance {
+            let sol_to_deposit = desired_balance
+                .checked_sub(initial_balance)
+                .unwrap()
+                .checked_add(LAMPORTS_PER_SOL)
+                .unwrap()
+                .checked_sub(1)
+                .unwrap()
+                .checked_div(LAMPORTS_PER_SOL)
+                .unwrap(); // rounds up to nearest sol
+            panic!("Expected to have at least {} lamports in {}, current balance is {} lamports, deposit {} SOL to continue.",
+                   desired_balance, &keypair.pubkey(), initial_balance, sol_to_deposit)
         }
-        let mut trees_needing_update: Vec<GeneratedMerkleTree> = vec![];
-        for tree in trees {
+    }
+
+    let start = Instant::now();
+    while start.elapsed() < MAX_RETRY_DURATION {
+        let mut trees_needing_update: Vec<&GeneratedMerkleTree> = vec![];
+        for tree in &trees {
             let account = rpc_client
                 .get_account(&tree.tip_distribution_account)
-                .await
-                .expect("fetch expect");
+                .await?;
 
             let mut data = account.data.as_slice();
             let fetched_tip_distribution_account =
@@ -103,6 +112,9 @@ pub fn upload_merkle_root(
         }
 
         info!("num trees need uploading: {:?}", trees_needing_update.len());
+        if trees_needing_update.is_empty() {
+            return Ok(());
+        }
 
         let transactions: Vec<Transaction> = trees_needing_update
             .iter()
@@ -121,18 +133,27 @@ pub fn upload_merkle_root(
                     },
                 );
                 Transaction::new_with_payer(
-                    &[ix],
+                    &[ComputeBudgetInstruction::set_compute_unit_limit(15_000), ix],
                     Some(&keypair.pubkey()),
                 )
             })
             .collect();
 
-        let (to_process, failed_transactions) = sign_and_send_transactions_with_retries(
-            &keypair, &rpc_client, max_concurrent_rpc_get_reqs, transactions, txn_send_batch_size, MAX_RETRY_DURATION).await;
-        if !to_process.is_empty() {
-            panic!("{} remaining mev claim transactions, {} failed requests.", to_process.len(), failed_transactions.len());
+        let blockhash = rpc_client
+            .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+            .await?
+            .0;
+
+        for tx_chunk in transactions.chunks(1_000) {
+            let tx_vec = tx_chunk.to_vec();
+            if let Err(e) =
+                send_until_blockhash_expires(&rpc_client, tx_vec, blockhash, &keypair, &api_key)
+                    .await
+            {
+                error!("send_until_blockhash_expires failed: {:?}", e);
+            }
         }
-    });
+    }
 
     Ok(())
 }

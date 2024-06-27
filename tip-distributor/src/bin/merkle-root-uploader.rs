@@ -29,9 +29,14 @@ struct Args {
     /// Number of transactions to send to RPC at a time.
     #[arg(long, env, default_value_t = 64)]
     txn_send_batch_size: usize,
+
+    /// Optional API key for the block engine
+    #[arg(long, env)]
+    block_engine_api_key: Option<String>,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::init();
 
     let args: Args = Args::parse();
@@ -44,7 +49,10 @@ fn main() {
         &args.tip_distribution_program_id,
         args.max_concurrent_rpc_get_reqs,
         args.txn_send_batch_size,
-    ) {
+        args.block_engine_api_key,
+    )
+    .await
+    {
         panic!("failed to upload merkle roots: {:?}", e);
     }
     info!(

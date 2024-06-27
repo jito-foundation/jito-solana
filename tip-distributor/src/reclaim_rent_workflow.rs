@@ -43,6 +43,7 @@ pub async fn reclaim_rent(
     // Optionally reclaim TipDistributionAccount rents on behalf of validators.
     should_reclaim_tdas: bool,
     micro_lamports: u64,
+    api_key: Option<String>,
 ) -> Result<(), ClaimMevError> {
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         rpc_url.clone(),
@@ -52,6 +53,7 @@ pub async fn reclaim_rent(
 
     let start = Instant::now();
 
+    info!("fetching tip distribution accounts, may take awhile");
     let accounts = rpc_client
         .get_program_accounts(&tip_distribution_program_id)
         .await?;
@@ -64,7 +66,16 @@ pub async fn reclaim_rent(
     let epoch = rpc_client.get_epoch_info().await?.epoch;
     let mut claim_status_pubkeys_to_expire =
         find_expired_claim_status_accounts(&accounts, epoch, signer.pubkey());
+    info!(
+        "found {} claim status accounts to expire",
+        claim_status_pubkeys_to_expire.len()
+    );
+
     let mut tda_pubkeys_to_expire = find_expired_tda_accounts(&accounts, epoch);
+    info!(
+        "found {} tip distribution accounts to expire",
+        tda_pubkeys_to_expire.len()
+    );
 
     while start.elapsed() <= max_loop_duration {
         let mut transactions = build_close_claim_status_transactions(
@@ -94,11 +105,14 @@ pub async fn reclaim_rent(
             return Ok(());
         }
 
-        transactions.shuffle(&mut thread_rng());
-        let transactions: Vec<_> = transactions.into_iter().take(10_000).collect();
-        let blockhash = rpc_client.get_latest_blockhash().await?;
-        send_until_blockhash_expires(&rpc_client, &rpc_client, transactions, blockhash, &signer)
-            .await?;
+        // send in small chunks because sending bundles is slow
+        // TODO: figure out why
+        for transactions_chunk in transactions.chunks(5_000) {
+            let transactions: Vec<_> = transactions_chunk.iter().cloned().collect();
+            let blockhash = rpc_client.get_latest_blockhash().await?;
+            send_until_blockhash_expires(&rpc_client, transactions, blockhash, &signer, &api_key)
+                .await?;
+        }
 
         // can just refresh calling get_multiple_accounts since these operations should be subtractive and not additive
         let claim_status_pubkeys: Vec<_> = claim_status_pubkeys_to_expire
@@ -267,9 +281,10 @@ fn build_close_claim_status_transactions(
         .collect::<Vec<_>>()
         .chunks(4)
         .map(|close_claim_status_instructions| {
-            let mut instructions = vec![ComputeBudgetInstruction::set_compute_unit_price(
-                microlamports,
-            )];
+            let mut instructions = vec![
+                ComputeBudgetInstruction::set_compute_unit_price(microlamports),
+                ComputeBudgetInstruction::set_compute_unit_limit(50_000),
+            ];
             instructions.extend(close_claim_status_instructions.to_vec());
             Transaction::new_with_payer(&instructions, Some(&payer))
         })

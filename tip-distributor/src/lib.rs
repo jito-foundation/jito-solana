@@ -1,9 +1,16 @@
+pub mod bundle_tips;
 pub mod claim_mev_workflow;
 pub mod merkle_root_generator_workflow;
 pub mod merkle_root_upload_workflow;
 pub mod reclaim_rent_workflow;
 pub mod stake_meta_generator_workflow;
 
+use rand::distributions::Alphanumeric;
+use rand::distributions::DistString;
+use reqwest::redirect::Policy;
+use reqwest::Client;
+use solana_sdk::signature::Signer;
+use std::str::FromStr;
 use {
     crate::{
         merkle_root_generator_workflow::MerkleRootGeneratorError,
@@ -27,6 +34,7 @@ use {
     },
     solana_merkle_tree::MerkleTree,
     solana_metrics::{datapoint_error, datapoint_warn},
+    solana_program::system_instruction::transfer,
     solana_program::{
         instruction::InstructionError,
         rent::{
@@ -35,26 +43,23 @@ use {
     },
     solana_rpc_client_api::{
         client_error::{Error, ErrorKind},
-        config::RpcSendTransactionConfig,
         request::{RpcError, RpcResponseErrorData, MAX_MULTIPLE_ACCOUNTS},
         response::RpcSimulateTransactionResult,
     },
+    solana_sdk::instruction::{AccountMeta, Instruction},
     solana_sdk::{
         account::{Account, AccountSharedData, ReadableAccount},
         clock::Slot,
-        commitment_config::{CommitmentConfig, CommitmentLevel},
+        commitment_config::CommitmentConfig,
         hash::{Hash, Hasher},
         pubkey::Pubkey,
         signature::{Keypair, Signature},
         stake_history::Epoch,
-        transaction::{
-            Transaction,
-            TransactionError::{self},
-        },
+        transaction::{Transaction, TransactionError},
     },
     solana_transaction_status::TransactionStatus,
     std::{
-        collections::{HashMap, HashSet},
+        collections::HashMap,
         fs::File,
         io::BufReader,
         path::PathBuf,
@@ -63,6 +68,10 @@ use {
     },
     tokio::{sync::Semaphore, time::sleep},
 };
+
+mod spl_memo_3_0 {
+    solana_sdk::declare_id!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+}
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct GeneratedMerkleTreeCollection {
@@ -553,6 +562,7 @@ pub async fn send_until_blockhash_expires(
     transactions: Vec<Transaction>,
     blockhash: Hash,
     keypair: &Arc<Keypair>,
+    api_key: &Option<String>,
 ) -> solana_rpc_client_api::client_error::Result<()> {
     let mut claim_transactions: HashMap<Signature, Transaction> = transactions
         .into_iter()
@@ -562,84 +572,87 @@ pub async fn send_until_blockhash_expires(
         })
         .collect();
 
-    let txs_requesting_send = claim_transactions.len();
+    let num_txs = claim_transactions.len();
+
+    let tip_account = Pubkey::from_str("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5").unwrap();
+
+    let client = Client::builder().redirect(Policy::none()).build().unwrap();
 
     while rpc_client
         .is_blockhash_valid(&blockhash, CommitmentConfig::processed())
         .await?
     {
-        let mut check_signatures = HashSet::with_capacity(claim_transactions.len());
-        let mut already_processed = HashSet::with_capacity(claim_transactions.len());
-        let mut is_blockhash_not_found = false;
+        let round_robin_urls = [
+            "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles",
+            "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles",
+            "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles",
+            "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles",
+        ];
 
-        for (signature, tx) in &claim_transactions {
-            match rpc_sender_client
-                .send_transaction_with_config(
-                    tx,
-                    RpcSendTransactionConfig {
-                        skip_preflight: false,
-                        preflight_commitment: Some(CommitmentLevel::Confirmed),
-                        max_retries: Some(2),
-                        ..RpcSendTransactionConfig::default()
-                    },
-                )
-                .await
+        let txs: Vec<_> = claim_transactions.values().collect();
+
+        for (i, tx_chunks) in txs.chunks(4).enumerate() {
+            let mut txs: Vec<_> = tx_chunks.iter().cloned().collect();
+            let tip_tx = Transaction::new_signed_with_payer(
+                &[
+                    build_memo(
+                        Alphanumeric
+                            .sample_string(&mut rand::thread_rng(), 64)
+                            .as_bytes(),
+                        &[],
+                    ),
+                    transfer(&keypair.pubkey(), &tip_account, 1000),
+                ],
+                Some(&keypair.pubkey()),
+                &[keypair],
+                blockhash,
+            );
+
+            txs.insert(0, &tip_tx);
+
+            match bundle_tips::send_bundle(
+                &txs,
+                &client,
+                round_robin_urls[i % round_robin_urls.len()],
+                api_key,
+            )
+            .await
             {
-                Ok(_) => {
-                    check_signatures.insert(*signature);
+                Ok(bundle_id) => {
+                    let signatures: Vec<_> = txs.iter().map(|tx| tx.signatures[0]).collect();
+                    info!(
+                        "sent bundle ok, bundle_id: {}, signatures: {:?}",
+                        bundle_id, signatures
+                    );
                 }
-                Err(e) => match e.get_transaction_error() {
-                    Some(TransactionError::BlockhashNotFound) => {
-                        is_blockhash_not_found = true;
-                        break;
-                    }
-                    Some(TransactionError::AlreadyProcessed) => {
-                        already_processed.insert(*tx.get_signature());
-                    }
-                    Some(e) => {
-                        warn!(
-                            "TransactionError sending signature: {} error: {:?} tx: {:?}",
-                            tx.get_signature(),
-                            e,
-                            tx
-                        );
-                    }
-                    None => {
-                        warn!(
-                            "Unknown error sending transaction signature: {} error: {:?}",
-                            tx.get_signature(),
-                            e
-                        );
-                    }
-                },
+                Err(e) => {
+                    warn!("send_bundle failed: {:?}", e);
+                }
             }
+            sleep(Duration::from_millis(5)).await;
         }
 
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(20)).await;
 
-        let signatures: Vec<Signature> = check_signatures.iter().cloned().collect();
+        let signatures: Vec<_> = claim_transactions.keys().cloned().collect();
+
         let statuses = get_batched_signatures_statuses(rpc_client, &signatures).await?;
 
-        for (signature, maybe_status) in &statuses {
-            if let Some(_status) = maybe_status {
-                claim_transactions.remove(signature);
-                check_signatures.remove(signature);
+        for (sig, status) in &statuses {
+            if let Some(status) = status {
+                if status.status.is_ok() {
+                    info!("transaction landed: {:?}", sig);
+                    claim_transactions.remove(sig);
+                }
             }
         }
 
-        for signature in already_processed {
-            claim_transactions.remove(&signature);
-        }
-
-        if claim_transactions.is_empty() || is_blockhash_not_found {
+        if claim_transactions.is_empty() {
             break;
         }
     }
 
-    let num_landed = txs_requesting_send
-        .checked_sub(claim_transactions.len())
-        .unwrap();
-    info!("num_landed: {:?}", num_landed);
+    info!("num_landed: {:?}", num_txs - claim_transactions.len());
 
     Ok(())
 }
@@ -766,6 +779,17 @@ where
     let file = File::open(path).unwrap();
     let reader = BufReader::new(file);
     serde_json::from_reader(reader)
+}
+
+pub fn build_memo(memo: &[u8], signer_pubkeys: &[&Pubkey]) -> Instruction {
+    Instruction {
+        program_id: spl_memo_3_0::id(),
+        accounts: signer_pubkeys
+            .iter()
+            .map(|&pubkey| AccountMeta::new_readonly(*pubkey, true))
+            .collect(),
+        data: memo.to_vec(),
+    }
 }
 
 #[cfg(test)]
