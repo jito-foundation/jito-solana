@@ -359,8 +359,13 @@ fn build_mev_claim_transactions(
     let transactions: Vec<Transaction> = instructions
         .into_iter()
         .map(|claim_ix| {
+            // helps get txs into block easier since default is 400k CUs
+            let compute_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(40_000);
             let priority_fee_ix = ComputeBudgetInstruction::set_compute_unit_price(micro_lamports);
-            Transaction::new_with_payer(&[priority_fee_ix, claim_ix], Some(&payer_pubkey))
+            Transaction::new_with_payer(
+                &[compute_limit_ix, priority_fee_ix, claim_ix],
+                Some(&payer_pubkey),
+            )
         })
         .collect();
 
