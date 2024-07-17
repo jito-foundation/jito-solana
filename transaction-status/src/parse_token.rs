@@ -15,7 +15,7 @@ use {
         message::AccountKeys,
     },
     spl_token_2022::{
-        extension::ExtensionType,
+        extension::{transfer_fee::instruction::TransferFeeInstruction, ExtensionType},
         instruction::{AuthorityType, TokenInstruction},
         solana_program::{
             instruction::Instruction as SplTokenInstruction, program_option::COption,
@@ -510,12 +510,12 @@ pub fn parse_token(
                 account_keys,
             )
         }
-        TokenInstruction::TransferFeeExtension(transfer_fee_instruction) => {
-            parse_transfer_fee_instruction(
-                transfer_fee_instruction,
-                &instruction.accounts,
-                account_keys,
-            )
+        TokenInstruction::TransferFeeExtension => {
+            let rest = &instruction.data[1..];
+            let tfe_instruction = TransferFeeInstruction::unpack(rest).map_err(|_| {
+                ParseInstructionError::InstructionNotParsable(ParsableProgram::SplToken)
+            })?;
+            parse_transfer_fee_instruction(tfe_instruction, &instruction.accounts, account_keys)
         }
         TokenInstruction::ConfidentialTransferExtension => parse_confidential_transfer_instruction(
             &instruction.data[1..],

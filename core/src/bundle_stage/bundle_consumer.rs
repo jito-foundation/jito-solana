@@ -30,7 +30,7 @@ use {
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
-        transaction::{self},
+        transaction,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
