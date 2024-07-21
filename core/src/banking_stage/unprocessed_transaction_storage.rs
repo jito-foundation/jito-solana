@@ -21,7 +21,7 @@ use {
     },
     itertools::Itertools,
     min_max_heap::MinMaxHeap,
-    solana_bundle::BundleExecutionError,
+    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
     solana_measure::{measure, measure_us},
     solana_runtime::bank::Bank,
     solana_sdk::{
@@ -1317,17 +1317,31 @@ impl BundleStorage {
                         rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
+                    Err(BundleExecutionError::ExceedsCostModel) => {
+                        // cost model buffered bundles contain most recent bundles at the front of the queue
+                        debug!(
+                            "bundle={} exceeds cost model, rebuffering",
+                            sanitized_bundle.bundle_id
+                        );
+                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                    }
+                    Err(BundleExecutionError::TransactionFailure(
+                        LoadAndExecuteBundleError::ProcessingTimeExceeded(_),
+                    )) => {
+                        // these are treated the same as exceeds cost model and are rebuferred to be completed
+                        // at the beginning of the next slot
+                        debug!(
+                            "bundle={} processing time exceeded, rebuffering",
+                            sanitized_bundle.bundle_id
+                        );
+                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                    }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
                         debug!(
                             "bundle={} execution error: {:?}",
                             sanitized_bundle.bundle_id, e
                         );
                         // do nothing
-                    }
-                    Err(BundleExecutionError::ExceedsCostModel) => {
-                        // cost model buffered bundles contain most recent bundles at the front of the queue
-                        debug!("bundle={} exceeds cost model", sanitized_bundle.bundle_id);
-                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
                     }
                     Err(BundleExecutionError::TipError(e)) => {
                         debug!("bundle={} tip error: {}", sanitized_bundle.bundle_id, e);
