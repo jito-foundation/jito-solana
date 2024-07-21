@@ -33,12 +33,8 @@ jobs:
             rebase: upstream/master
           - branch: v1.18
             rebase: upstream/v1.18
-          - branch: v1.17
-            rebase: upstream/v1.17
-            # note: this will always be a day behind because we're rebasing from the previous day's rebase
-            # and NOT upstream
-          - branch: v1.17-fast-replay
-            rebase: origin/v1.17
+          - branch: v2.0
+            rebase: upstream/v2.0
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
