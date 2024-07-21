@@ -42,7 +42,7 @@ RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
     if [ "$debug" = "false" ] ; then \
-      ./cargo stable build --release && cp target/release/solana* ./docker-output; \
+      ./cargo stable build --release && cp target/release/solana* ./docker-output && cp target/release/agave* ./docker-output; \
     else \
-      RUSTFLAGS='-g -C force-frame-pointers=yes' ./cargo stable build --release && cp target/release/solana* ./docker-output; \
+      RUSTFLAGS='-g -C force-frame-pointers=yes' ./cargo stable build --release && cp target/release/solana* ./docker-output && cp target/release/agave* ./docker-output; \
     fi
