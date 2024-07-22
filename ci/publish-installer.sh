@@ -35,6 +35,11 @@ cat install/agave-install-init.sh >>release.jito.wtf-install
 
 echo --- GCS: "install"
 upload-gcs-artifact "/solana/release.jito.wtf-install" "gs://jito-release/$CHANNEL_OR_TAG/install"
+
+# Jito added - releases need to support S3
+echo --- AWS S3 Store: "install"
+upload-s3-artifact "/solana/release.jito.wtf-install" "s3://release.jito.wtf/$CHANNEL_OR_TAG/install"
+
 echo Published to:
 ci/format-url.sh https://release.jito.wtf/"$CHANNEL_OR_TAG"/install
 
