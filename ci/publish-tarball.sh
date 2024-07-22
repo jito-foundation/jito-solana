@@ -121,6 +121,10 @@ for file in "${TARBALL_BASENAME}"-$TARGET.tar.bz2 "${TARBALL_BASENAME}"-$TARGET.
     echo --- GCS Store: "$file"
     upload-gcs-artifact "/solana/$file" gs://jito-release/"$CHANNEL_OR_TAG"/"$file"
 
+    # Jito added - releases need to support S3
+    echo --- AWS S3 Store: "$file"
+    upload-s3-artifact "/solana/$file" s3://release.jito.wtf/"$CHANNEL_OR_TAG"/"$file"
+
     echo Published to:
     $DRYRUN ci/format-url.sh https://release.jito.wtf/"$CHANNEL_OR_TAG"/"$file"
 
