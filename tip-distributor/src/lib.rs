@@ -41,7 +41,7 @@ use {
     },
     solana_sdk::{
         account::{Account, AccountSharedData, ReadableAccount},
-        clock::Slot,
+        clock::{Slot, DEFAULT_MS_PER_SLOT, MAX_PROCESSING_AGE},
         commitment_config::{CommitmentConfig, CommitmentLevel},
         hash::{Hash, Hasher},
         pubkey::Pubkey,
@@ -572,7 +572,15 @@ pub async fn send_until_blockhash_expires(
         let mut already_processed = HashSet::with_capacity(claim_transactions.len());
         let mut is_blockhash_not_found = false;
 
+        let blockhash_expiry_timer = Instant::now();
         for (signature, tx) in &claim_transactions {
+            if blockhash_expiry_timer.elapsed()
+                > Duration::from_millis(MAX_PROCESSING_AGE as u64 * DEFAULT_MS_PER_SLOT)
+            {
+                // blockhash likely expired. breakout and verify before sending more
+                break;
+            }
+
             match rpc_sender_client
                 .send_transaction_with_config(
                     tx,
