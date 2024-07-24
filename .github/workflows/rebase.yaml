@@ -21,7 +21,7 @@ name: "Rebase jito-solana from upstream anza-xyz/agave"
 on:
   #  push:
   schedule:
-    - cron: "30 18 * * 1-5"
+    - cron: "00 19 * * 1-5"
 
 jobs:
   rebase:
@@ -30,11 +30,14 @@ jobs:
       matrix:
         include:
           - branch: master
-            rebase: upstream/master
-          - branch: v1.18
-            rebase: upstream/v1.18
+            upstream_branch: master
+            upstream_repo: https://github.com/anza-xyz/agave.git
           - branch: v2.0
-            rebase: upstream/v2.0
+            upstream_branch: v2.0
+            upstream_repo: https://github.com/anza-xyz/agave.git
+          - branch: v1.18
+            upstream_branch: v1.18
+            upstream_repo: https://github.com/solana-labs/solana.git
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +47,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.JITO_SOLANA_RELEASE_TOKEN }}
       - name: Add upstream
-        run: git remote add upstream https://github.com/anza-xyz/agave.git
+        run: git remote add upstream ${{ matrix.upstream_repo }}
       - name: Fetch upstream
         run: git fetch upstream
       - name: Fetch origin
@@ -61,7 +64,7 @@ jobs:
           git config --global user.name "Jito Infrastructure"
       - name: Rebase
         id: rebase
-        run: git rebase ${{ matrix.rebase }}
+        run: git rebase upstream/${{ matrix.upstream_branch }}
       - name: Send warning for rebase error
         if: failure() && steps.rebase.outcome == 'failure'
         uses: slackapi/slack-github-action@v1.25.0
