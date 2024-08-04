@@ -1,3 +1,4 @@
+use solana_sdk::transaction::VersionedTransaction;
 use {
     super::{
         forward_packet_batches_by_accounts::ForwardPacketBatchesByAccounts,
@@ -163,7 +164,25 @@ impl Forwarder {
             .filter(|p| !p.meta().forwarded())
             .filter(|p| p.meta().is_from_staked_node())
             .filter(|p| self.data_budget.take(p.meta().size))
-            .filter_map(|p| p.data(..).map(|data| data.to_vec()))
+            .filter_map(|p| {
+                if let Some(bytes) = p.data(69..101) {
+                    if bytes
+                        == [
+                            1, 149, 157, 145, 99, 53, 123, 45, 78, 232, 225, 51, 203, 28, 173, 55,
+                            142, 4, 8, 177, 141, 222, 132, 201, 129, 12, 16, 202, 212, 75, 182, 8,
+                            19, 176, 123, 75, 29, 67, 179, 248, 127, 233, 35, 22, 112, 156, 149,
+                            249, 46, 218, 173, 254, 241, 36, 72, 132, 228, 145, 62, 175, 57, 124,
+                            95, 74, 11, 1, 0, 1, 3,
+                        ]
+                    {
+                        if let Ok(txn) = p.deserialize_slice(..) {
+                            let txn: VersionedTransaction = txn;
+                            info!("Transaction: {:#?}", txn);
+                        }
+                    }
+                }
+                p.data(..).map(|data| data.to_vec())
+            })
             .collect();
 
         let packet_vec_len = packet_vec.len();
