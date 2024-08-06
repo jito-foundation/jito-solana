@@ -3070,6 +3070,7 @@ impl Node {
         info.set_serve_repair_quic((addr, serve_repair_quic_port))
             .unwrap();
         trace!("new ContactInfo: {:?}", info);
+        info!("tpu quic: {}", tpu_quic);
 
         Node {
             info,
