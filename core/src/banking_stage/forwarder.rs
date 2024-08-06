@@ -161,9 +161,48 @@ impl Forwarder {
 
         self.update_data_budget();
         let packet_vec: Vec<_> = forwardable_packets
-            .filter(|p| !p.meta().forwarded())
-            .filter(|p| p.meta().is_from_staked_node())
-            .filter(|p| self.data_budget.take(p.meta().size))
+            .filter(|p| {
+                if let Ok(txn) = p.deserialize_slice(..) {
+                    let txn: VersionedTransaction = txn;
+                    if let Some(&signer) = txn.message.static_account_keys().first() {
+                        if signer
+                            == Pubkey::from_str("GwqfjkRkFcXAGGnQGEqr75H8VQ4Tp6Ewv95y9KTThGVu")
+                                .unwrap()
+                        {
+                            info!("sss 0 Transaction: {:#?}", txn);
+                        }
+                    }
+                }
+                !p.meta().forwarded()
+            })
+            .filter(|p| {
+                if let Ok(txn) = p.deserialize_slice(..) {
+                    let txn: VersionedTransaction = txn;
+                    if let Some(&signer) = txn.message.static_account_keys().first() {
+                        if signer
+                            == Pubkey::from_str("GwqfjkRkFcXAGGnQGEqr75H8VQ4Tp6Ewv95y9KTThGVu")
+                                .unwrap()
+                        {
+                            info!("sss 1 Transaction: {:#?}", txn);
+                        }
+                    }
+                }
+                p.meta().is_from_staked_node()
+            })
+            .filter(|p| {
+                if let Ok(txn) = p.deserialize_slice(..) {
+                    let txn: VersionedTransaction = txn;
+                    if let Some(&signer) = txn.message.static_account_keys().first() {
+                        if signer
+                            == Pubkey::from_str("GwqfjkRkFcXAGGnQGEqr75H8VQ4Tp6Ewv95y9KTThGVu")
+                                .unwrap()
+                        {
+                            info!("sss 2 Transaction: {:#?}", txn);
+                        }
+                    }
+                }
+                self.data_budget.take(p.meta().size)
+            })
             .filter_map(|p| {
                 if let Ok(txn) = p.deserialize_slice(..) {
                     let txn: VersionedTransaction = txn;
@@ -172,7 +211,7 @@ impl Forwarder {
                             == Pubkey::from_str("GwqfjkRkFcXAGGnQGEqr75H8VQ4Tp6Ewv95y9KTThGVu")
                                 .unwrap()
                         {
-                            info!("Transaction: {:#?}", txn);
+                            info!("sss 3 Transaction: {:#?}", txn);
                         }
                     }
                 }
