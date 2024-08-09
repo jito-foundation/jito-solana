@@ -549,6 +549,7 @@ pub async fn sign_and_send_transactions_with_retries(
 
 pub async fn send_until_blockhash_expires(
     rpc_client: &RpcClient,
+    rpc_sender_client: &RpcClient,
     transactions: Vec<Transaction>,
     blockhash: Hash,
     keypair: &Arc<Keypair>,
@@ -572,7 +573,7 @@ pub async fn send_until_blockhash_expires(
         let mut is_blockhash_not_found = false;
 
         for (signature, tx) in &claim_transactions {
-            match rpc_client
+            match rpc_sender_client
                 .send_transaction_with_config(
                     tx,
                     RpcSendTransactionConfig {
