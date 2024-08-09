@@ -175,7 +175,7 @@ pub async fn claim_mev_tips(
         }
 
         all_claim_transactions.shuffle(&mut thread_rng());
-        let transactions: Vec<_> = all_claim_transactions.into_iter().take(10_000).collect();
+        let transactions: Vec<_> = all_claim_transactions.into_iter().take(300).collect();
 
         // only check balance for the ones we need to currently send since reclaim rent running in parallel
         if let Some((start_balance, desired_balance, sol_to_deposit)) =
