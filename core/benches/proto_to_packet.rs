@@ -25,6 +25,7 @@ fn get_proto_packet(i: u8) -> PbPacket {
                 repair: false,
                 simple_vote_tx: false,
                 tracer_packet: false,
+                from_staked_node: false,
             }),
             sender_stake: 0,
         }),
