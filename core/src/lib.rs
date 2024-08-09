@@ -106,6 +106,12 @@ pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> Packet {
             if flags.repair {
                 packet.meta_mut().flags.insert(PacketFlags::REPAIR);
             }
+            if flags.from_staked_node {
+                packet
+                    .meta_mut()
+                    .flags
+                    .insert(PacketFlags::FROM_STAKED_NODE)
+            }
         }
     }
     packet
