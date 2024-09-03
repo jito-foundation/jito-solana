@@ -373,6 +373,10 @@ pub mod enable_partitioned_epoch_reward {
     solana_sdk::declare_id!("9bn2vTJUsUcnpiZWbu2woSKtTGW3ErZC9ERv88SDqQjK");
 }
 
+pub mod partitioned_epoch_rewards_superfeature {
+    solana_sdk::declare_id!("PERzQrt5gBD1XEe2c9XdFWqwgHY3mr7cYWbm5V772V8");
+}
+
 pub mod spl_token_v3_4_0 {
     solana_sdk::declare_id!("Ftok4njE8b7tDffYkC5bAbCaQv5sL6jispYrprzatUwN");
 }
@@ -1051,6 +1055,7 @@ lazy_static! {
         (ed25519_precompile_verify_strict::id(), "Use strict verification in ed25519 precompile SIMD-0152"),
         (verify_retransmitter_signature::id(), "Verify retransmitter signature #1840"),
         (vote_only_retransmitter_signed_fec_sets::id(), "vote only on retransmitter signed fec sets"),
+        (partitioned_epoch_rewards_superfeature::id(), "replaces enable_partitioned_epoch_reward to enable partitioned rewards at epoch boundary SIMD-0118"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
