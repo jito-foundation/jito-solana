@@ -853,6 +853,10 @@ pub mod enable_turbine_extended_fanout_experiments {
     solana_sdk::declare_id!("BZn14Liea52wtBwrXUxTv6vojuTTmfc7XGEDTXrvMD7b");
 }
 
+pub mod deprecate_legacy_vote_ixs {
+    solana_program::declare_id!("mustrekeyysGrhwdiwU42tCadZL8GcBb1i2GYhMopQv");
+}
+
 lazy_static! {
     /// Map of feature identifiers to user-visible description
     pub static ref FEATURE_NAMES: HashMap<Pubkey, &'static str> = [
@@ -1061,6 +1065,7 @@ lazy_static! {
         (vote_only_retransmitter_signed_fec_sets::id(), "vote only on retransmitter signed fec sets"),
         (partitioned_epoch_rewards_superfeature::id(), "replaces enable_partitioned_epoch_reward to enable partitioned rewards at epoch boundary SIMD-0118"),
         (enable_turbine_extended_fanout_experiments::id(), "enable turbine extended fanout experiments #2373"),
+        (deprecate_legacy_vote_ixs::id(), "Deprecate legacy vote instructions"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
