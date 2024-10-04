@@ -297,11 +297,9 @@ impl Tpu {
 
         let bundle_account_locker = BundleAccountLocker::default();
 
-        // tip accounts can't be used in BankingStage to avoid someone from stealing tips mid-slot.
-        // it also helps reduce surface area for potential account contention
+        // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
         let mut blacklisted_accounts = HashSet::new();
-        blacklisted_accounts.insert(tip_manager.tip_payment_config_pubkey());
-        blacklisted_accounts.extend(tip_manager.get_tip_accounts());
+        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
         let banking_stage = BankingStage::new(
             block_production_method,
             cluster_info,
