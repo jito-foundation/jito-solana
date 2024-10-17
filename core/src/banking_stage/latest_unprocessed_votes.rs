@@ -362,8 +362,8 @@ impl LatestUnprocessedVotes {
                     let mut vote = lock.write().unwrap();
                     if !vote.is_vote_taken() && !vote.is_forwarded() {
                         let deserialized_vote_packet = vote.vote.as_ref().unwrap().clone();
-                        if let Some(sanitized_vote_transaction) = deserialized_vote_packet
-                            .build_sanitized_transaction(
+                        if let Some((sanitized_vote_transaction, _deactivation_slot)) =
+                            deserialized_vote_packet.build_sanitized_transaction(
                                 bank.vote_only_bank(),
                                 bank.as_ref(),
                                 bank.get_reserved_account_keys(),

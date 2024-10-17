@@ -2,6 +2,7 @@ use {
     super::Bank,
     solana_sdk::{
         address_lookup_table::error::AddressLookupError,
+        clock::Slot,
         message::{
             v0::{LoadedAddresses, MessageAddressTableLookup},
             AddressLoaderError,
@@ -26,14 +27,26 @@ impl AddressLoader for &Bank {
         self,
         address_table_lookups: &[MessageAddressTableLookup],
     ) -> Result<LoadedAddresses, AddressLoaderError> {
+        self.load_addresses_from_ref(address_table_lookups.iter())
+            .map(|(loaded_addresses, _deactivation_slot)| loaded_addresses)
+    }
+}
+
+impl Bank {
+    /// Load addresses from an iterator of `SVMMessageAddressTableLookup`,
+    /// additionally returning the minimum deactivation slot across all referenced ALTs
+    pub fn load_addresses_from_ref<'a>(
+        &self,
+        address_table_lookups: impl Iterator<Item = &'a MessageAddressTableLookup>,
+    ) -> Result<(LoadedAddresses, Slot), AddressLoaderError> {
         let slot_hashes = self
             .transaction_processor
             .sysvar_cache()
             .get_slot_hashes()
             .map_err(|_| AddressLoaderError::SlotHashesSysvarNotFound)?;
 
-        address_table_lookups
-            .iter()
+        let mut deactivation_slot = u64::MAX;
+        let loaded_addresses = address_table_lookups
             .map(|address_table_lookup| {
                 self.rc
                     .accounts
@@ -42,8 +55,14 @@ impl AddressLoader for &Bank {
                         address_table_lookup,
                         &slot_hashes,
                     )
+                    .map(|(loaded_addresses, table_deactivation_slot)| {
+                        deactivation_slot = deactivation_slot.min(table_deactivation_slot);
+                        loaded_addresses
+                    })
                     .map_err(into_address_loader_error)
             })
-            .collect::<Result<_, _>>()
+            .collect::<Result<_, _>>()?;
+
+        Ok((loaded_addresses, deactivation_slot))
     }
 }

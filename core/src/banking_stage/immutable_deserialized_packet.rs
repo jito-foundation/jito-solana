@@ -1,18 +1,19 @@
 use {
     super::packet_filter::PacketFilterFailure,
     solana_perf::packet::Packet,
-    solana_runtime::compute_budget_details::{ComputeBudgetDetails, GetComputeBudgetDetails},
+    solana_runtime::{
+        bank::Bank,
+        compute_budget_details::{ComputeBudgetDetails, GetComputeBudgetDetails},
+    },
     solana_sdk::{
+        clock::Slot,
         hash::Hash,
-        message::Message,
+        message::{v0::LoadedAddresses, AddressLoaderError, Message, SimpleAddressLoader},
         pubkey::Pubkey,
         sanitize::SanitizeError,
         short_vec::decode_shortu16_len,
         signature::Signature,
-        transaction::{
-            AddressLoader, SanitizedTransaction, SanitizedVersionedTransaction,
-            VersionedTransaction,
-        },
+        transaction::{SanitizedTransaction, SanitizedVersionedTransaction, VersionedTransaction},
     },
     std::{cmp::Ordering, collections::HashSet, mem::size_of},
     thiserror::Error,
@@ -103,15 +104,22 @@ impl ImmutableDeserializedPacket {
 
     // This function deserializes packets into transactions, computes the blake3 hash of transaction
     // messages.
+    // Additionally, this returns the minimum deactivation slot of the resolved addresses.
     pub fn build_sanitized_transaction(
         &self,
         votes_only: bool,
-        address_loader: impl AddressLoader,
+        bank: &Bank,
         reserved_account_keys: &HashSet<Pubkey>,
-    ) -> Option<SanitizedTransaction> {
+    ) -> Option<(SanitizedTransaction, Slot)> {
         if votes_only && !self.is_simple_vote() {
             return None;
         }
+
+        // Resolve the lookup addresses and retrieve the min deactivation slot
+        let (loaded_addresses, deactivation_slot) =
+            Self::resolve_addresses_with_deactivation(self.transaction(), bank).ok()?;
+        let address_loader = SimpleAddressLoader::Enabled(loaded_addresses);
+
         let tx = SanitizedTransaction::try_new(
             self.transaction().clone(),
             *self.message_hash(),
@@ -120,7 +128,19 @@ impl ImmutableDeserializedPacket {
             reserved_account_keys,
         )
         .ok()?;
-        Some(tx)
+        Some((tx, deactivation_slot))
+    }
+
+    fn resolve_addresses_with_deactivation(
+        transaction: &SanitizedVersionedTransaction,
+        bank: &Bank,
+    ) -> Result<(LoadedAddresses, Slot), AddressLoaderError> {
+        let Some(address_table_lookups) = transaction.get_message().message.address_table_lookups()
+        else {
+            return Ok((LoadedAddresses::default(), Slot::MAX));
+        };
+
+        bank.load_addresses_from_ref(address_table_lookups.iter())
     }
 }
 
