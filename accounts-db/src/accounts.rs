@@ -10,6 +10,7 @@ use {
         storable_accounts::StorableAccounts,
     },
     dashmap::DashMap,
+    itertools::Itertools,
     log::*,
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount},
@@ -18,7 +19,7 @@ use {
         message::v0::LoadedAddresses,
         pubkey::Pubkey,
         slot_hashes::SlotHashes,
-        transaction::{Result, SanitizedTransaction},
+        transaction::{Result, SanitizedTransaction, TransactionAccountLocks, TransactionError},
         transaction_context::TransactionAccount,
     },
     solana_svm_transaction::{
@@ -592,26 +593,10 @@ impl Accounts {
         }
 
         for k in readonly_keys {
-            if !account_locks.lock_readonly(k) {
-                account_locks.insert_new_readonly(k);
-            }
+            account_locks.lock_readonly(k);
         }
 
         Ok(())
-    }
-
-    fn unlock_account(
-        &self,
-        account_locks: &mut AccountLocks,
-        writable_keys: Vec<&Pubkey>,
-        readonly_keys: Vec<&Pubkey>,
-    ) {
-        for k in writable_keys {
-            account_locks.unlock_write(k);
-        }
-        for k in readonly_keys {
-            account_locks.unlock_readonly(k);
-        }
     }
 
     /// This function will prevent multiple threads from modifying the same account state at the
@@ -670,8 +655,16 @@ impl Accounts {
             .map(|tx_account_locks_result| match tx_account_locks_result {
                 Ok(tx_account_locks) => Self::lock_account(
                     account_locks,
-                    tx_account_locks.writable,
-                    tx_account_locks.readonly,
+                    tx_account_locks
+                        .accounts_with_is_writable()
+                        .filter(|(_key, is_writable)| *is_writable)
+                        .map(|(key, _)| key)
+                        .collect_vec(),
+                    tx_account_locks
+                        .accounts_with_is_writable()
+                        .filter(|(_key, is_writable)| !*is_writable)
+                        .map(|(key, _)| key)
+                        .collect_vec(),
                     additional_read_locks,
                     additional_write_locks,
                 ),
@@ -742,13 +735,14 @@ impl Accounts {
         account_locks: &mut AccountLocks,
         tx_account_locks_results: Vec<Result<TransactionAccountLocks>>,
     ) -> Vec<Result<()>> {
-        let mut account_in_use_set = false;
+        let mut account_in_use = false;
         tx_account_locks_results
             .into_iter()
             .map(|tx_account_locks_result| match tx_account_locks_result {
-                Ok(tx_account_locks) => match account_in_use_set {
-                    true => Err(TransactionError::AccountInUse),
-                    false => {
+                Ok(tx_account_locks) => {
+                    if account_in_use {
+                        Err(TransactionError::AccountInUse)
+                    } else {
                         let locked = Self::lock_account(
                             account_locks,
                             tx_account_locks.writable,
@@ -757,11 +751,11 @@ impl Accounts {
                             None,
                         );
                         if matches!(locked, Err(TransactionError::AccountInUse)) {
-                            account_in_use_set = true;
+                            account_in_use = true;
                         }
                         locked
                     }
-                },
+                }
                 Err(err) => Err(err),
             })
             .collect()

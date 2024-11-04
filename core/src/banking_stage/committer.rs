@@ -19,8 +19,10 @@ use {
             TransactionProcessingResult, TransactionProcessingResultExtensions,
         },
     },
-    solana_transaction_status::{token_balances::TransactionTokenBalancesSet, PreBalanceInfo},
-    std::sync::Arc,
+    solana_transaction_status::{
+        token_balances::TransactionTokenBalancesSet, PreBalanceInfo, TransactionTokenBalance,
+    },
+    std::{collections::HashMap, sync::Arc},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +32,13 @@ pub enum CommitTransactionDetails {
         loaded_accounts_data_size: u32,
     },
     NotCommitted,
+}
+
+#[derive(Default)]
+pub(super) struct PreBalanceInfo {
+    pub native: Vec<Vec<u64>>,
+    pub token: Vec<Vec<TransactionTokenBalance>>,
+    pub mint_decimals: HashMap<Pubkey, u8>,
 }
 
 #[derive(Clone)]

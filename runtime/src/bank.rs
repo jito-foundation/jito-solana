@@ -71,8 +71,8 @@ use {
     },
     serde::Serialize,
     solana_accounts_db::{
-        account_locks::validate_account_locks,
-        accounts::{AccountAddressFilter, AccountLocks, Accounts, PubkeyAccountSlot},
+        account_locks::{validate_account_locks, AccountLocks},
+        accounts::{AccountAddressFilter, Accounts, PubkeyAccountSlot},
         accounts_db::{
             AccountStorageEntry, AccountsDb, AccountsDbConfig, CalcAccountsHashDataSource,
             DuplicatesLtHash, PubkeyHashAccount, VerifyAccountsHashAndLamportsConfig,
@@ -3525,7 +3525,7 @@ impl Bank {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         additional_read_locks: Option<&HashSet<Pubkey>>,
         additional_write_locks: Option<&HashSet<Pubkey>>,
-    ) -> TransactionBatch<'a, 'b> {
+    ) -> TransactionBatch<'a, 'b, SanitizedTransaction> {
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
         let lock_results = self.rc.accounts.lock_accounts_with_results(
             transactions.iter(),
@@ -3542,14 +3542,14 @@ impl Bank {
     pub fn prepare_sequential_sanitized_batch_with_results<'a, 'b>(
         &'a self,
         transactions: &'b [SanitizedTransaction],
-    ) -> TransactionBatch<'a, 'b> {
+    ) -> TransactionBatch<'a, 'b, SanitizedTransaction> {
         // this lock_results could be: Ok, AccountInUse, AccountLoadedTwice, or TooManyAccountLocks
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
         let lock_results = self
             .rc
             .accounts
             .lock_accounts_sequential_with_results(transactions.iter(), tx_account_lock_limit);
-        TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions))
+        TransactionBatch::new(lock_results, self, OwnedOrBorrowed::Borrowed(transactions))
     }
 
     /// Prepare a locked transaction batch from a list of sanitized transactions for simulation.
@@ -3560,7 +3560,7 @@ impl Bank {
     pub fn prepare_sequential_sanitized_batch_with_results_for_simulation<'a, 'b>(
         &'a self,
         transactions: &'b [SanitizedTransaction],
-    ) -> TransactionBatch<'a, 'b> {
+    ) -> TransactionBatch<'a, 'b, SanitizedTransaction> {
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
         let tx_account_locks_results: Vec<Result<_>> = transactions
             .iter()
@@ -3570,7 +3570,8 @@ impl Bank {
         let mut account_locks = AccountLocks::default();
         let lock_results =
             Accounts::lock_accounts_sequential(&mut account_locks, tx_account_locks_results);
-        let mut batch = TransactionBatch::new(lock_results, self, Cow::Borrowed(transactions));
+        let mut batch =
+            TransactionBatch::new(lock_results, self, OwnedOrBorrowed::Borrowed(transactions));
         // this is required to ensure that accounts aren't unlocked accidentally, which can be problematic during replay.
         // more specifically, during process_entries, if the lock counts are accidentally decremented,
         // one might end up replaying a block incorrectly
@@ -3761,13 +3762,13 @@ impl Bank {
 
     pub fn collect_balances_with_cache(
         &self,
-        batch: &TransactionBatch,
+        batch: &TransactionBatch<impl SVMMessage>,
         account_overrides: Option<&AccountOverrides>,
     ) -> TransactionBalances {
         let mut balances: TransactionBalances = vec![];
         for transaction in batch.sanitized_transactions() {
             let mut transaction_balances: Vec<u64> = vec![];
-            for account_key in transaction.message().account_keys().iter() {
+            for account_key in transaction.account_keys().iter() {
                 let balance = match account_overrides {
                     None => self.get_balance(account_key),
                     Some(overrides) => match overrides.get(account_key) {

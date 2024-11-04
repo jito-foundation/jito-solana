@@ -997,39 +997,35 @@ impl PohRecorder {
             let (mut poh_lock, poh_lock_us) = measure_us!(self.poh.lock().unwrap());
             self.record_lock_contention_us += poh_lock_us;
 
-            let (maybe_entries, record_mixin_time) =
-                measure!(poh_lock.record_bundle(&mixins), "record_mixin");
-            self.record_us += record_mixin_time.as_us();
+            let (maybe_entries, record_mixin_time) = measure_us!(poh_lock.record_bundle(&mixins));
+            self.record_us += record_mixin_time;
 
             drop(poh_lock);
 
             if let Some(entries) = maybe_entries {
                 let num_transactions = transactions.iter().map(|txs| txs.len()).sum();
-                let (send_entry_res, send_entry_time) = measure!(
-                    {
-                        let entries_tick_heights: Vec<(Entry, u64)> = entries
-                            .into_iter()
-                            .zip(transactions.into_iter())
-                            .map(|(poh_entry, transactions)| {
-                                (
-                                    Entry {
-                                        num_hashes: poh_entry.num_hashes,
-                                        hash: poh_entry.hash,
-                                        transactions,
-                                    },
-                                    self.tick_height,
-                                )
-                            })
-                            .collect();
-                        let bank_clone = working_bank.bank.clone();
-                        self.sender.send(WorkingBankEntry {
-                            bank: bank_clone,
-                            entries_ticks: entries_tick_heights,
+                let (send_entry_res, send_entry_time) = measure_us!({
+                    let entries_tick_heights: Vec<(Entry, u64)> = entries
+                        .into_iter()
+                        .zip(transactions.into_iter())
+                        .map(|(poh_entry, transactions)| {
+                            (
+                                Entry {
+                                    num_hashes: poh_entry.num_hashes,
+                                    hash: poh_entry.hash,
+                                    transactions,
+                                },
+                                self.tick_height,
+                            )
                         })
-                    },
-                    "send_poh_entry",
-                );
-                self.send_entry_us += send_entry_time.as_us();
+                        .collect();
+                    let bank_clone = working_bank.bank.clone();
+                    self.sender.send(WorkingBankEntry {
+                        bank: bank_clone,
+                        entries_ticks: entries_tick_heights,
+                    })
+                });
+                self.send_entry_us += send_entry_time;
                 send_entry_res?;
                 let starting_transaction_index =
                     working_bank.transaction_index.inspect(|transaction_index| {

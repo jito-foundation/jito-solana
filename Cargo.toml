@@ -312,7 +312,7 @@ jemallocator = { package = "tikv-jemallocator", version = "0.4.1", features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
 js-sys = "0.3.72"
-jito-protos = { path = "jito-protos", version = "=2.1.0" }
+jito-protos = { path = "jito-protos", version = "=2.2.0" }
 jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
 jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
 json5 = "0.4.1"
@@ -504,6 +504,7 @@ solana-rpc-client = { path = "rpc-client", version = "=2.2.0", default-features 
 solana-rpc-client-api = { path = "rpc-client-api", version = "=2.2.0" }
 solana-rpc-client-nonce-utils = { path = "rpc-client-nonce-utils", version = "=2.2.0" }
 solana-runtime = { path = "runtime", version = "=2.2.0" }
+solana-runtime-plugin = { path = "runtime-plugin", version = "=2.2.0" }
 solana-runtime-transaction = { path = "runtime-transaction", version = "=2.2.0" }
 solana-sdk = { path = "sdk", version = "=2.2.0" }
 solana-sdk-macro = { path = "sdk/macro", version = "=2.2.0" }

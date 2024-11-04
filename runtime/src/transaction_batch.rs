@@ -1,7 +1,7 @@
 use {
     crate::bank::Bank,
     core::ops::Deref,
-    solana_sdk::transaction::{Result, SanitizedTransaction, TransactionError},
+    solana_sdk::transaction::{Result, TransactionError},
     solana_svm_transaction::svm_message::SVMMessage,
 };
 
@@ -98,7 +98,7 @@ impl<'a, 'b, Tx: SVMMessage> TransactionBatch<'a, 'b, Tx> {
     }
 
     /// Bundle locking failed if lock result returns something other than ok or AccountInUse
-    pub fn check_bundle_lock_results(&self) -> Option<(&SanitizedTransaction, &TransactionError)> {
+    pub fn check_bundle_lock_results(&self) -> Option<(&Tx, &TransactionError)> {
         self.sanitized_transactions()
             .iter()
             .zip(self.lock_results.iter())

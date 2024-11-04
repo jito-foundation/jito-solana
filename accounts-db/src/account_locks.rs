@@ -12,8 +12,8 @@ use {
 
 #[derive(Debug, Default)]
 pub struct AccountLocks {
-    write_locks: AHashSet<Pubkey>,
-    readonly_locks: AHashMap<Pubkey, u64>,
+    pub(crate) write_locks: AHashSet<Pubkey>,
+    pub(crate) readonly_locks: AHashMap<Pubkey, u64>,
 }
 
 impl AccountLocks {
@@ -82,7 +82,7 @@ impl AccountLocks {
         !self.is_locked_readonly(key) && !self.is_locked_write(key)
     }
 
-    fn lock_readonly(&mut self, key: &Pubkey) {
+    pub(crate) fn lock_readonly(&mut self, key: &Pubkey) {
         *self.readonly_locks.entry(*key).or_default() += 1;
     }
 
@@ -90,7 +90,7 @@ impl AccountLocks {
         self.write_locks.insert(*key);
     }
 
-    fn unlock_readonly(&mut self, key: &Pubkey) {
+    pub(crate) fn unlock_readonly(&mut self, key: &Pubkey) {
         if let hash_map::Entry::Occupied(mut occupied_entry) = self.readonly_locks.entry(*key) {
             let count = occupied_entry.get_mut();
             *count -= 1;
@@ -105,7 +105,7 @@ impl AccountLocks {
         }
     }
 
-    fn unlock_write(&mut self, key: &Pubkey) {
+    pub(crate) fn unlock_write(&mut self, key: &Pubkey) {
         let removed = self.write_locks.remove(key);
         debug_assert!(
             removed,

@@ -4,6 +4,7 @@ use {
     solana_ledger::token_balances::collect_token_balances,
     solana_measure::{measure::Measure, measure_us},
     solana_runtime::{
+        account_saver::collect_accounts_to_store,
         bank::{Bank, LoadAndExecuteTransactionsOutput, TransactionBalances},
         transaction_batch::TransactionBatch,
     },
@@ -19,10 +20,9 @@ use {
     solana_svm::{
         account_loader::TransactionLoadResult,
         account_overrides::AccountOverrides,
-        account_saver::collect_accounts_to_store,
         transaction_processing_callback::TransactionProcessingCallback,
+        transaction_processing_result::TransactionProcessingResult,
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
-        transaction_results::TransactionExecutionResult,
     },
     solana_timings::ExecuteTimings,
     solana_transaction_status::{token_balances::TransactionTokenBalances, PreBalanceInfo},
@@ -103,7 +103,7 @@ pub enum LoadAndExecuteBundleError {
     TransactionError {
         signature: Signature,
         // Box reduces the size between variants in the Error
-        execution_result: Box<TransactionExecutionResult>,
+        execution_result: Box<TransactionProcessingResult>,
     },
 
     #[error("Invalid pre or post accounts")]
@@ -164,7 +164,7 @@ impl<'a> BundleTransactionsOutput<'a> {
             .loaded_transactions
     }
 
-    pub fn execution_results(&self) -> &[TransactionExecutionResult] {
+    pub fn execution_results(&self) -> &[TransactionProcessingResult] {
         &self.load_and_execute_transactions_output.execution_results
     }
 
@@ -192,19 +192,19 @@ pub type LoadAndExecuteBundleResult<T> = Result<T, LoadAndExecuteBundleError>;
 /// position i has a corresponding execution result at position i within the `execution_results`
 /// slice
 pub fn check_bundle_execution_results<'a>(
-    execution_results: &'a [TransactionExecutionResult],
+    execution_results: &'a [TransactionProcessingResult],
     sanitized_txs: &'a [SanitizedTransaction],
-) -> Result<(), (&'a SanitizedTransaction, &'a TransactionExecutionResult)> {
-    for (exec_results, sanitized_tx) in execution_results.iter().zip(sanitized_txs) {
-        match exec_results {
-            TransactionExecutionResult::Executed { details, .. } => {
-                if details.status.is_err() {
+) -> Result<(), (&'a SanitizedTransaction, &'a TransactionProcessingResult)> {
+    for (result, sanitized_tx) in execution_results.iter().zip(sanitized_txs) {
+        match result {
+            Ok(processed_txn) => {
+                if processed_txn.status().is_err() {
                     return Err((sanitized_tx, exec_results));
                 }
             }
-            TransactionExecutionResult::NotExecuted(e) => {
+            Err(e) => {
                 if !matches!(e, TransactionError::AccountInUse) {
-                    return Err((sanitized_tx, exec_results));
+                    return Err((sanitized_tx, result));
                 }
             }
         }

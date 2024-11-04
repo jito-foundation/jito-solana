@@ -135,7 +135,6 @@ test-case = { workspace = true }
 sysctl = { workspace = true }
 
 [build-dependencies]
-rustc_version = { workspace = true }
 tonic-build = { workspace = true }
 
 [features]
