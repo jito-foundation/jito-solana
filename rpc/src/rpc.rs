@@ -3360,7 +3360,7 @@ pub mod utils {
         let mut transaction_results = Vec::new();
         for bundle_output in bundle_execution_result.bundle_transaction_results() {
             for (index, execution_result) in bundle_output
-                .execution_results()
+                .processing_results()
                 .iter()
                 .enumerate()
                 .filter(|(_, result)| result.was_executed())

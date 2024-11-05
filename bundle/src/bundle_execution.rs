@@ -21,13 +21,19 @@ use {
         account_loader::TransactionLoadResult,
         account_overrides::AccountOverrides,
         transaction_processing_callback::TransactionProcessingCallback,
-        transaction_processing_result::TransactionProcessingResult,
+        transaction_processing_result::{
+            TransactionProcessingResult, TransactionProcessingResultExtensions,
+        },
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
     },
     solana_timings::ExecuteTimings,
-    solana_transaction_status::{token_balances::TransactionTokenBalances, PreBalanceInfo},
+    solana_transaction_status::{
+        token_balances::TransactionTokenBalances, TransactionTokenBalance,
+    },
     std::{
         cmp::{max, min},
+        collections::HashMap,
+        sync::Arc,
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -41,6 +47,13 @@ pub struct BundleExecutionMetrics {
     pub collect_pre_post_accounts_us: u64,
     pub cache_accounts_us: u64,
     pub execute_timings: ExecuteTimings,
+}
+
+#[derive(Default)]
+pub struct PreBalanceInfo {
+    pub native: Vec<Vec<u64>>,
+    pub token: Vec<Vec<TransactionTokenBalance>>,
+    pub mint_decimals: HashMap<Pubkey, u8>,
 }
 
 /// Contains the results from executing each TransactionBatch with a final result associated with it
@@ -68,10 +81,10 @@ impl<'a> LoadAndExecuteBundleOutput<'a> {
         &self.bundle_transaction_results
     }
 
-    pub fn executed_transaction_batches(&self) -> Vec<Vec<VersionedTransaction>> {
+    pub fn processed_transaction_batches(&self) -> Vec<Vec<VersionedTransaction>> {
         self.bundle_transaction_results
             .iter()
-            .map(|br| br.executed_versioned_transactions())
+            .map(|br| br.processed_versioned_transactions())
             .collect()
     }
 
@@ -102,8 +115,7 @@ pub enum LoadAndExecuteBundleError {
     )]
     TransactionError {
         signature: Signature,
-        // Box reduces the size between variants in the Error
-        execution_result: Box<TransactionProcessingResult>,
+        execution_result: Arc<TransactionProcessingResult>,
     },
 
     #[error("Invalid pre or post accounts")]
@@ -122,31 +134,31 @@ pub struct BundleTransactionsOutput<'a> {
 }
 
 impl<'a> BundleTransactionsOutput<'a> {
-    pub fn executed_versioned_transactions(&self) -> Vec<VersionedTransaction> {
+    pub fn processed_versioned_transactions(&self) -> Vec<VersionedTransaction> {
         self.transactions
             .iter()
             .zip(
                 self.load_and_execute_transactions_output
-                    .execution_results
+                    .processing_results
                     .iter(),
             )
             .filter_map(|(tx, exec_result)| {
                 exec_result
-                    .was_executed()
+                    .was_processed()
                     .then_some(tx.to_versioned_transaction())
             })
             .collect()
     }
 
-    pub fn executed_transactions(&self) -> Vec<&'a SanitizedTransaction> {
+    pub fn processed_transactions(&self) -> Vec<&'a SanitizedTransaction> {
         self.transactions
             .iter()
             .zip(
                 self.load_and_execute_transactions_output
-                    .execution_results
+                    .processing_results
                     .iter(),
             )
-            .filter_map(|(tx, exec_result)| exec_result.was_executed().then_some(tx))
+            .filter_map(|(tx, exec_result)| exec_result.was_processed().then_some(tx))
             .collect()
     }
 
@@ -164,8 +176,8 @@ impl<'a> BundleTransactionsOutput<'a> {
             .loaded_transactions
     }
 
-    pub fn execution_results(&self) -> &[TransactionProcessingResult] {
-        &self.load_and_execute_transactions_output.execution_results
+    pub fn processing_results(&self) -> &[TransactionProcessingResult] {
+        &self.load_and_execute_transactions_output.processing_results
     }
 
     pub fn pre_balance_info(&mut self) -> &mut PreBalanceInfo {
@@ -188,18 +200,18 @@ impl<'a> BundleTransactionsOutput<'a> {
 pub type LoadAndExecuteBundleResult<T> = Result<T, LoadAndExecuteBundleError>;
 
 /// Return an Error if a transaction was executed and reverted
-/// NOTE: `execution_results` are zipped with `sanitized_txs` so it's expected a sanitized tx at
-/// position i has a corresponding execution result at position i within the `execution_results`
+/// NOTE: `processing_results` are zipped with `sanitized_txs` so it's expected a sanitized tx at
+/// position i has a corresponding execution result at position i within the `processing_results`
 /// slice
 pub fn check_bundle_execution_results<'a>(
-    execution_results: &'a [TransactionProcessingResult],
+    processing_results: &'a [TransactionProcessingResult],
     sanitized_txs: &'a [SanitizedTransaction],
 ) -> Result<(), (&'a SanitizedTransaction, &'a TransactionProcessingResult)> {
-    for (result, sanitized_tx) in execution_results.iter().zip(sanitized_txs) {
+    for (result, sanitized_tx) in processing_results.iter().zip(sanitized_txs) {
         match result {
             Ok(processed_txn) => {
                 if processed_txn.status().is_err() {
-                    return Err((sanitized_tx, exec_results));
+                    return Err((sanitized_tx, result));
                 }
             }
             Err(e) => {
@@ -390,7 +402,7 @@ pub fn load_and_execute_bundle<'a>(
         // unexpected failures (not locking related), bail out of bundle execution early.
         if let Err((failing_tx, exec_result)) = check_bundle_execution_results(
             load_and_execute_transactions_output
-                .execution_results
+                .processing_results
                 .as_slice(),
             batch.sanitized_transactions(),
         ) {
@@ -418,7 +430,7 @@ pub fn load_and_execute_bundle<'a>(
         // If none of the transactions were executed, most likely an AccountInUse error
         // need to retry to ensure that all transactions in the bundle are executed.
         if !load_and_execute_transactions_output
-            .execution_results
+            .processing_results
             .iter()
             .any(|r| r.was_executed())
         {
@@ -443,7 +455,7 @@ pub fn load_and_execute_bundle<'a>(
 
         let accounts = collect_accounts_to_store(
             batch.sanitized_transactions(),
-            &load_and_execute_transactions_output.execution_results,
+            &load_and_execute_transactions_output.processing_results,
             &mut load_and_execute_transactions_output.loaded_transactions,
             &durable_nonce,
             lamports_per_signature,
@@ -512,7 +524,7 @@ fn get_account_transactions(
     bank: &Bank,
     account_overrides: &AccountOverrides,
     accounts: &[Option<Vec<Pubkey>>],
-    batch: &TransactionBatch,
+    batch: &TransactionBatch<SanitizedTransaction>,
 ) -> Vec<Option<Vec<(Pubkey, AccountSharedData)>>> {
     let iter = izip!(batch.lock_results().iter(), accounts.iter());
 
@@ -642,13 +654,13 @@ mod tests {
         assert_eq!(
             tx_result
                 .load_and_execute_transactions_output
-                .execution_results
+                .processing_results
                 .len(),
             1
         );
         let execution_result = tx_result
             .load_and_execute_transactions_output
-            .execution_results
+            .processing_results
             .first()
             .unwrap();
         assert!(execution_result.was_executed());
@@ -790,25 +802,25 @@ mod tests {
         assert_eq!(
             execution_result.bundle_transaction_results[0]
                 .load_and_execute_transactions_output
-                .execution_results
+                .processing_results
                 .len(),
             3
         );
         assert!(execution_result.bundle_transaction_results[0]
             .load_and_execute_transactions_output
-            .execution_results[0]
+            .processing_results[0]
             .was_executed_successfully());
         assert_eq!(
             execution_result.bundle_transaction_results[0]
                 .load_and_execute_transactions_output
-                .execution_results[1]
+                .processing_results[1]
                 .flattened_result(),
             Err(TransactionError::AccountInUse)
         );
         assert_eq!(
             execution_result.bundle_transaction_results[0]
                 .load_and_execute_transactions_output
-                .execution_results[2]
+                .processing_results[2]
                 .flattened_result(),
             Err(TransactionError::AccountInUse)
         );
@@ -856,18 +868,18 @@ mod tests {
         assert_eq!(
             execution_result.bundle_transaction_results[1]
                 .load_and_execute_transactions_output
-                .execution_results
+                .processing_results
                 .len(),
             2
         );
         assert!(execution_result.bundle_transaction_results[1]
             .load_and_execute_transactions_output
-            .execution_results[0]
+            .processing_results[0]
             .was_executed_successfully());
         assert_eq!(
             execution_result.bundle_transaction_results[1]
                 .load_and_execute_transactions_output
-                .execution_results[1]
+                .processing_results[1]
                 .flattened_result(),
             Err(TransactionError::AccountInUse)
         );
@@ -914,13 +926,13 @@ mod tests {
         assert_eq!(
             execution_result.bundle_transaction_results[2]
                 .load_and_execute_transactions_output
-                .execution_results
+                .processing_results
                 .len(),
             1
         );
         assert!(execution_result.bundle_transaction_results[2]
             .load_and_execute_transactions_output
-            .execution_results[0]
+            .processing_results[0]
             .was_executed_successfully());
 
         assert_eq!(

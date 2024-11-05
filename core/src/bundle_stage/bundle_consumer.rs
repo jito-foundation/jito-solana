@@ -663,14 +663,14 @@ impl BundleConsumer {
             };
         }
 
-        let (executed_batches, execution_results_to_transactions_us) =
-            measure_us!(bundle_execution_results.executed_transaction_batches());
+        let (processed_batches, execution_results_to_transactions_us) =
+            measure_us!(bundle_execution_results.processed_transaction_batches());
 
         debug!(
             "bundle: {} recording {} batches of {:?} transactions",
             sanitized_bundle.bundle_id,
-            executed_batches.len(),
-            executed_batches
+            processed_batches.len(),
+            processed_batches
                 .iter()
                 .map(|b| b.len())
                 .collect::<Vec<usize>>()
@@ -691,7 +691,7 @@ impl BundleConsumer {
             },
             record_us,
         ) = measure_us!(
-            recorder.record_transactions(bank_start.working_bank.slot(), executed_batches)
+            recorder.record_transactions(bank_start.working_bank.slot(), processed_batches)
         );
 
         execute_and_commit_timings.record_us = record_us;

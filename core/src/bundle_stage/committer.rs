@@ -91,7 +91,7 @@ impl Committer {
                     .signature_count;
 
                 let sanitized_transactions = bundle_results.transactions().to_vec();
-                let execution_results = bundle_results.execution_results().to_vec();
+                let execution_results = bundle_results.processing_results().to_vec();
 
                 let loaded_transactions = bundle_results.loaded_transactions_mut();
                 debug!("loaded_transactions: {:?}", loaded_transactions);
@@ -164,7 +164,7 @@ impl Committer {
                         });
 
                     self.prioritization_fee_cache
-                        .update(bank, bundle_results.executed_transactions().into_iter());
+                        .update(bank, bundle_results.processed_transactions().into_iter());
                 });
                 saturating_add_assign!(
                     execute_and_commit_timings.find_and_send_votes_us,
