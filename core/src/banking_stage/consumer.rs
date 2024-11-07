@@ -448,7 +448,7 @@ impl Consumer {
         // This means that the transaction may cross and epoch boundary (not allowed),
         //  or account lookup tables may have been closed.
         let pre_results = txs.iter().zip(max_ages).map(|(tx, max_age)| {
-            if bank.slot() > max_age.epoch_invalidation_slot {
+            if bank.epoch() != max_age.sanitized_epoch {
                 // Epoch has rolled over. Need to fully re-verify the transaction.
                 // Pre-compiles are verified here.
                 // Attempt re-sanitization after epoch-cross.

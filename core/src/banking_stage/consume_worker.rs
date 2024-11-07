@@ -762,7 +762,12 @@ mod tests {
             ..
         } = create_slow_genesis_config(10_000);
         let (bank, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
-        let bank = Arc::new(Bank::new_from_parent(bank, &Pubkey::new_unique(), 1));
+        // Warp to next epoch for MaxAge tests.
+        let bank = Arc::new(Bank::new_from_parent(
+            bank.clone(),
+            &Pubkey::new_unique(),
+            bank.get_epoch_info().slots_in_epoch,
+        ));
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path())
@@ -842,7 +847,7 @@ mod tests {
         let bid = TransactionBatchId::new(0);
         let id = TransactionId::new(0);
         let max_age = MaxAge {
-            epoch_invalidation_slot: bank.slot(),
+            sanitized_epoch: bank.epoch(),
             alt_invalidation_slot: bank.slot(),
         };
         let work = ConsumeWork {
@@ -891,7 +896,7 @@ mod tests {
         let bid = TransactionBatchId::new(0);
         let id = TransactionId::new(0);
         let max_age = MaxAge {
-            epoch_invalidation_slot: bank.slot(),
+            sanitized_epoch: bank.epoch(),
             alt_invalidation_slot: bank.slot(),
         };
         let work = ConsumeWork {
@@ -941,7 +946,7 @@ mod tests {
         let id1 = TransactionId::new(1);
         let id2 = TransactionId::new(0);
         let max_age = MaxAge {
-            epoch_invalidation_slot: bank.slot(),
+            sanitized_epoch: bank.epoch(),
             alt_invalidation_slot: bank.slot(),
         };
         consume_sender
@@ -1002,7 +1007,7 @@ mod tests {
         let id1 = TransactionId::new(1);
         let id2 = TransactionId::new(0);
         let max_age = MaxAge {
-            epoch_invalidation_slot: bank.slot(),
+            sanitized_epoch: bank.epoch(),
             alt_invalidation_slot: bank.slot(),
         };
         consume_sender
@@ -1056,6 +1061,7 @@ mod tests {
             .unwrap()
             .set_bank_for_test(bank.clone());
         assert!(bank.slot() > 0);
+        assert!(bank.epoch() > 0);
 
         // No conflicts between transactions. Test 6 cases.
         // 1. Epoch expiration, before slot => still succeeds due to resanitizing
@@ -1140,27 +1146,27 @@ mod tests {
                 transactions: txs,
                 max_ages: vec![
                     MaxAge {
-                        epoch_invalidation_slot: bank.slot() - 1,
+                        sanitized_epoch: bank.epoch() - 1,
                         alt_invalidation_slot: Slot::MAX,
                     },
                     MaxAge {
-                        epoch_invalidation_slot: bank.slot(),
+                        sanitized_epoch: bank.epoch(),
                         alt_invalidation_slot: Slot::MAX,
                     },
                     MaxAge {
-                        epoch_invalidation_slot: bank.slot() + 1,
+                        sanitized_epoch: bank.epoch() + 1,
                         alt_invalidation_slot: Slot::MAX,
                     },
                     MaxAge {
-                        epoch_invalidation_slot: u64::MAX,
+                        sanitized_epoch: bank.epoch(),
                         alt_invalidation_slot: bank.slot() - 1,
                     },
                     MaxAge {
-                        epoch_invalidation_slot: u64::MAX,
+                        sanitized_epoch: bank.epoch(),
                         alt_invalidation_slot: bank.slot(),
                     },
                     MaxAge {
-                        epoch_invalidation_slot: u64::MAX,
+                        sanitized_epoch: bank.epoch(),
                         alt_invalidation_slot: bank.slot() + 1,
                     },
                 ],
