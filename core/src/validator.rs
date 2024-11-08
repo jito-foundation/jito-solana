@@ -290,6 +290,7 @@ pub struct ValidatorConfig {
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
     // Using Option inside RwLock is ugly, but only convenient way to allow toggle on/off
     pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
 }
@@ -367,6 +368,7 @@ impl Default for ValidatorConfig {
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
             shred_receiver_address: Arc::new(RwLock::new(None)),
+            shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
         }
@@ -1408,7 +1410,7 @@ impl Validator {
             outstanding_repair_requests.clone(),
             cluster_slots.clone(),
             wen_restart_repair_slots.clone(),
-            config.shred_receiver_address.clone(),
+            config.shred_retransmit_receiver_address.clone(),
         )?;
 
         if in_wen_restart {
@@ -1509,6 +1511,7 @@ impl Validator {
             block_engine_config: config.block_engine_config.clone(),
             relayer_config: config.relayer_config.clone(),
             shred_receiver_address: config.shred_receiver_address.clone(),
+            shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
         });
 
         Ok(Self {

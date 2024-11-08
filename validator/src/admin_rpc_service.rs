@@ -269,6 +269,13 @@ pub trait AdminRpc {
 
     #[rpc(meta, name = "setShredReceiverAddress")]
     fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()>;
+
+    #[rpc(meta, name = "setShredRetransmitReceiverAddress")]
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
+    ) -> Result<()>;
 }
 
 pub struct AdminRpcImpl;
@@ -570,6 +577,28 @@ impl AdminRpc for AdminRpcImpl {
 
         meta.with_post_init(|post_init| {
             *post_init.shred_receiver_address.write().unwrap() = shred_receiver_address;
+            Ok(())
+        })
+    }
+
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
+    ) -> Result<()> {
+        let shred_receiver_address = if addr.is_empty() {
+            None
+        } else {
+            Some(SocketAddr::from_str(&addr).map_err(|_| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address: {}",
+                    addr
+                ))
+            })?)
+        };
+
+        meta.with_post_init(|post_init| {
+            *post_init.shred_retransmit_receiver_address.write().unwrap() = shred_receiver_address;
             Ok(())
         })
     }
@@ -1023,6 +1052,7 @@ mod tests {
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
             let shred_receiver_address = Arc::new(RwLock::new(None));
+            let shred_retransmit_receiver_address = Arc::new(RwLock::new(None));
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),
@@ -1046,6 +1076,7 @@ mod tests {
                     block_engine_config,
                     relayer_config,
                     shred_receiver_address,
+                    shred_retransmit_receiver_address,
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,

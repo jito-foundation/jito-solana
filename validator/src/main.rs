@@ -536,6 +536,22 @@ pub fn main() {
                 });
             return;
         }
+        ("set-shred-retransmit-receiver-address", Some(subcommand_matches)) => {
+            let addr = value_t_or_exit!(subcommand_matches, "shred_receiver_address", String);
+            let admin_client = admin_rpc_service::connect(&ledger_path);
+            admin_rpc_service::runtime()
+                .block_on(async move {
+                    admin_client
+                        .await?
+                        .set_shred_retransmit_receiver_address(addr)
+                        .await
+                })
+                .unwrap_or_else(|err| {
+                    println!("set shred receiver address failed: {}", err);
+                    exit(1);
+                });
+            return;
+        }
         ("authorized-voter", Some(authorized_voter_subcommand_matches)) => {
             match authorized_voter_subcommand_matches.subcommand() {
                 ("add", Some(subcommand_matches)) => {
@@ -1705,6 +1721,13 @@ pub fn main() {
             matches
                 .value_of("shred_receiver_address")
                 .map(|addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid")),
+        )),
+        shred_retransmit_receiver_address: Arc::new(RwLock::new(
+            matches
+                .value_of("shred_retransmit_receiver_address")
+                .map(|addr| {
+                    SocketAddr::from_str(addr).expect("shred_retransmit_receiver_address invalid")
+                }),
         )),
         staked_nodes_overrides: staked_nodes_overrides.clone(),
         use_snapshot_archives_at_startup: value_t_or_exit!(
