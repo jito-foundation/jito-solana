@@ -1410,7 +1410,6 @@ impl Validator {
             outstanding_repair_requests.clone(),
             cluster_slots.clone(),
             wen_restart_repair_slots.clone(),
-            config.shred_receiver_address.clone(),
             config.shred_retransmit_receiver_address.clone(),
         )?;
 
