@@ -27,4 +27,5 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
 }
