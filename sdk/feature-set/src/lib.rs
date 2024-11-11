@@ -869,6 +869,10 @@ pub mod reenable_sbpf_v1_execution {
     solana_pubkey::declare_id!("TestFeature21111111111111111111111111111111");
 }
 
+pub mod disable_account_loader_special_case {
+    solana_pubkey::declare_id!("EQUMpNFr7Nacb1sva56xn1aLfBxppEoSBH8RRVdkcD1x");
+}
+
 lazy_static! {
     /// Map of feature identifiers to user-visible description
     pub static ref FEATURE_NAMES: HashMap<Pubkey, &'static str> = [
@@ -1081,6 +1085,7 @@ lazy_static! {
         (partitioned_epoch_rewards_superfeature::id(), "replaces enable_partitioned_epoch_reward to enable partitioned rewards at epoch boundary SIMD-0118"),
         (disable_sbpf_v1_execution::id(), "Disables execution of SBPFv1 programs"),
         (reenable_sbpf_v1_execution::id(), "Re-enables execution of SBPFv1 programs"),
+        (disable_account_loader_special_case::id(), "Disable account loader special case #3513"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
