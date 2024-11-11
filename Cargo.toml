@@ -168,7 +168,7 @@ aquamarine = "0.3.3"
 aes-gcm-siv = "0.11.1"
 ahash = "0.8.10"
 anchor-lang = { path = "anchor/lang" }
-anyhow = "1.0.82"
+anyhow = "1.0.93"
 arbitrary = "1.3.2"
 ark-bn254 = "0.4.0"
 ark-ec = "0.4.0"
