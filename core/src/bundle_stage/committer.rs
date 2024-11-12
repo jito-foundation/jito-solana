@@ -93,12 +93,12 @@ impl Committer {
                 let sanitized_transactions = bundle_results.transactions().to_vec();
                 let execution_results = bundle_results.processing_results().to_vec();
 
-                let loaded_transactions = bundle_results.loaded_transactions_mut();
-                debug!("loaded_transactions: {:?}", loaded_transactions);
+                let processing_results = bundle_results.processing_results_mut();
+                debug!("processing_results: {:?}", processing_results);
 
                 let (tx_results, commit_time_us) = measure_us!(bank.commit_transactions(
                     &sanitized_transactions,
-                    loaded_transactions,
+                    processing_results,
                     execution_results,
                     last_blockhash,
                     lamports_per_signature,

@@ -18,8 +18,8 @@ use {
         transaction::{SanitizedTransaction, TransactionError, VersionedTransaction},
     },
     solana_svm::{
-        account_loader::TransactionLoadResult,
         account_overrides::AccountOverrides,
+        transaction_error_metrics::TransactionErrorMetrics,
         transaction_processing_callback::TransactionProcessingCallback,
         transaction_processing_result::{
             TransactionProcessingResult, TransactionProcessingResultExtensions,
@@ -170,10 +170,8 @@ impl<'a> BundleTransactionsOutput<'a> {
         self.transactions
     }
 
-    pub fn loaded_transactions_mut(&mut self) -> &mut [TransactionLoadResult] {
-        &mut self
-            .load_and_execute_transactions_output
-            .loaded_transactions
+    pub fn processing_results_mut(&mut self) -> &mut Vec<TransactionProcessingResult> {
+        &mut self.load_and_execute_transactions_output.processing_results
     }
 
     pub fn processing_results(&self) -> &[TransactionProcessingResult] {
@@ -379,6 +377,7 @@ pub fn load_and_execute_bundle<'a>(
                 &batch,
                 max_age,
                 &mut metrics.execute_timings,
+                &mut TransactionErrorMetrics::default(),
                 TransactionProcessingConfig {
                     account_overrides: Some(account_overrides),
                     check_program_modification_slot: bank.check_program_modification_slot(),
@@ -392,8 +391,8 @@ pub fn load_and_execute_bundle<'a>(
                 },
             ));
         debug!(
-            "bundle id: {} loaded_transactions: {:?}",
-            bundle.bundle_id, load_and_execute_transactions_output.loaded_transactions
+            "bundle id: {} processing_results: {:?}",
+            bundle.bundle_id, load_and_execute_transactions_output.processing_results
         );
         saturating_add_assign!(metrics.load_execute_us, load_execute_us);
 
@@ -422,7 +421,7 @@ pub fn load_and_execute_bundle<'a>(
                 metrics,
                 result: Err(LoadAndExecuteBundleError::TransactionError {
                     signature: *failing_tx.signature(),
-                    execution_result: Box::new(exec_result.clone()),
+                    execution_result: Arc::new(*exec_result),
                 }),
             };
         }
@@ -432,7 +431,7 @@ pub fn load_and_execute_bundle<'a>(
         if !load_and_execute_transactions_output
             .processing_results
             .iter()
-            .any(|r| r.was_executed())
+            .any(|r| r.was_processed())
         {
             saturating_add_assign!(metrics.num_retries, 1);
             debug!(
@@ -456,9 +455,7 @@ pub fn load_and_execute_bundle<'a>(
         let accounts = collect_accounts_to_store(
             batch.sanitized_transactions(),
             &load_and_execute_transactions_output.processing_results,
-            &mut load_and_execute_transactions_output.loaded_transactions,
-            &durable_nonce,
-            lamports_per_signature,
+            &mut load_and_execute_transactions_output.processing_results,
         )
         .0;
         for (pubkey, data) in accounts {
