@@ -3313,6 +3313,7 @@ pub mod utils {
             config::RpcSimulateTransactionAccountsConfig,
         },
         solana_sdk::{account::AccountSharedData, pubkey::Pubkey},
+        solana_svm::transaction_processing_result::TransactionProcessingResultExtensions,
         std::str::FromStr,
     };
 
@@ -3363,11 +3364,16 @@ pub mod utils {
                 .processing_results()
                 .iter()
                 .enumerate()
-                .filter(|(_, result)| result.was_executed())
+                .filter(|(_, result)| result.was_processed_with_successful_result())
             {
-                // things are filtered by was_executed, so safe to unwrap here
                 let result = execution_result.flattened_result();
-                let details = execution_result.details().unwrap();
+
+                // things are filtered by was_processed_with_successful_result, so safe to unwrap here.
+                let details = execution_result
+                    .as_ref()
+                    .unwrap()
+                    .execution_details()
+                    .unwrap();
 
                 let account_config = rpc_config
                     .pre_execution_accounts_configs
@@ -3456,7 +3462,7 @@ pub mod rpc_full {
             clock::MAX_PROCESSING_AGE,
             message::{SanitizedVersionedMessage, VersionedMessage},
         },
-        solana_transaction_status::{parse_ui_inner_instructions, UiInnerInstructions},
+        solana_transaction_status::parse_ui_inner_instructions,
     };
 
     #[rpc]

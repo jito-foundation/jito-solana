@@ -2,7 +2,7 @@
 
 use {
     crate::config::RpcSimulateTransactionAccountsConfig,
-    solana_account_decoder::UiAccount,
+    solana_account_decoder_client_types::UiAccount,
     solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
     solana_sdk::{
         clock::Slot,
@@ -10,8 +10,7 @@ use {
         signature::Signature,
         transaction::TransactionError,
     },
-    solana_svm::transaction_results::TransactionExecutionResult,
-    solana_transaction_status::{UiTransactionEncoding, UiTransactionReturnData},
+    solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionReturnData},
     thiserror::Error,
 };
 
@@ -72,18 +71,16 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
                     LoadAndExecuteBundleError::TransactionError {
                         signature,
                         execution_result,
-                    } => match *execution_result {
-                        TransactionExecutionResult::Executed { details, .. } => {
-                            let err_msg = if let Err(e) = details.status {
+                    } => match execution_result.as_ref() {
+                        Ok(processed_txn) => {
+                            let err_msg = if let Err(e) = processed_txn.status() {
                                 e.to_string()
                             } else {
                                 "Unknown error".to_string()
                             };
                             Self::TransactionFailure(signature, err_msg)
                         }
-                        TransactionExecutionResult::NotExecuted(e) => {
-                            Self::TransactionFailure(signature, e.to_string())
-                        }
+                        Err(e) => Self::TransactionFailure(signature, e.to_string()),
                     },
                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                         Self::InvalidPreOrPostAccounts

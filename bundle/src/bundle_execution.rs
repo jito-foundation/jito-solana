@@ -11,7 +11,6 @@ use {
     solana_sdk::{
         account::AccountSharedData,
         bundle::SanitizedBundle,
-        nonce::state::DurableNonce,
         pubkey::Pubkey,
         saturating_add_assign,
         signature::Signature,
@@ -372,7 +371,7 @@ pub fn load_and_execute_bundle<'a>(
             get_account_transactions(bank, account_overrides, accounts_requested, &batch);
         saturating_add_assign!(metrics.collect_pre_post_accounts_us, m.end_as_us());
 
-        let (mut load_and_execute_transactions_output, load_execute_us) = measure_us!(bank
+        let (load_and_execute_transactions_output, load_execute_us) = measure_us!(bank
             .load_and_execute_transactions(
                 &batch,
                 max_age,
@@ -421,7 +420,8 @@ pub fn load_and_execute_bundle<'a>(
                 metrics,
                 result: Err(LoadAndExecuteBundleError::TransactionError {
                     signature: *failing_tx.signature(),
-                    execution_result: Arc::new(*exec_result),
+                    // TODO(seg): check on this clone
+                    execution_result: Arc::new(exec_result.clone()),
                 }),
             };
         }
@@ -448,14 +448,18 @@ pub fn load_and_execute_bundle<'a>(
         // failed, non-nonce transactions.
         let m = Measure::start("cache");
 
-        let ((last_blockhash, lamports_per_signature), _last_blockhash_us) =
-            measure_us!(bank.last_blockhash_and_lamports_per_signature());
-        let durable_nonce = DurableNonce::from_blockhash(&last_blockhash);
-
+        // If geyser is present, we must collect `SanitizedTransaction`
+        // references in order to comply with that interface - until it
+        // is changed.
+        let maybe_txn_refs = bank
+            .accounts()
+            .accounts_db
+            .has_accounts_update_notifier()
+            .then(|| batch.sanitized_transactions().iter().collect::<Vec<_>>());
         let accounts = collect_accounts_to_store(
             batch.sanitized_transactions(),
+            &maybe_txn_refs,
             &load_and_execute_transactions_output.processing_results,
-            &mut load_and_execute_transactions_output.processing_results,
         )
         .0;
         for (pubkey, data) in accounts {
