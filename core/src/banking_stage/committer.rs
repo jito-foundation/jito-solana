@@ -20,7 +20,7 @@ use {
         },
     },
     solana_transaction_status::{
-        token_balances::TransactionTokenBalancesSet, PreBalanceInfo, TransactionTokenBalance,
+        token_balances::TransactionTokenBalancesSet, TransactionTokenBalance,
     },
     std::{collections::HashMap, sync::Arc},
 };

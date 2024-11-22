@@ -1,8 +1,10 @@
 use {
     crate::{
         banking_stage::{
-            committer::CommitTransactionDetails, leader_slot_metrics::ProcessTransactionsSummary,
-            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings, qos_service::QosService,
+            committer::CommitTransactionDetails,
+            leader_slot_metrics::{CommittedTransactionsCounts, ProcessTransactionsSummary},
+            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
+            qos_service::QosService,
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
@@ -22,14 +24,14 @@ use {
     },
     solana_cost_model::transaction_cost::TransactionCost,
     solana_gossip::cluster_info::ClusterInfo,
-    solana_measure::{measure, measure_us},
+    solana_measure::measure_us,
     solana_poh::poh_recorder::{BankStart, RecordTransactionsSummary, TransactionRecorder},
     solana_runtime::bank::Bank,
     solana_sdk::{
         bundle::SanitizedBundle,
         clock::{Slot, MAX_PROCESSING_AGE},
         pubkey::Pubkey,
-        transaction::{self},
+        transaction::{self, SanitizedTransaction},
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
@@ -208,21 +210,18 @@ impl BundleConsumer {
         // grabbing those locks so BundleStage can process as fast as possible.
         // A LockedBundle is similar to TransactionBatch; once its dropped the locks are released.
         #[allow(clippy::needless_collect)]
-        let (locked_bundle_results, locked_bundles_elapsed) = measure!(
-            bundles
-                .iter()
-                .map(|(_, sanitized_bundle)| {
-                    bundle_account_locker
-                        .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
-                })
-                .collect::<Vec<_>>(),
-            "locked_bundles_elapsed"
-        );
+        let (locked_bundle_results, locked_bundles_us) = measure_us!(bundles
+            .iter()
+            .map(|(_, sanitized_bundle)| {
+                bundle_account_locker
+                    .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+            })
+            .collect::<Vec<_>>());
         bundle_stage_leader_metrics
             .bundle_stage_metrics_tracker()
-            .increment_locked_bundle_elapsed_us(locked_bundles_elapsed.as_us());
+            .increment_locked_bundle_elapsed_us(locked_bundles_us);
 
-        let (execution_results, execute_locked_bundles_elapsed) = measure!(locked_bundle_results
+        let (execution_results, execute_locked_bundles_us) = measure_us!(locked_bundle_results
             .into_iter()
             .map(|r| match r {
                 Ok(locked_bundle) => {
@@ -255,7 +254,7 @@ impl BundleConsumer {
 
         bundle_stage_leader_metrics
             .bundle_stage_metrics_tracker()
-            .increment_execute_locked_bundles_elapsed_us(execute_locked_bundles_elapsed.as_us());
+            .increment_execute_locked_bundles_elapsed_us(execute_locked_bundles_us);
         execution_results.iter().for_each(|result| {
             bundle_stage_leader_metrics
                 .bundle_stage_metrics_tracker()
@@ -456,12 +455,15 @@ impl BundleConsumer {
 
     /// Reserves space for the entire bundle up-front to ensure the entire bundle can execute.
     /// Rolls back the reserved space if there's not enough blockspace for all transactions in the bundle.
-    fn reserve_bundle_blockspace(
+    fn reserve_bundle_blockspace<'a>(
         qos_service: &QosService,
         reserved_space: &BundleReservedSpaceManager,
-        sanitized_bundle: &SanitizedBundle,
+        sanitized_bundle: &'a SanitizedBundle,
         bank: &Arc<Bank>,
-    ) -> BundleExecutionResult<(Vec<transaction::Result<TransactionCost>>, usize)> {
+    ) -> BundleExecutionResult<(
+        Vec<transaction::Result<TransactionCost<'a, SanitizedTransaction>>>,
+        u64,
+    )> {
         let mut write_cost_tracker = bank.write_cost_tracker().unwrap();
 
         // set the block cost limit to the original block cost limit, run the select + accumulate
@@ -562,11 +564,7 @@ impl BundleConsumer {
                     Err(BundleExecutionError::BankProcessingTimeLimitReached)
                         | Err(BundleExecutionError::PohRecordError(_))
                 ),
-                transactions_attempted_execution_count: sanitized_bundle.transactions.len(),
-                committed_transactions_count: num_committed,
-                // NOTE: this assumes that bundles are committed all-or-nothing
-                committed_transactions_with_successful_result_count: num_committed,
-                failed_commit_count: 0,
+
                 retryable_transaction_indexes: vec![],
                 cost_model_throttled_transactions_count: 0,
                 cost_model_us: cost_model_elapsed_us,
@@ -574,6 +572,13 @@ impl BundleConsumer {
                 error_counters: result.transaction_error_counter,
                 min_prioritization_fees: 0, // TODO (LB)
                 max_prioritization_fees: 0, // TODO (LB)
+                transaction_counts: CommittedTransactionsCounts {
+                    attempted_processing_count: sanitized_bundle.transactions.len() as u64,
+                    committed_transactions_count: num_committed as u64,
+                    // NOTE: this assumes that bundles are committed all-or-nothing
+                    committed_transactions_with_successful_result_count: num_committed as u64,
+                    processed_but_failed_commit: 0,
+                },
             });
 
         match result.result {
@@ -616,6 +621,7 @@ impl BundleConsumer {
 
         debug!("bundle: {} executing", sanitized_bundle.bundle_id);
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
+        let mut txn_err_metrics = TransactionErrorMetrics::default();
         let mut bundle_execution_results = load_and_execute_bundle(
             &bank_start.working_bank,
             sanitized_bundle,
@@ -627,6 +633,7 @@ impl BundleConsumer {
             None,
             &default_accounts,
             &default_accounts,
+            &mut txn_err_metrics,
         );
 
         let execution_metrics = bundle_execution_results.metrics();
@@ -636,15 +643,6 @@ impl BundleConsumer {
         execute_and_commit_timings
             .execute_timings
             .accumulate(&execution_metrics.execute_timings);
-
-        let mut transaction_error_counter = TransactionErrorMetrics::default();
-        bundle_execution_results
-            .bundle_transaction_results()
-            .iter()
-            .for_each(|r| {
-                transaction_error_counter
-                    .accumulate(&r.load_and_execute_transactions_output().error_counters);
-            });
 
         debug!(
             "bundle: {} executed, is_ok: {}",
@@ -659,7 +657,7 @@ impl BundleConsumer {
                 result: Err(e.clone().into()),
                 execution_metrics,
                 execute_and_commit_timings,
-                transaction_error_counter,
+                transaction_error_counter: txn_err_metrics,
             };
         }
 
@@ -698,7 +696,7 @@ impl BundleConsumer {
         execute_and_commit_timings.record_transactions_timings = record_transactions_timings;
         execute_and_commit_timings
             .record_transactions_timings
-            .execution_results_to_transactions_us = execution_results_to_transactions_us;
+            .processing_results_to_transactions_us = execution_results_to_transactions_us;
 
         debug!(
             "bundle: {} record result: {}",
@@ -713,7 +711,7 @@ impl BundleConsumer {
                 result: Err(e.into()),
                 execution_metrics,
                 execute_and_commit_timings,
-                transaction_error_counter,
+                transaction_error_counter: txn_err_metrics,
             };
         }
 
@@ -753,7 +751,7 @@ impl BundleConsumer {
             result: Ok(()),
             execution_metrics,
             execute_and_commit_timings,
-            transaction_error_counter,
+            transaction_error_counter: txn_err_metrics,
         }
     }
 
@@ -1097,12 +1095,9 @@ mod tests {
             genesis_config_info.genesis_config.hash(),
             10_000,
         );
-        let deserialized_bundle = BundlePacketDeserializer::deserialize_bundle(
-            packet_bundles.get_mut(0).unwrap(),
-            false,
-            None,
-        )
-        .unwrap();
+        let deserialized_bundle =
+            BundlePacketDeserializer::deserialize_bundle(packet_bundles.get_mut(0).unwrap(), None)
+                .unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
         let sanitized_bundle = deserialized_bundle
             .build_sanitized_bundle(
@@ -1257,7 +1252,7 @@ mod tests {
         };
 
         let deserialized_bundle =
-            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, false, None).unwrap();
+            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, None).unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
         let sanitized_bundle = deserialized_bundle
             .build_sanitized_bundle(

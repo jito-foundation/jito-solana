@@ -251,6 +251,7 @@ pub fn load_and_execute_bundle<'a>(
     // will use AccountsOverride + Bank
     pre_execution_accounts: &[Option<Vec<Pubkey>>],
     post_execution_accounts: &[Option<Vec<Pubkey>>],
+    txn_err_metrics: &mut TransactionErrorMetrics,
 ) -> LoadAndExecuteBundleOutput<'a> {
     if pre_execution_accounts.len() != post_execution_accounts.len()
         || post_execution_accounts.len() != bundle.transactions.len()
@@ -376,7 +377,7 @@ pub fn load_and_execute_bundle<'a>(
                 &batch,
                 max_age,
                 &mut metrics.execute_timings,
-                &mut TransactionErrorMetrics::default(),
+                txn_err_metrics,
                 TransactionProcessingConfig {
                     account_overrides: Some(account_overrides),
                     check_program_modification_slot: bank.check_program_modification_slot(),

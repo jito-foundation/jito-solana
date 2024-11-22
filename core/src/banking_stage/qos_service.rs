@@ -57,8 +57,7 @@ impl QosService {
         let (transactions_qos_cost_results, num_included) = self.select_transactions_per_cost(
             transactions.iter(),
             transaction_costs.into_iter(),
-            bank.slot(),
-            cost_tracker,
+            bank,
         );
         self.accumulate_estimated_transaction_costs(&Self::accumulate_batched_transaction_costs(
             transactions_qos_cost_results.iter(),

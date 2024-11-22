@@ -129,6 +129,7 @@ impl ImmutableDeserializedBundle {
                     bank.get_reserved_account_keys(),
                 )
             })
+            .map(|(txn, _)| txn)
             .collect();
 
         if self.packets.len() != transactions.len() {

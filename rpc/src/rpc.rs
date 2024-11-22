@@ -3462,6 +3462,7 @@ pub mod rpc_full {
             clock::MAX_PROCESSING_AGE,
             message::{SanitizedVersionedMessage, VersionedMessage},
         },
+        solana_svm::transaction_error_metrics::TransactionErrorMetrics,
         solana_transaction_status::parse_ui_inner_instructions,
     };
 
@@ -4185,6 +4186,7 @@ pub mod rpc_full {
                 None,
                 &pre_execution_accounts,
                 &post_execution_accounts,
+                &mut TransactionErrorMetrics::default(),
             );
 
             // only return error if irrecoverable (timeout or tx malformed)

@@ -11,7 +11,10 @@ use {
         unprocessed_transaction_storage::{ConsumeScannerPayload, UnprocessedTransactionStorage},
         BankingStageStats,
     },
-    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
+    crate::{
+        banking_stage::committer::PreBalanceInfo,
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
+    },
     itertools::Itertools,
     solana_feature_set as feature_set,
     solana_ledger::token_balances::collect_token_balances,
@@ -42,8 +45,6 @@ use {
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
     },
     solana_svm_transaction::svm_message::SVMMessage,
-    solana_timings::ExecuteTimings,
-    solana_transaction_status::PreBalanceInfo,
     std::{
         collections::HashSet,
         sync::{atomic::Ordering, Arc},
@@ -689,7 +690,7 @@ impl Consumer {
 
         let (record_transactions_summary, record_us) = measure_us!(self
             .transaction_recorder
-            .record_transactions(bank.slot(), vec![executed_transactions]));
+            .record_transactions(bank.slot(), vec![processed_transactions]));
         execute_and_commit_timings.record_us = record_us;
 
         let RecordTransactionsSummary {

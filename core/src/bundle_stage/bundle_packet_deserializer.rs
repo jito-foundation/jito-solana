@@ -78,11 +78,7 @@ impl BundlePacketDeserializer {
         let mut num_dropped_bundles: usize = 0;
 
         for bundle in bundles.iter_mut() {
-            match Self::deserialize_bundle(
-                bundle,
-                round_compute_unit_price_enabled,
-                max_packets_per_bundle,
-            ) {
+            match Self::deserialize_bundle(bundle, max_packets_per_bundle) {
                 Ok(deserialized_bundle) => {
                     deserialized_bundles.push(deserialized_bundle);
                 }
@@ -140,14 +136,8 @@ impl BundlePacketDeserializer {
     /// bundle failed to deserialize
     pub fn deserialize_bundle(
         bundle: &mut PacketBundle,
-        round_compute_unit_price_enabled: bool,
         max_packets_per_bundle: Option<usize>,
     ) -> Result<ImmutableDeserializedBundle, DeserializedBundleError> {
-        bundle.batch.iter_mut().for_each(|p| {
-            p.meta_mut()
-                .set_round_compute_unit_price(round_compute_unit_price_enabled);
-        });
-
         ImmutableDeserializedBundle::new(bundle, max_packets_per_bundle)
     }
 }

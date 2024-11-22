@@ -21,7 +21,7 @@ use {
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
-    solana_measure::measure,
+    solana_measure::measure_us,
     solana_poh::poh_recorder::PohRecorder,
     solana_runtime::{
         bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
@@ -331,18 +331,15 @@ impl BundleStage {
             if !unprocessed_bundle_storage.is_empty()
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, process_buffered_packets_time) = measure!(
-                    Self::process_buffered_bundles(
-                        &decision_maker,
-                        &mut consumer,
-                        &mut unprocessed_bundle_storage,
-                        &mut bundle_stage_leader_metrics,
-                    ),
-                    "process_buffered_packets",
-                );
+                let (_, process_buffered_packets_us) = measure_us!(Self::process_buffered_bundles(
+                    &decision_maker,
+                    &mut consumer,
+                    &mut unprocessed_bundle_storage,
+                    &mut bundle_stage_leader_metrics,
+                ));
                 bundle_stage_leader_metrics
                     .leader_slot_metrics_tracker()
-                    .increment_process_buffered_packets_us(process_buffered_packets_time.as_us());
+                    .increment_process_buffered_packets_us(process_buffered_packets_us);
                 last_metrics_update = Instant::now();
             }
 
@@ -379,14 +376,14 @@ impl BundleStage {
         unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
-        let (decision, make_decision_time) =
-            measure!(decision_maker.make_consume_or_forward_decision());
+        let (decision, make_decision_us) =
+            measure_us!(decision_maker.make_consume_or_forward_decision());
 
         let (metrics_action, banking_stage_metrics_action) = bundle_stage_leader_metrics
             .check_leader_slot_boundary(decision.bank_start(), Some(unprocessed_bundle_storage));
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
-            .increment_make_decision_us(make_decision_time.as_us());
+            .increment_make_decision_us(make_decision_us);
 
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
@@ -399,17 +396,15 @@ impl BundleStage {
                 bundle_stage_leader_metrics
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
-                let (_, consume_buffered_packets_time) = measure!(
-                    consumer.consume_buffered_bundles(
+                let (_, consume_buffered_packets_us) = measure_us!(consumer
+                    .consume_buffered_bundles(
                         &bank_start,
                         unprocessed_bundle_storage,
                         bundle_stage_leader_metrics,
-                    ),
-                    "consume_buffered_bundles",
-                );
+                    ));
                 bundle_stage_leader_metrics
                     .leader_slot_metrics_tracker()
-                    .increment_consume_buffered_packets_us(consume_buffered_packets_time.as_us());
+                    .increment_consume_buffered_packets_us(consume_buffered_packets_us);
             }
             // BufferedPacketsDecision::Forward means the leader is slot is far away.
             // Bundles aren't forwarded because it breaks atomicity guarantees, so just drop them.

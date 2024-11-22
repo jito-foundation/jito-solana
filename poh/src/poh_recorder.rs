@@ -62,12 +62,8 @@ pub enum PohRecorderError {
 
 pub type Result<T> = std::result::Result<T, PohRecorderError>;
 
-#[derive(Clone, Debug)]
-pub struct WorkingBankEntry {
-    pub bank: Arc<Bank>,
-    // normal entries have len == 1, bundles have len > 1
-    pub entries_ticks: Vec<(Entry, u64)>,
-}
+// normal entries have len == 1, bundles have len > 1
+pub type WorkingBankEntry = (Arc<Bank>, Vec<(Entry, u64)>);
 
 #[derive(Debug, Clone)]
 pub struct BankStart {

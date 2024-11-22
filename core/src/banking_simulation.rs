@@ -1,4 +1,5 @@
 #![cfg(feature = "dev-context-only-utils")]
+
 use {
     crate::{
         banking_stage::{BankingStage, LikeClusterInfo},
@@ -6,6 +7,7 @@ use {
             BankingPacketBatch, BankingTracer, ChannelLabel, TimedTracedEvent, TracedEvent,
             TracedSender, TracerThread, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME,
         },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::BlockProductionMethod,
     },
     bincode::deserialize_from,
@@ -42,7 +44,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_turbine::broadcast_stage::{BroadcastStage, BroadcastStageType},
     std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, HashSet},
         fmt::Display,
         fs::File,
         io::{self, BufRead, BufReader},
@@ -792,6 +794,7 @@ impl BankingSimulator {
             bank_forks.clone(),
             shred_version,
             sender,
+            Arc::default(),
         );
 
         info!("Start banking stage!...");
@@ -815,6 +818,8 @@ impl BankingSimulator {
             bank_forks.clone(),
             prioritization_fee_cache,
             false,
+            HashSet::default(),
+            BundleAccountLocker::default(),
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot
