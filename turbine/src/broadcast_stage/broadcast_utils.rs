@@ -32,22 +32,15 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
     let timer = Duration::new(1, 0);
     let recv_start = Instant::now();
 
-    let WorkingBankEntry {
-        mut bank,
-        entries_ticks,
-    } = receiver.recv_timeout(timer)?;
-    let mut last_tick_height = entries_ticks.iter().last().unwrap().1;
-    let mut entries: Vec<Entry> = entries_ticks.into_iter().map(|(e, _)| e).collect();
-
+    let (mut bank, entry_ticks) = receiver.recv_timeout(timer)?;
+    let mut last_tick_height = entry_ticks.iter().last().unwrap().1;
     assert!(last_tick_height <= bank.max_tick_height());
+
+    let mut entries: Vec<Entry> = entry_ticks.into_iter().map(|(e, _)| e).collect();
 
     // Drain channel
     while last_tick_height != bank.max_tick_height() {
-        let Ok(WorkingBankEntry {
-            bank: try_bank,
-            entries_ticks: new_entries_ticks,
-        }) = receiver.try_recv()
-        else {
+        let Ok((try_bank, new_entries_ticks)) = receiver.try_recv() else {
             break;
         };
         // If the bank changed, that implies the previous slot was interrupted and we do not have to
@@ -69,10 +62,8 @@ pub(super) fn recv_slot_entries(receiver: &Receiver<WorkingBankEntry>) -> Result
     while last_tick_height != bank.max_tick_height()
         && serialized_batch_byte_count < target_serialized_batch_byte_count
     {
-        let Ok(WorkingBankEntry {
-            bank: try_bank,
-            entries_ticks: new_entries_ticks,
-        }) = receiver.recv_deadline(coalesce_start + ENTRY_COALESCE_DURATION)
+        let Ok((try_bank, new_entries_ticks)) =
+            receiver.recv_deadline(coalesce_start + ENTRY_COALESCE_DURATION)
         else {
             break;
         };
