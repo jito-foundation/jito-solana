@@ -676,10 +676,6 @@ impl BundleConsumer {
         let (freeze_lock, freeze_lock_us) = measure_us!(bank_start.working_bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
 
-        let (last_blockhash, lamports_per_signature) = bank_start
-            .working_bank
-            .last_blockhash_and_lamports_per_signature();
-
         let (
             RecordTransactionsSummary {
                 result: record_transactions_result,

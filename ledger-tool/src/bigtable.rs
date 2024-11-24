@@ -204,6 +204,7 @@ fn get_shred_config_from_ledger(
         blockstore.clone(),
         process_options,
         None,
+        true,
     );
 
     let bank = bank_forks.read().unwrap().working_bank();
@@ -1450,15 +1451,6 @@ pub fn bigtable_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) {
                 arg_matches,
                 AccessType::Primary,
             ));
-
-            let LoadAndProcessLedgerOutput { bank_forks, .. } = load_and_process_ledger_or_exit(
-                arg_matches,
-                &genesis_config,
-                blockstore.clone(),
-                process_options,
-                None,
-                true,
-            );
 
             let shred_config = if let Some(shred_version) = shred_version {
                 ShredConfig {

@@ -1553,13 +1553,6 @@ pub fn main() {
 
     let full_api = matches.is_present("full_rpc_api");
 
-    let cli::thread_args::NumThreadConfig {
-        ip_echo_server_threads,
-        replay_forks_threads,
-        replay_transactions_threads,
-        tvu_receive_threads,
-    } = cli::thread_args::parse_num_threads_args(&matches);
-
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
     let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
 

@@ -2509,6 +2509,7 @@ fn main() {
                             blockstore.clone(),
                             process_options,
                             None, // transaction status sender
+                            true,
                         );
 
                     let block_production_method = value_t!(

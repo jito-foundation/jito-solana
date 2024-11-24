@@ -67,11 +67,7 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
     let mut total = 0;
     let now = Instant::now();
     loop {
-        if let Ok(WorkingBankEntry {
-            bank: _,
-            entries_ticks,
-        }) = receiver.recv_timeout(Duration::new(1, 0))
-        {
+        if let Ok((_, entries_ticks)) = receiver.recv_timeout(Duration::new(1, 0)) {
             total += entries_ticks
                 .iter()
                 .map(|e| e.0.transactions.len())
