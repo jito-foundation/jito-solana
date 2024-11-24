@@ -61,7 +61,7 @@ impl TpuEntryNotifier {
         current_index: &mut usize,
         current_transaction_index: &mut usize,
     ) -> Result<(), RecvTimeoutError> {
-        let (bank, (entry, tick_height)) = entry_receiver.recv_timeout(Duration::from_secs(1))?;
+        let (bank, entries_ticks) = entry_receiver.recv_timeout(Duration::from_secs(1))?;
         let slot = bank.slot();
         let index = if slot != *current_slot {
             *current_index = 0;
@@ -73,25 +73,27 @@ impl TpuEntryNotifier {
             *current_index
         };
 
-        let entry_summary = EntrySummary {
-            num_hashes: entry.num_hashes,
-            hash: entry.hash,
-            num_transactions: entry.transactions.len() as u64,
-        };
-        if let Err(err) = entry_notification_sender.send(EntryNotification {
-            slot,
-            index,
-            entry: entry_summary,
-            starting_transaction_index: *current_transaction_index,
-        }) {
-            warn!(
+        entries_ticks.iter().for_each(|(entry, _tick_height)| {
+            let entry_summary = EntrySummary {
+                num_hashes: entry.num_hashes,
+                hash: entry.hash,
+                num_transactions: entry.transactions.len() as u64,
+            };
+            if let Err(err) = entry_notification_sender.send(EntryNotification {
+                slot,
+                index,
+                entry: entry_summary,
+                starting_transaction_index: *current_transaction_index,
+            }) {
+                warn!(
                 "Failed to send slot {slot:?} entry {index:?} from Tpu to EntryNotifierService, \
                  error {err:?}",
             );
-        }
-        *current_transaction_index += entry.transactions.len();
+            }
+            *current_transaction_index += entry.transactions.len();
+        });
 
-        if let Err(err) = broadcast_entry_sender.send((bank, (entry, tick_height))) {
+        if let Err(err) = broadcast_entry_sender.send((bank, entries_ticks)) {
             warn!(
                 "Failed to send slot {slot:?} entry {index:?} from Tpu to BroadcastStage, error \
                  {err:?}",
@@ -100,6 +102,7 @@ impl TpuEntryNotifier {
             // gracefully.
             exit.store(true, Ordering::Relaxed);
         }
+
         Ok(())
     }
 

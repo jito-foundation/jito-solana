@@ -494,7 +494,6 @@ impl Consumer {
             cost_model_us,
         ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
             bank,
-            &mut bank.write_cost_tracker().unwrap(),
             txs,
             pre_results
         ));

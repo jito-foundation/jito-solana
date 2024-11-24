@@ -61,7 +61,6 @@ impl BundlePacketDeserializer {
         Ok(Self::deserialize_and_collect_bundles(
             bundle_count,
             &mut bundles,
-            round_compute_unit_price_enabled,
             self.max_packets_per_bundle,
         ))
     }
@@ -71,7 +70,6 @@ impl BundlePacketDeserializer {
     fn deserialize_and_collect_bundles(
         bundle_count: usize,
         bundles: &mut [PacketBundle],
-        round_compute_unit_price_enabled: bool,
         max_packets_per_bundle: Option<usize>,
     ) -> ReceiveBundleResults {
         let mut deserialized_bundles = Vec::with_capacity(bundle_count);

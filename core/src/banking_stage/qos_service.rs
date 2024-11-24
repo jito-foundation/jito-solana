@@ -6,9 +6,7 @@
 use {
     super::{committer::CommitTransactionDetails, BatchedTransactionDetails},
     solana_cost_model::{
-        cost_model::CostModel,
-        cost_tracker::{CostTracker, UpdatedCosts},
-        transaction_cost::TransactionCost,
+        cost_model::CostModel, cost_tracker::UpdatedCosts, transaction_cost::TransactionCost,
     },
     solana_feature_set::FeatureSet,
     solana_measure::measure::Measure,
@@ -45,7 +43,6 @@ impl QosService {
     pub fn select_and_accumulate_transaction_costs<'a>(
         &self,
         bank: &Bank,
-        cost_tracker: &mut CostTracker, // caller should pass in &mut bank.write_cost_tracker().unwrap()
         transactions: &'a [SanitizedTransaction],
         pre_results: impl Iterator<Item = transaction::Result<()>>,
     ) -> (

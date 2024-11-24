@@ -474,7 +474,6 @@ impl BundleConsumer {
         let (transaction_qos_cost_results, cost_model_throttled_transactions_count) = qos_service
             .select_and_accumulate_transaction_costs(
                 bank,
-                &mut write_cost_tracker,
                 &sanitized_bundle.transactions,
                 std::iter::repeat(Ok(())),
             );
@@ -718,8 +717,6 @@ impl BundleConsumer {
         // note: execute_and_commit_timings.commit_us handled inside this function
         let (commit_us, commit_bundle_details) = committer.commit_bundle(
             &mut bundle_execution_results,
-            last_blockhash,
-            lamports_per_signature,
             starting_transaction_index,
             &bank_start.working_bank,
             &mut execute_and_commit_timings,
