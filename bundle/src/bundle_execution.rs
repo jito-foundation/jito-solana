@@ -563,6 +563,10 @@ mod tests {
             system_transaction::transfer,
             transaction::{SanitizedTransaction, Transaction, TransactionError},
         },
+        solana_svm::{
+            transaction_error_metrics::TransactionErrorMetrics,
+            transaction_processing_result::TransactionProcessingResultExtensions,
+        },
         std::{
             sync::{Arc, Barrier, RwLock},
             thread::{sleep, spawn},
@@ -616,9 +620,7 @@ mod tests {
         const TRANSFER_AMOUNT: u64 = 1_000;
         let (genesis_config_info, bank, _bank_forks) =
             create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
-        let lamports_per_signature = bank
-            .get_lamports_per_signature_for_blockhash(&genesis_config_info.genesis_config.hash())
-            .unwrap();
+        let lamports_per_signature = bank.fee_structure().lamports_per_signature;
 
         let kp = Keypair::new();
         let transactions = vec![transfer(
@@ -641,6 +643,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            &mut TransactionErrorMetrics::default(),
         );
 
         // make sure the bundle succeeded
@@ -665,8 +668,8 @@ mod tests {
             .processing_results
             .first()
             .unwrap();
-        assert!(execution_result.was_executed());
-        assert!(execution_result.was_executed_successfully());
+        assert!(execution_result.was_processed());
+        assert!(execution_result.was_processed_with_successful_result());
 
         // Make sure the post-balances are correct
         assert_eq!(tx_result.pre_balance_info.native.len(), 1);
@@ -716,6 +719,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            &mut TransactionErrorMetrics::default(),
         );
 
         assert_eq!(execution_result.bundle_transaction_results.len(), 0);
@@ -733,7 +737,7 @@ mod tests {
                 execution_result,
             } => {
                 assert_eq!(signature, *bundle.transactions[0].signature());
-                assert!(!execution_result.was_executed());
+                assert!(!execution_result.was_processed());
             }
         }
     }
@@ -746,9 +750,7 @@ mod tests {
         const TRANSFER_AMOUNT_3: u64 = 10_000;
         let (genesis_config_info, bank, _bank_forks) =
             create_simple_test_bank(MINT_AMOUNT_LAMPORTS);
-        let lamports_per_signature = bank
-            .get_lamports_per_signature_for_blockhash(&genesis_config_info.genesis_config.hash())
-            .unwrap();
+        let lamports_per_signature = bank.fee_structure().lamports_per_signature;
 
         // mint transfers 100k to 1
         // 1 transfers 50k to 2
@@ -791,6 +793,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            &mut TransactionErrorMetrics::default(),
         );
 
         assert!(execution_result.result.is_ok());
@@ -811,7 +814,7 @@ mod tests {
         assert!(execution_result.bundle_transaction_results[0]
             .load_and_execute_transactions_output
             .processing_results[0]
-            .was_executed_successfully());
+            .was_processed_with_successful_result());
         assert_eq!(
             execution_result.bundle_transaction_results[0]
                 .load_and_execute_transactions_output
@@ -877,7 +880,7 @@ mod tests {
         assert!(execution_result.bundle_transaction_results[1]
             .load_and_execute_transactions_output
             .processing_results[0]
-            .was_executed_successfully());
+            .was_processed_with_successful_result());
         assert_eq!(
             execution_result.bundle_transaction_results[1]
                 .load_and_execute_transactions_output
@@ -935,7 +938,7 @@ mod tests {
         assert!(execution_result.bundle_transaction_results[2]
             .load_and_execute_transactions_output
             .processing_results[0]
-            .was_executed_successfully());
+            .was_processed_with_successful_result());
 
         assert_eq!(
             execution_result.bundle_transaction_results[2]
@@ -1013,6 +1016,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            &mut TransactionErrorMetrics::default(),
         );
         match execution_result.result.as_ref().unwrap_err() {
             LoadAndExecuteBundleError::ProcessingTimeExceeded(_)
@@ -1072,6 +1076,7 @@ mod tests {
             None,
             &default,
             &default,
+            &mut TransactionErrorMetrics::default(),
         );
         assert_matches!(
             result.result,
@@ -1115,6 +1120,7 @@ mod tests {
             None,
             &default,
             &default,
+            &mut TransactionErrorMetrics::default(),
         );
         assert!(result.result.is_ok());
     }
@@ -1171,6 +1177,7 @@ mod tests {
             None,
             &default,
             &default,
+            &mut TransactionErrorMetrics::default(),
         );
         assert!(result.result.is_ok());
 
@@ -1204,6 +1211,7 @@ mod tests {
             None,
             &PRE_EXECUTION_ACCOUNTS,
             &vec![None; bundle.transactions.len()],
+            &mut TransactionErrorMetrics::default(),
         );
         assert_matches!(
             result.result,
@@ -1221,6 +1229,7 @@ mod tests {
             None,
             &vec![None; bundle.transactions.len()],
             &PRE_EXECUTION_ACCOUNTS,
+            &mut TransactionErrorMetrics::default(),
         );
         assert_matches!(
             result.result,

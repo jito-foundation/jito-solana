@@ -166,11 +166,7 @@ mod tests {
             .map(|i| {
                 let entry = Entry::new(&last_hash, 1, vec![tx.clone()]);
                 last_hash = entry.hash;
-                s.send(WorkingBankEntry {
-                    bank: bank1.clone(),
-                    entries_ticks: vec![(entry.clone(), i)],
-                })
-                .unwrap();
+                s.send((bank1.clone(), vec![(entry.clone(), i)])).unwrap();
                 entry
             })
             .collect();
@@ -204,18 +200,11 @@ mod tests {
                 last_hash = entry.hash;
                 // Interrupt slot 1 right before the last tick
                 if tick_height == expected_last_height {
-                    s.send(WorkingBankEntry {
-                        bank: bank2.clone(),
-                        entries_ticks: vec![(entry.clone(), tick_height)],
-                    })
-                    .unwrap();
+                    s.send((bank2.clone(), vec![(entry.clone(), tick_height)]))
+                        .unwrap();
                     Some(entry)
                 } else {
-                    s.send(WorkingBankEntry {
-                        bank: bank1.clone(),
-                        entries_ticks: vec![(entry, tick_height)],
-                    })
-                    .unwrap();
+                    s.send((bank1.clone(), vec![(entry, tick_height)])).unwrap();
                     None
                 }
             })

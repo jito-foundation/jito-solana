@@ -1347,10 +1347,7 @@ mod tests {
             ];
 
             let _ = recorder.record_transactions(bank.slot(), vec![txs.clone()]);
-            let WorkingBankEntry {
-                bank,
-                entries_ticks,
-            } = entry_receiver.recv().unwrap();
+            let (bank, entries_ticks) = entry_receiver.recv().unwrap();
             let entry = &entries_ticks.first().unwrap().0;
             assert_eq!(entry.transactions, txs);
 

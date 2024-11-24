@@ -6876,6 +6876,7 @@ dependencies = [
  "solana-perf",
  "solana-poh",
  "solana-program-runtime",
+ "solana-program-test",
  "solana-quic-client",
  "solana-rayon-threadlimit",
  "solana-rpc",

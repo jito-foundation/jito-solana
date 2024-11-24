@@ -1115,11 +1115,7 @@ mod tests {
         );
 
         let mut transactions = Vec::new();
-        while let Ok(WorkingBankEntry {
-            bank: wbe_bank,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
+        while let Ok((wbe_bank, entries_ticks)) = entry_receiver.recv() {
             assert_eq!(bank.slot(), wbe_bank.slot());
             for (entry, _) in entries_ticks {
                 if !entry.transactions.is_empty() {
@@ -1270,11 +1266,7 @@ mod tests {
         // and another with the tip
 
         let mut transactions = Vec::new();
-        while let Ok(WorkingBankEntry {
-            bank: wbe_bank,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
+        while let Ok((wbe_bank, entries_ticks)) = entry_receiver.recv() {
             assert_eq!(bank.slot(), wbe_bank.slot());
             transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
             if transactions.len() == 5 {
@@ -1405,11 +1397,7 @@ mod tests {
         );
 
         let mut transactions = Vec::new();
-        while let Ok(WorkingBankEntry {
-            bank: wbe_bank,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
+        while let Ok((wbe_bank, entries_ticks)) = entry_receiver.recv() {
             assert_eq!(bank.slot(), wbe_bank.slot());
             transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
             if transactions.len() == 4 {

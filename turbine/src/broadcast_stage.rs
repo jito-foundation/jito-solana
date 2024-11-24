@@ -768,10 +768,7 @@ pub mod test {
             let ticks = create_ticks(max_tick_height - start_tick_height, 0, Hash::default());
             for (i, tick) in ticks.into_iter().enumerate() {
                 entry_sender
-                    .send(WorkingBankEntry {
-                        bank: bank.clone(),
-                        entries_ticks: vec![(tick, i as u64 + 1)],
-                    })
+                    .send((bank.clone(), vec![(tick, i as u64 + 1)]))
                     .expect("Expect successful send to broadcast service");
             }
         }

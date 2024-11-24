@@ -808,7 +808,7 @@ fn test_snapshots_with_background_services(
                 &snapshot_test_config
                     .snapshot_config
                     .incremental_snapshot_archives_dir,
-                last_full_snapshot_slot.unwrap(),
+                latest_full_snapshot_slot.unwrap(),
                 None,
             ) != Some(slot)
             {

@@ -720,12 +720,8 @@ mod tests {
         bank.write_cost_tracker()
             .unwrap()
             .set_limits(cost_limit, cost_limit, cost_limit);
-        let (results, num_selected) = qos_service.select_transactions_per_cost(
-            txs.iter(),
-            txs_costs.into_iter(),
-            bank.slot(),
-            &mut bank.write_cost_tracker().unwrap(),
-        );
+        let (results, num_selected) =
+            qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
         assert_eq!(num_selected, 2);
 
         // verify that first transfer tx and first vote are allowed

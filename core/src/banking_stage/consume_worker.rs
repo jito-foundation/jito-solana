@@ -717,12 +717,14 @@ impl ConsumeWorkerTransactionErrorMetrics {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::{
+        crate::{
+            banking_stage::{
+                committer::Committer,
+                qos_service::QosService,
+                scheduler_messages::{MaxAge, TransactionBatchId, TransactionId},
+                tests::{create_slow_genesis_config, sanitize_transactions, simulate_poh},
+            },
             bundle_stage::bundle_account_locker::BundleAccountLocker,
-            committer::Committer,
-            qos_service::QosService,
-            scheduler_messages::{MaxAge, TransactionBatchId, TransactionId},
-            tests::{create_slow_genesis_config, sanitize_transactions, simulate_poh},
         },
         crossbeam_channel::unbounded,
         solana_ledger::{
