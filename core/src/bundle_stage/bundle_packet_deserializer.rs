@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_deserialize_and_collect_bundles_empty() {
         let results =
-            BundlePacketDeserializer::deserialize_and_collect_bundles(0, &mut [], false, Some(5));
+            BundlePacketDeserializer::deserialize_and_collect_bundles(0, &mut [], Some(5));
         assert_eq!(results.deserialized_bundles.len(), 0);
         assert_eq!(results.num_dropped_bundles, 0);
     }

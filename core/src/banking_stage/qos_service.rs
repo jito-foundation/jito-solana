@@ -774,12 +774,8 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
-                txs.iter(),
-                txs_costs.into_iter(),
-                bank.slot(),
-                &mut bank.write_cost_tracker().unwrap(),
-            );
+            let (qos_cost_results, _num_included) =
+                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -843,12 +839,8 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
-                txs.iter(),
-                txs_costs.into_iter(),
-                bank.slot(),
-                &mut bank.write_cost_tracker().unwrap(),
-            );
+            let (qos_cost_results, _num_included) =
+                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -902,12 +894,8 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
-                txs.iter(),
-                txs_costs.into_iter(),
-                bank.slot(),
-                &mut bank.write_cost_tracker().unwrap(),
-            );
+            let (qos_cost_results, _num_included) =
+                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()

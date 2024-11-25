@@ -1799,6 +1799,7 @@ mod tests {
                         .collect_vec(),
                 )
             },
+            &mut HashSet::default(),
         );
 
         // All packets should remain in the transaction storage

@@ -850,7 +850,9 @@ mod tests {
         crate::banking_trace::{BankingPacketBatch, BankingTracer},
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
-        solana_entry::entry::{self, EntrySlice},
+        solana_entry::entry::{
+            EntrySlice, {self},
+        },
         solana_gossip::cluster_info::Node,
         solana_ledger::{
             blockstore::Blockstore,
@@ -864,7 +866,6 @@ mod tests {
         solana_poh::{
             poh_recorder::{
                 create_test_recorder, PohRecorderError, Record, RecordTransactionsSummary,
-                WorkingBankEntry,
             },
             poh_service::PohService,
         },
@@ -1008,12 +1009,7 @@ mod tests {
             trace!("getting entries");
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .flat_map(
-                    |WorkingBankEntry {
-                         bank: _,
-                         entries_ticks,
-                     }| entries_ticks.into_iter().map(|(e, _)| e),
-                )
+                .flat_map(|(_, entries_ticks)| entries_ticks.into_iter().map(|(e, _)| e))
                 .collect();
             trace!("done");
             assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
@@ -1136,12 +1132,7 @@ mod tests {
             loop {
                 let entries: Vec<_> = entry_receiver
                     .iter()
-                    .flat_map(
-                        |WorkingBankEntry {
-                             bank: _,
-                             entries_ticks,
-                         }| entries_ticks.into_iter().map(|(e, _)| e),
-                    )
+                    .flat_map(|(_, entries_ticks)| entries_ticks.into_iter().map(|(e, _)| e))
                     .collect();
 
                 assert!(entries.verify(&blockhash, &entry::thread_pool_for_tests()));
@@ -1278,12 +1269,7 @@ mod tests {
             // check that the balance is what we expect.
             let entries: Vec<_> = entry_receiver
                 .iter()
-                .flat_map(
-                    |WorkingBankEntry {
-                         bank: _,
-                         entries_ticks,
-                     }| entries_ticks.into_iter().map(|(e, _)| e),
-                )
+                .flat_map(|(_, entries_ticks)| entries_ticks.into_iter().map(|(e, _)| e))
                 .collect();
 
             let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);

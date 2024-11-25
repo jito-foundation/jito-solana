@@ -1358,7 +1358,7 @@ mod tests {
 
             let mut done = false;
             // read entries until I find mine, might be ticks...
-            while let Ok((bank, entries_ticks)) = entry_receiver.recv() {
+            while let Ok((_, entries_ticks)) = entry_receiver.recv() {
                 if !entries_ticks[0].0.is_tick() {
                     assert_eq!(entries_ticks[0].0.transactions.len(), transactions.len());
                     done = true;
