@@ -61,14 +61,14 @@ impl AccountLocks {
     }
 
     #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
-    fn is_locked_readonly(&self, key: &Pubkey) -> bool {
+    pub fn is_locked_readonly(&self, key: &Pubkey) -> bool {
         self.readonly_locks
             .get(key)
             .map_or(false, |count| *count > 0)
     }
 
     #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
-    fn is_locked_write(&self, key: &Pubkey) -> bool {
+    pub fn is_locked_write(&self, key: &Pubkey) -> bool {
         self.write_locks.contains(key)
     }
 
