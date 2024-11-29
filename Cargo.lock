@@ -8214,7 +8214,6 @@ dependencies = [
  "solana-bundle",
  "solana-inline-spl",
  "solana-sdk",
- "solana-svm",
  "solana-transaction-status-client-types",
  "solana-version",
  "thiserror",
