@@ -22,7 +22,7 @@ members = [
     "bloom",
     "bucket_map",
     "builtins-default-costs",
-    "bundle",
+    "bundle-execution",
     "cargo-registry",
     "clap-utils",
     "clap-v3-utils",
@@ -414,7 +414,7 @@ solana-borsh = { path = "sdk/borsh", version = "=2.2.0" }
 solana-bpf-loader-program = { path = "programs/bpf_loader", version = "=2.2.0" }
 solana-bucket-map = { path = "bucket_map", version = "=2.2.0" }
 solana-builtins-default-costs = { path = "builtins-default-costs", version = "=2.2.0" }
-solana-bundle = { path = "bundle", version = "=2.2.0" }
+solana-bundle = { path = "bundle-execution", version = "=2.2.0" }
 agave-cargo-registry = { path = "cargo-registry", version = "=2.2.0" }
 solana-clap-utils = { path = "clap-utils", version = "=2.2.0" }
 solana-clap-v3-utils = { path = "clap-v3-utils", version = "=2.2.0" }
