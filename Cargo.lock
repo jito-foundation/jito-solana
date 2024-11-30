@@ -6493,7 +6493,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-bundle"
+name = "solana-bundle-execution"
 version = "2.2.0"
 dependencies = [
  "anchor-lang",
@@ -6861,7 +6861,7 @@ dependencies = [
  "solana-accounts-db",
  "solana-bloom",
  "solana-builtins-default-costs",
- "solana-bundle",
+ "solana-bundle-execution",
  "solana-client",
  "solana-compute-budget",
  "solana-connection-cache",
@@ -8132,7 +8132,7 @@ dependencies = [
  "soketto",
  "solana-account-decoder",
  "solana-accounts-db",
- "solana-bundle",
+ "solana-bundle-execution",
  "solana-client",
  "solana-entry",
  "solana-faucet",
@@ -8217,6 +8217,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account-decoder-client-types",
+ "solana-bundle-execution",
  "solana-inline-spl",
  "solana-sdk",
  "solana-transaction-status-client-types",

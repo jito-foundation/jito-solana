@@ -1,7 +1,7 @@
 [package]
-name = "solana-bundle"
-description = "Library related to handling bundles"
-documentation = "https://docs.rs/solana-bundle"
+name = "solana-bundle-execution"
+description = "Library related to executing bundles"
+documentation = "https://docs.rs/solana-bundle-execution"
 readme = "../README.md"
 version = { workspace = true }
 authors = { workspace = true }
@@ -35,4 +35,4 @@ solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
 
 [lib]
 crate-type = ["lib"]
-name = "solana_bundle"
+name = "solana_bundle_execution"

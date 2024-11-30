@@ -92,20 +92,51 @@ def should_add(package, dependency, wrong_self_dev_dependencies):
         and not is_path_dev_dep(dependency)
     )
 
+def find_cycle(graph):
+    """
+    Find a cycle in the dependency graph using Tarjan's algorithm.
+    Returns the first cycle found as a list, or None if no cycles exist.
+    """
+    def dfs(node, path, visited):
+        if node in path:
+            cycle_start = path.index(node)
+            return path[cycle_start:] + [node]
+
+        if node in visited:
+            return None
+
+        visited.add(node)
+        path.append(node)
+
+        for neighbor in graph[node]:
+            if neighbor not in graph:
+                continue
+            cycle = dfs(neighbor, path, visited)
+            if cycle:
+                return cycle
+
+        path.pop()
+        return None
+
+    visited = set()
+    for start in graph:
+        if start not in visited:
+            cycle = dfs(start, [], visited)
+            if cycle:
+                return cycle
+    return None
+
 def get_packages():
     metadata = load_metadata()
-
     manifest_path = dict()
-
-    # Build dictionary of packages and their immediate solana-only dependencies
     dependency_graph = dict()
     wrong_self_dev_dependencies = list()
 
     for pkg in metadata['packages']:
-        manifest_path[pkg['name']] = pkg['manifest_path'];
+        manifest_path[pkg['name']] = pkg['manifest_path']
         dependency_graph[pkg['name']] = [
             x['name'] for x in pkg['dependencies'] if should_add(pkg, x, wrong_self_dev_dependencies)
-        ];
+        ]
 
     # Check for direct circular dependencies
     circular_dependencies = set()
@@ -118,21 +149,26 @@ def get_packages():
         sys.stderr.write('Error: Circular dependency: {}\n'.format(dependency))
     for dependency in wrong_self_dev_dependencies:
         sys.stderr.write('Error: wrong dev-context-only-utils circular dependency. try: ' +
-            '{} = {{ path = ".", features = {} }}\n'
-            .format(dependency['name'], json.dumps(dependency['features']))
-        )
+                         '{} = {{ path = ".", features = {} }}\n'
+                         .format(dependency['name'], json.dumps(dependency['features']))
+                         )
 
     if len(circular_dependencies) != 0 or len(wrong_self_dev_dependencies) != 0:
         sys.exit(1)
 
     # Order dependencies
     sorted_dependency_graph = []
-    max_iterations = pow(len(dependency_graph),2)
+    max_iterations = pow(len(dependency_graph), 2)
     while dependency_graph:
         deleted_packages = []
         if max_iterations == 0:
-            # One day be more helpful and find the actual cycle for the user...
-            sys.exit('Error: Circular dependency suspected between these packages: \n {}\n'.format('\n '.join(dependency_graph.keys())))
+            # Find the actual cycle
+            cycle = find_cycle(dependency_graph)
+            if cycle:
+                cycle_str = ' -> '.join(cycle)
+                sys.exit('Error: Circular dependency detected:\n{}\n'.format(cycle_str))
+            else:
+                sys.exit('Error: Dependency resolution failed but no cycle found. This might indicate a bug.')
 
         max_iterations -= 1
 
@@ -146,8 +182,7 @@ def get_packages():
                 deleted_packages.append(package)
                 sorted_dependency_graph.append((package, manifest_path[package]))
 
-        dependency_graph = {p: d for p, d in dependency_graph.items() if not p in deleted_packages }
-
+        dependency_graph = {p: d for p, d in dependency_graph.items() if not p in deleted_packages}
 
     return sorted_dependency_graph
 
