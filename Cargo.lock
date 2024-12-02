@@ -7525,6 +7525,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-message"
+version = "2.2.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "bitflags 2.6.0",
+ "blake3",
+ "borsh 1.5.3",
+ "itertools 0.12.1",
+ "lazy_static",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "solana-bincode",
+ "solana-frozen-abi",
+ "solana-frozen-abi-macro",
+ "solana-hash",
+ "solana-instruction",
+ "solana-logger",
+ "solana-message",
+ "solana-nonce",
+ "solana-program",
+ "solana-pubkey",
+ "solana-sanitize",
+ "solana-sdk-ids",
+ "solana-sha256-hasher",
+ "solana-short-vec",
+ "solana-system-interface",
+ "solana-sysvar",
+ "solana-transaction-error",
+ "static_assertions",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "solana-metrics"
 version = "2.2.0"
 dependencies = [
@@ -7829,6 +7864,7 @@ dependencies = [
  "solana-keccak-hasher",
  "solana-last-restart-slot",
  "solana-logger",
+ "solana-message",
  "solana-msg",
  "solana-native-token",
  "solana-nonce",
