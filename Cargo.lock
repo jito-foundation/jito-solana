@@ -7616,7 +7616,7 @@ dependencies = [
  "serde_derive",
  "socket2 0.5.8",
  "solana-logger",
- "solana-sdk",
+ "solana-serde",
  "solana-version",
  "tokio",
  "url 2.5.4",

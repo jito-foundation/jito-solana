@@ -6008,7 +6008,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "socket2 0.5.8",
- "solana-sdk",
+ "solana-serde",
  "tokio",
  "url 2.5.4",
 ]
