@@ -8498,6 +8498,7 @@ dependencies = [
  "num-derive",
  "num-traits",
  "num_enum",
+ "openssl",
  "qualifier_attr",
  "rand 0.7.3",
  "rand 0.8.5",
