@@ -176,6 +176,7 @@ members = [
     "sdk/sysvar",
     "sdk/sysvar-id",
     "sdk/time-utils",
+    "sdk/transaction",
     "sdk/transaction-context",
     "sdk/transaction-error",
     "send-transaction-service",
@@ -573,6 +574,7 @@ solana-sysvar = { path = "sdk/sysvar", version = "=2.2.0" }
 solana-sysvar-id = { path = "sdk/sysvar-id", version = "=2.2.0" }
 solana-test-validator = { path = "test-validator", version = "=2.2.0" }
 solana-thin-client = { path = "thin-client", version = "=2.2.0" }
+solana-transaction = { path = "sdk/transaction", version = "=2.2.0" }
 solana-transaction-error = { path = "sdk/transaction-error", version = "=2.2.0" }
 solana-tpu-client = { path = "tpu-client", version = "=2.2.0", default-features = false }
 solana-tpu-client-next = { path = "tpu-client-next", version = "=2.2.0" }

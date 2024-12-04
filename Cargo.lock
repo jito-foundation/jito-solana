@@ -8558,6 +8558,7 @@ dependencies = [
  "solana-signer",
  "solana-sysvar",
  "solana-time-utils",
+ "solana-transaction",
  "solana-transaction-context",
  "solana-transaction-error",
  "static_assertions",
@@ -9276,6 +9277,45 @@ dependencies = [
  "thiserror 2.0.3",
  "tokio",
  "tokio-util 0.7.12",
+]
+
+[[package]]
+name = "solana-transaction"
+version = "2.2.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "borsh 1.5.3",
+ "serde",
+ "serde_derive",
+ "solana-bincode",
+ "solana-feature-set",
+ "solana-frozen-abi",
+ "solana-frozen-abi-macro",
+ "solana-hash",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-logger",
+ "solana-message",
+ "solana-nonce",
+ "solana-packet",
+ "solana-precompiles",
+ "solana-presigner",
+ "solana-program",
+ "solana-pubkey",
+ "solana-reserved-account-keys",
+ "solana-sanitize",
+ "solana-sdk",
+ "solana-sdk-ids",
+ "solana-sha256-hasher",
+ "solana-short-vec",
+ "solana-signature",
+ "solana-signer",
+ "solana-system-interface",
+ "solana-transaction",
+ "solana-transaction-error",
+ "static_assertions",
+ "wasm-bindgen",
 ]
 
 [[package]]
