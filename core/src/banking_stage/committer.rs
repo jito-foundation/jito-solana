@@ -137,7 +137,7 @@ impl Committer {
             let txs = batch.sanitized_transactions().to_vec();
             let post_balances = bank.collect_balances(batch);
             let post_token_balances =
-                collect_token_balances(bank, batch, &mut pre_balance_info.mint_decimals);
+                collect_token_balances(bank, batch, &mut pre_balance_info.mint_decimals, None);
             let mut transaction_index = starting_transaction_index.unwrap_or_default();
             let batch_transaction_indexes: Vec<_> = commit_results
                 .iter()

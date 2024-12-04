@@ -96,6 +96,9 @@ impl QosService {
     /// Given a list of transactions and their costs, this function returns a corresponding
     /// list of Results that indicate if a transaction is selected to be included in the current block,
     /// and a count of the number of transactions that would fit in the block
+    /// Given a list of transactions and their costs, this function returns a corresponding
+    /// list of Results that indicate if a transaction is selected to be included in the current block,
+    /// and a count of the number of transactions that would fit in the block
     fn select_transactions_per_cost<'a>(
         &self,
         transactions: impl Iterator<Item = &'a SanitizedTransaction>,
