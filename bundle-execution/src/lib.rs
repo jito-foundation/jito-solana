@@ -7,8 +7,6 @@ use {
     thiserror::Error,
 };
 
-pub mod bundle_execution;
-
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TipError {
     #[error("account is missing from bank: {0}")]

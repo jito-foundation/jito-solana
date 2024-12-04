@@ -22,7 +22,6 @@ use {
     itertools::Itertools,
     min_max_heap::MinMaxHeap,
     solana_accounts_db::account_locks::validate_account_locks,
-    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
     solana_measure::measure_us,
     solana_runtime::bank::Bank,
     solana_sdk::{
@@ -34,7 +33,10 @@ use {
         saturating_add_assign,
         transaction::SanitizedTransaction,
     },
-    solana_svm::transaction_error_metrics::TransactionErrorMetrics,
+    solana_svm::{
+        bundle_processor::{BundleExecutionError, LoadAndExecuteBundleError},
+        transaction_error_metrics::TransactionErrorMetrics,
+    },
     std::{
         collections::{HashMap, HashSet, VecDeque},
         sync::{atomic::Ordering, Arc},

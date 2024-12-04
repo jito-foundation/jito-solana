@@ -1,8 +1,11 @@
 use {
+    anchor_lang::error::Error,
     itertools::izip,
     log::*,
+    serde::{Deserialize, Serialize},
     solana_ledger::token_balances::collect_token_balances,
     solana_measure::{measure::Measure, measure_us},
+    solana_poh::poh_recorder::PohRecorderError,
     solana_runtime::{
         account_saver::collect_accounts_to_store,
         bank::{Bank, LoadAndExecuteTransactionsOutput, TransactionBalances},
@@ -37,6 +40,56 @@ use {
     },
     thiserror::Error,
 };
+
+#[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TipError {
+    #[error("account is missing from bank: {0}")]
+    AccountMissing(Pubkey),
+
+    #[error("Anchor error: {0}")]
+    AnchorError(String),
+
+    #[error("Lock error")]
+    LockError,
+
+    #[error("Error executing initialize programs")]
+    InitializeProgramsError,
+
+    #[error("Error cranking tip programs")]
+    CrankTipError,
+}
+
+impl From<anchor_lang::error::Error> for TipError {
+    fn from(anchor_err: Error) -> Self {
+        match anchor_err {
+            Error::AnchorError(e) => Self::AnchorError(e.error_msg),
+            Error::ProgramError(e) => Self::AnchorError(e.to_string()),
+        }
+    }
+}
+
+pub type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
+
+#[derive(Error, Debug, Clone)]
+pub enum BundleExecutionError {
+    #[error("The bank has hit the max allotted time for processing transactions")]
+    BankProcessingTimeLimitReached,
+
+    #[error("The bundle exceeds the cost model")]
+    ExceedsCostModel,
+
+    #[error("Runtime error while executing the bundle: {0}")]
+    TransactionFailure(#[from] LoadAndExecuteBundleError),
+
+    #[error("Error locking bundle because a transaction is malformed")]
+    LockError,
+
+    #[error("PoH record error: {0}")]
+    PohRecordError(#[from] PohRecorderError),
+
+    #[error("Tip payment error {0}")]
+    TipError(#[from] TipError),
+}
 
 #[derive(Clone, Default)]
 pub struct BundleExecutionMetrics {
@@ -551,7 +604,7 @@ fn get_account_transactions(
 #[cfg(test)]
 mod tests {
     use {
-        crate::bundle_execution::{load_and_execute_bundle, LoadAndExecuteBundleError},
+        crate::bundle_processor::{load_and_execute_bundle, LoadAndExecuteBundleError},
         assert_matches::assert_matches,
         solana_ledger::genesis_utils::create_genesis_config,
         solana_runtime::{bank::Bank, bank_forks::BankForks, genesis_utils::GenesisConfigInfo},

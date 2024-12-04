@@ -3,6 +3,7 @@
 
 pub mod account_loader;
 pub mod account_overrides;
+pub mod bundle_processor;
 pub mod message_processor;
 pub mod nonce_info;
 pub mod program_loader;
