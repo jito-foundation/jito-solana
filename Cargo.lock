@@ -8561,6 +8561,7 @@ dependencies = [
  "solana-short-vec",
  "solana-signature",
  "solana-signer",
+ "solana-system-transaction",
  "solana-sysvar",
  "solana-time-utils",
  "solana-transaction",
@@ -9064,6 +9065,19 @@ dependencies = [
  "solana-program-runtime",
  "solana-sdk",
  "solana-type-overrides",
+]
+
+[[package]]
+name = "solana-system-transaction"
+version = "2.2.0"
+dependencies = [
+ "solana-hash",
+ "solana-keypair",
+ "solana-message",
+ "solana-pubkey",
+ "solana-signer",
+ "solana-system-interface",
+ "solana-transaction",
 ]
 
 [[package]]
