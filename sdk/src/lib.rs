@@ -77,7 +77,6 @@ pub mod native_loader;
 pub mod net;
 pub mod nonce_account;
 pub mod offchain_message;
-pub mod poh_config;
 pub mod precompiles;
 pub mod program_utils;
 pub mod pubkey;
@@ -133,6 +132,8 @@ pub use solana_fee_structure as fee;
 pub use solana_inflation as inflation;
 #[deprecated(since = "2.1.0", note = "Use `solana-packet` crate instead")]
 pub use solana_packet as packet;
+#[deprecated(since = "2.2.0", note = "Use `solana-poh-config` crate instead")]
+pub use solana_poh_config as poh_config;
 #[deprecated(since = "2.1.0", note = "Use `solana-program-memory` crate instead")]
 pub use solana_program_memory as program_memory;
 #[deprecated(since = "2.1.0", note = "Use `solana_pubkey::pubkey` instead")]
@@ -231,10 +232,10 @@ macro_rules! saturating_add_assign {
     }};
 }
 
-#[macro_use]
-extern crate serde_derive;
 pub extern crate bs58;
 extern crate log as logger;
+#[cfg_attr(not(target_os = "solana"), macro_use)]
+extern crate serde_derive;
 
 #[cfg_attr(feature = "frozen-abi", macro_use)]
 #[cfg(feature = "frozen-abi")]

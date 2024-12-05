@@ -74,6 +74,7 @@ frozen-abi = [
     "solana-account/frozen-abi",
     "solana-cluster-type/frozen-abi",
     "solana-inflation/frozen-abi",
+    "solana-poh-config/frozen-abi",
     "solana-program/frozen-abi",
     "solana-reward-info/frozen-abi",
     "solana-short-vec/frozen-abi",
@@ -146,6 +147,7 @@ solana-keypair = { workspace = true, optional = true, features = [
 ] }
 solana-native-token = { workspace = true }
 solana-packet = { workspace = true, features = ["bincode", "serde"] }
+solana-poh-config = { workspace = true, features = ["serde"] }
 solana-precompile-error = { workspace = true, optional = true }
 solana-precompiles = { workspace = true, optional = true }
 solana-presigner = { workspace = true, optional = true }
