@@ -7034,8 +7034,8 @@ dependencies = [
  "serde",
  "serde_derive",
  "solana-frozen-abi",
+ "solana-message",
  "solana-native-token",
- "solana-program",
 ]
 
 [[package]]
