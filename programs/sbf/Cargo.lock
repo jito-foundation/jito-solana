@@ -5272,6 +5272,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-client-traits"
+version = "2.2.0"
+dependencies = [
+ "solana-account",
+ "solana-commitment-config",
+ "solana-epoch-info",
+ "solana-hash",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-message",
+ "solana-pubkey",
+ "solana-signature",
+ "solana-signer",
+ "solana-system-interface",
+ "solana-transaction",
+ "solana-transaction-error",
+]
+
+[[package]]
 name = "solana-clock"
 version = "2.2.0"
 dependencies = [
@@ -7219,6 +7238,7 @@ dependencies = [
  "siphasher",
  "solana-account",
  "solana-bn254",
+ "solana-client-traits",
  "solana-cluster-type",
  "solana-commitment-config",
  "solana-compute-budget-interface",

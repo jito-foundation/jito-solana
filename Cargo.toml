@@ -109,6 +109,7 @@ members = [
     "sdk/borsh",
     "sdk/cargo-build-sbf",
     "sdk/cargo-test-sbf",
+    "sdk/client-traits",
     "sdk/clock",
     "sdk/cluster-type",
     "sdk/commitment-config",
@@ -445,6 +446,7 @@ solana-cli = { path = "cli", version = "=2.2.0" }
 solana-cli-config = { path = "cli-config", version = "=2.2.0" }
 solana-cli-output = { path = "cli-output", version = "=2.2.0" }
 solana-client = { path = "client", version = "=2.2.0" }
+solana-client-traits = { path = "sdk/client-traits", version = "=2.2.0" }
 solana-clock = { path = "sdk/clock", version = "=2.2.0" }
 solana-cluster-type = { path = "sdk/cluster-type", version = "=2.2.0" }
 solana-commitment-config = { path = "sdk/commitment-config", version = "=2.2.0" }

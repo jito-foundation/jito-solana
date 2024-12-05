@@ -62,7 +62,6 @@ pub use solana_program::{borsh, borsh0_10, borsh1};
 #[cfg(feature = "full")]
 #[deprecated(since = "2.2.0", note = "Use `solana-signer` crate instead")]
 pub use solana_signer::signers;
-pub mod client;
 pub mod entrypoint;
 pub mod entrypoint_deprecated;
 pub mod epoch_rewards_hasher;
@@ -108,6 +107,9 @@ pub use solana_account as account;
 pub use solana_account::state_traits as account_utils;
 #[deprecated(since = "2.1.0", note = "Use `solana-bn254` crate instead")]
 pub use solana_bn254 as alt_bn128;
+#[cfg(feature = "full")]
+#[deprecated(since = "2.2.0", note = "Use `solana-client-traits` crate instead")]
+pub use solana_client_traits as client;
 #[deprecated(
     since = "2.2.0",
     note = "Use `solana-compute-budget-interface` crate instead"
