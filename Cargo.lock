@@ -6792,11 +6792,12 @@ dependencies = [
  "solana-account-info",
  "solana-define-syscall",
  "solana-instruction",
- "solana-program",
  "solana-program-entrypoint",
  "solana-program-error",
  "solana-pubkey",
+ "solana-sdk-ids",
  "solana-stable-layout",
+ "solana-system-interface",
  "static_assertions",
 ]
 
