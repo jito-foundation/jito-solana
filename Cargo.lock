@@ -6158,7 +6158,7 @@ dependencies = [
  "bincode",
  "serde",
  "solana-instruction",
- "solana-program",
+ "solana-system-interface",
 ]
 
 [[package]]
