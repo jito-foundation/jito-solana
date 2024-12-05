@@ -9387,10 +9387,10 @@ dependencies = [
  "solana-account",
  "solana-account-info",
  "solana-instruction",
- "solana-program",
  "solana-pubkey",
  "solana-rent",
  "solana-signature",
+ "solana-system-interface",
  "solana-transaction-context",
  "static_assertions",
 ]
