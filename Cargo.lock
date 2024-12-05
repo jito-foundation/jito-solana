@@ -8759,7 +8759,7 @@ dependencies = [
  "serde_json",
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
- "solana-program",
+ "solana-pubkey",
  "solana-sanitize",
  "solana-short-vec",
  "solana-signature",
