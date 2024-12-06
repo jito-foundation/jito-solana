@@ -72,7 +72,7 @@ use {
         u64_align, utils,
         verify_accounts_hash_in_background::VerifyAccountsHashInBackground,
     },
-    crossbeam_channel::{unbounded, Receiver, Sender},
+    crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError},
     dashmap::{DashMap, DashSet},
     log::*,
     rand::{thread_rng, Rng},
@@ -2260,7 +2260,7 @@ impl AccountsDb {
     fn background_hasher(receiver: Receiver<Vec<CachedAccount>>) {
         info!("Background account hasher has started");
         loop {
-            let result = receiver.recv();
+            let result = receiver.try_recv();
             match result {
                 Ok(accounts) => {
                     for account in accounts {
@@ -2271,7 +2271,10 @@ impl AccountsDb {
                         };
                     }
                 }
-                Err(err) => {
+                Err(TryRecvError::Empty) => {
+                    sleep(Duration::from_millis(5));
+                }
+                Err(err @ TryRecvError::Disconnected) => {
                     info!("Background account hasher is stopping because: {err}");
                     break;
                 }
