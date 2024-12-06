@@ -6328,6 +6328,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-sbf-rust-account-mem"
+version = "2.1.5"
+dependencies = [
+ "solana-program",
+]
+
+[[package]]
 name = "solana-sbf-rust-alloc"
 version = "2.1.5"
 dependencies = [
