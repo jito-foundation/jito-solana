@@ -289,13 +289,10 @@ pub struct LoadProgramMetrics {
 
 impl LoadProgramMetrics {
     pub fn submit_datapoint(&self, timings: &mut ExecuteDetailsTimings) {
-        saturating_add_assign!(
-            timings.create_executor_register_syscalls_us,
-            self.register_syscalls_us
-        );
-        saturating_add_assign!(timings.create_executor_load_elf_us, self.load_elf_us);
-        saturating_add_assign!(timings.create_executor_verify_code_us, self.verify_code_us);
-        saturating_add_assign!(timings.create_executor_jit_compile_us, self.jit_compile_us);
+        timings.create_executor_register_syscalls_us += self.register_syscalls_us;
+        timings.create_executor_load_elf_us += self.load_elf_us;
+        timings.create_executor_verify_code_us += self.verify_code_us;
+        timings.create_executor_jit_compile_us += self.jit_compile_us;
         datapoint_trace!(
             "create_executor_trace",
             ("program_id", self.program_id, String),

@@ -7161,7 +7161,7 @@ version = "2.2.0"
 dependencies = [
  "eager",
  "enum-iterator",
- "solana-sdk",
+ "solana-pubkey",
 ]
 
 [[package]]

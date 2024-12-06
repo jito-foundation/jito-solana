@@ -31,7 +31,6 @@ use {
         native_loader,
         precompiles::Precompile,
         pubkey::Pubkey,
-        saturating_add_assign,
         stable_layout::stable_instruction::StableInstruction,
         sysvar,
         transaction_context::{
@@ -601,13 +600,10 @@ impl<'a> InvokeContext<'a> {
             return Err(InstructionError::BuiltinProgramsMustConsumeComputeUnits);
         }
 
-        saturating_add_assign!(
-            timings
-                .execute_accessories
-                .process_instructions
-                .process_executable_chain_us,
-            process_executable_chain_time.end_as_us()
-        );
+        timings
+            .execute_accessories
+            .process_instructions
+            .process_executable_chain_us += process_executable_chain_time.end_as_us();
         result
     }
 
