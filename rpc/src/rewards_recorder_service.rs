@@ -1,3 +1,6 @@
+//! The `RewardsRecorderService` is responsible for receiving rewards data and
+//! persisting it into the `Blockstore`.
+
 use {
     crossbeam_channel::RecvTimeoutError,
     solana_ledger::{
@@ -29,15 +32,21 @@ impl RewardsRecorderService {
     ) -> Self {
         let thread_hdl = Builder::new()
             .name("solRewardsWritr".to_string())
-            .spawn(move || loop {
-                if exit.load(Ordering::Relaxed) {
-                    break;
+            .spawn(move || {
+                info!("RewardsRecorderService has started");
+                loop {
+                    if exit.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Err(RecvTimeoutError::Disconnected) = Self::write_rewards(
+                        &rewards_receiver,
+                        &max_complete_rewards_slot,
+                        &blockstore,
+                    ) {
+                        break;
+                    }
                 }
-                if let Err(RecvTimeoutError::Disconnected) =
-                    Self::write_rewards(&rewards_receiver, &max_complete_rewards_slot, &blockstore)
-                {
-                    break;
-                }
+                info!("RewardsRecorderService has stopped");
             })
             .unwrap();
         Self { thread_hdl }
