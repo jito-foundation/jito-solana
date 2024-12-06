@@ -55,13 +55,11 @@ fn send_vote_transaction(
     })?;
     let buf = serialize(transaction)?;
     let client = connection_cache.get_connection(&tpu);
-    match client.send_data_async(buf) {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            trace!("Ran into an error when sending vote: {err:?} to {tpu:?}");
-            Err(GossipError::SendError)
-        }
-    }
+
+    client.send_data_async(buf).map_err(|err| {
+        trace!("Ran into an error when sending vote: {err:?} to {tpu:?}");
+        GossipError::SendError
+    })
 }
 
 pub struct VotingService {
