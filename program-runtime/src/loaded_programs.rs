@@ -2,19 +2,17 @@ use {
     crate::invoke_context::{BuiltinFunctionWithContext, InvokeContext},
     log::{debug, error, log_enabled, trace},
     percentage::PercentageInteger,
+    solana_clock::{Epoch, Slot},
     solana_measure::measure::Measure,
+    solana_pubkey::Pubkey,
     solana_rbpf::{
         elf::Executable,
         program::{BuiltinProgram, FunctionRegistry},
         verifier::RequisiteVerifier,
         vm::Config,
     },
-    solana_sdk::{
-        bpf_loader, bpf_loader_deprecated, bpf_loader_upgradeable,
-        clock::{Epoch, Slot},
-        loader_v4, native_loader,
-        pubkey::Pubkey,
-        saturating_add_assign,
+    solana_sdk_ids::{
+        bpf_loader, bpf_loader_deprecated, bpf_loader_upgradeable, loader_v4, native_loader,
     },
     solana_timings::ExecuteDetailsTimings,
     solana_type_overrides::{
@@ -1311,7 +1309,7 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                     self.stats
                         .evictions
                         .entry(*program)
-                        .and_modify(|c| saturating_add_assign!(*c, 1))
+                        .and_modify(|c| *c = c.saturating_add(1))
                         .or_insert(1);
                     *candidate = Arc::new(unloaded);
                 }
@@ -1370,8 +1368,9 @@ mod tests {
         },
         assert_matches::assert_matches,
         percentage::Percentage,
+        solana_clock::Slot,
+        solana_pubkey::Pubkey,
         solana_rbpf::{elf::Executable, program::BuiltinProgram},
-        solana_sdk::{clock::Slot, pubkey::Pubkey},
         std::{
             fs::File,
             io::Read,
