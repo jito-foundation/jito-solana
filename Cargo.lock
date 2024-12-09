@@ -9583,11 +9583,14 @@ dependencies = [
  "lazy_static",
  "log",
  "rand 0.8.5",
+ "solana-hash",
+ "solana-keypair",
  "solana-packet",
  "solana-perf",
- "solana-sdk",
+ "solana-pubkey",
  "solana-short-vec",
  "solana-signature",
+ "solana-system-transaction",
 ]
 
 [[package]]
