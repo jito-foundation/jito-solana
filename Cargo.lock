@@ -6690,8 +6690,11 @@ dependencies = [
  "criterion",
  "solana-compute-budget",
  "solana-compute-budget-instruction",
+ "solana-compute-budget-interface",
  "solana-compute-budget-program",
- "solana-sdk",
+ "solana-feature-set",
+ "solana-message",
+ "solana-sdk-ids",
  "solana-svm-transaction",
 ]
 
