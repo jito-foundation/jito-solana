@@ -6153,6 +6153,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-nonce-account"
+version = "2.2.0"
+dependencies = [
+ "solana-account",
+ "solana-hash",
+ "solana-nonce",
+ "solana-sdk-ids",
+]
+
+[[package]]
 name = "solana-offchain-message"
 version = "2.2.0"
 dependencies = [
@@ -7404,6 +7414,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-native-token",
+ "solana-nonce-account",
  "solana-offchain-message",
  "solana-packet",
  "solana-poh-config",

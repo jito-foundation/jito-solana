@@ -141,6 +141,7 @@ members = [
     "sdk/msg",
     "sdk/native-token",
     "sdk/nonce",
+    "sdk/nonce-account",
     "sdk/offchain-message",
     "sdk/package-metadata",
     "sdk/package-metadata-macro",
@@ -513,6 +514,7 @@ solana-native-token = { path = "sdk/native-token", version = "=2.2.0" }
 solana-net-utils = { path = "net-utils", version = "=2.2.0" }
 solana-nohash-hasher = "0.2.1"
 solana-nonce = { path = "sdk/nonce", version = "=2.2.0" }
+solana-nonce-account = { path = "sdk/nonce-account", version = "=2.2.0" }
 solana-notifier = { path = "notifier", version = "=2.2.0" }
 solana-offchain-message = { path = "sdk/offchain-message", version = "=2.2.0" }
 solana-package-metadata = { path = "sdk/package-metadata", version = "=2.2.0" }

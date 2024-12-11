@@ -7793,6 +7793,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-nonce-account"
+version = "2.2.0"
+dependencies = [
+ "solana-account",
+ "solana-fee-calculator",
+ "solana-hash",
+ "solana-nonce",
+ "solana-pubkey",
+ "solana-sdk-ids",
+]
+
+[[package]]
 name = "solana-notifier"
 version = "2.2.0"
 dependencies = [
@@ -8745,6 +8757,7 @@ dependencies = [
  "solana-keypair",
  "solana-logger",
  "solana-native-token",
+ "solana-nonce-account",
  "solana-offchain-message",
  "solana-packet",
  "solana-poh-config",
