@@ -7396,6 +7396,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-instructions-sysvar"
+version = "2.2.0"
+dependencies = [
+ "bitflags 2.6.0",
+ "qualifier_attr",
+ "solana-account-info",
+ "solana-instruction",
+ "solana-program-error",
+ "solana-pubkey",
+ "solana-sanitize",
+ "solana-sdk-ids",
+ "solana-serialize-utils",
+ "solana-sysvar-id",
+]
+
+[[package]]
 name = "solana-keccak-hasher"
 version = "2.2.0"
 dependencies = [
@@ -8046,6 +8062,7 @@ dependencies = [
  "solana-frozen-abi-macro",
  "solana-hash",
  "solana-instruction",
+ "solana-instructions-sysvar",
  "solana-keccak-hasher",
  "solana-last-restart-slot",
  "solana-logger",
@@ -8754,6 +8771,7 @@ dependencies = [
  "solana-hard-forks",
  "solana-inflation",
  "solana-instruction",
+ "solana-instructions-sysvar",
  "solana-keypair",
  "solana-logger",
  "solana-native-token",
@@ -8786,7 +8804,6 @@ dependencies = [
  "solana-signature",
  "solana-signer",
  "solana-system-transaction",
- "solana-sysvar",
  "solana-time-utils",
  "solana-transaction",
  "solana-transaction-context",
@@ -8831,6 +8848,7 @@ dependencies = [
  "solana-feature-set",
  "solana-hash",
  "solana-instruction",
+ "solana-instructions-sysvar",
  "solana-keccak-hasher",
  "solana-keypair",
  "solana-logger",
@@ -8841,7 +8859,6 @@ dependencies = [
  "solana-sdk-ids",
  "solana-secp256k1-program",
  "solana-signer",
- "solana-sysvar",
 ]
 
 [[package]]
@@ -9324,11 +9341,9 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bincode",
- "bitflags 2.6.0",
  "bytemuck",
  "bytemuck_derive",
  "lazy_static",
- "qualifier_attr",
  "serde",
  "serde_derive",
  "serial_test",
@@ -9342,6 +9357,7 @@ dependencies = [
  "solana-frozen-abi-macro",
  "solana-hash",
  "solana-instruction",
+ "solana-instructions-sysvar",
  "solana-last-restart-slot",
  "solana-msg",
  "solana-program",
@@ -9354,7 +9370,6 @@ dependencies = [
  "solana-sdk",
  "solana-sdk-ids",
  "solana-sdk-macro",
- "solana-serialize-utils",
  "solana-sha256-hasher",
  "solana-slot-hashes",
  "solana-slot-history",

@@ -5906,6 +5906,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-instructions-sysvar"
+version = "2.2.0"
+dependencies = [
+ "bitflags 2.6.0",
+ "solana-account-info",
+ "solana-instruction",
+ "solana-program-error",
+ "solana-pubkey",
+ "solana-sanitize",
+ "solana-sdk-ids",
+ "solana-serialize-utils",
+ "solana-sysvar-id",
+]
+
+[[package]]
 name = "solana-keccak-hasher"
 version = "2.2.0"
 dependencies = [
@@ -6321,6 +6336,7 @@ dependencies = [
  "solana-fee-calculator",
  "solana-hash",
  "solana-instruction",
+ "solana-instructions-sysvar",
  "solana-keccak-hasher",
  "solana-last-restart-slot",
  "solana-message",
@@ -7851,7 +7867,6 @@ version = "2.2.0"
 dependencies = [
  "base64 0.22.1",
  "bincode",
- "bitflags 2.6.0",
  "bytemuck",
  "bytemuck_derive",
  "lazy_static",
@@ -7865,6 +7880,7 @@ dependencies = [
  "solana-fee-calculator",
  "solana-hash",
  "solana-instruction",
+ "solana-instructions-sysvar",
  "solana-last-restart-slot",
  "solana-program-entrypoint",
  "solana-program-error",
@@ -7874,7 +7890,6 @@ dependencies = [
  "solana-sanitize",
  "solana-sdk-ids",
  "solana-sdk-macro",
- "solana-serialize-utils",
  "solana-slot-hashes",
  "solana-slot-history",
  "solana-sysvar-id",
