@@ -1,5 +1,4 @@
 use {
-    crate::sigverify::SigverifyTracerPacketStats,
     bincode::serialize_into,
     chrono::{DateTime, Local},
     crossbeam_channel::{unbounded, Receiver, SendError, Sender, TryRecvError},
@@ -20,7 +19,7 @@ use {
     thiserror::Error,
 };
 
-pub type BankingPacketBatch = Arc<(Vec<PacketBatch>, Option<SigverifyTracerPacketStats>)>;
+pub type BankingPacketBatch = Arc<Vec<PacketBatch>>;
 pub type BankingPacketSender = TracedSender;
 pub type BankingPacketReceiver = Receiver<BankingPacketBatch>;
 pub type TracerThreadResult = Result<(), TraceError>;
@@ -373,7 +372,7 @@ pub mod for_test {
     };
 
     pub fn sample_packet_batch() -> BankingPacketBatch {
-        BankingPacketBatch::new((to_packet_batches(&vec![test_tx(); 4], 10), None))
+        BankingPacketBatch::new(to_packet_batches(&vec![test_tx(); 4], 10))
     }
 
     pub fn drop_and_clean_temp_dir_unless_suppressed(temp_dir: TempDir) {
@@ -430,7 +429,7 @@ mod tests {
         });
 
         non_vote_sender
-            .send(BankingPacketBatch::new((vec![], None)))
+            .send(BankingPacketBatch::new(vec![]))
             .unwrap();
         for_test::terminate_tracer(tracer, None, dummy_main_thread, non_vote_sender, None);
     }
