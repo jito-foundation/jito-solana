@@ -6150,6 +6150,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-bench-vote"
+version = "2.2.0"
+dependencies = [
+ "bincode",
+ "clap 3.2.23",
+ "crossbeam-channel",
+ "solana-client",
+ "solana-connection-cache",
+ "solana-net-utils",
+ "solana-sdk",
+ "solana-streamer",
+ "solana-version",
+ "solana-vote-program",
+]
+
+[[package]]
 name = "solana-bincode"
 version = "2.2.0"
 dependencies = [
