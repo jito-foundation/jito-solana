@@ -7475,6 +7475,7 @@ dependencies = [
  "solana-transaction",
  "solana-transaction-context",
  "solana-transaction-error",
+ "solana-validator-exit",
  "thiserror 2.0.7",
  "wasm-bindgen",
 ]
@@ -8269,6 +8270,10 @@ dependencies = [
  "static_assertions",
  "vec_extract_if_polyfill",
 ]
+
+[[package]]
+name = "solana-validator-exit"
+version = "2.2.0"
 
 [[package]]
 name = "solana-version"
