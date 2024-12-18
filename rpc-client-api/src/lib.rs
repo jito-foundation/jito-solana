@@ -1,5 +1,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 
+pub mod bundles;
 pub mod client_error;
 pub mod config;
 pub mod custom_error;
