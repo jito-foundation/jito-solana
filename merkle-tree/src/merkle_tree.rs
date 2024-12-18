@@ -18,7 +18,7 @@ macro_rules! hash_intermediate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug, Eq, Hash, PartialEq)]
 pub struct MerkleTree {
     leaf_count: usize,
     nodes: Vec<Hash>,
@@ -35,6 +35,14 @@ impl<'a> ProofEntry<'a> {
     ) -> Self {
         assert!(left_sibling.is_none() ^ right_sibling.is_none());
         Self(target, left_sibling, right_sibling)
+    }
+
+    pub fn get_left_sibling(&self) -> Option<&'a Hash> {
+        self.1
+    }
+
+    pub fn get_right_sibling(&self) -> Option<&'a Hash> {
+        self.2
     }
 }
 
@@ -59,6 +67,10 @@ impl<'a> Proof<'a> {
             }
         });
         result.is_some()
+    }
+
+    pub fn get_proof_entries(self) -> Vec<ProofEntry<'a>> {
+        self.0
     }
 }
 
@@ -95,7 +107,7 @@ impl MerkleTree {
         }
     }
 
-    pub fn new<T: AsRef<[u8]>>(items: &[T]) -> Self {
+    pub fn new<T: AsRef<[u8]>>(items: &[T], sorted_hashes: bool) -> Self {
         let cap = MerkleTree::calculate_vec_capacity(items.len());
         let mut mt = MerkleTree {
             leaf_count: items.len(),
@@ -123,8 +135,20 @@ impl MerkleTree {
                     &mt.nodes[prev_level_start + prev_level_idx]
                 };
 
-                let hash = hash_intermediate!(lsib, rsib);
-                mt.nodes.push(hash);
+                // tip-distribution verification uses sorted hashing
+                if sorted_hashes {
+                    if lsib <= rsib {
+                        let hash = hash_intermediate!(lsib, rsib);
+                        mt.nodes.push(hash);
+                    } else {
+                        let hash = hash_intermediate!(rsib, lsib);
+                        mt.nodes.push(hash);
+                    }
+                } else {
+                    // hashing for solana internals
+                    let hash = hash_intermediate!(lsib, rsib);
+                    mt.nodes.push(hash);
+                }
             }
             prev_level_start = level_start;
             prev_level_len = level_len;
@@ -189,21 +213,21 @@ mod tests {
 
     #[test]
     fn test_tree_from_empty() {
-        let mt = MerkleTree::new::<[u8; 0]>(&[]);
+        let mt = MerkleTree::new::<[u8; 0]>(&[], false);
         assert_eq!(mt.get_root(), None);
     }
 
     #[test]
     fn test_tree_from_one() {
         let input = b"test";
-        let mt = MerkleTree::new(&[input]);
+        let mt = MerkleTree::new(&[input], false);
         let expected = hash_leaf!(input);
         assert_eq!(mt.get_root(), Some(&expected));
     }
 
     #[test]
     fn test_tree_from_many() {
-        let mt = MerkleTree::new(TEST);
+        let mt = MerkleTree::new(TEST, false);
         // This golden hash will need to be updated whenever the contents of `TEST` change in any
         // way, including addition, removal and reordering or any of the tree calculation algo
         // changes
@@ -215,7 +239,7 @@ mod tests {
 
     #[test]
     fn test_path_creation() {
-        let mt = MerkleTree::new(TEST);
+        let mt = MerkleTree::new(TEST, false);
         for (i, _s) in TEST.iter().enumerate() {
             let _path = mt.find_path(i).unwrap();
         }
@@ -223,13 +247,13 @@ mod tests {
 
     #[test]
     fn test_path_creation_bad_index() {
-        let mt = MerkleTree::new(TEST);
+        let mt = MerkleTree::new(TEST, false);
         assert_eq!(mt.find_path(TEST.len()), None);
     }
 
     #[test]
     fn test_path_verify_good() {
-        let mt = MerkleTree::new(TEST);
+        let mt = MerkleTree::new(TEST, false);
         for (i, s) in TEST.iter().enumerate() {
             let hash = hash_leaf!(s);
             let path = mt.find_path(i).unwrap();
@@ -239,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_path_verify_bad() {
-        let mt = MerkleTree::new(TEST);
+        let mt = MerkleTree::new(TEST, false);
         for (i, s) in BAD.iter().enumerate() {
             let hash = hash_leaf!(s);
             let path = mt.find_path(i).unwrap();

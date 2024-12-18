@@ -14,6 +14,7 @@ crossbeam-channel = { workspace = true }
 log = { workspace = true }
 solana-client = { workspace = true }
 solana-connection-cache = { workspace = true }
+solana-gossip = { workspace = true }
 solana-measure = { workspace = true }
 solana-metrics = { workspace = true }
 solana-runtime = { workspace = true }
@@ -23,6 +24,7 @@ solana-tpu-client = { workspace = true }
 [dev-dependencies]
 solana-logger = { workspace = true }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-streamer = { workspace = true }
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
