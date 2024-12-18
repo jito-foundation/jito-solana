@@ -1,5 +1,7 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 use {
     super::{
         transaction_priority_id::TransactionPriorityId,
@@ -70,6 +72,7 @@ pub(crate) struct ReceivingStats {
     pub num_dropped_on_capacity: usize,
 
     pub num_buffered: usize,
+    pub num_dropped_on_blacklisted_account: usize,
 
     pub receive_time_us: u64,
     pub buffer_time_us: u64,
@@ -88,7 +91,7 @@ impl ReceivingStats {
         self.num_dropped_on_fee_payer += other.num_dropped_on_fee_payer;
         self.num_dropped_on_capacity += other.num_dropped_on_capacity;
         self.num_buffered += other.num_buffered;
-
+        self.num_dropped_on_blacklisted_account += other.num_dropped_on_blacklisted_account;
         self.receive_time_us += other.receive_time_us;
         self.buffer_time_us += other.buffer_time_us;
     }
@@ -113,6 +116,7 @@ pub(crate) struct SanitizedTransactionReceiveAndBuffer {
     /// Packet/Transaction ingress.
     packet_receiver: PacketDeserializer,
     bank_forks: Arc<RwLock<BankForks>>,
+    blacklisted_accounts: HashSet<Pubkey>,
 }
 
 impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
@@ -168,6 +172,8 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
                         num_dropped_on_fee_payer: buffer_stats.num_dropped_on_fee_payer,
                         num_dropped_on_capacity: buffer_stats.num_dropped_on_capacity,
                         num_buffered: buffer_stats.num_buffered,
+                        num_dropped_on_blacklisted_account: buffer_stats
+                            .num_dropped_on_blacklisted_account,
                         receive_time_us,
                         buffer_time_us,
                     })
@@ -183,6 +189,7 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
                         num_dropped_on_fee_payer: 0,
                         num_dropped_on_capacity: 0,
                         num_buffered: 0,
+                        num_dropped_on_blacklisted_account: 0,
                         receive_time_us,
                         buffer_time_us: 0,
                     })
@@ -199,6 +206,7 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
                 num_dropped_on_fee_payer: 0,
                 num_dropped_on_capacity: 0,
                 num_buffered: 0,
+                num_dropped_on_blacklisted_account: 0,
                 receive_time_us,
                 buffer_time_us: 0,
             }),
@@ -216,13 +224,19 @@ struct BufferStats {
     num_dropped_on_fee_payer: usize,
     num_dropped_on_capacity: usize,
     num_buffered: usize,
+    num_dropped_on_blacklisted_account: usize,
 }
 
 impl SanitizedTransactionReceiveAndBuffer {
-    pub fn new(packet_receiver: PacketDeserializer, bank_forks: Arc<RwLock<BankForks>>) -> Self {
+    pub fn new(
+        packet_receiver: PacketDeserializer,
+        bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+    ) -> Self {
         Self {
             packet_receiver,
             bank_forks,
+            blacklisted_accounts,
         }
     }
 
@@ -260,6 +274,7 @@ impl SanitizedTransactionReceiveAndBuffer {
         let mut num_dropped_on_fee_payer = 0;
         let mut num_dropped_on_capacity = 0;
         let mut num_buffered = 0;
+        let mut num_dropped_on_blacklisted_account = 0;
 
         let mut error_counts = TransactionErrorMetrics::default();
         for chunk in packets.chunks(CHUNK_SIZE) {
@@ -284,6 +299,16 @@ impl SanitizedTransactionReceiveAndBuffer {
                 .is_err()
                 {
                     num_dropped_on_lock_validation += 1;
+                    continue;
+                }
+
+                if tx
+                    .message()
+                    .account_keys()
+                    .iter()
+                    .any(|account| self.blacklisted_accounts.contains(account))
+                {
+                    num_dropped_on_blacklisted_account += 1;
                     continue;
                 }
 
@@ -363,6 +388,7 @@ impl SanitizedTransactionReceiveAndBuffer {
             num_dropped_on_fee_payer,
             num_dropped_on_capacity,
             num_buffered,
+            num_dropped_on_blacklisted_account,
         }
     }
 }
@@ -371,6 +397,7 @@ impl SanitizedTransactionReceiveAndBuffer {
 pub(crate) struct TransactionViewReceiveAndBuffer {
     pub receiver: BankingPacketReceiver,
     pub bank_forks: Arc<RwLock<BankForks>>,
+    pub blacklisted_accounts: HashSet<Pubkey>,
 }
 
 impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
@@ -408,6 +435,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             num_buffered: 0,
             receive_time_us: 0,
             buffer_time_us: 0,
+            num_dropped_on_blacklisted_account: 0,
         };
 
         // If not leader/unknown, do a blocking-receive initially. This lets
@@ -482,6 +510,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             num_dropped_on_fee_payer: stats.num_dropped_on_fee_payer,
             num_dropped_on_capacity: stats.num_dropped_on_capacity,
             num_buffered: stats.num_buffered,
+            num_dropped_on_blacklisted_account: stats.num_dropped_on_blacklisted_account,
             receive_time_us: stats.receive_time_us,
             buffer_time_us: stats.buffer_time_us,
         })
@@ -510,6 +539,7 @@ enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,
+    BlacklistedAccount,
 }
 
 impl TransactionViewReceiveAndBuffer {
@@ -610,6 +640,7 @@ impl TransactionViewReceiveAndBuffer {
         let mut num_dropped_on_parsing_and_sanitization = 0;
         let mut num_dropped_on_lock_validation = 0;
         let mut num_dropped_on_compute_budget = 0;
+        let mut num_dropped_on_blacklisted_account = 0;
 
         for packet_batch in packet_batch_message.iter() {
             for packet in packet_batch.iter() {
@@ -633,6 +664,7 @@ impl TransactionViewReceiveAndBuffer {
                             alt_resolved_slot,
                             sanitized_epoch,
                             transaction_account_lock_limit,
+                            &self.blacklisted_accounts,
                         ) {
                             Ok(state) => Ok(state),
                             Err(PacketHandlingError::Sanitization) => {
@@ -645,6 +677,10 @@ impl TransactionViewReceiveAndBuffer {
                             }
                             Err(PacketHandlingError::ComputeBudget) => {
                                 num_dropped_on_compute_budget += 1;
+                                Err(())
+                            }
+                            Err(PacketHandlingError::BlacklistedAccount) => {
+                                num_dropped_on_blacklisted_account += 1;
                                 Err(())
                             }
                         }
@@ -678,6 +714,7 @@ impl TransactionViewReceiveAndBuffer {
             num_dropped_on_already_processed,
             num_dropped_on_fee_payer,
             num_dropped_on_capacity,
+            num_dropped_on_blacklisted_account,
             num_buffered,
             receive_time_us: 0, // receive is outside this function
             buffer_time_us: start.elapsed().as_micros() as u64,
@@ -691,6 +728,7 @@ impl TransactionViewReceiveAndBuffer {
         alt_resolved_slot: Slot,
         sanitized_epoch: Epoch,
         transaction_account_lock_limit: usize,
+        blacklisted_accounts: &HashSet<Pubkey>,
     ) -> Result<TransactionViewState, PacketHandlingError> {
         // Parsing and basic sanitization checks
         let Ok(view) = SanitizedTransactionView::try_new_sanitized(bytes) else {
@@ -737,6 +775,14 @@ impl TransactionViewReceiveAndBuffer {
 
         if validate_account_locks(view.account_keys(), transaction_account_lock_limit).is_err() {
             return Err(PacketHandlingError::LockValidation);
+        }
+
+        if view
+            .account_keys()
+            .iter()
+            .any(|account| blacklisted_accounts.contains(account))
+        {
+            return Err(PacketHandlingError::BlacklistedAccount);
         }
 
         let Ok(compute_budget_limits) = view
@@ -858,6 +904,7 @@ mod tests {
     fn setup_sanitized_transaction_receive_and_buffer(
         receiver: Receiver<BankingPacketBatch>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         SanitizedTransactionReceiveAndBuffer,
         TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
@@ -865,6 +912,7 @@ mod tests {
         let receive_and_buffer = SanitizedTransactionReceiveAndBuffer {
             packet_receiver: PacketDeserializer::new(receiver),
             bank_forks,
+            blacklisted_accounts,
         };
         let container = TransactionStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
@@ -873,6 +921,7 @@ mod tests {
     fn setup_transaction_view_receive_and_buffer(
         receiver: Receiver<BankingPacketBatch>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         TransactionViewReceiveAndBuffer,
         TransactionViewStateContainer,
@@ -880,6 +929,7 @@ mod tests {
         let receive_and_buffer = TransactionViewReceiveAndBuffer {
             receiver,
             bank_forks,
+            blacklisted_accounts,
         };
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
@@ -936,12 +986,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks);
+            setup_receive_and_buffer(receiver, bank_forks, HashSet::default());
 
         drop(sender); // disconnect channel
         let r = receive_and_buffer
@@ -955,12 +1006,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let transaction = transfer(
             &mint_keypair,
@@ -984,6 +1036,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(
                 &mut container,
@@ -1010,12 +1063,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let transaction = transfer(
             &mint_keypair,
@@ -1044,6 +1098,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1068,12 +1123,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let packet_batches = Arc::new(vec![PacketBatch::from(PinnedPacketBatch::new(vec![
             Packet::new([1u8; PACKET_DATA_SIZE], Meta::default()),
@@ -1093,6 +1149,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1117,12 +1174,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let transaction = transfer(&mint_keypair, &Pubkey::new_unique(), 1, Hash::new_unique());
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
@@ -1141,6 +1199,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1165,12 +1224,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let transaction = transfer(
             &Keypair::new(),
@@ -1194,6 +1254,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1218,12 +1279,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let to_pubkey = Pubkey::new_unique();
         let transaction = VersionedTransaction::try_new(
@@ -1262,6 +1324,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1286,13 +1349,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
-
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
         let transaction = transfer(
             &mint_keypair,
             &Pubkey::new_unique(),
@@ -1315,6 +1378,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1339,12 +1403,13 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let num_transactions = 3 * TEST_CONTAINER_CAPACITY;
         let transactions = Vec::from_iter((0..num_transactions).map(|_| {
@@ -1372,6 +1437,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1396,6 +1462,7 @@ mod tests {
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
         ) -> (R, R::Container),
     ) {
         fn create_tx_with_n_keys(payer: &Keypair, n: usize) -> VersionedTransaction {
@@ -1428,7 +1495,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_receive_and_buffer(receiver, bank_forks.clone());
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
 
         let transaction_account_lock_limit = bank_forks
             .read()
@@ -1457,6 +1524,8 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
+            ..
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1526,5 +1595,53 @@ mod tests {
         let total_locks = 5; // fee-payer, program, pk1, pk2, pk3
         let svt = SanitizedVersionedTransaction::try_new(transaction).unwrap();
         assert_eq!(total_num_locks(&svt), total_locks);
+    }
+
+    #[test_case(setup_sanitized_transaction_receive_and_buffer; "testcase-sdk")]
+    #[test_case(setup_transaction_view_receive_and_buffer; "testcase-view")]
+    fn test_receive_blacklisted_account<R: ReceiveAndBuffer>(
+        setup_receive_and_buffer: impl FnOnce(
+            Receiver<BankingPacketBatch>,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> (R, R::Container),
+    ) {
+        let (sender, receiver) = unbounded();
+        let (bank_forks, mint_keypair) = test_bank_forks();
+
+        let blacklisted_account = Keypair::new();
+
+        let (mut receive_and_buffer, mut container) = setup_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::from_iter(vec![blacklisted_account.pubkey()]),
+        );
+        let ok_tx = transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            bank_forks.read().unwrap().root_bank().last_blockhash(),
+        );
+        let blacklisted_tx = transfer(
+            &mint_keypair,
+            &blacklisted_account.pubkey(),
+            1,
+            bank_forks.read().unwrap().root_bank().last_blockhash(),
+        );
+        let packet_batches = Arc::new(to_packet_batches(&[ok_tx, blacklisted_tx], 2));
+
+        sender.send(packet_batches).unwrap();
+
+        let ReceivingStats {
+            num_received,
+            num_dropped_on_blacklisted_account,
+            ..
+        } = receive_and_buffer
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+
+        assert_eq!(num_received, 2);
+        assert_eq!(num_dropped_on_blacklisted_account, 1);
+        verify_container(&mut container, 1);
     }
 }
