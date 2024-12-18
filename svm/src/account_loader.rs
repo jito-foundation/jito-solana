@@ -441,10 +441,24 @@ fn load_transaction_account<CB: TransactionProcessingCallback>(
     } else if let Some(account_override) =
         account_overrides.and_then(|overrides| overrides.get(account_key))
     {
-        LoadedTransactionAccount {
-            loaded_size: account_override.data().len(),
-            account: account_override.clone(),
-            rent_collected: 0,
+        if account_override.lamports() == 0 {
+            let mut default_account = AccountSharedData::default();
+
+            // All new accounts must be rent-exempt (enforced in Bank::execute_loaded_transaction).
+            // Currently, rent collection sets rent_epoch to u64::MAX, but initializing the account
+            // with this field already set would allow us to skip rent collection for these accounts.
+            default_account.set_rent_epoch(RENT_EXEMPT_RENT_EPOCH);
+            LoadedTransactionAccount {
+                loaded_size: default_account.data().len(),
+                account: default_account,
+                rent_collected: 0,
+            }
+        } else {
+            LoadedTransactionAccount {
+                loaded_size: account_override.data().len(),
+                account: account_override.clone(),
+                rent_collected: 0,
+            }
         }
     } else if let Some(program) =
         (!disable_account_loader_special_case && !is_instruction_account && !is_writable)

@@ -24,13 +24,26 @@ impl AccountLocks {
     pub fn try_lock_accounts<'a>(
         &mut self,
         keys: impl Iterator<Item = (&'a Pubkey, bool)> + Clone,
+        additional_read_locks: Option<&std::collections::HashSet<Pubkey>>,
+        additional_write_locks: Option<&std::collections::HashSet<Pubkey>>,
     ) -> Result<(), TransactionError> {
         for (key, writable) in keys.clone() {
             if writable {
-                if !self.can_write_lock(key) {
+                if !self.can_write_lock(key)
+                    || additional_read_locks
+                        .map(|s| s.contains(key))
+                        .unwrap_or(false)
+                    || additional_write_locks
+                        .map(|s| s.contains(key))
+                        .unwrap_or(false)
+                {
                     return Err(TransactionError::AccountInUse);
                 }
-            } else if !self.can_read_lock(key) {
+            } else if !self.can_read_lock(key)
+                || additional_write_locks
+                    .map(|s| s.contains(key))
+                    .unwrap_or(false)
+            {
                 return Err(TransactionError::AccountInUse);
             }
         }
@@ -168,23 +181,27 @@ mod tests {
         let key2 = Pubkey::new_unique();
 
         // Add write and read-lock.
-        let result = account_locks.try_lock_accounts([(&key1, true), (&key2, false)].into_iter());
+        let result = account_locks.try_lock_accounts(
+            [(&key1, true), (&key2, false)].into_iter(),
+            None,
+            None,
+        );
         assert!(result.is_ok());
 
         // Try to add duplicate write-lock.
-        let result = account_locks.try_lock_accounts([(&key1, true)].into_iter());
+        let result = account_locks.try_lock_accounts([(&key1, true)].into_iter(), None, None);
         assert_eq!(result, Err(TransactionError::AccountInUse));
 
         // Try to add write lock on read-locked account.
-        let result = account_locks.try_lock_accounts([(&key2, true)].into_iter());
+        let result = account_locks.try_lock_accounts([(&key2, true)].into_iter(), None, None);
         assert_eq!(result, Err(TransactionError::AccountInUse));
 
         // Try to add read lock on write-locked account.
-        let result = account_locks.try_lock_accounts([(&key1, false)].into_iter());
+        let result = account_locks.try_lock_accounts([(&key1, false)].into_iter(), None, None);
         assert_eq!(result, Err(TransactionError::AccountInUse));
 
         // Add read lock on read-locked account.
-        let result = account_locks.try_lock_accounts([(&key2, false)].into_iter());
+        let result = account_locks.try_lock_accounts([(&key2, false)].into_iter(), None, None);
         assert!(result.is_ok());
 
         // Unlock write and read locks.
@@ -287,5 +304,51 @@ mod tests {
         keys[47] = keys[3]; // Duplicate key
         let account_keys = AccountKeys::new(&keys, None);
         assert!(has_duplicates(account_keys));
+    }
+
+    #[test]
+    fn test_additional_read_locks() {
+        let mut account_locks = AccountLocks::default();
+
+        let key1 = Pubkey::new_unique();
+
+        // write lock key1 while key1 in additional read locks will fail
+        let result = account_locks.try_lock_accounts(
+            [(&key1, true)].into_iter(),
+            Some(&std::collections::HashSet::from_iter([key1])),
+            None,
+        );
+        assert_eq!(result, Err(TransactionError::AccountInUse));
+
+        // read lock key1 while key1 in additional read locks will be ok
+        let result = account_locks.try_lock_accounts(
+            [(&key1, false)].into_iter(),
+            Some(&std::collections::HashSet::from_iter([key1])),
+            None,
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn test_additional_write_locks() {
+        let mut account_locks = AccountLocks::default();
+
+        let key1 = Pubkey::new_unique();
+
+        // write lock key1 while key1 in addition write locks will fail
+        let result = account_locks.try_lock_accounts(
+            [(&key1, true)].into_iter(),
+            None,
+            Some(&std::collections::HashSet::from_iter([key1])),
+        );
+        assert_eq!(result, Err(TransactionError::AccountInUse));
+
+        // read lock key1 while key1 in addition write locks will fail
+        let result = account_locks.try_lock_accounts(
+            [(&key1, false)].into_iter(),
+            None,
+            Some(&std::collections::HashSet::from_iter([key1])),
+        );
+        assert_eq!(result, Err(TransactionError::AccountInUse));
     }
 }

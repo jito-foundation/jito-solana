@@ -33,6 +33,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       # This can be removed once cargo-ndk >= 3.5.4 is used.
       - name: Setup environment for Android NDK
@@ -63,6 +65,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - name: Setup Rust
         run: |
