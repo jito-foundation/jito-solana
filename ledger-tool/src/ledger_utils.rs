@@ -111,6 +111,7 @@ pub fn load_and_process_ledger_or_exit(
     blockstore: Arc<Blockstore>,
     process_options: ProcessOptions,
     transaction_status_sender: Option<TransactionStatusSender>,
+    ignore_halt_at_slot_for_snapshot_loading: bool,
 ) -> LoadAndProcessLedgerOutput {
     load_and_process_ledger(
         arg_matches,
@@ -118,6 +119,7 @@ pub fn load_and_process_ledger_or_exit(
         blockstore,
         process_options,
         transaction_status_sender,
+        ignore_halt_at_slot_for_snapshot_loading,
     )
     .unwrap_or_else(|err| {
         eprintln!("Exiting. Failed to load and process ledger: {err}");
@@ -131,7 +133,14 @@ pub fn load_and_process_ledger(
     blockstore: Arc<Blockstore>,
     process_options: ProcessOptions,
     transaction_status_sender: Option<TransactionStatusSender>,
+    ignore_halt_at_slot_for_snapshot_loading: bool,
 ) -> Result<LoadAndProcessLedgerOutput, LoadAndProcessLedgerError> {
+    let snapshot_halt_at_slot = if ignore_halt_at_slot_for_snapshot_loading {
+        None
+    } else {
+        process_options.halt_at_slot
+    };
+
     let mut starting_slot = 0; // default start check with genesis
     let snapshot_config = {
         let snapshots_dir = arg_matches
@@ -155,12 +164,13 @@ pub fn load_and_process_ledger(
             .map(PathBuf::from)
             .unwrap_or_else(|| snapshots_dir.clone());
         if let Some(full_snapshot_slot) =
-            snapshot_paths::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir)
+            snapshot_paths::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir, snapshot_halt_at_slot)
         {
             let incremental_snapshot_slot =
                 snapshot_paths::get_highest_incremental_snapshot_archive_slot(
                     &incremental_snapshot_archives_dir,
                     full_snapshot_slot,
+                    snapshot_halt_at_slot,
                 )
                 .unwrap_or_default();
             starting_slot = std::cmp::max(full_snapshot_slot, incremental_snapshot_slot);
@@ -346,6 +356,7 @@ pub fn load_and_process_ledger(
             None, // Maybe support this later, though
             accounts_update_notifier,
             exit.clone(),
+            ignore_halt_at_slot_for_snapshot_loading,
         )
         .map_err(LoadAndProcessLedgerError::LoadBankForks)?;
     let block_verification_method = value_t_or_exit!(

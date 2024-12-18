@@ -394,6 +394,7 @@ where
                 num_dropped_on_fee_payer,
                 num_dropped_on_capacity,
                 num_buffered,
+                num_dropped_on_blacklisted_account,
                 receive_time_us: _,
                 buffer_time_us: _,
             } = &receiving_stats;
@@ -410,6 +411,8 @@ where
             count_metrics.num_dropped_on_receive_fee_payer += *num_dropped_on_fee_payer;
             count_metrics.num_dropped_on_capacity += *num_dropped_on_capacity;
             count_metrics.num_buffered += *num_buffered;
+            count_metrics.num_dropped_on_blacklisted_account +=
+                *num_dropped_on_blacklisted_account;
         });
 
         self.timing_metrics.update(|timing_metrics| {
@@ -450,6 +453,7 @@ impl CostPacer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use {
         super::*,
         crate::banking_stage::{
@@ -499,17 +503,23 @@ mod tests {
     fn test_create_transaction_view_receive_and_buffer(
         receiver: BankingPacketReceiver,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
         TransactionViewReceiveAndBuffer {
             receiver,
             bank_forks,
+            blacklisted_accounts,
         }
     }
 
     #[allow(clippy::type_complexity)]
     fn create_test_frame<R: ReceiveAndBuffer>(
         num_threads: usize,
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) -> (
         TestFrame<R::Transaction>,
         SchedulerController<R, PrioGraphScheduler<R::Transaction>>,
@@ -527,8 +537,11 @@ mod tests {
         let decision_maker = DecisionMaker::new(shared_leader_state.clone());
 
         let (banking_packet_sender, banking_packet_receiver) = unbounded();
-        let receive_and_buffer =
-            create_receive_and_buffer(banking_packet_receiver, bank_forks.clone());
+        let receive_and_buffer = create_receive_and_buffer(
+            banking_packet_receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let (consume_work_senders, consume_work_receivers) = create_channels(num_threads);
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
