@@ -1,6 +1,7 @@
 //! The `validator` module hosts all the validator microservices.
 
 pub use solana_perf::report_target_features;
+use {crate::tip_manager::TipManagerConfig, solana_turbine::ShredReceiverAddresses};
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
@@ -16,6 +17,8 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
         },
         forwarding_stage::ForwardingClientConfig,
+        multicast_shred_check_service::MulticastShredCheckService,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self, repair_handler::RepairHandlerType, serve_repair_service::ServeRepairService,
         },
@@ -27,6 +30,7 @@ use {
             SystemMonitorService, SystemMonitorStatsReportConfig, verify_net_stats_access,
         },
         tpu::{Tpu, TpuSockets},
+        // tip_manager::TipManagerConfig,
         tvu::{AlpenglowInitializationState, Tvu, TvuConfig, TvuSockets},
     },
     agave_snapshots::{
@@ -40,6 +44,7 @@ use {
     },
     agave_xdp::transmitter::{Transmitter, TransmitterBuilder},
     anyhow::{Context, Result, anyhow},
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, bounded, unbounded},
     serde::{Deserialize, Serialize},
     solana_account::ReadableAccount,
@@ -239,6 +244,7 @@ impl BlockProductionMethod {
     Deserialize,
     PartialEq,
     Eq,
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -391,6 +397,22 @@ pub struct ValidatorConfig {
     pub repair_handler_type: RepairHandlerType,
     // Thread niceness adjustment for snapshot packager service
     pub snapshot_packager_niceness_adj: i8,
+    // jito configuration
+    pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
+    pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
+    /// Configured external receivers for this validator's own broadcast path.
+    /// Used for direct leader shreds and replay-triggered rebroadcasts of this
+    /// validator's slots.
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Configured external receivers for TVU retransmit-stage shreds.
+    /// Does not apply to this validator's own direct leader broadcast path.
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Automatically detected multicast destination for leader shreds.
+    pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
+    /// Skips automatic multicast route detection and multicast receiver updates.
+    pub disable_multicast_shred_check: bool,
 }
 
 impl ValidatorConfig {
@@ -474,6 +496,18 @@ impl ValidatorConfig {
             voting_service_test_override: None,
             repair_handler_type: RepairHandlerType::default(),
             snapshot_packager_niceness_adj: 0,
+            relayer_config: Arc::new(ArcSwap::from_pointee(RelayerConfig::default())),
+            block_engine_config: Arc::new(ArcSwap::from_pointee(BlockEngineConfig::default())),
+            shred_receiver_addresses: Arc::new(
+                ArcSwap::from_pointee(ShredReceiverAddresses::new()),
+            ),
+            shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                ShredReceiverAddresses::new(),
+            )),
+            multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            tip_manager_config: TipManagerConfig::default(),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
+            disable_multicast_shred_check: false,
         }
     }
 
@@ -638,6 +672,9 @@ pub struct Validator {
     transaction_status_service: Option<TransactionStatusService>,
     entry_notifier_service: Option<EntryNotifierService>,
     system_monitor_service: Option<SystemMonitorService>,
+    /// Background watcher that keeps the cluster multicast shred address in sync
+    /// with kernel route availability.
+    multicast_shred_check_service: Option<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
     stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
@@ -1491,6 +1528,8 @@ impl Validator {
             "New shred signal for the TVU should be the same as the clear bank signal."
         );
 
+        let bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>> = Arc::default();
+
         let vote_tracker = Arc::<VoteTracker>::default();
 
         let (retransmit_slots_sender, retransmit_slots_receiver) = unbounded();
@@ -1630,6 +1669,8 @@ impl Validator {
                 build_reward_certs_receiver,
                 reward_certs_sender,
             },
+            config.shred_retransmit_receiver_addresses.clone(),
+            bam_shred_receiver_addresses.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1705,6 +1746,13 @@ impl Validator {
             }),
             cancel,
             votor_event_sender.clone(),
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_addresses.clone(),
+            bam_shred_receiver_addresses,
+            config.multicast_receiver_address.clone(),
+            config.bam_url.clone(),
         );
 
         datapoint_info!(
@@ -1739,6 +1787,23 @@ impl Validator {
             snapshot_controller,
             blockstore: blockstore.clone(),
             votor_event_sender,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+            shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
+        });
+
+        let multicast_shred_check_service = (!config.disable_multicast_shred_check
+            && matches!(
+                genesis_config.cluster_type,
+                ClusterType::MainnetBeta | ClusterType::Testnet
+            ))
+        .then(|| {
+            MulticastShredCheckService::new(
+                exit.clone(),
+                config.multicast_receiver_address.clone(),
+                genesis_config.cluster_type,
+            )
         });
 
         Ok(Self {
@@ -1754,6 +1819,7 @@ impl Validator {
             transaction_status_service,
             entry_notifier_service,
             system_monitor_service,
+            multicast_shred_check_service,
             sample_performance_service,
             snapshot_packager_service,
             completed_data_sets_service,
@@ -1900,6 +1966,12 @@ impl Validator {
             system_monitor_service
                 .join()
                 .expect("system_monitor_service");
+        }
+
+        if let Some(multicast_shred_check_service) = self.multicast_shred_check_service {
+            multicast_shred_check_service
+                .join()
+                .expect("multicast_shred_check_service");
         }
 
         if let Some(sample_performance_service) = self.sample_performance_service {
