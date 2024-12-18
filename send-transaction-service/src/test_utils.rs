@@ -7,6 +7,7 @@ use {
         transaction_client::{ConnectionCacheClient, TpuInfoWithSendStatic, TransactionClient},
     },
     solana_client::connection_cache::ConnectionCache,
+    solana_gossip::cluster_info::ClusterInfo,
     std::{net::SocketAddr, sync::Arc},
     tokio::runtime::Handle,
 };
@@ -17,7 +18,7 @@ use {
 pub trait CreateClient: TransactionClient {
     fn create_client(
         maybe_runtime: Option<Handle>,
-        my_tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_forward_count: u64,
     ) -> Self;
@@ -26,7 +27,7 @@ pub trait CreateClient: TransactionClient {
 impl CreateClient for ConnectionCacheClient<NullTpuInfo> {
     fn create_client(
         maybe_runtime: Option<Handle>,
-        my_tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_forward_count: u64,
     ) -> Self {
@@ -34,14 +35,13 @@ impl CreateClient for ConnectionCacheClient<NullTpuInfo> {
         let connection_cache = Arc::new(ConnectionCache::new("connection_cache_test"));
         ConnectionCacheClient::new(
             connection_cache,
-            my_tpu_address,
+            cluster_info,
             tpu_peers,
             None,
             leader_forward_count,
         )
     }
 }
-
 pub trait Cancelable {
     fn cancel(&self);
 }

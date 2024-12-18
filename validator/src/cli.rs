@@ -69,6 +69,10 @@ const MAX_SNAPSHOT_DOWNLOAD_ABORT: u32 = 5;
 // with less than 2 ticks per slot.
 const MINIMUM_TICKS_PER_SLOT: u64 = 2;
 
+const DEFAULT_PREALLOCATED_BUNDLE_COST: u64 = 3000000;
+const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: u64 = 500;
+const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: u64 = 3;
+
 pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     return App::new(crate_name!())
         .about(crate_description!())
@@ -1683,6 +1687,102 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                     May get stuck if the leader used is different from others.",
                 ),
         )
+        .arg(
+            Arg::with_name("block_engine_url")
+                .long("block-engine-url")
+                .help("Block engine url.  Set to empty string to disable block engine connection.")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("relayer_url")
+                .long("relayer-url")
+                .help("Relayer url. Set to empty string to disable relayer connection.")
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("trust_relayer_packets")
+                .long("trust-relayer-packets")
+                .takes_value(false)
+                .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
+        )
+        .arg(
+            Arg::with_name("relayer_expected_heartbeat_interval_ms")
+                .long("relayer-expected-heartbeat-interval-ms")
+                .takes_value(true)
+                .help("Interval at which the Relayer is expected to send heartbeat messages.")
+                .default_value(&default_args.relayer_expected_heartbeat_interval_ms)
+        )
+        .arg(
+            Arg::with_name("relayer_max_failed_heartbeats")
+                .long("relayer-max-failed-heartbeats")
+                .takes_value(true)
+                .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
+                .default_value(&default_args.relayer_max_failed_heartbeats)
+        )
+        .arg(
+            Arg::with_name("trust_block_engine_packets")
+                .long("trust-block-engine-packets")
+                .takes_value(false)
+                .help("Skip signature verification on block engine packets. Not recommended unless the block engine is trusted.")
+        )
+        .arg(
+            Arg::with_name("tip_payment_program_pubkey")
+                .long("tip-payment-program-pubkey")
+                .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-payment program")
+        )
+        .arg(
+            Arg::with_name("tip_distribution_program_pubkey")
+                .long("tip-distribution-program-pubkey")
+                .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+                .takes_value(true)
+                .help("The public key of the tip-distribution program.")
+        )
+        .arg(
+            Arg::with_name("merkle_root_upload_authority")
+                .long("merkle-root-upload-authority")
+                .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
+                .takes_value(true)
+                .help("The public key of the authorized merkle-root uploader.")
+        )
+        .arg(
+            Arg::with_name("commission_bps")
+                .long("commission-bps")
+                .value_name("COMMISSION_BPS")
+                .takes_value(true)
+                .help("The commission validator takes from tips expressed in basis points.")
+        )
+        .arg(
+            Arg::with_name("preallocated_bundle_cost")
+                .long("preallocated-bundle-cost")
+                .value_name("PREALLOCATED_BUNDLE_COST")
+                .takes_value(true)
+                .default_value(&default_args.preallocated_bundle_cost)
+                .help("Number of CUs to allocate for bundles at beginning of slot.")
+        )
+        .arg(
+            Arg::with_name("shred_receiver_address")
+                .long("shred-receiver-address")
+                .value_name("SHRED_RECEIVER_ADDRESS")
+                .takes_value(true)
+                .help("Validator will forward all leader shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
+        )
+        .arg(
+            Arg::with_name("shred_retransmit_receiver_address")
+                .long("shred-retransmit-receiver-address")
+                .value_name("SHRED_RETRANSMIT_RECEIVER_ADDRESS")
+                .takes_value(true)
+                .help("Validator will forward all retransmit shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
+        )
+        .arg(
+            Arg::with_name("runtime_plugin_config")
+                .long("runtime-plugin-config")
+                .value_name("FILE")
+                .takes_value(true)
+                .multiple(true)
+                .help("Specify the configuration file for a Runtime plugin.")
+        )
         .args(&thread_args(&default_args.thread_args))
         .args(&get_deprecated_arguments())
         .after_help("The default subcommand is run")
@@ -1701,7 +1801,16 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(commands::set_log_filter::command(default_args))
         .subcommand(commands::staked_nodes_overrides::command(default_args))
         .subcommand(commands::wait_for_restart_window::command(default_args))
-        .subcommand(commands::set_public_address::command(default_args));
+        .subcommand(commands::set_public_address::command(default_args))
+        .subcommand(commands::set_public_address::command(default_args))
+        // jito subcommands
+        .subcommand(commands::block_engine::command(default_args))
+        .subcommand(commands::relayer::command(default_args))
+        .subcommand(commands::shred::shred_receiver_command(default_args))
+        .subcommand(commands::shred::shred_retransmit_receiver_command(
+            default_args,
+        ))
+        .subcommand(commands::runtime_plugin::command(default_args));
 }
 
 /// Deprecated argument description should be moved into the [`deprecated_arguments()`] function,
@@ -2080,6 +2189,10 @@ pub struct DefaultArgs {
     pub wen_restart_path: String,
 
     pub thread_args: DefaultThreadArgs,
+
+    pub preallocated_bundle_cost: String,
+    pub relayer_expected_heartbeat_interval_ms: String,
+    pub relayer_max_failed_heartbeats: String,
 }
 
 impl DefaultArgs {
@@ -2177,6 +2290,10 @@ impl DefaultArgs {
             banking_trace_dir_byte_limit: BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT.to_string(),
             wen_restart_path: "wen_restart_progress.proto".to_string(),
             thread_args: DefaultThreadArgs::default(),
+            preallocated_bundle_cost: DEFAULT_PREALLOCATED_BUNDLE_COST.to_string(),
+            relayer_expected_heartbeat_interval_ms: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS
+                .to_string(),
+            relayer_max_failed_heartbeats: DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS.to_string(),
         }
     }
 }
@@ -2625,6 +2742,14 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                 .takes_value(true)
                 .multiple(true)
                 .help("Specify the configuration file for the Geyser plugin."),
+        )
+        .arg(
+            Arg::with_name("runtime_plugin_config")
+                .long("runtime-plugin-config")
+                .value_name("FILE")
+                .takes_value(true)
+                .multiple(true)
+                .help("Specify the configuration file for a Runtime plugin."),
         )
         .arg(
             Arg::with_name("deactivate_feature")
