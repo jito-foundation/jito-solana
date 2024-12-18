@@ -1,5 +1,6 @@
 //! The `validator` module hosts all the validator microservices.
 
+use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
 use {
     crate::{
@@ -15,6 +16,7 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
             ExternalRootSource, Tower,
         },
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self,
             quic_endpoint::{RepairQuicAsyncSenders, RepairQuicSenders, RepairQuicSockets},
@@ -32,6 +34,7 @@ use {
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
         tpu::{ForwardingClientOption, Tpu, TpuSockets},
+        // tip_manager::TipManagerConfig,
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
     agave_snapshots::{
@@ -39,6 +42,7 @@ use {
         snapshot_hash::StartingSnapshotHashes, SnapshotInterval,
     },
     anyhow::{anyhow, Context, Result},
+    arc_swap::ArcSwap,
     crossbeam_channel::{bounded, unbounded, Receiver},
     quinn::Endpoint,
     serde::{Deserialize, Serialize},
@@ -214,6 +218,7 @@ impl BlockVerificationMethod {
     Deserialize,
     PartialEq,
     Eq,
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -245,6 +250,7 @@ impl BlockProductionMethod {
     Deserialize,
     PartialEq,
     Eq,
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -382,6 +388,12 @@ pub struct ValidatorConfig {
     pub use_tpu_client_next: bool,
     pub retransmit_xdp: Option<XdpConfig>,
     pub repair_handler_type: RepairHandlerType,
+    // jito configuration
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
 }
 
 impl ValidatorConfig {
@@ -464,6 +476,11 @@ impl ValidatorConfig {
             use_tpu_client_next: true,
             retransmit_xdp: None,
             repair_handler_type: RepairHandlerType::default(),
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            tip_manager_config: TipManagerConfig::default(),
         }
     }
 
@@ -1658,6 +1675,7 @@ impl Validator {
             wen_restart_repair_slots.clone(),
             slot_status_notifier,
             vote_connection_cache,
+            config.shred_retransmit_receiver_address.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1752,6 +1770,10 @@ impl Validator {
             key_notifiers.clone(),
             banking_control_reciever,
             cancel,
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_address.clone(),
         );
 
         datapoint_info!(
@@ -1787,6 +1809,10 @@ impl Validator {
             cluster_slots,
             node: Some(node_multihoming),
             banking_control_sender,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_address: config.shred_receiver_address.clone(),
+            shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
         });
 
         Ok(Self {
