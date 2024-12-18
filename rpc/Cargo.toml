@@ -9,6 +9,16 @@ homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lib]
+crate-type = ["lib"]
+name = "solana_rpc"
+
+[features]
+dev-context-only-utils = ["solana-rpc/dev-context-only-utils"]
+
 [dependencies]
 agave-feature-set = { workspace = true }
 base64 = { workspace = true }
@@ -33,6 +43,8 @@ soketto = { workspace = true }
 solana-account = { workspace = true }
 solana-account-decoder = { workspace = true }
 solana-accounts-db = { workspace = true }
+solana-bundle = { workspace = true }
+solana-bundle-sdk = { workspace = true }
 solana-client = { workspace = true }
 solana-clock = { workspace = true }
 solana-commitment-config = { workspace = true }
@@ -54,6 +66,7 @@ solana-perf = { workspace = true }
 solana-poh = { workspace = true }
 solana-poh-config = { workspace = true }
 solana-program-pack = { workspace = true }
+solana-program-runtime = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-quic-definitions = { workspace = true }
 solana-rayon-threadlimit = { workspace = true }
@@ -119,15 +132,3 @@ solana-vote-interface = { workspace = true }
 spl-pod = { workspace = true }
 symlink = { workspace = true }
 test-case = { workspace = true }
-
-[features]
-dev-context-only-utils = [
-    "solana-rpc/dev-context-only-utils",
-]
-
-[lib]
-crate-type = ["lib"]
-name = "solana_rpc"
-
-[package.metadata.docs.rs]
-targets = ["x86_64-unknown-linux-gnu"]
