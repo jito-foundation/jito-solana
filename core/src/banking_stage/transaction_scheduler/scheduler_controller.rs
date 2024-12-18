@@ -57,6 +57,10 @@ where
     worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
     /// Detailed scheduling metrics.
     scheduling_details: SchedulingDetails,
+    /// This is the BAM controller.
+    bam_controller: bool,
+    /// Whether BAM is enabled.
+    bam_enabled: Arc<AtomicBool>,
 }
 
 impl<R, S> SchedulerController<R, S>
@@ -71,6 +75,8 @@ where
         bank_forks: Arc<RwLock<BankForks>>,
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+        bam_controller: bool,
+        bam_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
             exit,
@@ -83,6 +89,8 @@ where
             timing_metrics: SchedulerTimingMetrics::default(),
             worker_metrics,
             scheduling_details: SchedulingDetails::default(),
+            bam_controller,
+            bam_enabled,
         }
     }
 
@@ -109,14 +117,14 @@ where
             self.timing_metrics
                 .maybe_report_and_reset_slot(new_leader_slot);
 
-            self.receive_completed()?;
+            self.receive_completed(&decision)?;
             self.process_transactions(&decision)?;
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
-            let should_report = self.count_metrics.interval_has_data();
+            let should_report = self.count_metrics.interval_has_data() && self.scheduling_enabled();
             let priority_min_max = self.container.get_min_max_priority();
             self.count_metrics.update(|count_metrics| {
                 count_metrics.update_priority_stats(priority_min_max);
@@ -141,6 +149,10 @@ where
     ) -> Result<(), SchedulerError> {
         match decision {
             BufferedPacketsDecision::Consume(bank) => {
+                if !self.scheduling_enabled() {
+                    return Ok(());
+                }
+
                 let (scheduling_summary, schedule_time_us) = measure_us!(self.scheduler.schedule(
                     &mut self.container,
                     |txs, results| {
@@ -211,7 +223,12 @@ where
     /// Clears the transaction state container.
     /// This only clears pending transactions, and does **not** clear in-flight transactions.
     fn clear_container(&mut self) {
+        if self.bam_controller {
+            return;
+        }
+
         let mut num_dropped_on_clear = Saturating::<usize>(0);
+
         while let Some(id) = self.container.pop() {
             self.container.remove_by_id(id.id);
             num_dropped_on_clear += 1;
@@ -226,6 +243,10 @@ where
     /// expired, already processed, or are no longer sanitizable.
     /// This only clears pending transactions, and does **not** clear in-flight transactions.
     fn clean_queue(&mut self) {
+        if self.bam_controller {
+            return;
+        }
+
         // Clean up any transactions that have already been processed, are too old, or do not have
         // valid nonce accounts.
         const MAX_TRANSACTION_CHECKS: usize = 10_000;
@@ -285,9 +306,13 @@ where
     }
 
     /// Receives completed transactions from the workers and updates metrics.
-    fn receive_completed(&mut self) -> Result<(), SchedulerError> {
-        let ((num_transactions, num_retryable), receive_completed_time_us) =
-            measure_us!(self.scheduler.receive_completed(&mut self.container)?);
+    fn receive_completed(
+        &mut self,
+        decision: &BufferedPacketsDecision,
+    ) -> Result<(), SchedulerError> {
+        let ((num_transactions, num_retryable), receive_completed_time_us) = measure_us!(self
+            .scheduler
+            .receive_completed(&mut self.container, decision)?);
 
         self.count_metrics.update(|count_metrics| {
             count_metrics.num_finished += num_transactions;
@@ -321,6 +346,7 @@ where
                 num_dropped_on_fee_payer,
                 num_dropped_on_capacity,
                 num_buffered,
+                num_dropped_on_blacklisted_account,
                 receive_time_us: _,
                 buffer_time_us: _,
             } = &receiving_stats;
@@ -337,6 +363,7 @@ where
             count_metrics.num_dropped_on_receive_fee_payer += *num_dropped_on_fee_payer;
             count_metrics.num_dropped_on_capacity += *num_dropped_on_capacity;
             count_metrics.num_buffered += *num_buffered;
+            count_metrics.num_dropped_on_blacklisted_account += *num_dropped_on_blacklisted_account;
         });
 
         self.timing_metrics.update(|timing_metrics| {
@@ -346,10 +373,15 @@ where
 
         Ok(receiving_stats)
     }
+
+    fn scheduling_enabled(&self) -> bool {
+        self.bam_controller == self.bam_enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use {
         super::*,
         crate::banking_stage::{
@@ -404,24 +436,35 @@ mod tests {
     fn test_create_sanitized_transaction_receive_and_buffer(
         receiver: BankingPacketReceiver,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> SanitizedTransactionReceiveAndBuffer {
-        SanitizedTransactionReceiveAndBuffer::new(PacketDeserializer::new(receiver), bank_forks)
+        SanitizedTransactionReceiveAndBuffer::new(
+            PacketDeserializer::new(receiver),
+            bank_forks,
+            blacklisted_accounts,
+        )
     }
 
     fn test_create_transaction_view_receive_and_buffer(
         receiver: BankingPacketReceiver,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
         TransactionViewReceiveAndBuffer {
             receiver,
             bank_forks,
+            blacklisted_accounts,
         }
     }
 
     #[allow(clippy::type_complexity)]
     fn create_test_frame<R: ReceiveAndBuffer>(
         num_threads: usize,
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) -> (
         TestFrame<R::Transaction>,
         SchedulerController<R, PrioGraphScheduler<R::Transaction>>,
@@ -445,8 +488,11 @@ mod tests {
         );
 
         let (banking_packet_sender, banking_packet_receiver) = unbounded();
-        let receive_and_buffer =
-            create_receive_and_buffer(banking_packet_receiver, bank_forks.clone());
+        let receive_and_buffer = create_receive_and_buffer(
+            banking_packet_receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let (consume_work_senders, consume_work_receivers) = create_channels(num_threads);
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
@@ -473,6 +519,8 @@ mod tests {
             bank_forks,
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
+            false,
+            Arc::new(AtomicBool::new(false)),
         );
 
         (test_frame, scheduler_controller)
@@ -522,7 +570,7 @@ mod tests {
             .decision_maker
             .make_consume_or_forward_decision();
         assert!(matches!(decision, BufferedPacketsDecision::Consume(_)));
-        assert!(scheduler_controller.receive_completed().is_ok());
+        assert!(scheduler_controller.receive_completed(&decision).is_ok());
 
         // Time is not a reliable way for deterministic testing.
         // Loop here until no more packets are received, this avoids parallel
@@ -540,7 +588,11 @@ mod tests {
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     #[should_panic(expected = "batch id 0 is not being tracked")]
     fn test_unexpected_batch_id<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (test_frame, scheduler_controller) = create_test_frame(1, create_receive_and_buffer);
         let TestFrame {
@@ -555,8 +607,12 @@ mod tests {
                     ids: vec![],
                     transactions: vec![],
                     max_ages: vec![],
+                    revert_on_error: false,
+                    respond_with_extra_info: false,
+                    max_schedule_slot: None,
                 },
                 retryable_indexes: vec![],
+                extra_info: None,
             })
             .unwrap();
 
@@ -566,7 +622,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_single_threaded_no_conflicts<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
@@ -623,7 +683,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_single_threaded_conflict<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
@@ -683,7 +747,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_single_threaded_multi_batch<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
@@ -748,7 +816,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_simple_thread_selection<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(2, create_receive_and_buffer);
@@ -816,7 +888,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_retryable<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
@@ -875,6 +951,7 @@ mod tests {
             .send(FinishedConsumeWork {
                 work: consume_work,
                 retryable_indexes: vec![1],
+                extra_info: None,
             })
             .unwrap();
 

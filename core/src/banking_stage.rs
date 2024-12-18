@@ -10,6 +10,7 @@ use {
         packet_receiver::PacketReceiver, qos_service::QosService, vote_storage::VoteStorage,
     },
     crate::{
+        bam_dependencies::BamDependencies,
         banking_stage::{
             consume_worker::ConsumeWorker,
             packet_deserializer::PacketDeserializer,
@@ -18,10 +19,12 @@ use {
                 scheduler_controller::SchedulerController, scheduler_error::SchedulerError,
             },
         },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::{BlockProductionMethod, TransactionStructure},
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
     conditional_mod::conditional_vis_mod,
+    consumer::TipProcessingDependencies,
     crossbeam_channel::{unbounded, Receiver, Sender},
     histogram::Histogram,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfoQuery},
@@ -33,8 +36,11 @@ use {
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
     },
+    solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_time_utils::AtomicInterval,
+    solana_transaction::sanitized::SanitizedTransaction,
     std::{
+        collections::HashSet,
         num::{NonZeroUsize, Saturating},
         ops::Deref,
         sync::{
@@ -45,6 +51,8 @@ use {
         time::Duration,
     },
     transaction_scheduler::{
+        bam_receive_and_buffer::BamReceiveAndBuffer,
+        bam_scheduler::BamScheduler,
         greedy_scheduler::{GreedyScheduler, GreedySchedulerConfig},
         prio_graph_scheduler::PrioGraphSchedulerConfig,
         receive_and_buffer::{
@@ -63,11 +71,11 @@ pub mod qos_service;
 pub mod vote_storage;
 
 mod consume_worker;
-mod vote_worker;
-conditional_vis_mod!(decision_maker, feature = "dev-context-only-utils", pub);
-mod immutable_deserialized_packet;
+pub mod decision_maker;
+pub(crate) mod immutable_deserialized_packet;
 mod latest_validator_vote_packet;
-mod leader_slot_timing_metrics;
+pub(crate) mod leader_slot_timing_metrics;
+mod vote_worker;
 conditional_vis_mod!(packet_deserializer, feature = "dev-context-only-utils", pub);
 mod packet_receiver;
 mod read_write_account_set;
@@ -374,6 +382,11 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        tip_processing_dependencies: Option<TipProcessingDependencies>,
+        bam_dependencies: Option<BamDependencies>,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
@@ -389,6 +402,8 @@ impl BankingStage {
             committer.clone(),
             log_messages_bytes_limit,
             VoteStorage::new(&bank_forks.read().unwrap().working_bank()),
+            bundle_account_locker.clone(),
+            block_cost_limit_reservation_cb.clone(),
         );
 
         let use_greedy_scheduler = matches!(
@@ -409,6 +424,11 @@ impl BankingStage {
             use_greedy_scheduler,
             num_workers,
             non_vote_context.clone(),
+            bundle_account_locker.clone(),
+            block_cost_limit_reservation_cb.clone(),
+            blacklisted_accounts,
+            tip_processing_dependencies,
+            bam_dependencies,
         );
 
         Self {
@@ -418,45 +438,69 @@ impl BankingStage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_central_scheduler(
         transaction_struct: TransactionStructure,
         use_greedy_scheduler: bool,
         num_workers: NonZeroUsize,
         context: BankingStageNonVoteContext,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        blacklisted_accounts: HashSet<Pubkey>,
+        tip_processing_dependencies: Option<TipProcessingDependencies>,
+        bam_dependencies: Option<BamDependencies>,
     ) -> Vec<JoinHandle<()>> {
         match transaction_struct {
             TransactionStructure::Sdk => {
                 let receive_and_buffer = SanitizedTransactionReceiveAndBuffer::new(
                     PacketDeserializer::new(context.non_vote_receiver.clone()),
                     context.bank_forks.clone(),
+                    blacklisted_accounts.clone(),
                 );
                 Self::spawn_scheduler_and_workers(
                     receive_and_buffer,
                     use_greedy_scheduler,
                     num_workers,
                     context,
+                    bundle_account_locker,
+                    block_cost_limit_reservation_cb,
+                    tip_processing_dependencies,
+                    bam_dependencies,
+                    blacklisted_accounts,
                 )
             }
             TransactionStructure::View => {
                 let receive_and_buffer = TransactionViewReceiveAndBuffer {
                     receiver: context.non_vote_receiver.clone(),
                     bank_forks: context.bank_forks.clone(),
+                    blacklisted_accounts: blacklisted_accounts.clone(),
                 };
                 Self::spawn_scheduler_and_workers(
                     receive_and_buffer,
                     use_greedy_scheduler,
                     num_workers,
                     context,
+                    bundle_account_locker,
+                    block_cost_limit_reservation_cb,
+                    tip_processing_dependencies,
+                    bam_dependencies,
+                    blacklisted_accounts,
                 )
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_scheduler_and_workers<R: ReceiveAndBuffer + Send + Sync + 'static>(
         receive_and_buffer: R,
         use_greedy_scheduler: bool,
         num_workers: NonZeroUsize,
         context: BankingStageNonVoteContext,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        tip_processing_dependencies: Option<TipProcessingDependencies>,
+        bam_dependencies: Option<BamDependencies>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> Vec<JoinHandle<()>> {
         assert!(num_workers <= BankingStage::max_num_workers());
         let num_workers = num_workers.get();
@@ -485,17 +529,19 @@ impl BankingStage {
                     context.transaction_recorder.clone(),
                     QosService::new(id),
                     context.log_messages_bytes_limit,
+                    bundle_account_locker.clone(),
                 ),
                 finished_work_sender.clone(),
                 context.poh_recorder.read().unwrap().shared_working_bank(),
             );
 
             worker_metrics.push(consume_worker.metrics_handle());
+            let cb = block_cost_limit_reservation_cb.clone();
             thread_hdls.push(
                 Builder::new()
                     .name(format!("solCoWorker{id:02}"))
                     .spawn(move || {
-                        let _ = consume_worker.run();
+                        let _ = consume_worker.run(cb);
                     })
                     .unwrap(),
             )
@@ -504,6 +550,7 @@ impl BankingStage {
         // Macro to spawn the scheduler. Different type on `scheduler` and thus
         // scheduler_controller mean we cannot have an easy if for `scheduler`
         // assignment without introducing `dyn`.
+        #[allow(unused_macros)]
         macro_rules! spawn_scheduler {
             ($scheduler:ident) => {
                 let exit = exit.clone();
@@ -534,25 +581,170 @@ impl BankingStage {
         }
 
         // Spawn the central scheduler thread
+        let bam_enabled = bam_dependencies
+            .as_ref()
+            .map(|bam| bam.bam_enabled.clone())
+            .unwrap_or(Arc::new(AtomicBool::new(false)));
+        let scheduler_worker_senders = work_senders.clone();
+        let scheduler_finished_work_receiver = finished_work_receiver.clone();
+        let scheduler_decision_maker = decision_maker.clone();
+        let scheduler_bank_forks = context.bank_forks.clone();
+        let scheduler_worker_metrics = worker_metrics.clone();
+        let scheduler_bam_enabled = bam_enabled.clone();
+        let scheduler_exit = exit.clone();
         if use_greedy_scheduler {
-            let scheduler = GreedyScheduler::new(
-                work_senders,
-                finished_work_receiver,
-                GreedySchedulerConfig::default(),
+            thread_hdls.push(
+                Builder::new()
+                    .name("solBnkTxSched".to_string())
+                    .spawn(move || {
+                        let scheduler = GreedyScheduler::new(
+                            scheduler_worker_senders,
+                            scheduler_finished_work_receiver,
+                            GreedySchedulerConfig::default(),
+                        );
+                        let scheduler_controller = SchedulerController::new(
+                            scheduler_exit,
+                            scheduler_decision_maker,
+                            receive_and_buffer,
+                            scheduler_bank_forks,
+                            scheduler,
+                            scheduler_worker_metrics,
+                            false,
+                            scheduler_bam_enabled,
+                        );
+
+                        match scheduler_controller.run() {
+                            Ok(_) => {}
+                            Err(SchedulerError::DisconnectedRecvChannel(_)) => {}
+                            Err(SchedulerError::DisconnectedSendChannel(_)) => {
+                                warn!("Unexpected worker disconnect from scheduler")
+                            }
+                        }
+                    })
+                    .unwrap(),
             );
-            spawn_scheduler!(scheduler);
         } else {
-            let scheduler = PrioGraphScheduler::new(
-                work_senders,
-                finished_work_receiver,
-                PrioGraphSchedulerConfig::default(),
+            thread_hdls.push(
+                Builder::new()
+                    .name("solBnkTxSched".to_string())
+                    .spawn(move || {
+                        let scheduler = PrioGraphScheduler::new(
+                            scheduler_worker_senders,
+                            scheduler_finished_work_receiver,
+                            PrioGraphSchedulerConfig::default(),
+                        );
+                        let scheduler_controller = SchedulerController::new(
+                            scheduler_exit,
+                            scheduler_decision_maker,
+                            receive_and_buffer,
+                            scheduler_bank_forks,
+                            scheduler,
+                            scheduler_worker_metrics,
+                            false,
+                            scheduler_bam_enabled,
+                        );
+
+                        match scheduler_controller.run() {
+                            Ok(_) => {}
+                            Err(SchedulerError::DisconnectedRecvChannel(_)) => {}
+                            Err(SchedulerError::DisconnectedSendChannel(_)) => {
+                                warn!("Unexpected worker disconnect from scheduler")
+                            }
+                        }
+                    })
+                    .unwrap(),
             );
-            spawn_scheduler!(scheduler);
+        }
+
+        if let Some(bam_dependencies) = bam_dependencies {
+            // Spawn BAM workers
+            // Create channels for communication between scheduler and workers
+            const NUM_BAM_WORKERS: usize = 8;
+            let num_workers = NUM_BAM_WORKERS;
+            let (work_sender, work_receiver) = unbounded();
+            let (finished_work_sender, finished_work_receiver) = unbounded();
+
+            // Spawn the worker threads
+            let mut worker_metrics = Vec::with_capacity(num_workers);
+            for index in 0..num_workers {
+                let id = index as u32;
+                let consume_worker = ConsumeWorker::new_with_tip_processing_deps(
+                    id,
+                    exit.clone(),
+                    work_receiver.clone(),
+                    Consumer::new(
+                        context.committer.clone(),
+                        context.transaction_recorder.clone(),
+                        QosService::new(id),
+                        context.log_messages_bytes_limit,
+                        bundle_account_locker.clone(),
+                    ),
+                    finished_work_sender.clone(),
+                    context.poh_recorder.read().unwrap().shared_working_bank(),
+                    tip_processing_dependencies.clone(),
+                );
+
+                worker_metrics.push(consume_worker.metrics_handle());
+                thread_hdls.push(
+                    Builder::new()
+                        .name(format!("solCoWorker{id:02}"))
+                        .spawn(move || {
+                            let _ = consume_worker.run(|_| 0);
+                        })
+                        .unwrap(),
+                )
+            }
+
+            // Spawn the BAM scheduler thread
+            let bam_scheduler_exit = exit.clone();
+            thread_hdls.push(
+                Builder::new()
+                    .name("solBamSched".to_string())
+                    .spawn(move || {
+                        let scheduler =
+                            BamScheduler::<RuntimeTransaction<SanitizedTransaction>>::new(
+                                work_sender,
+                                finished_work_receiver,
+                                bam_dependencies.outbound_sender.clone(),
+                                context.bank_forks.clone(),
+                            );
+                        let receive_and_buffer = BamReceiveAndBuffer::new(
+                            bam_scheduler_exit.clone(),
+                            bam_dependencies.bam_enabled.clone(),
+                            bam_dependencies.batch_receiver.clone(),
+                            bam_dependencies.outbound_sender.clone(),
+                            context.bank_forks.clone(),
+                            Some(context.poh_recorder.read().unwrap().shared_working_bank()),
+                            blacklisted_accounts,
+                        );
+
+                        let scheduler_controller = SchedulerController::new(
+                            bam_scheduler_exit,
+                            decision_maker.clone(),
+                            receive_and_buffer,
+                            context.bank_forks,
+                            scheduler,
+                            worker_metrics,
+                            true,
+                            bam_enabled,
+                        );
+
+                        match scheduler_controller.run() {
+                            Ok(_) => {}
+                            Err(SchedulerError::DisconnectedRecvChannel(_)) => {}
+                            Err(SchedulerError::DisconnectedSendChannel(_)) => {
+                                warn!("Unexpected worker disconnect from scheduler")
+                            }
+                        }
+                    })
+                    .unwrap(),
+            );
         }
 
         thread_hdls
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_vote_worker(
         tpu_receiver: BankingPacketReceiver,
         gossip_receiver: BankingPacketReceiver,
@@ -562,6 +754,8 @@ impl BankingStage {
         committer: Committer,
         log_messages_bytes_limit: Option<usize>,
         vote_storage: VoteStorage,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> JoinHandle<()> {
         let tpu_receiver = PacketReceiver::new(tpu_receiver);
         let gossip_receiver = PacketReceiver::new(gossip_receiver);
@@ -570,6 +764,7 @@ impl BankingStage {
             transaction_recorder,
             QosService::new(0),
             log_messages_bytes_limit,
+            bundle_account_locker.clone(),
         );
         let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
 
@@ -584,7 +779,7 @@ impl BankingStage {
                     bank_forks,
                     consumer,
                 )
-                .run()
+                .run(block_cost_limit_reservation_cb)
             })
             .unwrap()
     }
@@ -665,7 +860,9 @@ mod tests {
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_transaction as system_transaction,
-        solana_transaction::{sanitized::SanitizedTransaction, Transaction},
+        solana_transaction::{
+            sanitized::SanitizedTransaction, versioned::VersionedTransaction, Transaction,
+        },
         solana_vote::vote_transaction::new_tower_sync_transaction,
         solana_vote_program::vote_state::TowerSync,
         std::{
@@ -673,6 +870,7 @@ mod tests {
             thread::sleep,
             time::Instant,
         },
+        strum::IntoEnumIterator,
         test_case::test_case,
     };
 
@@ -721,6 +919,11 @@ mod tests {
             None,
             bank_forks,
             Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
+            None,
+            None,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -777,6 +980,11 @@ mod tests {
             None,
             bank_forks,
             Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
+            None,
+            None,
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -842,6 +1050,11 @@ mod tests {
             None,
             bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
             Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
+            None,
+            None,
         );
 
         // good tx, and no verify
@@ -993,6 +1206,11 @@ mod tests {
                 None,
                 bank_forks,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
+                HashSet::default(),
+                BundleAccountLocker::default(),
+                |_| 0,
+                None,
+                None,
             );
 
             // wait for banking_stage to eat the packets
@@ -1072,18 +1290,29 @@ mod tests {
         let pubkey2 = solana_pubkey::new_rand();
 
         let txs = vec![
-            system_transaction::transfer(&mint_keypair, &pubkey, 1, genesis_config.hash()).into(),
-            system_transaction::transfer(&keypair2, &pubkey2, 1, genesis_config.hash()).into(),
+            VersionedTransaction::from(system_transaction::transfer(
+                &mint_keypair,
+                &pubkey,
+                1,
+                genesis_config.hash(),
+            )),
+            VersionedTransaction::from(system_transaction::transfer(
+                &keypair2,
+                &pubkey2,
+                1,
+                genesis_config.hash(),
+            )),
         ];
 
-        let _ = recorder.record_transactions(bank.slot(), txs.clone());
+        let _ = recorder.record_transactions(bank.slot(), vec![txs.clone()]);
         let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
         assert_eq!(entry.transactions, txs);
 
         // Once bank is set to a new bank (setting bank.slot() + 1 in record_transactions),
         // record_transactions should throw MaxHeightReached
         let next_slot = bank.slot() + 1;
-        let RecordTransactionsSummary { result, .. } = recorder.record_transactions(next_slot, txs);
+        let RecordTransactionsSummary { result, .. } =
+            recorder.record_transactions(next_slot, vec![txs]);
         assert_matches!(result, Err(PohRecorderError::MaxHeightReached));
         // Should receive nothing from PohRecorder b/c record failed
         assert!(entry_receiver.try_recv().is_err());
@@ -1180,6 +1409,11 @@ mod tests {
             None,
             bank_forks,
             Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
+            None,
+            None,
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1255,5 +1489,120 @@ mod tests {
         banking_stage.join().unwrap();
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
+    }
+
+    #[test]
+    fn test_blacklisted_accounts() {
+        solana_logger::setup();
+
+        for block_production_method in BlockProductionMethod::iter() {
+            for transaction_struct in TransactionStructure::iter() {
+                let GenesisConfigInfo {
+                    genesis_config,
+                    mint_keypair,
+                    ..
+                } = create_slow_genesis_config(10);
+                let (bank, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+                let start_hash = bank.last_blockhash();
+                let banking_tracer = BankingTracer::new_disabled();
+                let Channels {
+                    non_vote_sender,
+                    non_vote_receiver,
+                    tpu_vote_sender,
+                    tpu_vote_receiver,
+                    gossip_vote_sender,
+                    gossip_vote_receiver,
+                } = banking_tracer.create_channels(false);
+
+                let ledger_path = get_tmp_ledger_path_auto_delete!();
+                {
+                    let blockstore = Arc::new(
+                        Blockstore::open(ledger_path.path())
+                            .expect("Expected to be able to open database ledger"),
+                    );
+                    let (exit, poh_recorder, transaction_recorder, poh_service, entry_receiver) =
+                        create_test_recorder(bank.clone(), blockstore, None, None);
+
+                    let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+                    let blacklisted_keypair = Keypair::new();
+
+                    let banking_stage = BankingStage::new_num_threads(
+                        block_production_method.clone(),
+                        transaction_struct.clone(),
+                        poh_recorder,
+                        transaction_recorder,
+                        non_vote_receiver,
+                        tpu_vote_receiver,
+                        gossip_vote_receiver,
+                        DEFAULT_NUM_WORKERS,
+                        None,
+                        replay_vote_sender,
+                        None,
+                        bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
+                        Arc::new(PrioritizationFeeCache::new(0u64)),
+                        HashSet::from_iter([blacklisted_keypair.pubkey()]),
+                        BundleAccountLocker::default(),
+                        |_| 0,
+                        None,
+                        None,
+                    );
+
+                    // bad tx
+                    let blacklisted_tx = system_transaction::transfer(
+                        &mint_keypair,
+                        &blacklisted_keypair.pubkey(),
+                        2,
+                        start_hash,
+                    );
+
+                    // good tx
+                    let good_keypair = Keypair::new();
+                    let ok_tx = system_transaction::transfer(
+                        &mint_keypair,
+                        &good_keypair.pubkey(),
+                        2,
+                        start_hash,
+                    );
+
+                    // send 'em over
+                    let packet_batches =
+                        to_packet_batches(&[blacklisted_tx.clone(), ok_tx.clone()], 2);
+
+                    // glad they all fit
+                    assert_eq!(packet_batches.len(), 1);
+                    non_vote_sender
+                        .send(BankingPacketBatch::new(packet_batches))
+                        .unwrap();
+
+                    // wait for 512 ticks or 8 leader slots to pass before checking state
+                    while let Ok((_bank, (_entry, tick))) = entry_receiver.recv() {
+                        if tick == 511 {
+                            break;
+                        }
+                    }
+
+                    drop(non_vote_sender);
+                    drop(tpu_vote_sender);
+                    drop(gossip_vote_sender);
+                    exit.store(true, Ordering::Relaxed);
+                    poh_service.join().unwrap();
+                    banking_stage.join().unwrap();
+
+                    assert_eq!(bank.get_balance(&good_keypair.pubkey()), 2);
+                    assert!(bank.has_signature(&ok_tx.signatures[0]));
+
+                    assert_eq!(
+                        bank.get_balance(&blacklisted_keypair.pubkey()),
+                        0,
+                        "test failed with config: {}_{}",
+                        block_production_method,
+                        transaction_struct
+                    );
+                    assert!(!bank.has_signature(&blacklisted_tx.signatures[0]));
+                }
+                Blockstore::destroy(ledger_path.path()).unwrap();
+            }
+        }
     }
 }

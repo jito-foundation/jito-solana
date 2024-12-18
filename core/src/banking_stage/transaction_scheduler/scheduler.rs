@@ -8,6 +8,7 @@ use {
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     std::num::Saturating,
 };
+use crate::banking_stage::decision_maker::BufferedPacketsDecision;
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 pub(crate) trait Scheduler<Tx: TransactionWithMeta> {
@@ -26,6 +27,7 @@ pub(crate) trait Scheduler<Tx: TransactionWithMeta> {
     fn receive_completed(
         &mut self,
         container: &mut impl StateContainer<Tx>,
+        _decision: &BufferedPacketsDecision,
     ) -> Result<(usize, usize), SchedulerError> {
         let mut total_num_transactions = Saturating::<usize>(0);
         let mut total_num_retryable = Saturating::<usize>(0);

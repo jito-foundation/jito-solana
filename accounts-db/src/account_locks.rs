@@ -24,8 +24,14 @@ impl AccountLocks {
     pub fn try_lock_accounts<'a>(
         &mut self,
         keys: impl Iterator<Item = (&'a Pubkey, bool)> + Clone,
+        is_read_prelocked_callback: &impl Fn(&Pubkey) -> bool,
+        is_write_prelocked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> TransactionResult<()> {
-        self.can_lock_accounts(keys.clone())?;
+        self.can_lock_accounts(
+            keys.clone(),
+            is_read_prelocked_callback,
+            is_write_prelocked_callback,
+        )?;
         self.lock_accounts(keys);
 
         Ok(())
@@ -41,10 +47,16 @@ impl AccountLocks {
         mut validated_batch_keys: Vec<
             TransactionResult<impl Iterator<Item = (&'a Pubkey, bool)> + Clone>,
         >,
+        is_read_locked_callback: &impl Fn(&Pubkey) -> bool,
+        is_write_locked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> Vec<TransactionResult<()>> {
         validated_batch_keys.iter_mut().for_each(|validated_keys| {
             if let Ok(ref keys) = validated_keys {
-                if let Err(e) = self.can_lock_accounts(keys.clone()) {
+                if let Err(e) = self.can_lock_accounts(
+                    keys.clone(),
+                    is_read_locked_callback,
+                    is_write_locked_callback,
+                ) {
                     *validated_keys = Err(e);
                 }
             }
@@ -73,13 +85,18 @@ impl AccountLocks {
     fn can_lock_accounts<'a>(
         &self,
         keys: impl Iterator<Item = (&'a Pubkey, bool)>,
+        is_read_prelocked_callback: &impl Fn(&Pubkey) -> bool,
+        is_write_prelocked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> TransactionResult<()> {
         for (key, writable) in keys {
             if writable {
-                if !self.can_write_lock(key) {
+                if !self.can_write_lock(key)
+                    || is_read_prelocked_callback(key)
+                    || is_write_prelocked_callback(key)
+                {
                     return Err(TransactionError::AccountInUse);
                 }
-            } else if !self.can_read_lock(key) {
+            } else if !self.can_read_lock(key) || is_write_prelocked_callback(key) {
                 return Err(TransactionError::AccountInUse);
             }
         }
@@ -210,23 +227,31 @@ mod tests {
         let key2 = Pubkey::new_unique();
 
         // Add write and read-lock.
-        let result = account_locks.try_lock_accounts([(&key1, true), (&key2, false)].into_iter());
+        let result = account_locks.try_lock_accounts(
+            [(&key1, true), (&key2, false)].into_iter(),
+            &|_| false,
+            &|_| false,
+        );
         assert!(result.is_ok());
 
         // Try to add duplicate write-lock.
-        let result = account_locks.try_lock_accounts([(&key1, true)].into_iter());
+        let result =
+            account_locks.try_lock_accounts([(&key1, true)].into_iter(), &|_| false, &|_| false);
         assert_eq!(result, Err(TransactionError::AccountInUse));
 
         // Try to add write lock on read-locked account.
-        let result = account_locks.try_lock_accounts([(&key2, true)].into_iter());
+        let result =
+            account_locks.try_lock_accounts([(&key2, true)].into_iter(), &|_| false, &|_| false);
         assert_eq!(result, Err(TransactionError::AccountInUse));
 
         // Try to add read lock on write-locked account.
-        let result = account_locks.try_lock_accounts([(&key1, false)].into_iter());
+        let result =
+            account_locks.try_lock_accounts([(&key1, false)].into_iter(), &|_| false, &|_| false);
         assert_eq!(result, Err(TransactionError::AccountInUse));
 
         // Add read lock on read-locked account.
-        let result = account_locks.try_lock_accounts([(&key2, false)].into_iter());
+        let result =
+            account_locks.try_lock_accounts([(&key2, false)].into_iter(), &|_| false, &|_| false);
         assert!(result.is_ok());
 
         // Unlock write and read locks.
@@ -329,5 +354,48 @@ mod tests {
         keys[47] = keys[3]; // Duplicate key
         let account_keys = AccountKeys::new(&keys, None);
         assert!(has_duplicates(account_keys));
+    }
+
+    #[test]
+    fn test_additional_read_locks() {
+        let mut account_locks = AccountLocks::default();
+
+        let key1 = Pubkey::new_unique();
+
+        // write lock key1 while key1 in additional read locks will fail
+        let result = account_locks.try_lock_accounts(
+            [(&key1, true)].into_iter(),
+            &|key| *key == key1,
+            &|_| false,
+        );
+        assert_eq!(result, Err(TransactionError::AccountInUse));
+
+        // read lock key1 while key1 in additional read locks will be ok
+        let result = account_locks.try_lock_accounts(
+            [(&key1, false)].into_iter(),
+            &|key| *key == key1,
+            &|_| false,
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn test_additional_write_locks() {
+        let mut account_locks = AccountLocks::default();
+
+        let key1 = Pubkey::new_unique();
+
+        // write lock key1 while key1 in addition write locks will fail
+        let result =
+            account_locks
+                .try_lock_accounts([(&key1, true)].into_iter(), &|_| false, &|key| *key == key1);
+        assert_eq!(result, Err(TransactionError::AccountInUse));
+
+        // read lock key1 while key1 in addition write locks will fail
+        let result =
+            account_locks.try_lock_accounts([(&key1, false)].into_iter(), &|_| false, &|key| {
+                *key == key1
+            });
+        assert_eq!(result, Err(TransactionError::AccountInUse));
     }
 }
