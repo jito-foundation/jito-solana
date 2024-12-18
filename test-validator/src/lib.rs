@@ -22,6 +22,7 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::tower_storage::TowerStorage,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
@@ -46,6 +47,7 @@ use {
     solana_message::Message,
     solana_native_token::LAMPORTS_PER_SOL,
     solana_net_utils::{find_available_ports_in_range, multihomed_sockets::BindIpAddrs, PortRange},
+    solana_program_binaries::{jito_tip_distribution, jito_tip_payment},
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_rpc::{rpc::JsonRpcConfig, rpc_pubsub_service::PubSubConfig},
@@ -72,7 +74,7 @@ use {
         num::{NonZero, NonZeroU64},
         path::{Path, PathBuf},
         str::FromStr,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
         time::Duration,
     },
     tokio::time::sleep,
@@ -143,6 +145,7 @@ pub struct TestValidatorGenesis {
     pub tpu_enable_udp: bool,
     pub geyser_plugin_manager: Arc<RwLock<GeyserPluginManager>>,
     admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+    pub bam_url: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -179,6 +182,7 @@ impl Default for TestValidatorGenesis {
             geyser_plugin_manager: Arc::new(RwLock::new(GeyserPluginManager::default())),
             admin_rpc_service_post_init:
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
+            bam_url: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -1135,6 +1139,16 @@ impl TestValidator {
             staked_nodes_overrides: config.staked_nodes_overrides.clone(),
             accounts_db_config,
             runtime_config,
+            tip_manager_config: TipManagerConfig {
+                tip_payment_program_id: jito_tip_payment::id(),
+                tip_distribution_program_id: jito_tip_distribution::id(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: validator_identity.pubkey(),
+                    vote_account: vote_account_address,
+                    commission_bps: 10,
+                },
+            },
+            bam_url: config.bam_url.clone(),
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {
