@@ -260,6 +260,7 @@ dependencies = [
  "agave-geyser-plugin-interface",
  "agave-logger",
  "agave-snapshots",
+ "arc-swap",
  "chrono",
  "clap",
  "console 0.16.1",
@@ -333,6 +334,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tikv-jemallocator",
  "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -3507,6 +3509,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-protos"
+version = "3.1.4"
+dependencies = [
+ "bytes",
+ "prost",
+ "prost-types",
+ "protobuf-src",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4979,7 +4993,7 @@ dependencies = [
  "getrandom 0.3.1",
  "lru-slab",
  "rand 0.9.0",
- "ring",
+ "ring 0.17.14",
  "rustc-hash 2.0.0",
  "rustls 0.23.34",
  "rustls-pki-types",
@@ -5213,7 +5227,7 @@ dependencies = [
  "lru",
  "parking_lot 0.11.2",
  "smallvec",
- "spin",
+ "spin 0.9.8",
 ]
 
 [[package]]
@@ -5360,6 +5374,21 @@ dependencies = [
 
 [[package]]
 name = "ring"
+version = "0.16.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3053cf52e236a3ed746dfc745aa9cacf1b791d846bdaf412f60a8d7d6e17c8fc"
+dependencies = [
+ "cc",
+ "libc",
+ "once_cell",
+ "spin 0.5.2",
+ "untrusted 0.7.1",
+ "web-sys",
+ "winapi 0.3.9",
+]
+
+[[package]]
+name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
@@ -5368,7 +5397,7 @@ dependencies = [
  "cfg-if 1.0.4",
  "getrandom 0.2.10",
  "libc",
- "untrusted",
+ "untrusted 0.9.0",
  "windows-sys 0.52.0",
 ]
 
@@ -5490,7 +5519,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f56a14d1f48b391359b22f731fd4bd7e43c97f3c50eee276f3aa09c94784d3e"
 dependencies = [
  "log",
- "ring",
+ "ring 0.17.14",
  "rustls-webpki 0.101.7",
  "sct",
 ]
@@ -5502,11 +5531,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a9586e9ee2b4f8fab52a0048ca7334d7024eef48e2cb9407e3497bb7cab7fa7"
 dependencies = [
  "once_cell",
- "ring",
+ "ring 0.17.14",
  "rustls-pki-types",
  "rustls-webpki 0.103.6",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
+dependencies = [
+ "openssl-probe",
+ "rustls-pemfile",
+ "schannel",
+ "security-framework 2.3.1",
 ]
 
 [[package]]
@@ -5552,7 +5593,7 @@ dependencies = [
  "log",
  "once_cell",
  "rustls 0.23.34",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.1",
  "rustls-platform-verifier-android",
  "rustls-webpki 0.103.6",
  "security-framework 3.2.0",
@@ -5569,12 +5610,22 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
+version = "0.100.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f6a5fc258f1c1276dfe3016516945546e2d5383911efc0fc4f1cdc5df3a4ae3"
+dependencies = [
+ "ring 0.16.20",
+ "untrusted 0.7.1",
+]
+
+[[package]]
+name = "rustls-webpki"
 version = "0.101.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b6275d1ee7a1cd780b64aca7726599a1dbc893b1e64144529e55c3c2f745765"
 dependencies = [
- "ring",
- "untrusted",
+ "ring 0.17.14",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -5583,9 +5634,9 @@ version = "0.103.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8572f3c2cb9934231157b45499fc41e1f58c589fdfb81a844ba873265e80f8eb"
 dependencies = [
- "ring",
+ "ring 0.17.14",
  "rustls-pki-types",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -5630,8 +5681,8 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
 dependencies = [
- "ring",
- "untrusted",
+ "ring 0.17.14",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -6285,6 +6336,7 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-commitment-config",
+ "solana-gossip",
  "solana-hash 3.1.0",
  "solana-message",
  "solana-pubkey",
@@ -6469,6 +6521,15 @@ dependencies = [
  "solana-sdk-ids",
  "solana-system-program",
  "solana-vote-program",
+]
+
+[[package]]
+name = "solana-bundle"
+version = "3.1.4"
+dependencies = [
+ "itertools 0.12.1",
+ "sha2 0.10.9",
+ "solana-runtime-transaction",
 ]
 
 [[package]]
@@ -6755,6 +6816,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bincode",
+ "borsh",
  "bs58",
  "bytemuck",
  "bytes",
@@ -6765,6 +6827,8 @@ dependencies = [
  "futures 0.3.31",
  "histogram",
  "itertools 0.12.1",
+ "jito-protos",
+ "lazy_static",
  "libc",
  "log",
  "lru",
@@ -6772,6 +6836,8 @@ dependencies = [
  "num_cpus",
  "num_enum",
  "prio-graph",
+ "prost",
+ "prost-types",
  "qualifier_attr",
  "quinn",
  "rand 0.8.5",
@@ -6790,6 +6856,7 @@ dependencies = [
  "solana-bincode",
  "solana-bloom",
  "solana-builtins-default-costs",
+ "solana-bundle",
  "solana-client",
  "solana-clock",
  "solana-cluster-type",
@@ -6875,6 +6942,8 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-util 0.7.16",
+ "tonic",
+ "tonic-build",
  "trees",
 ]
 
@@ -8267,6 +8336,7 @@ dependencies = [
  "solana-poh",
  "solana-poh-config",
  "solana-program-pack",
+ "solana-program-runtime",
  "solana-pubkey",
  "solana-quic-definitions",
  "solana-rayon-threadlimit",
@@ -8352,8 +8422,11 @@ dependencies = [
  "serde_json",
  "solana-account-decoder-client-types",
  "solana-clock",
+ "solana-commitment-config",
  "solana-rpc-client-types",
+ "solana-signature",
  "solana-signer",
+ "solana-svm",
  "solana-transaction-error",
  "solana-transaction-status-client-types",
  "thiserror 2.0.17",
@@ -9429,6 +9502,7 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-connection-cache",
+ "solana-gossip",
  "solana-hash 3.1.0",
  "solana-keypair",
  "solana-measure",
@@ -10154,6 +10228,7 @@ dependencies = [
  "agave-feature-set",
  "agave-votor",
  "agave-xdp",
+ "arc-swap",
  "bincode",
  "bytes",
  "caps",
@@ -10489,6 +10564,12 @@ dependencies = [
  "thiserror 2.0.17",
  "zeroize",
 ]
+
+[[package]]
+name = "spin"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
 
 [[package]]
 name = "spin"
@@ -11361,6 +11442,7 @@ dependencies = [
  "percent-encoding 2.3.2",
  "pin-project",
  "prost",
+ "rustls-native-certs 0.6.3",
  "rustls-pemfile",
  "tokio",
  "tokio-rustls 0.24.1",
@@ -11369,6 +11451,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "webpki-roots 0.23.1",
 ]
 
 [[package]]
@@ -11648,6 +11731,12 @@ checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
+
+[[package]]
+name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
@@ -11891,6 +11980,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e4ffd8df1c57e87c325000a3d6ef93db75279dc3a231125aac571650f22b12a"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b03058f88386e5ff5310d9111d53f48b17d732b401aeb83a8d5190f2ac459338"
+dependencies = [
+ "rustls-webpki 0.100.3",
 ]
 
 [[package]]

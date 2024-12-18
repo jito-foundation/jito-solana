@@ -38,18 +38,16 @@ use {
 
 pub type PubkeyAccountSlot = (Pubkey, AccountSharedData, Slot);
 
-struct TransactionAccountLocksIterator<'a, T: SVMMessage> {
+pub struct TransactionAccountLocksIterator<'a, T: SVMMessage> {
     transaction: &'a T,
 }
 
 impl<'a, T: SVMMessage> TransactionAccountLocksIterator<'a, T> {
-    pub(crate) fn new(transaction: &'a T) -> Self {
+    pub fn new(transaction: &'a T) -> Self {
         Self { transaction }
     }
 
-    pub(crate) fn accounts_with_is_writable(
-        &self,
-    ) -> impl Iterator<Item = (&'a Pubkey, bool)> + Clone {
+    pub fn accounts_with_is_writable(&self) -> impl Iterator<Item = (&'a Pubkey, bool)> + Clone {
         self.transaction
             .account_keys()
             .iter()
