@@ -4,7 +4,7 @@ use {
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
-    std::{thread::sleep, time::Duration},
+    std::{net::SocketAddr, thread::sleep, time::Duration},
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
@@ -185,6 +185,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
@@ -197,6 +198,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
+            &shred_receiver_address.read().unwrap(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
