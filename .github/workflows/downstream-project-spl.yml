@@ -58,6 +58,9 @@ jobs:
           # - token
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+          token: ${{ secrets.ACCESS_TOKEN }}
 
       - shell: bash
         run: |
@@ -88,6 +91,9 @@ jobs:
           - token-2022
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+          token: ${{ secrets.ACCESS_TOKEN }}
 
       - shell: bash
         run: |
@@ -128,6 +134,9 @@ jobs:
           # - token
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+          token: ${{ secrets.ACCESS_TOKEN }}
 
       - shell: bash
         run: |

@@ -81,6 +81,12 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         use_tpu_client_next: config.use_tpu_client_next,
         retransmit_xdp: config.retransmit_xdp.clone(),
         repair_handler_type: config.repair_handler_type.clone(),
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_address: config.shred_receiver_address.clone(),
+        shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        bam_url: config.bam_url.clone(),
     }
 }
 
