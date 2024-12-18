@@ -75,6 +75,7 @@ use {
     },
     solana_time_utils::timestamp,
     solana_transaction::Transaction,
+    solana_version::ClientId,
     solana_vote::vote_parser,
     std::{
         borrow::Borrow,
@@ -264,6 +265,10 @@ impl ClusterInfo {
 
     pub fn set_entrypoints(&self, entrypoints: Vec<ContactInfo>) {
         *self.entrypoints.write().unwrap() = entrypoints;
+    }
+
+    pub fn set_my_contact_info(&self, my_contact_info: ContactInfo) {
+        *self.my_contact_info.write().unwrap() = my_contact_info;
     }
 
     /// Pubkeys that should be preserved during CRDS trim.
@@ -2358,6 +2363,15 @@ impl ClusterInfo {
             shred_version,
         );
         (contact_info, gossip_socket, None)
+    }
+
+    pub fn set_client_id(&self, client_id: ClientId) {
+        self.my_contact_info.write().unwrap().version.client = u16::try_from(client_id).unwrap();
+        self.refresh_my_gossip_contact_info();
+    }
+
+    pub fn get_client_id(&self) -> ClientId {
+        self.my_contact_info.read().unwrap().version.client.into()
     }
 }
 

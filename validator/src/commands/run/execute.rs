@@ -5,6 +5,7 @@ use {
         cli::{self},
         commands::{run::args::RunArgs, FromClapArgMatches},
         ledger_lockfile, lock_ledger,
+        shred_receiver_addresses::parse_shred_receiver_addresses,
     },
     agave_logger::redirect_stderr_to_file,
     agave_snapshots::{
@@ -12,6 +13,7 @@ use {
         snapshot_config::{SnapshotConfig, SnapshotUsage},
         ArchiveFormat, SnapshotInterval, SnapshotVersion,
     },
+    arc_swap::ArcSwap,
     clap::{crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit, ArgMatches},
     crossbeam_channel::unbounded,
     log::*,
@@ -33,9 +35,11 @@ use {
         banking_stage::transaction_scheduler::scheduler_controller::SchedulerConfig,
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::repair_handler::RepairHandlerType,
         snapshot_packager_service::SnapshotPackagerService,
         system_monitor_service::SystemMonitorService,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tpu::MAX_VOTES_PER_SECOND,
         validator::{
             is_snapshot_config_valid, BlockProductionMethod, BlockVerificationMethod,
@@ -74,12 +78,14 @@ use {
     std::{
         collections::HashSet,
         fs::{self, File},
+        io,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         num::{NonZeroU64, NonZeroUsize},
         path::{Path, PathBuf},
         process::exit,
-        str::FromStr,
-        sync::{atomic::AtomicBool, Arc, RwLock},
+        str::{self, FromStr},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        time::Duration,
     },
 };
 
@@ -525,6 +531,78 @@ pub fn execute(
         UseSnapshotArchivesAtStartup
     );
 
+    let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
+
+    let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
+
+    let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig {
+        block_engine_url: if matches.is_present("block_engine_url") {
+            value_of(matches, "block_engine_url").expect("couldn't parse block_engine_url")
+        } else {
+            String::default()
+        },
+        disable_block_engine_autoconfig: matches.is_present("disable_block_engine_autoconfig"),
+        trust_packets: matches.is_present("trust_block_engine_packets"),
+    }));
+
+    let bam_url = Arc::new(ArcSwap::from_pointee(
+        crate::commands::bam::extract_bam_url(matches)?,
+    ));
+
+    // Defaults are set in cli definition, safe to use unwrap() here
+    let expected_heartbeat_interval_ms: u64 =
+        value_of(matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+    assert!(
+        expected_heartbeat_interval_ms > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
+    let max_failed_heartbeats: u64 = value_of(matches, "relayer_max_failed_heartbeats").unwrap();
+    assert!(
+        max_failed_heartbeats > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
+
+    let relayer_config = Arc::new(Mutex::new(RelayerConfig {
+        relayer_url: if matches.is_present("relayer_url") {
+            value_of(matches, "relayer_url").expect("couldn't parse relayer_url")
+        } else {
+            "".to_string()
+        },
+        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+        oldest_allowed_heartbeat: Duration::from_millis(
+            max_failed_heartbeats * expected_heartbeat_interval_ms,
+        ),
+    }));
+
+    let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
+        parse_shred_receiver_addresses(
+            matches
+                .values_of("shred_receiver_address")
+                .into_iter()
+                .flatten(),
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("shred_receiver_address invalid: {err}"),
+            )
+        })?,
+    ));
+    let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::from_pointee(
+        parse_shred_receiver_addresses(
+            matches
+                .values_of("shred_retransmit_receiver_address")
+                .into_iter()
+                .flatten(),
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("shred_retransmit_receiver_address invalid: {err}"),
+            )
+        })?,
+    ));
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -640,6 +718,13 @@ pub fn execute(
             Arc::new(AtomicBool::new(false)),
         )]
         .into(),
+        // jito config
+        relayer_config,
+        block_engine_config,
+        shred_receiver_addresses,
+        shred_retransmit_receiver_addresses,
+        tip_manager_config,
+        bam_url,
     };
 
     let reserved = validator_config
@@ -733,6 +818,7 @@ pub fn execute(
             tower_storage: validator_config.tower_storage.clone(),
             staked_nodes_overrides,
             rpc_to_plugin_manager_sender,
+            bam_url: validator_config.bam_url.clone(),
         },
     );
 
@@ -1277,4 +1363,56 @@ fn new_snapshot_config(
     }
 
     Ok(snapshot_config)
+}
+
+fn tip_manager_config_from_matches(
+    matches: &ArgMatches,
+    voting_disabled: bool,
+) -> TipManagerConfig {
+    TipManagerConfig {
+        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
+            || {
+                if !voting_disabled {
+                    panic!(
+                        "--tip-payment-program-pubkey argument required when validator is voting"
+                    );
+                }
+                Pubkey::new_unique()
+            },
+        ),
+        tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
+            .unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!(
+                        "--tip-distribution-program-pubkey argument required when validator is \
+                         voting"
+                    );
+                }
+                Pubkey::new_unique()
+            }),
+        tip_distribution_account_config: TipDistributionAccountConfig {
+            merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
+                .unwrap_or_else(|| {
+                    if !voting_disabled {
+                        panic!(
+                            "--merkle-root-upload-authority argument required when validator is \
+                             voting"
+                        );
+                    }
+                    Pubkey::new_unique()
+                }),
+            vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--vote-account argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+            commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
+                if !voting_disabled {
+                    panic!("--commission-bps argument required when validator is voting");
+                }
+                0
+            }),
+        },
+    }
 }
