@@ -69,6 +69,7 @@ solana-perf = { workspace = true }
 solana-poh = { workspace = true }
 solana-poh-config = { workspace = true }
 solana-program-pack = { workspace = true }
+solana-program-runtime = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-quic-definitions = { workspace = true }
 solana-rayon-threadlimit = { workspace = true }

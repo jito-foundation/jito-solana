@@ -79,6 +79,15 @@ cargo_audit_ignores=(
 	# Solution:  Upgrade to >=0.3.47
 	--ignore RUSTSEC-2026-0009
 
+  # Crate:     ring
+  # Version:   0.16.20
+  # Title:     Some AES functions may panic when overflow checking is enabled.
+  # Date:      2025-03-06
+  # ID:        RUSTSEC-2025-0009
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2025-0009
+  # Solution:  Upgrade to >=0.17.12
+  --ignore RUSTSEC-2025-0009
+
   # Crate:     quinn-proto
   # Version:   0.11.13
   # Title:     Denial of service in Quinn endpoints

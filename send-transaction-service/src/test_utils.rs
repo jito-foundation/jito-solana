@@ -9,6 +9,7 @@ use {
         },
     },
     solana_client::connection_cache::ConnectionCache,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_net_utils::sockets::{bind_to, localhost_port_range_for_tests},
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -24,7 +25,7 @@ use {
 pub trait CreateClient: TransactionClient + Clone {
     fn create_client(
         maybe_runtime: Option<Handle>,
-        my_tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_forward_count: u64,
     ) -> Self;
@@ -33,14 +34,14 @@ pub trait CreateClient: TransactionClient + Clone {
 impl CreateClient for ConnectionCacheClient<NullTpuInfo> {
     fn create_client(
         _maybe_runtime: Option<Handle>,
-        my_tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_forward_count: u64,
     ) -> Self {
         let connection_cache = Arc::new(ConnectionCache::new("connection_cache_test"));
         ConnectionCacheClient::new(
             connection_cache,
-            my_tpu_address,
+            cluster_info,
             tpu_peers,
             None,
             leader_forward_count,
@@ -51,7 +52,7 @@ impl CreateClient for ConnectionCacheClient<NullTpuInfo> {
 impl CreateClient for TpuClientNextClient {
     fn create_client(
         maybe_runtime: Option<Handle>,
-        my_tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_forward_count: u64,
     ) -> Self {
@@ -62,7 +63,7 @@ impl CreateClient for TpuClientNextClient {
             .expect("Should be able to open UdpSocket for tests.");
         Self::new::<NullTpuInfo>(
             runtime_handle,
-            my_tpu_address,
+            cluster_info,
             tpu_peers,
             None,
             leader_forward_count,

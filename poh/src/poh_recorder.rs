@@ -279,7 +279,7 @@ impl PohRecorder {
     }
 
     // synchronize PoH with a bank
-    pub(crate) fn reset(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
+    pub fn reset(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
         self.clear_bank(false);
         let tick_height = self.reset_poh(reset_bank, true);
 
@@ -625,7 +625,7 @@ impl PohRecorder {
     }
 
     /// Return the slot that PoH is currently ticking through.
-    fn current_poh_slot(&self) -> Slot {
+    pub fn current_poh_slot(&self) -> Slot {
         // The tick_height field is initialized to the last tick of the start
         // bank and generally indicates what tick height has already been
         // reached so use the next tick height to determine which slot poh is
@@ -891,6 +891,10 @@ impl PohRecorder {
     #[cfg(feature = "dev-context-only-utils")]
     pub fn clear_bank_for_test(&mut self) {
         self.clear_bank(true);
+    }
+
+    pub fn get_blockstore(&self) -> Arc<Blockstore> {
+        self.blockstore.clone()
     }
 }
 

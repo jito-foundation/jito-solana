@@ -1,5 +1,6 @@
 use {
     super::*,
+    crate::ShredReceiverAddresses,
     solana_entry::entry::Entry,
     solana_gossip::contact_info::ContactInfo,
     solana_hash::Hash,
@@ -149,6 +150,7 @@ impl BroadcastRun for BroadcastFakeShredsRun {
 
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,
@@ -156,6 +158,10 @@ impl BroadcastRun for BroadcastFakeShredsRun {
         sock: BroadcastSocket,
         _bank_forks: &RwLock<BankForks>,
         _quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        _multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let sock = match sock {
             BroadcastSocket::Udp(sock) => sock,

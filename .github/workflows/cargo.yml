@@ -55,6 +55,10 @@ jobs:
           apk add bash git
 
       - uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+          token: ${{ secrets.ACCESS_TOKEN }}
+
 
       - uses: mozilla-actions/sccache-action@v0.0.9
         with:

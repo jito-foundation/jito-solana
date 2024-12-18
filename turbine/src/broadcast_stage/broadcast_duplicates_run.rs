@@ -1,6 +1,6 @@
 use {
     super::*,
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{cluster_nodes::ClusterNodesCache, ShredReceiverAddresses},
     crossbeam_channel::Sender,
     itertools::Itertools,
     solana_entry::entry::Entry,
@@ -291,6 +291,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,
@@ -298,6 +299,10 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         _quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        _multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {
