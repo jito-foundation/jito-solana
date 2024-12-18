@@ -86,6 +86,7 @@ fn load_blockstore(ledger_path: &Path, arg_matches: &ArgMatches<'_>) -> Arc<Bank
         Arc::new(blockstore),
         process_options,
         None,
+        true,
     );
     let bank = bank_forks.read().unwrap().working_bank();
     bank

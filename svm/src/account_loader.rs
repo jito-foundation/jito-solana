@@ -28,7 +28,7 @@ use {
     solana_sdk::rent_collector::{CollectedInfo, RENT_EXEMPT_RENT_EPOCH},
     solana_sdk_ids::{
         native_loader,
-        sysvar::{self, slot_history},
+        sysvar::{self},
     },
     solana_svm_rent_collector::svm_rent_collector::SVMRentCollector,
     solana_svm_transaction::svm_message::SVMMessage,
@@ -167,12 +167,10 @@ impl<'a, CB: TransactionProcessingCallback> AccountLoader<'a, CB> {
     ) -> AccountLoader<'a, CB> {
         let mut account_cache = AHashMap::with_capacity(capacity);
 
-        // SlotHistory may be overridden for simulation.
-        // No other uses of AccountOverrides are expected.
-        if let Some(slot_history) =
-            account_overrides.and_then(|overrides| overrides.get(&slot_history::id()))
-        {
-            account_cache.insert(slot_history::id(), slot_history.clone());
+        if let Some(overrides) = account_overrides {
+            for (key, account) in overrides.accounts() {
+                account_cache.insert(*key, account.clone());
+            }
         }
 
         Self {

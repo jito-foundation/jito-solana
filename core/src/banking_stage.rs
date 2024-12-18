@@ -24,6 +24,7 @@ use {
                 scheduler_controller::SchedulerController, scheduler_error::SchedulerError,
             },
         },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::{BlockProductionMethod, TransactionStructure},
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
@@ -41,7 +42,9 @@ use {
     },
     solana_sdk::{pubkey::Pubkey, timing::AtomicInterval},
     std::{
-        cmp, env,
+        cmp,
+        collections::HashSet,
+        env,
         ops::Deref,
         sync::{
             atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -69,12 +72,12 @@ pub mod unprocessed_packet_batches;
 pub mod vote_storage;
 
 mod consume_worker;
-conditional_vis_mod!(decision_maker, feature = "dev-context-only-utils", pub);
-mod immutable_deserialized_packet;
+pub mod decision_maker;
+pub(crate) mod immutable_deserialized_packet;
 mod latest_unprocessed_votes;
-mod leader_slot_timing_metrics;
+pub(crate) mod leader_slot_timing_metrics;
 conditional_vis_mod!(packet_deserializer, feature = "dev-context-only-utils", pub);
-mod packet_filter;
+pub(crate) mod packet_filter;
 mod packet_receiver;
 mod read_write_account_set;
 conditional_vis_mod!(scheduler_messages, feature = "dev-context-only-utils", pub);
@@ -333,6 +336,10 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
+        // callback function for compute space reservation for BundleStage
+        block_cost_limit_block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         Self::new_num_threads(
             block_production_method,
@@ -349,6 +356,9 @@ impl BankingStage {
             log_messages_bytes_limit,
             bank_forks,
             prioritization_fee_cache,
+            blacklisted_accounts,
+            bundle_account_locker,
+            block_cost_limit_block_cost_limit_reservation_cb,
         )
     }
 
@@ -368,6 +378,9 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         match block_production_method {
             BlockProductionMethod::CentralScheduler
@@ -391,6 +404,9 @@ impl BankingStage {
                     log_messages_bytes_limit,
                     bank_forks,
                     prioritization_fee_cache,
+                    blacklisted_accounts,
+                    bundle_account_locker,
+                    block_cost_limit_reservation_cb,
                 )
             }
         }
@@ -412,6 +428,9 @@ impl BankingStage {
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Keeps track of extraneous vote transactions for the vote threads
@@ -444,6 +463,8 @@ impl BankingStage {
                 transaction_recorder.clone(),
                 log_messages_bytes_limit,
                 VoteStorage::new(latest_unprocessed_votes.clone(), vote_source),
+                bundle_account_locker.clone(),
+                block_cost_limit_reservation_cb.clone(),
             ));
         }
 
@@ -452,6 +473,7 @@ impl BankingStage {
                 let receive_and_buffer = SanitizedTransactionReceiveAndBuffer::new(
                     PacketDeserializer::new(non_vote_receiver),
                     bank_forks.clone(),
+                    blacklisted_accounts,
                 );
                 Self::spawn_scheduler_and_workers(
                     &mut bank_thread_hdls,
@@ -464,12 +486,15 @@ impl BankingStage {
                     num_threads,
                     log_messages_bytes_limit,
                     bank_forks,
+                    bundle_account_locker.clone(),
+                    block_cost_limit_reservation_cb.clone(),
                 );
             }
             TransactionStructure::View => {
                 let receive_and_buffer = TransactionViewReceiveAndBuffer {
                     receiver: non_vote_receiver,
                     bank_forks: bank_forks.clone(),
+                    blacklisted_accounts,
                 };
                 Self::spawn_scheduler_and_workers(
                     &mut bank_thread_hdls,
@@ -482,6 +507,8 @@ impl BankingStage {
                     num_threads,
                     log_messages_bytes_limit,
                     bank_forks,
+                    bundle_account_locker.clone(),
+                    block_cost_limit_reservation_cb.clone(),
                 );
             }
         }
@@ -501,6 +528,8 @@ impl BankingStage {
         num_threads: u32,
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) {
         // Create channels for communication between scheduler and workers
         let num_workers = (num_threads).saturating_sub(NUM_VOTE_PROCESSING_THREADS);
@@ -520,17 +549,19 @@ impl BankingStage {
                     transaction_recorder.clone(),
                     QosService::new(id),
                     log_messages_bytes_limit,
+                    bundle_account_locker.clone(),
                 ),
                 finished_work_sender.clone(),
                 poh_recorder.read().unwrap().new_leader_bank_notifier(),
             );
 
             worker_metrics.push(consume_worker.metrics_handle());
+            let cb = block_cost_limit_reservation_cb.clone();
             bank_thread_hdls.push(
                 Builder::new()
                     .name(format!("solCoWorker{id:02}"))
                     .spawn(move || {
-                        let _ = consume_worker.run();
+                        let _ = consume_worker.run(cb);
                     })
                     .unwrap(),
             )
@@ -584,6 +615,7 @@ impl BankingStage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_thread_local_multi_iterator_thread(
         id: u32,
         packet_receiver: BankingPacketReceiver,
@@ -593,6 +625,8 @@ impl BankingStage {
         transaction_recorder: TransactionRecorder,
         log_messages_bytes_limit: Option<usize>,
         vote_storage: VoteStorage,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> JoinHandle<()> {
         let mut packet_receiver = PacketReceiver::new(id, packet_receiver);
         let consumer = Consumer::new(
@@ -600,6 +634,7 @@ impl BankingStage {
             transaction_recorder,
             QosService::new(id),
             log_messages_bytes_limit,
+            bundle_account_locker.clone(),
         );
 
         Builder::new()
@@ -612,6 +647,7 @@ impl BankingStage {
                     &consumer,
                     id,
                     vote_storage,
+                    block_cost_limit_reservation_cb,
                 )
             })
             .unwrap()
@@ -625,6 +661,7 @@ impl BankingStage {
         vote_storage: &mut VoteStorage,
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        block_cost_limit_reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
         if vote_storage.should_not_process() {
             return;
@@ -647,6 +684,7 @@ impl BankingStage {
                         vote_storage,
                         banking_stage_stats,
                         slot_metrics_tracker,
+                        block_cost_limit_reservation_cb
                     ));
                 slot_metrics_tracker
                     .increment_consume_buffered_packets_us(consume_buffered_packets_us);
@@ -675,6 +713,7 @@ impl BankingStage {
         consumer: &Consumer,
         id: u32,
         mut vote_storage: VoteStorage,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64,
     ) {
         let mut banking_stage_stats = BankingStageStats::new(id);
 
@@ -692,6 +731,7 @@ impl BankingStage {
                     &mut vote_storage,
                     &banking_stage_stats,
                     &mut slot_metrics_tracker,
+                    &block_cost_limit_reservation_cb
                 ));
                 slot_metrics_tracker
                     .increment_process_buffered_packets_us(process_buffered_packets_us);
@@ -749,7 +789,7 @@ mod tests {
         agave_banking_stage_ingress_types::BankingPacketBatch,
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
-        solana_entry::entry::{self, Entry, EntrySlice},
+        solana_entry::entry::{self, EntrySlice},
         solana_gossip::cluster_info::Node,
         solana_ledger::{
             blockstore::Blockstore,
@@ -761,7 +801,7 @@ mod tests {
         },
         solana_perf::packet::to_packet_batches,
         solana_poh::{
-            poh_recorder::{create_test_recorder, PohRecorderError, Record},
+            poh_recorder::{create_test_recorder, PohRecorderError, Record, WorkingBankEntry},
             poh_service::PohService,
             transaction_recorder::RecordTransactionsSummary,
         },
@@ -782,6 +822,7 @@ mod tests {
             sync::atomic::{AtomicBool, Ordering},
             thread::sleep,
         },
+        strum::IntoEnumIterator,
         test_case::test_case,
     };
 
@@ -840,6 +881,9 @@ mod tests {
             None,
             bank_forks,
             &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -898,6 +942,9 @@ mod tests {
             None,
             bank_forks,
             &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -910,7 +957,12 @@ mod tests {
         trace!("getting entries");
         let entries: Vec<_> = entry_receiver
             .iter()
-            .map(|(_bank, (entry, _tick_height))| entry)
+            .flat_map(
+                |WorkingBankEntry {
+                     bank: _,
+                     entries_ticks,
+                 }| entries_ticks.into_iter().map(|(e, _)| e),
+            )
             .collect();
         trace!("done");
         assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
@@ -965,6 +1017,9 @@ mod tests {
             None,
             bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
             &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
         );
 
         // fund another account so we can send 2 good transactions in a single batch.
@@ -1011,9 +1066,14 @@ mod tests {
         bank.process_transaction(&fund_tx).unwrap();
         //receive entries + ticks
         loop {
-            let entries: Vec<Entry> = entry_receiver
+            let entries: Vec<_> = entry_receiver
                 .iter()
-                .map(|(_bank, (entry, _tick_height))| entry)
+                .flat_map(
+                    |WorkingBankEntry {
+                         bank: _,
+                         entries_ticks,
+                     }| entries_ticks.into_iter().map(|(e, _)| e),
+                )
                 .collect();
 
             assert!(entries.verify(&blockhash, &entry::thread_pool_for_tests()));
@@ -1116,6 +1176,9 @@ mod tests {
                 None,
                 bank_forks,
                 &Arc::new(PrioritizationFeeCache::new(0u64)),
+                HashSet::default(),
+                BundleAccountLocker::default(),
+                |_| 0,
             );
 
             // wait for banking_stage to eat the packets
@@ -1139,7 +1202,12 @@ mod tests {
         // check that the balance is what we expect.
         let entries: Vec<_> = entry_receiver
             .iter()
-            .map(|(_bank, (entry, _tick_height))| entry)
+            .flat_map(
+                |WorkingBankEntry {
+                     bank: _,
+                     entries_ticks,
+                 }| entries_ticks.into_iter().map(|e| e.0),
+            )
             .collect();
 
         let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
@@ -1199,14 +1267,20 @@ mod tests {
             system_transaction::transfer(&keypair2, &pubkey2, 1, genesis_config.hash()).into(),
         ];
 
-        let _ = recorder.record_transactions(bank.slot(), txs.clone());
-        let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
+        let _ = recorder.record_transactions(bank.slot(), vec![txs.clone()]);
+        let WorkingBankEntry {
+            bank,
+            entries_ticks,
+        } = entry_receiver.recv().unwrap();
+        assert_eq!(entries_ticks.len(), 1);
+        let entry = &entries_ticks[0].0;
         assert_eq!(entry.transactions, txs);
 
         // Once bank is set to a new bank (setting bank.slot() + 1 in record_transactions),
         // record_transactions should throw MaxHeightReached
         let next_slot = bank.slot() + 1;
-        let RecordTransactionsSummary { result, .. } = recorder.record_transactions(next_slot, txs);
+        let RecordTransactionsSummary { result, .. } =
+            recorder.record_transactions(next_slot, vec![txs]);
         assert_matches!(result, Err(PohRecorderError::MaxHeightReached));
         // Should receive nothing from PohRecorder b/c record failed
         assert!(entry_receiver.try_recv().is_err());
@@ -1305,6 +1379,9 @@ mod tests {
             None,
             bank_forks,
             &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1380,5 +1457,119 @@ mod tests {
         banking_stage.join().unwrap();
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
+    }
+
+    #[test]
+    fn test_blacklisted_accounts() {
+        solana_logger::setup();
+
+        for block_production_method in BlockProductionMethod::iter() {
+            for transaction_struct in TransactionStructure::iter() {
+                let GenesisConfigInfo {
+                    genesis_config,
+                    mint_keypair,
+                    ..
+                } = create_slow_genesis_config(10);
+                let (bank, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+                let start_hash = bank.last_blockhash();
+                let banking_tracer = BankingTracer::new_disabled();
+                let Channels {
+                    non_vote_sender,
+                    non_vote_receiver,
+                    tpu_vote_sender,
+                    tpu_vote_receiver,
+                    gossip_vote_sender,
+                    gossip_vote_receiver,
+                } = banking_tracer.create_channels(false);
+
+                let ledger_path = get_tmp_ledger_path_auto_delete!();
+                {
+                    let blockstore = Arc::new(
+                        Blockstore::open(ledger_path.path())
+                            .expect("Expected to be able to open database ledger"),
+                    );
+                    let (exit, poh_recorder, transaction_recorder, poh_service, entry_receiver) =
+                        create_test_recorder(bank.clone(), blockstore, None, None);
+                    let (_, cluster_info) = new_test_cluster_info(/*keypair:*/ None);
+                    let cluster_info = Arc::new(cluster_info);
+                    let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+                    let blacklisted_keypair = Keypair::new();
+
+                    let banking_stage = BankingStage::new(
+                        block_production_method.clone(),
+                        transaction_struct.clone(),
+                        &cluster_info,
+                        &poh_recorder,
+                        transaction_recorder,
+                        non_vote_receiver,
+                        tpu_vote_receiver,
+                        gossip_vote_receiver,
+                        None,
+                        replay_vote_sender,
+                        None,
+                        bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
+                        &Arc::new(PrioritizationFeeCache::new(0u64)),
+                        HashSet::from_iter([blacklisted_keypair.pubkey()]),
+                        BundleAccountLocker::default(),
+                        |_| 0,
+                    );
+
+                    // bad tx
+                    let blacklisted_tx = system_transaction::transfer(
+                        &mint_keypair,
+                        &blacklisted_keypair.pubkey(),
+                        2,
+                        start_hash,
+                    );
+
+                    // good tx
+                    let good_keypair = Keypair::new();
+                    let ok_tx = system_transaction::transfer(
+                        &mint_keypair,
+                        &good_keypair.pubkey(),
+                        2,
+                        start_hash,
+                    );
+
+                    // send 'em over
+                    let packet_batches =
+                        to_packet_batches(&[blacklisted_tx.clone(), ok_tx.clone()], 2);
+
+                    // glad they all fit
+                    assert_eq!(packet_batches.len(), 1);
+                    non_vote_sender
+                        .send(BankingPacketBatch::new(packet_batches))
+                        .unwrap();
+
+                    // wait for 512 ticks or 8 leader slots to pass before checking state
+                    while let Ok(msg) = entry_receiver.recv() {
+                        if msg.entries_ticks.iter().any(|(_e, tick)| *tick == 511) {
+                            break;
+                        }
+                    }
+
+                    drop(non_vote_sender);
+                    drop(tpu_vote_sender);
+                    drop(gossip_vote_sender);
+                    exit.store(true, Ordering::Relaxed);
+                    poh_service.join().unwrap();
+                    banking_stage.join().unwrap();
+
+                    assert_eq!(bank.get_balance(&good_keypair.pubkey()), 2);
+                    assert!(bank.has_signature(&ok_tx.signatures[0]));
+
+                    assert_eq!(
+                        bank.get_balance(&blacklisted_keypair.pubkey()),
+                        0,
+                        "test failed with config: {}_{}",
+                        block_production_method,
+                        transaction_struct
+                    );
+                    assert!(!bank.has_signature(&blacklisted_tx.signatures[0]));
+                }
+                Blockstore::destroy(ledger_path.path()).unwrap();
+            }
+        }
     }
 }
