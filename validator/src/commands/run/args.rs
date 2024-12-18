@@ -1286,6 +1286,107 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("block_engine_url")
+            .long("block-engine-url")
+            .help(
+                "URL entrypoint to the Block Engine. Connected Block Engine will be \
+                 autoconfigured unless `--disable-block-engine-autoconfig` is used. Set to empty \
+                 string to disable block engine connection.",
+            )
+            .takes_value(true),
+    )
+    .arg(
+        Arg::with_name("relayer_url")
+            .long("relayer-url")
+            .help("Relayer url. Set to empty string to disable relayer connection.")
+            .takes_value(true),
+    )
+    .arg(
+        Arg::with_name("relayer_expected_heartbeat_interval_ms")
+            .long("relayer-expected-heartbeat-interval-ms")
+            .takes_value(true)
+            .help("Interval at which the Relayer is expected to send heartbeat messages.")
+            .default_value(&default_args.relayer_expected_heartbeat_interval_ms),
+    )
+    .arg(
+        Arg::with_name("relayer_max_failed_heartbeats")
+            .long("relayer-max-failed-heartbeats")
+            .takes_value(true)
+            .help(
+                "Maximum number of heartbeats the Relayer can miss before falling back to the \
+                 normal TPU pipeline.",
+            )
+            .default_value(&default_args.relayer_max_failed_heartbeats),
+    )
+    .arg(
+        Arg::with_name("trust_block_engine_packets")
+            .long("trust-block-engine-packets")
+            .takes_value(false)
+            .help(
+                "Skip signature verification on block engine packets. Not recommended unless the \
+                 block engine is trusted.",
+            ),
+    )
+    .arg(
+        Arg::with_name("tip_payment_program_pubkey")
+            .long("tip-payment-program-pubkey")
+            .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+            .takes_value(true)
+            .help("The public key of the tip-payment program"),
+    )
+    .arg(
+        Arg::with_name("tip_distribution_program_pubkey")
+            .long("tip-distribution-program-pubkey")
+            .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+            .takes_value(true)
+            .help("The public key of the tip-distribution program."),
+    )
+    .arg(
+        Arg::with_name("merkle_root_upload_authority")
+            .long("merkle-root-upload-authority")
+            .value_name("MERKLE_ROOT_UPLOAD_AUTHORITY")
+            .takes_value(true)
+            .help("The public key of the authorized merkle-root uploader."),
+    )
+    .arg(
+        Arg::with_name("commission_bps")
+            .long("commission-bps")
+            .value_name("COMMISSION_BPS")
+            .takes_value(true)
+            .help("The commission validator takes from tips expressed in basis points."),
+    )
+    .arg(
+        Arg::with_name("disable_block_engine_autoconfig")
+            .long("disable-block-engine-autoconfig")
+            .value_name("DISABLE_BLOCK_ENGINE_AUTOCONFIG")
+            .takes_value(false)
+            .help(
+                "Disables Block Engine auto-configuration. This stops the validator client from \
+                 using the most performant Block Engine region. Values provided to \
+                 `--block-engine-url` will be used as-is.",
+            ),
+    )
+    .arg(
+        Arg::with_name("shred_receiver_address")
+            .long("shred-receiver-address")
+            .value_name("SHRED_RECEIVER_ADDRESS")
+            .takes_value(true)
+            .help(
+                "Validator will forward all leader shreds to this address in addition to normal \
+                 turbine operation. Set to empty string to disable.",
+            ),
+    )
+    .arg(
+        Arg::with_name("shred_retransmit_receiver_address")
+            .long("shred-retransmit-receiver-address")
+            .value_name("SHRED_RETRANSMIT_RECEIVER_ADDRESS")
+            .takes_value(true)
+            .help(
+                "Validator will forward all retransmit shreds to this address in addition to \
+                 normal turbine operation. Set to empty string to disable.",
+            ),
+    )
+    .arg(
         Arg::with_name("retransmit_xdp_interface")
             .hidden(hidden_unless_forced())
             .long("experimental-retransmit-xdp-interface")

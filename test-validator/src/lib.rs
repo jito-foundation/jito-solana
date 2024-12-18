@@ -22,6 +22,7 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::tower_storage::TowerStorage,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
@@ -46,6 +47,7 @@ use {
     solana_message::Message,
     solana_native_token::LAMPORTS_PER_SOL,
     solana_net_utils::{find_available_ports_in_range, multihomed_sockets::BindIpAddrs, PortRange},
+    solana_program_binaries::{jito_tip_distribution, jito_tip_payment},
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_rpc::{rpc::JsonRpcConfig, rpc_pubsub_service::PubSubConfig},
@@ -1135,6 +1137,15 @@ impl TestValidator {
             staked_nodes_overrides: config.staked_nodes_overrides.clone(),
             accounts_db_config,
             runtime_config,
+            tip_manager_config: TipManagerConfig {
+                tip_payment_program_id: jito_tip_payment::id(),
+                tip_distribution_program_id: jito_tip_distribution::id(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: validator_identity.pubkey(),
+                    vote_account: vote_account_address,
+                    commission_bps: 10,
+                },
+            },
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {
