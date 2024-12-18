@@ -289,7 +289,7 @@ if [[ -n $BUILDKITE_TAG ]]; then
   start_pipeline "Tag pipeline for $BUILDKITE_TAG"
 
   annotate --style info --context release-tag \
-    "https://github.com/anza-xyz/agave/releases/$BUILDKITE_TAG"
+    "https://github.com/jito-foundation/jito-solana/releases/$BUILDKITE_TAG"
 
   # Jump directly to the secondary build to publish release artifacts quickly
   trigger_secondary_step
@@ -307,7 +307,7 @@ if [[ $BUILDKITE_BRANCH =~ ^pull ]]; then
 
   # Add helpful link back to the corresponding Github Pull Request
   annotate --style info --context pr-backlink \
-    "Github Pull Request: https://github.com/anza-xyz/agave/$BUILDKITE_BRANCH"
+    "Github Pull Request: https://github.com/jito-foundation/jito-solana/$BUILDKITE_BRANCH"
 
   pull_or_push_steps
   exit 0

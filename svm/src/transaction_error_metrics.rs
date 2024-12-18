@@ -1,6 +1,6 @@
 use solana_sdk::saturating_add_assign;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct TransactionErrorMetrics {
     pub total: usize,
     pub account_in_use: usize,

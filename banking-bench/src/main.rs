@@ -9,6 +9,7 @@ use {
     solana_core::{
         banking_stage::BankingStage,
         banking_trace::{BankingPacketBatch, BankingTracer, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::BlockProductionMethod,
     },
     solana_gossip::cluster_info::{ClusterInfo, Node},
@@ -37,6 +38,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_tpu_client::tpu_client::DEFAULT_TPU_CONNECTION_POOL_SIZE,
     std::{
+        collections::HashSet,
         sync::{atomic::Ordering, Arc, RwLock},
         thread::sleep,
         time::{Duration, Instant},
@@ -58,9 +60,15 @@ fn check_txs(
     let now = Instant::now();
     let mut no_bank = false;
     loop {
-        if let Ok((_bank, (entry, _tick_height))) = receiver.recv_timeout(Duration::from_millis(10))
+        if let Ok(WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        }) = receiver.recv_timeout(Duration::from_millis(10))
         {
-            total += entry.transactions.len();
+            total += entries_ticks
+                .iter()
+                .map(|e| e.0.transactions.len())
+                .sum::<usize>();
         }
         if total >= ref_tx_count {
             break;
@@ -475,6 +483,9 @@ fn main() {
         bank_forks.clone(),
         &Arc::new(PrioritizationFeeCache::new(0u64)),
         false,
+        HashSet::default(),
+        BundleAccountLocker::default(),
+        |_| 0,
     );
 
     // This is so that the signal_receiver does not go out of scope after the closure.

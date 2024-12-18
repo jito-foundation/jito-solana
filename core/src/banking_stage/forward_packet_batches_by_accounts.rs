@@ -120,7 +120,7 @@ impl ForwardPacketBatchesByAccounts {
     ) -> bool {
         let tx_cost = CostModel::calculate_cost(sanitized_transaction, feature_set);
 
-        if let Ok(updated_costs) = self.cost_tracker.try_add(&tx_cost) {
+        if let Ok(updated_costs) = self.cost_tracker.try_add(&tx_cost, 0) {
             let batch_index = self.get_batch_index_by_updated_costs(&updated_costs);
 
             if let Some(forward_batch) = self.forward_batches.get_mut(batch_index) {
