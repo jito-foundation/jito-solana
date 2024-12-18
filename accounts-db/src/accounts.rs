@@ -25,7 +25,7 @@ use {
     },
     solana_transaction::sanitized::SanitizedTransaction,
     solana_transaction_context::TransactionAccount,
-    solana_transaction_error::TransactionResult as Result,
+    solana_transaction_error::{TransactionError, TransactionResult as Result},
     std::{
         cmp::Reverse,
         collections::{BinaryHeap, HashMap, HashSet},
@@ -38,12 +38,12 @@ use {
 
 pub type PubkeyAccountSlot = (Pubkey, AccountSharedData, Slot);
 
-struct TransactionAccountLocksIterator<'a, T: SVMMessage> {
+pub struct TransactionAccountLocksIterator<'a, T: SVMMessage> {
     transaction: &'a T,
 }
 
 impl<'a, T: SVMMessage> TransactionAccountLocksIterator<'a, T> {
-    pub(crate) fn new(transaction: &'a T) -> Self {
+    pub fn new(transaction: &'a T) -> Self {
         Self { transaction }
     }
 
@@ -500,6 +500,8 @@ impl Accounts {
         results: impl Iterator<Item = Result<()>>,
         tx_account_lock_limit: usize,
         relax_intrabatch_account_locks: bool,
+        is_read_prelocked_callback: &impl Fn(&Pubkey) -> bool,
+        is_write_prelocked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> Vec<Result<()>> {
         // Validate the account locks, then get keys and is_writable if successful validation.
         // We collect to fully evaluate before taking the account_locks mutex.
@@ -515,12 +517,20 @@ impl Accounts {
         let account_locks = &mut self.account_locks.lock().unwrap();
 
         if relax_intrabatch_account_locks {
-            account_locks.try_lock_transaction_batch(validated_batch_keys)
+            account_locks.try_lock_transaction_batch(
+                validated_batch_keys,
+                is_read_prelocked_callback,
+                is_write_prelocked_callback,
+            )
         } else {
             validated_batch_keys
                 .into_iter()
                 .map(|result_validated_tx_keys| match result_validated_tx_keys {
-                    Ok(validated_tx_keys) => account_locks.try_lock_accounts(validated_tx_keys),
+                    Ok(validated_tx_keys) => account_locks.try_lock_accounts(
+                        validated_tx_keys,
+                        is_read_prelocked_callback,
+                        is_write_prelocked_callback,
+                    ),
                     Err(e) => Err(e),
                 })
                 .collect()
@@ -563,6 +573,57 @@ impl Accounts {
     /// Add a slot to root.  Root slots cannot be purged
     pub fn add_root(&self, slot: Slot) -> AccountsAddRootTiming {
         self.accounts_db.add_root(slot)
+    }
+
+    pub fn lock_accounts_sequential_with_results<Tx: SVMMessage>(
+        &self,
+        txs: &[Tx],
+        tx_account_lock_limit: usize,
+    ) -> Vec<Result<()>> {
+        let tx_account_locks_results: Vec<_> = txs
+            .iter()
+            .map(|tx| {
+                validate_account_locks(tx.account_keys(), tx_account_lock_limit)
+                    .map(|_| TransactionAccountLocksIterator::new(tx))
+            })
+            .collect();
+        self.lock_accounts_sequential_inner(tx_account_locks_results)
+    }
+
+    #[must_use]
+    fn lock_accounts_sequential_inner<Tx: SVMMessage>(
+        &self,
+        tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<Tx>>>,
+    ) -> Vec<Result<()>> {
+        let mut l_account_locks = self.account_locks.lock().unwrap();
+        Self::lock_accounts_sequential(&mut l_account_locks, tx_account_locks_results)
+    }
+
+    pub fn lock_accounts_sequential<Tx: SVMMessage>(
+        account_locks: &mut AccountLocks,
+        tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<Tx>>>,
+    ) -> Vec<Result<()>> {
+        let mut account_in_use_set = false;
+        tx_account_locks_results
+            .into_iter()
+            .map(|tx_account_locks_result| match tx_account_locks_result {
+                Ok(tx_account_locks) => match account_in_use_set {
+                    true => Err(TransactionError::AccountInUse),
+                    false => {
+                        let locked = account_locks.try_lock_accounts(
+                            tx_account_locks.accounts_with_is_writable(),
+                            &|_| false,
+                            &|_| false,
+                        );
+                        if matches!(locked, Err(TransactionError::AccountInUse)) {
+                            account_in_use_set = true;
+                        }
+                        locked
+                    }
+                },
+                Err(err) => Err(err),
+            })
+            .collect()
     }
 }
 
@@ -795,6 +856,8 @@ mod tests {
             [Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
         assert_eq!(results[0], Err(TransactionError::AccountLoadedTwice));
     }
@@ -829,6 +892,8 @@ mod tests {
                 vec![Ok(()); txs.len()].into_iter(),
                 MAX_TX_ACCOUNT_LOCKS,
                 relax_intrabatch_account_locks,
+                &|_| false,
+                &|_| false,
             );
             assert_eq!(results, vec![Ok(())]);
             accounts.unlock_accounts(txs.iter().zip(&results));
@@ -856,6 +921,8 @@ mod tests {
                 vec![Ok(()); txs.len()].into_iter(),
                 MAX_TX_ACCOUNT_LOCKS,
                 relax_intrabatch_account_locks,
+                &|_| false,
+                &|_| false,
             );
             assert_eq!(results[0], Err(TransactionError::TooManyAccountLocks));
         }
@@ -896,6 +963,8 @@ mod tests {
             [Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         assert_eq!(results0, vec![Ok(())]);
@@ -931,6 +1000,8 @@ mod tests {
             vec![Ok(()); txs.len()].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
         assert_eq!(
             results1,
@@ -962,6 +1033,8 @@ mod tests {
             [Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
         assert_eq!(
             results2,
@@ -1030,6 +1103,8 @@ mod tests {
                 vec![Ok(()); txs.len()].into_iter(),
                 MAX_TX_ACCOUNT_LOCKS,
                 relax_intrabatch_account_locks,
+                &|_| false,
+                &|_| false,
             );
             for result in results.iter() {
                 if result.is_ok() {
@@ -1049,6 +1124,8 @@ mod tests {
                 vec![Ok(()); txs.len()].into_iter(),
                 MAX_TX_ACCOUNT_LOCKS,
                 relax_intrabatch_account_locks,
+                &|_| false,
+                &|_| false,
             );
             if results[0].is_ok() {
                 let counter_value = counter_clone.clone().load(Ordering::Acquire);
@@ -1096,6 +1173,8 @@ mod tests {
             [Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         assert!(results0[0].is_ok());
@@ -1195,6 +1274,8 @@ mod tests {
             qos_results.into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         assert_eq!(
@@ -1254,6 +1335,8 @@ mod tests {
             [Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         assert_eq!(results, vec![Ok(())]);
@@ -1264,6 +1347,8 @@ mod tests {
             [Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         assert_eq!(results, vec![Err(TransactionError::AccountInUse)]);
@@ -1274,6 +1359,8 @@ mod tests {
             [Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         assert_eq!(results, vec![Err(TransactionError::AccountInUse)]);
@@ -1285,6 +1372,8 @@ mod tests {
             [Ok(()), Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         if relax_intrabatch_account_locks {
@@ -1300,6 +1389,8 @@ mod tests {
             [Ok(()), Ok(())].into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
             relax_intrabatch_account_locks,
+            &|_| false,
+            &|_| false,
         );
 
         if relax_intrabatch_account_locks {
