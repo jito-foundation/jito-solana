@@ -2792,6 +2792,19 @@ impl AccountsDb {
                                         } else {
                                             found_not_zero += 1;
                                         }
+
+                                        // If this candidate has multiple rooted slot list entries,
+                                        // we should reclaim the older ones.
+                                        if slot_list.len() > 1
+                                            && *slot
+                                                <= max_clean_root_inclusive.unwrap_or(Slot::MAX)
+                                        {
+                                            should_purge = true;
+                                            purges_old_accounts_local += 1;
+                                            useless = false;
+                                        }
+                                        // Note, this next if-block is only kept to maintain the
+                                        // `uncleaned_roots_slot_list_1` stat.
                                         if uncleaned_roots.contains(slot) {
                                             // Assertion enforced by `accounts_index.get()`, the latest slot
                                             // will not be greater than the given `max_clean_root`
@@ -2800,12 +2813,7 @@ impl AccountsDb {
                                             {
                                                 assert!(slot <= &max_clean_root_inclusive);
                                             }
-                                            if slot_list.len() > 1 {
-                                                // no need to purge old accounts if there is only 1 slot in the slot list
-                                                should_purge = true;
-                                                purges_old_accounts_local += 1;
-                                                useless = false;
-                                            } else {
+                                            if slot_list.len() == 1 {
                                                 self.clean_accounts_stats
                                                     .uncleaned_roots_slot_list_1
                                                     .fetch_add(1, Ordering::Relaxed);
@@ -9393,7 +9401,7 @@ pub mod tests {
         },
         std::{
             hash::DefaultHasher,
-            iter::FromIterator,
+            iter::{self, FromIterator},
             str::FromStr,
             sync::{atomic::AtomicBool, RwLock},
             thread::{self, Builder, JoinHandle},
@@ -17343,5 +17351,111 @@ pub mod tests {
     fn compute_merkle_root(hashes: impl IntoIterator<Item = Hash>) -> Hash {
         let hashes = hashes.into_iter().collect();
         AccountsHasher::compute_merkle_root_recurse(hashes, MERKLE_FANOUT)
+    }
+
+    /// Test that `clean` reclaims old accounts when cleaning old storages
+    ///
+    /// When `clean` constructs candidates from old storages, pubkeys in these storages may have other
+    /// newer versions of the accounts in other newer storages *not* explicitly marked to be visited by
+    /// `clean`.  In this case, `clean` should still reclaim the old versions of these accounts.
+    #[test]
+    fn test_clean_old_storages_with_reclaims_rooted() {
+        let accounts_db = AccountsDb::new_single_for_tests();
+        let pubkey = Pubkey::new_unique();
+        let old_slot = 11;
+        let new_slot = 22;
+        let slots = [old_slot, new_slot];
+        for &slot in &slots {
+            let account = AccountSharedData::new(slot, 0, &Pubkey::new_unique());
+            // store `pubkey` into multiple slots, and also store another unique pubkey
+            // to prevent the whole storage from being marked as dead by `clean`.
+            accounts_db.store_for_tests(
+                slot,
+                &[(&pubkey, &account), (&Pubkey::new_unique(), &account)],
+            );
+            accounts_db.calculate_accounts_delta_hash(slot);
+            accounts_db.add_root_and_flush_write_cache(slot);
+        }
+
+        // for this test, `new_slot` must not be in the uncleaned_roots list
+        accounts_db.accounts_index.remove_uncleaned_root(new_slot);
+        assert!(accounts_db.accounts_index.is_uncleaned_root(old_slot));
+        assert!(!accounts_db.accounts_index.is_uncleaned_root(new_slot));
+
+        // ensure the slot list for `pubkey` has both the old and new slots
+        let slot_list = accounts_db
+            .accounts_index
+            .get_bin(&pubkey)
+            .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+            .unwrap();
+        assert_eq!(slot_list.len(), slots.len());
+        assert!(slot_list.iter().map(|(slot, _)| slot).eq(slots.iter()));
+
+        // `clean` should now reclaim the account in `old_slot`, even though `new_slot` is not
+        // explicitly being cleaned
+        accounts_db.clean_accounts_for_tests();
+
+        // ensure we've reclaimed the account in `old_slot`
+        let slot_list = accounts_db
+            .accounts_index
+            .get_bin(&pubkey)
+            .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+            .unwrap();
+        assert_eq!(slot_list.len(), 1);
+        assert!(slot_list
+            .iter()
+            .map(|(slot, _)| slot)
+            .eq(iter::once(&new_slot)));
+    }
+
+    /// Test that `clean` respects rooted vs unrooted slots w.r.t. reclaims
+    ///
+    /// When an account is in multiple slots, and the latest is unrooted, `clean` should *not* reclaim
+    /// all the rooted versions.
+    #[test]
+    fn test_clean_old_storages_with_reclaims_unrooted() {
+        let accounts_db = AccountsDb::new_single_for_tests();
+        let pubkey = Pubkey::new_unique();
+        let old_slot = 11;
+        let new_slot = 22;
+        let slots = [old_slot, new_slot];
+        for &slot in &slots {
+            let account = AccountSharedData::new(slot, 0, &Pubkey::new_unique());
+            // store `pubkey` into multiple slots, and also store another unique pubkey
+            // to prevent the whole storage from being marked as dead by `clean`.
+            accounts_db.store_for_tests(
+                slot,
+                &[(&pubkey, &account), (&Pubkey::new_unique(), &account)],
+            );
+            accounts_db.calculate_accounts_delta_hash(slot);
+        }
+        // do not root `new_slot`!
+        accounts_db.add_root_and_flush_write_cache(old_slot);
+
+        // for this test, `new_slot` must not be a root
+        assert!(accounts_db.accounts_index.is_uncleaned_root(old_slot));
+        assert!(!accounts_db.accounts_index.is_uncleaned_root(new_slot));
+        assert!(!accounts_db.accounts_index.is_alive_root(new_slot));
+
+        // ensure the slot list for `pubkey` has both the old and new slots
+        let slot_list = accounts_db
+            .accounts_index
+            .get_bin(&pubkey)
+            .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+            .unwrap();
+        assert_eq!(slot_list.len(), slots.len());
+        assert!(slot_list.iter().map(|(slot, _)| slot).eq(slots.iter()));
+
+        // `clean` should *not* reclaim the account in `old_slot` because `new_slot` is not a root
+        accounts_db.clean_accounts_for_tests();
+
+        // ensure we have NOT reclaimed the account in `old_slot`
+        let slot_list = accounts_db
+            .accounts_index
+            .get_bin(&pubkey)
+            .slot_list_mut(&pubkey, |slot_list| slot_list.clone())
+            .unwrap();
+        assert_eq!(slot_list.len(), slots.len());
+        assert!(slot_list.iter().map(|(slot, _)| slot).eq(slots.iter()));
     }
 }
