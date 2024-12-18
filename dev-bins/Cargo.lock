@@ -642,7 +642,7 @@ dependencies = [
  "ark-std 0.5.0",
  "educe 0.6.0",
  "fnv",
- "hashbrown 0.15.5",
+ "hashbrown 0.15.2",
  "itertools 0.13.0",
  "num-bigint 0.4.6",
  "num-integer",
@@ -761,7 +761,7 @@ dependencies = [
  "ark-std 0.5.0",
  "educe 0.6.0",
  "fnv",
- "hashbrown 0.15.5",
+ "hashbrown 0.15.2",
 ]
 
 [[package]]
@@ -1108,7 +1108,7 @@ checksum = "c51b96c5a8ed8705b40d655273bc4212cbbf38d4e3be2788f36306f154523ec7"
 dependencies = [
  "bytes",
  "core-error",
- "hashbrown 0.15.5",
+ "hashbrown 0.15.2",
  "log",
  "object",
  "thiserror 1.0.69",
@@ -2922,9 +2922,9 @@ checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
-version = "0.15.5"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
 dependencies = [
  "allocator-api2",
  "equivalent",
@@ -3589,6 +3589,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-protos"
+version = "3.1.7"
+dependencies = [
+ "bytes",
+ "prost",
+ "prost-types",
+ "protobuf-src",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3782,7 +3794,7 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a35523c6dfa972e1fd19132ef647eff4360a6546c6271807e1327ca6e8797f96"
 dependencies = [
- "hashbrown 0.15.5",
+ "hashbrown 0.15.2",
 ]
 
 [[package]]
@@ -4361,7 +4373,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
 dependencies = [
  "crc32fast",
- "hashbrown 0.15.5",
+ "hashbrown 0.15.2",
  "indexmap 2.11.4",
  "memchr",
 ]
@@ -6381,6 +6393,7 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-commitment-config",
+ "solana-gossip",
  "solana-hash 3.1.0",
  "solana-message",
  "solana-pubkey",
@@ -6632,6 +6645,15 @@ dependencies = [
  "solana-sdk-ids",
  "solana-system-program",
  "solana-vote-program",
+]
+
+[[package]]
+name = "solana-bundle"
+version = "3.1.7"
+dependencies = [
+ "itertools 0.12.1",
+ "sha2 0.10.9",
+ "solana-runtime-transaction",
 ]
 
 [[package]]
@@ -6918,6 +6940,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bincode",
+ "borsh",
  "bs58",
  "bytemuck",
  "bytes",
@@ -6928,6 +6951,8 @@ dependencies = [
  "futures 0.3.31",
  "histogram",
  "itertools 0.12.1",
+ "jito-protos",
+ "lazy_static",
  "libc",
  "log",
  "lru",
@@ -6935,6 +6960,8 @@ dependencies = [
  "num_cpus",
  "num_enum",
  "prio-graph",
+ "prost",
+ "prost-types",
  "qualifier_attr",
  "quinn",
  "rand 0.8.5",
@@ -6947,15 +6974,18 @@ dependencies = [
  "serde_bytes",
  "shaq",
  "slab",
+ "smallvec",
  "solana-account",
  "solana-accounts-db",
  "solana-address-lookup-table-interface",
  "solana-bincode",
  "solana-bloom",
  "solana-builtins-default-costs",
+ "solana-bundle",
  "solana-client",
  "solana-clock",
  "solana-cluster-type",
+ "solana-commitment-config",
  "solana-compute-budget",
  "solana-compute-budget-instruction",
  "solana-compute-budget-interface",
@@ -7028,6 +7058,7 @@ dependencies = [
  "solana-vote",
  "solana-vote-program",
  "solana-wen-restart",
+ "spl-memo-interface",
  "static_assertions",
  "strum",
  "strum_macros",
@@ -7037,7 +7068,10 @@ dependencies = [
  "thiserror 2.0.17",
  "tikv-jemallocator",
  "tokio",
+ "tokio-stream",
  "tokio-util 0.7.16",
+ "tonic",
+ "tonic-build",
  "trees",
 ]
 
@@ -8126,6 +8160,7 @@ dependencies = [
  "solana-poh-config",
  "solana-pubkey",
  "solana-runtime",
+ "solana-runtime-transaction",
  "solana-time-utils",
  "solana-transaction",
  "thiserror 2.0.17",
@@ -8511,6 +8546,7 @@ dependencies = [
  "solana-poh",
  "solana-poh-config",
  "solana-program-pack",
+ "solana-program-runtime",
  "solana-pubkey",
  "solana-quic-definitions",
  "solana-rayon-threadlimit",
@@ -8596,8 +8632,11 @@ dependencies = [
  "serde_json",
  "solana-account-decoder-client-types",
  "solana-clock",
+ "solana-commitment-config",
  "solana-rpc-client-types",
+ "solana-signature",
  "solana-signer",
+ "solana-svm",
  "solana-transaction-error",
  "solana-transaction-status-client-types",
  "thiserror 2.0.17",
@@ -8912,6 +8951,7 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-connection-cache",
+ "solana-gossip",
  "solana-hash 3.1.0",
  "solana-keypair",
  "solana-measure",
@@ -9667,6 +9707,7 @@ dependencies = [
  "agave-feature-set",
  "agave-votor",
  "agave-xdp",
+ "arc-swap",
  "bincode",
  "bytes",
  "caps",
