@@ -850,6 +850,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
         validator_snapshot_test_config
             .full_snapshot_archives_dir
             .path(),
+        None,
     )
     .unwrap();
     info!(
@@ -889,6 +890,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
                 .incremental_snapshot_archives_dir
                 .path(),
             full_snapshot_archive.slot(),
+            None,
         )
         .unwrap();
     info!(
@@ -1032,6 +1034,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
             validator_snapshot_test_config
                 .full_snapshot_archives_dir
                 .path(),
+            None,
         )
         .unwrap();
 
@@ -1098,6 +1101,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
             validator_snapshot_test_config
                 .full_snapshot_archives_dir
                 .path(),
+            None,
         )
         .unwrap();
 
@@ -1126,6 +1130,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
             validator_snapshot_test_config
                 .full_snapshot_archives_dir
                 .path(),
+            None,
         ) {
             if full_snapshot_slot >= validator_next_full_snapshot_slot {
                 if let Some(incremental_snapshot_slot) =
@@ -1134,6 +1139,7 @@ fn test_incremental_snapshot_download_with_crossing_full_snapshot_interval_at_st
                             .incremental_snapshot_archives_dir
                             .path(),
                         full_snapshot_slot,
+                        None,
                     )
                 {
                     if incremental_snapshot_slot >= validator_next_incremental_snapshot_slot {
@@ -1328,8 +1334,10 @@ fn test_snapshots_blockstore_floor() {
     trace!("Waiting for snapshot tar to be generated with slot",);
 
     let archive_info = loop {
-        let archive =
-            snapshot_utils::get_highest_full_snapshot_archive_info(full_snapshot_archives_dir);
+        let archive = snapshot_utils::get_highest_full_snapshot_archive_info(
+            full_snapshot_archives_dir,
+            None,
+        );
         if archive.is_some() {
             trace!("snapshot exists");
             break archive.unwrap();
@@ -5149,12 +5157,14 @@ fn test_boot_from_local_state() {
             if let Some(other_full_snapshot_slot) =
                 snapshot_utils::get_highest_full_snapshot_archive_slot(
                     &other_validator_config.full_snapshot_archives_dir,
+                    None,
                 )
             {
                 let other_incremental_snapshot_slot =
                     snapshot_utils::get_highest_incremental_snapshot_archive_slot(
                         &other_validator_config.incremental_snapshot_archives_dir,
                         other_full_snapshot_slot,
+                        None,
                     );
                 if other_full_snapshot_slot >= full_snapshot_archive.slot()
                     && other_incremental_snapshot_slot >= Some(incremental_snapshot_archive.slot())
@@ -5304,6 +5314,7 @@ fn test_boot_from_local_state_missing_archive() {
     info!("Deleting latest full snapshot archive...");
     let highest_full_snapshot = snapshot_utils::get_highest_full_snapshot_archive_info(
         validator_config.full_snapshot_archives_dir.path(),
+        None,
     )
     .unwrap();
     fs::remove_file(highest_full_snapshot.path()).unwrap();

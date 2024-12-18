@@ -61,39 +61,44 @@ impl TpuEntryNotifier {
         current_index: &mut usize,
         current_transaction_index: &mut usize,
     ) -> Result<(), RecvTimeoutError> {
-        let (bank, (entry, tick_height)) = entry_receiver.recv_timeout(Duration::from_secs(1))?;
+        let WorkingBankEntry {
+            bank,
+            entries_ticks,
+        } = entry_receiver.recv_timeout(Duration::from_secs(1))?;
         let slot = bank.slot();
-        let index = if slot != *current_slot {
+        if slot != *current_slot {
             *current_index = 0;
             *current_transaction_index = 0;
             *current_slot = slot;
-            0
-        } else {
-            *current_index += 1;
-            *current_index
-        };
+        }
 
-        let entry_summary = EntrySummary {
-            num_hashes: entry.num_hashes,
-            hash: entry.hash,
-            num_transactions: entry.transactions.len() as u64,
-        };
-        if let Err(err) = entry_notification_sender.send(EntryNotification {
-            slot,
-            index,
-            entry: entry_summary,
-            starting_transaction_index: *current_transaction_index,
-        }) {
-            warn!(
-                "Failed to send slot {slot:?} entry {index:?} from Tpu to EntryNotifierService, \
+        for (entry, _ticks) in &entries_ticks {
+            let entry_summary = EntrySummary {
+                num_hashes: entry.num_hashes,
+                hash: entry.hash,
+                num_transactions: entry.transactions.len() as u64,
+            };
+            if let Err(err) = entry_notification_sender.send(EntryNotification {
+                slot,
+                index: *current_index,
+                entry: entry_summary,
+                starting_transaction_index: *current_transaction_index,
+            }) {
+                warn!(
+                "Failed to send slot {slot:?} entry {current_index:?} from Tpu to EntryNotifierService, \
                  error {err:?}",
             );
+            }
+            *current_transaction_index += entry.transactions.len();
+            *current_index += 1;
         }
-        *current_transaction_index += entry.transactions.len();
 
-        if let Err(err) = broadcast_entry_sender.send((bank, (entry, tick_height))) {
+        if let Err(err) = broadcast_entry_sender.send(WorkingBankEntry {
+            bank,
+            entries_ticks,
+        }) {
             warn!(
-                "Failed to send slot {slot:?} entry {index:?} from Tpu to BroadcastStage, error \
+                "Failed to send slot {slot:?} entry {current_index:?} from Tpu to BroadcastStage, error \
                  {err:?}",
             );
             // If the BroadcastStage channel is closed, the validator has halted. Try to exit
