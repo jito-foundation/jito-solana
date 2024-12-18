@@ -73,7 +73,7 @@ impl VoteWorker {
         }
     }
 
-    pub fn run(mut self) {
+    pub fn run(mut self, reservation_cb: impl Fn(&Bank) -> u64) {
         let mut banking_stage_stats = BankingStageStats::new();
         let mut slot_metrics_tracker = LeaderSlotMetricsTracker::default();
 
@@ -83,8 +83,11 @@ impl VoteWorker {
             if !self.storage.is_empty()
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, process_buffered_packets_us) = measure_us!(self
-                    .process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker));
+                let (_, process_buffered_packets_us) = measure_us!(self.process_buffered_packets(
+                    &mut banking_stage_stats,
+                    &mut slot_metrics_tracker,
+                    &reservation_cb
+                ));
                 slot_metrics_tracker
                     .increment_process_buffered_packets_us(process_buffered_packets_us);
                 last_metrics_update = Instant::now();
@@ -118,6 +121,7 @@ impl VoteWorker {
         &mut self,
         banking_stage_stats: &mut BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
         let (decision, make_decision_us) =
             measure_us!(self.decision_maker.make_consume_or_forward_decision());
@@ -136,6 +140,7 @@ impl VoteWorker {
                     &bank,
                     banking_stage_stats,
                     slot_metrics_tracker,
+                    reservation_cb
                 ));
                 slot_metrics_tracker
                     .increment_consume_buffered_packets_us(consume_buffered_packets_us);
@@ -162,6 +167,7 @@ impl VoteWorker {
         bank: &Bank,
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
         if self.storage.is_empty() {
             return;
@@ -178,6 +184,7 @@ impl VoteWorker {
             &mut rebuffered_packet_count,
             banking_stage_stats,
             slot_metrics_tracker,
+            reservation_cb,
         );
 
         if reached_end_of_slot {
@@ -213,6 +220,7 @@ impl VoteWorker {
         rebuffered_packet_count: &mut usize,
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> bool {
         // Based on the stake distribution present in the supplied bank, drain the unprocessed votes
         // from each validator using a weighted random ordering. Votes from validators with
@@ -249,6 +257,7 @@ impl VoteWorker {
                 rebuffered_packet_count,
                 vote_packets.len(),
                 slot_metrics_tracker,
+                reservation_cb,
             ) {
                 self.storage.reinsert_packets(
                     retryable_vote_indices
@@ -263,6 +272,7 @@ impl VoteWorker {
         reached_end_of_slot
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_process_packets(
         &self,
         bank: &Bank,
@@ -273,6 +283,7 @@ impl VoteWorker {
         rebuffered_packet_count: &mut usize,
         packets_to_process_len: usize,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Option<Vec<usize>> {
         if *reached_end_of_slot {
             return None;
@@ -284,6 +295,7 @@ impl VoteWorker {
                 sanitized_transactions,
                 banking_stage_stats,
                 slot_metrics_tracker,
+                reservation_cb
             ));
 
         slot_metrics_tracker
@@ -328,9 +340,10 @@ impl VoteWorker {
         sanitized_transactions: &[impl TransactionWithMeta],
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
         let (mut process_transactions_summary, process_transactions_us) =
-            measure_us!(self.process_transactions(bank, sanitized_transactions));
+            measure_us!(self.process_transactions(bank, sanitized_transactions, reservation_cb));
         slot_metrics_tracker.increment_process_transactions_us(process_transactions_us);
         banking_stage_stats
             .transaction_processing_elapsed
@@ -380,10 +393,11 @@ impl VoteWorker {
         &self,
         bank: &Bank,
         transactions: &[impl TransactionWithMeta],
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
-        let process_transaction_batch_output = self
-            .consumer
-            .process_and_record_transactions(bank, transactions);
+        let process_transaction_batch_output =
+            self.consumer
+                .process_and_record_transactions(bank, transactions, reservation_cb);
 
         let ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,
