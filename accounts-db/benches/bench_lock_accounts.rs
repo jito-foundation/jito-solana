@@ -95,6 +95,8 @@ fn bench_entry_lock_accounts(c: &mut Criterion) {
                         batch_results.clone(),
                         MAX_TX_ACCOUNT_LOCKS,
                         relax_intrabatch_account_locks,
+                        &|_| false,
+                        &|_| false,
                     );
                     accounts.unlock_accounts(batch.iter().zip(&results));
                 }
