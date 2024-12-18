@@ -188,6 +188,7 @@ fn retransmit(
     max_slots: &MaxSlots,
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
+    shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
 ) -> Result<(), RecvTimeoutError> {
     const RECV_TIMEOUT: Duration = Duration::from_secs(1);
     let mut shreds = shreds_receiver.recv_timeout(RECV_TIMEOUT)?;
@@ -268,6 +269,7 @@ fn retransmit(
                     &sockets[index % sockets.len()],
                     quic_endpoint_sender,
                     stats,
+                    &shred_receiver_address.read().unwrap(),
                 )
                 .inspect_err(|err| {
                     stats.record_error(err);
@@ -292,6 +294,7 @@ fn retransmit(
                         &sockets[index % sockets.len()],
                         quic_endpoint_sender,
                         stats,
+                        &shred_receiver_address.read().unwrap(),
                     )
                     .inspect_err(|err| {
                         stats.record_error(err);
@@ -315,6 +318,7 @@ fn retransmit(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
     key: &ShredId,
     shred: &[u8],
@@ -325,15 +329,20 @@ fn retransmit_shred(
     socket: &UdpSocket,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     stats: &RetransmitStats,
+    shred_receiver_addr: &Option<SocketAddr>,
 ) -> Result<(/*root_distance:*/ usize, /*num_nodes:*/ usize), Error> {
     let mut compute_turbine_peers = Measure::start("turbine_start");
     let data_plane_fanout = cluster_nodes::get_data_plane_fanout(key.slot(), root_bank);
     let (root_distance, addrs) =
         cluster_nodes.get_retransmit_addrs(slot_leader, key, data_plane_fanout)?;
-    let addrs: Vec<_> = addrs
+    let mut addrs: Vec<_> = addrs
         .into_iter()
         .filter(|addr| socket_addr_space.check(addr))
         .collect();
+    if let Some(addr) = shred_receiver_addr {
+        addrs.push(*addr);
+    }
+
     compute_turbine_peers.stop();
     stats
         .compute_turbine_peers_total
@@ -381,6 +390,7 @@ fn retransmit_shred(
 /// * `leader_schedule_cache` - The leader schedule to verify shreds
 /// * `cluster_info` - This structure needs to be updated and populated by the bank and via gossip.
 /// * `r` - Receive channel for shreds to be retransmitted to all the layer 1 nodes.
+#[allow(clippy::too_many_arguments)]
 pub fn retransmitter(
     sockets: Arc<Vec<UdpSocket>>,
     quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
@@ -391,6 +401,7 @@ pub fn retransmitter(
     max_slots: Arc<MaxSlots>,
     rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
     slot_status_notifier: Option<SlotStatusNotifier>,
+    shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
 ) -> JoinHandle<()> {
     let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
         CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -423,6 +434,7 @@ pub fn retransmitter(
                 &max_slots,
                 rpc_subscriptions.as_deref(),
                 slot_status_notifier.as_ref(),
+                &shred_receiver_addr,
             ) {
                 Ok(()) => (),
                 Err(RecvTimeoutError::Timeout) => (),
@@ -437,6 +449,7 @@ pub struct RetransmitStage {
 }
 
 impl RetransmitStage {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bank_forks: Arc<RwLock<BankForks>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
@@ -447,6 +460,7 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let retransmit_thread_handle = retransmitter(
             retransmit_sockets,
@@ -458,6 +472,7 @@ impl RetransmitStage {
             max_slots,
             rpc_subscriptions,
             slot_status_notifier,
+            shred_receiver_addr,
         );
 
         Self {

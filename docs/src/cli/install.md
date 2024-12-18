@@ -20,11 +20,11 @@ on your preferred workflow:
 - Open your favorite Terminal application
 
 - Install the Agave release
-  [LATEST_AGAVE_RELEASE_VERSION](https://github.com/anza-xyz/agave/releases/tag/LATEST_AGAVE_RELEASE_VERSION)
+  [LATEST_AGAVE_RELEASE_VERSION](https://github.com/jito-foundation/jito-solana/releases/tag/LATEST_AGAVE_RELEASE_VERSION)
   on your machine by running:
 
 ```bash
-sh -c "$(curl -sSfL https://release.anza.xyz/LATEST_AGAVE_RELEASE_VERSION/install)"
+sh -c "$(curl -sSfL https://release.jito.wtf/LATEST_AGAVE_RELEASE_VERSION/install)"
 ```
 
 - You can replace `LATEST_AGAVE_RELEASE_VERSION` with the release tag matching
@@ -38,7 +38,7 @@ downloading LATEST_AGAVE_RELEASE_VERSION installer
 Configuration: /home/solana/.config/solana/install/config.yml
 Active release directory: /home/solana/.local/share/solana/install/active_release
 * Release version: LATEST_AGAVE_RELEASE_VERSION
-* Release URL: https://github.com/anza-xyz/agave/releases/download/LATEST_AGAVE_RELEASE_VERSION/solana-release-x86_64-unknown-linux-gnu.tar.bz2
+* Release URL: https://github.com/jito-foundation/jito-solana/releases/download/LATEST_AGAVE_RELEASE_VERSION/solana-release-x86_64-unknown-linux-gnu.tar.bz2
 Update successful
 ```
 
@@ -65,16 +65,16 @@ solana --version
 
 - Open a Command Prompt (`cmd.exe`) as an Administrator
 
-  - Search for Command Prompt in the Windows search bar. When the Command Prompt
-    app appears, right-click and select “Open as Administrator”. If you are
-    prompted by a pop-up window asking “Do you want to allow this app to make
-    changes to your device?”, click Yes.
+- Search for Command Prompt in the Windows search bar. When the Command Prompt
+  app appears, right-click and select “Open as Administrator”. If you are
+  prompted by a pop-up window asking “Do you want to allow this app to make
+  changes to your device?”, click Yes.
 
 - Copy and paste the following command, then press Enter to download the Solana
   installer into a temporary directory:
 
 ```bash
-cmd /c "curl https://release.anza.xyz/LATEST_AGAVE_RELEASE_VERSION/agave-install-init-x86_64-pc-windows-msvc.exe --output C:\agave-install-tmp\agave-install-init.exe --create-dirs"
+cmd /c "curl https://release.jito.wtf/LATEST_AGAVE_RELEASE_VERSION/agave-install-init-x86_64-pc-windows-msvc.exe --output C:\agave-install-tmp\agave-install-init.exe --create-dirs"
 ```
 
 - Copy and paste the following command, then press Enter to install the latest
@@ -89,8 +89,8 @@ C:\agave-install-tmp\agave-install-init.exe LATEST_AGAVE_RELEASE_VERSION
 
 - Close the command prompt window and re-open a new command prompt window as a
   normal user
-  - Search for "Command Prompt" in the search bar, then left click on the
-    Command Prompt app icon, no need to run as Administrator)
+- Search for "Command Prompt" in the search bar, then left click on the
+  Command Prompt app icon, no need to run as Administrator)
 - Confirm you have the desired version of `solana` installed by entering:
 
 ```bash
@@ -108,9 +108,7 @@ manually download and install the binaries.
 ### Linux
 
 Download the binaries by navigating to
-[https://github.com/anza-xyz/agave/releases/latest](https://github.com/anza-xyz/agave/releases/latest),
-download **solana-release-x86_64-unknown-linux-gnu.tar.bz2**, then extract the
-archive:
+[https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
 
 ```bash
 tar jxf solana-release-x86_64-unknown-linux-gnu.tar.bz2
@@ -121,9 +119,7 @@ export PATH=$PWD/bin:$PATH
 ### MacOS
 
 Download the binaries by navigating to
-[https://github.com/anza-xyz/agave/releases/latest](https://github.com/anza-xyz/agave/releases/latest),
-download **solana-release-x86_64-apple-darwin.tar.bz2**, then extract the
-archive:
+[https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
 
 ```bash
 tar jxf solana-release-x86_64-apple-darwin.tar.bz2
@@ -134,10 +130,7 @@ export PATH=$PWD/bin:$PATH
 ### Windows
 
 - Download the binaries by navigating to
-  [https://github.com/anza-xyz/agave/releases/latest](https://github.com/anza-xyz/agave/releases/latest),
-  download **solana-release-x86_64-pc-windows-msvc.tar.bz2**, then extract the
-  archive using WinZip or similar.
-
+  [https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
 - Open a Command Prompt and navigate to the directory into which you extracted
   the binaries and run:
 
@@ -242,9 +235,7 @@ above.
 
 After installing the prerequisites, proceed with building Solana from source,
 navigate to
-[Solana's GitHub releases page](https://github.com/anza-xyz/agave/releases/latest),
-and download the **Source Code** archive. Extract the code and build the
-binaries with:
+[Solana's GitHub releases page](https://github.com/jito-foundation/jito-solana/releases/latest),
 
 ```bash
 ./scripts/cargo-install-all.sh .

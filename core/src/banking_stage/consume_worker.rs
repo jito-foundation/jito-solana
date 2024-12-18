@@ -58,14 +58,18 @@ impl ConsumeWorker {
         self.metrics.clone()
     }
 
-    pub fn run(self) -> Result<(), ConsumeWorkerError> {
+    pub fn run(self, reservation_cb: impl Fn(&Bank) -> u64) -> Result<(), ConsumeWorkerError> {
         loop {
             let work = self.consume_receiver.recv()?;
-            self.consume_loop(work)?;
+            self.consume_loop(work, &reservation_cb)?;
         }
     }
 
-    fn consume_loop(&self, work: ConsumeWork) -> Result<(), ConsumeWorkerError> {
+    fn consume_loop(
+        &self,
+        work: ConsumeWork,
+        reservation_cb: &impl Fn(&Bank) -> u64,
+    ) -> Result<(), ConsumeWorkerError> {
         let (maybe_consume_bank, get_bank_us) = measure_us!(self.get_consume_bank());
         let Some(mut bank) = maybe_consume_bank else {
             self.metrics
@@ -99,18 +103,24 @@ impl ConsumeWorker {
                     return self.retry_drain(work);
                 }
             }
-            self.consume(&bank, work)?;
+            self.consume(&bank, work, reservation_cb)?;
         }
 
         Ok(())
     }
 
     /// Consume a single batch.
-    fn consume(&self, bank: &Arc<Bank>, work: ConsumeWork) -> Result<(), ConsumeWorkerError> {
+    fn consume(
+        &self,
+        bank: &Arc<Bank>,
+        work: ConsumeWork,
+        reservation_cb: &impl Fn(&Bank) -> u64,
+    ) -> Result<(), ConsumeWorkerError> {
         let output = self.consumer.process_and_record_aged_transactions(
             bank,
             &work.transactions,
             &work.max_ages,
+            reservation_cb,
         );
 
         self.metrics.update_for_consume(&output);
@@ -699,11 +709,14 @@ impl ConsumeWorkerTransactionErrorMetrics {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::{
-            committer::Committer,
-            qos_service::QosService,
-            scheduler_messages::{MaxAge, TransactionBatchId, TransactionId},
-            tests::{create_slow_genesis_config, sanitize_transactions, simulate_poh},
+        crate::{
+            banking_stage::{
+                committer::Committer,
+                qos_service::QosService,
+                scheduler_messages::{MaxAge, TransactionBatchId, TransactionId},
+                tests::{create_slow_genesis_config, sanitize_transactions, simulate_poh},
+            },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         crossbeam_channel::unbounded,
         solana_ledger::{
@@ -796,7 +809,14 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            HashSet::default(),
+            BundleAccountLocker::default(),
+        );
 
         let (consume_sender, consume_receiver) = unbounded();
         let (consumed_sender, consumed_receiver) = unbounded();
@@ -837,7 +857,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
 
         let pubkey1 = Pubkey::new_unique();
 
@@ -882,7 +902,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()
@@ -931,7 +951,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()
@@ -983,7 +1003,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()
@@ -1058,7 +1078,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()

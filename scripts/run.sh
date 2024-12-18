@@ -104,6 +104,10 @@ args=(
   --identity "$validator_identity"
   --vote-account "$validator_vote_account"
   --ledger "$ledgerDir"
+  --tip-payment-program-pubkey "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
+  --tip-distribution-program-pubkey "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
+  --merkle-root-upload-authority "$validator_identity"
+  --commission-bps 0
   --gossip-port 8001
   --full-rpc-api
   --rpc-port 8899
