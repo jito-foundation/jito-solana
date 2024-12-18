@@ -3,16 +3,16 @@ use {
     crate::{
         blockstore::{
             column::{
-                Column, ColumnIndexDeprecation, ColumnName, DEPRECATED_PROGRAM_COSTS_COLUMN_NAME,
-                ProtobufColumn, TypedColumn, columns,
+                columns, Column, ColumnIndexDeprecation, ColumnName, ProtobufColumn, TypedColumn,
+                DEPRECATED_PROGRAM_COSTS_COLUMN_NAME,
             },
             error::{BlockstoreError, Result},
         },
         blockstore_metrics::{
-            BlockstoreRocksDbColumnFamilyMetrics, PERF_METRIC_OP_NAME_GET,
+            maybe_enable_rocksdb_perf, report_rocksdb_read_perf, report_rocksdb_write_perf,
+            BlockstoreRocksDbColumnFamilyMetrics, PerfSamplingStatus, PERF_METRIC_OP_NAME_GET,
             PERF_METRIC_OP_NAME_MULTI_GET, PERF_METRIC_OP_NAME_PUT,
-            PERF_METRIC_OP_NAME_WRITE_BATCH, PerfSamplingStatus, maybe_enable_rocksdb_perf,
-            report_rocksdb_read_perf, report_rocksdb_write_perf,
+            PERF_METRIC_OP_NAME_WRITE_BATCH,
         },
         blockstore_options::{AccessType, BlockstoreOptions, LedgerColumnOptions},
     },
@@ -20,12 +20,12 @@ use {
     log::*,
     prost::Message,
     rocksdb::{
-        self, ColumnFamily, ColumnFamilyDescriptor, CompactionDecision, DB, DBCompressionType,
-        DBIterator, DBPinnableSlice, DBRawIterator, IteratorMode as RocksIteratorMode, LiveFile,
-        Options, WriteBatch as RWriteBatch,
+        self,
         compaction_filter::CompactionFilter,
         compaction_filter_factory::{CompactionFilterContext, CompactionFilterFactory},
-        properties as RocksProperties,
+        properties as RocksProperties, ColumnFamily, ColumnFamilyDescriptor, CompactionDecision,
+        DBCompressionType, DBIterator, DBPinnableSlice, DBRawIterator,
+        IteratorMode as RocksIteratorMode, LiveFile, Options, WriteBatch as RWriteBatch, DB,
     },
     serde::de::DeserializeOwned,
     solana_clock::Slot,
@@ -37,8 +37,8 @@ use {
         num::NonZeroUsize,
         path::{Path, PathBuf},
         sync::{
-            Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
         },
     },
 };

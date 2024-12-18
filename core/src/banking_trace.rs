@@ -4,7 +4,7 @@ use {
     agave_banking_stage_ingress_types::{BankingPacketBatch, BankingPacketReceiver},
     bincode::serialize_into,
     chrono::{DateTime, Local},
-    crossbeam_channel::{Receiver, SendError, Sender, TryRecvError, unbounded},
+    crossbeam_channel::{unbounded, Receiver, SendError, Sender, TryRecvError},
     rolling_file::{RollingCondition, RollingConditionBasic, RollingFileAppender},
     serde::{Deserialize, Serialize},
     solana_clock::Slot,
@@ -14,10 +14,10 @@ use {
         io::{self, Write},
         path::PathBuf,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
-        thread::{self, JoinHandle, sleep},
+        thread::{self, sleep, JoinHandle},
         time::{Duration, SystemTime},
     },
     thiserror::Error,
@@ -414,6 +414,7 @@ impl BankingTracer {
 /// and the flag are expected to be shared among all of traced sender instances, which will be used
 /// by the trio of sources respectively. This routing functionality is needed for unified scheduler
 /// and its runtime switching.
+#[derive(Clone)]
 pub struct TracedSender {
     label: ChannelLabel,
     sender: Sender<BankingPacketBatch>,

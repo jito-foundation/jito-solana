@@ -2,19 +2,19 @@
 extern crate test;
 
 use {
-    rand::{Rng, rng},
+    rand::{rng, Rng},
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_message::Message,
     solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank,
         bank_forks::BankForks,
-        genesis_utils::{GenesisConfigInfo, create_genesis_config},
+        genesis_utils::{create_genesis_config, GenesisConfigInfo},
         prioritization_fee_cache::*,
     },
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_system_interface::instruction as system_instruction,
-    solana_transaction::{Transaction, sanitized::SanitizedTransaction},
+    solana_transaction::{sanitized::SanitizedTransaction, Transaction},
     std::sync::Arc,
     test::Bencher,
 };

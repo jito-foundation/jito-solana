@@ -1,9 +1,9 @@
 use {
     super::{Bank, BankStatusCache},
-    agave_feature_set::{FeatureSet, raise_cpi_nesting_limit_to_8},
+    agave_feature_set::{raise_cpi_nesting_limit_to_8, FeatureSet},
     solana_accounts_db::blockhash_queue::BlockhashQueue,
-    solana_clock::{MAX_PROCESSING_AGE, MAX_TRANSACTION_FORWARDING_DELAY, Slot},
-    solana_fee::{FeeFeatures, calculate_fee_details},
+    solana_clock::{Slot, MAX_PROCESSING_AGE, MAX_TRANSACTION_FORWARDING_DELAY},
+    solana_fee::{calculate_fee_details, FeeFeatures},
     solana_fee_structure::{FeeBudgetLimits, FeeDetails},
     solana_nonce::state::{Data as NonceData, DurableNonce},
     solana_nonce_account as nonce_account,
@@ -289,10 +289,10 @@ mod tests {
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_message::{
-            Message, MessageHeader, SanitizedMessage, SanitizedVersionedMessage,
-            SimpleAddressLoader, VersionedMessage,
             compiled_instruction::CompiledInstruction,
             v0::{self, LoadedAddresses, MessageAddressTableLookup},
+            Message, MessageHeader, SanitizedMessage, SanitizedVersionedMessage,
+            SimpleAddressLoader, VersionedMessage,
         },
         solana_nonce::{state::State as NonceState, versions::Versions as NonceVersions},
         solana_signer::Signer,
@@ -370,10 +370,9 @@ mod tests {
             Some(&custodian_pubkey),
             &nonce_hash,
         ));
-        assert!(
-            bank.check_nonce_transaction_validity(&message, &bank.next_durable_nonce())
-                .is_none()
-        );
+        assert!(bank
+            .check_nonce_transaction_validity(&message, &bank.next_durable_nonce())
+            .is_none());
     }
 
     #[test]
@@ -400,13 +399,12 @@ mod tests {
             &nonce_hash,
         );
         message.instructions[0].accounts.clear();
-        assert!(
-            bank.check_nonce_transaction_validity(
+        assert!(bank
+            .check_nonce_transaction_validity(
                 &new_sanitized_message(message),
                 &bank.next_durable_nonce(),
             )
-            .is_none()
-        );
+            .is_none());
     }
 
     #[test]
@@ -434,10 +432,9 @@ mod tests {
             Some(&custodian_pubkey),
             &nonce_hash,
         ));
-        assert!(
-            bank.check_nonce_transaction_validity(&message, &bank.next_durable_nonce())
-                .is_none()
-        );
+        assert!(bank
+            .check_nonce_transaction_validity(&message, &bank.next_durable_nonce())
+            .is_none());
     }
 
     #[test]
@@ -462,10 +459,9 @@ mod tests {
             Some(&custodian_pubkey),
             &Hash::default(),
         ));
-        assert!(
-            bank.check_nonce_transaction_validity(&message, &bank.next_durable_nonce())
-                .is_none()
-        );
+        assert!(bank
+            .check_nonce_transaction_validity(&message, &bank.next_durable_nonce())
+            .is_none());
     }
 
     #[test_case(true; "test_check_nonce_transaction_validity_nonce_is_alt_disallowed")]

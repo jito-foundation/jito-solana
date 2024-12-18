@@ -1,9 +1,9 @@
 use {
     crate::{
-        Version,
         encoding::{
-            Endianness, PodG1Point, PodG2Point, PodScalar, swap_fq_endianness, swap_g2_c0_c1,
+            swap_fq_endianness, swap_g2_c0_c1, Endianness, PodG1Point, PodG2Point, PodScalar,
         },
+        Version,
     },
     blstrs::{G1Projective, G2Projective},
 };

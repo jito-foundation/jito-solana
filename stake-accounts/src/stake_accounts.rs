@@ -1,5 +1,5 @@
 use {
-    solana_account::{ReadableAccount, state_traits::StateMut},
+    solana_account::{state_traits::StateMut, ReadableAccount},
     solana_clock::SECONDS_PER_DAY,
     solana_instruction::Instruction,
     solana_message::Message,

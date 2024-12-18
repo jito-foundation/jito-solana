@@ -1,5 +1,5 @@
 use {
-    super::{AccountsIndex, DiskIndexValue, IndexValue, in_mem_accounts_index::InMemAccountsIndex},
+    super::{in_mem_accounts_index::InMemAccountsIndex, AccountsIndex, DiskIndexValue, IndexValue},
     solana_pubkey::Pubkey,
     std::{
         ops::{Bound, RangeBounds},
@@ -101,7 +101,7 @@ pub enum AccountsIndexPubkeyIterOrder {
 mod tests {
     use {
         super::{
-            super::{UpsertReclaim, secondary::AccountSecondaryIndexes},
+            super::{secondary::AccountSecondaryIndexes, UpsertReclaim},
             *,
         },
         crate::accounts_index::ReclaimsSlotList,

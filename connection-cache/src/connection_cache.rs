@@ -1,19 +1,19 @@
 use {
     crate::{
         client_connection::ClientConnection as BlockingClientConnection,
-        connection_cache_stats::{CONNECTION_STAT_SUBMISSION_INTERVAL, ConnectionCacheStats},
+        connection_cache_stats::{ConnectionCacheStats, CONNECTION_STAT_SUBMISSION_INTERVAL},
         nonblocking::client_connection::ClientConnection as NonblockingClientConnection,
     },
     crossbeam_channel::{Receiver, RecvError, Sender},
     indexmap::map::IndexMap,
     log::*,
-    rand::{Rng, rng},
+    rand::{rng, Rng},
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
     solana_time_utils::AtomicInterval,
     std::{
         net::SocketAddr,
-        sync::{Arc, RwLock, atomic::Ordering},
+        sync::{atomic::Ordering, Arc, RwLock},
         thread::{Builder, JoinHandle},
     },
     thiserror::Error,
@@ -115,24 +115,22 @@ where
     ) -> JoinHandle<()> {
         Builder::new()
             .name("solQAsynCon".to_string())
-            .spawn(move || {
-                loop {
-                    let recv_result = receiver.recv();
-                    match recv_result {
-                        Err(RecvError) => {
-                            break;
-                        }
-                        Ok((idx, addr)) => {
-                            let map = map.read().unwrap();
-                            let pool = map.get(&addr);
-                            if let Some(pool) = pool {
-                                let conn = pool.get(idx);
-                                if let Ok(conn) = conn {
-                                    drop(map);
-                                    let conn = conn.new_blocking_connection(addr, stats.clone());
-                                    let result = conn.send_data(&[]);
-                                    debug!("Create async connection result {result:?} for {addr}");
-                                }
+            .spawn(move || loop {
+                let recv_result = receiver.recv();
+                match recv_result {
+                    Err(RecvError) => {
+                        break;
+                    }
+                    Ok((idx, addr)) => {
+                        let map = map.read().unwrap();
+                        let pool = map.get(&addr);
+                        if let Some(pool) = pool {
+                            let conn = pool.get(idx);
+                            if let Ok(conn) = conn {
+                                drop(map);
+                                let conn = conn.new_blocking_connection(addr, stats.clone());
+                                let result = conn.send_data(&[]);
+                                debug!("Create async connection result {result:?} for {addr}");
                             }
                         }
                     }

@@ -4,8 +4,8 @@ use {
     crate::{
         netlink::{GreTunnelInfo, MacAddress},
         packet::{
-            ETH_HEADER_SIZE, IP_HEADER_SIZE, UDP_HEADER_SIZE, write_eth_header, write_ip_header,
-            write_ip_header_for_udp, write_udp_header,
+            write_eth_header, write_ip_header, write_ip_header_for_udp, write_udp_header,
+            ETH_HEADER_SIZE, IP_HEADER_SIZE, UDP_HEADER_SIZE,
         },
     },
     libc::{ETH_P_IP, IPPROTO_GRE},

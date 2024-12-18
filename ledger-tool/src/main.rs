@@ -15,17 +15,17 @@ use {
     agave_feature_set::{self as feature_set, FeatureSet},
     agave_reserved_account_keys::ReservedAccountKeys,
     agave_snapshots::{
-        ArchiveFormat, DEFAULT_ARCHIVE_COMPRESSION, SUPPORTED_ARCHIVE_COMPRESSION, SnapshotVersion,
-        snapshot_archive_info::SnapshotArchiveInfoGetter as _,
+        snapshot_archive_info::SnapshotArchiveInfoGetter as _, ArchiveFormat, SnapshotVersion,
+        DEFAULT_ARCHIVE_COMPRESSION, SUPPORTED_ARCHIVE_COMPRESSION,
     },
     clap::{
-        App, AppSettings, Arg, ArgMatches, SubCommand, crate_description, crate_name, value_t,
-        value_t_or_exit, values_t_or_exit,
+        crate_description, crate_name, value_t, value_t_or_exit, values_t_or_exit, App,
+        AppSettings, Arg, ArgMatches, SubCommand,
     },
     dashmap::DashMap,
     log::*,
     serde::Serialize,
-    solana_account::{AccountSharedData, ReadableAccount, WritableAccount, state_traits::StateMut},
+    solana_account::{state_traits::StateMut, AccountSharedData, ReadableAccount, WritableAccount},
     solana_accounts_db::accounts_index::{ScanConfig, ScanOrder},
     solana_clap_utils::{
         input_parsers::{cluster_type_of, pubkey_of, pubkeys_of},
@@ -34,7 +34,7 @@ use {
             is_within_range,
         },
     },
-    solana_cli_output::{CliAccount, OutputFormat, display::build_balance_message},
+    solana_cli_output::{display::build_balance_message, CliAccount, OutputFormat},
     solana_clock::{Epoch, Slot},
     solana_cluster_type::ClusterType,
     solana_core::{
@@ -49,7 +49,7 @@ use {
     solana_inflation::Inflation,
     solana_instruction::TRANSACTION_LEVEL_STACK_HEIGHT,
     solana_ledger::{
-        blockstore::{Blockstore, banking_trace_path, create_new_ledger},
+        blockstore::{banking_trace_path, create_new_ledger, Blockstore},
         blockstore_options::{AccessType, LedgerColumnOptions},
         blockstore_processor::{
             ProcessSlotCallback, TransactionStatusMessage, TransactionStatusSender,
@@ -57,13 +57,13 @@ use {
     },
     solana_measure::{measure::Measure, measure_time},
     solana_message::SimpleAddressLoader,
-    solana_native_token::{LAMPORTS_PER_SOL, Sol},
+    solana_native_token::{Sol, LAMPORTS_PER_SOL},
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_runtime::{
         bank::{
-            Bank, RewardCalculationEvent,
             bank_hash_details::{self, SlotDetails, TransactionDetails},
+            Bank, RewardCalculationEvent,
         },
         bank_forks::BankForks,
         inflation_rewards::points::{InflationPointCalculationEvent, PointValue},
@@ -82,20 +82,20 @@ use {
     solana_vote::vote_state_view::VoteStateView,
     solana_vote_program::{
         self,
-        vote_state::{self, BLS_PUBLIC_KEY_COMPRESSED_SIZE, VoteStateV3, VoteStateV4},
+        vote_state::{self, VoteStateV3, VoteStateV4, BLS_PUBLIC_KEY_COMPRESSED_SIZE},
     },
     std::{
         collections::{HashMap, HashSet},
         ffi::{OsStr, OsString},
-        fs::{File, read_dir},
+        fs::{read_dir, File},
         io::{self, Write},
         mem::swap,
         path::{Path, PathBuf},
-        process::{Command, Stdio, exit},
+        process::{exit, Command, Stdio},
         str::FromStr,
         sync::{
-            Arc, Mutex, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, Mutex, RwLock,
         },
         thread::JoinHandle,
     },
@@ -1830,7 +1830,6 @@ fn main() {
                             process_options,
                             None,
                         );
-
                     println!(
                         "{}",
                         compute_shred_version(
@@ -2178,12 +2177,11 @@ fn main() {
 
                     // If we are creating an incremental snapshot, it must be based on a full snapshot
                     if is_incremental {
-                        assert!(
-                            bank.accounts()
-                                .accounts_db
-                                .latest_full_snapshot_slot()
-                                .is_some()
-                        );
+                        assert!(bank
+                            .accounts()
+                            .accounts_db
+                            .latest_full_snapshot_slot()
+                            .is_some());
                     }
 
                     // Snapshot creation will implicitly perform AccountsDb
@@ -2538,7 +2536,7 @@ fn main() {
                             );
                             exit(1);
                         }
-                        let full_snapshot_slot = starting_snapshot_hashes.unwrap().full.0.0;
+                        let full_snapshot_slot = starting_snapshot_hashes.unwrap().full.0 .0;
                         if bank.slot() <= full_snapshot_slot {
                             eprintln!(
                                 "Unable to create incremental snapshot: Slot must be greater than \
@@ -2761,6 +2759,7 @@ fn main() {
                             process_options,
                             None,
                         );
+
                     let bank_forks = bank_forks.read().unwrap();
                     let slot = bank_forks.working_bank().slot();
                     let bank = bank_forks.get(slot).unwrap_or_else(|| {

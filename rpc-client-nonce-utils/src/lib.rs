@@ -4,7 +4,7 @@ pub mod blockhash_query;
 pub mod nonblocking;
 
 pub use crate::nonblocking::{
-    Error, account_identity_ok, data_from_account, data_from_state, state_from_account,
+    account_identity_ok, data_from_account, data_from_state, state_from_account, Error,
 };
 use {
     solana_account::Account, solana_commitment_config::CommitmentConfig, solana_pubkey::Pubkey,

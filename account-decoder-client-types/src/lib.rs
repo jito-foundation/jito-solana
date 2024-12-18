@@ -4,7 +4,7 @@
 #[cfg(feature = "zstd")]
 use std::io::Read;
 use {
-    base64::{Engine, prelude::BASE64_STANDARD},
+    base64::{prelude::BASE64_STANDARD, Engine},
     core::str::FromStr,
     serde::{Deserialize, Serialize},
     serde_json::Value,

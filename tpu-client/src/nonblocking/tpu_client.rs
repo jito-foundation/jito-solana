@@ -1,15 +1,15 @@
 pub use crate::tpu_client::Result;
 use {
-    crate::tpu_client::{MAX_FANOUT_SLOTS, RecentLeaderSlots, TpuClientConfig},
+    crate::tpu_client::{RecentLeaderSlots, TpuClientConfig, MAX_FANOUT_SLOTS},
     bincode::serialize,
     futures_util::{future::join_all, stream::StreamExt},
     log::*,
-    solana_clock::{DEFAULT_MS_PER_SLOT, NUM_CONSECUTIVE_LEADER_SLOTS, Slot},
+    solana_clock::{Slot, DEFAULT_MS_PER_SLOT, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_commitment_config::CommitmentConfig,
     solana_connection_cache::{
         connection_cache::{
-            ConnectionCache, ConnectionManager, ConnectionPool, DEFAULT_CONNECTION_POOL_SIZE,
-            NewConnectionConfig, Protocol,
+            ConnectionCache, ConnectionManager, ConnectionPool, NewConnectionConfig, Protocol,
+            DEFAULT_CONNECTION_POOL_SIZE,
         },
         nonblocking::client_connection::ClientConnection,
     },
@@ -30,14 +30,14 @@ use {
         net::SocketAddr,
         str::FromStr,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
         },
     },
     thiserror::Error,
     tokio::{
         task::JoinHandle,
-        time::{Duration, Instant, sleep, timeout},
+        time::{sleep, timeout, Duration, Instant},
     },
 };
 #[cfg(feature = "spinner")]

@@ -9,7 +9,7 @@ use {
     solana_bls_signatures::Signature as BLSSignature,
     solana_clock::Slot,
     solana_hash::Hash,
-    wincode::{SchemaRead, SchemaWrite, containers::Pod},
+    wincode::{containers::Pod, SchemaRead, SchemaWrite},
 };
 
 /// The seed used to derive the BLS keypair

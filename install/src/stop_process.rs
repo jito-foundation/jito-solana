@@ -19,7 +19,7 @@ pub fn stop_process(process: &mut Child) -> Result<(), io::Error> {
     use {
         nix::{
             errno::Errno::{EINVAL, EPERM, ESRCH},
-            sys::signal::{Signal, kill},
+            sys::signal::{kill, Signal},
             unistd::Pid,
         },
         std::{

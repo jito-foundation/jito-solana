@@ -1,8 +1,9 @@
 use {
     crate::{
         common::{
-            SAFE_TO_NOTAR_MIN_NOTARIZE_AND_SKIP, SAFE_TO_NOTAR_MIN_NOTARIZE_FOR_NOTARIZE_OR_SKIP,
-            SAFE_TO_NOTAR_MIN_NOTARIZE_ONLY, SAFE_TO_SKIP_THRESHOLD, Stake,
+            Stake, SAFE_TO_NOTAR_MIN_NOTARIZE_AND_SKIP,
+            SAFE_TO_NOTAR_MIN_NOTARIZE_FOR_NOTARIZE_OR_SKIP, SAFE_TO_NOTAR_MIN_NOTARIZE_ONLY,
+            SAFE_TO_SKIP_THRESHOLD,
         },
         consensus_pool::stats::ConsensusPoolStats,
         event::VotorEvent,

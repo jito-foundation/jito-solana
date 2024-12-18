@@ -1,6 +1,6 @@
 //! The `packet` module defines data structures and methods to pull data from the network.
 #[cfg(unix)]
-use nix::poll::{PollFd, PollTimeout, poll};
+use nix::poll::{poll, PollFd, PollTimeout};
 #[cfg(any(
     target_os = "linux",
     target_os = "android",
@@ -18,10 +18,10 @@ use {
     },
 };
 pub use {
-    solana_packet::{Meta, PACKET_DATA_SIZE, Packet},
+    solana_packet::{Meta, Packet, PACKET_DATA_SIZE},
     solana_perf::packet::{
-        NUM_PACKETS, PACKETS_PER_BATCH, PacketBatch, PacketBatchRecycler, PacketRef, PacketRefMut,
-        RecycledPacketBatch,
+        PacketBatch, PacketBatchRecycler, PacketRef, PacketRefMut, RecycledPacketBatch,
+        NUM_PACKETS, PACKETS_PER_BATCH,
     },
 };
 

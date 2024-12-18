@@ -2,37 +2,37 @@ use {
     crate::{
         checks::{check_account_for_fee_with_commitment, check_unique_pubkeys},
         cli::{
-            CliCommand, CliCommandInfo, CliConfig, CliError, ProcessResult,
-            log_instruction_custom_error,
+            log_instruction_custom_error, CliCommand, CliCommandInfo, CliConfig, CliError,
+            ProcessResult,
         },
         compute_budget::{
-            ComputeUnitConfig, WithComputeUnitConfig, simulate_and_update_compute_unit_limit,
+            simulate_and_update_compute_unit_limit, ComputeUnitConfig, WithComputeUnitConfig,
         },
         feature::get_feature_activation_epoch,
         memo::WithMemo,
         nonce::check_nonce_account,
-        spend_utils::{SpendAmount, resolve_spend_tx_and_check_account_balances},
+        spend_utils::{resolve_spend_tx_and_check_account_balances, SpendAmount},
     },
-    clap::{App, AppSettings, Arg, ArgGroup, ArgMatches, SubCommand, value_t},
-    solana_account::{Account, from_account, state_traits::StateMut},
+    clap::{value_t, App, AppSettings, Arg, ArgGroup, ArgMatches, SubCommand},
+    solana_account::{from_account, state_traits::StateMut, Account},
     solana_clap_utils::{
-        ArgConstant,
-        compute_budget::{COMPUTE_UNIT_PRICE_ARG, ComputeUnitLimit, compute_unit_price_arg},
-        fee_payer::{FEE_PAYER_ARG, fee_payer_arg},
+        compute_budget::{compute_unit_price_arg, ComputeUnitLimit, COMPUTE_UNIT_PRICE_ARG},
+        fee_payer::{fee_payer_arg, FEE_PAYER_ARG},
         hidden_unless_forced,
         input_parsers::*,
         input_validators::*,
         keypair::{DefaultSigner, SignerIndex},
-        memo::{MEMO_ARG, memo_arg},
+        memo::{memo_arg, MEMO_ARG},
         nonce::*,
         offline::*,
+        ArgConstant,
     },
     solana_cli_output::{
-        self, CliBalance, CliEpochReward, CliStakeHistory, CliStakeHistoryEntry, CliStakeState,
-        CliStakeType, OutputFormat, ReturnSignersConfig, display::BuildBalanceMessageConfig,
-        return_signers_with_config,
+        self, display::BuildBalanceMessageConfig, return_signers_with_config, CliBalance,
+        CliEpochReward, CliStakeHistory, CliStakeHistoryEntry, CliStakeState, CliStakeType,
+        OutputFormat, ReturnSignersConfig,
     },
-    solana_clock::{Clock, Epoch, SECONDS_PER_DAY, UnixTimestamp},
+    solana_clock::{Clock, Epoch, UnixTimestamp, SECONDS_PER_DAY},
     solana_commitment_config::CommitmentConfig,
     solana_epoch_schedule::EpochSchedule,
     solana_message::Message,
@@ -2422,7 +2422,11 @@ pub async fn process_stake_set_lockup(
 }
 
 fn u64_some_if_not_zero(n: u64) -> Option<u64> {
-    if n > 0 { Some(n) } else { None }
+    if n > 0 {
+        Some(n)
+    } else {
+        None
+    }
 }
 
 pub fn build_stake_state(
@@ -2968,7 +2972,7 @@ mod tests {
         super::*,
         crate::{clap_app::get_clap_app, cli::parse_command},
         solana_hash::Hash,
-        solana_keypair::{Keypair, keypair_from_seed, read_keypair_file, write_keypair},
+        solana_keypair::{keypair_from_seed, read_keypair_file, write_keypair, Keypair},
         solana_presigner::Presigner,
         solana_rpc_client_nonce_utils::nonblocking::blockhash_query::Source,
         solana_signer::Signer,

@@ -1,6 +1,5 @@
 use {
     super::{
-        BankingStageStats, SLOT_BOUNDARY_CHECK_PERIOD,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
         latest_validator_vote_packet::VoteSource,
@@ -9,10 +8,16 @@ use {
         },
         vote_packet_receiver::VotePacketReceiver,
         vote_storage::VoteStorage,
+        BankingStageStats, SLOT_BOUNDARY_CHECK_PERIOD,
     },
-    crate::banking_stage::{
-        consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
-        transaction_scheduler::transaction_state_container::{RuntimeTransactionView, SharedBytes},
+    crate::{
+        banking_stage::{
+            consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
+            transaction_scheduler::transaction_state_container::{
+                RuntimeTransactionView, SharedBytes,
+            },
+        },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     agave_transaction_view::{
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
@@ -38,8 +43,8 @@ use {
     solana_transaction_error::TransactionError,
     std::{
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
         },
         time::Instant,
     },
@@ -64,6 +69,7 @@ pub struct VoteWorker {
     storage: VoteStorage,
     bank_forks: Arc<RwLock<BankForks>>,
     consumer: Consumer,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl VoteWorker {
@@ -76,6 +82,7 @@ impl VoteWorker {
         storage: VoteStorage,
         bank_forks: Arc<RwLock<BankForks>>,
         consumer: Consumer,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             exit,
@@ -86,6 +93,7 @@ impl VoteWorker {
             storage,
             bank_forks,
             consumer,
+            bundle_account_locker,
         }
     }
 
@@ -99,11 +107,8 @@ impl VoteWorker {
             if !self.storage.is_empty()
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, process_buffered_packets_us) =
-                    measure_us!(self.process_buffered_packets(
-                        &mut banking_stage_stats,
-                        &mut slot_metrics_tracker
-                    ));
+                let (_, process_buffered_packets_us) = measure_us!(self
+                    .process_buffered_packets(&mut banking_stage_stats, &mut slot_metrics_tracker));
                 slot_metrics_tracker
                     .increment_process_buffered_packets_us(process_buffered_packets_us);
                 last_metrics_update = Instant::now();
@@ -295,6 +300,7 @@ impl VoteWorker {
         reached_end_of_slot
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_process_packets(
         &self,
         bank: &Bank,
@@ -309,8 +315,8 @@ impl VoteWorker {
             return None;
         }
 
-        let (process_transactions_summary, process_packets_transactions_us) =
-            measure_us!(self.process_packets_transactions(
+        let (process_transactions_summary, process_packets_transactions_us) = measure_us!(self
+            .process_packets_transactions(
                 bank,
                 sanitized_transactions,
                 banking_stage_stats,
@@ -356,9 +362,13 @@ impl VoteWorker {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
     ) -> ProcessTransactionsSummary {
-        let (mut process_transactions_summary, process_transactions_us) = measure_us!(
-            Self::process_transactions(&self.consumer, bank, sanitized_transactions)
-        );
+        let (mut process_transactions_summary, process_transactions_us) =
+            measure_us!(Self::process_transactions(
+                &self.consumer,
+                bank,
+                sanitized_transactions,
+                &self.bundle_account_locker
+            ));
         slot_metrics_tracker.increment_process_transactions_us(process_transactions_us);
         banking_stage_stats
             .transaction_processing_elapsed
@@ -409,9 +419,14 @@ impl VoteWorker {
         consumer: &Consumer,
         bank: &Bank,
         transactions: &[impl TransactionWithMeta],
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionsSummary {
-        let process_transaction_batch_output =
-            consumer.process_and_record_transactions(bank, transactions);
+        let process_transaction_batch_output = consumer.process_and_record_transactions(
+            bank,
+            transactions,
+            bundle_account_locker,
+            false,
+        );
 
         let ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,
@@ -782,7 +797,12 @@ mod tests {
         )]);
 
         // Process some transactions on a bank that hasn't finished.
-        let summary = VoteWorker::process_transactions(&consumer, &bank, &transactions);
+        let summary = VoteWorker::process_transactions(
+            &consumer,
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         // Assert - Transaction were prcoessed.
         assert!(summary.transaction_counts.committed_transactions_count.0 > 0);

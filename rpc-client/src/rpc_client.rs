@@ -13,7 +13,7 @@ pub use crate::mock_sender::Mocks;
 use {
     crate::{
         http_sender::HttpSender,
-        mock_sender::{MockSender, MocksMap, mock_encoded_account},
+        mock_sender::{mock_encoded_account, MockSender, MocksMap},
         nonblocking::{self, rpc_client::get_rpc_request_str},
         rpc_sender::*,
     },
@@ -28,16 +28,17 @@ use {
     solana_epoch_schedule::EpochSchedule,
     solana_feature_gate_interface::Feature,
     solana_hash::Hash,
-    solana_message::{Message as LegacyMessage, v0},
+    solana_message::{v0, Message as LegacyMessage},
     solana_pubkey::Pubkey,
     solana_rpc_client_api::{
+        bundles::{RpcSimulateBundleConfig, RpcSimulateBundleResult},
         client_error::{Error as ClientError, ErrorKind, Result as ClientResult},
         config::{RpcAccountInfoConfig, *},
         request::{RpcRequest, TokenAccountsFilter},
         response::*,
     },
     solana_signature::Signature,
-    solana_transaction::{Transaction, uses_durable_nonce, versioned::VersionedTransaction},
+    solana_transaction::{uses_durable_nonce, versioned::VersionedTransaction, Transaction},
     solana_transaction_error::TransactionResult,
     solana_transaction_status_client_types::{
         EncodedConfirmedBlock, EncodedConfirmedTransactionWithStatusMeta, TransactionStatus,
@@ -1234,6 +1235,21 @@ impl RpcClient {
         self.invoke(
             (self.rpc_client.as_ref()).simulate_transaction_with_config(transaction, config),
         )
+    }
+
+    pub fn simulate_bundle(
+        &self,
+        bundle: &[impl SerializableTransaction],
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        self.invoke((self.rpc_client.as_ref()).simulate_bundle(bundle))
+    }
+
+    pub fn simulate_bundle_with_config(
+        &self,
+        bundle: &[impl SerializableTransaction],
+        config: RpcSimulateBundleConfig,
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        self.invoke((self.rpc_client.as_ref()).simulate_bundle_with_config(bundle, config))
     }
 
     /// Returns the highest slot information that the node has snapshots for.
@@ -3810,17 +3826,17 @@ mod tests {
         super::*,
         crate::mock_sender::PUBKEY,
         assert_matches::assert_matches,
-        base64::{Engine, prelude::BASE64_STANDARD},
+        base64::{prelude::BASE64_STANDARD, Engine},
         crossbeam_channel::unbounded,
-        jsonrpc_core::{Error, IoHandler, Params, futures::prelude::*},
+        jsonrpc_core::{futures::prelude::*, Error, IoHandler, Params},
         jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder},
-        serde_json::{Number, json},
-        solana_account_decoder::{UiAccountData, encode_ui_account},
+        serde_json::{json, Number},
+        solana_account_decoder::{encode_ui_account, UiAccountData},
         solana_account_decoder_client_types::UiAccountEncoding,
         solana_hash::Hash,
         solana_instruction::error::InstructionError,
         solana_keypair::Keypair,
-        solana_message::{MessageHeader, compiled_instruction::CompiledInstruction},
+        solana_message::{compiled_instruction::CompiledInstruction, MessageHeader},
         solana_rpc_client_api::client_error::ErrorKind,
         solana_signer::Signer,
         solana_system_transaction as system_transaction,

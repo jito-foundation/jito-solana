@@ -410,7 +410,7 @@ mod tests {
             accounts_file::AccountsFileProvider,
         },
         rand::Rng,
-        solana_account::{AccountSharedData, accounts_equal},
+        solana_account::{accounts_equal, AccountSharedData},
         std::sync::Arc,
     };
 

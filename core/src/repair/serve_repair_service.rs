@@ -1,13 +1,13 @@
 use {
     crate::repair::{quic_endpoint::RemoteRequest, serve_repair::ServeRepair},
     bytes::Bytes,
-    crossbeam_channel::{Receiver, Sender, unbounded},
+    crossbeam_channel::{unbounded, Receiver, Sender},
     solana_net_utils::SocketAddrSpace,
     solana_perf::{packet::PacketBatch, recycler::Recycler},
     solana_streamer::streamer::{self, StreamerReceiveStats},
     std::{
         net::{SocketAddr, UdpSocket},
-        sync::{Arc, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc},
         thread::{self, Builder, JoinHandle},
         time::Duration,
     },

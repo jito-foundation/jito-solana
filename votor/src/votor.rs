@@ -80,7 +80,7 @@ use {
     },
     std::{
         collections::HashMap,
-        sync::{Arc, RwLock, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         thread::{self, JoinHandle},
         time::Duration,
     },

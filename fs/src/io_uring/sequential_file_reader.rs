@@ -2,12 +2,12 @@
 
 use {
     super::{
-        IO_PRIO_BE_HIGHEST,
         memory::{IoBufferChunk, PageAlignedMemory},
+        IO_PRIO_BE_HIGHEST,
     },
-    crate::{FileSize, IoSize, buffered_reader::FileBufRead, io_uring::sqpoll},
+    crate::{buffered_reader::FileBufRead, io_uring::sqpoll, FileSize, IoSize},
     agave_io_uring::{Completion, Ring, RingAccess as _, RingOp},
-    io_uring::{IoUring, opcode, squeue, types},
+    io_uring::{opcode, squeue, types, IoUring},
     std::{
         collections::VecDeque,
         fs::{File, OpenOptions},

@@ -1,6 +1,6 @@
 use {
     crate::recycler::{RecyclerX, Reset},
-    rand::{Rng, seq::SliceRandom},
+    rand::{seq::SliceRandom, Rng},
     rayon::prelude::*,
     serde::{Deserialize, Serialize},
     std::{

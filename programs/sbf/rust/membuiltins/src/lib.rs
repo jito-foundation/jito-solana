@@ -5,8 +5,8 @@
 
 extern crate compiler_builtins;
 use {
-    solana_program_entrypoint::{SUCCESS, custom_heap_default, custom_panic_default},
-    solana_sbf_rust_mem_dep::{MemOps, run_mem_tests},
+    solana_program_entrypoint::{custom_heap_default, custom_panic_default, SUCCESS},
+    solana_sbf_rust_mem_dep::{run_mem_tests, MemOps},
 };
 
 #[no_mangle]

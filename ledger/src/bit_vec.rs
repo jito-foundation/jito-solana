@@ -516,7 +516,11 @@ mod tests {
         (range.clone(), range).prop_map(
             // Avoid descending (empty) ranges
             |(start, end)| {
-                if start > end { end..start } else { start..end }
+                if start > end {
+                    end..start
+                } else {
+                    start..end
+                }
             },
         )
     }

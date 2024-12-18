@@ -4,14 +4,14 @@
 use {
     super::leader_updater::LeaderUpdater,
     crate::{
-        SendTransactionStats,
         connection_worker::DEFAULT_MAX_CONNECTION_HANDSHAKE_TIMEOUT,
         logging::debug,
         quic_networking::{
-            QuicClientCertificate, QuicError, create_client_config, create_client_endpoint,
+            create_client_config, create_client_endpoint, QuicClientCertificate, QuicError,
         },
         transaction_batch::TransactionBatch,
-        workers_cache::{WorkersCache, WorkersCacheError, shutdown_worker},
+        workers_cache::{shutdown_worker, WorkersCache, WorkersCacheError},
+        SendTransactionStats,
     },
     async_trait::async_trait,
     quinn::{ClientConfig, Endpoint},

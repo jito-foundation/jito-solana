@@ -1,8 +1,8 @@
 use {
     ahash::HashSet,
     clap::{
-        App, AppSettings, Arg, ArgMatches, SubCommand, crate_description, crate_name,
-        value_t_or_exit, values_t_or_exit,
+        crate_description, crate_name, value_t_or_exit, values_t_or_exit, App, AppSettings, Arg,
+        ArgMatches, SubCommand,
     },
     rayon::prelude::*,
     solana_account::ReadableAccount,

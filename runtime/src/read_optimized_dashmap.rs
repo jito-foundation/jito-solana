@@ -6,8 +6,8 @@ use shuttle::sync::Arc;
 use std::sync::Arc;
 use {
     dashmap::{
-        DashMap,
         mapref::{entry::Entry, multiple::RefMulti},
+        DashMap,
     },
     std::{hash::BuildHasher, ops::Deref},
 };

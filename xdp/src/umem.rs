@@ -1,7 +1,7 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use {
-    libc::{_SC_PAGESIZE, munmap, sysconf},
+    libc::{munmap, sysconf, _SC_PAGESIZE},
     std::{
         ffi::c_void,
         io,

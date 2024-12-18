@@ -6,7 +6,7 @@ use {
         vote::Vote,
     },
     bitvec::vec::BitVec,
-    criterion::{BenchmarkId, Criterion, criterion_group, criterion_main},
+    criterion::{criterion_group, criterion_main, BenchmarkId, Criterion},
     solana_bls_signatures::{
         keypair::Keypair as BlsKeypair, pubkey::Pubkey as BlsPubkey,
         signature::Signature as BlsSignature,

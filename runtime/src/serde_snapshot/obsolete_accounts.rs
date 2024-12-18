@@ -4,8 +4,8 @@ use {
     rayon::iter::{IntoParallelRefIterator, ParallelIterator},
     serde::{Deserialize, Serialize},
     solana_accounts_db::{
-        ObsoleteAccountItem, ObsoleteAccounts, account_info::Offset,
-        account_storage_entry::AccountStorageEntry, accounts_db::AccountsFileId,
+        account_info::Offset, account_storage_entry::AccountStorageEntry,
+        accounts_db::AccountsFileId, ObsoleteAccountItem, ObsoleteAccounts,
     },
     solana_clock::Slot,
     std::sync::Arc,

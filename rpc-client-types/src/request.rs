@@ -2,7 +2,7 @@ pub use solana_address::Address;
 use {
     crate::response::RpcSimulateTransactionResult,
     serde::{Deserialize, Serialize},
-    serde_json::{Value, json},
+    serde_json::{json, Value},
     solana_clock::Slot,
     std::fmt,
     thiserror::Error,
@@ -68,6 +68,7 @@ pub enum RpcRequest {
     RequestAirdrop,
     SendTransaction,
     SimulateTransaction,
+    SimulateBundle,
     SignVote,
 }
 
@@ -133,6 +134,7 @@ impl RpcRequest {
             RpcRequest::RequestAirdrop => "requestAirdrop",
             RpcRequest::SendTransaction => "sendTransaction",
             RpcRequest::SimulateTransaction => "simulateTransaction",
+            RpcRequest::SimulateBundle => "simulateBundle",
             RpcRequest::SignVote => "signVote",
         }
     }

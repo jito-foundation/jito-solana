@@ -13,7 +13,7 @@ pub mod blockhash_query {
 }
 pub mod client_error {
     pub use solana_rpc_client_api::client_error::{
-        Error as ClientError, ErrorKind as ClientErrorKind, Result, reqwest,
+        reqwest, Error as ClientError, ErrorKind as ClientErrorKind, Result,
     };
 }
 /// Durable transaction nonce helpers.

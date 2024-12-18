@@ -1,7 +1,7 @@
 //! Information about snapshot archives
 
 use {
-    crate::{ArchiveFormat, Result, paths as snapshot_paths, snapshot_hash::SnapshotHash},
+    crate::{paths as snapshot_paths, snapshot_hash::SnapshotHash, ArchiveFormat, Result},
     solana_clock::Slot,
     std::{cmp::Ordering, path::PathBuf},
 };

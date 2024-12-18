@@ -1,14 +1,15 @@
 #![allow(clippy::arithmetic_side_effects)]
 use {
     agave_feature_set::{
-        FEATURE_NAMES, FeatureSet, alpenglow, increase_cpi_account_info_limit,
-        raise_cpi_nesting_limit_to_8,
+        alpenglow, increase_cpi_account_info_limit, raise_cpi_nesting_limit_to_8, FeatureSet,
+        FEATURE_NAMES,
     },
     agave_snapshots::{
-        SnapshotInterval, paths::BANK_SNAPSHOTS_DIR, snapshot_config::SnapshotConfig,
+        paths::BANK_SNAPSHOTS_DIR, snapshot_config::SnapshotConfig, SnapshotInterval,
     },
     agave_syscalls::create_program_runtime_environment_v1,
-    base64::{Engine, prelude::BASE64_STANDARD},
+    arc_swap::ArcSwap,
+    base64::{prelude::BASE64_STANDARD, Engine},
     crossbeam_channel::Receiver,
     log::*,
     solana_account::{Account, AccountSharedData, ReadableAccount, WritableAccount},
@@ -17,19 +18,20 @@ use {
         utils::create_accounts_run_and_snapshot_dirs,
     },
     solana_cli_output::CliAccount,
-    solana_clock::{DEFAULT_MS_PER_SLOT, Slot},
+    solana_clock::{Slot, DEFAULT_MS_PER_SLOT},
     solana_commitment_config::CommitmentConfig,
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::tower_storage::TowerStorage,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
     solana_fee_calculator::FeeRateGovernor,
     solana_genesis_utils::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
     solana_geyser_plugin_manager::{
-        GeyserPluginManagerRequest, geyser_plugin_manager::GeyserPluginManager,
+        geyser_plugin_manager::GeyserPluginManager, GeyserPluginManagerRequest,
     },
     solana_gossip::{
         cluster_info::{ClusterInfo, NodeConfig},
@@ -38,7 +40,7 @@ use {
     },
     solana_inflation::Inflation,
     solana_instruction::{AccountMeta, Instruction},
-    solana_keypair::{Keypair, read_keypair_file, write_keypair_file},
+    solana_keypair::{read_keypair_file, write_keypair_file, Keypair},
     solana_ledger::{
         blockstore::create_new_ledger, blockstore_options::LedgerColumnOptions,
         create_new_tmp_ledger,
@@ -47,8 +49,9 @@ use {
     solana_message::Message,
     solana_native_token::LAMPORTS_PER_SOL,
     solana_net_utils::{
-        PortRange, SocketAddrSpace, find_available_ports_in_range, multihomed_sockets::BindIpAddrs,
+        find_available_ports_in_range, multihomed_sockets::BindIpAddrs, PortRange, SocketAddrSpace,
     },
+    solana_program_binaries::{jito_tip_distribution, jito_tip_payment},
     solana_program_runtime::{
         execution_budget::SVMTransactionExecutionBudget, invoke_context::InvokeContext,
     },
@@ -73,7 +76,7 @@ use {
         collections::{HashMap, HashSet},
         ffi::OsStr,
         fmt::Display,
-        fs::{self, File, remove_dir_all},
+        fs::{self, remove_dir_all, File},
         io::Read,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         num::{NonZero, NonZeroU64},
@@ -150,6 +153,7 @@ pub struct TestValidatorGenesis {
     pub transaction_account_lock_limit: Option<usize>,
     pub geyser_plugin_manager: Arc<RwLock<GeyserPluginManager>>,
     admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -186,6 +190,7 @@ impl Default for TestValidatorGenesis {
             geyser_plugin_manager: Arc::new(RwLock::new(GeyserPluginManager::default())),
             admin_rpc_service_post_init:
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 }
@@ -1225,6 +1230,16 @@ impl TestValidator {
             accounts_db_config,
             runtime_config,
             enable_scheduler_bindings: config.enable_scheduler_bindings,
+            tip_manager_config: TipManagerConfig {
+                tip_payment_program_id: jito_tip_payment::id(),
+                tip_distribution_program_id: jito_tip_distribution::id(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: validator_identity.pubkey(),
+                    vote_account: vote_account_address,
+                    commission_bps: 10,
+                },
+            },
+            bam_url: config.bam_url.clone(),
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {
@@ -1496,11 +1511,9 @@ mod test {
             blockhash,
         );
 
-        assert!(
-            rpc_client
-                .send_and_confirm_transaction(&transaction)
-                .is_ok()
-        );
+        assert!(rpc_client
+            .send_and_confirm_transaction(&transaction)
+            .is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1524,12 +1537,10 @@ mod test {
             blockhash,
         );
 
-        assert!(
-            rpc_client
-                .send_and_confirm_transaction(&transaction)
-                .await
-                .is_ok()
-        );
+        assert!(rpc_client
+            .send_and_confirm_transaction(&transaction)
+            .await
+            .is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

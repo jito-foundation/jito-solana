@@ -1,6 +1,6 @@
 use {
     crate::commands::{FromClapArgMatches, Result},
-    clap::{ArgMatches, values_t},
+    clap::{values_t, ArgMatches},
     solana_accounts_db::accounts_index::{
         AccountIndex, AccountSecondaryIndexes, AccountSecondaryIndexesIncludeExclude,
     },
@@ -64,7 +64,7 @@ mod tests {
     use {
         super::*,
         crate::commands::run::args::{
-            RunArgs, tests::verify_args_struct_by_command_run_with_identity_setup,
+            tests::verify_args_struct_by_command_run_with_identity_setup, RunArgs,
         },
         solana_rpc::rpc::JsonRpcConfig,
         test_case::test_case,

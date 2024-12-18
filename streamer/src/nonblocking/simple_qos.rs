@@ -3,14 +3,14 @@ use {
         nonblocking::{
             qos::{ConnectionContext, OpaqueStreamerCounter, QosController},
             quic::{
-                ClientConnectionTracker, ConnectionHandlerError, ConnectionPeerType,
-                ConnectionTable, ConnectionTableKey, ConnectionTableType, MAX_RTT, MIN_RTT,
-                get_connection_stake, update_open_connections_stat,
+                get_connection_stake, update_open_connections_stat, ClientConnectionTracker,
+                ConnectionHandlerError, ConnectionPeerType, ConnectionTable, ConnectionTableKey,
+                ConnectionTableType, MAX_RTT, MIN_RTT,
             },
         },
         quic::{
-            DEFAULT_MAX_QUIC_CONNECTIONS_PER_STAKED_PEER, DEFAULT_MAX_STAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS, StreamerStats,
+            StreamerStats, DEFAULT_MAX_QUIC_CONNECTIONS_PER_STAKED_PEER,
+            DEFAULT_MAX_STAKED_CONNECTIONS, DEFAULT_MAX_STREAMS_PER_MS,
         },
         streamer::StakedNodes,
     },
@@ -20,8 +20,8 @@ use {
     std::{
         future::Future,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicU64, Ordering},
+            Arc, RwLock,
         },
         time::Duration,
     },
@@ -311,7 +311,7 @@ mod tests {
                 quic::{ConnectionTable, ConnectionTableType},
                 testing_utilities::get_client_config,
             },
-            quic::{StreamerStats, configure_server},
+            quic::{configure_server, StreamerStats},
             streamer::StakedNodes,
         },
         quinn::Endpoint,
@@ -320,8 +320,8 @@ mod tests {
         std::{
             collections::HashMap,
             sync::{
-                Arc, RwLock,
                 atomic::{AtomicU64, Ordering},
+                Arc, RwLock,
             },
         },
         tokio_util::sync::CancellationToken,

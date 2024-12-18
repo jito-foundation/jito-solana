@@ -5,8 +5,8 @@ use {
     std::{
         string::ToString,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},

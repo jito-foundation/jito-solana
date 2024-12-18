@@ -49,7 +49,7 @@ mod test {
         solana_keypair::Keypair,
         solana_ledger::{
             shred::Shredder,
-            sigverify_shreds::{LruCache, SlotPubkeys, verify_shred_cpu},
+            sigverify_shreds::{verify_shred_cpu, LruCache, SlotPubkeys},
         },
         solana_packet::PacketFlags,
         solana_signer::Signer,

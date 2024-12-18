@@ -3,7 +3,7 @@ use {
         Device, RemoteWallet, RemoteWalletError, RemoteWalletInfo, RemoteWalletManager,
     },
     console::Emoji,
-    dialoguer::{Select, theme::ColorfulTheme},
+    dialoguer::{theme::ColorfulTheme, Select},
     semver::Version as FirmwareVersion,
     solana_derivation_path::DerivationPath,
     std::fmt,

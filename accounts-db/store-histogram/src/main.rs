@@ -1,6 +1,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 use {
-    clap::{App, Arg, crate_description, crate_name, value_t, value_t_or_exit},
+    clap::{crate_description, crate_name, value_t, value_t_or_exit, App, Arg},
     std::{fmt::Display, fs, path::PathBuf, str::FromStr},
 };
 

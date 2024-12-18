@@ -1,11 +1,11 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use {
-    bencher::{Bencher, benchmark_group, benchmark_main},
+    bencher::{benchmark_group, benchmark_main, Bencher},
     log::*,
     rand::Rng,
     solana_perf::{
-        packet::{BytesPacket, BytesPacketBatch, PacketBatch, to_packet_batches},
+        packet::{to_packet_batches, BytesPacket, BytesPacketBatch, PacketBatch},
         sigverify,
         test_tx::{test_multisig_tx, test_tx},
     },

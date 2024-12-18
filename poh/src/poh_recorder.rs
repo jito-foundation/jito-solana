@@ -19,9 +19,9 @@ use {
     },
     agave_votor_messages::migration::MigrationStatus,
     arc_swap::ArcSwap,
-    crossbeam_channel::{Receiver, SendError, Sender, TrySendError, bounded, unbounded},
+    crossbeam_channel::{bounded, unbounded, Receiver, SendError, Sender, TrySendError},
     log::*,
-    solana_clock::{BankId, NUM_CONSECUTIVE_LEADER_SLOTS, Slot},
+    solana_clock::{BankId, Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_entry::{
         entry::Entry,
         poh::{Poh, PohEntry},
@@ -36,8 +36,8 @@ use {
     std::{
         cmp,
         sync::{
-            Arc, Mutex, RwLock,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc, Mutex, RwLock,
         },
         time::Instant,
     },
@@ -632,7 +632,7 @@ impl PohRecorder {
     }
 
     /// Return the slot that PoH is currently ticking through.
-    fn current_poh_slot(&self) -> Slot {
+    pub fn current_poh_slot(&self) -> Slot {
         // The tick_height field is initialized to the last tick of the start
         // bank and generally indicates what tick height has already been
         // reached so use the next tick height to determine which slot poh is
@@ -946,6 +946,10 @@ impl PohRecorder {
             poh.reset(current_hash, hashes_per_tick);
         }
     }
+
+    pub fn get_blockstore(&self) -> Arc<Blockstore> {
+        self.blockstore.clone()
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -1121,7 +1125,7 @@ mod tests {
         solana_ledger::{
             blockstore::Blockstore,
             blockstore_meta::SlotMeta,
-            genesis_utils::{GenesisConfigInfo, create_genesis_config},
+            genesis_utils::{create_genesis_config, GenesisConfigInfo},
             get_tmp_ledger_path_auto_delete,
         },
         solana_perf::test_tx::test_tx,
@@ -1450,11 +1454,9 @@ mod tests {
         assert_eq!(poh_recorder.tick_height(), min_tick_height);
         let tx = test_tx();
         let h1 = hash(b"hello world!");
-        assert!(
-            poh_recorder
-                .record(bank1.slot(), vec![h1], vec![vec![tx.into()]])
-                .is_ok()
-        );
+        assert!(poh_recorder
+            .record(bank1.slot(), vec![h1], vec![vec![tx.into()]])
+            .is_ok());
         assert_eq!(poh_recorder.tick_cache.len(), 0);
 
         //tick in the cache + entry
@@ -1494,11 +1496,9 @@ mod tests {
         }
         let tx = test_tx();
         let h1 = hash(b"hello world!");
-        assert!(
-            poh_recorder
-                .record(bank.slot(), vec![h1], vec![vec![tx.into()]])
-                .is_err()
-        );
+        assert!(poh_recorder
+            .record(bank.slot(), vec![h1], vec![vec![tx.into()]])
+            .is_err());
         for _ in 0..num_ticks_to_max {
             let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
             assert!(entry.is_tick());
@@ -1726,11 +1726,9 @@ mod tests {
 
         let tx = test_tx();
         let h1 = hash(b"hello world!");
-        assert!(
-            poh_recorder
-                .record(bank.slot(), vec![h1], vec![vec![tx.into()]])
-                .is_err()
-        );
+        assert!(poh_recorder
+            .record(bank.slot(), vec![h1], vec![vec![tx.into()]])
+            .is_err());
         assert!(poh_recorder.working_bank.is_none());
 
         // Even thought we ticked much further than working_bank.max_tick_height,

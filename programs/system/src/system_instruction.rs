@@ -11,8 +11,8 @@ use {
     solana_system_interface::error::SystemError,
     solana_sysvar::rent::Rent,
     solana_transaction_context::{
-        IndexOfAccount, instruction::InstructionContext,
-        instruction_accounts::BorrowedInstructionAccount,
+        instruction::InstructionContext, instruction_accounts::BorrowedInstructionAccount,
+        IndexOfAccount,
     },
     std::collections::HashSet,
 };

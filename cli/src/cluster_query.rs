@@ -2,22 +2,22 @@ use {
     crate::{
         cli::{CliCommand, CliCommandInfo, CliConfig, CliError, ProcessResult},
         compute_budget::{
-            ComputeUnitConfig, WithComputeUnitConfig, simulate_for_compute_unit_limit,
+            simulate_for_compute_unit_limit, ComputeUnitConfig, WithComputeUnitConfig,
         },
         feature::get_feature_activation_epoch,
-        spend_utils::{SpendAmount, resolve_spend_tx_and_check_account_balance},
+        spend_utils::{resolve_spend_tx_and_check_account_balance, SpendAmount},
     },
-    clap::{App, AppSettings, Arg, ArgMatches, SubCommand, value_t, value_t_or_exit},
+    clap::{value_t, value_t_or_exit, App, AppSettings, Arg, ArgMatches, SubCommand},
     console::style,
     crossbeam_channel::unbounded,
     serde::{Deserialize, Serialize},
     solana_account::{from_account, state_traits::StateMut},
     solana_clap_utils::{
-        compute_budget::{COMPUTE_UNIT_PRICE_ARG, ComputeUnitLimit, compute_unit_price_arg},
+        compute_budget::{compute_unit_price_arg, ComputeUnitLimit, COMPUTE_UNIT_PRICE_ARG},
         input_parsers::*,
         input_validators::*,
         keypair::DefaultSigner,
-        offline::{BLOCKHASH_ARG, blockhash_arg},
+        offline::{blockhash_arg, BLOCKHASH_ARG},
     },
     solana_cli_output::{
         cli_clientid::CliClientId,
@@ -58,7 +58,7 @@ use {
     solana_signature::Signature,
     solana_slot_history::{self as slot_history, SlotHistory},
     solana_stake_interface::{self as stake, state::StakeStateV2},
-    solana_system_interface::{MAX_PERMITTED_DATA_LENGTH, instruction as system_instruction},
+    solana_system_interface::{instruction as system_instruction, MAX_PERMITTED_DATA_LENGTH},
     solana_tpu_client::nonblocking::tpu_client::TpuClient,
     solana_transaction::Transaction,
     solana_transaction_status::{
@@ -72,8 +72,8 @@ use {
         rc::Rc,
         str::FromStr,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::sleep,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -2475,7 +2475,7 @@ mod tests {
     use {
         super::*,
         crate::{clap_app::get_clap_app, cli::parse_command},
-        solana_keypair::{Keypair, write_keypair},
+        solana_keypair::{write_keypair, Keypair},
         std::str::FromStr,
         tempfile::NamedTempFile,
     };

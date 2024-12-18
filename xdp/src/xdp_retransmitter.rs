@@ -21,7 +21,7 @@ use {
     std::{
         error::Error,
         net::{Ipv4Addr, SocketAddr},
-        sync::{Arc, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc},
         thread,
     },
 };

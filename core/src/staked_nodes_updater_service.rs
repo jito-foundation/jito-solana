@@ -5,8 +5,8 @@ use {
     std::{
         collections::HashMap,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,

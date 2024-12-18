@@ -7,7 +7,7 @@ use {
     im::HashMap as ImHashMap,
     log::error,
     num_derive::ToPrimitive,
-    rayon::{ThreadPool, prelude::*},
+    rayon::{prelude::*, ThreadPool},
     serde::Serialize,
     solana_account::{AccountSharedData, ReadableAccount},
     solana_accounts_db::utils::create_account_shared_data,
@@ -29,7 +29,7 @@ use {
 
 mod serde_stakes;
 pub(crate) use serde_stakes::{
-    DeserializableStakes, SerdeStakesToStakeFormat, serialize_stake_accounts_to_delegation_format,
+    serialize_stake_accounts_to_delegation_format, DeserializableStakes, SerdeStakesToStakeFormat,
 };
 
 #[derive(Debug, Error)]
@@ -55,11 +55,11 @@ pub enum InvalidCacheEntryReason {
     WrongOwner,
 }
 
-type StakeAccount = stake_account::StakeAccount<Delegation>;
+pub type StakeAccount = stake_account::StakeAccount<Delegation>;
 
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
 #[derive(Default, Debug)]
-pub(crate) struct StakesCache(RwLock<Stakes<StakeAccount>>);
+pub struct StakesCache(RwLock<Stakes<StakeAccount>>);
 
 impl StakesCache {
     pub(crate) fn new(stakes: Stakes<StakeAccount>) -> Self {
@@ -168,7 +168,7 @@ pub struct Stakes<T: Clone> {
     vote_accounts: VoteAccounts,
 
     /// stake_delegations
-    stake_delegations: ImHashMap<Pubkey, T>,
+    pub stake_delegations: ImHashMap<Pubkey, T>,
 
     /// unused
     unused: u64,
@@ -459,7 +459,7 @@ impl Stakes<StakeAccount> {
     /// iterate over it with [`rayon`].
     ///
     /// [hamt]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
-    pub(crate) fn stake_delegations(&self) -> &ImHashMap<Pubkey, StakeAccount> {
+    pub fn stake_delegations(&self) -> &ImHashMap<Pubkey, StakeAccount> {
         &self.stake_delegations
     }
 
@@ -599,7 +599,7 @@ pub(crate) mod tests {
         solana_pubkey::Pubkey,
         solana_rent::Rent,
         solana_stake_interface::{self as stake, state::StakeStateV2},
-        solana_vote_interface::state::{BLS_PUBLIC_KEY_COMPRESSED_SIZE, VoteStateV4},
+        solana_vote_interface::state::{VoteStateV4, BLS_PUBLIC_KEY_COMPRESSED_SIZE},
         solana_vote_program::vote_state,
     };
 

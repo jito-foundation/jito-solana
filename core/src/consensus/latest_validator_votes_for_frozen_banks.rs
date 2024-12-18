@@ -3,7 +3,7 @@ use {
     solana_clock::Slot,
     solana_hash::Hash,
     solana_pubkey::Pubkey,
-    std::collections::{HashMap, hash_map::Entry},
+    std::collections::{hash_map::Entry, HashMap},
 };
 
 #[derive(Default)]
@@ -142,21 +142,15 @@ mod tests {
             // the highest voted frozen slot
             (false, None)
         );
-        assert!(
-            latest_validator_votes_for_frozen_banks
-                .max_replay_frozen_votes
-                .is_empty()
-        );
-        assert!(
-            latest_validator_votes_for_frozen_banks
-                .max_gossip_frozen_votes
-                .is_empty()
-        );
-        assert!(
-            latest_validator_votes_for_frozen_banks
-                .fork_choice_dirty_set
-                .is_empty()
-        );
+        assert!(latest_validator_votes_for_frozen_banks
+            .max_replay_frozen_votes
+            .is_empty());
+        assert!(latest_validator_votes_for_frozen_banks
+            .max_gossip_frozen_votes
+            .is_empty());
+        assert!(latest_validator_votes_for_frozen_banks
+            .fork_choice_dirty_set
+            .is_empty());
 
         // Case 2: Frozen vote should be added, but the same vote added again
         // shouldn't update state
@@ -192,11 +186,9 @@ mod tests {
                     (vote_slot, vec![frozen_hash])
                 );
             } else {
-                assert!(
-                    !latest_validator_votes_for_frozen_banks
-                        .fork_choice_dirty_set
-                        .contains_key(&vote_pubkey)
-                );
+                assert!(!latest_validator_votes_for_frozen_banks
+                    .fork_choice_dirty_set
+                    .contains_key(&vote_pubkey));
             }
         }
 
@@ -227,11 +219,9 @@ mod tests {
                 (vote_slot, all_frozen_hashes.clone())
             );
         } else {
-            assert!(
-                !latest_validator_votes_for_frozen_banks
-                    .fork_choice_dirty_set
-                    .contains_key(&vote_pubkey)
-            );
+            assert!(!latest_validator_votes_for_frozen_banks
+                .fork_choice_dirty_set
+                .contains_key(&vote_pubkey));
         }
 
         // Case 4: Adding duplicate vote that is not frozen should not update the state
@@ -260,11 +250,9 @@ mod tests {
                 (vote_slot, all_frozen_hashes.clone())
             );
         } else {
-            assert!(
-                !latest_validator_votes_for_frozen_banks
-                    .fork_choice_dirty_set
-                    .contains_key(&vote_pubkey)
-            );
+            assert!(!latest_validator_votes_for_frozen_banks
+                .fork_choice_dirty_set
+                .contains_key(&vote_pubkey));
         }
 
         // Case 5: Adding a vote for a new higher slot that is not yet frozen
@@ -296,11 +284,9 @@ mod tests {
                 (old_vote_slot, all_frozen_hashes)
             );
         } else {
-            assert!(
-                !latest_validator_votes_for_frozen_banks
-                    .fork_choice_dirty_set
-                    .contains_key(&vote_pubkey)
-            );
+            assert!(!latest_validator_votes_for_frozen_banks
+                .fork_choice_dirty_set
+                .contains_key(&vote_pubkey));
         }
 
         // Case 6: Adding a vote for a new higher slot that *is* frozen
@@ -330,11 +316,9 @@ mod tests {
                 (vote_slot, vec![frozen_hash])
             );
         } else {
-            assert!(
-                !latest_validator_votes_for_frozen_banks
-                    .fork_choice_dirty_set
-                    .contains_key(&vote_pubkey)
-            );
+            assert!(!latest_validator_votes_for_frozen_banks
+                .fork_choice_dirty_set
+                .contains_key(&vote_pubkey));
         }
 
         // Case 7: Adding a vote for a new pubkey should also update the state
@@ -365,11 +349,9 @@ mod tests {
                 (vote_slot, vec![frozen_hash])
             );
         } else {
-            assert!(
-                !latest_validator_votes_for_frozen_banks
-                    .fork_choice_dirty_set
-                    .contains_key(&vote_pubkey)
-            );
+            assert!(!latest_validator_votes_for_frozen_banks
+                .fork_choice_dirty_set
+                .contains_key(&vote_pubkey));
         }
     }
 
@@ -506,11 +488,9 @@ mod tests {
             (vote_slot, vec![frozen_hash])
         );
         // Shouldn't find the vote in the replayed votes
-        assert!(
-            latest_validator_votes_for_frozen_banks
-                .latest_vote(&vote_pubkey, !is_replay_vote)
-                .is_none()
-        );
+        assert!(latest_validator_votes_for_frozen_banks
+            .latest_vote(&vote_pubkey, !is_replay_vote)
+            .is_none());
         assert_eq!(
             latest_validator_votes_for_frozen_banks
                 .take_votes_dirty_set(0)

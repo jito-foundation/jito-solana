@@ -17,7 +17,7 @@ use {
     solana_ledger::{blockstore::Blockstore, leader_schedule_cache::LeaderScheduleCache},
     solana_measure::measure::Measure,
     solana_poh::{
-        poh_recorder::{GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS, PohRecorder, PohRecorderError},
+        poh_recorder::{PohRecorder, PohRecorderError, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
         record_channels::RecordReceiver,
     },
     solana_pubkey::Pubkey,
@@ -30,8 +30,8 @@ use {
     stats::{LoopMetrics, SlotMetrics},
     std::{
         sync::{
-            Arc, Condvar, Mutex, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, Condvar, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},

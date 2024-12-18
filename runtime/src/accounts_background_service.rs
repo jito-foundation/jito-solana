@@ -14,7 +14,7 @@ use {
         snapshot_controller::SnapshotController,
         snapshot_package::SnapshotPackage,
     },
-    agave_snapshots::{SnapshotArchiveKind, SnapshotKind, error::SnapshotError},
+    agave_snapshots::{error::SnapshotError, SnapshotArchiveKind, SnapshotKind},
     crossbeam_channel::{Receiver, SendError, Sender},
     log::*,
     rayon::iter::{IntoParallelIterator, ParallelIterator},
@@ -26,10 +26,10 @@ use {
         cmp,
         fmt::{self, Debug, Formatter},
         sync::{
-            Arc, LazyLock, Mutex, RwLock,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc, LazyLock, Mutex, RwLock,
         },
-        thread::{self, Builder, JoinHandle, sleep},
+        thread::{self, sleep, Builder, JoinHandle},
         time::{Duration, Instant},
     },
 };
@@ -700,8 +700,8 @@ fn cmp_snapshot_request_kinds_by_priority(
     b: &SnapshotRequestKind,
 ) -> cmp::Ordering {
     use {
-        SnapshotRequestKind as Kind,
         cmp::Ordering::{Equal, Greater, Less},
+        SnapshotRequestKind as Kind,
     };
     match (a, b) {
         (Kind::FullSnapshot, Kind::FullSnapshot) => Equal,
@@ -898,11 +898,9 @@ mod test {
 
         // And now ensure the snapshot request channel is empty!
         assert_eq!(latest_full_snapshot_slot(&bank0), Some(240));
-        assert!(
-            snapshot_request_handler
-                .get_next_snapshot_request()
-                .is_none()
-        );
+        assert!(snapshot_request_handler
+            .get_next_snapshot_request()
+            .is_none());
     }
 
     /// Ensure that we can prune banks with the same slot (if they were on different forks)

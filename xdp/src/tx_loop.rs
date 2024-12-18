@@ -6,8 +6,8 @@ use {
         gre::{construct_gre_packet, gre_packet_size},
         netlink::MacAddress,
         packet::{
-            ETH_HEADER_SIZE, IP_HEADER_SIZE, UDP_HEADER_SIZE, write_eth_header,
-            write_ip_header_for_udp, write_udp_header,
+            write_eth_header, write_ip_header_for_udp, write_udp_header, ETH_HEADER_SIZE,
+            IP_HEADER_SIZE, UDP_HEADER_SIZE,
         },
         route::NextHop,
         set_cpu_affinity,
@@ -15,7 +15,7 @@ use {
         umem::{Frame, OwnedUmem, PageAlignedMemory, Umem},
     },
     crossbeam_channel::{Receiver, Sender, TryRecvError},
-    libc::{_SC_PAGESIZE, sysconf},
+    libc::{sysconf, _SC_PAGESIZE},
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         thread,

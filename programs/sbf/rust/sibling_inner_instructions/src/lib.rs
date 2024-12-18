@@ -5,8 +5,8 @@
 use {
     solana_account_info::AccountInfo,
     solana_instruction::{
-        AccountMeta, Instruction, TRANSACTION_LEVEL_STACK_HEIGHT,
         syscalls::{get_processed_sibling_instruction, get_stack_height},
+        AccountMeta, Instruction, TRANSACTION_LEVEL_STACK_HEIGHT,
     },
     solana_msg::msg,
     solana_program_error::ProgramResult,

@@ -3,35 +3,35 @@ use {
     agave_votor_messages::consensus_message::BLS_KEYPAIR_DERIVE_SEED,
     bip39::{Mnemonic, MnemonicType, Seed},
     clap::{
-        Arg, ArgAction, ArgMatches, Command, builder::ValueParser, crate_description, crate_name,
-        value_parser,
+        builder::ValueParser, crate_description, crate_name, value_parser, Arg, ArgAction,
+        ArgMatches, Command,
     },
-    solana_bls_signatures::{Pubkey as BLSPubkey, keypair::Keypair as BLSKeypair},
+    solana_bls_signatures::{keypair::Keypair as BLSKeypair, Pubkey as BLSPubkey},
     solana_clap_v3_utils::{
-        DisplayError,
         input_parsers::{
-            STDOUT_OUTFILE_TOKEN,
             signer::{SignerSource, SignerSourceParserBuilder},
+            STDOUT_OUTFILE_TOKEN,
         },
         keygen::{
-            KeyGenerationCommonArgs, NO_OUTFILE_ARG, check_for_overwrite,
+            check_for_overwrite,
             derivation_path::{acquire_derivation_path, derivation_path_arg},
             mnemonic::{
                 acquire_passphrase_and_message, no_passphrase_and_message, try_get_language,
                 try_get_word_count,
             },
-            no_outfile_arg,
+            no_outfile_arg, KeyGenerationCommonArgs, NO_OUTFILE_ARG,
         },
         keypair::{
-            SKIP_SEED_PHRASE_VALIDATION_ARG, keypair_from_seed_phrase, keypair_from_source,
-            signer_from_source,
+            keypair_from_seed_phrase, keypair_from_source, signer_from_source,
+            SKIP_SEED_PHRASE_VALIDATION_ARG,
         },
+        DisplayError,
     },
-    solana_cli_config::{CONFIG_FILE, Config},
+    solana_cli_config::{Config, CONFIG_FILE},
     solana_instruction::{AccountMeta, Instruction},
     solana_keypair::{
-        Keypair, keypair_from_seed, seed_derivable::keypair_from_seed_and_derivation_path,
-        write_keypair, write_keypair_file,
+        keypair_from_seed, seed_derivable::keypair_from_seed_and_derivation_path, write_keypair,
+        write_keypair_file, Keypair,
     },
     solana_message::Message,
     solana_pubkey::Pubkey,
@@ -42,8 +42,8 @@ use {
         error,
         rc::Rc,
         sync::{
-            Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
         },
         thread,
         time::Instant,
@@ -729,7 +729,11 @@ fn do_main(matches: &ArgMatches) -> Result<(), Box<dyn error::Error>> {
                         .chars()
                         .map(|c| {
                             let up = c.to_ascii_uppercase();
-                            if BS58_ALPHABET.contains(up) { up } else { c }
+                            if BS58_ALPHABET.contains(up) {
+                                up
+                            } else {
+                                c
+                            }
                         })
                         .collect()
                 } else {
@@ -896,7 +900,7 @@ mod tests {
     use {
         super::*,
         solana_keypair::read_keypair_file,
-        tempfile::{TempDir, tempdir},
+        tempfile::{tempdir, TempDir},
     };
 
     fn read_pubkey_file(infile: &str) -> Result<Pubkey, Box<dyn std::error::Error>> {

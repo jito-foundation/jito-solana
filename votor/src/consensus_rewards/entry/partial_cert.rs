@@ -7,7 +7,7 @@ use {
     },
     solana_pubkey::Pubkey,
     solana_runtime::epoch_stakes::BLSPubkeyToRankMap,
-    solana_signer_store::{EncodeError, encode_base2},
+    solana_signer_store::{encode_base2, EncodeError},
     thiserror::Error,
 };
 

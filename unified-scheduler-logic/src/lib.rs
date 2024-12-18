@@ -102,7 +102,7 @@ use {
     solana_clock::{Epoch, Slot},
     solana_pubkey::Pubkey,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
-    solana_transaction::{Hash, sanitized::SanitizedTransaction},
+    solana_transaction::{sanitized::SanitizedTransaction, Hash},
     static_assertions::const_assert_eq,
     std::{
         cmp::Ordering,
@@ -830,7 +830,11 @@ impl UsageQueueInner {
             }
         }
 
-        if is_newly_lockable { self.pop() } else { None }
+        if is_newly_lockable {
+            self.pop()
+        } else {
+            None
+        }
     }
 
     fn push_blocked(&mut self, usage_from_task: UsageFromTask) {
@@ -1511,11 +1515,11 @@ mod tests {
         solana_instruction::{AccountMeta, Instruction},
         solana_message::Message,
         solana_pubkey::Pubkey,
-        solana_transaction::{Transaction, sanitized::SanitizedTransaction},
+        solana_transaction::{sanitized::SanitizedTransaction, Transaction},
         std::{
             cell::RefCell,
             collections::HashMap,
-            panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+            panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
             rc::Rc,
         },
         test_case::test_matrix,

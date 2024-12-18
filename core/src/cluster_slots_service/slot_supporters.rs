@@ -6,8 +6,8 @@ use {
         hash::RandomState,
         ptr,
         sync::{
-            Arc,
             atomic::{AtomicU64, Ordering},
+            Arc,
         },
     },
 };

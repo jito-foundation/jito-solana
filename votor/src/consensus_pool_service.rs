@@ -5,10 +5,10 @@ mod stats;
 
 use {
     crate::{
-        commitment::{CommitmentAggregationData, CommitmentType, update_commitment_cache},
+        commitment::{update_commitment_cache, CommitmentAggregationData, CommitmentType},
         common::DELTA_STANDSTILL,
         consensus_pool::{
-            AddVoteError, ConsensusPool, parent_ready_tracker::BlockProductionParent,
+            parent_ready_tracker::BlockProductionParent, AddVoteError, ConsensusPool,
         },
         event::{LeaderWindowInfo, VotorEvent, VotorEventSender},
         voting_service::BLSOp,
@@ -17,7 +17,7 @@ use {
         consensus_message::{Certificate, ConsensusMessage},
         migration::MigrationStatus,
     },
-    crossbeam_channel::{Receiver, Sender, TrySendError, select},
+    crossbeam_channel::{select, Receiver, Sender, TrySendError},
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{blockstore::Blockstore, leader_schedule_cache::LeaderScheduleCache},
@@ -29,8 +29,8 @@ use {
     stats::ConsensusPoolServiceStats,
     std::{
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -446,7 +446,7 @@ mod tests {
     use {
         super::*,
         agave_votor_messages::{
-            consensus_message::{BLS_KEYPAIR_DERIVE_SEED, CertificateType, VoteMessage},
+            consensus_message::{CertificateType, VoteMessage, BLS_KEYPAIR_DERIVE_SEED},
             vote::Vote,
         },
         solana_bls_signatures::{
@@ -459,7 +459,7 @@ mod tests {
         solana_runtime::{
             bank_forks::{BankForks, SharableBanks},
             genesis_utils::{
-                ValidatorVoteKeypairs, create_genesis_config_with_alpenglow_vote_accounts,
+                create_genesis_config_with_alpenglow_vote_accounts, ValidatorVoteKeypairs,
             },
         },
         solana_signer::Signer,

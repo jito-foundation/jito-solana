@@ -18,13 +18,13 @@ use {
     },
     solana_svm::transaction_commit_result::CommittedTransaction,
     solana_transaction_status::{
-        Reward, RewardsAndNumPartitions, TransactionStatusMeta, extract_and_fmt_memos,
-        map_inner_instructions,
+        extract_and_fmt_memos, map_inner_instructions, Reward, RewardsAndNumPartitions,
+        TransactionStatusMeta,
     },
     std::{
         sync::{
-            Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,
@@ -371,15 +371,15 @@ pub(crate) mod tests {
         solana_svm::transaction_execution_result::TransactionLoadedAccountsStats,
         solana_system_transaction as system_transaction,
         solana_transaction::{
-            Transaction,
             sanitized::{MessageHash, SanitizedTransaction},
             versioned::VersionedTransaction,
+            Transaction,
         },
         solana_transaction_status::{
-            TransactionStatusMeta, TransactionTokenBalance,
-            token_balances::TransactionTokenBalancesSet,
+            token_balances::TransactionTokenBalancesSet, TransactionStatusMeta,
+            TransactionTokenBalance,
         },
-        std::sync::{Arc, atomic::AtomicBool},
+        std::sync::{atomic::AtomicBool, Arc},
     };
 
     #[derive(Eq, Hash, PartialEq)]

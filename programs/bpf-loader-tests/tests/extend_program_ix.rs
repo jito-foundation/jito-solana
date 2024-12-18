@@ -12,8 +12,8 @@ use {
     solana_sdk_ids::bpf_loader_upgradeable::id,
     solana_signer::Signer,
     solana_system_interface::{
-        MAX_PERMITTED_DATA_LENGTH, error::SystemError, instruction as system_instruction,
-        program as system_program,
+        error::SystemError, instruction as system_instruction, program as system_program,
+        MAX_PERMITTED_DATA_LENGTH,
     },
     solana_transaction::Transaction,
     solana_transaction_error::TransactionError,

@@ -1,16 +1,16 @@
 use {
-    crate::{MaxSearch, bucket_stats::BucketStats},
+    crate::{bucket_stats::BucketStats, MaxSearch},
     memmap2::MmapMut,
-    rand::{Rng, rng},
+    rand::{rng, Rng},
     solana_measure::measure::Measure,
     std::{
-        fs::{OpenOptions, remove_file},
+        fs::{remove_file, OpenOptions},
         io::{Seek, SeekFrom, Write},
         num::NonZeroU64,
         path::{Path, PathBuf},
         sync::{
-            Arc,
             atomic::{AtomicU64, Ordering},
+            Arc,
         },
     },
 };
@@ -619,16 +619,14 @@ mod test {
         let stats = Arc::new(BucketStats::default());
         let count = Arc::new(AtomicU64::default());
         // file doesn't exist
-        assert!(
-            BucketStorage::<IndexBucket<u64>>::load_on_restart(
-                PathBuf::from(tmpdir.path()),
-                NonZeroU64::new(elem_size).unwrap(),
-                max_search,
-                stats.clone(),
-                count.clone(),
-            )
-            .is_none()
-        );
+        assert!(BucketStorage::<IndexBucket<u64>>::load_on_restart(
+            PathBuf::from(tmpdir.path()),
+            NonZeroU64::new(elem_size).unwrap(),
+            max_search,
+            stats.clone(),
+            count.clone(),
+        )
+        .is_none());
         agave_logger::setup();
         for len in [0, 1, 47, 48, 49, 4097] {
             // create a zero len file. That will fail to load since it is too small.

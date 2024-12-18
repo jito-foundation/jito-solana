@@ -1,7 +1,7 @@
 use {
     super::{
-        AtomicRefCount, DiskIndexValue, IndexValue, RefCount, SlotList, SlotListItem,
         bucket_map_holder::{Age, AtomicAge, BucketMapHolder},
+        AtomicRefCount, DiskIndexValue, IndexValue, RefCount, SlotList, SlotListItem,
     },
     crate::{account_info::AccountInfo, is_zero_lamport::IsZeroLamport},
     solana_clock::Slot,
@@ -9,8 +9,8 @@ use {
         fmt::Debug,
         ops::{Deref, DerefMut},
         sync::{
-            RwLock, RwLockReadGuard, RwLockWriteGuard,
             atomic::{AtomicBool, Ordering},
+            RwLock, RwLockReadGuard, RwLockWriteGuard,
         },
     },
 };

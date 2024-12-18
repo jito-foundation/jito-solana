@@ -8,7 +8,7 @@ use {
     solana_hash::Hash,
     solana_ledger::{
         blockstore::Blockstore,
-        genesis_utils::{GenesisConfigInfo, create_genesis_config},
+        genesis_utils::{create_genesis_config, GenesisConfigInfo},
         get_tmp_ledger_path_auto_delete,
         leader_schedule_cache::LeaderScheduleCache,
     },
@@ -19,8 +19,8 @@ use {
     solana_sha256_hasher::hash,
     solana_transaction::sanitized::SanitizedTransaction,
     std::sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     },
     test::Bencher,
 };

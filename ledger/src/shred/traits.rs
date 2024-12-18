@@ -1,6 +1,6 @@
 use {
     crate::shred::{
-        CodingShredHeader, DataShredHeader, Error, ShredCommonHeader, payload::Payload,
+        payload::Payload, CodingShredHeader, DataShredHeader, Error, ShredCommonHeader,
     },
     solana_clock::Slot,
     solana_signature::Signature,

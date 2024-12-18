@@ -1,6 +1,6 @@
 #[allow(deprecated)]
 use {
-    criterion::{Criterion, criterion_group, criterion_main},
+    criterion::{criterion_group, criterion_main, Criterion},
     solana_account::{self as account, AccountSharedData, WritableAccount},
     solana_hash::Hash,
     solana_instruction::AccountMeta,
@@ -16,7 +16,7 @@ use {
         sysvar::{recent_blockhashes, rent},
     },
     solana_system_interface::instruction::SystemInstruction,
-    solana_sysvar::recent_blockhashes::{IterItem, MAX_ENTRIES, RecentBlockhashes},
+    solana_sysvar::recent_blockhashes::{IterItem, RecentBlockhashes, MAX_ENTRIES},
 };
 
 const SEED: &str = "bench test";

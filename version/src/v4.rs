@@ -1,7 +1,7 @@
 use {
     crate::{client_ids::ClientId, compute_commit},
-    rand::{Rng, rng},
-    serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _},
+    rand::{rng, Rng},
+    serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serialize, Serializer},
     solana_sanitize::Sanitize,
     solana_serde_varint as serde_varint,
     std::{convert::TryInto, fmt, str::FromStr},
@@ -217,6 +217,10 @@ impl Version {
         &self.client
     }
 
+    pub fn set_client(&mut self, client: ClientId) {
+        self.client = client;
+    }
+
     pub fn prerelease(&self) -> &Prerelease {
         &self.prerelease
     }
@@ -303,7 +307,7 @@ impl Serialize for Version {
 
         let (packed_minor, patch) = PackedMinor::try_pack(minor, patch, prerelease)
             .map_err(|err| S::Error::custom(format!("{err:?}")))?;
-        let client = u16::try_from(client.clone()).map_err(S::Error::custom)?;
+        let client = u16::try_from(*client).map_err(S::Error::custom)?;
 
         let serialized_version = SerializedVersion {
             major,

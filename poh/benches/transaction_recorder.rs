@@ -1,6 +1,6 @@
 use {
     agave_votor_messages::migration::MigrationStatus,
-    criterion::{Criterion, criterion_group, criterion_main},
+    criterion::{criterion_group, criterion_main, Criterion},
     crossbeam_channel::bounded,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -11,7 +11,7 @@ use {
     solana_poh::{
         poh_controller::PohController,
         poh_recorder::PohRecorder,
-        poh_service::{DEFAULT_HASHES_PER_BATCH, DEFAULT_PINNED_CPU_CORE, PohService},
+        poh_service::{PohService, DEFAULT_HASHES_PER_BATCH, DEFAULT_PINNED_CPU_CORE},
         record_channels::record_channels,
         transaction_recorder::TransactionRecorder,
     },
@@ -20,7 +20,7 @@ use {
     solana_runtime::{bank::Bank, installed_scheduler_pool::BankWithScheduler},
     solana_transaction::versioned::VersionedTransaction,
     std::{
-        sync::{Arc, RwLock, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         time::{Duration, Instant},
     },
 };

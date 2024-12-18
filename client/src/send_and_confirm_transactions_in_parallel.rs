@@ -13,18 +13,18 @@ use {
     solana_rpc_client_api::{
         client_error::ErrorKind,
         config::RpcSendTransactionConfig,
-        request::{MAX_GET_SIGNATURE_STATUSES_QUERY_ITEMS, RpcError, RpcResponseErrorData},
+        request::{RpcError, RpcResponseErrorData, MAX_GET_SIGNATURE_STATUSES_QUERY_ITEMS},
         response::RpcSimulateTransactionResult,
     },
     solana_signature::Signature,
-    solana_signer::{SignerError, signers::Signers},
+    solana_signer::{signers::Signers, SignerError},
     solana_tpu_client::tpu_client::{Result, TpuSenderError},
     solana_transaction::Transaction,
     solana_transaction_error::TransactionError,
     std::{
         sync::{
-            Arc,
             atomic::{AtomicU64, AtomicUsize, Ordering},
+            Arc,
         },
         time::Duration,
     },

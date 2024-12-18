@@ -7,7 +7,7 @@ use {
         },
         vote::Vote,
     },
-    crossbeam_channel::{Receiver, Sender, select_biased},
+    crossbeam_channel::{select_biased, Receiver, Sender},
     entry::Entry,
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
@@ -16,8 +16,8 @@ use {
     std::{
         collections::BTreeMap,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,

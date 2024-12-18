@@ -2,8 +2,8 @@
 
 use {
     crate::{
-        RefCount,
         bucket_storage::{BucketCapacity, BucketOccupied, BucketStorage, Capacity, IncludeHeader},
+        RefCount,
     },
     bv::BitVec,
     modular_bitfield::prelude::*,

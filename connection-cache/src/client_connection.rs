@@ -3,7 +3,7 @@ use {
     solana_transaction_error::TransportResult,
     std::{
         net::SocketAddr,
-        sync::{Arc, atomic::AtomicU64},
+        sync::{atomic::AtomicU64, Arc},
     },
 };
 

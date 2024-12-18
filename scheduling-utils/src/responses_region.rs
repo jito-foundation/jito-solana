@@ -1,9 +1,9 @@
 use {
     agave_scheduler_bindings::{
-        TransactionResponseRegion,
         worker_message_types::{
-            self, CHECK_RESPONSE, CheckResponse, EXECUTION_RESPONSE, ExecutionResponse,
+            self, CheckResponse, ExecutionResponse, CHECK_RESPONSE, EXECUTION_RESPONSE,
         },
+        TransactionResponseRegion,
     },
     rts_alloc::Allocator,
     std::ptr::NonNull,

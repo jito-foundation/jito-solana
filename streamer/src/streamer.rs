@@ -4,19 +4,19 @@
 use {
     crate::{
         packet::{
-            self, PACKETS_PER_BATCH, Packet, PacketBatch, PacketBatchRecycler, PacketRef,
-            RecycledPacketBatch,
+            self, Packet, PacketBatch, PacketBatchRecycler, PacketRef, RecycledPacketBatch,
+            PACKETS_PER_BATCH,
         },
-        sendmmsg::{SendPktsError, batch_send},
+        sendmmsg::{batch_send, SendPktsError},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender, TrySendError},
     histogram::Histogram,
     solana_net_utils::{
-        SocketAddrSpace,
         multihomed_sockets::{
             BindIpAddrs, CurrentSocket, FixedSocketProvider, MultihomedSocketProvider,
             SocketProvider,
         },
+        SocketAddrSpace,
     },
     solana_pubkey::Pubkey,
     solana_time_utils::timestamp,
@@ -25,8 +25,8 @@ use {
         collections::HashMap,
         net::{IpAddr, UdpSocket},
         sync::{
-            Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
         },
         thread::{Builder, JoinHandle},
         time::{Duration, Instant},
@@ -598,7 +598,7 @@ mod test {
     use {
         super::*,
         crate::{
-            packet::{PACKET_DATA_SIZE, Packet, RecycledPacketBatch},
+            packet::{Packet, RecycledPacketBatch, PACKET_DATA_SIZE},
             streamer::{receiver, responder},
         },
         crossbeam_channel::unbounded,
@@ -607,8 +607,8 @@ mod test {
         std::{
             io::{self, Write},
             sync::{
-                Arc,
                 atomic::{AtomicBool, Ordering},
+                Arc,
             },
             time::Duration,
         },

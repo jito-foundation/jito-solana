@@ -12,8 +12,8 @@ use {
     solana_signature::Signature,
     std::{
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,

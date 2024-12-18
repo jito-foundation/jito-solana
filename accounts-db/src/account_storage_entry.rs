@@ -10,8 +10,8 @@ use {
     std::{
         path::Path,
         sync::{
-            RwLock, RwLockReadGuard,
             atomic::{AtomicUsize, Ordering},
+            RwLock, RwLockReadGuard,
         },
     },
 };

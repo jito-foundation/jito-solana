@@ -4,15 +4,15 @@ use {
             connection_rate_limiter::ConnectionRateLimiter,
             qos::{ConnectionContext, OpaqueStreamerCounter, QosController},
         },
-        quic::{QuicServerError, QuicStreamerConfig, StreamerStats, configure_server},
+        quic::{configure_server, QuicServerError, QuicStreamerConfig, StreamerStats},
         streamer::StakedNodes,
     },
     bytes::{BufMut, Bytes, BytesMut},
     crossbeam_channel::{Sender, TrySendError},
-    futures::{Future, StreamExt as _, stream::FuturesUnordered},
+    futures::{stream::FuturesUnordered, Future, StreamExt as _},
     indexmap::map::{Entry, IndexMap},
     quinn::{Accept, Connecting, Connection, Endpoint, EndpointConfig, TokioRuntime},
-    rand::{Rng, rng},
+    rand::{rng, Rng},
     smallvec::SmallVec,
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
@@ -29,8 +29,8 @@ use {
         net::{IpAddr, SocketAddr, UdpSocket},
         pin::Pin,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicU64, Ordering},
+            Arc, RwLock,
         },
         task::Poll,
         time::{Duration, Instant},
@@ -1116,12 +1116,12 @@ pub mod test {
             qos::NullStreamerCounter,
             swqos::SwQosConfig,
             testing_utilities::{
-                SpawnTestServerResult, check_multiple_streams, get_client_config,
-                make_client_endpoint, setup_quic_server, spawn_stake_weighted_qos_server,
+                check_multiple_streams, get_client_config, make_client_endpoint, setup_quic_server,
+                spawn_stake_weighted_qos_server, SpawnTestServerResult,
             },
         },
         assert_matches::assert_matches,
-        crossbeam_channel::{Receiver, unbounded},
+        crossbeam_channel::{unbounded, Receiver},
         quinn::{ApplicationClose, ConnectionError},
         solana_keypair::Keypair,
         solana_net_utils::sockets::bind_to_localhost_unique,
@@ -1766,38 +1766,34 @@ pub mod test {
 
         // We should NOT be able to add more entries than max_connections_per_peer, since we are
         // using the same peer pubkey.
-        assert!(
-            table
-                .try_add_connection(
-                    ConnectionTableKey::Pubkey(pubkey),
-                    0,
-                    ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
-                    None,
-                    ConnectionPeerType::Unstaked,
-                    Arc::new(AtomicU64::new(10)),
-                    max_connections_per_peer,
-                    || Arc::new(NullStreamerCounter {})
-                )
-                .is_none()
-        );
+        assert!(table
+            .try_add_connection(
+                ConnectionTableKey::Pubkey(pubkey),
+                0,
+                ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
+                None,
+                ConnectionPeerType::Unstaked,
+                Arc::new(AtomicU64::new(10)),
+                max_connections_per_peer,
+                || Arc::new(NullStreamerCounter {})
+            )
+            .is_none());
 
         // We should be able to add an entry from another peer pubkey
         let num_entries = max_connections_per_peer + 1;
         let pubkey2 = Pubkey::new_unique();
-        assert!(
-            table
-                .try_add_connection(
-                    ConnectionTableKey::Pubkey(pubkey2),
-                    0,
-                    ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
-                    None,
-                    ConnectionPeerType::Unstaked,
-                    Arc::new(AtomicU64::new(10)),
-                    max_connections_per_peer,
-                    || Arc::new(NullStreamerCounter {})
-                )
-                .is_some()
-        );
+        assert!(table
+            .try_add_connection(
+                ConnectionTableKey::Pubkey(pubkey2),
+                0,
+                ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
+                None,
+                ConnectionPeerType::Unstaked,
+                Arc::new(AtomicU64::new(10)),
+                max_connections_per_peer,
+                || Arc::new(NullStreamerCounter {})
+            )
+            .is_some());
 
         assert_eq!(table.total_size, num_entries);
 

@@ -1,7 +1,7 @@
 pub use solana_transaction_status_client_types::{ParsedAccount, ParsedAccountSource};
 use {
     agave_reserved_account_keys::ReservedAccountKeys,
-    solana_message::{Message, v0::LoadedMessage},
+    solana_message::{v0::LoadedMessage, Message},
 };
 
 pub fn parse_legacy_message_accounts(message: &Message) -> Vec<ParsedAccount> {
@@ -42,8 +42,8 @@ mod test {
         super::*,
         agave_reserved_account_keys::ReservedAccountKeys,
         solana_message::{
-            MessageHeader,
             v0::{self, LoadedAddresses},
+            MessageHeader,
         },
         solana_pubkey::Pubkey,
     };

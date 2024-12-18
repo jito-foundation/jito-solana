@@ -1,6 +1,6 @@
 use {
     crate::range::UniformU64Sampler,
-    rand::{Rng, distr::weighted::Error},
+    rand::{distr::weighted::Error, Rng},
     std::num::NonZero,
 };
 

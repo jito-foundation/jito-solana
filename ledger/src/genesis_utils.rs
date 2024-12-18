@@ -1,5 +1,5 @@
 pub use solana_runtime::genesis_utils::{
-    GenesisConfigInfo, bootstrap_validator_stake_lamports, create_genesis_config_with_leader,
+    bootstrap_validator_stake_lamports, create_genesis_config_with_leader, GenesisConfigInfo,
 };
 use {
     solana_keypair::Keypair, solana_pubkey::Pubkey,

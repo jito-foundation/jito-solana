@@ -5,16 +5,15 @@ extern crate test;
 use {
     agave_banking_stage_ingress_types::BankingPacketBatch,
     solana_core::banking_trace::{
-        BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BankingTracer, Channels, TraceError,
-        TracerThreadResult,
         for_test::{
             drop_and_clean_temp_dir_unless_suppressed, sample_packet_batch, terminate_tracer,
         },
-        receiving_loop_with_minimized_sender_overhead,
+        receiving_loop_with_minimized_sender_overhead, BankingTracer, Channels, TraceError,
+        TracerThreadResult, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT,
     },
     std::{
         path::PathBuf,
-        sync::{Arc, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc},
         thread,
     },
     tempfile::TempDir,

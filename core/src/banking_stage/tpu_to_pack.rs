@@ -3,7 +3,7 @@
 
 use {
     agave_banking_stage_ingress_types::BankingPacketReceiver,
-    agave_scheduler_bindings::{SharableTransactionRegion, TpuToPackMessage, tpu_message_flags},
+    agave_scheduler_bindings::{tpu_message_flags, SharableTransactionRegion, TpuToPackMessage},
     agave_scheduling_utils::handshake::server::AgaveTpuToPackSession,
     rts_alloc::Allocator,
     solana_packet::PacketFlags,
@@ -12,8 +12,8 @@ use {
         net::IpAddr,
         ptr::NonNull,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::JoinHandle,
         time::Duration,

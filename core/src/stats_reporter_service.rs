@@ -3,8 +3,8 @@ use {
     std::{
         result::Result,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,
@@ -22,16 +22,14 @@ impl StatsReporterService {
     ) -> Self {
         let thread_hdl = Builder::new()
             .name("solStatsReport".to_owned())
-            .spawn(move || {
-                loop {
-                    if exit.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    if let Err(e) = Self::receive_reporting_func(&reporting_receiver) {
-                        match e {
-                            RecvTimeoutError::Disconnected => break,
-                            RecvTimeoutError::Timeout => (),
-                        }
+            .spawn(move || loop {
+                if exit.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Err(e) = Self::receive_reporting_func(&reporting_receiver) {
+                    match e {
+                        RecvTimeoutError::Disconnected => break,
+                        RecvTimeoutError::Timeout => (),
                     }
                 }
             })

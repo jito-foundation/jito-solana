@@ -1,18 +1,18 @@
 use {
     crate::{
         cli::{
-            CliCommand, CliCommandInfo, CliConfig, CliError, ProcessResult,
-            log_instruction_custom_error, request_and_confirm_airdrop,
+            log_instruction_custom_error, request_and_confirm_airdrop, CliCommand, CliCommandInfo,
+            CliConfig, CliError, ProcessResult,
         },
         compute_budget::{ComputeUnitConfig, WithComputeUnitConfig},
         memo::WithMemo,
         nonce::check_nonce_account,
-        spend_utils::{SpendAmount, resolve_spend_tx_and_check_account_balances},
+        spend_utils::{resolve_spend_tx_and_check_account_balances, SpendAmount},
     },
-    clap::{App, Arg, ArgMatches, SubCommand, value_t_or_exit},
+    clap::{value_t_or_exit, App, Arg, ArgMatches, SubCommand},
     hex::FromHex,
     solana_clap_utils::{
-        compute_budget::{COMPUTE_UNIT_PRICE_ARG, ComputeUnitLimit, compute_unit_price_arg},
+        compute_budget::{compute_unit_price_arg, ComputeUnitLimit, COMPUTE_UNIT_PRICE_ARG},
         fee_payer::*,
         hidden_unless_forced,
         input_parsers::*,
@@ -23,10 +23,10 @@ use {
         offline::*,
     },
     solana_cli_output::{
-        CliAccount, CliBalance, CliFindProgramDerivedAddress, CliSignatureVerificationStatus,
-        CliTransaction, CliTransactionConfirmation, OutputFormat, ReturnSignersConfig,
-        display::{BuildBalanceMessageConfig, build_balance_message},
-        return_signers_with_config,
+        display::{build_balance_message, BuildBalanceMessageConfig},
+        return_signers_with_config, CliAccount, CliBalance, CliFindProgramDerivedAddress,
+        CliSignatureVerificationStatus, CliTransaction, CliTransactionConfirmation, OutputFormat,
+        ReturnSignersConfig,
     },
     solana_commitment_config::CommitmentConfig,
     solana_message::Message,
@@ -39,7 +39,7 @@ use {
     solana_sdk_ids::{stake, system_program},
     solana_signature::Signature,
     solana_system_interface::{error::SystemError, instruction as system_instruction},
-    solana_transaction::{Transaction, versioned::VersionedTransaction},
+    solana_transaction::{versioned::VersionedTransaction, Transaction},
     solana_transaction_status::{
         EncodableWithMeta, EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction,
         TransactionBinaryEncoding, UiTransactionEncoding,

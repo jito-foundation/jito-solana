@@ -1,6 +1,6 @@
 use {
     futures_util::StreamExt,
-    serde_json::{Value, json},
+    serde_json::{json, Value},
     solana_clock::Slot,
     solana_commitment_config::{CommitmentConfig, CommitmentLevel},
     solana_keypair::Keypair,
@@ -27,7 +27,7 @@ use {
         bank::Bank,
         bank_forks::BankForks,
         commitment::{BlockCommitmentCache, CommitmentSlots},
-        genesis_utils::{GenesisConfigInfo, create_genesis_config},
+        genesis_utils::{create_genesis_config, GenesisConfigInfo},
     },
     solana_signer::Signer,
     solana_system_interface::program as system_program,
@@ -40,8 +40,8 @@ use {
         collections::HashSet,
         net::{IpAddr, SocketAddr},
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc, RwLock,
         },
         thread::sleep,
         time::{Duration, Instant},

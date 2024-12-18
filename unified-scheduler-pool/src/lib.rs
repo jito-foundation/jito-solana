@@ -17,26 +17,27 @@ use {
     agave_banking_stage_ingress_types::{BankingPacketBatch, BankingPacketReceiver},
     assert_matches::assert_matches,
     crossbeam_channel::{
-        self, Receiver, RecvError, RecvTimeoutError, SendError, Sender, never, select_biased,
+        self, never, select_biased, Receiver, RecvError, RecvTimeoutError, SendError, Sender,
     },
     dashmap::DashMap,
     derive_where::derive_where,
-    dyn_clone::{DynClone, clone_trait_object},
+    dyn_clone::{clone_trait_object, DynClone},
     log::*,
     scopeguard::defer,
     solana_clock::{Epoch, Slot},
     solana_cost_model::cost_model::CostModel,
     solana_ledger::blockstore_processor::{
-        TransactionBatchWithIndexes, TransactionStatusSender, execute_batch,
+        execute_batch, TransactionBatchWithIndexes, TransactionStatusSender,
     },
     solana_metrics::datapoint_info,
     solana_poh::transaction_recorder::{RecordTransactionsSummary, TransactionRecorder},
     solana_pubkey::Pubkey,
     solana_runtime::{
         installed_scheduler_pool::{
-            InstalledScheduler, InstalledSchedulerBox, InstalledSchedulerPool, ResultWithTimings,
-            ScheduleResult, SchedulerAborted, SchedulerId, SchedulingContext, TimeoutListener,
-            UninstalledScheduler, UninstalledSchedulerBox, initialized_result_with_timings,
+            initialized_result_with_timings, InstalledScheduler, InstalledSchedulerBox,
+            InstalledSchedulerPool, ResultWithTimings, ScheduleResult, SchedulerAborted,
+            SchedulerId, SchedulingContext, TimeoutListener, UninstalledScheduler,
+            UninstalledSchedulerBox,
         },
         prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
@@ -58,10 +59,10 @@ use {
         mem,
         ops::DerefMut,
         sync::{
-            Arc, Mutex, MutexGuard, OnceLock, Weak,
             atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
+            Arc, Mutex, MutexGuard, OnceLock, Weak,
         },
-        thread::{self, JoinHandle, sleep},
+        thread::{self, sleep, JoinHandle},
         time::{Duration, Instant},
     },
     trait_set::trait_set,
@@ -2208,7 +2209,11 @@ impl<S: SpawnableScheduler<TH>, TH: TaskHandler> ThreadManager<S, TH> {
             move || {
                 let (do_now, dont_now) = (&disconnected::<()>(), &never::<()>());
                 let dummy_receiver = |trigger| {
-                    if trigger { do_now } else { dont_now }
+                    if trigger {
+                        do_now
+                    } else {
+                        dont_now
+                    }
                 };
 
                 let mut state_machine = unsafe {
@@ -2932,7 +2937,7 @@ mod tests {
         super::*,
         crate::sleepless_testing,
         assert_matches::assert_matches,
-        solana_clock::{MAX_PROCESSING_AGE, Slot},
+        solana_clock::{Slot, MAX_PROCESSING_AGE},
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_ledger::blockstore_processor::{TransactionStatusBatch, TransactionStatusMessage},
@@ -2941,7 +2946,7 @@ mod tests {
         solana_runtime::{
             bank::Bank,
             bank_forks::BankForks,
-            genesis_utils::{GenesisConfigInfo, create_genesis_config},
+            genesis_utils::{create_genesis_config, GenesisConfigInfo},
             installed_scheduler_pool::{
                 BankWithScheduler, InstalledSchedulerPoolArc, SchedulingContext,
             },
@@ -3709,17 +3714,13 @@ mod tests {
 
         // existing banks in bank_forks shouldn't process transactions anymore in general, so
         // shouldn't be touched
-        assert!(
-            !bank_forks
-                .working_bank_with_scheduler()
-                .has_installed_scheduler()
-        );
+        assert!(!bank_forks
+            .working_bank_with_scheduler()
+            .has_installed_scheduler());
         bank_forks.install_scheduler_pool(pool);
-        assert!(
-            !bank_forks
-                .working_bank_with_scheduler()
-                .has_installed_scheduler()
-        );
+        assert!(!bank_forks
+            .working_bank_with_scheduler()
+            .has_installed_scheduler());
 
         let mut child_bank = bank_forks.insert(child_bank);
         assert!(child_bank.has_installed_scheduler());

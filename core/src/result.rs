@@ -44,7 +44,7 @@ impl<T> std::convert::From<crossbeam_channel::SendError<T>> for Error {
 mod tests {
     use {
         crate::result::{Error, Result},
-        crossbeam_channel::{RecvError, RecvTimeoutError, unbounded},
+        crossbeam_channel::{unbounded, RecvError, RecvTimeoutError},
         std::{io, io::Write, panic},
     };
 

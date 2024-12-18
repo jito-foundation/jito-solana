@@ -1,6 +1,6 @@
 use {
     crate::ArgConstant,
-    clap::{Arg, value_parser},
+    clap::{value_parser, Arg},
 };
 
 pub const COMPUTE_UNIT_PRICE_ARG: ArgConstant<'static> = ArgConstant {

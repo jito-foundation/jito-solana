@@ -4,15 +4,15 @@ use {
     agave_feature_set::enable_alt_bn128_syscall,
     assert_matches::assert_matches,
     serde_json::Value,
-    solana_account::{ReadableAccount, state_traits::StateMut},
+    solana_account::{state_traits::StateMut, ReadableAccount},
     solana_borsh::v1::try_from_slice_unchecked,
     solana_cli::{
-        cli::{CliCommand, CliConfig, process_command},
-        program::{CLOSE_PROGRAM_WARNING, ProgramCliCommand},
+        cli::{process_command, CliCommand, CliConfig},
+        program::{ProgramCliCommand, CLOSE_PROGRAM_WARNING},
         program_v4::{AdditionalCliConfig, ProgramV4CliCommand},
         test_utils::wait_n_slots,
     },
-    solana_cli_output::{OutputFormat, parse_sign_only_reply_string},
+    solana_cli_output::{parse_sign_only_reply_string, OutputFormat},
     solana_client::rpc_config::RpcSendTransactionConfig,
     solana_commitment_config::CommitmentConfig,
     solana_compute_budget_interface::ComputeBudgetInstruction,
@@ -31,7 +31,7 @@ use {
     solana_rpc_client_nonce_utils::nonblocking::blockhash_query::BlockhashQuery,
     solana_sdk_ids::{bpf_loader_upgradeable, compute_budget, loader_v4},
     solana_signature::Signature,
-    solana_signer::{Signer, null_signer::NullSigner},
+    solana_signer::{null_signer::NullSigner, Signer},
     solana_system_interface::program as system_program,
     solana_test_validator::TestValidatorGenesis,
     solana_transaction::Transaction,
@@ -524,21 +524,17 @@ async fn test_cli_program_deploy_feature(enable_feature: bool, skip_preflight: b
         // When we skip verification, we fail at a later stage
         let response = process_command(&config).await;
         if skip_preflight {
-            assert!(
-                response
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("Deploying program failed")
-            );
+            assert!(response
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Deploying program failed"));
         } else {
-            assert!(
-                response
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("Deploying program failed: RPC response error -32002:")
-            );
+            assert!(response
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Deploying program failed: RPC response error -32002:"));
         }
     }
 }
@@ -705,13 +701,11 @@ async fn test_cli_program_upgrade_with_feature(enable_feature: bool) {
         config.output_format = OutputFormat::JsonCompact;
 
         let response = process_command(&config).await;
-        assert!(
-            response
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("Upgrading program failed: RPC response error -32002")
-        );
+        assert!(response
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Upgrading program failed: RPC response error -32002"));
     }
 }
 

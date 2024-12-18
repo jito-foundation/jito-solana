@@ -1,7 +1,7 @@
 use {
-    crate::{ArgConstant, keypair::prompt_passphrase},
+    crate::{keypair::prompt_passphrase, ArgConstant},
     bip39::Language,
-    clap::{Arg, ArgMatches, builder::PossibleValuesParser},
+    clap::{builder::PossibleValuesParser, Arg, ArgMatches},
     std::error,
 };
 

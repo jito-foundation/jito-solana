@@ -1,5 +1,5 @@
 use {
-    dashmap::{DashMap, mapref::entry::Entry::Occupied},
+    dashmap::{mapref::entry::Entry::Occupied, DashMap},
     log::*,
     solana_pubkey::Pubkey,
     solana_time_utils::AtomicInterval,
@@ -7,8 +7,8 @@ use {
         collections::HashSet,
         fmt::Debug,
         sync::{
-            RwLock,
             atomic::{AtomicU64, Ordering},
+            RwLock,
         },
     },
 };

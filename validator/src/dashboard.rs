@@ -1,7 +1,7 @@
 use {
     crate::{
-        ProgressBar, admin_rpc_service, format_name_value, new_spinner_progress_bar,
-        println_name_value,
+        admin_rpc_service, format_name_value, new_spinner_progress_bar, println_name_value,
+        ProgressBar,
     },
     console::style,
     solana_clock::Slot,
@@ -16,8 +16,8 @@ use {
         net::SocketAddr,
         path::{Path, PathBuf},
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread,
         time::{Duration, SystemTime},

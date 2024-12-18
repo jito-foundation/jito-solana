@@ -1,6 +1,6 @@
 use {
     crate::parse_instruction::{
-        ParsableProgram, ParseInstructionError, ParsedInstructionEnum, check_num_accounts,
+        check_num_accounts, ParsableProgram, ParseInstructionError, ParsedInstructionEnum,
     },
     extension::{
         confidential_mint_burn::*, confidential_transfer::*, confidential_transfer_fee::*,
@@ -10,11 +10,11 @@ use {
         token_metadata::*, transfer_fee::*, transfer_hook::*,
     },
     serde::{Deserialize, Serialize},
-    serde_json::{Map, Value, json},
+    serde_json::{json, Map, Value},
     solana_account_decoder::{
         parse_account_data::SplTokenAdditionalDataV2, parse_token::token_amount_to_ui_amount_v3,
     },
-    solana_message::{AccountKeys, compiled_instruction::CompiledInstruction},
+    solana_message::{compiled_instruction::CompiledInstruction, AccountKeys},
     solana_program_option::COption,
     solana_pubkey::Pubkey,
     spl_token_2022_interface::{
@@ -469,12 +469,10 @@ pub fn parse_token(
                 if !extension_types.is_empty() {
                     map.insert(
                         "extensionTypes".to_string(),
-                        json!(
-                            extension_types
-                                .into_iter()
-                                .map(UiExtensionType::from)
-                                .collect::<Vec<_>>()
-                        ),
+                        json!(extension_types
+                            .into_iter()
+                            .map(UiExtensionType::from)
+                            .collect::<Vec<_>>()),
                     );
                 }
                 Ok(ParsedInstructionEnum {

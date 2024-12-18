@@ -6,7 +6,7 @@ use {
     serde::{Deserialize, Serialize},
     serde_json::Result,
     solana_account::{
-        AccountSharedData, create_account_shared_data_for_test, state_traits::StateMut,
+        create_account_shared_data_for_test, state_traits::StateMut, AccountSharedData,
     },
     solana_cli_output::{OutputFormat, QuietDisplay, VerboseDisplay},
     solana_clock::Slot,
@@ -16,8 +16,8 @@ use {
         create_vm,
         invoke_context::InvokeContext,
         loaded_programs::{
-            DELAY_VISIBILITY_SLOT_OFFSET, LoadProgramMetrics, ProgramCacheEntry,
-            ProgramCacheEntryType,
+            LoadProgramMetrics, ProgramCacheEntry, ProgramCacheEntryType,
+            DELAY_VISIBILITY_SLOT_OFFSET,
         },
         serialization::serialize_parameters,
         with_mock_invoke_context,
@@ -30,7 +30,7 @@ use {
     },
     solana_sdk_ids::{bpf_loader_upgradeable, sysvar},
     solana_transaction_context::{
-        IndexOfAccount, instruction::InstructionContext, instruction_accounts::InstructionAccount,
+        instruction::InstructionContext, instruction_accounts::InstructionAccount, IndexOfAccount,
     },
     std::{
         collections::HashMap,

@@ -3,7 +3,7 @@ use {
         admin_rpc_service,
         commands::{FromClapArgMatches, Result},
     },
-    clap::{App, Arg, ArgMatches, SubCommand, value_t},
+    clap::{value_t, App, Arg, ArgMatches, SubCommand},
     std::path::Path,
 };
 

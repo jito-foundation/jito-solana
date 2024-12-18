@@ -13,8 +13,8 @@ use {
     std::{
         collections::HashMap,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder},
     },

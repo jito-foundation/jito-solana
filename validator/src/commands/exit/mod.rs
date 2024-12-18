@@ -3,9 +3,9 @@ use std::{io, thread, time::Duration};
 use {
     crate::{
         admin_rpc_service,
-        commands::{Error, FromClapArgMatches, Result, wait_for_restart_window},
+        commands::{wait_for_restart_window, Error, FromClapArgMatches, Result},
     },
-    clap::{App, Arg, ArgMatches, SubCommand, value_t_or_exit},
+    clap::{value_t_or_exit, App, Arg, ArgMatches, SubCommand},
     solana_clap_utils::input_validators::{is_parsable, is_valid_percentage},
     std::path::Path,
 };

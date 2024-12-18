@@ -17,19 +17,19 @@ use {
     solana_transaction::versioned::VersionedTransaction,
     solana_transaction_error::TransactionError,
     solana_transaction_status::{
-        ConfirmedBlock, ConfirmedTransactionStatusWithSignature,
+        extract_and_fmt_memos, ConfirmedBlock, ConfirmedTransactionStatusWithSignature,
         ConfirmedTransactionWithStatusMeta, EntrySummary, Reward, TransactionByAddrInfo,
         TransactionConfirmationStatus, TransactionStatus, TransactionStatusMeta,
         TransactionWithStatusMeta, VersionedConfirmedBlock, VersionedConfirmedBlockWithEntries,
-        VersionedTransactionWithStatusMeta, extract_and_fmt_memos,
+        VersionedTransactionWithStatusMeta,
     },
     std::{
         collections::{HashMap, HashSet},
         convert::TryInto,
         fmt::Debug,
         sync::{
-            Arc,
             atomic::{AtomicUsize, Ordering},
+            Arc,
         },
         time::Duration,
     },

@@ -92,11 +92,9 @@ mod tests {
                 );
             }
 
-            assert!(
-                unfrozen_gossip_verified_vote_hashes
-                    .votes_per_slot
-                    .is_empty()
-            );
+            assert!(unfrozen_gossip_verified_vote_hashes
+                .votes_per_slot
+                .is_empty());
         }
 
         // Case 2: Other >= non-frozen banks should be added in case they're frozen later
@@ -127,11 +125,9 @@ mod tests {
                     assert_eq!(*pubkey_votes, validator_keys);
                 }
             } else {
-                assert!(
-                    unfrozen_gossip_verified_vote_hashes
-                        .votes_per_slot
-                        .is_empty()
-                );
+                assert!(unfrozen_gossip_verified_vote_hashes
+                    .votes_per_slot
+                    .is_empty());
             }
         }
     }

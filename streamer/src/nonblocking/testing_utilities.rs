@@ -1,23 +1,23 @@
 //! Contains utility functions to create server and client for test purposes.
 use {
-    super::quic::{ALPN_TPU_PROTOCOL_ID, SpawnNonBlockingServerResult},
+    super::quic::{SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID},
     crate::{
         nonblocking::{
             quic::spawn_server,
             swqos::{SwQos, SwQosConfig},
         },
-        quic::{QUIC_MAX_TIMEOUT, QuicServerError, QuicStreamerConfig, StreamerStats},
+        quic::{QuicServerError, QuicStreamerConfig, StreamerStats, QUIC_MAX_TIMEOUT},
         streamer::StakedNodes,
     },
-    crossbeam_channel::{Receiver, Sender, unbounded},
+    crossbeam_channel::{unbounded, Receiver, Sender},
     quinn::{
-        ClientConfig, Connection, EndpointConfig, IdleTimeout, TokioRuntime, TransportConfig,
-        crypto::rustls::QuicClientConfig,
+        crypto::rustls::QuicClientConfig, ClientConfig, Connection, EndpointConfig, IdleTimeout,
+        TokioRuntime, TransportConfig,
     },
     solana_keypair::Keypair,
     solana_net_utils::sockets::{
-        SocketConfiguration as SocketConfig, bind_to_localhost_unique,
-        localhost_port_range_for_tests, multi_bind_in_range_with_config,
+        bind_to_localhost_unique, localhost_port_range_for_tests, multi_bind_in_range_with_config,
+        SocketConfiguration as SocketConfig,
     },
     solana_perf::packet::PacketBatch,
     solana_tls_utils::{new_dummy_x509_certificate, tls_client_config_builder},

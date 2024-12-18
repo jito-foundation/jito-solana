@@ -143,13 +143,21 @@ impl Counter {
         let v = env::var("SOLANA_DEFAULT_METRICS_RATE")
             .map(|x| x.parse().unwrap_or(0))
             .unwrap_or(0);
-        if v == 0 { DEFAULT_METRICS_RATE } else { v }
+        if v == 0 {
+            DEFAULT_METRICS_RATE
+        } else {
+            v
+        }
     }
     fn default_log_rate() -> usize {
         let v = env::var("SOLANA_DEFAULT_LOG_RATE")
             .map(|x| x.parse().unwrap_or(DEFAULT_LOG_RATE))
             .unwrap_or(DEFAULT_LOG_RATE);
-        if v == 0 { DEFAULT_LOG_RATE } else { v }
+        if v == 0 {
+            DEFAULT_LOG_RATE
+        } else {
+            v
+        }
     }
     pub fn init(&mut self) {
         #![allow(deprecated)]
@@ -199,7 +207,7 @@ mod tests {
         serial_test::serial,
         std::{
             env,
-            sync::{RwLock, atomic::Ordering},
+            sync::{atomic::Ordering, RwLock},
         },
     };
 

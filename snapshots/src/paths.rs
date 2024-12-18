@@ -1,11 +1,11 @@
 use {
     crate::{
-        ArchiveFormat, Result,
         error::SnapshotError,
         snapshot_archive_info::{
             FullSnapshotArchiveInfo, IncrementalSnapshotArchiveInfo, SnapshotArchiveInfoGetter as _,
         },
         snapshot_hash::SnapshotHash,
+        ArchiveFormat, Result,
     },
     log::*,
     regex::Regex,
@@ -296,38 +296,30 @@ mod tests {
         assert!(
             parse_full_snapshot_archive_filename("snapshot-12345678-bad!hash.bad!ext").is_err()
         );
-        assert!(
-            parse_full_snapshot_archive_filename(&format!(
-                "snapshot-12345678-{}.bad!ext",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
+        assert!(parse_full_snapshot_archive_filename(&format!(
+            "snapshot-12345678-{}.bad!ext",
+            Hash::new_unique()
+        ))
+        .is_err());
         assert!(
             parse_full_snapshot_archive_filename("snapshot-12345678-bad!hash.tar.zst").is_err()
         );
 
-        assert!(
-            parse_full_snapshot_archive_filename(&format!(
-                "snapshot-bad!slot-{}.bad!ext",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
-        assert!(
-            parse_full_snapshot_archive_filename(&format!(
-                "snapshot-12345678-{}.bad!ext",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
-        assert!(
-            parse_full_snapshot_archive_filename(&format!(
-                "snapshot-bad!slot-{}.tar.zst",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
+        assert!(parse_full_snapshot_archive_filename(&format!(
+            "snapshot-bad!slot-{}.bad!ext",
+            Hash::new_unique()
+        ))
+        .is_err());
+        assert!(parse_full_snapshot_archive_filename(&format!(
+            "snapshot-12345678-{}.bad!ext",
+            Hash::new_unique()
+        ))
+        .is_err());
+        assert!(parse_full_snapshot_archive_filename(&format!(
+            "snapshot-bad!slot-{}.tar.zst",
+            Hash::new_unique()
+        ))
+        .is_err());
 
         assert!(
             parse_full_snapshot_archive_filename("snapshot-bad!slot-bad!hash.tar.zst").is_err()
@@ -335,13 +327,11 @@ mod tests {
         assert!(
             parse_full_snapshot_archive_filename("snapshot-12345678-bad!hash.tar.zst").is_err()
         );
-        assert!(
-            parse_full_snapshot_archive_filename(&format!(
-                "snapshot-bad!slot-{}.tar.zst",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
+        assert!(parse_full_snapshot_archive_filename(&format!(
+            "snapshot-bad!slot-{}.tar.zst",
+            Hash::new_unique()
+        ))
+        .is_err());
     }
 
     #[test]
@@ -376,49 +366,37 @@ mod tests {
         );
 
         assert!(parse_incremental_snapshot_archive_filename("invalid").is_err());
-        assert!(
-            parse_incremental_snapshot_archive_filename(&format!(
-                "snapshot-42-{}.tar.zst",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
-        assert!(
-            parse_incremental_snapshot_archive_filename(
-                "incremental-snapshot-bad!slot-bad!slot-bad!hash.bad!ext"
-            )
-            .is_err()
-        );
+        assert!(parse_incremental_snapshot_archive_filename(&format!(
+            "snapshot-42-{}.tar.zst",
+            Hash::new_unique()
+        ))
+        .is_err());
+        assert!(parse_incremental_snapshot_archive_filename(
+            "incremental-snapshot-bad!slot-bad!slot-bad!hash.bad!ext"
+        )
+        .is_err());
 
-        assert!(
-            parse_incremental_snapshot_archive_filename(&format!(
-                "incremental-snapshot-bad!slot-56785678-{}.tar.zst",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
+        assert!(parse_incremental_snapshot_archive_filename(&format!(
+            "incremental-snapshot-bad!slot-56785678-{}.tar.zst",
+            Hash::new_unique()
+        ))
+        .is_err());
 
-        assert!(
-            parse_incremental_snapshot_archive_filename(&format!(
-                "incremental-snapshot-12345678-bad!slot-{}.tar.zst",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
+        assert!(parse_incremental_snapshot_archive_filename(&format!(
+            "incremental-snapshot-12345678-bad!slot-{}.tar.zst",
+            Hash::new_unique()
+        ))
+        .is_err());
 
-        assert!(
-            parse_incremental_snapshot_archive_filename(
-                "incremental-snapshot-12341234-56785678-bad!HASH.tar.zst"
-            )
-            .is_err()
-        );
+        assert!(parse_incremental_snapshot_archive_filename(
+            "incremental-snapshot-12341234-56785678-bad!HASH.tar.zst"
+        )
+        .is_err());
 
-        assert!(
-            parse_incremental_snapshot_archive_filename(&format!(
-                "incremental-snapshot-12341234-56785678-{}.bad!ext",
-                Hash::new_unique()
-            ))
-            .is_err()
-        );
+        assert!(parse_incremental_snapshot_archive_filename(&format!(
+            "incremental-snapshot-12341234-56785678-{}.bad!ext",
+            Hash::new_unique()
+        ))
+        .is_err());
     }
 }

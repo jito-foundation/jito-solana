@@ -6,8 +6,8 @@ use log::*;
 use {
     crate::{cluster::QuicTpuClient, local_cluster::LocalCluster},
     agave_votor_messages::consensus_message::ConsensusMessage,
-    rand::{Rng, rng},
-    rayon::{ThreadPool, prelude::*},
+    rand::{rng, Rng},
+    rayon::{prelude::*, ThreadPool},
     solana_client::connection_cache::ConnectionCache,
     solana_clock::{self as clock, Slot},
     solana_commitment_config::CommitmentConfig,
@@ -20,7 +20,7 @@ use {
         crds_data::{self, CrdsData},
         crds_value::{CrdsValue, CrdsValueLabel},
         gossip_error::GossipError,
-        gossip_service::{self, GossipService, discover_validators},
+        gossip_service::{self, discover_validators, GossipService},
     },
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -32,7 +32,7 @@ use {
     solana_signer::Signer,
     solana_streamer::{
         nonblocking::simple_qos::SimpleQosConfig,
-        quic::{QuicStreamerConfig, spawn_simple_qos_server},
+        quic::{spawn_simple_qos_server, QuicStreamerConfig},
         streamer::StakedNodes,
     },
     solana_system_transaction as system_transaction,
@@ -48,10 +48,10 @@ use {
         net::{SocketAddr, TcpListener, UdpSocket},
         path::Path,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
         },
-        thread::{JoinHandle, sleep},
+        thread::{sleep, JoinHandle},
         time::{Duration, Instant},
     },
     tokio_util::sync::CancellationToken,
@@ -699,11 +699,11 @@ pub fn start_gossip_voter(
     gossip_addr: &SocketAddr,
     node_keypair: &Keypair,
     vote_filter: impl Fn((CrdsValueLabel, Transaction)) -> Option<(VoteTransaction, Transaction)>
-    + std::marker::Send
-    + 'static,
+        + std::marker::Send
+        + 'static,
     mut process_vote_tx: impl FnMut(Slot, &Transaction, &VoteTransaction, &ClusterInfo)
-    + std::marker::Send
-    + 'static,
+        + std::marker::Send
+        + 'static,
     sleep_ms: u64,
     num_expected_peers: usize,
     refresh_ms: u64,

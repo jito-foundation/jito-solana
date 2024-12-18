@@ -1,6 +1,6 @@
 use {
     crate::commands::{Error, FromClapArgMatches, Result},
-    clap::{Arg, ArgMatches, value_t},
+    clap::{value_t, Arg, ArgMatches},
     solana_clap_utils::{
         hidden_unless_forced,
         input_validators::{is_parsable, is_within_range},
@@ -194,7 +194,7 @@ mod tests {
     use {
         super::*,
         crate::commands::run::args::{
-            RunArgs, tests::verify_args_struct_by_command_run_with_identity_setup,
+            tests::verify_args_struct_by_command_run_with_identity_setup, RunArgs,
         },
         std::net::{Ipv4Addr, SocketAddr},
     };

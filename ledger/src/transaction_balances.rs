@@ -5,7 +5,7 @@ use {
     solana_runtime::bank::TransactionBalancesSet,
     solana_svm::transaction_balances::{BalanceCollector, SvmTokenInfo},
     solana_transaction_status::{
-        TransactionTokenBalance, token_balances::TransactionTokenBalancesSet,
+        token_balances::TransactionTokenBalancesSet, TransactionTokenBalance,
     },
 };
 

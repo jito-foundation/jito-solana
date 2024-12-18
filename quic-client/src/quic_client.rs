@@ -14,7 +14,7 @@ use {
     solana_transaction_error::{TransportError, TransportResult},
     std::{
         net::SocketAddr,
-        sync::{Arc, Condvar, Mutex, MutexGuard, atomic::Ordering},
+        sync::{atomic::Ordering, Arc, Condvar, Mutex, MutexGuard},
         time::Duration,
     },
     tokio::{runtime::Runtime, time::timeout},

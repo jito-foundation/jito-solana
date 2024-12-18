@@ -126,10 +126,10 @@ mod tests {
         solana_runtime::{
             bank::Bank,
             genesis_utils::{
-                ValidatorVoteKeypairs, create_genesis_config_with_alpenglow_vote_accounts,
+                create_genesis_config_with_alpenglow_vote_accounts, ValidatorVoteKeypairs,
             },
         },
-        solana_signer_store::{Decoded, decode},
+        solana_signer_store::{decode, Decoded},
         std::{collections::HashMap, sync::Arc},
     };
 

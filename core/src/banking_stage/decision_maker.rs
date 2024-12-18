@@ -7,8 +7,8 @@ use {
     solana_runtime::bank::Bank,
     solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus},
     std::sync::{
-        Arc,
         atomic::{AtomicBool, Ordering::Relaxed},
+        Arc,
     },
 };
 

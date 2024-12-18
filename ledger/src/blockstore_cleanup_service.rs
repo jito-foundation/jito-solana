@@ -6,16 +6,17 @@
 
 use {
     crate::blockstore::{
-        self, Blockstore, PurgeType,
-        column::{ColumnName, columns},
+        self,
+        column::{columns, ColumnName},
+        Blockstore, PurgeType,
     },
-    solana_clock::{DEFAULT_MS_PER_SLOT, Slot},
+    solana_clock::{Slot, DEFAULT_MS_PER_SLOT},
     solana_measure::measure::Measure,
     std::{
         string::ToString,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},

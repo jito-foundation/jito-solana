@@ -1,10 +1,10 @@
 #![allow(clippy::arithmetic_side_effects)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use solana_entry::entry::{self, EntrySlice, create_ticks, init_poh};
+use solana_entry::entry::{self, create_ticks, init_poh, EntrySlice};
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-use solana_entry::entry::{EntrySlice, create_ticks, init_poh};
+use solana_entry::entry::{create_ticks, init_poh, EntrySlice};
 use {
-    clap::{Arg, Command, crate_description, crate_name},
+    clap::{crate_description, crate_name, Arg, Command},
     solana_measure::measure::Measure,
     solana_sha256_hasher::hash,
 };

@@ -1,6 +1,6 @@
 use {
     agave_io_uring::{Completion, Ring, RingAccess as _, RingOp},
-    io_uring::{IoUring, opcode, squeue, types},
+    io_uring::{opcode, squeue, types, IoUring},
     slab::Slab,
     std::{
         collections::VecDeque,

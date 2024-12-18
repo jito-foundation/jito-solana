@@ -1,11 +1,11 @@
 use {
     crate::parse_instruction::{
-        ParsableProgram, ParseInstructionError, ParsedInstructionEnum, check_num_accounts,
+        check_num_accounts, ParsableProgram, ParseInstructionError, ParsedInstructionEnum,
     },
     bincode::deserialize,
     serde_json::json,
     solana_address_lookup_table_interface::instruction::ProgramInstruction,
-    solana_message::{AccountKeys, compiled_instruction::CompiledInstruction},
+    solana_message::{compiled_instruction::CompiledInstruction, AccountKeys},
 };
 
 pub fn parse_address_lookup_table(
@@ -146,19 +146,18 @@ mod test {
                 }),
             }
         );
-        assert!(
-            parse_address_lookup_table(
-                &message.instructions[0],
-                &AccountKeys::new(&message.account_keys[0..3], None)
-            )
-            .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&message.account_keys[0..3], None)
+        )
+        .is_err());
         let keys = message.account_keys.clone();
         message.instructions[0].accounts.pop();
-        assert!(
-            parse_address_lookup_table(&message.instructions[0], &AccountKeys::new(&keys, None))
-                .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&keys, None)
+        )
+        .is_err());
     }
 
     #[test]
@@ -182,19 +181,18 @@ mod test {
                 }),
             }
         );
-        assert!(
-            parse_address_lookup_table(
-                &message.instructions[0],
-                &AccountKeys::new(&message.account_keys[0..1], None)
-            )
-            .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&message.account_keys[0..1], None)
+        )
+        .is_err());
         let keys = message.account_keys.clone();
         message.instructions[0].accounts.pop();
-        assert!(
-            parse_address_lookup_table(&message.instructions[0], &AccountKeys::new(&keys, None))
-                .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&keys, None)
+        )
+        .is_err());
     }
 
     #[test]
@@ -226,19 +224,18 @@ mod test {
                 }),
             }
         );
-        assert!(
-            parse_address_lookup_table(
-                &message.instructions[0],
-                &AccountKeys::new(&message.account_keys[0..1], None)
-            )
-            .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&message.account_keys[0..1], None)
+        )
+        .is_err());
         let keys = message.account_keys.clone();
         message.instructions[0].accounts.pop();
-        assert!(
-            parse_address_lookup_table(&message.instructions[0], &AccountKeys::new(&keys, None))
-                .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&keys, None)
+        )
+        .is_err());
 
         // Some payer, some addresses
         let instruction = instruction::extend_lookup_table(
@@ -268,21 +265,20 @@ mod test {
                 }),
             }
         );
-        assert!(
-            parse_address_lookup_table(
-                &message.instructions[0],
-                &AccountKeys::new(&message.account_keys[0..1], None)
-            )
-            .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&message.account_keys[0..1], None)
+        )
+        .is_err());
         let keys = message.account_keys.clone();
         message.instructions[0].accounts.pop();
         message.instructions[0].accounts.pop();
         message.instructions[0].accounts.pop();
-        assert!(
-            parse_address_lookup_table(&message.instructions[0], &AccountKeys::new(&keys, None))
-                .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&keys, None)
+        )
+        .is_err());
     }
 
     #[test]
@@ -306,19 +302,18 @@ mod test {
                 }),
             }
         );
-        assert!(
-            parse_address_lookup_table(
-                &message.instructions[0],
-                &AccountKeys::new(&message.account_keys[0..1], None)
-            )
-            .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&message.account_keys[0..1], None)
+        )
+        .is_err());
         let keys = message.account_keys.clone();
         message.instructions[0].accounts.pop();
-        assert!(
-            parse_address_lookup_table(&message.instructions[0], &AccountKeys::new(&keys, None))
-                .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&keys, None)
+        )
+        .is_err());
     }
 
     #[test]
@@ -345,18 +340,17 @@ mod test {
                 }),
             }
         );
-        assert!(
-            parse_address_lookup_table(
-                &message.instructions[0],
-                &AccountKeys::new(&message.account_keys[0..2], None)
-            )
-            .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&message.account_keys[0..2], None)
+        )
+        .is_err());
         let keys = message.account_keys.clone();
         message.instructions[0].accounts.pop();
-        assert!(
-            parse_address_lookup_table(&message.instructions[0], &AccountKeys::new(&keys, None))
-                .is_err()
-        );
+        assert!(parse_address_lookup_table(
+            &message.instructions[0],
+            &AccountKeys::new(&keys, None)
+        )
+        .is_err());
     }
 }

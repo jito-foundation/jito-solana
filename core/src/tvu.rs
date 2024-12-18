@@ -11,15 +11,15 @@ use {
             DuplicateConfirmedSlotsReceiver, GossipVerifiedVoteHashReceiver,
             VerifiedVoterSlotsReceiver, VerifiedVoterSlotsSender, VoteTracker,
         },
-        cluster_slots_service::{ClusterSlotsService, cluster_slots::ClusterSlots},
+        cluster_slots_service::{cluster_slots::ClusterSlots, ClusterSlotsService},
         commitment_service::AggregateCommitmentService,
         completed_data_sets_service::CompletedDataSetsSender,
-        consensus::{Tower, tower_storage::TowerStorage},
+        consensus::{tower_storage::TowerStorage, Tower},
         cost_update_service::CostUpdateService,
         drop_bank_service::DropBankService,
         repair::repair_service::{OutstandingShredRepairs, RepairInfo, RepairServiceChannels},
         replay_stage::{ReplayReceivers, ReplaySenders, ReplayStage, ReplayStageConfig},
-        shred_fetch_stage::{SHRED_FETCH_CHANNEL_SIZE, ShredFetchStage},
+        shred_fetch_stage::{ShredFetchStage, SHRED_FETCH_CHANNEL_SIZE},
         voting_service::VotingService,
         warm_quic_cache_service::WarmQuicCacheService,
         window_service::{WindowService, WindowServiceChannels},
@@ -33,8 +33,9 @@ use {
         votor::{Votor, VotorConfig},
     },
     agave_xdp::xdp_retransmitter::XdpSender,
+    arc_swap::ArcSwap,
     bytes::Bytes,
-    crossbeam_channel::{Receiver, Sender, bounded, unbounded},
+    crossbeam_channel::{bounded, unbounded, Receiver, Sender},
     solana_client::connection_cache::ConnectionCache,
     solana_clock::Slot,
     solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierArc,
@@ -63,15 +64,15 @@ use {
     solana_streamer::{
         evicting_sender::EvictingSender,
         nonblocking::simple_qos::SimpleQosConfig,
-        quic::{QuicStreamerConfig, SpawnServerResult, spawn_simple_qos_server},
+        quic::{spawn_simple_qos_server, QuicStreamerConfig, SpawnServerResult},
         streamer::StakedNodes,
     },
-    solana_turbine::retransmit_stage::RetransmitStage,
+    solana_turbine::{retransmit_stage::RetransmitStage, ShredReceiverAddresses},
     std::{
         collections::HashSet,
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
-        sync::{Arc, RwLock, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         thread::{self, JoinHandle},
     },
     tokio::sync::mpsc::Sender as AsyncSender,
@@ -226,6 +227,7 @@ impl Tvu {
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
         votor_init: AlpenglowInitializationState,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Result<Self, String> {
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -357,6 +359,7 @@ impl Tvu {
             slot_status_notifier.clone(),
             tvu_config.xdp_sender,
             votor_event_sender.clone(),
+            shred_receiver_addresses,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -662,7 +665,7 @@ pub mod tests {
             blockstore::BlockstoreSignals,
             blockstore_options::BlockstoreOptions,
             create_new_tmp_ledger,
-            genesis_utils::{GenesisConfigInfo, create_genesis_config},
+            genesis_utils::{create_genesis_config, GenesisConfigInfo},
         },
         solana_net_utils::SocketAddrSpace,
         solana_poh::poh_recorder::create_test_recorder,
@@ -834,6 +837,7 @@ pub mod tests {
                 bls_connection_cache: Arc::new(bls_connection_cache),
                 voting_service_test_override: None,
             },
+            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);

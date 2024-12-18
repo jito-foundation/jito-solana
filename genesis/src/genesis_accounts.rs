@@ -1,6 +1,6 @@
 use {
     crate::{
-        stakes::{StakerInfo, create_and_add_stakes},
+        stakes::{create_and_add_stakes, StakerInfo},
         unlocks::UnlockInfo,
     },
     solana_cluster_type::ClusterType,

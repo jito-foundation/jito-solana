@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use {
-        crossbeam_channel::{Receiver, unbounded},
+        crossbeam_channel::{unbounded, Receiver},
         log::*,
         solana_connection_cache::{
             client_connection::ClientStats, connection_cache_stats::ConnectionCacheStats,
@@ -16,7 +16,7 @@ mod tests {
             quic::{QuicStreamerConfig, SpawnServerResult},
             streamer::StakedNodes,
         },
-        solana_tls_utils::{QuicClientCertificate, new_dummy_x509_certificate},
+        solana_tls_utils::{new_dummy_x509_certificate, QuicClientCertificate},
         std::{
             net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
             sync::{Arc, RwLock},

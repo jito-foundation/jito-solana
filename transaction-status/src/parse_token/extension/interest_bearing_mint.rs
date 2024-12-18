@@ -2,8 +2,8 @@ use {
     super::*,
     spl_token_2022_interface::{
         extension::interest_bearing_mint::{
-            BasisPoints,
             instruction::{InitializeInstructionData, InterestBearingMintInstruction},
+            BasisPoints,
         },
         instruction::{decode_instruction_data, decode_instruction_type},
     },

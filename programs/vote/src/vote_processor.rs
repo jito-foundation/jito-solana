@@ -1,7 +1,7 @@
 //! Vote program processor
 
 use {
-    crate::vote_state::{self, NewCommissionCollector, handler::VoteStateTargetVersion},
+    crate::vote_state::{self, handler::VoteStateTargetVersion, NewCommissionCollector},
     log::*,
     solana_bincode::limited_deserialize,
     solana_instruction::error::InstructionError,
@@ -404,22 +404,23 @@ mod tests {
         crate::{
             vote_error::VoteError,
             vote_instruction::{
-                CreateVoteAccountConfig, VoteInstruction, authorize, authorize_checked,
-                compact_update_vote_state, compact_update_vote_state_switch,
-                create_account_with_config, update_commission, update_validator_identity,
-                update_vote_state, update_vote_state_switch, vote, vote_switch, withdraw,
+                authorize, authorize_checked, compact_update_vote_state,
+                compact_update_vote_state_switch, create_account_with_config, update_commission,
+                update_validator_identity, update_vote_state, update_vote_state_switch, vote,
+                vote_switch, withdraw, CreateVoteAccountConfig, VoteInstruction,
             },
             vote_state::{
-                self, Lockout, TowerSync, Vote, VoteAuthorize, VoteAuthorizeCheckedWithSeedArgs,
-                VoteAuthorizeWithSeedArgs, VoteInit, VoteInitV2, VoteStateUpdate, VoteStateV3,
-                VoteStateV4, VoteStateVersions, create_bls_pubkey_and_proof_of_possession,
+                self, create_bls_pubkey_and_proof_of_possession,
                 handler::{VoteStateHandle, VoteStateHandler},
+                Lockout, TowerSync, Vote, VoteAuthorize, VoteAuthorizeCheckedWithSeedArgs,
+                VoteAuthorizeWithSeedArgs, VoteInit, VoteInitV2, VoteStateUpdate, VoteStateV3,
+                VoteStateV4, VoteStateVersions,
             },
         },
         bincode::serialize,
         solana_account::{
-            self as account, Account, AccountSharedData, ReadableAccount, WritableAccount,
-            state_traits::StateMut,
+            self as account, state_traits::StateMut, Account, AccountSharedData, ReadableAccount,
+            WritableAccount,
         },
         solana_clock::Clock,
         solana_epoch_schedule::EpochSchedule,
@@ -436,10 +437,10 @@ mod tests {
         solana_svm_feature_set::SVMFeatureSet,
         solana_system_program::system_processor::DEFAULT_COMPUTE_UNITS as SYSTEM_PROGRAM_COMPUTE_UNITS,
         solana_vote_interface::{
-            instruction::{CommissionKind, tower_sync, tower_sync_switch},
+            instruction::{tower_sync, tower_sync_switch, CommissionKind},
             state::{
-                BLS_PROOF_OF_POSSESSION_COMPRESSED_SIZE, BLS_PUBLIC_KEY_COMPRESSED_SIZE,
-                VoterWithBLSArgs,
+                VoterWithBLSArgs, BLS_PROOF_OF_POSSESSION_COMPRESSED_SIZE,
+                BLS_PUBLIC_KEY_COMPRESSED_SIZE,
             },
         },
         std::{cell::RefCell, collections::HashSet, str::FromStr, sync::Arc},

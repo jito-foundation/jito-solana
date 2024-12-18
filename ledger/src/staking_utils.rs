@@ -10,7 +10,7 @@ pub(crate) mod tests {
         solana_keypair::Keypair,
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
-        solana_signer::{Signer, signers::Signers},
+        solana_signer::{signers::Signers, Signer},
         solana_stake_interface::{
             program as stake_program,
             stake_flags::StakeFlags,
@@ -21,8 +21,8 @@ pub(crate) mod tests {
         solana_vote_program::{
             vote_instruction,
             vote_state::{
-                VoteAuthorize, VoteInit, VoteStateV4, VoteStateVersions, VoterWithBLSArgs,
-                create_bls_proof_of_possession,
+                create_bls_proof_of_possession, VoteAuthorize, VoteInit, VoteStateV4,
+                VoteStateVersions, VoterWithBLSArgs,
             },
         },
         std::sync::Arc,

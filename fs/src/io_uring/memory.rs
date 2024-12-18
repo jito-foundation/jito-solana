@@ -2,7 +2,7 @@ use {
     crate::IoSize,
     agave_io_uring::{Ring, RingOp},
     std::{
-        alloc::{Layout, LayoutError, alloc},
+        alloc::{alloc, Layout, LayoutError},
         io,
         ops::{Deref, DerefMut},
         ptr::{self, NonNull},

@@ -1,5 +1,5 @@
 use {
-    crate::{Config, home_dir, utils::spawn},
+    crate::{home_dir, utils::spawn, Config},
     bzip2::bufread::BzDecoder,
     log::{debug, error, info, warn},
     regex::Regex,
@@ -11,7 +11,7 @@ use {
         fs::{self, File},
         io::{BufRead, BufReader, ErrorKind},
         path::{Path, PathBuf},
-        process::{Command, exit},
+        process::{exit, Command},
         sync::OnceLock,
     },
     tar::Archive,

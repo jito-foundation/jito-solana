@@ -3,13 +3,13 @@
 extern crate test;
 
 use {
-    rand::{Rng, rng},
+    rand::{rng, Rng},
     solana_account::AccountSharedData,
     solana_accounts_db::{
         account_info::AccountInfo,
         accounts_index::{
-            ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS, AccountSecondaryIndexes, AccountsIndex,
-            ReclaimsSlotList, UpsertReclaim,
+            AccountSecondaryIndexes, AccountsIndex, ReclaimsSlotList, UpsertReclaim,
+            ACCOUNTS_INDEX_CONFIG_FOR_BENCHMARKS,
         },
     },
     std::sync::Arc,

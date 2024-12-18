@@ -1,5 +1,5 @@
 use {
-    crate::{UiFeeCalculator, parse_account_data::ParseAccountError},
+    crate::{parse_account_data::ParseAccountError, UiFeeCalculator},
     serde::{Deserialize, Serialize},
     solana_instruction::error::InstructionError,
     solana_nonce::{state::State, versions::Versions},

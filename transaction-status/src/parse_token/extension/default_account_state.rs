@@ -2,7 +2,7 @@ use {
     super::*,
     solana_account_decoder::parse_token::convert_account_state,
     spl_token_2022_interface::extension::default_account_state::instruction::{
-        DefaultAccountStateInstruction, decode_instruction,
+        decode_instruction, DefaultAccountStateInstruction,
     },
 };
 

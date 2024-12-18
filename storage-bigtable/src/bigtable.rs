@@ -2,19 +2,18 @@
 
 use {
     crate::{
-        CredentialType,
         access_token::{AccessToken, Scope},
         compression::{compress_best, decompress},
-        root_ca_certificate,
+        root_ca_certificate, CredentialType,
     },
-    backoff::{Error as BackoffError, ExponentialBackoff, future::retry},
+    backoff::{future::retry, Error as BackoffError, ExponentialBackoff},
     log::*,
     std::{
         str::FromStr,
         time::{Duration, Instant},
     },
     thiserror::Error,
-    tonic::{Request, Status, codegen::InterceptedService, transport::ClientTlsConfig},
+    tonic::{codegen::InterceptedService, transport::ClientTlsConfig, Request, Status},
 };
 
 #[allow(clippy::all)]

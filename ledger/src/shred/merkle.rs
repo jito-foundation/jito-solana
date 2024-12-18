@@ -3,10 +3,7 @@ use crate::shred::ShredType;
 use {
     crate::{
         shred::{
-            self, CODING_SHREDS_PER_FEC_BLOCK, CodingShredHeader, DATA_SHREDS_PER_FEC_BLOCK,
-            DataShredHeader, Error, ProcessShredsStats, SHREDS_PER_FEC_BLOCK,
-            SIZE_OF_CODING_SHRED_HEADERS, SIZE_OF_DATA_SHRED_HEADERS, SIZE_OF_NONCE,
-            SIZE_OF_SIGNATURE, ShredCommonHeader, ShredFlags, ShredVariant,
+            self,
             common::impl_shred_common,
             dispatch,
             merkle_tree::*,
@@ -15,12 +12,16 @@ use {
             traits::{
                 Shred as ShredTrait, ShredCode as ShredCodeTrait, ShredData as ShredDataTrait,
             },
+            CodingShredHeader, DataShredHeader, Error, ProcessShredsStats, ShredCommonHeader,
+            ShredFlags, ShredVariant, CODING_SHREDS_PER_FEC_BLOCK, DATA_SHREDS_PER_FEC_BLOCK,
+            SHREDS_PER_FEC_BLOCK, SIZE_OF_CODING_SHRED_HEADERS, SIZE_OF_DATA_SHRED_HEADERS,
+            SIZE_OF_NONCE, SIZE_OF_SIGNATURE,
         },
         shredder::ReedSolomonCache,
     },
     assert_matches::debug_assert_matches,
     itertools::{Either, Itertools},
-    rayon::{ThreadPool, prelude::*},
+    rayon::{prelude::*, ThreadPool},
     reed_solomon_erasure::Error::{InvalidIndex, TooFewParityShards},
     solana_clock::Slot,
     solana_hash::Hash,
@@ -1334,10 +1335,10 @@ fn finish_erasure_batch(
 mod test {
     use {
         super::*,
-        crate::shred::{ShredFlags, ShredId, merkle_tree::get_proof_size},
+        crate::shred::{merkle_tree::get_proof_size, ShredFlags, ShredId},
         assert_matches::assert_matches,
         itertools::Itertools,
-        rand::{CryptoRng, Rng, seq::SliceRandom},
+        rand::{seq::SliceRandom, CryptoRng, Rng},
         rayon::ThreadPoolBuilder,
         reed_solomon_erasure::Error::TooFewShardsPresent,
         solana_keypair::Keypair,

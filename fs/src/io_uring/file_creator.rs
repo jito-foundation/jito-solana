@@ -2,17 +2,16 @@
 
 use {
     crate::{
-        FileInfo, FileSize, IoSize,
         file_io::FileCreator,
         io_uring::{
-            IO_PRIO_BE_HIGHEST,
             memory::{IoBufferChunk, PageAlignedMemory},
-            sqpoll,
+            sqpoll, IO_PRIO_BE_HIGHEST,
         },
+        FileInfo, FileSize, IoSize,
     },
     agave_io_uring::{Completion, FixedSlab, Ring, RingAccess, RingOp},
     core::slice,
-    io_uring::{IoUring, opcode, squeue, types},
+    io_uring::{opcode, squeue, types, IoUring},
     libc::{O_CREAT, O_DIRECT, O_NOATIME, O_NOFOLLOW, O_RDWR, O_TRUNC},
     smallvec::SmallVec,
     std::{

@@ -54,8 +54,8 @@ use {
     solana_pubkey::Pubkey,
     std::{
         sync::{
-            Arc, Condvar, LazyLock, Mutex, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, Condvar, LazyLock, Mutex, RwLock,
         },
         time::Duration,
     },

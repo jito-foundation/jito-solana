@@ -1,7 +1,7 @@
 use {
     crate::{
         bit_vec::BitVec,
-        shred::{self, DATA_SHREDS_PER_FEC_BLOCK, MAX_DATA_SHREDS_PER_SLOT, Shred, ShredType},
+        shred::{self, Shred, ShredType, DATA_SHREDS_PER_FEC_BLOCK, MAX_DATA_SHREDS_PER_SLOT},
     },
     bitflags::bitflags,
     serde::{Deserialize, Deserializer, Serialize, Serializer},
@@ -959,7 +959,11 @@ mod test {
         (range.clone(), range).prop_map(
             // Avoid descending (empty) ranges
             |(start, end)| {
-                if start > end { end..start } else { start..end }
+                if start > end {
+                    end..start
+                } else {
+                    start..end
+                }
             },
         )
     }

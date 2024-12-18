@@ -284,11 +284,9 @@ mod tests {
                     .get_writable_account_fee(&write_account_b)
                     .unwrap()
             );
-            assert!(
-                prioritization_fee
-                    .get_writable_account_fee(&write_account_c)
-                    .is_none()
-            );
+            assert!(prioritization_fee
+                .get_writable_account_fee(&write_account_c)
+                .is_none());
         }
 
         // Assert for second transaction:
@@ -350,22 +348,18 @@ mod tests {
             prioritization_fee.prune_irrelevant_writable_accounts();
             assert_eq!(1, prioritization_fee.min_writable_account_fees.len());
             assert_eq!(2, prioritization_fee.get_min_compute_unit_price().unwrap());
-            assert!(
-                prioritization_fee
-                    .get_writable_account_fee(&write_account_a)
-                    .is_none()
-            );
+            assert!(prioritization_fee
+                .get_writable_account_fee(&write_account_a)
+                .is_none());
             assert_eq!(
                 5,
                 prioritization_fee
                     .get_writable_account_fee(&write_account_b)
                     .unwrap()
             );
-            assert!(
-                prioritization_fee
-                    .get_writable_account_fee(&write_account_c)
-                    .is_none()
-            );
+            assert!(prioritization_fee
+                .get_writable_account_fee(&write_account_c)
+                .is_none());
         }
     }
 

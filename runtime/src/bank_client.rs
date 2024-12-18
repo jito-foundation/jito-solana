@@ -1,6 +1,6 @@
 use {
     crate::bank::Bank,
-    crossbeam_channel::{Receiver, Sender, unbounded},
+    crossbeam_channel::{unbounded, Receiver, Sender},
     solana_account::Account,
     solana_client_traits::{AsyncClient, Client, SyncClient},
     solana_commitment_config::CommitmentConfig,
@@ -11,15 +11,15 @@ use {
     solana_message::{Message, SanitizedMessage},
     solana_pubkey::Pubkey,
     solana_signature::Signature,
-    solana_signer::{Signer, signers::Signers},
+    solana_signer::{signers::Signers, Signer},
     solana_system_interface::instruction as system_instruction,
     solana_sysvar::SysvarSerialize,
-    solana_transaction::{Transaction, versioned::VersionedTransaction},
+    solana_transaction::{versioned::VersionedTransaction, Transaction},
     solana_transaction_error::{TransportError, TransportResult as Result},
     std::{
         io,
         sync::Arc,
-        thread::{Builder, sleep},
+        thread::{sleep, Builder},
         time::{Duration, Instant},
     },
 };

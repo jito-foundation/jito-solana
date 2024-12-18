@@ -5,7 +5,7 @@ use {
         update_manifest::{SignedUpdateManifest, UpdateManifest},
     },
     chrono::{Local, TimeZone},
-    console::{Emoji, style},
+    console::{style, Emoji},
     crossbeam_channel::unbounded,
     indicatif::{ProgressBar, ProgressStyle},
     serde::{Deserialize, Serialize},
@@ -14,7 +14,7 @@ use {
         state::get_config_data,
     },
     solana_hash::Hash,
-    solana_keypair::{Keypair, read_keypair_file, signable::Signable},
+    solana_keypair::{read_keypair_file, signable::Signable, Keypair},
     solana_message::Message,
     solana_pubkey::Pubkey,
     solana_rpc_client::rpc_client::RpcClient,
@@ -355,8 +355,8 @@ pub fn string_from_winreg_value(val: &winreg::RegValue) -> Option<String> {
 #[cfg(windows)]
 fn get_windows_path_var() -> Result<Option<String>, String> {
     use winreg::{
-        RegKey,
         enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE},
+        RegKey,
     };
 
     let root = RegKey::predef(HKEY_CURRENT_USER);
@@ -389,12 +389,12 @@ fn add_to_path(new_path: &str) -> bool {
         winapi::{
             shared::minwindef::*,
             um::winuser::{
-                HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutA, WM_SETTINGCHANGE,
+                SendMessageTimeoutA, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
             },
         },
         winreg::{
+            enums::{RegType, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE},
             RegKey, RegValue,
-            enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, RegType},
         },
     };
 
@@ -584,7 +584,7 @@ pub fn init(
 
 fn github_release_download_url(release_semver: &str) -> String {
     format!(
-        "https://github.com/anza-xyz/agave/releases/download/v{}/solana-release-{}.tar.bz2",
+        "https://github.com/jito-foundation/jito-solana/releases/download/v{}/solana-release-{}.tar.bz2",
         release_semver,
         crate::build_env::TARGET
     )
@@ -592,7 +592,7 @@ fn github_release_download_url(release_semver: &str) -> String {
 
 fn release_channel_download_url(release_channel: &str) -> String {
     format!(
-        "https://release.anza.xyz/{}/solana-release-{}.tar.bz2",
+        "https://release.jito.wtf/{}/solana-release-{}.tar.bz2",
         release_channel,
         crate::build_env::TARGET
     )
@@ -600,7 +600,7 @@ fn release_channel_download_url(release_channel: &str) -> String {
 
 fn release_channel_version_url(release_channel: &str) -> String {
     format!(
-        "https://release.anza.xyz/{}/solana-release-{}.yml",
+        "https://release.jito.wtf/{}/solana-release-{}.yml",
         release_channel,
         crate::build_env::TARGET
     )
@@ -917,7 +917,7 @@ fn check_for_newer_github_release(
 
     while page == 1 || releases.len() == PER_PAGE {
         let url = reqwest::Url::parse_with_params(
-            "https://api.github.com/repos/anza-xyz/agave/releases",
+            "https://api.github.com/repos/jito-foundation/jito-solana/releases",
             &[
                 ("per_page", &format!("{PER_PAGE}")),
                 ("page", &format!("{page}")),

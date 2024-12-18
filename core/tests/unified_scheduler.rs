@@ -5,7 +5,7 @@ use {
     itertools::Itertools,
     log::*,
     solana_core::{
-        banking_stage::{BankingStage, unified_scheduler::ensure_banking_stage_setup},
+        banking_stage::{unified_scheduler::ensure_banking_stage_setup, BankingStage},
         banking_trace::BankingTracer,
         consensus::{
             heaviest_subtree_fork_choice::HeaviestSubtreeForkChoice,
@@ -42,7 +42,7 @@ use {
     },
     std::{
         collections::HashMap,
-        sync::{Arc, Mutex, atomic::Ordering},
+        sync::{atomic::Ordering, Arc, Mutex},
         thread::sleep,
         time::Duration,
     },

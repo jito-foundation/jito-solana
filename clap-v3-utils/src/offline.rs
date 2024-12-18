@@ -1,6 +1,6 @@
 use {
-    crate::{ArgConstant, input_parsers::signer::PubkeySignature},
-    clap::{Arg, ArgAction, Command, value_parser},
+    crate::{input_parsers::signer::PubkeySignature, ArgConstant},
+    clap::{value_parser, Arg, ArgAction, Command},
     solana_hash::Hash,
 };
 

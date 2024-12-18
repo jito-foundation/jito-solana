@@ -7,8 +7,8 @@ use {
     std::{
         cmp::min,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
     },

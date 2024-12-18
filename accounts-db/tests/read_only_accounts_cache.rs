@@ -1,7 +1,7 @@
 use {
-    rand::{SeedableRng, rngs::SmallRng},
+    rand::{rngs::SmallRng, SeedableRng},
     solana_account::{Account, AccountSharedData},
-    solana_accounts_db::read_only_accounts_cache::{CACHE_ENTRY_SIZE, ReadOnlyAccountsCache},
+    solana_accounts_db::read_only_accounts_cache::{ReadOnlyAccountsCache, CACHE_ENTRY_SIZE},
     solana_pubkey::Pubkey,
     std::{collections::HashSet, sync::atomic::Ordering},
     test_case::test_matrix,

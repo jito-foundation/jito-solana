@@ -4,12 +4,12 @@ use {
     solana_instruction::{AccountMeta, Instruction},
     solana_msg::msg,
     solana_program_error::ProgramResult,
-    solana_program_test::{ProgramTest, ProgramTestContext, processor},
+    solana_program_test::{processor, ProgramTest, ProgramTestContext},
     solana_pubkey::Pubkey,
     solana_signer::Signer,
     solana_sysvar::{
-        Sysvar, SysvarSerialize,
         last_restart_slot::{self, LastRestartSlot},
+        Sysvar, SysvarSerialize,
     },
     solana_transaction::Transaction,
 };

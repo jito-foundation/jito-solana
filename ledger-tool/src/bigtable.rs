@@ -1,18 +1,17 @@
 //! The `bigtable` subcommand
 use {
     crate::{
-        LoadAndProcessLedgerOutput,
         args::{load_genesis_arg, snapshot_args},
         ledger_path::canonicalize_ledger_path,
         load_and_process_ledger_or_exit, open_genesis_config_by,
         output::{
-            CliBlockWithEntries, CliEntries, EncodedConfirmedBlockWithEntries,
-            encode_confirmed_block,
+            encode_confirmed_block, CliBlockWithEntries, CliEntries,
+            EncodedConfirmedBlockWithEntries,
         },
-        parse_process_options,
+        parse_process_options, LoadAndProcessLedgerOutput,
     },
     clap::{
-        App, AppSettings, Arg, ArgMatches, SubCommand, value_t, value_t_or_exit, values_t_or_exit,
+        value_t, value_t_or_exit, values_t_or_exit, App, AppSettings, Arg, ArgMatches, SubCommand,
     },
     crossbeam_channel::unbounded,
     futures::stream::FuturesUnordered,
@@ -23,11 +22,11 @@ use {
         input_validators::{is_parsable, is_slot, is_valid_pubkey},
     },
     solana_cli_output::{
-        CliBlock, CliTransaction, CliTransactionConfirmation, OutputFormat,
-        display::println_transaction,
+        display::println_transaction, CliBlock, CliTransaction, CliTransactionConfirmation,
+        OutputFormat,
     },
     solana_clock::Slot,
-    solana_entry::entry::{Entry, create_ticks},
+    solana_entry::entry::{create_ticks, Entry},
     solana_hash::Hash,
     solana_keypair::keypair_from_seed,
     solana_ledger::{
@@ -48,7 +47,7 @@ use {
         process::exit,
         result::Result,
         str::FromStr,
-        sync::{Arc, Mutex, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc, Mutex},
     },
 };
 

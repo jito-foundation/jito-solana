@@ -10,10 +10,10 @@ use {
     std::{
         net::SocketAddr,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc, RwLock,
         },
-        thread::{Builder, JoinHandle, sleep},
+        thread::{sleep, Builder, JoinHandle},
         time::{Duration, Instant},
     },
 };

@@ -24,11 +24,9 @@ fn bad_arguments() {
     assert!(!run_ledger_tool(&[]).status.success());
 
     // Invalid ledger path should fail
-    assert!(
-        !run_ledger_tool(&["-l", "invalid_ledger", "verify"])
-            .status
-            .success()
-    );
+    assert!(!run_ledger_tool(&["-l", "invalid_ledger", "verify"])
+        .status
+        .success());
 }
 
 fn nominal_test_helper(ledger_path: &str) {

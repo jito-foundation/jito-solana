@@ -9,7 +9,7 @@ use {
         bank_client::BankClient,
         epoch_stakes::VersionedEpochStakes,
         genesis_utils::{
-            GenesisConfigInfo, ValidatorVoteKeypairs, create_genesis_config_with_vote_accounts,
+            create_genesis_config_with_vote_accounts, GenesisConfigInfo, ValidatorVoteKeypairs,
         },
         loader_utils::load_program_of_loader_v4,
     },

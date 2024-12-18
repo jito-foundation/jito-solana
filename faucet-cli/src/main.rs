@@ -1,10 +1,10 @@
 #[allow(deprecated)]
 use solana_faucet::{
-    faucet::{FAUCET_PORT, Faucet, run_faucet},
+    faucet::{run_faucet, Faucet, FAUCET_PORT},
     socketaddr,
 };
 use {
-    clap::{App, Arg, crate_description, crate_name, values_t},
+    clap::{crate_description, crate_name, values_t, App, Arg},
     log::*,
     solana_clap_utils::input_parsers::{lamports_of_sol, value_of},
     solana_keypair::read_keypair_file,
@@ -97,15 +97,13 @@ async fn main() {
     ));
 
     let faucet1 = faucet.clone();
-    thread::spawn(move || {
-        loop {
-            #[allow(deprecated)]
-            {
-                let time = faucet1.lock().unwrap().time_slice;
-                thread::sleep(time);
-                debug!("clearing ip cache");
-                faucet1.lock().unwrap().clear_caches();
-            }
+    thread::spawn(move || loop {
+        #[allow(deprecated)]
+        {
+            let time = faucet1.lock().unwrap().time_slice;
+            thread::sleep(time);
+            debug!("clearing ip cache");
+            faucet1.lock().unwrap().clear_caches();
         }
     });
 

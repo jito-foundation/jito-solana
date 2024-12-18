@@ -5,14 +5,14 @@ use {
         },
         bank::{Bank, SquashTiming},
     },
-    agave_snapshots::{SnapshotInterval, snapshot_config::SnapshotConfig},
+    agave_snapshots::{snapshot_config::SnapshotConfig, SnapshotInterval},
     log::*,
     solana_clock::Slot,
     solana_measure::measure::Measure,
     std::{
         sync::{
-            Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
         },
         time::Instant,
     },

@@ -4,7 +4,7 @@ use {
         StakeArgs, TransactionLogArgs,
     },
     clap::{
-        App, Arg, ArgMatches, SubCommand, crate_description, crate_name, value_t, value_t_or_exit,
+        crate_description, crate_name, value_t, value_t_or_exit, App, Arg, ArgMatches, SubCommand,
     },
     solana_clap_utils::{
         input_parsers::{pubkey_of_signer, value_of},

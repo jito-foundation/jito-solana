@@ -55,8 +55,8 @@ use {
         stake_account::StakeAccount,
         stake_history::StakeHistory as CowStakeHistory,
         stake_weighted_timestamp::{
+            calculate_stake_weighted_timestamp, MaxAllowableDrift,
             MAX_ALLOWABLE_DRIFT_PERCENTAGE_FAST, MAX_ALLOWABLE_DRIFT_PERCENTAGE_SLOW_V2,
-            MaxAllowableDrift, calculate_stake_weighted_timestamp,
         },
         stakes::{DeserializableStakes, SerdeStakesToStakeFormat, Stakes, StakesCache},
         status_cache::{SlotDelta, StatusCache},
@@ -65,8 +65,8 @@ use {
     accounts_lt_hash::{CacheValue as AccountsLtHashCacheValue, Stats as AccountsLtHashStats},
     agave_bls_cert_verify::cert_verify::{self, Error as CertVerifyError},
     agave_feature_set::{
-        self as feature_set, FeatureSet, increase_cpi_account_info_limit,
-        raise_cpi_nesting_limit_to_8, relax_programdata_account_check_migration,
+        self as feature_set, increase_cpi_account_info_limit, raise_cpi_nesting_limit_to_8,
+        relax_programdata_account_check_migration, FeatureSet,
     },
     agave_precompiles::{get_precompile, get_precompiles, is_precompile},
     agave_reserved_account_keys::ReservedAccountKeys,
@@ -79,19 +79,20 @@ use {
     },
     ahash::AHashSet,
     dashmap::DashMap,
+    itertools::izip,
     log::*,
     partitioned_epoch_rewards::PartitionedRewardsCalculation,
     rayon::{ThreadPool, ThreadPoolBuilder},
     serde::{Deserialize, Serialize},
     solana_account::{
-        Account, AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
-        create_account_shared_data_with_fields as create_account, from_account,
+        create_account_shared_data_with_fields as create_account, from_account, Account,
+        AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
     },
     solana_accounts_db::{
         account_locks::validate_account_locks,
         account_storage_entry::AccountStorageEntry,
         accounts::{AccountAddressFilter, Accounts, PubkeyAccountSlot},
-        accounts_db::{AccountsDb, AccountsDbConfig},
+        accounts_db::{AccountsDb, AccountsDbConfig, ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS},
         accounts_hash::AccountsLtHash,
         accounts_index::{IndexKey, ScanConfig, ScanResult},
         accounts_update_notifier_interface::AccountsUpdateNotifier,
@@ -102,8 +103,8 @@ use {
     },
     solana_builtins::{BUILTINS, STATELESS_BUILTINS},
     solana_clock::{
-        BankId, Epoch, INITIAL_RENT_EPOCH, MAX_PROCESSING_AGE, MAX_TRANSACTION_FORWARDING_DELAY,
-        Slot, SlotIndex, UnixTimestamp,
+        BankId, Epoch, Slot, SlotIndex, UnixTimestamp, INITIAL_RENT_EPOCH, MAX_PROCESSING_AGE,
+        MAX_TRANSACTION_FORWARDING_DELAY,
     },
     solana_cluster_type::ClusterType,
     solana_compute_budget::compute_budget::ComputeBudget,
@@ -122,7 +123,7 @@ use {
     solana_keypair::Keypair,
     solana_lattice_hash::lt_hash::LtHash,
     solana_measure::{measure::Measure, measure_time, measure_us},
-    solana_message::{AccountKeys, SanitizedMessage, inner_instruction::InnerInstructions},
+    solana_message::{inner_instruction::InnerInstructions, AccountKeys, SanitizedMessage},
     solana_packet::PACKET_DATA_SIZE,
     solana_precompile_error::PrecompileError,
     solana_program_runtime::{
@@ -146,6 +147,7 @@ use {
         account_loader::LoadedTransaction,
         account_overrides::AccountOverrides,
         program_loader::load_program_with_pubkey,
+        rollback_accounts::RollbackAccounts,
         transaction_balances::{BalanceCollector, SvmTokenInfo},
         transaction_commit_result::{CommittedTransaction, TransactionCommitResult},
         transaction_error_metrics::TransactionErrorMetrics,
@@ -165,13 +167,13 @@ use {
     solana_svm_timings::{ExecuteTimingType, ExecuteTimings},
     solana_svm_transaction::svm_message::SVMMessage,
     solana_system_transaction as system_transaction,
-    solana_sysvar::{self as sysvar, SysvarSerialize, last_restart_slot::LastRestartSlot},
+    solana_sysvar::{self as sysvar, last_restart_slot::LastRestartSlot, SysvarSerialize},
     solana_sysvar_id::SysvarId,
     solana_time_utils::years_as_slots,
     solana_transaction::{
-        Transaction, TransactionVerificationMode,
-        sanitized::{MAX_TX_ACCOUNT_LOCKS, MessageHash, SanitizedTransaction},
+        sanitized::{MessageHash, SanitizedTransaction, MAX_TX_ACCOUNT_LOCKS},
         versioned::VersionedTransaction,
+        Transaction, TransactionVerificationMode,
     },
     solana_transaction_context::{
         transaction::TransactionReturnData, transaction_accounts::KeyedAccountSharedData,
@@ -189,24 +191,22 @@ use {
         path::PathBuf,
         slice,
         sync::{
-            Arc, LazyLock, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
             atomic::{
                 AtomicBool, AtomicI64, AtomicU64,
                 Ordering::{self, AcqRel, Acquire, Relaxed},
             },
+            Arc, LazyLock, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
         },
         time::{Duration, Instant},
+        vec,
     },
 };
 #[cfg(feature = "dev-context-only-utils")]
 use {
     dashmap::DashSet,
     rayon::iter::{IntoParallelRefIterator, ParallelIterator},
-    solana_accounts_db::accounts_db::{
-        ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
-    },
     solana_nonce as nonce,
-    solana_nonce_account::{SystemAccountKind, get_system_account_kind},
+    solana_nonce_account::{get_system_account_kind, SystemAccountKind},
     solana_program_runtime::sysvar_cache::SysvarCache,
 };
 pub use {partitioned_epoch_rewards::KeyedRewardsAndNumPartitions, solana_reward_info::RewardType};
@@ -328,6 +328,7 @@ impl BankRc {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadAndExecuteTransactionsOutput {
     // Vector of results indicating whether a transaction was processed or could not
     // be processed. Note processed transactions can still have failed!
@@ -856,7 +857,7 @@ pub struct Bank {
     inflation: Arc<RwLock<Inflation>>,
 
     /// cache of vote_account and stake_account state for this fork
-    stakes_cache: StakesCache,
+    pub stakes_cache: StakesCache,
 
     /// staked nodes on epoch boundaries, saved off when a bank.slot() is at
     ///   a leader schedule calculation boundary
@@ -982,6 +983,8 @@ pub struct BankTestConfig {
 #[cfg(feature = "dev-context-only-utils")]
 impl Default for BankTestConfig {
     fn default() -> Self {
+        use solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING;
+
         Self {
             accounts_db_config: ACCOUNTS_DB_CONFIG_FOR_TESTING,
         }
@@ -1453,10 +1456,9 @@ impl Bank {
             new.update_last_restart_slot()
         });
 
-        let (_, fill_sysvar_cache_time_us) = measure_us!(
-            new.transaction_processor
-                .fill_missing_sysvar_cache_entries(&new)
-        );
+        let (_, fill_sysvar_cache_time_us) = measure_us!(new
+            .transaction_processor
+            .fill_missing_sysvar_cache_entries(&new));
 
         let (num_accounts_modified_this_slot, populate_cache_for_accounts_lt_hash_us) =
             measure_us!({
@@ -1699,8 +1701,8 @@ impl Bank {
 
         // Apply stake rewards and commission using new snapshots.
         let cached_vote_accounts = self.get_cached_vote_accounts(rewarded_epoch, &vote_accounts);
-        let (rewards_calculation, update_rewards_with_thread_pool_time_us) =
-            measure_us!(self.calculate_rewards(
+        let (rewards_calculation, update_rewards_with_thread_pool_time_us) = measure_us!(self
+            .calculate_rewards(
                 &stake_history,
                 stake_delegations,
                 cached_vote_accounts,
@@ -1728,12 +1730,10 @@ impl Bank {
     ) {
         let epoch = self.epoch();
         let slot = self.slot();
-        let (thread_pool, thread_pool_time_us) = measure_us!(
-            ThreadPoolBuilder::new()
-                .thread_name(|i| format!("solBnkNewEpch{i:02}"))
-                .build()
-                .expect("new rayon threadpool")
-        );
+        let (thread_pool, thread_pool_time_us) = measure_us!(ThreadPoolBuilder::new()
+            .thread_name(|i| format!("solBnkNewEpch{i:02}"))
+            .build()
+            .expect("new rayon threadpool"));
 
         let (_, apply_feature_activations_time_us) = measure_us!(
             thread_pool.install(|| { self.compute_and_apply_new_feature_activations() })
@@ -1867,18 +1867,19 @@ impl Bank {
         // Note that we are disabling the read cache while we populate the stakes cache.
         // The stakes accounts will not be expected to be loaded again.
         // If we populate the read cache with these loads, then we'll just soon have to evict these.
-        let (stakes, stakes_time) = measure_time!(
-            Stakes::load_from_deserialized_delegations(fields.stakes, |pubkey| {
+        let (stakes, stakes_time) = measure_time!(Stakes::load_from_deserialized_delegations(
+            fields.stakes,
+            |pubkey| {
                 let (account, _slot) = bank_rc
                     .accounts
                     .load_with_fixed_root_do_not_populate_read_cache(&ancestors, pubkey)?;
                 Some(account)
-            })
-            .expect(
-                "Stakes cache is inconsistent with accounts-db. This can indicate a corrupted \
-                 snapshot or bugs in cached accounts or accounts-db.",
-            )
-        );
+            }
+        )
+        .expect(
+            "Stakes cache is inconsistent with accounts-db. This can indicate a corrupted \
+             snapshot or bugs in cached accounts or accounts-db.",
+        ));
         info!("Loading Stakes took: {stakes_time}");
         assert!(
             fields.versioned_epoch_stakes.is_empty(),
@@ -3242,15 +3243,26 @@ impl Bank {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(TransactionBatch::new(
-            self.try_lock_accounts(&sanitized_txs),
+            self.try_lock_accounts(&sanitized_txs, false),
             self,
             OwnedOrBorrowed::Owned(sanitized_txs),
         ))
     }
 
     /// Attempt to take locks on the accounts in a transaction batch
-    pub fn try_lock_accounts(&self, txs: &[impl TransactionWithMeta]) -> Vec<Result<()>> {
-        self.try_lock_accounts_with_results(txs, txs.iter().map(|_| Ok(())))
+    pub fn try_lock_accounts(
+        &self,
+        txs: &[impl TransactionWithMeta],
+        batched: bool,
+    ) -> Vec<Result<()>> {
+        self.try_lock_accounts_with_results(
+            txs,
+            txs.iter().map(|_| Ok(())),
+            batched
+                || self
+                    .feature_set
+                    .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+        )
     }
 
     /// Attempt to take locks on the accounts in a transaction batch, and their cost
@@ -3259,11 +3271,9 @@ impl Bank {
         &self,
         txs: &[impl TransactionWithMeta],
         tx_results: impl Iterator<Item = Result<()>>,
+        relax_intrabatch_account_locks: bool,
     ) -> Vec<Result<()>> {
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
-        let relax_intrabatch_account_locks = self
-            .feature_set
-            .is_active(&feature_set::relax_intrabatch_account_locks::id());
 
         // with simd83 enabled, we must fail transactions that duplicate a prior message hash
         // previously, conflicting account locks would fail such transactions as a side effect
@@ -3296,7 +3306,27 @@ impl Bank {
         &'a self,
         txs: &'b [Tx],
     ) -> TransactionBatch<'a, 'b, Tx> {
-        self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())))
+        self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())), false)
+    }
+
+    /// Override the relax_intrabatch_account_locks feature flag and use the SIMD83 logic for bundle execution
+    pub fn prepare_sanitized_batch_relax_intrabatch_account_locks<
+        'a,
+        'b,
+        Tx: TransactionWithMeta,
+    >(
+        &'a self,
+        transactions: &'b [Tx],
+    ) -> TransactionBatch<'a, 'b, Tx> {
+        TransactionBatch::new(
+            self.try_lock_accounts_with_results(
+                transactions,
+                transactions.iter().map(|_| Ok(())),
+                true,
+            ),
+            self,
+            OwnedOrBorrowed::Borrowed(transactions),
+        )
     }
 
     /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
@@ -3305,10 +3335,18 @@ impl Bank {
         &'a self,
         transactions: &'b [Tx],
         transaction_results: impl Iterator<Item = Result<()>>,
+        batched_locking: bool,
     ) -> TransactionBatch<'a, 'b, Tx> {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         TransactionBatch::new(
-            self.try_lock_accounts_with_results(transactions, transaction_results),
+            self.try_lock_accounts_with_results(
+                transactions,
+                transaction_results,
+                batched_locking
+                    || self
+                        .feature_set
+                        .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+            ),
             self,
             OwnedOrBorrowed::Borrowed(transactions),
         )
@@ -3510,7 +3548,228 @@ impl Bank {
         }
     }
 
-    fn get_account_overrides_for_simulation(&self, account_keys: &AccountKeys) -> AccountOverrides {
+    /// Simulates transactions against a potentially unfrozen bank with pre-execution accounts
+    pub fn simulate_transactions_unchecked_with_pre_accounts<Tx: TransactionWithMeta>(
+        &self,
+        transactions: &[Tx],
+        pre_accounts: &Vec<Vec<Pubkey>>,
+        post_accounts: &Vec<Vec<Pubkey>>,
+        log_messages_bytes_limit: Option<usize>,
+    ) -> Vec<(
+        Vec<KeyedAccountSharedData>, /* pre-accounts */
+        TransactionSimulationResult, /* post-simulation result, which also contains the accounts */
+        Vec<KeyedAccountSharedData>, /* post-accounts; results are stored in the simulation result, but there's no requirement for the tx being present*/
+    )> {
+        if transactions.is_empty() {
+            return vec![];
+        }
+        let mut simulation_results = Vec::with_capacity(transactions.len());
+
+        let mut account_overrides = AccountOverrides::default();
+
+        // Pre-load all the account state into account overrides
+        for transaction in transactions {
+            let account_keys = transaction.account_keys();
+            account_overrides.merge(self.get_account_overrides_for_simulation(&account_keys));
+            for account in account_keys.iter() {
+                if !account_overrides.accounts().contains_key(account) {
+                    if let Some((account_shared_data, _slot)) =
+                        self.get_account_shared_data(account)
+                    {
+                        account_overrides.set_account(account, Some(account_shared_data));
+                    }
+                }
+            }
+        }
+
+        // execute each transaction (this could be faster, but the dumb pre-execution accounts logic makes it difficult)
+        for (transaction, pre_accounts, post_accounts) in
+            izip!(transactions, pre_accounts, post_accounts)
+        {
+            let mut accounts_pre_loaded = Vec::with_capacity(pre_accounts.len());
+
+            // fill out the pre-accounts from the account overrides or bank
+            // shouldn't need to hit the bank unless pre_account isn't in transaction keys
+            for pubkey in pre_accounts {
+                if let Some(account) = account_overrides.get(pubkey) {
+                    accounts_pre_loaded.push((*pubkey, account.clone()));
+                } else if let Some((account_shared_data, _slot)) =
+                    self.get_account_shared_data(pubkey)
+                {
+                    accounts_pre_loaded.push((*pubkey, account_shared_data));
+                } else {
+                    accounts_pre_loaded.push((*pubkey, AccountSharedData::default()));
+                }
+            }
+
+            let number_of_accounts = transaction.account_keys().len();
+
+            let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
+
+            let LoadAndExecuteTransactionsOutput {
+                mut processing_results,
+                balance_collector,
+                ..
+            } = self.load_and_execute_transactions(
+                &batch,
+                MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+                &mut ExecuteTimings::default(),
+                &mut TransactionErrorMetrics::default(),
+                TransactionProcessingConfig {
+                    account_overrides: Some(&account_overrides),
+                    check_program_deployment_slot: self.check_program_deployment_slot,
+                    log_messages_bytes_limit,
+                    limit_to_load_programs: true,
+                    recording_config: ExecutionRecordingConfig {
+                        enable_cpi_recording: false,
+                        enable_log_recording: true,
+                        enable_return_data_recording: true,
+                        enable_transaction_balance_recording: true,
+                    },
+                    drop_on_failure: true,
+                    all_or_nothing: true,
+                },
+            );
+
+            let processing_result = processing_results
+                .pop()
+                .unwrap_or(Err(TransactionError::InvalidProgramForExecution));
+            let (
+                post_simulation_accounts,
+                result,
+                fee,
+                logs,
+                return_data,
+                inner_instructions,
+                units_consumed,
+                loaded_accounts_data_size,
+            ) = match processing_result {
+                Ok(processed_tx) => {
+                    let executed_units = processed_tx.executed_units();
+                    let loaded_accounts_data_size = processed_tx.loaded_accounts_data_size();
+
+                    match processed_tx {
+                        ProcessedTransaction::Executed(executed_tx) => {
+                            // write accounts into the account overrides
+                            for (pubkey, account) in executed_tx.loaded_transaction.accounts.iter()
+                            {
+                                account_overrides.set_account(pubkey, Some(account.clone()));
+                            }
+
+                            let details = executed_tx.execution_details;
+                            let post_simulation_accounts = executed_tx
+                                .loaded_transaction
+                                .accounts
+                                .into_iter()
+                                .take(number_of_accounts)
+                                .collect::<Vec<_>>();
+                            (
+                                post_simulation_accounts,
+                                details.status,
+                                Some(executed_tx.loaded_transaction.fee_details.total_fee()),
+                                details.log_messages,
+                                details.return_data,
+                                details.inner_instructions,
+                                executed_units,
+                                loaded_accounts_data_size,
+                            )
+                        }
+                        ProcessedTransaction::FeesOnly(fees_only_tx) => {
+                            // write accounts into the account overrides
+                            match fees_only_tx.rollback_accounts {
+                                RollbackAccounts::FeePayerOnly { fee_payer } => {
+                                    account_overrides
+                                        .set_account(&fee_payer.0, Some(fee_payer.1.clone()));
+                                }
+                                RollbackAccounts::SameNonceAndFeePayer { nonce } => {
+                                    account_overrides.set_account(&nonce.0, Some(nonce.1.clone()));
+                                }
+                                RollbackAccounts::SeparateNonceAndFeePayer { nonce, fee_payer } => {
+                                    account_overrides.set_account(&nonce.0, Some(nonce.1.clone()));
+                                    account_overrides
+                                        .set_account(&fee_payer.0, Some(fee_payer.1.clone()));
+                                }
+                            }
+
+                            (
+                                vec![],
+                                Err(fees_only_tx.load_error),
+                                Some(fees_only_tx.fee_details.total_fee()),
+                                None,
+                                None,
+                                None,
+                                executed_units,
+                                loaded_accounts_data_size,
+                            )
+                        }
+                    }
+                }
+                Err(error) => (vec![], Err(error), None, None, None, None, 0, 0),
+            };
+            let logs = logs.unwrap_or_default();
+
+            let (pre_balances, post_balances, pre_token_balances, post_token_balances) =
+                match balance_collector {
+                    Some(balance_collector) => {
+                        let (mut native_pre, mut native_post, mut token_pre, mut token_post) =
+                            balance_collector.into_vecs();
+
+                        (
+                            native_pre.pop(),
+                            native_post.pop(),
+                            token_pre.pop(),
+                            token_post.pop(),
+                        )
+                    }
+                    None => (None, None, None, None),
+                };
+
+            let mut accounts_post_loaded = Vec::with_capacity(post_accounts.len());
+            for pubkey in post_accounts {
+                if let Some(account) = account_overrides.get(pubkey) {
+                    accounts_post_loaded.push((*pubkey, account.clone()));
+                } else if let Some((account_shared_data, _slot)) =
+                    self.get_account_shared_data(pubkey)
+                {
+                    accounts_post_loaded.push((*pubkey, account_shared_data));
+                } else {
+                    accounts_post_loaded.push((*pubkey, AccountSharedData::default()));
+                }
+            }
+
+            let is_execution_result_err = result.is_err();
+            simulation_results.push((
+                accounts_pre_loaded,
+                TransactionSimulationResult {
+                    result,
+                    logs,
+                    post_simulation_accounts,
+                    units_consumed,
+                    loaded_accounts_data_size,
+                    return_data,
+                    inner_instructions,
+                    fee,
+                    pre_balances,
+                    post_balances,
+                    pre_token_balances,
+                    post_token_balances,
+                },
+                accounts_post_loaded,
+            ));
+
+            // bail out early if the execution result is an error
+            if is_execution_result_err {
+                break;
+            }
+        }
+
+        simulation_results
+    }
+
+    pub fn get_account_overrides_for_simulation(
+        &self,
+        account_keys: &AccountKeys,
+    ) -> AccountOverrides {
         let mut account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {
@@ -3535,7 +3794,7 @@ impl Bank {
         &self,
         txs_and_results: impl Iterator<Item = (&'a Tx, &'a Result<()>)> + Clone,
     ) {
-        self.rc.accounts.unlock_accounts(txs_and_results)
+        self.rc.accounts.unlock_accounts(txs_and_results);
     }
 
     pub fn remove_unrooted_slots(&self, slots: &[(Slot, BankId)]) {
@@ -4829,7 +5088,7 @@ impl Bank {
 
         let accounts_lt_hash_checksum = {
             let accounts_lt_hash = &*self.accounts_lt_hash.lock().unwrap();
-            let lt_hash_bytes = bytemuck::must_cast_slice(&accounts_lt_hash.0.0);
+            let lt_hash_bytes = bytemuck::must_cast_slice(&accounts_lt_hash.0 .0);
             hash = hashv(&[hash.as_ref(), lt_hash_bytes]);
             accounts_lt_hash.0.checksum()
         };
@@ -6107,6 +6366,34 @@ impl Bank {
             self.stakes_cache.stakes().clone()
         }
     }
+
+    /// Total priority fees (lamports) that this bank collected
+    /// **Only populated once the bank is Executed. Always call
+    /// it after the bank is rooted.**
+    pub fn priority_fee_total(&self) -> u64 {
+        self.collector_fee_details.read().unwrap().priority_fee
+    }
+
+    pub fn new_for_benches(genesis_config: &GenesisConfig) -> Self {
+        Self::new_with_paths_for_benches(genesis_config, Vec::new())
+    }
+
+    /// Intended for use by benches only.
+    /// create new bank with the given config and paths.
+    pub fn new_with_paths_for_benches(genesis_config: &GenesisConfig, paths: Vec<PathBuf>) -> Self {
+        Self::new_from_genesis(
+            genesis_config,
+            Arc::<RuntimeConfig>::default(),
+            paths,
+            None,
+            ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
+            None,
+            Some(Pubkey::new_unique()),
+            Arc::default(),
+            None,
+            None,
+        )
+    }
 }
 
 impl InvokeContextCallback for Bank {
@@ -6234,27 +6521,6 @@ impl Bank {
         )
     }
 
-    pub fn new_for_benches(genesis_config: &GenesisConfig) -> Self {
-        Self::new_with_paths_for_benches(genesis_config, Vec::new())
-    }
-
-    /// Intended for use by benches only.
-    /// create new bank with the given config and paths.
-    pub fn new_with_paths_for_benches(genesis_config: &GenesisConfig, paths: Vec<PathBuf>) -> Self {
-        Self::new_from_genesis(
-            genesis_config,
-            Arc::<RuntimeConfig>::default(),
-            paths,
-            None,
-            ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
-            None,
-            Some(Pubkey::new_unique()),
-            Arc::default(),
-            None,
-            None,
-        )
-    }
-
     pub fn new_from_parent_with_bank_forks(
         bank_forks: &RwLock<BankForks>,
         parent: Arc<Bank>,
@@ -6279,7 +6545,7 @@ impl Bank {
             .map(RuntimeTransaction::from_transaction_for_tests)
             .collect::<Vec<_>>();
         TransactionBatch::new(
-            self.try_lock_accounts(&sanitized_txs),
+            self.try_lock_accounts(&sanitized_txs, false),
             self,
             OwnedOrBorrowed::Owned(sanitized_txs),
         )
@@ -6437,7 +6703,7 @@ pub mod test_utils {
     use {
         super::Bank,
         crate::installed_scheduler_pool::BankWithScheduler,
-        solana_account::{ReadableAccount, WritableAccount, state_traits::StateMut},
+        solana_account::{state_traits::StateMut, ReadableAccount, WritableAccount},
         solana_instruction::error::LamportsError,
         solana_pubkey::Pubkey,
         solana_sha256_hasher::hashv,

@@ -3,8 +3,8 @@ use {
     solana_clock::Slot,
     solana_runtime::{bank::Bank, installed_scheduler_pool::BankWithScheduler},
     std::sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     },
 };
 

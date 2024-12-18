@@ -30,7 +30,7 @@ mod tests {
         super::*,
         crate::{
             accounts::Accounts,
-            accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDbConfig, MarkObsoleteAccounts},
+            accounts_db::{AccountsDbConfig, MarkObsoleteAccounts, ACCOUNTS_DB_CONFIG_FOR_TESTING},
             accounts_update_notifier_interface::{
                 AccountForGeyser, AccountsUpdateNotifier, AccountsUpdateNotifierInterface,
             },
@@ -39,8 +39,8 @@ mod tests {
         dashmap::DashMap,
         solana_account::ReadableAccount as _,
         std::sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         test_case::test_case,
     };

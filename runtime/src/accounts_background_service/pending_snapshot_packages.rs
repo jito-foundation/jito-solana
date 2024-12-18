@@ -1,6 +1,6 @@
 use {
     crate::snapshot_package::{
-        SnapshotPackage, are_snapshot_packages_the_same_kind, cmp_snapshot_packages_by_priority,
+        are_snapshot_packages_the_same_kind, cmp_snapshot_packages_by_priority, SnapshotPackage,
     },
     agave_snapshots::{SnapshotArchiveKind, SnapshotKind},
     log::*,

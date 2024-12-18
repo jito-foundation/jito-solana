@@ -2,8 +2,8 @@
 
 use {
     self::points::{
-        CalculatedStakePoints, DelegatedVoteState, InflationPointCalculationEvent, PointValue,
-        SkippedReason, calculate_stake_points_and_credits,
+        calculate_stake_points_and_credits, CalculatedStakePoints, DelegatedVoteState,
+        InflationPointCalculationEvent, PointValue, SkippedReason,
     },
     solana_clock::Epoch,
     solana_instruction::error::InstructionError,
@@ -279,7 +279,7 @@ mod tests {
         solana_native_token::LAMPORTS_PER_SOL,
         solana_pubkey::Pubkey,
         solana_stake_interface::state::Delegation,
-        solana_vote_program::vote_state::{VoteStateV4, handler::VoteStateHandle},
+        solana_vote_program::vote_state::{handler::VoteStateHandle, VoteStateV4},
         test_case::test_case,
     };
 

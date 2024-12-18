@@ -1,5 +1,5 @@
 use {
-    clap::{Arg, crate_description, crate_name, crate_version},
+    clap::{crate_description, crate_name, crate_version, Arg},
     itertools::Itertools,
     log::*,
     regex::Regex,
@@ -7,9 +7,9 @@ use {
         env,
         ffi::OsStr,
         fs::File,
-        io::{BufWriter, prelude::*},
+        io::{prelude::*, BufWriter},
         path::{Path, PathBuf},
-        process::{Command, exit},
+        process::{exit, Command},
     },
 };
 

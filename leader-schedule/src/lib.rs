@@ -5,7 +5,7 @@
 
 use {
     agave_random::weighted::WeightedU64Index,
-    rand_chacha::{ChaChaRng, rand_core::SeedableRng},
+    rand_chacha::{rand_core::SeedableRng, ChaChaRng},
     solana_clock::Epoch,
     solana_pubkey::Pubkey,
     std::sync::Arc,

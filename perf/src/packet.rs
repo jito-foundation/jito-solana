@@ -9,7 +9,7 @@ use {
         iter::{IndexedParallelIterator, ParallelIterator},
         prelude::{IntoParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator},
     },
-    serde::{Deserialize, Serialize, de::DeserializeOwned},
+    serde::{de::DeserializeOwned, Deserialize, Serialize},
     std::{
         borrow::Borrow,
         io::Read,
@@ -20,7 +20,7 @@ use {
 };
 pub use {
     bytes,
-    solana_packet::{self, Meta, PACKET_DATA_SIZE, Packet, PacketFlags},
+    solana_packet::{self, Meta, Packet, PacketFlags, PACKET_DATA_SIZE},
 };
 
 pub const NUM_PACKETS: usize = 1024 * 8;

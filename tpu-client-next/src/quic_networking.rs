@@ -3,8 +3,8 @@
 use {
     crate::connection_workers_scheduler::BindTarget,
     quinn::{
-        ClientConfig, Connection, Endpoint, EndpointConfig, IdleTimeout, TransportConfig,
-        congestion::CubicConfig, crypto::rustls::QuicClientConfig, default_runtime,
+        congestion::CubicConfig, crypto::rustls::QuicClientConfig, default_runtime, ClientConfig,
+        Connection, Endpoint, EndpointConfig, IdleTimeout, TransportConfig,
     },
     rustls::KeyLogFile,
     solana_streamer::nonblocking::quic::ALPN_TPU_PROTOCOL_ID,

@@ -1,11 +1,11 @@
 use {
-    bencher::{Bencher, benchmark_group, benchmark_main},
+    bencher::{benchmark_group, benchmark_main, Bencher},
     log::*,
     rand::distr::{Distribution, Uniform},
     solana_metrics::{
         counter::CounterPoint,
         datapoint::DataPoint,
-        metrics::{MetricsAgent, serialize_points, test_mocks::MockMetricsWriter},
+        metrics::{serialize_points, test_mocks::MockMetricsWriter, MetricsAgent},
     },
     std::{hint::black_box, sync::Arc, time::Duration},
 };

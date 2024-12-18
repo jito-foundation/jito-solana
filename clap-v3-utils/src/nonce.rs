@@ -1,5 +1,5 @@
 use {
-    crate::{ArgConstant, input_validators::*},
+    crate::{input_validators::*, ArgConstant},
     clap::{Arg, Command},
 };
 

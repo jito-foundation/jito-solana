@@ -1,14 +1,14 @@
 use {
-    criterion::{BenchmarkId, Criterion, criterion_group, criterion_main},
-    rand::{SeedableRng, rngs::SmallRng, seq::IndexedRandom as _},
+    criterion::{criterion_group, criterion_main, BenchmarkId, Criterion},
+    rand::{rngs::SmallRng, seq::IndexedRandom as _, SeedableRng},
     solana_accounts_db::{
         accounts_db::AccountsDb, read_only_accounts_cache::ReadOnlyAccountsCache,
     },
     std::{
         hint::black_box,
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::Builder,
         time::{Duration, Instant},

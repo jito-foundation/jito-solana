@@ -463,24 +463,20 @@ fn test_clone_and_filter_for_vat_filters_non_alpenglow() {
     assert_eq!(filtered.len(), MAX_ALPENGLOW_VOTE_ACCOUNTS);
     // Check that all filtered accounts have bls pubkey.
     for (_pubkey, (_stake, vote_account)) in filtered.as_ref().iter() {
-        assert!(
-            vote_account
-                .vote_state_view()
-                .bls_pubkey_compressed()
-                .is_some()
-        );
+        assert!(vote_account
+            .vote_state_view()
+            .bls_pubkey_compressed()
+            .is_some());
     }
     // Now get only 1500 accounts, even some alpenglow accounts are kicked out.
     let new_limit = MAX_ALPENGLOW_VOTE_ACCOUNTS - 500;
     let filtered = vote_accounts.clone_and_filter_for_vat(new_limit, MIN_STAKE_FOR_STAKED_ACCOUNT);
     assert!(filtered.len() <= new_limit);
     for (_pubkey, (_stake, vote_account)) in filtered.as_ref().iter() {
-        assert!(
-            vote_account
-                .vote_state_view()
-                .bls_pubkey_compressed()
-                .is_some()
-        );
+        assert!(vote_account
+            .vote_state_view()
+            .bls_pubkey_compressed()
+            .is_some());
     }
 }
 

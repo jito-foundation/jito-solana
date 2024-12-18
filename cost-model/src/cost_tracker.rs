@@ -16,8 +16,8 @@ use {
         collections::HashMap,
         num::Saturating,
         sync::{
-            Arc,
             atomic::{AtomicU64, Ordering},
+            Arc,
         },
     },
 };
@@ -218,6 +218,10 @@ impl CostTracker {
 
     pub fn vote_cost(&self) -> u64 {
         self.vote_cost
+    }
+
+    pub fn block_cost_limit(&self) -> u64 {
+        self.block_cost_limit
     }
 
     pub fn transaction_count(&self) -> u64 {

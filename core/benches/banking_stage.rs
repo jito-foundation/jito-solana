@@ -16,24 +16,27 @@ use {
 extern crate test;
 
 use {
-    crossbeam_channel::{Receiver, unbounded},
+    crossbeam_channel::{unbounded, Receiver},
     log::*,
-    rand::{Rng, rng},
+    rand::{rng, Rng},
     rayon::prelude::*,
-    solana_core::{banking_stage::BankingStage, banking_trace::BankingTracer},
-    solana_entry::entry::{Entry, next_hash},
+    solana_core::{
+        banking_stage::BankingStage, banking_trace::BankingTracer,
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
+    },
+    solana_entry::entry::{next_hash, Entry},
     solana_genesis_config::GenesisConfig,
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::{
         blockstore::Blockstore,
         blockstore_processor::process_entries_for_tests,
-        genesis_utils::{GenesisConfigInfo, create_genesis_config},
+        genesis_utils::{create_genesis_config, GenesisConfigInfo},
         get_tmp_ledger_path_auto_delete,
     },
     solana_message::Message,
     solana_perf::packet::to_packet_batches,
-    solana_poh::poh_recorder::{WorkingBankEntry, create_test_recorder},
+    solana_poh::poh_recorder::{create_test_recorder, WorkingBankEntry},
     solana_pubkey as pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_signature::Signature,
@@ -41,10 +44,11 @@ use {
     solana_system_interface::instruction as system_instruction,
     solana_system_transaction as system_transaction,
     solana_time_utils::timestamp,
-    solana_transaction::{Transaction, versioned::VersionedTransaction},
+    solana_transaction::{versioned::VersionedTransaction, Transaction},
     std::{
+        collections::HashSet,
         iter::repeat_with,
-        sync::{Arc, atomic::Ordering},
+        sync::{atomic::Ordering, Arc},
         time::{Duration, Instant},
     },
     test::Bencher,
@@ -250,6 +254,10 @@ fn bench_banking(
         s,
         None,
         bank_forks,
+        None,
+        HashSet::default(),
+        BundleAccountLocker::default(),
+        None,
         None,
     );
 

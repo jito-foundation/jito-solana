@@ -3,13 +3,12 @@
 extern crate solana_core;
 
 use {
-    bencher::{Bencher, TDynBenchFn, TestDesc, TestDescAndFn, TestFn, benchmark_main},
+    bencher::{benchmark_main, Bencher, TDynBenchFn, TestDesc, TestDescAndFn, TestFn},
     crossbeam_channel::unbounded,
     log::*,
     rand::{
-        Rng,
         distr::{Distribution, Uniform},
-        rng,
+        rng, Rng,
     },
     solana_core::{
         banking_trace::BankingTracer,
@@ -20,7 +19,7 @@ use {
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
     solana_perf::{
-        packet::{PacketBatch, to_packet_batches},
+        packet::{to_packet_batches, PacketBatch},
         sigverify,
         test_tx::test_tx,
     },

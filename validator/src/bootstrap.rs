@@ -1,17 +1,17 @@
 use {
     agave_snapshots::{
-        SnapshotArchiveKind, paths as snapshot_paths,
-        snapshot_archive_info::SnapshotArchiveInfoGetter as _,
+        paths as snapshot_paths, snapshot_archive_info::SnapshotArchiveInfoGetter as _,
+        SnapshotArchiveKind,
     },
     itertools::Itertools,
     log::*,
-    rand::{Rng, rng, seq::SliceRandom},
+    rand::{rng, seq::SliceRandom, Rng},
     rayon::prelude::*,
     solana_account::ReadableAccount,
     solana_clock::Slot,
     solana_commitment_config::CommitmentConfig,
     solana_core::validator::{ValidatorConfig, ValidatorStartProgress},
-    solana_download_utils::{DownloadProgressRecord, download_snapshot_archive},
+    solana_download_utils::{download_snapshot_archive, DownloadProgressRecord},
     solana_genesis_utils::download_then_check_genesis_hash,
     solana_gossip::{
         cluster_info::ClusterInfo,
@@ -29,13 +29,13 @@ use {
     solana_signer::Signer,
     solana_vote_program::vote_state::VoteStateV4,
     std::{
-        collections::{HashMap, HashSet, hash_map::RandomState},
+        collections::{hash_map::RandomState, HashMap, HashSet},
         net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
         path::Path,
         process::exit,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
         },
         time::{Duration, Instant},
     },

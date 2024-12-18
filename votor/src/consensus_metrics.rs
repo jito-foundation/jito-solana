@@ -9,8 +9,8 @@ use {
     std::{
         collections::{BTreeMap, BTreeSet},
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{Builder, JoinHandle},
         time::{Duration, Instant},

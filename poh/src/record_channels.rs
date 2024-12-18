@@ -1,16 +1,16 @@
 #[cfg(feature = "shuttle-test")]
 use shuttle::sync::{
-    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
 };
 #[cfg(not(feature = "shuttle-test"))]
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
 };
 use {
     crate::poh_recorder::Record,
-    crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded},
+    crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TryRecvError},
     solana_clock::BankId,
     std::time::Duration,
 };

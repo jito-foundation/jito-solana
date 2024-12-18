@@ -75,7 +75,7 @@
 
 extern crate rand;
 use {
-    rand::{Rng, rng},
+    rand::{rng, Rng},
     std::collections::{HashMap, VecDeque},
 };
 

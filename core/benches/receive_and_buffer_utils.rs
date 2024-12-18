@@ -1,30 +1,33 @@
 use {
     agave_banking_stage_ingress_types::BankingPacketBatch,
-    crossbeam_channel::{Receiver, Sender, unbounded},
+    crossbeam_channel::{unbounded, Receiver, Sender},
     rand::prelude::*,
     solana_account::AccountSharedData,
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_core::banking_stage::{
-        TOTAL_BUFFERED_PACKETS,
         decision_maker::BufferedPacketsDecision,
         transaction_scheduler::{
             receive_and_buffer::{ReceiveAndBuffer, TransactionViewReceiveAndBuffer},
             transaction_state_container::StateContainer,
         },
+        TOTAL_BUFFERED_PACKETS,
     },
     solana_genesis_config::GenesisConfig,
     solana_hash::Hash,
     solana_instruction::{AccountMeta, Instruction},
     solana_keypair::Keypair,
-    solana_ledger::genesis_utils::{GenesisConfigInfo, create_genesis_config},
+    solana_ledger::genesis_utils::{create_genesis_config, GenesisConfigInfo},
     solana_message::{Message, VersionedMessage},
-    solana_perf::packet::{NUM_PACKETS, PacketBatch, to_packet_batches},
+    solana_perf::packet::{to_packet_batches, PacketBatch, NUM_PACKETS},
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_sdk_ids::system_program,
     solana_signer::Signer,
     solana_transaction::versioned::VersionedTransaction,
-    std::sync::{Arc, RwLock},
+    std::{
+        collections::HashSet,
+        sync::{Arc, RwLock},
+    },
 };
 
 // the max number of instructions of given type that we can put into packet.
@@ -141,6 +144,7 @@ impl ReceiveAndBufferCreator for TransactionViewReceiveAndBuffer {
         TransactionViewReceiveAndBuffer {
             receiver,
             sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            blacklisted_accounts: HashSet::default(),
         }
     }
 }

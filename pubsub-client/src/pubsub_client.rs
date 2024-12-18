@@ -88,12 +88,13 @@
 
 pub use crate::nonblocking::pubsub_client::PubsubClientError;
 use {
-    crossbeam_channel::{Receiver, Sender, unbounded},
+    crossbeam_channel::{unbounded, Receiver, Sender},
     log::*,
     serde::de::DeserializeOwned,
     serde_json::{
-        Map, Value, json,
+        json,
         value::Value::{Number, Object},
+        Map, Value,
     },
     solana_account_decoder_client_types::UiAccount,
     solana_clock::Slot,
@@ -114,18 +115,18 @@ use {
         marker::PhantomData,
         net::TcpStream,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
         },
-        thread::{JoinHandle, sleep},
+        thread::{sleep, JoinHandle},
         time::Duration,
     },
     tungstenite::{
-        Message, WebSocket,
         client::IntoClientRequest,
         connect,
-        http::{StatusCode, header},
+        http::{header, StatusCode},
         stream::MaybeTlsStream,
+        Message, WebSocket,
     },
 };
 

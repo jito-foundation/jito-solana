@@ -2,18 +2,18 @@
 use solana_stake_interface::config::Config as StakeConfig;
 use {
     crate::{bank::VAT_TO_BURN_PER_EPOCH, stake_utils},
-    agave_feature_set::{FEATURE_NAMES, FeatureSet, vote_state_v4},
+    agave_feature_set::{vote_state_v4, FeatureSet, FEATURE_NAMES},
     agave_votor_messages::{
         self,
-        consensus_message::{BLS_KEYPAIR_DERIVE_SEED, Certificate, CertificateType},
+        consensus_message::{Certificate, CertificateType, BLS_KEYPAIR_DERIVE_SEED},
         migration::GENESIS_CERTIFICATE_ACCOUNT,
     },
     bincode::serialize,
     log::*,
-    solana_account::{Account, AccountSharedData, ReadableAccount, state_traits::StateMut},
+    solana_account::{state_traits::StateMut, Account, AccountSharedData, ReadableAccount},
     solana_bls_signatures::{
-        Pubkey as BLSPubkey, Signature as BLSSignature, keypair::Keypair as BLSKeypair,
-        pubkey::PubkeyCompressed as BLSPubkeyCompressed,
+        keypair::Keypair as BLSKeypair, pubkey::PubkeyCompressed as BLSPubkeyCompressed,
+        Pubkey as BLSPubkey, Signature as BLSSignature,
     },
     solana_clock::Epoch,
     solana_cluster_type::ClusterType,
@@ -32,10 +32,10 @@ use {
     solana_stake_interface::state::{Authorized, Lockup, Meta, StakeStateV2},
     solana_system_interface::program as system_program,
     solana_sysvar::{
-        SysvarSerialize,
         epoch_rewards::{self, EpochRewards},
+        SysvarSerialize,
     },
-    solana_vote_interface::state::{BLS_PUBLIC_KEY_COMPRESSED_SIZE, VoteStateV4},
+    solana_vote_interface::state::{VoteStateV4, BLS_PUBLIC_KEY_COMPRESSED_SIZE},
     solana_vote_program::vote_state,
     std::{borrow::Borrow, sync::Arc},
 };

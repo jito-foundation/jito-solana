@@ -1,6 +1,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 use {
-    clap::{App, AppSettings, Arg, ArgMatches, SubCommand, crate_description, crate_name},
+    clap::{crate_description, crate_name, App, AppSettings, Arg, ArgMatches, SubCommand},
     solana_clap_utils::{
         input_parsers::pubkey_of,
         input_validators::{is_pubkey, is_url},
