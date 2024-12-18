@@ -8,11 +8,33 @@ cd "$(dirname "$0")"/..
 
 output_file=${1:-/dev/stderr}
 
-if [[ -n $CI_PULL_REQUEST ]]; then
-  # filter pr number from ci branch.
-  [[ $CI_BRANCH =~ pull/([0-9]+)/head ]]
-  pr_number=${BASH_REMATCH[1]}
-  echo "get affected files from PR: $pr_number"
+is_pr_build=false
+if [[ -n $BUILDKITE_PULL_REQUEST && $BUILDKITE_PULL_REQUEST != "false" ]]; then
+  is_pr_build=true
+elif [[ -n $CI_PULL_REQUEST ]]; then
+  is_pr_build=true
+elif [[ $CI == "true" ]]; then
+  is_pr_build=true
+fi
+
+if $is_pr_build; then
+  # Buildkite standard PR metadata (preferred when available)
+  if [[ $BUILDKITE_PULL_REQUEST =~ ^[0-9]+$ ]]; then
+    pr_number=$BUILDKITE_PULL_REQUEST
+  # Legacy ci-gate branch naming fallback
+  elif [[ $CI_BRANCH =~ pull/([0-9]+)/head ]]; then
+    pr_number=${BASH_REMATCH[1]}
+  else
+    echo "Unable to determine PR number (BUILDKITE_PULL_REQUEST=$BUILDKITE_PULL_REQUEST, CI_BRANCH=$CI_BRANCH)"
+    pr_number=
+  fi
+
+  CI_PULL_REQUEST=true
+  if [[ -n $pr_number ]]; then
+    echo "get affected files from PR: $pr_number"
+  else
+    echo "PR number missing; using conservative CI set"
+  fi
 
   if [[ $BUILDKITE_REPO =~ ^https:\/\/github\.com\/([^\/]+)\/([^\/\.]+) ]]; then
     owner="${BASH_REMATCH[1]}"
@@ -46,21 +68,31 @@ if [[ -n $CI_PULL_REQUEST ]]; then
   }'
 
   # get affected files
-  readarray -t affected_files < <(
-    gh api graphql \
-      -f query="$query" \
-      -F pr="$pr_number" \
-      -F owner="$owner" \
-      -F repo="$repo" \
-      --paginate \
-      --jq '.data.repository.pullRequest.files.nodes.[].path'
-  )
+  if [[ -n $pr_number ]] && command -v gh >/dev/null 2>&1; then
+    readarray -t affected_files < <(
+      gh api graphql \
+        -f query="$query" \
+        -F pr="$pr_number" \
+        -F owner="$owner" \
+        -F repo="$repo" \
+        --paginate \
+        --jq '.data.repository.pullRequest.files.nodes.[].path'
+    )
+  else
+    echo "gh not found or PR number missing; falling back to git diff for affected files"
+    if [[ -n $BUILDKITE_PULL_REQUEST_BASE_BRANCH ]]; then
+      readarray -t affected_files < <(
+        git diff --name-only "origin/$BUILDKITE_PULL_REQUEST_BASE_BRANCH"...HEAD
+      )
+    fi
+  fi
 
   if [[ ${#affected_files[*]} -eq 0 ]]; then
-    echo "Unable to determine the files affected by this PR"
-    exit 1
+    echo "Unable to determine the files affected by this PR; running conservative CI set"
+    affected_files=("ci/buildkite-pipeline.sh")
   fi
 else
+  CI_PULL_REQUEST=
   affected_files=()
 fi
 
@@ -357,7 +389,7 @@ if [[ -n $BUILDKITE_TAG ]]; then
   start_pipeline "Tag pipeline for $BUILDKITE_TAG"
 
   annotate --style info --context release-tag \
-    "https://github.com/anza-xyz/agave/releases/$BUILDKITE_TAG"
+    "https://github.com/jito-foundation/jito-solana/releases/$BUILDKITE_TAG"
 
   # Jump directly to the secondary build to publish release artifacts quickly
   trigger_secondary_step
@@ -365,7 +397,7 @@ if [[ -n $BUILDKITE_TAG ]]; then
 fi
 
 
-if [[ $BUILDKITE_BRANCH =~ ^pull ]]; then
+if $is_pr_build; then
   echo "+++ Affected files in this PR"
   for file in "${affected_files[@]}"; do
     echo "- $file"
@@ -375,7 +407,7 @@ if [[ $BUILDKITE_BRANCH =~ ^pull ]]; then
 
   # Add helpful link back to the corresponding Github Pull Request
   annotate --style info --context pr-backlink \
-    "Github Pull Request: https://github.com/anza-xyz/agave/$BUILDKITE_BRANCH"
+    "Github Pull Request: https://github.com/jito-foundation/jito-solana/$BUILDKITE_BRANCH"
 
   pull_or_push_steps
   exit 0

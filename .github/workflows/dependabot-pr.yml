@@ -1,52 +1,52 @@
-name: Dependabot PR
+# name: Dependabot PR
 
-on:
-  pull_request:
-    branches:
-      - master
+# on:
+#   pull_request:
+#     branches:
+#       - master
 
-jobs:
-  dependabot:
-    timeout-minutes: 10
-    runs-on: ubuntu-24.04
-    if: github.triggering_actor == 'dependabot[bot]'
-    steps:
-      - name: checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          token: ${{ secrets.PAT }}
+# jobs:
+#   dependabot:
+#     timeout-minutes: 10
+#     runs-on: ubuntu-24.04
+#     if: github.triggering_actor == 'dependabot[bot]'
+#     steps:
+#       - name: checkout
+#         uses: actions/checkout@v6
+#         with:
+#           ref: ${{ github.event.pull_request.head.ref }}
+#           token: ${{ secrets.PAT }}
 
-      - name: update code
-        run: |
-          input="${{ github.event.pull_request.title }}"
+#       - name: update code
+#         run: |
+#           input="${{ github.event.pull_request.title }}"
 
-          regex='[Bb]ump (.+) from ([^ ]+) to ([^ ]+)( in .*)?'
-          if [[ ! "$input" =~ $regex ]]; then
-            echo "unexpected pattern"
-            exit 1
-          fi
+#           regex='[Bb]ump (.+) from ([^ ]+) to ([^ ]+)( in .*)?'
+#           if [[ ! "$input" =~ $regex ]]; then
+#             echo "unexpected pattern"
+#             exit 1
+#           fi
 
-          crate_name="${BASH_REMATCH[1]}"
-          old_version="${BASH_REMATCH[2]}"
-          new_version="${BASH_REMATCH[3]}"
-          echo "crate_name: $crate_name, old_version: $old_version, new_version: $new_version"
+#           crate_name="${BASH_REMATCH[1]}"
+#           old_version="${BASH_REMATCH[2]}"
+#           new_version="${BASH_REMATCH[3]}"
+#           echo "crate_name: $crate_name, old_version: $old_version, new_version: $new_version"
 
-          cargo xtask update-crate --package $crate_name --from $old_version --to $new_version
+#           cargo xtask update-crate --package $crate_name --from $old_version --to $new_version
 
-          ./scripts/cargo-for-all-lock-files.sh --ignore-exit-code -- update -p $crate_name:$old_version --precise $new_version
+#           ./scripts/cargo-for-all-lock-files.sh --ignore-exit-code -- update -p $crate_name:$old_version --precise $new_version
 
-          ./scripts/cargo-for-all-lock-files.sh tree
+#           ./scripts/cargo-for-all-lock-files.sh tree
 
-      - name: push
-        run: |
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "✅ Nothing to update"
-          else
-            git config user.email "49699333+dependabot[bot]@users.noreply.github.com"
-            git config user.name "dependabot[bot]"
-            git add **/Cargo.toml
-            git add **/Cargo.lock
-            git commit -am "Update all workspaces"
-            git push
-          fi
+#       - name: push
+#         run: |
+#           if [ -z "$(git status --porcelain)" ]; then
+#             echo "✅ Nothing to update"
+#           else
+#             git config user.email "49699333+dependabot[bot]@users.noreply.github.com"
+#             git config user.name "dependabot[bot]"
+#             git add **/Cargo.toml
+#             git add **/Cargo.lock
+#             git commit -am "Update all workspaces"
+#             git push
+#           fi

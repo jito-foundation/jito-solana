@@ -12,9 +12,11 @@ edition = { workspace = true }
 [features]
 agave-unstable-api = []
 dev-context-only-utils = []
+frozen-abi = ["dep:solana-frozen-abi", "solana-fee-structure/frozen-abi"]
 
 [dependencies]
 solana-fee-structure = { workspace = true }
+solana-frozen-abi = { workspace = true, optional = true }
 solana-program-runtime = { workspace = true }
 
 [lints]

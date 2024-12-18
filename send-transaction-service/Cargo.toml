@@ -14,13 +14,17 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = ["solana-net-utils"]
+dev-context-only-utils = ["solana-net-utils", "solana-signer"]
 
 [dependencies]
 async-trait = { workspace = true }
 crossbeam-channel = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }
+solana-client = { workspace = true }
+solana-clock = { workspace = true }
+solana-connection-cache = { workspace = true }
+solana-gossip = { workspace = true }
 solana-hash = { workspace = true }
 solana-keypair = { workspace = true }
 solana-measure = { workspace = true }
@@ -30,6 +34,7 @@ solana-nonce-account = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-runtime = { workspace = true }
 solana-signature = { workspace = true }
+solana-signer = { workspace = true, optional = true }
 solana-time-utils = { workspace = true }
 solana-tls-utils = { workspace = true }
 solana-tpu-client-next = { workspace = true, features = ["metrics"] }
@@ -45,5 +50,6 @@ solana-net-utils = { path = "../net-utils", features = ["agave-unstable-api"] }
 solana-nonce = { workspace = true }
 solana-runtime = { path = "../runtime", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-signer = { workspace = true }
+solana-streamer = { workspace = true }
 solana-system-interface = { workspace = true }
 solana-system-transaction = { workspace = true }

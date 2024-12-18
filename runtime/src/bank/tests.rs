@@ -41,6 +41,7 @@ use {
     solana_account_info::MAX_PERMITTED_DATA_INCREASE,
     solana_accounts_db::{
         accounts::AccountAddressFilter,
+        accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING,
         accounts_index::{
             AccountIndex, AccountSecondaryIndexes, ITER_BATCH_SIZE, IndexKey, ScanConfig, ScanError,
         },

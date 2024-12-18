@@ -294,7 +294,7 @@ impl Entry {
 }
 
 pub fn hash_signatures(signatures: &[impl AsRef<[u8]>]) -> Hash {
-    let merkle_tree = MerkleTree::new(signatures);
+    let merkle_tree = MerkleTree::new(signatures, false);
     if let Some(root_hash) = merkle_tree.get_root() {
         *root_hash
     } else {

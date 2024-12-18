@@ -1,6 +1,6 @@
 use {
     super::*,
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{ShredReceiverAddresses, cluster_nodes::ClusterNodesCache},
     agave_votor::event::VotorEventSender,
     agave_votor_messages::migration::MigrationStatus,
     crossbeam_channel::Sender,
@@ -12,7 +12,7 @@ use {
     solana_signature::Signature,
     solana_signer::Signer,
     solana_system_transaction as system_transaction,
-    std::collections::HashSet,
+    std::{collections::HashSet, net::SocketAddr},
 };
 
 pub const MINIMUM_DUPLICATE_SLOT: Slot = 20;
@@ -335,6 +335,8 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {

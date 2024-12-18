@@ -18,10 +18,7 @@ name = "solana_rpc"
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = [
-    "solana-ledger/dev-context-only-utils",
-    "solana-rpc/dev-context-only-utils",
-]
+dev-context-only-utils = ["solana-ledger/dev-context-only-utils", "solana-rpc/dev-context-only-utils"]
 
 [dependencies]
 agave-feature-set = { workspace = true }
@@ -68,6 +65,7 @@ solana-perf = { workspace = true }
 solana-poh = { workspace = true }
 solana-poh-config = { workspace = true }
 solana-program-pack = { workspace = true }
+solana-program-runtime = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-rayon-threadlimit = { workspace = true }
 solana-rpc-client-api = { workspace = true }

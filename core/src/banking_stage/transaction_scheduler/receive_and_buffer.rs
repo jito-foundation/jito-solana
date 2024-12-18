@@ -17,6 +17,7 @@ use {
         resolved_transaction_view::ResolvedTransactionView, transaction_data::TransactionData,
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
+    ahash::HashSet,
     arrayvec::ArrayVec,
     core::time::Duration,
     crossbeam_channel::{RecvTimeoutError, TryRecvError},
@@ -26,6 +27,7 @@ use {
     solana_cost_model::cost_model::CostModel,
     solana_fee_structure::FeeBudgetLimits,
     solana_message::v0::LoadedAddresses,
+    solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank,
         bank_forks::{BankPair, SharableBanks},
@@ -47,6 +49,7 @@ pub(crate) struct DisconnectedError;
 
 /// Stats/metrics returned by `receive_and_buffer_packets`.
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
+#[derive(Default)]
 pub(crate) struct ReceivingStats {
     pub num_received: usize,
     /// Count of packets that passed sigverify but were dropped
@@ -63,13 +66,14 @@ pub(crate) struct ReceivingStats {
     pub num_dropped_on_capacity: usize,
 
     pub num_buffered: usize,
+    pub num_dropped_on_blacklisted_account: usize,
 
     pub receive_time_us: u64,
     pub buffer_time_us: u64,
 }
 
 impl ReceivingStats {
-    fn accumulate(&mut self, other: ReceivingStats) {
+    pub(crate) fn accumulate(&mut self, other: ReceivingStats) {
         self.num_received += other.num_received;
         self.num_dropped_without_parsing += other.num_dropped_without_parsing;
         self.num_dropped_on_parsing_and_sanitization +=
@@ -81,7 +85,7 @@ impl ReceivingStats {
         self.num_dropped_on_fee_payer += other.num_dropped_on_fee_payer;
         self.num_dropped_on_capacity += other.num_dropped_on_capacity;
         self.num_buffered += other.num_buffered;
-
+        self.num_dropped_on_blacklisted_account += other.num_dropped_on_blacklisted_account;
         self.receive_time_us += other.receive_time_us;
         self.buffer_time_us += other.buffer_time_us;
     }
@@ -105,6 +109,7 @@ pub(crate) trait ReceiveAndBuffer {
 pub(crate) struct TransactionViewReceiveAndBuffer {
     pub receiver: BankingPacketReceiver,
     pub sharable_banks: SharableBanks,
+    pub blacklisted_accounts: HashSet<Pubkey>,
 }
 
 impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
@@ -140,6 +145,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             num_buffered: 0,
             receive_time_us: 0,
             buffer_time_us: 0,
+            num_dropped_on_blacklisted_account: 0,
         };
 
         // If not leader/unknown, do a blocking-receive initially. This lets
@@ -215,17 +221,20 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             num_dropped_on_fee_payer: stats.num_dropped_on_fee_payer,
             num_dropped_on_capacity: stats.num_dropped_on_capacity,
             num_buffered: stats.num_buffered,
+            num_dropped_on_blacklisted_account: stats.num_dropped_on_blacklisted_account,
             receive_time_us: stats.receive_time_us,
             buffer_time_us: stats.buffer_time_us,
         })
     }
 }
 
-pub(crate) enum PacketHandlingError {
+#[derive(Debug, PartialEq, Eq)]
+pub enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,
     ALTResolution,
+    BlacklistedAccount,
 }
 
 impl TransactionViewReceiveAndBuffer {
@@ -326,6 +335,7 @@ impl TransactionViewReceiveAndBuffer {
         let mut num_dropped_on_parsing_and_sanitization = 0;
         let mut num_dropped_on_lock_validation = 0;
         let mut num_dropped_on_compute_budget = 0;
+        let mut num_dropped_on_blacklisted_account = 0;
 
         for packet_batch in packet_batch_message.iter() {
             for packet in packet_batch.iter() {
@@ -348,6 +358,7 @@ impl TransactionViewReceiveAndBuffer {
                             working_bank,
                             transaction_account_lock_limit,
                             enable_instruction_accounts_limit,
+                            &self.blacklisted_accounts,
                         ) {
                             Ok(state) => Ok(state),
                             Err(
@@ -363,6 +374,10 @@ impl TransactionViewReceiveAndBuffer {
                             }
                             Err(PacketHandlingError::ComputeBudget) => {
                                 num_dropped_on_compute_budget += 1;
+                                Err(())
+                            }
+                            Err(PacketHandlingError::BlacklistedAccount) => {
+                                num_dropped_on_blacklisted_account += 1;
                                 Err(())
                             }
                         }
@@ -396,6 +411,7 @@ impl TransactionViewReceiveAndBuffer {
             num_dropped_on_already_processed,
             num_dropped_on_fee_payer,
             num_dropped_on_capacity,
+            num_dropped_on_blacklisted_account,
             num_buffered,
             receive_time_us: 0, // receive is outside this function
             buffer_time_us: start.elapsed().as_micros() as u64,
@@ -408,6 +424,7 @@ impl TransactionViewReceiveAndBuffer {
         working_bank: &Bank,
         transaction_account_lock_limit: usize,
         enable_instruction_accounts_limit: bool,
+        blacklisted_accounts: &HashSet<Pubkey>,
     ) -> Result<TransactionViewState, PacketHandlingError> {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
@@ -415,6 +432,14 @@ impl TransactionViewReceiveAndBuffer {
             transaction_account_lock_limit,
             enable_instruction_accounts_limit,
         )?;
+
+        if view
+            .account_keys()
+            .iter()
+            .any(|account| blacklisted_accounts.contains(account))
+        {
+            return Err(PacketHandlingError::BlacklistedAccount);
+        }
 
         let Ok(compute_budget_limits) = view
             .compute_budget_instruction_details()
@@ -554,7 +579,7 @@ pub(crate) fn calculate_priority_and_cost(
 /// slots, the value used here is the lower-bound on the deactivation
 /// period, i.e. the transaction's address lookups are valid until
 /// AT LEAST this slot.
-fn calculate_max_age(
+pub(crate) fn calculate_max_age(
     sanitized_epoch: Epoch,
     deactivation_slot: Slot,
     current_slot: Slot,
@@ -605,6 +630,7 @@ mod tests {
     fn setup_transaction_view_receive_and_buffer(
         receiver: Receiver<BankingPacketBatch>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         TransactionViewReceiveAndBuffer,
         TransactionViewStateContainer,
@@ -612,6 +638,7 @@ mod tests {
         let receive_and_buffer = TransactionViewReceiveAndBuffer {
             receiver,
             sharable_banks: bank_forks.read().unwrap().sharable_banks(),
+            blacklisted_accounts,
         };
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
@@ -667,7 +694,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks);
+            setup_transaction_view_receive_and_buffer(receiver, bank_forks, HashSet::default());
 
         drop(sender); // disconnect channel
         let r = receive_and_buffer
@@ -679,8 +706,11 @@ mod tests {
     fn test_receive_and_buffer_no_hold() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &mint_keypair,
@@ -704,6 +734,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(
                 &mut container,
@@ -728,8 +759,11 @@ mod tests {
     fn test_receive_and_buffer_discard() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &mint_keypair,
@@ -758,6 +792,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -781,7 +816,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks);
+            setup_transaction_view_receive_and_buffer(receiver, bank_forks, HashSet::default());
 
         let packet_batches = Arc::new(vec![PacketBatch::from(RecycledPacketBatch::new(vec![
             Packet::new([1u8; PACKET_DATA_SIZE], Meta::default()),
@@ -801,6 +836,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -824,7 +860,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks);
+            setup_transaction_view_receive_and_buffer(receiver, bank_forks, HashSet::default());
 
         let transaction = transfer(&mint_keypair, &Pubkey::new_unique(), 1, Hash::new_unique());
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
@@ -843,6 +879,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -865,8 +902,11 @@ mod tests {
     fn test_receive_and_buffer_simple_transfer_unfunded_fee_payer() {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &Keypair::new(),
@@ -890,6 +930,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -912,8 +953,11 @@ mod tests {
     fn test_receive_and_buffer_failed_alt_resolve() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let to_pubkey = Pubkey::new_unique();
         let transaction = VersionedTransaction::try_new(
@@ -952,6 +996,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -974,8 +1019,11 @@ mod tests {
     fn test_receive_and_buffer_simple_transfer() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &mint_keypair,
@@ -999,6 +1047,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1021,8 +1070,11 @@ mod tests {
     fn test_receive_and_buffer_overfull() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let num_transactions = 3 * TEST_CONTAINER_CAPACITY;
         let transactions = Vec::from_iter((0..num_transactions).map(|_| {
@@ -1050,6 +1102,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1099,8 +1152,11 @@ mod tests {
 
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction_account_lock_limit = bank_forks
             .read()
@@ -1129,6 +1185,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1145,5 +1202,33 @@ mod tests {
         assert_eq!(num_buffered, 0);
 
         verify_container(&mut container, 0);
+    }
+
+    #[test]
+    fn test_receive_blacklisted_account() {
+        let keypair = Keypair::new();
+        let blacklisted_accounts = HashSet::from_iter([keypair.pubkey()]);
+
+        let (sender, receiver) = unbounded();
+        let (bank_forks, _mint_keypair) = test_bank_forks();
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            blacklisted_accounts,
+        );
+
+        let transaction = transfer(
+            &keypair,
+            &Pubkey::new_unique(),
+            1,
+            bank_forks.read().unwrap().root_bank().last_blockhash(),
+        );
+        let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
+        sender.send(packet_batches).unwrap();
+
+        let r = receive_and_buffer
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+        assert_eq!(r.num_dropped_on_blacklisted_account, 1);
     }
 }
