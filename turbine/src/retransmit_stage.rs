@@ -223,6 +223,7 @@ fn retransmit(
     max_slots: &MaxSlots,
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
+    shred_receiver_address: &Option<SocketAddr>,
 ) -> Result<(), RecvError> {
     // Try to receive shreds from the channel without blocking. If the channel
     // is empty precompute turbine trees speculatively. If no cache updates are
@@ -308,6 +309,7 @@ fn retransmit(
             socket,
             quic_endpoint_sender,
             stats,
+            shred_receiver_address,
         )
     };
     let slot_stats = if shreds.len() < PAR_ITER_MIN_NUM_SHREDS {
@@ -347,6 +349,7 @@ fn retransmit(
 }
 
 // Retransmit a single shred to all downstream nodes
+#[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
     shred: shred::Payload,
     root_bank: &Bank,
@@ -357,6 +360,7 @@ fn retransmit_shred(
     socket: &UdpSocket,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     stats: &RetransmitStats,
+    shred_receiver_addr: &Option<SocketAddr>,
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -366,8 +370,15 @@ fn retransmit_shred(
         return None;
     }
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) =
-        get_retransmit_addrs(&key, root_bank, cache, addr_cache, socket_addr_space, stats)?;
+    let (root_distance, addrs) = get_retransmit_addrs(
+        &key,
+        root_bank,
+        cache,
+        addr_cache,
+        socket_addr_space,
+        stats,
+        shred_receiver_addr,
+    )?;
     compute_turbine_peers.stop();
     stats
         .compute_turbine_peers_total
@@ -423,6 +434,7 @@ fn get_retransmit_addrs<'a>(
     addr_cache: &'a AddrCache,
     socket_addr_space: &SocketAddrSpace,
     stats: &RetransmitStats,
+    shred_receiver_addr: &Option<SocketAddr>,
 ) -> Option<(/*root_distance:*/ u8, Cow<'a, [SocketAddr]>)> {
     if let Some((root_distance, addrs)) = addr_cache.get(shred) {
         stats.addr_cache_hit.fetch_add(1, Ordering::Relaxed);
@@ -430,7 +442,7 @@ fn get_retransmit_addrs<'a>(
     }
     let (slot_leader, cluster_nodes) = cache.get(&shred.slot())?;
     let data_plane_fanout = cluster_nodes::get_data_plane_fanout(shred.slot(), root_bank);
-    let (root_distance, addrs) = cluster_nodes
+    let (root_distance, mut addrs) = cluster_nodes
         .get_retransmit_addrs(slot_leader, shred, data_plane_fanout, socket_addr_space)
         .inspect_err(|err| match err {
             Error::Loopback { .. } => {
@@ -438,6 +450,9 @@ fn get_retransmit_addrs<'a>(
             }
         })
         .ok()?;
+    if let Some(shred_receiver_addr) = shred_receiver_addr {
+        addrs.push(*shred_receiver_addr);
+    }
     stats.addr_cache_miss.fetch_add(1, Ordering::Relaxed);
     Some((root_distance, Cow::Owned(addrs)))
 }
@@ -521,6 +536,7 @@ impl RetransmitStage {
     /// * `leader_schedule_cache` - The leader schedule to verify shreds
     /// * `cluster_info` - This structure needs to be updated and populated by the bank and via gossip.
     /// * `retransmit_receiver` - Receive channel for batches of shreds to be retransmitted.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bank_forks: Arc<RwLock<BankForks>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
@@ -531,6 +547,7 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -568,6 +585,7 @@ impl RetransmitStage {
                     &max_slots,
                     rpc_subscriptions.as_deref(),
                     slot_status_notifier.as_ref(),
+                    &shred_receiver_addr.read().unwrap(),
                 )
                 .is_ok()
                 {}

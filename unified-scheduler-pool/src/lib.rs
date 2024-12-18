@@ -850,7 +850,7 @@ impl TaskHandler for DefaultTaskHandler {
                 );
                 // Note that we're about to partially commit side effects to bank in _pre commit_
                 // callback. Extra care must be taken in the case of poh failure just below;
-                bank.write_cost_tracker().unwrap().try_add(&cost)?;
+                bank.write_cost_tracker().unwrap().try_add(&cost, 0)?;
 
                 let RecordTransactionsSummary {
                     result,
@@ -860,7 +860,10 @@ impl TaskHandler for DefaultTaskHandler {
                     .transaction_recorder
                     .as_ref()
                     .unwrap()
-                    .record_transactions(bank.slot(), vec![transaction.to_versioned_transaction()]);
+                    .record_transactions(
+                        bank.slot(),
+                        vec![vec![transaction.to_versioned_transaction()]],
+                    );
                 match result {
                     Ok(()) => Ok(starting_transaction_index),
                     Err(_) => {
@@ -4104,10 +4107,11 @@ mod tests {
                         TransactionStatusBatch { .. }
                     ))
                 );
-                assert_matches!(
-                    signal_receiver.try_recv(),
-                    Ok((_, (solana_entry::entry::Entry {transactions, ..} , _)))
-                        if transactions == vec![tx.to_versioned_transaction()]
+                assert_eq!(
+                    signal_receiver.try_recv().unwrap().entries_ticks[0]
+                        .0
+                        .transactions,
+                    vec![tx.to_versioned_transaction()]
                 );
             } else {
                 assert_eq!(result, &expected_tx_result);
