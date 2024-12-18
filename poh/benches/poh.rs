@@ -116,11 +116,13 @@ fn bench_poh_recorder_record_transaction_index(bencher: &mut Bencher) {
         let _record_result = poh_recorder
             .record(
                 bank.slot(),
-                test::black_box(h1),
-                test::black_box(&txs)
-                    .iter()
-                    .map(|tx| tx.to_versioned_transaction())
-                    .collect(),
+                &[(
+                    test::black_box(h1),
+                    test::black_box(&txs)
+                        .iter()
+                        .map(|tx| tx.to_versioned_transaction())
+                        .collect(),
+                )],
             )
             .unwrap()
             .unwrap();
