@@ -22,6 +22,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
+          submodules: 'recursive'
 
       - name: Setup Rust
         shell: bash
