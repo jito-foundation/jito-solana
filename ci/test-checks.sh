@@ -26,6 +26,8 @@ fi
 # check dev-context-only-utils isn't used in normal dependencies
 _ scripts/check-dev-context-only-utils.sh tree
 
+_ cargo "+${rust_nightly}" fmt --version
+
 # fmt
 _ scripts/cargo-for-all-lock-files.sh -- "+${rust_nightly}" fmt --all -- --check
 

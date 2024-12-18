@@ -59,6 +59,9 @@ arrayvec = { workspace = true }
 assert_matches = { workspace = true }
 async-trait = { workspace = true }
 bincode = { workspace = true }
+borsh = { workspace = true }
+bs58 = { workspace = true }
+bytemuck = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["default", "serde"] }
 crossbeam-channel = { workspace = true }
@@ -66,6 +69,8 @@ dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
+jito-protos = { workspace = true }
+lazy_static = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
@@ -73,6 +78,8 @@ min-max-heap = { workspace = true }
 num_cpus = { workspace = true }
 num_enum = { workspace = true }
 prio-graph = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 qualifier_attr = { workspace = true }
 quinn = { workspace = true }
 rand = { workspace = true }
@@ -84,15 +91,19 @@ serde = { workspace = true }
 serde_bytes = { workspace = true }
 signal-hook = { workspace = true }
 slab = { workspace = true }
+smallvec = { workspace = true }
 solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-address-lookup-table-interface = { workspace = true }
 solana-bincode = { workspace = true }
 solana-bloom = { workspace = true }
 solana-bls-signatures = { workspace = true }
+solana-builtins-default-costs = { workspace = true }
+solana-bundle = { workspace = true }
 solana-client = { workspace = true }
 solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }
+solana-commitment-config = { workspace = true }
 solana-compute-budget = { workspace = true }
 solana-compute-budget-interface = { workspace = true }
 solana-connection-cache = { workspace = true }
@@ -124,6 +135,7 @@ solana-message = { workspace = true }
 solana-metrics = { workspace = true }
 solana-native-token = { workspace = true }
 solana-net-utils = { workspace = true }
+solana-nohash-hasher = { workspace = true }
 solana-nonce = { workspace = true }
 solana-nonce-account = { workspace = true }
 solana-packet = { workspace = true }
@@ -167,6 +179,7 @@ solana-validator-exit = { workspace = true }
 solana-version = { workspace = true }
 solana-vote = { workspace = true }
 solana-vote-program = { workspace = true }
+spl-memo-interface = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true }
@@ -174,7 +187,9 @@ sys-info = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
+tonic = { workspace = true }
 trees = { workspace = true }
 wincode = { workspace = true }
 
@@ -185,6 +200,9 @@ jemallocator = { workspace = true }
 rts-alloc = { workspace = true }
 shaq = { workspace = true }
 sysctl = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["agave-unstable-api"] }
@@ -198,6 +216,7 @@ serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["dev-context-only-utils"] }
 solana-bpf-loader-program = { path = "../programs/bpf_loader", default-features = false, features = ["agave-unstable-api"] }
 solana-client = { path = "../client", features = ["dev-context-only-utils"] }
+# solana-bundle = { workspace = true }
 solana-compute-budget-interface = { workspace = true }
 solana-compute-budget-program = { path = "../programs/compute-budget", features = ["agave-unstable-api"] }
 # See order-crates-for-publishing.py for using this unusual `path = "."`
@@ -209,11 +228,15 @@ solana-net-utils = { path = "../net-utils", features = ["agave-unstable-api", "d
 solana-poh = { path = "../poh", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-program-binaries = { path = "../program-binaries", features = ["agave-unstable-api"] }
 solana-program-runtime = { path = "../program-runtime", features = ["agave-unstable-api", "metrics"] }
+solana-program-test = { workspace = true }
 solana-rpc = { path = "../rpc", features = ["agave-unstable-api", "dev-context-only-utils"] }
+solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-runtime-transaction = { workspace = true }
 solana-signer-store = { workspace = true }
 solana-system-program = { path = "../programs/system", features = ["agave-unstable-api"] }
 solana-unified-scheduler-pool = { path = "../unified-scheduler-pool", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-vote = { path = "../vote", features = ["agave-unstable-api", "dev-context-only-utils"] }
+solana-vote-interface = { workspace = true }
 spl-memo-interface = { workspace = true }
 static_assertions = { workspace = true }
 test-case = { workspace = true }

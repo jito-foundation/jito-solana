@@ -1053,7 +1053,6 @@ fn test_program_sbf_invoke_sanity() {
             bank.feature_set
                 .is_active(&feature_set::increase_tx_account_lock_limit::id())
         );
-
         // failure cases
 
         let do_invoke_failure_test_local_with_compute_check =
