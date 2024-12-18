@@ -1,0 +1,23 @@
+[package]
+name = "solana-bundle"
+description = "Library related to handling bundles"
+documentation = "https://docs.rs/solana-bundle"
+readme = "../README.md"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[lib]
+crate-type = ["lib"]
+name = "solana_bundle"
+
+[features]
+agave-unstable-api = []
+
+[dependencies]
+itertools = { workspace = true }
+sha2 = { workspace = true }
+solana-runtime-transaction = { workspace = true }
