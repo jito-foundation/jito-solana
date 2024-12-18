@@ -183,6 +183,11 @@ impl<'a, CB: TransactionProcessingCallback> AccountLoader<'a, CB> {
         {
             loaded_accounts.insert(slot_history::id(), slot_history.clone());
         }
+        if let Some(overrides) = account_overrides {
+            for (key, account) in overrides.accounts() {
+                loaded_accounts.insert(*key, account.clone());
+            }
+        }
 
         Self {
             loaded_accounts,
