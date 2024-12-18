@@ -1,6 +1,7 @@
 //! The `validator` module hosts all the validator microservices.
 
 pub use solana_perf::report_target_features;
+use {crate::tip_manager::TipManagerConfig, solana_turbine::ShredReceiverAddresses};
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
@@ -17,6 +18,7 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
         },
         forwarding_stage::ForwardingClientConfig,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self,
             quic_endpoint::{RepairQuicAsyncSenders, RepairQuicSenders, RepairQuicSockets},
@@ -31,6 +33,7 @@ use {
             SystemMonitorService, SystemMonitorStatsReportConfig, verify_net_stats_access,
         },
         tpu::{Tpu, TpuSockets},
+        // tip_manager::TipManagerConfig,
         tvu::{AlpenglowInitializationState, Tvu, TvuConfig, TvuSockets},
     },
     agave_snapshots::{
@@ -44,6 +47,7 @@ use {
     },
     agave_xdp::xdp_retransmitter::{XdpRetransmitBuilder, XdpRetransmitter},
     anyhow::{Context, Result, anyhow},
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, bounded, unbounded},
     quinn::Endpoint,
     serde::{Deserialize, Serialize},
@@ -254,6 +258,7 @@ impl BlockProductionMethod {
     Deserialize,
     PartialEq,
     Eq,
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -406,6 +411,13 @@ pub struct ValidatorConfig {
     pub repair_handler_type: RepairHandlerType,
     // Thread niceness adjustment for snapshot packager service
     pub snapshot_packager_niceness_adj: i8,
+    // jito configuration
+    pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
+    pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl ValidatorConfig {
@@ -486,6 +498,16 @@ impl ValidatorConfig {
             voting_service_test_override: None,
             repair_handler_type: RepairHandlerType::default(),
             snapshot_packager_niceness_adj: 0,
+            relayer_config: Arc::new(ArcSwap::from_pointee(RelayerConfig::default())),
+            block_engine_config: Arc::new(ArcSwap::from_pointee(BlockEngineConfig::default())),
+            shred_receiver_addresses: Arc::new(
+                ArcSwap::from_pointee(ShredReceiverAddresses::new()),
+            ),
+            shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                ShredReceiverAddresses::new(),
+            )),
+            tip_manager_config: TipManagerConfig::default(),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 
@@ -1688,6 +1710,7 @@ impl Validator {
                 bls_connection_cache,
                 voting_service_test_override: config.voting_service_test_override.clone(),
             },
+            config.shred_retransmit_receiver_addresses.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1762,6 +1785,11 @@ impl Validator {
             }),
             cancel,
             votor_event_sender,
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_addresses.clone(),
+            config.bam_url.clone(),
         );
 
         datapoint_info!(
@@ -1794,6 +1822,10 @@ impl Validator {
             node: Some(node_multihoming),
             banking_control_sender,
             snapshot_controller,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+            shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
         });
 
         Ok(Self {
