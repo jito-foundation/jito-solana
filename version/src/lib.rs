@@ -75,7 +75,7 @@ impl Default for Version {
                 .unwrap_or_else(|| thread_rng().gen::<u32>()),
             feature_set,
             // Other client implementations need to modify this line.
-            client: u16::try_from(ClientId::Agave).unwrap(),
+            client: u16::try_from(ClientId::JitoLabs).unwrap(),
         }
     }
 }
