@@ -224,6 +224,7 @@ fn retransmit(
     max_slots: &MaxSlots,
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
+    shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
 ) -> Result<(), RecvError> {
     // Try to receive shreds from the channel without blocking. If the channel
     // is empty precompute turbine trees speculatively. If no cache updates are
@@ -309,6 +310,7 @@ fn retransmit(
             socket,
             quic_endpoint_sender,
             stats,
+            &shred_receiver_address.read().unwrap(),
         )
     };
     let slot_stats = if shreds.len() < PAR_ITER_MIN_NUM_SHREDS {
@@ -348,6 +350,7 @@ fn retransmit(
 }
 
 // Retransmit a single shred to all downstream nodes
+#[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
     shred: shred::Payload,
     root_bank: &Bank,
@@ -358,6 +361,7 @@ fn retransmit_shred(
     socket: &UdpSocket,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     stats: &RetransmitStats,
+    shred_receiver_addr: &Option<SocketAddr>,
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -369,6 +373,9 @@ fn retransmit_shred(
     let mut compute_turbine_peers = Measure::start("turbine_start");
     let (root_distance, addrs) =
         get_retransmit_addrs(&key, root_bank, cache, addr_cache, socket_addr_space, stats)?;
+    if let Some(addr) = shred_receiver_addr {
+        addrs.push(*addr);
+    }
     compute_turbine_peers.stop();
     stats
         .compute_turbine_peers_total
@@ -522,6 +529,7 @@ impl RetransmitStage {
     /// * `leader_schedule_cache` - The leader schedule to verify shreds
     /// * `cluster_info` - This structure needs to be updated and populated by the bank and via gossip.
     /// * `retransmit_receiver` - Receive channel for batches of shreds to be retransmitted.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bank_forks: Arc<RwLock<BankForks>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
@@ -532,6 +540,7 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -571,6 +580,7 @@ impl RetransmitStage {
                     &max_slots,
                     rpc_subscriptions.as_deref(),
                     slot_status_notifier.as_ref(),
+                    &shred_receiver_addr,
                 )
                 .is_ok()
                 {}

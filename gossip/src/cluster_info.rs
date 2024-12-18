@@ -359,6 +359,10 @@ impl ClusterInfo {
         *self.entrypoints.write().unwrap() = entrypoints;
     }
 
+    pub fn set_my_contact_info(&self, my_contact_info: ContactInfo) {
+        *self.my_contact_info.write().unwrap() = my_contact_info;
+    }
+
     pub fn save_contact_info(&self) {
         let _st = ScopedTimer::from(&self.stats.save_contact_info_time);
         let nodes = {

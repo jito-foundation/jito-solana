@@ -1,0 +1,61 @@
+[package]
+name = "solana-tip-distributor"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+description = "Collection of binaries used to distribute MEV rewards to delegators and validators."
+publish = false
+
+[dependencies]
+anchor-lang = { workspace = true }
+clap = { version = "4.1.11", features = ["derive", "env"] }
+crossbeam-channel = { workspace = true }
+env_logger = { workspace = true }
+futures = { workspace = true }
+gethostname = { workspace = true }
+im = { workspace = true }
+itertools = { workspace = true }
+jito-tip-distribution = { workspace = true }
+jito-tip-payment = { workspace = true }
+log = { workspace = true }
+num-traits = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+solana-accounts-db = { workspace = true }
+solana-client = { workspace = true }
+solana-genesis-utils = { workspace = true }
+solana-ledger = { workspace = true }
+solana-measure = { workspace = true }
+solana-merkle-tree = { workspace = true }
+solana-metrics = { workspace = true }
+solana-program = { workspace = true }
+solana-program-runtime = { workspace = true }
+solana-rpc-client-api = { workspace = true }
+solana-runtime = { workspace = true }
+solana-sdk = { workspace = true }
+solana-stake-program = { workspace = true }
+solana-transaction-status = { workspace = true }
+solana-vote = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-sdk = { workspace = true, features = ["dev-context-only-utils"] }
+
+[[bin]]
+name = "solana-stake-meta-generator"
+path = "src/bin/stake-meta-generator.rs"
+
+[[bin]]
+name = "solana-merkle-root-generator"
+path = "src/bin/merkle-root-generator.rs"
+
+[[bin]]
+name = "solana-merkle-root-uploader"
+path = "src/bin/merkle-root-uploader.rs"
+
+[[bin]]
+name = "solana-claim-mev-tips"
+path = "src/bin/claim-mev-tips.rs"

@@ -53,7 +53,12 @@ pub enum PohRecorderError {
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
 
-pub type WorkingBankEntry = (Arc<Bank>, (Entry, u64));
+#[derive(Clone, Debug)]
+pub struct WorkingBankEntry {
+    pub bank: Arc<Bank>,
+    // normal entries have len == 1, bundles have len > 1
+    pub entries_ticks: Vec<(Entry, u64)>,
+}
 
 #[derive(Debug, Clone)]
 pub struct BankStart {
@@ -75,21 +80,19 @@ impl BankStart {
 type RecordResultSender = Sender<Result<Option<usize>>>;
 
 pub struct Record {
-    pub mixin: Hash,
-    pub transactions: Vec<VersionedTransaction>,
+    // non-bundles shall have mixins_txs.len() == 1, bundles shall have mixins_txs.len() > 1
+    pub mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
     pub slot: Slot,
     pub sender: RecordResultSender,
 }
 impl Record {
     pub fn new(
-        mixin: Hash,
-        transactions: Vec<VersionedTransaction>,
+        mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
         slot: Slot,
         sender: RecordResultSender,
     ) -> Self {
         Self {
-            mixin,
-            transactions,
+            mixins_txs,
             slot,
             sender,
         }
@@ -532,9 +535,10 @@ impl PohRecorder {
 
             for tick in &self.tick_cache[..entry_count] {
                 working_bank.bank.register_tick(&tick.0.hash);
-                send_result = self
-                    .working_bank_sender
-                    .send((working_bank.bank.clone(), tick.clone()));
+                send_result = self.working_bank_sender.send(WorkingBankEntry {
+                    bank: working_bank.bank.clone(),
+                    entries_ticks: vec![tick.clone()],
+                });
                 if send_result.is_err() {
                     break;
                 }
@@ -1117,7 +1121,11 @@ mod tests {
         assert_eq!(poh_recorder.tick_height, tick_height_before + 1);
         assert_eq!(poh_recorder.tick_cache.len(), 0);
         let mut num_entries = 0;
-        while let Ok((wbank, (_entry, _tick_height))) = entry_receiver.try_recv() {
+        while let Ok(WorkingBankEntry {
+            bank: wbank,
+            entries_ticks: _,
+        }) = entry_receiver.try_recv()
+        {
             assert_eq!(wbank.slot(), bank1.slot());
             num_entries += 1;
         }
@@ -1204,7 +1212,7 @@ mod tests {
         // We haven't yet reached the minimum tick height for the working bank,
         // so record should fail
         assert_matches!(
-            poh_recorder.record(bank1.slot(), h1, vec![tx.into()]),
+            poh_recorder.record(bank1.slot(), &[(h1, vec![tx.into()])]),
             Err(PohRecorderError::MinHeightNotReached)
         );
         assert!(entry_receiver.try_recv().is_err());
@@ -1243,7 +1251,7 @@ mod tests {
         // However we hand over a bad slot so record fails
         let bad_slot = bank.slot() + 1;
         assert_matches!(
-            poh_recorder.record(bad_slot, h1, vec![tx.into()]),
+            poh_recorder.record(bad_slot, &[(h1, vec![tx.into()])]),
             Err(PohRecorderError::MaxHeightReached)
         );
     }
@@ -1286,18 +1294,26 @@ mod tests {
         let tx = test_tx();
         let h1 = hash(b"hello world!");
         assert!(poh_recorder
-            .record(bank1.slot(), h1, vec![tx.into()])
+            .record(bank1.slot(), &[(h1, vec![tx.into()])])
             .is_ok());
         assert_eq!(poh_recorder.tick_cache.len(), 0);
 
         //tick in the cache + entry
         for _ in 0..min_tick_height {
-            let (_bank, (e, _tick_height)) = entry_receiver.recv().unwrap();
-            assert!(e.is_tick());
+            let WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            } = entry_receiver.recv().unwrap();
+            assert_eq!(entries_ticks.len(), 1);
+            assert!(entries_ticks[0].0.is_tick());
         }
 
-        let (_bank, (e, _tick_height)) = entry_receiver.recv().unwrap();
-        assert!(!e.is_tick());
+        let WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        } = entry_receiver.recv().unwrap();
+        assert_eq!(entries_ticks.len(), 1);
+        assert!(!entries_ticks[0].0.is_tick());
     }
 
     #[test]
@@ -1328,11 +1344,15 @@ mod tests {
         let tx = test_tx();
         let h1 = hash(b"hello world!");
         assert!(poh_recorder
-            .record(bank.slot(), h1, vec![tx.into()])
+            .record(bank.slot(), &[(h1, vec![tx.into()])])
             .is_err());
         for _ in 0..num_ticks_to_max {
-            let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
-            assert!(entry.is_tick());
+            let WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            } = entry_receiver.recv().unwrap();
+            assert_eq!(entries_ticks.len(), 1);
+            assert!(entries_ticks[0].0.is_tick());
         }
     }
 
@@ -1372,7 +1392,7 @@ mod tests {
         let tx1 = test_tx();
         let h1 = hash(b"hello world!");
         let record_result = poh_recorder
-            .record(bank.slot(), h1, vec![tx0.into(), tx1.into()])
+            .record(bank.slot(), &[(h1, vec![tx0.into(), tx1.into()])])
             .unwrap()
             .unwrap();
         assert_eq!(record_result, 0);
@@ -1389,7 +1409,7 @@ mod tests {
         let tx = test_tx();
         let h2 = hash(b"foobar");
         let record_result = poh_recorder
-            .record(bank.slot(), h2, vec![tx.into()])
+            .record(bank.slot(), &[(h2, vec![tx.into()])])
             .unwrap()
             .unwrap();
         assert_eq!(record_result, 2);
@@ -1626,7 +1646,7 @@ mod tests {
         let tx = test_tx();
         let h1 = hash(b"hello world!");
         assert!(poh_recorder
-            .record(bank.slot(), h1, vec![tx.into()])
+            .record(bank.slot(), &[(h1, vec![tx.into()])])
             .is_err());
         assert!(poh_recorder.working_bank.is_none());
 

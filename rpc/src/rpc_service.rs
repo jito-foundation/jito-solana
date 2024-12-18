@@ -259,6 +259,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                 let full_snapshot_archive_info =
                     snapshot_utils::get_highest_full_snapshot_archive_info(
                         &snapshot_config.full_snapshot_archives_dir,
+                        None,
                     );
                 let snapshot_archive_info =
                     if let Some(full_snapshot_archive_info) = full_snapshot_archive_info {
@@ -268,6 +269,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                             snapshot_utils::get_highest_incremental_snapshot_archive_info(
                                 &snapshot_config.incremental_snapshot_archives_dir,
                                 full_snapshot_archive_info.slot(),
+                                None,
                             )
                             .map(|incremental_snapshot_archive_info| {
                                 incremental_snapshot_archive_info
@@ -637,6 +639,8 @@ impl JsonRpcService {
         let largest_accounts_cache = Arc::new(RwLock::new(LargestAccountsCache::new(
             LARGEST_ACCOUNTS_CACHE_DURATION,
         )));
+
+        let runtime = service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj);
 
         let exit_bigtable_ledger_upload_service = Arc::new(AtomicBool::new(false));
 

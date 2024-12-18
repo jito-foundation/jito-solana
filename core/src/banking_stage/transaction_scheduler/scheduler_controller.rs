@@ -19,6 +19,7 @@ use {
         TOTAL_BUFFERED_PACKETS,
     },
     solana_measure::measure_us,
+    solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_sdk::{self, clock::MAX_PROCESSING_AGE, saturating_add_assign},
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
@@ -52,6 +53,8 @@ where
     worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
     /// Detailed scheduling metrics.
     scheduling_details: SchedulingDetails,
+    /// Blacklisted accounts
+    blacklisted_accounts: HashSet<Pubkey>,
 }
 
 impl<R, S> SchedulerController<R, S>
@@ -65,6 +68,7 @@ where
         bank_forks: Arc<RwLock<BankForks>>,
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         Self {
             decision_maker,
@@ -77,6 +81,7 @@ where
             timing_metrics: SchedulerTimingMetrics::default(),
             worker_metrics,
             scheduling_details: SchedulingDetails::default(),
+            blacklisted_accounts,
         }
     }
 
@@ -147,7 +152,7 @@ where
                             MAX_PROCESSING_AGE,
                         )
                     },
-                    |_| PreLockFilterAction::AttemptToSchedule // no pre-lock filter for now
+                    |tx| { Self::pre_lock_filter(tx, &self.blacklisted_accounts) }
                 )?);
 
                 self.count_metrics.update(|count_metrics| {
@@ -329,6 +334,12 @@ where
             decision,
         )
     }
+
+    fn pre_lock_filter(tx: &R::Transaction, blacklisted_accounts: &HashSet<Pubkey>) -> bool {
+        !tx.account_keys()
+            .iter()
+            .any(|a| blacklisted_accounts.contains(a))
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +473,7 @@ mod tests {
             bank_forks,
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
+            HashSet::default(),
         );
 
         (test_frame, scheduler_controller)
