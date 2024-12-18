@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum ClientId {
     SolanaLabs,
     JitoLabs,
