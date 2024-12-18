@@ -11,7 +11,7 @@ use {
     },
 };
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct ProgramTiming {
     pub accumulated_us: Saturating<u64>,
     pub accumulated_units: Saturating<u64>,
@@ -61,6 +61,7 @@ pub enum ExecuteTimingType {
     FilterExecutableUs,
 }
 
+#[derive(Clone)]
 pub struct Metrics([Saturating<u64>; ExecuteTimingType::CARDINALITY]);
 
 impl Index<ExecuteTimingType> for Metrics {
@@ -309,7 +310,7 @@ eager_macro_rules! { $eager_1
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ExecuteTimings {
     pub metrics: Metrics,
     pub details: ExecuteDetailsTimings,
@@ -333,9 +334,24 @@ impl ExecuteTimings {
             None => debug_assert!(idx < ExecuteTimingType::CARDINALITY, "Index out of bounds"),
         }
     }
+
+    pub fn accumulate_execute_units_and_time(&self) -> (u64, u64) {
+        self.details
+            .per_program_timings
+            .values()
+            .fold((0, 0), |(units, times), program_timings| {
+                (
+                    (Saturating(units)
+                        + program_timings.accumulated_units
+                        + program_timings.total_errored_units)
+                        .0,
+                    (Saturating(times) + program_timings.accumulated_us).0,
+                )
+            })
+    }
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct ExecuteProcessInstructionTimings {
     pub total_us: Saturating<u64>,
     pub verify_caller_us: Saturating<u64>,
@@ -352,7 +368,7 @@ impl ExecuteProcessInstructionTimings {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct ExecuteAccessoryTimings {
     pub feature_set_clone_us: Saturating<u64>,
     pub get_executors_us: Saturating<u64>,
@@ -370,7 +386,7 @@ impl ExecuteAccessoryTimings {
     }
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct ExecuteDetailsTimings {
     pub serialize_us: Saturating<u64>,
     pub create_vm_us: Saturating<u64>,

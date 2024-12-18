@@ -1,4 +1,5 @@
 #![allow(clippy::arithmetic_side_effects)]
+
 #[cfg(not(any(target_env = "msvc", target_os = "freebsd")))]
 use jemallocator::Jemalloc;
 use {
@@ -29,7 +30,9 @@ use {
     solana_core::{
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         system_monitor_service::SystemMonitorService,
+        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         tpu::DEFAULT_TPU_COALESCE,
         validator::{
             is_snapshot_config_valid, BlockProductionMethod, BlockVerificationMethod,
@@ -61,6 +64,7 @@ use {
         snapshot_config::{SnapshotConfig, SnapshotUsage},
         snapshot_utils::{self, ArchiveFormat, SnapshotVersion},
     },
+    solana_runtime_plugin::runtime_plugin_admin_rpc_service::RuntimePluginAdminRpcRequestMetadata,
     solana_sdk::{
         clock::{Slot, DEFAULT_SLOTS_PER_EPOCH},
         hash::Hash,
@@ -79,7 +83,7 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{Arc, RwLock},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         time::Duration,
     },
 };
@@ -222,6 +226,29 @@ pub fn main() {
         }
         ("set-public-address", Some(subcommand_matches)) => {
             commands::set_public_address::execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-block-engine-config", Some(subcommand_matches)) => {
+            commands::block_engine::execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-relayer-config", Some(subcommand_matches)) => {
+            commands::relayer::execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-shred-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_receiver_execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-shred-retransmit-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_retransmit_receiver_execute(
+                subcommand_matches,
+                &ledger_path,
+            );
+            return;
+        }
+        ("runtime-plugin", Some(plugin_subcommand_matches)) => {
+            commands::runtime_plugin::execute(plugin_subcommand_matches, &ledger_path);
             return;
         }
         _ => unreachable!(),
@@ -783,6 +810,44 @@ pub fn main() {
 
     let full_api = matches.is_present("full_rpc_api");
 
+    let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
+    let tip_manager_config = tip_manager_config_from_matches(&matches, voting_disabled);
+
+    let block_engine_config = BlockEngineConfig {
+        block_engine_url: if matches.is_present("block_engine_url") {
+            value_of(&matches, "block_engine_url").expect("couldn't parse block_engine_url")
+        } else {
+            "".to_string()
+        },
+        trust_packets: matches.is_present("trust_block_engine_packets"),
+    };
+
+    // Defaults are set in cli definition, safe to use unwrap() here
+    let expected_heartbeat_interval_ms: u64 =
+        value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
+    assert!(
+        expected_heartbeat_interval_ms > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
+    let max_failed_heartbeats: u64 = value_of(&matches, "relayer_max_failed_heartbeats").unwrap();
+    assert!(
+        max_failed_heartbeats > 0,
+        "relayer-max-failed-heartbeats must be greater than zero"
+    );
+
+    let relayer_config = RelayerConfig {
+        relayer_url: if matches.is_present("relayer_url") {
+            value_of(&matches, "relayer_url").expect("couldn't parse relayer_url")
+        } else {
+            "".to_string()
+        },
+        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+        oldest_allowed_heartbeat: Duration::from_millis(
+            max_failed_heartbeats * expected_heartbeat_interval_ms,
+        ),
+        trust_packets: matches.is_present("trust_relayer_packets"),
+    };
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -931,6 +996,23 @@ pub fn main() {
             .is_present("delay_leader_block_for_pending_fork"),
         wen_restart_proto_path: value_t!(matches, "wen_restart", PathBuf).ok(),
         wen_restart_coordinator: value_t!(matches, "wen_restart_coordinator", Pubkey).ok(),
+        relayer_config: Arc::new(Mutex::new(relayer_config)),
+        block_engine_config: Arc::new(Mutex::new(block_engine_config)),
+        tip_manager_config,
+        shred_receiver_address: Arc::new(RwLock::new(
+            matches
+                .value_of("shred_receiver_address")
+                .map(|addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid")),
+        )),
+        shred_retransmit_receiver_address: Arc::new(RwLock::new(
+            matches
+                .value_of("shred_retransmit_receiver_address")
+                .map(|addr| {
+                    SocketAddr::from_str(addr).expect("shred_retransmit_receiver_address invalid")
+                }),
+        )),
+        preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
+            .expect("preallocated_bundle_cost set as default"),
         ..ValidatorConfig::default()
     };
 
@@ -1247,6 +1329,31 @@ pub fn main() {
         },
     );
 
+    let runtime_plugin_config_and_rpc_rx = {
+        let plugin_exit = Arc::new(AtomicBool::new(false));
+        let (rpc_request_sender, rpc_request_receiver) = unbounded();
+        solana_runtime_plugin::runtime_plugin_admin_rpc_service::run(
+            &ledger_path,
+            RuntimePluginAdminRpcRequestMetadata {
+                rpc_request_sender,
+                validator_exit: validator_config.validator_exit.clone(),
+            },
+            plugin_exit,
+        );
+
+        if matches.is_present("runtime_plugin_config") {
+            (
+                values_t_or_exit!(matches, "runtime_plugin_config", String)
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                rpc_request_receiver,
+            )
+        } else {
+            (vec![], rpc_request_receiver)
+        }
+    };
+
     let gossip_host: IpAddr = matches
         .value_of("gossip_host")
         .map(|gossip_host| {
@@ -1485,6 +1592,7 @@ pub fn main() {
             vote_quic_server_config,
         },
         admin_service_post_init,
+        Some(runtime_plugin_config_and_rpc_rx),
     ) {
         Ok(validator) => validator,
         Err(err) => match err.downcast_ref() {
@@ -1556,5 +1664,49 @@ fn process_account_indexes(matches: &ArgMatches) -> AccountSecondaryIndexes {
     AccountSecondaryIndexes {
         keys,
         indexes: account_indexes,
+    }
+}
+
+fn tip_manager_config_from_matches(
+    matches: &ArgMatches,
+    voting_disabled: bool,
+) -> TipManagerConfig {
+    TipManagerConfig {
+        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
+            || {
+                if !voting_disabled {
+                    panic!("--tip-payment-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            },
+        ),
+        tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
+            .unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--tip-distribution-program-pubkey argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+        tip_distribution_account_config: TipDistributionAccountConfig {
+            merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
+                .unwrap_or_else(|| {
+                    if !voting_disabled {
+                        panic!("--merkle-root-upload-authority argument required when validator is voting");
+                    }
+                    Pubkey::new_unique()
+                }),
+            vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
+                if !voting_disabled {
+                    panic!("--vote-account argument required when validator is voting");
+                }
+                Pubkey::new_unique()
+            }),
+            commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
+                if !voting_disabled {
+                    panic!("--commission-bps argument required when validator is voting");
+                }
+                0
+            }),
+        },
     }
 }
