@@ -36,7 +36,7 @@ use {
         signature::Signature,
         transaction::{Transaction, TransactionError, TransactionVersion, VersionedTransaction},
     },
-    std::collections::HashSet,
+    std::collections::{HashMap, HashSet},
     thiserror::Error,
 };
 
@@ -850,6 +850,13 @@ pub struct TransactionByAddrInfo {
     pub index: u32,                    // Where the transaction is located in the block
     pub memo: Option<String>,          // Transaction memo
     pub block_time: Option<UnixTimestamp>,
+}
+
+#[derive(Clone, Default)]
+pub struct PreBalanceInfo {
+    pub native: Vec<Vec<u64>>,
+    pub token: Vec<Vec<TransactionTokenBalance>>,
+    pub mint_decimals: HashMap<Pubkey, u8>,
 }
 
 #[cfg(test)]
