@@ -93,6 +93,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
             &bank_forks,
             &SocketAddrSpace::Unspecified,
             &quic_endpoint_sender,
+            &None,
         )
         .unwrap();
     });
