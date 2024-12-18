@@ -10,6 +10,7 @@ use {
     },
     log::*,
     solana_accounts_db::accounts_update_notifier_interface::AccountsUpdateNotifier,
+    solana_clock::Slot,
     solana_genesis_config::GenesisConfig,
     solana_runtime::{
         bank_forks::BankForks,
@@ -98,6 +99,7 @@ pub fn load(
         entry_notification_sender,
         accounts_update_notifier,
         exit,
+        true,
     )?;
     blockstore_processor::process_blockstore_from_root(
         blockstore,
@@ -124,9 +126,12 @@ pub fn load_bank_forks(
     entry_notification_sender: Option<&EntryNotifierSender>,
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
     exit: Arc<AtomicBool>,
+    ignore_halt_at_slot_for_snapshot_loading: bool,
 ) -> LoadResult {
     fn get_snapshots_to_load(
         snapshot_config: &SnapshotConfig,
+        halt_at_slot: Option<Slot>,
+        ignore_halt_at_slot_for_snapshot_loading: bool,
     ) -> Option<(
         FullSnapshotArchiveInfo,
         Option<IncrementalSnapshotArchiveInfo>,
@@ -136,9 +141,16 @@ pub fn load_bank_forks(
             return None;
         };
 
+        let halt_at_slot = if ignore_halt_at_slot_for_snapshot_loading {
+            None
+        } else {
+            halt_at_slot
+        };
+
         let Some(full_snapshot_archive_info) =
             snapshot_utils::get_highest_full_snapshot_archive_info(
                 &snapshot_config.full_snapshot_archives_dir,
+                halt_at_slot,
             )
         else {
             warn!(
@@ -152,6 +164,7 @@ pub fn load_bank_forks(
             snapshot_utils::get_highest_incremental_snapshot_archive_info(
                 &snapshot_config.incremental_snapshot_archives_dir,
                 full_snapshot_archive_info.slot(),
+                halt_at_slot,
             );
 
         Some((
@@ -162,7 +175,11 @@ pub fn load_bank_forks(
 
     let (bank_forks, starting_snapshot_hashes) =
         if let Some((full_snapshot_archive_info, incremental_snapshot_archive_info)) =
-            get_snapshots_to_load(snapshot_config)
+            get_snapshots_to_load(
+                snapshot_config,
+                process_options.halt_at_slot,
+                ignore_halt_at_slot_for_snapshot_loading,
+            )
         {
             info!(
                 "Initializing bank snapshots dir: {}",
@@ -220,7 +237,7 @@ pub fn load_bank_forks(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn bank_forks_from_snapshot(
+pub fn bank_forks_from_snapshot(
     full_snapshot_archive_info: FullSnapshotArchiveInfo,
     incremental_snapshot_archive_info: Option<IncrementalSnapshotArchiveInfo>,
     genesis_config: &GenesisConfig,
