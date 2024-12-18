@@ -40,6 +40,16 @@ cargo_audit_ignores=(
   # jsonrpc-core-client v18.0.0 -> jsonrpc-client-transports v18.0.0 -> url v1.7.2 -> idna v0.1.5
   --ignore RUSTSEC-2024-0421
 
+  # Jito added: Overflow happens when decoding 64GB payloads in a single chunk.
+  # Crate:     ring
+  # Version:   0.16.20
+  # Title:     Some AES functions may panic when overflow checking is enabled.
+  # Date:      2025-03-06
+  # ID:        RUSTSEC-2025-0009
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2025-0009
+  # Solution:  Upgrade to >=0.17.12
+  --ignore RUSTSEC-2025-0009
+
   # === programs/sbf ===
   #
   # Crate:     curve25519-dalek
