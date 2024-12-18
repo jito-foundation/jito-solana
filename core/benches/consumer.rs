@@ -7,16 +7,17 @@ use {
         iter::IndexedParallelIterator,
         prelude::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator},
     },
-    solana_core::banking_stage::{
-        committer::Committer, consumer::Consumer, qos_service::QosService,
+    solana_core::{
+        banking_stage::{committer::Committer, consumer::Consumer, qos_service::QosService},
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
-    solana_entry::entry::Entry,
     solana_ledger::{
         blockstore::Blockstore,
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
     },
     solana_poh::{
-        poh_recorder::create_test_recorder, poh_service::PohService,
+        poh_recorder::{create_test_recorder, WorkingBankEntry},
+        poh_service::PohService,
         transaction_recorder::TransactionRecorder,
     },
     solana_runtime::{bank::Bank, bank_forks::BankForks},
@@ -84,7 +85,13 @@ fn create_transactions(bank: &Bank, num: usize) -> Vec<RuntimeTransaction<Saniti
 fn create_consumer(transaction_recorder: TransactionRecorder) -> Consumer {
     let (replay_vote_sender, _replay_vote_receiver) = unbounded();
     let committer = Committer::new(None, replay_vote_sender, Arc::default());
-    Consumer::new(committer, transaction_recorder, QosService::new(0), None)
+    Consumer::new(
+        committer,
+        transaction_recorder,
+        QosService::new(0),
+        None,
+        BundleAccountLocker::default(),
+    )
 }
 
 struct BenchFrame {
@@ -94,7 +101,7 @@ struct BenchFrame {
     exit: Arc<AtomicBool>,
     transaction_recorder: TransactionRecorder,
     poh_service: PohService,
-    signal_receiver: Receiver<(Arc<Bank>, (Entry, u64))>,
+    signal_receiver: Receiver<WorkingBankEntry>,
 }
 
 fn setup() -> BenchFrame {
@@ -161,8 +168,11 @@ fn bench_process_and_record_transactions(bencher: &mut Bencher, batch_size: usiz
 
     bencher.iter(move || {
         for _ in 0..batches_per_iteration {
-            let summary =
-                consumer.process_and_record_transactions(&bank, transaction_iter.next().unwrap());
+            let summary = consumer.process_and_record_transactions(
+                &bank,
+                transaction_iter.next().unwrap(),
+                &|_| 0,
+            );
             assert!(summary
                 .execute_and_commit_transactions_output
                 .commit_transactions_result

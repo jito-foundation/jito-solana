@@ -10,6 +10,7 @@ use {
     solana_core::{
         banking_stage::{update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage},
         banking_trace::{BankingTracer, Channels, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::{BlockProductionMethod, TransactionStructure},
     },
     solana_gossip::cluster_info::{ClusterInfo, Node},
@@ -37,6 +38,7 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
+        collections::HashSet,
         sync::{atomic::Ordering, Arc, RwLock},
         thread::sleep,
         time::{Duration, Instant},
@@ -476,6 +478,9 @@ fn main() {
         None,
         bank_forks.clone(),
         &prioritization_fee_cache,
+        HashSet::default(),
+        BundleAccountLocker::default(),
+        |_| 0,
     );
 
     // This is so that the signal_receiver does not go out of scope after the closure.

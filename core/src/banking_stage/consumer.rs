@@ -1,10 +1,11 @@
 use {
     super::{
-        committer::{CommitTransactionDetails, Committer, PreBalanceInfo},
+        committer::{CommitTransactionDetails, Committer},
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
         scheduler_messages::MaxAge,
     },
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     itertools::Itertools,
     solana_fee::FeeFeatures,
     solana_ledger::token_balances::collect_token_balances,
@@ -27,7 +28,7 @@ use {
         transaction_processing_result::TransactionProcessingResultExtensions,
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
     },
-    solana_timings::ExecuteTimings,
+    solana_transaction_status::PreBalanceInfo,
     std::{num::Saturating, sync::Arc},
 };
 
@@ -75,6 +76,7 @@ pub struct Consumer {
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl Consumer {
@@ -83,12 +85,14 @@ impl Consumer {
         transaction_recorder: TransactionRecorder,
         qos_service: QosService,
         log_messages_bytes_limit: Option<usize>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             committer,
             transaction_recorder,
             qos_service,
             log_messages_bytes_limit,
+            bundle_account_locker,
         }
     }
 
@@ -96,6 +100,7 @@ impl Consumer {
         &self,
         bank: &Arc<Bank>,
         txs: &[impl TransactionWithMeta],
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionBatchOutput {
         let mut error_counters = TransactionErrorMetrics::default();
         let pre_results = vec![Ok(()); txs.len()];
@@ -112,6 +117,7 @@ impl Consumer {
             bank,
             txs,
             check_results.into_iter(),
+            reservation_cb,
         );
 
         // Accumulate error counters from the initial checks into final results
@@ -127,6 +133,7 @@ impl Consumer {
         bank: &Arc<Bank>,
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionBatchOutput {
         // Need to filter out transactions since they were sanitized earlier.
         // This means that the transaction may cross and epoch boundary (not allowed),
@@ -154,7 +161,12 @@ impl Consumer {
 
             Ok(())
         });
-        self.process_and_record_transactions_with_pre_results(bank, txs, pre_results)
+        self.process_and_record_transactions_with_pre_results(
+            bank,
+            txs,
+            pre_results,
+            reservation_cb,
+        )
     }
 
     fn process_and_record_transactions_with_pre_results(
@@ -162,6 +174,7 @@ impl Consumer {
         bank: &Arc<Bank>,
         txs: &[impl TransactionWithMeta],
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionBatchOutput {
         let (
             (transaction_qos_cost_results, cost_model_throttled_transactions_count),
@@ -169,19 +182,25 @@ impl Consumer {
         ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
             bank,
             txs,
-            pre_results
+            pre_results,
+            reservation_cb
         ));
 
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
-        // same account state
+        // same account state.
+        // BundleAccountLocker is used to prevent race conditions with bundled transactions from bundle stage
+        let bundle_account_locks = self.bundle_account_locker.account_locks();
         let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
             txs,
             transaction_qos_cost_results.iter().map(|r| match r {
                 Ok(_cost) => Ok(()),
                 Err(err) => Err(err.clone()),
-            })
+            }),
+            Some(&bundle_account_locks.read_locks()),
+            Some(&bundle_account_locks.write_locks())
         ));
+        drop(bundle_account_locks);
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
         // WouldExceedMaxAccountCostLimit, WouldExceedMaxVoteCostLimit
@@ -208,8 +227,9 @@ impl Consumer {
             bank,
         );
 
-        let (cu, us) =
-            Self::accumulate_execute_units_and_time(&execute_and_commit_timings.execute_timings);
+        let (cu, us) = execute_and_commit_timings
+            .execute_timings
+            .accumulate_execute_units_and_time();
         self.qos_service.accumulate_actual_execute_cu(cu);
         self.qos_service.accumulate_actual_execute_time(us);
 
@@ -246,7 +266,7 @@ impl Consumer {
             if transaction_status_sender_enabled {
                 pre_balance_info.native = bank.collect_balances(batch);
                 pre_balance_info.token =
-                    collect_token_balances(bank, batch, &mut pre_balance_info.mint_decimals)
+                    collect_token_balances(bank, batch, &mut pre_balance_info.mint_decimals, None)
             }
         });
         execute_and_commit_timings.collect_balances_us = collect_balances_us;
@@ -350,7 +370,7 @@ impl Consumer {
 
         let (record_transactions_summary, record_us) = measure_us!(self
             .transaction_recorder
-            .record_transactions(bank.slot(), processed_transactions));
+            .record_transactions(bank.slot(), vec![processed_transactions]));
         execute_and_commit_timings.record_us = record_us;
 
         let RecordTransactionsSummary {
@@ -465,21 +485,6 @@ impl Consumer {
             fee,
         )
     }
-
-    fn accumulate_execute_units_and_time(execute_timings: &ExecuteTimings) -> (u64, u64) {
-        execute_timings.details.per_program_timings.values().fold(
-            (0, 0),
-            |(units, times), program_timings| {
-                (
-                    (Saturating(units)
-                        + program_timings.accumulated_units
-                        + program_timings.total_errored_units)
-                        .0,
-                    (Saturating(times) + program_timings.accumulated_us).0,
-                )
-            },
-        )
-    }
 }
 
 #[cfg(test)]
@@ -530,7 +535,7 @@ mod tests {
             system_program, system_transaction,
             transaction::{MessageHash, Transaction, VersionedTransaction},
         },
-        solana_timings::ProgramTiming,
+        solana_timings::{ExecuteTimings, ProgramTiming},
         solana_transaction_status::{TransactionStatusMeta, VersionedTransactionWithStatusMeta},
         std::{
             borrow::Cow,
@@ -579,10 +584,15 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
         let process_transactions_summary =
-            consumer.process_and_record_transactions(&bank, &transactions);
-
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
         poh_recorder
             .read()
             .unwrap()
@@ -688,10 +698,16 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
         let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -739,7 +755,7 @@ mod tests {
         )]);
 
         let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -839,11 +855,10 @@ mod tests {
                     let timeout = Duration::from_millis(10);
                     let record = record_receiver.recv_timeout(timeout);
                     if let Ok(record) = record {
-                        let record_response = poh_recorder.write().unwrap().record(
-                            record.slot,
-                            record.mixin,
-                            record.transactions,
-                        );
+                        let record_response = poh_recorder
+                            .write()
+                            .unwrap()
+                            .record(record.slot, &record.mixins_txs);
                         poh_recorder.write().unwrap().tick();
                         if record.sender.send(record_response).is_err() {
                             panic!("Error returning mixin hash");
@@ -880,10 +895,16 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
         let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
             commit_transactions_result,
@@ -982,10 +1003,16 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
         let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -1059,7 +1086,13 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
         let get_block_cost = || bank.read_cost_tracker().unwrap().block_cost();
         let get_tx_count = || bank.read_cost_tracker().unwrap().transaction_count();
@@ -1078,7 +1111,7 @@ mod tests {
         )]);
 
         let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -1108,7 +1141,7 @@ mod tests {
         ]);
 
         let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -1219,11 +1252,16 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
         let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
-
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
         poh_recorder
             .read()
             .unwrap()
@@ -1411,10 +1449,16 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder.clone(), QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder.clone(),
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
         let process_transactions_summary =
-            consumer.process_and_record_transactions(&bank, &transactions);
+            consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
         let ProcessTransactionBatchOutput {
             mut execute_and_commit_transactions_output,
@@ -1553,9 +1597,15 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
-        let _ = consumer.process_and_record_transactions(&bank, &transactions);
+        let _ = consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
         drop(consumer); // drop/disconnect transaction_status_sender
 
@@ -1698,9 +1748,15 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
 
-        let _ = consumer.process_and_record_transactions(&bank, &[sanitized_tx.clone()]);
+        let _ = consumer.process_and_record_transactions(&bank, &[sanitized_tx.clone()], &|_| 0);
 
         drop(consumer); // drop/disconnect transaction_status_sender
 
@@ -1753,7 +1809,7 @@ mod tests {
             expected_units += n * 1000;
         }
 
-        let (units, us) = Consumer::accumulate_execute_units_and_time(&execute_timings);
+        let (units, us) = execute_timings.accumulate_execute_units_and_time();
 
         assert_eq!(expected_units, units);
         assert_eq!(expected_us, us);

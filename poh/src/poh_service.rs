@@ -192,11 +192,12 @@ impl PohService {
         if let Ok(record) = record {
             if record
                 .sender
-                .send(poh_recorder.write().unwrap().record(
-                    record.slot,
-                    record.mixin,
-                    record.transactions,
-                ))
+                .send(
+                    poh_recorder
+                        .write()
+                        .unwrap()
+                        .record(record.slot, &record.mixins_txs),
+                )
                 .is_err()
             {
                 panic!("Error returning mixin hash");
@@ -255,11 +256,7 @@ impl PohService {
                 timing.total_lock_time_ns += lock_time.as_ns();
                 let mut record_time = Measure::start("record");
                 loop {
-                    let res = poh_recorder_l.record(
-                        record.slot,
-                        record.mixin,
-                        std::mem::take(&mut record.transactions),
-                    );
+                    let res = poh_recorder_l.record(record.slot, &record.mixins_txs);
                     let (send_res, send_record_result_us) = measure_us!(record.sender.send(res));
                     debug_assert!(send_res.is_ok(), "Record wasn't sent.");
 
@@ -454,11 +451,10 @@ mod tests {
                     loop {
                         // send some data
                         let mut time = Measure::start("record");
-                        let _ =
-                            poh_recorder
-                                .write()
-                                .unwrap()
-                                .record(bank_slot, h1, vec![tx.clone()]);
+                        let _ = poh_recorder
+                            .write()
+                            .unwrap()
+                            .record(bank_slot, &[(h1, vec![tx.clone()])]);
                         time.stop();
                         total_us += time.as_us();
                         total_times += 1;

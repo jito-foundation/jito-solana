@@ -56,6 +56,10 @@ const MAX_SNAPSHOT_DOWNLOAD_ABORT: u32 = 5;
 // with less than 2 ticks per slot.
 const MINIMUM_TICKS_PER_SLOT: u64 = 2;
 
+const DEFAULT_PREALLOCATED_BUNDLE_COST: u64 = 3000000;
+const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: u64 = 500;
+const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: u64 = 3;
+
 pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     let app = App::new(crate_name!())
         .about(crate_description!())
@@ -79,7 +83,15 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(commands::set_log_filter::command())
         .subcommand(commands::staked_nodes_overrides::command())
         .subcommand(commands::wait_for_restart_window::command())
-        .subcommand(commands::set_public_address::command());
+        .subcommand(commands::set_public_address::command())
+        // jito subcommands
+        .subcommand(commands::block_engine::command(default_args))
+        .subcommand(commands::relayer::command(default_args))
+        .subcommand(commands::shred::shred_receiver_command(default_args))
+        .subcommand(commands::shred::shred_retransmit_receiver_command(
+            default_args,
+        ))
+        .subcommand(commands::runtime_plugin::command(default_args));
 
     commands::run::add_args(app, default_args)
         .args(&thread_args(&default_args.thread_args))
@@ -437,6 +449,10 @@ pub struct DefaultArgs {
     pub wen_restart_path: String,
 
     pub thread_args: DefaultThreadArgs,
+
+    pub preallocated_bundle_cost: String,
+    pub relayer_expected_heartbeat_interval_ms: String,
+    pub relayer_max_failed_heartbeats: String,
 }
 
 impl DefaultArgs {
@@ -530,6 +546,10 @@ impl DefaultArgs {
             banking_trace_dir_byte_limit: BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT.to_string(),
             wen_restart_path: "wen_restart_progress.proto".to_string(),
             thread_args: DefaultThreadArgs::default(),
+            preallocated_bundle_cost: DEFAULT_PREALLOCATED_BUNDLE_COST.to_string(),
+            relayer_expected_heartbeat_interval_ms: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS
+                .to_string(),
+            relayer_max_failed_heartbeats: DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS.to_string(),
         }
     }
 }
@@ -978,6 +998,14 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                 .takes_value(true)
                 .multiple(true)
                 .help("Specify the configuration file for the Geyser plugin."),
+        )
+        .arg(
+            Arg::with_name("runtime_plugin_config")
+                .long("runtime-plugin-config")
+                .value_name("FILE")
+                .takes_value(true)
+                .multiple(true)
+                .help("Specify the configuration file for a Runtime plugin."),
         )
         .arg(
             Arg::with_name("deactivate_feature")

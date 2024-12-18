@@ -18,7 +18,10 @@ use {
     log::*,
     rand::{thread_rng, Rng},
     rayon::prelude::*,
-    solana_core::{banking_stage::BankingStage, banking_trace::BankingTracer},
+    solana_core::{
+        banking_stage::BankingStage, banking_trace::BankingTracer,
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
+    },
     solana_entry::entry::{next_hash, Entry},
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_ledger::{
@@ -44,6 +47,7 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
+        collections::HashSet,
         iter::repeat_with,
         sync::{atomic::Ordering, Arc},
         time::{Duration, Instant},
@@ -256,6 +260,9 @@ fn bench_banking(
         None,
         bank_forks,
         &Arc::new(PrioritizationFeeCache::new(0u64)),
+        HashSet::default(),
+        BundleAccountLocker::default(),
+        |_| 0,
     );
 
     let chunk_len = verified.len() / CHUNKS;

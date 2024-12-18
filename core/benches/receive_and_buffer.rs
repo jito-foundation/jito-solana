@@ -33,6 +33,7 @@ use {
     },
     solana_sdk_ids::system_program,
     std::{
+        collections::HashSet,
         sync::{Arc, RwLock},
         time::{Duration, Instant},
     },
@@ -139,6 +140,7 @@ trait ReceiveAndBufferCreator {
     fn create(
         receiver: Receiver<Arc<Vec<PacketBatch>>>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self;
 }
 
@@ -146,10 +148,12 @@ impl ReceiveAndBufferCreator for TransactionViewReceiveAndBuffer {
     fn create(
         receiver: Receiver<Arc<Vec<PacketBatch>>>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         TransactionViewReceiveAndBuffer {
             receiver,
             bank_forks,
+            blacklisted_accounts,
         }
     }
 }
@@ -158,8 +162,13 @@ impl ReceiveAndBufferCreator for SanitizedTransactionReceiveAndBuffer {
     fn create(
         receiver: Receiver<Arc<Vec<PacketBatch>>>,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
-        SanitizedTransactionReceiveAndBuffer::new(PacketDeserializer::new(receiver), bank_forks)
+        SanitizedTransactionReceiveAndBuffer::new(
+            PacketDeserializer::new(receiver),
+            bank_forks,
+            blacklisted_accounts,
+        )
     }
 }
 
@@ -188,7 +197,7 @@ fn bench_receive_and_buffer<T: ReceiveAndBuffer + ReceiveAndBufferCreator>(
 
     let (sender, receiver) = unbounded();
 
-    let mut rb = T::create(receiver, bank_forks);
+    let mut rb = T::create(receiver, bank_forks, HashSet::default());
 
     const TOTAL_BUFFERED_PACKETS: usize = 100_000;
     let mut count_metrics = SchedulerCountMetrics::default();

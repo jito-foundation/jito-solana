@@ -492,7 +492,7 @@ fn compute_slot_cost(
                 num_programs += transaction.message().instructions().len();
 
                 let tx_cost = CostModel::calculate_cost(&transaction, &feature_set);
-                let result = cost_tracker.try_add(&tx_cost);
+                let result = cost_tracker.try_add(&tx_cost, 0);
                 if result.is_err() {
                     println!(
                         "Slot: {slot}, CostModel rejected transaction {transaction:?}, reason \
@@ -1771,8 +1771,8 @@ fn main() {
                             Arc::new(blockstore),
                             process_options,
                             None,
+                            true,
                         );
-
                     println!(
                         "{}",
                         compute_shred_version(
@@ -1835,6 +1835,7 @@ fn main() {
                             Arc::new(blockstore),
                             process_options,
                             transaction_status_sender,
+                            true,
                         );
 
                     let working_bank = bank_forks.read().unwrap().working_bank();
@@ -1906,6 +1907,7 @@ fn main() {
                             Arc::new(blockstore),
                             process_options,
                             None,
+                            true,
                         );
 
                     let dot = graph_forks(&bank_forks.read().unwrap(), &graph_config);
@@ -2103,6 +2105,7 @@ fn main() {
                         blockstore.clone(),
                         process_options,
                         None,
+                        false,
                     );
 
                     let mut bank = bank_forks
@@ -2546,6 +2549,7 @@ fn main() {
                             blockstore.clone(),
                             process_options,
                             None, // transaction status sender
+                            true,
                         );
 
                     let block_production_method = value_t!(
@@ -2589,6 +2593,7 @@ fn main() {
                             Arc::new(blockstore),
                             process_options,
                             None,
+                            true,
                         );
                     let bank = bank_forks.read().unwrap().working_bank();
 
@@ -2641,7 +2646,9 @@ fn main() {
                             Arc::new(blockstore),
                             process_options,
                             None,
+                            true,
                         );
+
                     let bank_forks = bank_forks.read().unwrap();
                     let slot = bank_forks.working_bank().slot();
                     let bank = bank_forks.get(slot).unwrap_or_else(|| {

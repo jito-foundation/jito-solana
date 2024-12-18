@@ -60,16 +60,21 @@ impl TransactionRecorder {
     pub fn record_transactions(
         &self,
         bank_slot: Slot,
-        transactions: Vec<VersionedTransaction>,
+        batches: Vec<Vec<VersionedTransaction>>,
     ) -> RecordTransactionsSummary {
         let mut record_transactions_timings = RecordTransactionsTimings::default();
         let mut starting_transaction_index = None;
 
-        if !transactions.is_empty() {
-            let (hash, hash_us) = measure_us!(hash_transactions(&transactions));
+        if !batches.is_empty() && !batches.iter().any(|b| b.is_empty()) {
+            let (hashes, hash_us) = measure_us!(batches
+                .iter()
+                .map(|b| hash_transactions(b))
+                .collect::<Vec<_>>());
             record_transactions_timings.hash_us = Saturating(hash_us);
 
-            let (res, poh_record_us) = measure_us!(self.record(bank_slot, hash, transactions));
+            let hashes_transactions: Vec<_> = hashes.into_iter().zip(batches).collect();
+
+            let (res, poh_record_us) = measure_us!(self.record(bank_slot, hashes_transactions));
             record_transactions_timings.poh_record_us = Saturating(poh_record_us);
 
             match res {
@@ -105,14 +110,13 @@ impl TransactionRecorder {
     pub fn record(
         &self,
         bank_slot: Slot,
-        mixin: Hash,
-        transactions: Vec<VersionedTransaction>,
+        mixins_txs: Vec<(Hash, Vec<VersionedTransaction>)>,
     ) -> Result<Option<usize>> {
         // create a new channel so that there is only 1 sender and when it goes out of scope, the receiver fails
         let (result_sender, result_receiver) = bounded(1);
-        let res =
-            self.record_sender
-                .send(Record::new(mixin, transactions, bank_slot, result_sender));
+        let res = self
+            .record_sender
+            .send(Record::new(mixins_txs, bank_slot, result_sender));
         if res.is_err() {
             // If the channel is dropped, then the validator is shutting down so return that we are hitting
             //  the max tick height to stop transaction processing and flush any transactions in the pipeline.
