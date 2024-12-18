@@ -17,6 +17,7 @@ agave-feature-set = { workspace = true }
 agave-votor = { workspace = true }
 agave-votor-messages = { workspace = true }
 agave-xdp = { workspace = true }
+arc-swap = { workspace = true }
 bytes = { workspace = true }
 crossbeam-channel = { workspace = true }
 itertools = { workspace = true }
@@ -26,6 +27,7 @@ lru = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
+smallvec = { workspace = true }
 solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }
 solana-entry = { workspace = true }
