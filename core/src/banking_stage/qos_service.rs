@@ -6,7 +6,9 @@
 use {
     super::{committer::CommitTransactionDetails, BatchedTransactionDetails},
     solana_cost_model::{
-        cost_model::CostModel, cost_tracker::UpdatedCosts, transaction_cost::TransactionCost,
+        cost_model::CostModel,
+        cost_tracker::{CostTracker, UpdatedCosts},
+        transaction_cost::TransactionCost,
     },
     solana_feature_set::FeatureSet,
     solana_measure::measure::Measure,
@@ -43,6 +45,7 @@ impl QosService {
     pub fn select_and_accumulate_transaction_costs<'a, Tx: TransactionWithMeta>(
         &self,
         bank: &Bank,
+        cost_tracker: &mut CostTracker,
         transactions: &'a [Tx],
         pre_results: impl Iterator<Item = transaction::Result<()>>,
     ) -> (Vec<transaction::Result<TransactionCost<'a, Tx>>>, u64) {
@@ -52,6 +55,7 @@ impl QosService {
             transactions.iter(),
             transaction_costs.into_iter(),
             bank,
+            cost_tracker,
         );
         self.accumulate_estimated_transaction_costs(&Self::accumulate_batched_transaction_costs(
             transactions_qos_cost_results.iter(),
@@ -98,9 +102,9 @@ impl QosService {
         transactions: impl Iterator<Item = &'a Tx>,
         transactions_costs: impl Iterator<Item = transaction::Result<TransactionCost<'a, Tx>>>,
         bank: &Bank,
+        cost_tracker: &mut CostTracker,
     ) -> (Vec<transaction::Result<TransactionCost<'a, Tx>>>, usize) {
         let mut cost_tracking_time = Measure::start("cost_tracking_time");
-        let mut cost_tracker = bank.write_cost_tracker().unwrap();
         let mut num_included = 0;
         let select_results = transactions
             .zip(transactions_costs)
@@ -702,8 +706,12 @@ mod tests {
         bank.write_cost_tracker()
             .unwrap()
             .set_limits(cost_limit, cost_limit, cost_limit);
-        let (results, num_selected) =
-            qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
+        let (results, num_selected) = qos_service.select_transactions_per_cost(
+            txs.iter(),
+            txs_costs.into_iter(),
+            &bank,
+            &mut bank.write_cost_tracker().unwrap(),
+        );
         assert_eq!(num_selected, 2);
 
         // verify that first transfer tx and first vote are allowed
@@ -756,8 +764,12 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) =
-                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
+            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
+                txs.iter(),
+                txs_costs.into_iter(),
+                &bank,
+                &mut bank.write_cost_tracker().unwrap(),
+            );
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -825,8 +837,12 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) =
-                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
+            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
+                txs.iter(),
+                txs_costs.into_iter(),
+                &bank,
+                &mut bank.write_cost_tracker().unwrap(),
+            );
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -879,8 +895,12 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) =
-                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
+            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
+                txs.iter(),
+                txs_costs.into_iter(),
+                &bank,
+                &mut bank.write_cost_tracker().unwrap(),
+            );
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()

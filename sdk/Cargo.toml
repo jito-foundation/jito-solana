@@ -18,7 +18,7 @@ program = []
 
 default = [
     "borsh",
-    "full",  # functionality that is not compatible or needed for on-chain programs
+    "full", # functionality that is not compatible or needed for on-chain programs
 ]
 full = [
     "byteorder",
@@ -90,6 +90,9 @@ frozen-abi = [
 openssl-vendored = ["solana-precompiles/openssl-vendored"]
 
 [dependencies]
+anchor-lang = { workspace = true }
+assert_matches = { workspace = true, optional = true }
+base64 = { workspace = true }
 bincode = { workspace = true }
 bitflags = { workspace = true, features = ["serde"] }
 borsh = { workspace = true, optional = true }

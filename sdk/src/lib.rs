@@ -62,6 +62,7 @@ pub use solana_program::{borsh, borsh0_10, borsh1};
 #[cfg(feature = "full")]
 #[deprecated(since = "2.2.0", note = "Use `solana-signer` crate instead")]
 pub use solana_signer::signers;
+pub mod bundle;
 pub mod entrypoint;
 pub mod entrypoint_deprecated;
 pub mod example_mocks;

@@ -389,7 +389,8 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         // Determine a capacity for the internal account cache. This
         // over-allocates but avoids ever reallocating, and spares us from
         // deduplicating the account keys lists.
-        let account_keys_in_batch = sanitized_txs.iter().map(|tx| tx.account_keys().len()).sum();
+        let account_keys_in_batch: usize =
+            sanitized_txs.iter().map(|tx| tx.account_keys().len()).sum();
 
         // Create the account loader, which wraps all external account fetching.
         let mut account_loader = AccountLoader::new_with_account_cache_capacity(
@@ -398,7 +399,12 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             program_accounts_map,
             callbacks,
             environment.feature_set.clone(),
-            account_keys_in_batch,
+            account_keys_in_batch.saturating_add(
+                config
+                    .account_overrides
+                    .map(|a| a.len())
+                    .unwrap_or_default(),
+            ),
         );
 
         let enable_transaction_loading_failure_fees = environment

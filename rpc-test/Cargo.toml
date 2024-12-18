@@ -34,6 +34,7 @@ solana-transaction-status = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
+serial_test = { workspace = true }
 solana-connection-cache = { workspace = true }
 solana-logger = { workspace = true }
 

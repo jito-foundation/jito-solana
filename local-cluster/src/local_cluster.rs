@@ -351,6 +351,7 @@ impl LocalCluster {
                 tpu_max_connections_per_ipaddr_per_minute: 32, // max connections per IpAddr per minute
             },
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
 
@@ -559,6 +560,7 @@ impl LocalCluster {
                 tpu_max_connections_per_ipaddr_per_minute: 32, // max connections per IpAddr per mintute
             },
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
 
@@ -1095,6 +1097,7 @@ impl Cluster for LocalCluster {
                 tpu_max_connections_per_ipaddr_per_minute: 32, // max connections per IpAddr per minute, use higher value because of tests
             },
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         cluster_validator_info.validator = Some(restarted_node);

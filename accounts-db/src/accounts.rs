@@ -18,7 +18,7 @@ use {
         message::v0::LoadedAddresses,
         pubkey::Pubkey,
         slot_hashes::SlotHashes,
-        transaction::{Result, SanitizedTransaction},
+        transaction::{Result, SanitizedTransaction, TransactionError},
         transaction_context::TransactionAccount,
     },
     solana_svm_transaction::{
@@ -37,12 +37,12 @@ use {
 
 pub type PubkeyAccountSlot = (Pubkey, AccountSharedData, Slot);
 
-struct TransactionAccountLocksIterator<'a, T: SVMMessage> {
+pub struct TransactionAccountLocksIterator<'a, T: SVMMessage> {
     transaction: &'a T,
 }
 
 impl<'a, T: SVMMessage> TransactionAccountLocksIterator<'a, T> {
-    pub(crate) fn new(transaction: &'a T) -> Self {
+    pub fn new(transaction: &'a T) -> Self {
         Self { transaction }
     }
 
@@ -570,7 +570,7 @@ impl Accounts {
                     .map(|_| TransactionAccountLocksIterator::new(tx))
             })
             .collect();
-        self.lock_accounts_inner(tx_account_locks_results)
+        self.lock_accounts_inner(tx_account_locks_results, None, None)
     }
 
     #[must_use]
@@ -579,6 +579,8 @@ impl Accounts {
         txs: impl Iterator<Item = &'a (impl SVMMessage + 'a)>,
         results: impl Iterator<Item = Result<()>>,
         tx_account_lock_limit: usize,
+        additional_read_locks: Option<&HashSet<Pubkey>>,
+        additional_write_locks: Option<&HashSet<Pubkey>>,
     ) -> Vec<Result<()>> {
         // Validate the account locks, then get iterator if successful validation.
         let tx_account_locks_results: Vec<Result<_>> = txs
@@ -589,21 +591,29 @@ impl Accounts {
                 Err(err) => Err(err),
             })
             .collect();
-        self.lock_accounts_inner(tx_account_locks_results)
+        self.lock_accounts_inner(
+            tx_account_locks_results,
+            additional_read_locks,
+            additional_write_locks,
+        )
     }
 
     #[must_use]
     fn lock_accounts_inner(
         &self,
         tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<impl SVMMessage>>>,
+        additional_read_locks: Option<&HashSet<Pubkey>>,
+        additional_write_locks: Option<&HashSet<Pubkey>>,
     ) -> Vec<Result<()>> {
         let account_locks = &mut self.account_locks.lock().unwrap();
         tx_account_locks_results
             .into_iter()
             .map(|tx_account_locks_result| match tx_account_locks_result {
-                Ok(tx_account_locks) => {
-                    account_locks.try_lock_accounts(tx_account_locks.accounts_with_is_writable())
-                }
+                Ok(tx_account_locks) => account_locks.try_lock_accounts(
+                    tx_account_locks.accounts_with_is_writable(),
+                    additional_read_locks,
+                    additional_write_locks,
+                ),
                 Err(err) => Err(err),
             })
             .collect()
@@ -645,6 +655,57 @@ impl Accounts {
     /// Add a slot to root.  Root slots cannot be purged
     pub fn add_root(&self, slot: Slot) -> AccountsAddRootTiming {
         self.accounts_db.add_root(slot)
+    }
+
+    pub fn lock_accounts_sequential_with_results<Tx: SVMMessage>(
+        &self,
+        txs: &[Tx],
+        tx_account_lock_limit: usize,
+    ) -> Vec<Result<()>> {
+        let tx_account_locks_results: Vec<_> = txs
+            .iter()
+            .map(|tx| {
+                validate_account_locks(tx.account_keys(), tx_account_lock_limit)
+                    .map(|_| TransactionAccountLocksIterator::new(tx))
+            })
+            .collect();
+        self.lock_accounts_sequential_inner(tx_account_locks_results)
+    }
+
+    #[must_use]
+    fn lock_accounts_sequential_inner<Tx: SVMMessage>(
+        &self,
+        tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<Tx>>>,
+    ) -> Vec<Result<()>> {
+        let mut l_account_locks = self.account_locks.lock().unwrap();
+        Self::lock_accounts_sequential(&mut l_account_locks, tx_account_locks_results)
+    }
+
+    pub fn lock_accounts_sequential<Tx: SVMMessage>(
+        account_locks: &mut AccountLocks,
+        tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<Tx>>>,
+    ) -> Vec<Result<()>> {
+        let mut account_in_use_set = false;
+        tx_account_locks_results
+            .into_iter()
+            .map(|tx_account_locks_result| match tx_account_locks_result {
+                Ok(tx_account_locks) => match account_in_use_set {
+                    true => Err(TransactionError::AccountInUse),
+                    false => {
+                        let locked = account_locks.try_lock_accounts(
+                            tx_account_locks.accounts_with_is_writable(),
+                            None,
+                            None,
+                        );
+                        if matches!(locked, Err(TransactionError::AccountInUse)) {
+                            account_in_use_set = true;
+                        }
+                        locked
+                    }
+                },
+                Err(err) => Err(err),
+            })
+            .collect()
     }
 }
 
@@ -1258,6 +1319,8 @@ mod tests {
             txs.iter(),
             qos_results.into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
+            None,
+            None,
         );
 
         assert_eq!(

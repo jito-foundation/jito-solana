@@ -87,13 +87,14 @@ pub fn bank_fields_from_snapshot_archives(
     storage_access: StorageAccess,
 ) -> snapshot_utils::Result<BankFieldsToDeserialize> {
     let full_snapshot_archive_info =
-        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir).ok_or_else(|| {
-            SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf())
-        })?;
+        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir, None).ok_or_else(
+            || SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf()),
+        )?;
 
     let incremental_snapshot_archive_info = get_highest_incremental_snapshot_archive_info(
         &incremental_snapshot_archives_dir,
         full_snapshot_archive_info.slot(),
+        None,
     );
 
     let temp_unpack_dir = TempDir::new()?;
@@ -293,13 +294,14 @@ pub fn bank_from_latest_snapshot_archives(
     Option<IncrementalSnapshotArchiveInfo>,
 )> {
     let full_snapshot_archive_info =
-        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir).ok_or_else(|| {
-            SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf())
-        })?;
+        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir, None).ok_or_else(
+            || SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf()),
+        )?;
 
     let incremental_snapshot_archive_info = get_highest_incremental_snapshot_archive_info(
         &incremental_snapshot_archives_dir,
         full_snapshot_archive_info.slot(),
+        None,
     );
 
     let (bank, _) = bank_from_snapshot_archives(
@@ -2536,7 +2538,7 @@ mod tests {
         fs::remove_file(full_snapshot_archive_info.unwrap().path()).unwrap();
 
         let highest_full_snapshot_archive =
-            get_highest_full_snapshot_archive_info(&snapshot_archives_dir).unwrap();
+            get_highest_full_snapshot_archive_info(&snapshot_archives_dir, None).unwrap();
         let highest_bank_snapshot_post =
             get_highest_bank_snapshot_post(&bank_snapshots_dir).unwrap();
         let highest_bank_snapshot_pre = get_highest_bank_snapshot_pre(&bank_snapshots_dir).unwrap();

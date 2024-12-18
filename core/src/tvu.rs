@@ -164,6 +164,7 @@ impl Tvu {
         wen_restart_repair_slots: Option<Arc<RwLock<Vec<Slot>>>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let in_wen_restart = wen_restart_repair_slots.is_some();
 
@@ -214,6 +215,7 @@ impl Tvu {
             max_slots.clone(),
             Some(rpc_subscriptions.clone()),
             slot_status_notifier.clone(),
+            shred_receiver_addr,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -587,6 +589,7 @@ pub mod tests {
             wen_restart_repair_slots,
             None,
             Arc::new(connection_cache),
+            Arc::new(RwLock::new(None)),
         )
         .expect("assume success");
         if enable_wen_restart {

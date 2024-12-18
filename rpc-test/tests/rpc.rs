@@ -5,6 +5,7 @@ use {
     log::*,
     reqwest::{self, header::CONTENT_TYPE},
     serde_json::{json, Value},
+    serial_test::serial,
     solana_account_decoder::UiAccount,
     solana_client::connection_cache::ConnectionCache,
     solana_net_utils::bind_to_unspecified,
@@ -283,6 +284,7 @@ fn test_rpc_slot_updates() {
 }
 
 #[test]
+#[serial] // helps test pass
 fn test_rpc_subscriptions() {
     solana_logger::setup();
 
