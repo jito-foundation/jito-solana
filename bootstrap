@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -eu
+
+BANK_HASH=$(cargo run --release --bin solana-ledger-tool -- -l config/bootstrap-validator bank-hash)
+
+# increase max file handle limit
+ulimit -Hn 1000000
+
+# if above fails, run:
+# sudo bash -c 'echo "*               hard    nofile          1000000" >> /etc/security/limits.conf'
+
+# NOTE: make sure tip-payment and tip-distribution program are deployed using the correct pubkeys
+RUST_LOG=INFO,solana_core::bundle_stage=DEBUG \
+  NDEBUG=1 ./multinode-demo/bootstrap-validator.sh \
+  --wait-for-supermajority 0 \
+  --expected-bank-hash "$BANK_HASH" \
+  --block-engine-url http://127.0.0.1 \
+  --relayer-url http://127.0.0.1:11226 \
+  --rpc-pubsub-enable-block-subscription \
+  --enable-rpc-transaction-history \
+  --tip-payment-program-pubkey T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt \
+  --tip-distribution-program-pubkey 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7 \
+  --commission-bps 0 \
+  --shred-receiver-address 127.0.0.1:1002 \
+  --trust-relayer-packets \
+  --trust-block-engine-packets
