@@ -33,7 +33,7 @@ use {
         net::{Ipv4Addr, UdpSocket},
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc,
+            Arc, RwLock,
         },
         thread::{sleep, Builder},
         time::Duration,
@@ -127,6 +127,7 @@ fn bench_retransmitter(bencher: &mut Bencher) {
         Arc::default(), // solana_rpc::max_slots::MaxSlots
         None,
         None,
+        Arc::new(RwLock::new(None)),
     );
 
     let mut index = 0;
