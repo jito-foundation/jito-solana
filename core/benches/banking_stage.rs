@@ -25,6 +25,7 @@ use {
             BankingStage, BankingStageStats,
         },
         banking_trace::{BankingPacketBatch, BankingTracer},
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     solana_entry::entry::{next_hash, Entry},
     solana_gossip::cluster_info::{ClusterInfo, Node},
@@ -54,6 +55,7 @@ use {
     },
     solana_streamer::socket::SocketAddrSpace,
     std::{
+        collections::HashSet,
         iter::repeat_with,
         sync::{atomic::Ordering, Arc},
         time::{Duration, Instant},
@@ -65,8 +67,15 @@ fn check_txs(receiver: &Arc<Receiver<WorkingBankEntry>>, ref_tx_count: usize) {
     let mut total = 0;
     let now = Instant::now();
     loop {
-        if let Ok((_bank, (entry, _tick_height))) = receiver.recv_timeout(Duration::new(1, 0)) {
-            total += entry.transactions.len();
+        if let Ok(WorkingBankEntry {
+            bank: _,
+            entries_ticks,
+        }) = receiver.recv_timeout(Duration::new(1, 0))
+        {
+            total += entries_ticks
+                .iter()
+                .map(|e| e.0.transactions.len())
+                .sum::<usize>();
         }
         if total >= ref_tx_count {
             break;
@@ -110,7 +119,14 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
     );
     let (s, _r) = unbounded();
     let committer = Committer::new(None, s, Arc::new(PrioritizationFeeCache::new(0u64)));
-    let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+    let consumer = Consumer::new(
+        committer,
+        recorder,
+        QosService::new(1),
+        None,
+        HashSet::default(),
+        BundleAccountLocker::default(),
+    );
     // This tests the performance of buffering packets.
     // If the packet buffers are copied, performance will be poor.
     bencher.iter(move || {
@@ -309,6 +325,8 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         bank_forks,
         &Arc::new(PrioritizationFeeCache::new(0u64)),
         false,
+        HashSet::default(),
+        BundleAccountLocker::default(),
     );
 
     let chunk_len = verified.len() / CHUNKS;

@@ -16,6 +16,7 @@ itertools = { workspace = true }
 log = { workspace = true }
 solana-client = { workspace = true }
 solana-connection-cache = { workspace = true }
+solana-gossip = { workspace = true }
 solana-measure = { workspace = true }
 solana-metrics = { workspace = true }
 solana-quic-client = { workspace = true }
@@ -28,6 +29,7 @@ tokio-util = { workspace = true }
 [dev-dependencies]
 solana-logger = { workspace = true }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-streamer = { workspace = true }
 
 [features]
 dev-context-only-utils = []

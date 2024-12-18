@@ -1,6 +1,6 @@
 use {
     super::{
-        committer::{CommitTransactionDetails, Committer, PreBalanceInfo},
+        committer::{CommitTransactionDetails, Committer},
         immutable_deserialized_packet::ImmutableDeserializedPacket,
         leader_slot_metrics::{
             CommittedTransactionsCounts, LeaderSlotMetricsTracker, ProcessTransactionsSummary,
@@ -11,6 +11,7 @@ use {
         unprocessed_transaction_storage::{ConsumeScannerPayload, UnprocessedTransactionStorage},
         BankingStageStats,
     },
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     itertools::Itertools,
     solana_feature_set as feature_set,
     solana_ledger::token_balances::collect_token_balances,
@@ -28,6 +29,7 @@ use {
     solana_sdk::{
         clock::{FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET, MAX_PROCESSING_AGE},
         fee::FeeBudgetLimits,
+        pubkey::Pubkey,
         saturating_add_assign,
         timing::timestamp,
         transaction::{self, TransactionError},
@@ -38,8 +40,9 @@ use {
         transaction_processing_result::TransactionProcessingResultExtensions,
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
     },
-    solana_timings::ExecuteTimings,
+    solana_transaction_status::PreBalanceInfo,
     std::{
+        collections::HashSet,
         num::Saturating,
         sync::{atomic::Ordering, Arc},
         time::Instant,
@@ -90,6 +93,8 @@ pub struct Consumer {
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
+    blacklisted_accounts: HashSet<Pubkey>,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl Consumer {
@@ -98,12 +103,16 @@ impl Consumer {
         transaction_recorder: TransactionRecorder,
         qos_service: QosService,
         log_messages_bytes_limit: Option<usize>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             committer,
             transaction_recorder,
             qos_service,
             log_messages_bytes_limit,
+            blacklisted_accounts,
+            bundle_account_locker,
         }
     }
 
@@ -133,6 +142,7 @@ impl Consumer {
                     packets_to_process,
                 )
             },
+            &self.blacklisted_accounts,
         );
 
         if reached_end_of_slot {
@@ -481,20 +491,26 @@ impl Consumer {
             cost_model_us,
         ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
             bank,
+            &mut bank.write_cost_tracker().unwrap(),
             txs,
             pre_results
         ));
 
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
-        // same account state
+        // same account state.
+        // BundleAccountLocker is used to prevent race conditions with bundled transactions from bundle stage
+        let bundle_account_locks = self.bundle_account_locker.account_locks();
         let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
             txs,
             transaction_qos_cost_results.iter().map(|r| match r {
                 Ok(_cost) => Ok(()),
                 Err(err) => Err(err.clone()),
-            })
+            }),
+            Some(&bundle_account_locks.read_locks()),
+            Some(&bundle_account_locks.write_locks())
         ));
+        drop(bundle_account_locks);
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
         // WouldExceedMaxAccountCostLimit, WouldExceedMaxVoteCostLimit
@@ -526,8 +542,9 @@ impl Consumer {
             .iter_mut()
             .for_each(|x| *x += chunk_offset);
 
-        let (cu, us) =
-            Self::accumulate_execute_units_and_time(&execute_and_commit_timings.execute_timings);
+        let (cu, us) = execute_and_commit_timings
+            .execute_timings
+            .accumulate_execute_units_and_time();
         self.qos_service.accumulate_actual_execute_cu(cu);
         self.qos_service.accumulate_actual_execute_time(us);
 
@@ -564,7 +581,7 @@ impl Consumer {
             if transaction_status_sender_enabled {
                 pre_balance_info.native = bank.collect_balances(batch);
                 pre_balance_info.token =
-                    collect_token_balances(bank, batch, &mut pre_balance_info.mint_decimals)
+                    collect_token_balances(bank, batch, &mut pre_balance_info.mint_decimals, None)
             }
         });
         execute_and_commit_timings.collect_balances_us = collect_balances_us;
@@ -670,7 +687,7 @@ impl Consumer {
 
         let (record_transactions_summary, record_us) = measure_us!(self
             .transaction_recorder
-            .record_transactions(bank.slot(), processed_transactions));
+            .record_transactions(bank.slot(), vec![processed_transactions]));
         execute_and_commit_timings.record_us = record_us;
 
         let RecordTransactionsSummary {
@@ -787,21 +804,6 @@ impl Consumer {
         )
     }
 
-    fn accumulate_execute_units_and_time(execute_timings: &ExecuteTimings) -> (u64, u64) {
-        execute_timings.details.per_program_timings.values().fold(
-            (0, 0),
-            |(units, times), program_timings| {
-                (
-                    (Saturating(units)
-                        + program_timings.accumulated_units
-                        + program_timings.total_errored_units)
-                        .0,
-                    (Saturating(times) + program_timings.accumulated_us).0,
-                )
-            },
-        )
-    }
-
     /// This function filters pending packets that are still valid
     /// # Arguments
     /// * `transactions` - a batch of transactions deserialized from packets
@@ -896,10 +898,11 @@ mod tests {
             transaction::{Transaction, VersionedTransaction},
         },
         solana_svm::account_loader::CheckedTransactionDetails,
-        solana_timings::ProgramTiming,
+        solana_timings::{ExecuteTimings, ProgramTiming},
         solana_transaction_status::{TransactionStatusMeta, VersionedTransactionWithStatusMeta},
         std::{
             borrow::Cow,
+            num::Saturating,
             path::Path,
             sync::{
                 atomic::{AtomicBool, AtomicU64},
@@ -946,7 +949,14 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            HashSet::default(),
+            BundleAccountLocker::default(),
+        );
         let process_transactions_summary =
             consumer.process_transactions(&bank, &Instant::now(), &transactions);
 
@@ -1121,7 +1131,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let process_transactions_batch_output =
                 consumer.process_and_record_transactions(&bank, &transactions, 0);
@@ -1149,7 +1166,13 @@ mod tests {
 
             let mut done = false;
             // read entries until I find mine, might be ticks...
-            while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
+            while let Ok(WorkingBankEntry {
+                bank,
+                entries_ticks,
+            }) = entry_receiver.recv()
+            {
+                assert!(entries_ticks.len() == 1);
+                let entry = &entries_ticks.first().unwrap().0;
                 if !entry.is_tick() {
                     trace!("got entry");
                     assert_eq!(entry.transactions.len(), transactions.len());
@@ -1270,11 +1293,10 @@ mod tests {
                         let timeout = Duration::from_millis(10);
                         let record = record_receiver.recv_timeout(timeout);
                         if let Ok(record) = record {
-                            let record_response = poh_recorder.write().unwrap().record(
-                                record.slot,
-                                record.mixin,
-                                record.transactions,
-                            );
+                            let record_response = poh_recorder
+                                .write()
+                                .unwrap()
+                                .record(record.slot, &record.mixins_txs);
                             poh_recorder.write().unwrap().tick();
                             if record.sender.send(record_response).is_err() {
                                 panic!("Error returning mixin hash");
@@ -1311,7 +1333,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let process_transactions_batch_output =
                 consumer.process_and_record_transactions(&bank, &transactions, 0);
@@ -1339,9 +1368,13 @@ mod tests {
 
             let mut done = false;
             // read entries until I find mine, might be ticks...
-            while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
-                if !entry.is_tick() {
-                    assert_eq!(entry.transactions.len(), transactions.len());
+            while let Ok(WorkingBankEntry {
+                bank: _,
+                entries_ticks,
+            }) = entry_receiver.recv()
+            {
+                if !entries_ticks[0].0.is_tick() {
+                    assert_eq!(entries_ticks[0].0.transactions.len(), transactions.len());
                     done = true;
                     break;
                 }
@@ -1415,7 +1448,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let process_transactions_batch_output =
                 consumer.process_and_record_transactions(&bank, &transactions, 0);
@@ -1494,7 +1534,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let get_block_cost = || bank.read_cost_tracker().unwrap().block_cost();
             let get_tx_count = || bank.read_cost_tracker().unwrap().transaction_count();
@@ -1657,7 +1704,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let process_transactions_batch_output =
                 consumer.process_and_record_transactions(&bank, &transactions, 0);
@@ -1862,7 +1916,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder.clone(), QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder.clone(),
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let process_transactions_summary =
                 consumer.process_transactions(&bank, &Instant::now(), &transactions);
@@ -1991,7 +2052,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let _ = consumer.process_and_record_transactions(&bank, &transactions, 0);
 
@@ -2136,7 +2204,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             let _ = consumer.process_and_record_transactions(&bank, &[sanitized_tx.clone()], 0);
 
@@ -2196,7 +2271,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             // When the working bank in poh_recorder is None, no packets should be processed (consume will not be called)
             assert!(!poh_recorder.read().unwrap().has_bank());
@@ -2281,7 +2363,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             // When the working bank in poh_recorder is None, no packets should be processed
             assert!(!poh_recorder.read().unwrap().has_bank());
@@ -2333,7 +2422,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             // When the working bank in poh_recorder is None, no packets should be processed (consume will not be called)
             assert!(!poh_recorder.read().unwrap().has_bank());
@@ -2465,7 +2561,14 @@ mod tests {
                 replay_vote_sender,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
             );
-            let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+            let consumer = Consumer::new(
+                committer,
+                recorder,
+                QosService::new(1),
+                None,
+                HashSet::default(),
+                BundleAccountLocker::default(),
+            );
 
             // When the working bank in poh_recorder is None, no packets should be processed (consume will not be called)
             assert!(!poh_recorder.read().unwrap().has_bank());
@@ -2534,7 +2637,7 @@ mod tests {
             expected_units += n * 1000;
         }
 
-        let (units, us) = Consumer::accumulate_execute_units_and_time(&execute_timings);
+        let (units, us) = execute_timings.accumulate_execute_units_and_time();
 
         assert_eq!(expected_units, units);
         assert_eq!(expected_us, us);

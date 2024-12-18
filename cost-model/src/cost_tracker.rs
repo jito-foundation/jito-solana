@@ -147,6 +147,10 @@ impl CostTracker {
         self.vote_cost_limit = vote_cost_limit;
     }
 
+    pub fn set_block_cost_limit(&mut self, block_cost_limit: u64) {
+        self.block_cost_limit = block_cost_limit;
+    }
+
     pub fn in_flight_transaction_count(&self) -> usize {
         self.in_flight_transaction_count.0
     }
@@ -209,6 +213,10 @@ impl CostTracker {
 
     pub fn vote_cost(&self) -> u64 {
         self.vote_cost
+    }
+
+    pub fn block_cost_limit(&self) -> u64 {
+        self.block_cost_limit
     }
 
     pub fn transaction_count(&self) -> u64 {
