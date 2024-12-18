@@ -53,18 +53,18 @@ pub enum InvalidCacheEntryReason {
     WrongOwner,
 }
 
-type StakeAccount = stake_account::StakeAccount<Delegation>;
+pub type StakeAccount = stake_account::StakeAccount<Delegation>;
 
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
 #[derive(Default, Debug)]
-pub(crate) struct StakesCache(RwLock<Stakes<StakeAccount>>);
+pub struct StakesCache(RwLock<Stakes<StakeAccount>>);
 
 impl StakesCache {
     pub(crate) fn new(stakes: Stakes<StakeAccount>) -> Self {
         Self(RwLock::new(stakes))
     }
 
-    pub(crate) fn stakes(&self) -> RwLockReadGuard<Stakes<StakeAccount>> {
+    pub fn stakes(&self) -> RwLockReadGuard<Stakes<StakeAccount>> {
         self.0.read().unwrap()
     }
 
@@ -203,7 +203,7 @@ pub struct Stakes<T: Clone> {
     vote_accounts: VoteAccounts,
 
     /// stake_delegations
-    stake_delegations: ImHashMap<Pubkey, T>,
+    pub stake_delegations: ImHashMap<Pubkey, T>,
 
     /// unused
     unused: u64,
@@ -246,7 +246,7 @@ impl Stakes<StakeAccount> {
     /// full account state for respective stake pubkeys. get_account function
     /// should return the account at the respective slot where stakes where
     /// cached.
-    pub(crate) fn new<F>(stakes: &Stakes<Delegation>, get_account: F) -> Result<Self, Error>
+    pub fn new<F>(stakes: &Stakes<Delegation>, get_account: F) -> Result<Self, Error>
     where
         F: Fn(&Pubkey) -> Option<AccountSharedData> + Sync,
     {
@@ -497,7 +497,7 @@ impl Stakes<StakeAccount> {
         );
     }
 
-    pub(crate) fn stake_delegations(&self) -> &ImHashMap<Pubkey, StakeAccount> {
+    pub fn stake_delegations(&self) -> &ImHashMap<Pubkey, StakeAccount> {
         &self.stake_delegations
     }
 
