@@ -23,6 +23,8 @@ ignores=(
   .cargo
   target
   node_modules
+  jito-programs
+  anchor
 )
 
 not_paths=()
