@@ -8,9 +8,13 @@ use {
         fail_entry_verification_broadcast_run::FailEntryVerificationBroadcastRun,
         standard_broadcast_run::StandardBroadcastRun,
     },
-    crate::cluster_nodes::{ClusterNodes, ClusterNodesCache},
+    crate::{
+        MAX_SHRED_RECEIVER_ADDRESSES, ShredReceiverAddresses,
+        cluster_nodes::{ClusterNodes, ClusterNodesCache},
+    },
     agave_votor::event::VotorEventSender,
     agave_xdp::xdp_retransmitter::XdpSender,
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, RecvError, RecvTimeoutError, Sender, unbounded},
     itertools::Itertools,
     solana_clock::Slot,
@@ -30,7 +34,7 @@ use {
     solana_time_utils::{AtomicInterval, timestamp},
     std::{
         collections::{HashMap, HashSet},
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{
             Arc, Mutex, RwLock,
             atomic::{AtomicBool, Ordering},
@@ -123,6 +127,9 @@ impl BroadcastStageType {
         shred_version: u16,
         xdp_sender: Option<XdpSender>,
         votor_event_sender: VotorEventSender,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> BroadcastStage {
         let migration_status = bank_forks.read().unwrap().migration_status();
         match self {
@@ -136,6 +143,9 @@ impl BroadcastStageType {
                 bank_forks,
                 StandardBroadcastRun::new(shred_version, migration_status, votor_event_sender),
                 xdp_sender,
+                shredstream_receiver_address,
+                shred_receiver_addresses,
+                multicast_receiver_address,
             ),
 
             BroadcastStageType::FailEntryVerification => BroadcastStage::new(
@@ -148,6 +158,9 @@ impl BroadcastStageType {
                 bank_forks,
                 FailEntryVerificationBroadcastRun::new(shred_version),
                 xdp_sender,
+                shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                Arc::new(ArcSwap::from_pointee(None)),
             ),
 
             BroadcastStageType::BroadcastFakeShreds => BroadcastStage::new(
@@ -160,6 +173,9 @@ impl BroadcastStageType {
                 bank_forks,
                 BroadcastFakeShredsRun::new(0, shred_version),
                 xdp_sender,
+                shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                Arc::new(ArcSwap::from_pointee(None)),
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -177,6 +193,9 @@ impl BroadcastStageType {
                     votor_event_sender,
                 ),
                 xdp_sender,
+                shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                Arc::new(ArcSwap::from_pointee(None)),
             ),
         }
     }
@@ -197,6 +216,9 @@ trait BroadcastRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()>;
 }
@@ -293,6 +315,9 @@ impl BroadcastStage {
         bank_forks: Arc<RwLock<BankForks>>,
         mut broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
         xdp_sender: Option<XdpSender>,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -351,6 +376,10 @@ impl BroadcastStage {
             let cluster_info = cluster_info.clone();
             let bank_forks = bank_forks.clone();
             let xdp_sender = xdp_sender.clone();
+            let shredstream_receiver_address = shredstream_receiver_address.clone();
+            let shred_receiver_addresses = shred_receiver_addresses.clone();
+            let multicast_receiver_address = multicast_receiver_address.clone();
+
             let run_transmit = move || loop {
                 let sock_variant = match xdp_sender.as_ref() {
                     Some(xdp) => BroadcastSocket::Xdp(xdp),
@@ -365,6 +394,9 @@ impl BroadcastStage {
                     &cluster_info,
                     sock_variant,
                     &bank_forks,
+                    &shredstream_receiver_address,
+                    &shred_receiver_addresses,
+                    &multicast_receiver_address,
                 );
                 if let Some(res) = Self::handle_error(res, "solana-broadcaster-transmit") {
                     return res;
@@ -485,6 +517,7 @@ pub enum BroadcastSocket<'a> {
 
 /// Broadcasts shreds from the leader (i.e. this node) to the root of the
 /// turbine retransmit tree for each shred.
+#[allow(clippy::too_many_arguments)]
 pub fn broadcast_shreds(
     socket: BroadcastSocket,
     shreds: &[Shred],
@@ -494,6 +527,9 @@ pub fn broadcast_shreds(
     cluster_info: &ClusterInfo,
     bank_forks: &RwLock<BankForks>,
     socket_addr_space: &SocketAddrSpace,
+    shredstream_receiver_address: &Option<SocketAddr>,
+    shred_receiver_addresses: &ShredReceiverAddresses,
+    multicast_receiver_address: &Option<SocketAddr>,
 ) -> Result<()> {
     let mut result = Ok(());
     // Compute destinations for each of the shreds to be sent
@@ -502,7 +538,7 @@ pub fn broadcast_shreds(
         let bank_forks = bank_forks.read().unwrap();
         (bank_forks.root_bank(), bank_forks.working_bank())
     };
-    let packets: Vec<_> = shreds
+    let mut packets: Vec<_> = shreds
         .iter()
         .chunk_by(|shred| shred.slot())
         .into_iter()
@@ -522,6 +558,23 @@ pub fn broadcast_shreds(
             })
         })
         .collect();
+
+    // Forward shreds to external receivers, avoiding duplicates when addresses
+    // overlap. Add the cluster multicast address only when the route is present
+    // and the address is not already added.
+    if let Some(addr) = shredstream_receiver_address {
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
+    }
+    let external_receiver_addrs = shred_receiver_addresses
+        .iter()
+        .chain(multicast_receiver_address.iter().filter(|addr| {
+            !shred_receiver_addresses.contains(addr)
+                && shred_receiver_addresses.len() < MAX_SHRED_RECEIVER_ADDRESSES
+        }))
+        .filter(|addr| Some(**addr) != *shredstream_receiver_address);
+    for &addr in external_receiver_addrs {
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), addr)));
+    }
 
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
@@ -556,7 +609,6 @@ pub fn broadcast_shreds(
     transmit_stats.total_packets += num_udp_packets;
     result
 }
-
 impl<T> From<crossbeam_channel::SendError<T>> for Error {
     fn from(_: crossbeam_channel::SendError<T>) -> Error {
         Error::Send
@@ -753,6 +805,9 @@ pub mod test {
             bank_forks,
             StandardBroadcastRun::new(0, Arc::new(MigrationStatus::default()), votor_event_sender),
             None,
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
         );
 
         MockBroadcastStage {

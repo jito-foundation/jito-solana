@@ -5,7 +5,7 @@ use {
         broadcast_utils::{self, ReceiveResults},
         *,
     },
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{ShredReceiverAddresses, cluster_nodes::ClusterNodesCache},
     agave_votor::event::VotorEventSender,
     agave_votor_messages::migration::MigrationStatus,
     solana_entry::entry::Entry,
@@ -16,7 +16,7 @@ use {
         Shred, ShredType, Shredder,
     },
     solana_time_utils::AtomicInterval,
-    std::{borrow::Cow, sync::RwLock},
+    std::{borrow::Cow, net::SocketAddr, sync::RwLock},
 };
 
 #[derive(Clone)]
@@ -180,7 +180,15 @@ impl StandardBroadcastRun {
             &mut ProcessShredsStats::default(),
         )?;
         // Data and coding shreds are sent in a single batch.
-        let _ = self.transmit(&srecv, cluster_info, BroadcastSocket::Udp(sock), bank_forks);
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            BroadcastSocket::Udp(sock),
+            bank_forks,
+            &ArcSwap::default(),
+            &ArcSwap::default(),
+            &ArcSwap::default(),
+        );
         let _ = self.record(&brecv, blockstore);
         Ok(())
     }
@@ -389,6 +397,9 @@ impl StandardBroadcastRun {
         shreds: Arc<Vec<Shred>>,
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
+        shredstream_receiver_address: &Option<SocketAddr>,
+        shred_receiver_addresses: &ShredReceiverAddresses,
+        multicast_receiver_address: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats {
@@ -409,6 +420,9 @@ impl StandardBroadcastRun {
             cluster_info,
             bank_forks,
             cluster_info.socket_addr_space(),
+            shredstream_receiver_address,
+            shred_receiver_addresses,
+            multicast_receiver_address,
         )?;
         transmit_time.stop();
 
@@ -475,9 +489,21 @@ impl BroadcastRun for StandardBroadcastRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
-        self.broadcast(sock, cluster_info, shreds, batch_info, bank_forks)
+        self.broadcast(
+            sock,
+            cluster_info,
+            shreds,
+            batch_info,
+            bank_forks,
+            &shredstream_receiver_address.load(),
+            &shred_receiver_addresses.load(),
+            &multicast_receiver_address.load(),
+        )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
         let (shreds, slot_start_ts) = receiver.recv()?;

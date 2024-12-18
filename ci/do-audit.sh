@@ -99,6 +99,15 @@ cargo_audit_ignores=(
   #
   # AGAVE OK: vendored the upstream fix again
   --ignore RUSTSEC-2026-0104
+
+  # Crate:     ring
+  # Version:   0.16.20
+  # Title:     Some AES functions may panic when overflow checking is enabled.
+  # Date:      2025-03-06
+  # ID:        RUSTSEC-2025-0009
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2025-0009
+  # Solution:  Upgrade to >=0.17.12
+  --ignore RUSTSEC-2025-0009
 )
 scripts/cargo-for-all-lock-files.sh audit "${cargo_audit_ignores[@]}" | $dep_tree_filter
 # we want the `cargo audit` exit code, not `$dep_tree_filter`'s
