@@ -94,6 +94,7 @@ pub struct SocketConfiguration {
     recv_buffer_size: Option<usize>,
     send_buffer_size: Option<usize>,
     non_blocking: bool,
+    multicast_ttl: Option<u32>,
 }
 
 impl SocketConfiguration {
@@ -124,6 +125,11 @@ impl SocketConfiguration {
         self.non_blocking = non_blocking;
         self
     }
+
+    pub fn multicast_ttl(mut self, ttl: u32) -> Self {
+        self.multicast_ttl = Some(ttl);
+        self
+    }
 }
 
 #[allow(deprecated)]
@@ -134,6 +140,7 @@ impl From<crate::SocketConfig> for SocketConfiguration {
             recv_buffer_size: value.recv_buffer_size,
             send_buffer_size: value.send_buffer_size,
             non_blocking: false,
+            multicast_ttl: None,
         }
     }
 }
@@ -159,6 +166,7 @@ pub(crate) fn udp_socket_with_config(config: SocketConfiguration) -> io::Result<
         recv_buffer_size,
         send_buffer_size,
         non_blocking,
+        multicast_ttl,
     } = config;
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
     if PLATFORM_SUPPORTS_SOCKET_CONFIGS {
@@ -168,6 +176,9 @@ pub(crate) fn udp_socket_with_config(config: SocketConfiguration) -> io::Result<
         }
         if let Some(send_buffer_size) = send_buffer_size {
             sock.set_send_buffer_size(send_buffer_size)?;
+        }
+        if let Some(multicast_ttl) = multicast_ttl {
+            sock.set_multicast_ttl_v4(multicast_ttl)?;
         }
 
         if reuseport {
@@ -660,6 +671,17 @@ mod tests {
             tcp_listeners,
         ));
         assert!(verify_all_reachable_udp(&ip_echo_server_addr, &socket_refs));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_multicast_ttl() {
+        let ip_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let port = unique_port_range_for_tests(1).start;
+        let config = SocketConfiguration::default().multicast_ttl(64);
+        let socket = bind_to_with_config(ip_addr, port, config).unwrap();
+        let sock2 = socket2::Socket::from(socket);
+        assert_eq!(sock2.multicast_ttl_v4().unwrap(), 64);
     }
 
     // This test is gated for non-macOS platforms because it requires binding to 127.0.0.2,

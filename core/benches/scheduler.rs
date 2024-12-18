@@ -1,11 +1,13 @@
 #[cfg(not(any(target_env = "msvc", target_os = "freebsd")))]
 use jemallocator::Jemalloc;
+use solana_core::bundle_stage::bundle_account_locker::BundleAccountLocker;
 #[path = "receive_and_buffer_utils.rs"]
 mod utils;
 use {
     criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput},
     crossbeam_channel::{unbounded, Receiver, Sender},
     solana_core::banking_stage::{
+        decision_maker::BufferedPacketsDecision,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork},
         transaction_scheduler::{
             greedy_scheduler::{GreedyScheduler, GreedySchedulerConfig},
@@ -60,6 +62,7 @@ impl PingPong {
                 .send(FinishedConsumeWork {
                     work,
                     retryable_indexes: vec![],
+                    extra_info: None,
                 })
                 .is_err()
             {
@@ -154,6 +157,7 @@ fn bench_scheduler_impl<T: ReceiveAndBuffer + utils::ReceiveAndBufferCreator>(
                                         bench_env.consume_work_senders.clone(),
                                         bench_env.finished_consume_work_receiver.clone(),
                                         GreedySchedulerConfig::default(),
+                                        BundleAccountLocker::default(),
                                     ),
                                     iters,
                                 )
@@ -165,6 +169,7 @@ fn bench_scheduler_impl<T: ReceiveAndBuffer + utils::ReceiveAndBufferCreator>(
                                         bench_env.consume_work_senders.clone(),
                                         bench_env.finished_consume_work_receiver.clone(),
                                         PrioGraphSchedulerConfig::default(),
+                                        BundleAccountLocker::default(),
                                     ),
                                     iters,
                                 )
@@ -203,12 +208,13 @@ fn timing_scheduler<T: ReceiveAndBuffer, S: Scheduler<T::Transaction>>(
         assert_eq!(res.num_received, num_txs);
         assert!(!container.is_empty());
 
+        let ignored_decision = BufferedPacketsDecision::ForwardAndHold;
         let elapsed = {
             let start = Instant::now();
             {
                 while !container.is_empty() {
                     scheduler
-                        .receive_completed(black_box(&mut container))
+                        .receive_completed(black_box(&mut container), &ignored_decision)
                         .unwrap();
 
                     scheduler

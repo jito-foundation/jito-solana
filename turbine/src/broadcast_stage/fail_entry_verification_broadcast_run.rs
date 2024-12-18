@@ -1,10 +1,14 @@
 use {
     super::*,
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{cluster_nodes::ClusterNodesCache, ShredReceiverAddresses},
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
-    std::{thread::sleep, time::Duration},
+    std::{
+        net::{SocketAddr, UdpSocket},
+        thread::sleep,
+        time::Duration,
+    },
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
@@ -175,6 +179,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,
@@ -182,10 +187,15 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
             sock,
+            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &AtomicInterval::default(),
@@ -194,6 +204,9 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
+            &shredstream_receiver_address.load(),
+            &shred_receiver_addresses.load(),
+            &multicast_receiver_address.load(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {

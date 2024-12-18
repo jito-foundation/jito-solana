@@ -2,16 +2,19 @@ use {
     crate::{
         banking_stage::BankingStage,
         cluster_slots_service::cluster_slots::ClusterSlots,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{outstanding_requests::OutstandingRequests, serve_repair::ShredRepairType},
     },
+    arc_swap::ArcSwap,
     solana_gossip::{cluster_info::ClusterInfo, node::NodeMultihoming},
     solana_pubkey::Pubkey,
     solana_quic_definitions::NotifyKeyUpdate,
     solana_runtime::bank_forks::BankForks,
+    solana_turbine::ShredReceiverAddresses,
     std::{
         collections::{HashMap, HashSet},
         net::UdpSocket,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
     },
 };
 
@@ -28,6 +31,8 @@ pub enum KeyUpdaterType {
     Forward,
     /// For the RPC service
     RpcService,
+    /// For the BAM connection
+    BamConnection,
 }
 
 /// Responsible for managing the updaters for identity key change
@@ -81,4 +86,8 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub cluster_slots: Arc<ClusterSlots>,
     pub node: Option<Arc<NodeMultihoming>>,
     pub banking_stage: Arc<RwLock<Option<BankingStage>>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }

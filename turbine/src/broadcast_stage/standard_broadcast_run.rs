@@ -5,7 +5,7 @@ use {
         broadcast_utils::{self, ReceiveResults},
         *,
     },
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{cluster_nodes::ClusterNodesCache, ShredReceiverAddresses},
     solana_entry::entry::Entry,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -14,9 +14,15 @@ use {
         MAX_DATA_SHREDS_PER_SLOT,
     },
     solana_time_utils::AtomicInterval,
-    std::{borrow::Cow, sync::RwLock},
+    std::{borrow::Cow, net::SocketAddr, sync::RwLock},
     tokio::sync::mpsc::Sender as AsyncSender,
 };
+
+struct ExternalBroadcastReceivers<'a> {
+    shredstream_receiver_address: &'a Option<SocketAddr>,
+    shred_receiver_addresses: &'a ShredReceiverAddresses,
+    multicast_receiver_address: &'a Option<SocketAddr>,
+}
 
 #[derive(Clone)]
 pub struct StandardBroadcastRun {
@@ -172,12 +178,18 @@ impl StandardBroadcastRun {
             &mut ProcessShredsStats::default(),
         )?;
         // Data and coding shreds are sent in a single batch.
+        let shred_receiver_socket =
+            solana_net_utils::bind_to_unspecified().expect("bind test shred_receiver_socket");
         let _ = self.transmit(
             &srecv,
             cluster_info,
             BroadcastSocket::Udp(sock),
             bank_forks,
             quic_endpoint_sender,
+            &ArcSwap::default(),
+            &ArcSwap::default(),
+            &ArcSwap::default(),
+            &shred_receiver_socket,
         );
         let _ = self.record(&brecv, blockstore);
         Ok(())
@@ -370,14 +382,17 @@ impl StandardBroadcastRun {
         insert_shreds_stats.update(new_insertion_shreds_stats, broadcast_shred_batch_info);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn broadcast(
         &mut self,
         sock: BroadcastSocket,
+        shred_receiver_socket: &UdpSocket,
         cluster_info: &ClusterInfo,
         shreds: Arc<Vec<Shred>>,
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        external_receivers: ExternalBroadcastReceivers<'_>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats {
@@ -391,6 +406,7 @@ impl StandardBroadcastRun {
 
         broadcast_shreds(
             sock,
+            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &self.last_datapoint_submit,
@@ -399,6 +415,9 @@ impl StandardBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
+            external_receivers.shredstream_receiver_address,
+            external_receivers.shred_receiver_addresses,
+            external_receivers.multicast_receiver_address,
         )?;
         transmit_time.stop();
 
@@ -459,6 +478,7 @@ impl BroadcastRun for StandardBroadcastRun {
             &mut process_stats,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,
@@ -466,15 +486,25 @@ impl BroadcastRun for StandardBroadcastRun {
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
         self.broadcast(
             sock,
+            shred_receiver_socket,
             cluster_info,
             shreds,
             batch_info,
             bank_forks,
             quic_endpoint_sender,
+            ExternalBroadcastReceivers {
+                shredstream_receiver_address: &shredstream_receiver_address.load(),
+                shred_receiver_addresses: &shred_receiver_addresses.load(),
+                multicast_receiver_address: &multicast_receiver_address.load(),
+            },
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
