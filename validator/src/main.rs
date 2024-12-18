@@ -1,4 +1,5 @@
 #![allow(clippy::arithmetic_side_effects)]
+
 #[cfg(not(any(target_env = "msvc", target_os = "freebsd")))]
 use jemallocator::Jemalloc;
 use {
@@ -61,6 +62,7 @@ use {
         snapshot_config::{SnapshotConfig, SnapshotUsage},
         snapshot_utils::{self, ArchiveFormat, SnapshotVersion},
     },
+    solana_runtime_plugin::runtime_plugin_admin_rpc_service::RuntimePluginAdminRpcRequestMetadata,
     solana_sdk::{
         clock::{Slot, DEFAULT_SLOTS_PER_EPOCH},
         hash::Hash,
@@ -79,7 +81,7 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{Arc, RwLock},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         time::Duration,
     },
 };
@@ -222,6 +224,29 @@ pub fn main() {
         }
         ("set-public-address", Some(subcommand_matches)) => {
             commands::set_public_address::execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-block-engine-config", Some(subcommand_matches)) => {
+            commands::block_engine::execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-relayer-config", Some(subcommand_matches)) => {
+            commands::relayer::execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-shred-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_receiver_execute(subcommand_matches, &ledger_path);
+            return;
+        }
+        ("set-shred-retransmit-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_retransmit_receiver_execute(
+                subcommand_matches,
+                &ledger_path,
+            );
+            return;
+        }
+        ("runtime-plugin", Some(plugin_subcommand_matches)) => {
+            commands::runtime_plugin::execute(plugin_subcommand_matches, &ledger_path);
             return;
         }
         _ => unreachable!(),
@@ -1246,6 +1271,31 @@ pub fn main() {
         },
     );
 
+    let runtime_plugin_config_and_rpc_rx = {
+        let plugin_exit = Arc::new(AtomicBool::new(false));
+        let (rpc_request_sender, rpc_request_receiver) = unbounded();
+        solana_runtime_plugin::runtime_plugin_admin_rpc_service::run(
+            &ledger_path,
+            RuntimePluginAdminRpcRequestMetadata {
+                rpc_request_sender,
+                validator_exit: validator_config.validator_exit.clone(),
+            },
+            plugin_exit,
+        );
+
+        if matches.is_present("runtime_plugin_config") {
+            (
+                values_t_or_exit!(matches, "runtime_plugin_config", String)
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                rpc_request_receiver,
+            )
+        } else {
+            (vec![], rpc_request_receiver)
+        }
+    };
+
     let gossip_host: IpAddr = matches
         .value_of("gossip_host")
         .map(|gossip_host| {
@@ -1483,6 +1533,7 @@ pub fn main() {
             vote_quic_server_config,
         },
         admin_service_post_init,
+        Some(runtime_plugin_config_and_rpc_rx),
     ) {
         Ok(validator) => validator,
         Err(err) => match err.downcast_ref() {

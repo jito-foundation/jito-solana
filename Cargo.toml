@@ -30,6 +30,8 @@ members = [
     "bucket_map",
     "builtins",
     "builtins-default-costs",
+    "bundle",
+    "bundle-sdk",
     "cargo-registry",
     "clap-utils",
     "clap-v3-utils",
@@ -56,6 +58,7 @@ members = [
     "gossip",
     "inline-spl",
     "install",
+    "jito-protos",
     "keygen",
     "lattice-hash",
     "ledger",
@@ -108,6 +111,7 @@ members = [
     "rpc-client-nonce-utils",
     "rpc-test",
     "runtime",
+    "runtime-plugin",
     "runtime-transaction",
     "send-transaction-service",
     "stake-accounts",
@@ -123,6 +127,7 @@ members = [
     "thin-client",
     "thread-manager",
     "timings",
+    "tip-distributor",
     "tls-utils",
     "tokens",
     "tps-client",
@@ -150,7 +155,13 @@ members = [
     "zk-token-sdk",
 ]
 
-exclude = ["programs/sbf", "svm/examples", "svm/tests/example-programs"]
+exclude = [
+    "anchor",
+    "jito-programs",
+    "programs/sbf",
+    "svm/examples",
+    "svm/tests/example-programs",
+]
 
 resolver = "2"
 
@@ -179,6 +190,7 @@ aes-gcm-siv = "0.11.1"
 ahash = "0.8.11"
 anyhow = "1.0.95"
 arbitrary = "1.4.1"
+anchor-lang = { path = "anchor/lang" }
 ark-bn254 = "0.4.0"
 ark-ec = "0.4.0"
 ark-ff = "0.4.0"
@@ -271,6 +283,9 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
 js-sys = "0.3.77"
+jito-protos = { path = "jito-protos", version = "=2.2.3" }
+jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
+jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
 json5 = "0.4.1"
 jsonrpc-core = "18.0.0"
 jsonrpc-core-client = "18.0.0"
@@ -279,6 +294,7 @@ jsonrpc-http-server = "18.0.0"
 jsonrpc-ipc-server = "18.0.0"
 jsonrpc-pubsub = "18.0.0"
 lazy-lru = "0.1.3"
+jsonrpc-server-utils = "18.0.0"
 lazy_static = "1.5.0"
 libc = "0.2.169"
 libloading = "0.7.4"
@@ -375,6 +391,8 @@ solana-bn254 = "=2.2.1"
 solana-borsh = "=2.2.1"
 solana-bpf-loader-program = { path = "programs/bpf_loader", version = "=2.2.3" }
 solana-bucket-map = { path = "bucket_map", version = "=2.2.3" }
+solana-bundle = { path = "bundle", version = "=2.2.3" }
+solana-bundle-sdk = { path = "bundle-sdk", version = "=2.2.3" }
 solana-builtins = { path = "builtins", version = "=2.2.3" }
 solana-builtins-default-costs = { path = "builtins-default-costs", version = "=2.2.3" }
 agave-cargo-registry = { path = "cargo-registry", version = "=2.2.3" }
@@ -508,6 +526,7 @@ solana-rpc-client = { path = "rpc-client", version = "=2.2.3", default-features 
 solana-rpc-client-api = { path = "rpc-client-api", version = "=2.2.3" }
 solana-rpc-client-nonce-utils = { path = "rpc-client-nonce-utils", version = "=2.2.3" }
 solana-runtime = { path = "runtime", version = "=2.2.3" }
+solana-runtime-plugin = { path = "runtime-plugin", version = "=2.2.3" }
 solana-runtime-transaction = { path = "runtime-transaction", version = "=2.2.3" }
 solana-sbpf = "=0.10.0"
 solana-sdk = "=2.2.1"

@@ -194,6 +194,7 @@ fn retransmit(
     max_slots: &MaxSlots,
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
+    shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
 ) -> Result<(), RecvError> {
     // wait for something on the channel
     let mut shreds = retransmit_receiver.recv()?;
@@ -266,6 +267,7 @@ fn retransmit(
                     &retransmit_sockets[index % retransmit_sockets.len()],
                     quic_endpoint_sender,
                     stats,
+                    &shred_receiver_address.read().unwrap(),
                 )
             })
             .fold(HashMap::new(), record)
@@ -284,6 +286,7 @@ fn retransmit(
                         &retransmit_sockets[index % retransmit_sockets.len()],
                         quic_endpoint_sender,
                         stats,
+                        &shred_receiver_address.read().unwrap(),
                     )
                 })
                 .fold(HashMap::new, record)
@@ -303,6 +306,7 @@ fn retransmit(
 }
 
 // Retransmit a single shred to all downstream nodes
+#[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
     shred: shred::Payload,
     root_bank: &Bank,
@@ -312,6 +316,7 @@ fn retransmit_shred(
     socket: &UdpSocket,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     stats: &RetransmitStats,
+    shred_receiver_addr: &Option<SocketAddr>,
 ) -> Option<(
     Slot,  // Shred slot.
     usize, // This node's distance from the turbine root.
@@ -325,7 +330,7 @@ fn retransmit_shred(
     }
     let mut compute_turbine_peers = Measure::start("turbine_start");
     let data_plane_fanout = cluster_nodes::get_data_plane_fanout(key.slot(), root_bank);
-    let (root_distance, addrs) = cluster_nodes
+    let (root_distance, mut addrs) = cluster_nodes
         .get_retransmit_addrs(slot_leader, &key, data_plane_fanout, socket_addr_space)
         .inspect_err(|err| match err {
             Error::Loopback { .. } => {
@@ -334,6 +339,9 @@ fn retransmit_shred(
             }
         })
         .ok()?;
+    if let Some(addr) = shred_receiver_addr {
+        addrs.push(*addr);
+    }
     compute_turbine_peers.stop();
     stats
         .compute_turbine_peers_total
@@ -386,6 +394,7 @@ impl RetransmitStage {
     /// * `leader_schedule_cache` - The leader schedule to verify shreds
     /// * `cluster_info` - This structure needs to be updated and populated by the bank and via gossip.
     /// * `retransmit_receiver` - Receive channel for batches of shreds to be retransmitted.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bank_forks: Arc<RwLock<BankForks>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
@@ -396,6 +405,7 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
+        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -435,6 +445,7 @@ impl RetransmitStage {
                     &max_slots,
                     rpc_subscriptions.as_deref(),
                     slot_status_notifier.as_ref(),
+                    &shred_receiver_addr,
                 )
                 .is_ok()
                 {}
