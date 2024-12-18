@@ -35,6 +35,10 @@ use {
     solana_hash::Hash,
     solana_pubkey::Pubkey,
     solana_rpc_client_api::{
+        bundles::{
+            RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
+            SimulationSlotConfig,
+        },
         client_error::{
             Error as ClientError, ErrorKind as ClientErrorKind, Result as ClientResult,
         },
@@ -884,6 +888,7 @@ impl RpcClient {
                     code,
                     message,
                     data,
+                    ..
                 }) = &err.kind
                 {
                     debug!("{} {}", code, message);
@@ -1299,6 +1304,53 @@ impl RpcClient {
         self.send(
             RpcRequest::SimulateTransaction,
             json!([serialized_encoded, config]),
+        )
+        .await
+    }
+
+    pub async fn simulate_bundle(
+        &self,
+        bundle: &[impl SerializableTransaction],
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        self.simulate_bundle_with_config(
+            bundle,
+            RpcSimulateBundleConfig {
+                simulation_bank: Some(SimulationSlotConfig::Commitment(self.commitment())),
+                pre_execution_accounts_configs: vec![None; bundle.len()],
+                post_execution_accounts_configs: vec![None; bundle.len()],
+                ..RpcSimulateBundleConfig::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn simulate_bundle_with_config(
+        &self,
+        bundle: &[impl SerializableTransaction],
+        config: RpcSimulateBundleConfig,
+    ) -> RpcResult<RpcSimulateBundleResult> {
+        let transaction_encoding = config
+            .transaction_encoding
+            .unwrap_or(UiTransactionEncoding::Base64);
+        let simulation_bank = Some(config.simulation_bank.unwrap_or_default());
+
+        let encoded_transactions = bundle
+            .iter()
+            .map(|tx| serialize_and_encode(tx, transaction_encoding))
+            .collect::<ClientResult<Vec<String>>>()?;
+        let rpc_bundle_request = RpcBundleRequest {
+            encoded_transactions,
+        };
+
+        let config = RpcSimulateBundleConfig {
+            transaction_encoding: Some(transaction_encoding),
+            simulation_bank,
+            ..config
+        };
+
+        self.send(
+            RpcRequest::SimulateBundle,
+            json!([rpc_bundle_request, config]),
         )
         .await
     }
