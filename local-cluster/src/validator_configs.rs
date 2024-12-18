@@ -82,6 +82,12 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         delay_leader_block_for_pending_fork: config.delay_leader_block_for_pending_fork,
         retransmit_xdp: config.retransmit_xdp.clone(),
         repair_handler_type: config.repair_handler_type.clone(),
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+        shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        bam_url: config.bam_url.clone(),
     }
 }
 

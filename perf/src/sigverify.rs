@@ -96,7 +96,7 @@ impl std::convert::From<std::num::TryFromIntError> for PacketError {
 /// Returns true if the signature on the packet verifies.
 /// Caller must do packet.set_discard(true) if this returns false.
 #[must_use]
-fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool) -> bool {
+pub fn verify_packet(packet: &mut PacketRefMut, reject_non_vote: bool) -> bool {
     // If this packet was already marked as discard, drop it
     if packet.meta().discard() {
         return false;

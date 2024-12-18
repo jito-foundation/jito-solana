@@ -21,7 +21,6 @@ use {
     },
     regex::Regex,
     solana_cli_output::display::build_balance_message,
-    solana_client::connection_cache::Protocol,
     solana_genesis_config::DEFAULT_GENESIS_DOWNLOAD_PATH,
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
@@ -512,17 +511,9 @@ impl JsonRpcService {
 
         let RpcTpuClientArgs(identity_keypair, tpu_client_socket, client_runtime, cancel) =
             config.rpc_tpu_client_args;
-        let my_tpu_address = config
-            .cluster_info
-            .my_contact_info()
-            .tpu(Protocol::QUIC)
-            .ok_or(format!(
-                "Invalid {:?} socket address for TPU",
-                Protocol::QUIC
-            ))?;
         let client = TpuClientNextClient::new(
             client_runtime,
-            my_tpu_address,
+            config.cluster_info.clone(),
             config.send_transaction_service_config.tpu_peers.clone(),
             leader_info,
             config.send_transaction_service_config.leader_forward_count,
@@ -871,7 +862,6 @@ mod tests {
             json_rpc_config.rpc_blocking_threads,
             json_rpc_config.rpc_niceness_adj,
         );
-        let tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let send_transaction_service_config = send_transaction_service::Config {
             retry_rate_ms: 1000,
             leader_forward_count: 1,
@@ -880,7 +870,7 @@ mod tests {
 
         let client = TpuClientNextClient::create_client(
             Some(runtime.handle().clone()),
-            tpu_address,
+            cluster_info.clone(),
             send_transaction_service_config.tpu_peers.clone(),
             send_transaction_service_config.leader_forward_count,
         );

@@ -306,7 +306,7 @@ impl Node {
         info.set_tpu_forwards(
             QUIC,
             public_tpu_forwards_addr
-                .unwrap_or_else(|| SocketAddr::new(advertised_ip, tpu_forwards_port)),
+                .unwrap_or_else(|| SocketAddr::new(advertised_ip, tpu_forwards_quic_port)),
         )
         .unwrap();
         info.set_tpu_vote(UDP, (advertised_ip, tpu_vote_port))

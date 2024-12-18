@@ -58,6 +58,8 @@ jobs:
           # - token
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
@@ -88,6 +90,8 @@ jobs:
           - token-2022
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
@@ -128,6 +132,8 @@ jobs:
           # - token
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
