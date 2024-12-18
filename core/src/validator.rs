@@ -14,6 +14,7 @@ use {
             ExternalRootSource, Tower,
         },
         poh_timing_report_service::PohTimingReportService,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self,
             quic_endpoint::{RepairQuicAsyncSenders, RepairQuicSenders, RepairQuicSockets},
@@ -27,6 +28,7 @@ use {
         system_monitor_service::{
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
+        tip_manager::TipManagerConfig,
         tpu::{Tpu, TpuSockets, DEFAULT_TPU_COALESCE},
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
@@ -112,6 +114,10 @@ use {
         snapshot_hash::StartingSnapshotHashes,
         snapshot_utils::{self, clean_orphaned_account_snapshot_dirs},
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
+        runtime_plugin_service::RuntimePluginService,
+    },
     solana_sdk::{
         clock::Slot,
         epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
@@ -187,7 +193,7 @@ impl BlockVerificationMethod {
     }
 }
 
-#[derive(Clone, EnumString, EnumVariantNames, Default, IntoStaticStr, Display)]
+#[derive(Clone, EnumString, EnumVariantNames, Default, IntoStaticStr, Display, EnumIter)]
 #[strum(serialize_all = "kebab-case")]
 pub enum BlockProductionMethod {
     #[default]
@@ -317,6 +323,14 @@ pub struct ValidatorConfig {
     pub tvu_shred_sigverify_threads: NonZeroUsize,
     pub thread_manager_config: ThreadManagerConfig,
     pub delay_leader_block_for_pending_fork: bool,
+
+    // jito configuration
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub preallocated_bundle_cost: u64,
 }
 
 impl Default for ValidatorConfig {
@@ -391,6 +405,12 @@ impl Default for ValidatorConfig {
             thread_manager_config: ThreadManagerConfig::default_for_agave(),
             tvu_shred_sigverify_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             delay_leader_block_for_pending_fork: false,
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            shred_receiver_address: Arc::new(RwLock::new(None)),
+            shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
+            tip_manager_config: TipManagerConfig::default(),
+            preallocated_bundle_cost: 0,
         }
     }
 }
@@ -611,6 +631,10 @@ impl Validator {
         socket_addr_space: SocketAddrSpace,
         tpu_config: ValidatorTpuConfig,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+        runtime_plugin_configs_and_request_rx: Option<(
+            Vec<PathBuf>,
+            Receiver<RuntimePluginManagerRpcRequest>,
+        )>,
     ) -> Result<Self> {
         let ValidatorTpuConfig {
             use_quic,
@@ -1088,6 +1112,19 @@ impl Validator {
             None,
         ));
 
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .map_err(|e| {
+                ValidatorError::Other(format!("Failed to start runtime plugin service: {e:?}"))
+            })?;
+        }
+
         let max_slots = Arc::new(MaxSlots::default());
 
         let staked_nodes = Arc::new(RwLock::new(StakedNodes::default()));
@@ -1534,6 +1571,7 @@ impl Validator {
             wen_restart_repair_slots.clone(),
             slot_status_notifier,
             vote_connection_cache,
+            config.shred_retransmit_receiver_address.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1604,6 +1642,11 @@ impl Validator {
             config.transaction_struct.clone(),
             config.enable_block_production_forwarding,
             config.generator_config.clone(),
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_address.clone(),
+            config.preallocated_bundle_cost,
         );
 
         datapoint_info!(
@@ -1628,6 +1671,10 @@ impl Validator {
             repair_socket: Arc::new(node.sockets.repair),
             outstanding_repair_requests,
             cluster_slots,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_address: config.shred_receiver_address.clone(),
+            shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
         });
 
         Ok(Self {
@@ -2082,6 +2129,7 @@ fn load_blockstore(
                 .map(|service| service.sender()),
             accounts_update_notifier,
             exit,
+            true,
         )
         .map_err(|err| err.to_string())?;
 
@@ -2839,6 +2887,7 @@ mod tests {
             SocketAddrSpace::Unspecified,
             ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         assert_eq!(
@@ -3055,6 +3104,7 @@ mod tests {
                     SocketAddrSpace::Unspecified,
                     ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
                     Arc::new(RwLock::new(None)),
+                    None,
                 )
                 .expect("assume successful validator start")
             })
@@ -3171,7 +3221,7 @@ mod tests {
 
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(300, 200),
-            100
+            100,
         ));
 
         let default_accounts_hash_interval =
@@ -3179,62 +3229,62 @@ mod tests {
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS
+                snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
             ),
             default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            default_accounts_hash_interval
+            default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 snapshot_bank_utils::DEFAULT_INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            default_accounts_hash_interval
+            default_accounts_hash_interval,
         ));
         assert!(is_snapshot_config_valid(
             &new_snapshot_config(
                 DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
-                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL
+                DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
             ),
-            Slot::MAX
+            Slot::MAX,
         ));
 
         assert!(!is_snapshot_config_valid(&new_snapshot_config(0, 100), 100));
         assert!(!is_snapshot_config_valid(&new_snapshot_config(100, 0), 100));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(42, 100),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 42),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 100),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(100, 200),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(444, 200),
-            100
+            100,
         ));
         assert!(!is_snapshot_config_valid(
             &new_snapshot_config(400, 222),
-            100
+            100,
         ));
 
         assert!(is_snapshot_config_valid(
             &SnapshotConfig::new_load_only(),
-            100
+            100,
         ));
         assert!(is_snapshot_config_valid(
             &SnapshotConfig {
@@ -3242,7 +3292,7 @@ mod tests {
                 incremental_snapshot_archive_interval_slots: 37,
                 ..SnapshotConfig::new_load_only()
             },
-            100
+            100,
         ));
         assert!(is_snapshot_config_valid(
             &SnapshotConfig {
@@ -3250,7 +3300,7 @@ mod tests {
                 incremental_snapshot_archive_interval_slots: DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
                 ..SnapshotConfig::new_load_only()
             },
-            100
+            100,
         ));
     }
 

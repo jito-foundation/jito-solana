@@ -75,6 +75,12 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         tvu_shred_sigverify_threads: config.tvu_shred_sigverify_threads,
         thread_manager_config: config.thread_manager_config.clone(),
         delay_leader_block_for_pending_fork: config.delay_leader_block_for_pending_fork,
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_address: config.shred_receiver_address.clone(),
+        shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        preallocated_bundle_cost: config.preallocated_bundle_cost,
     }
 }
 

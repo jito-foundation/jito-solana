@@ -79,6 +79,24 @@ pub fn main() {
         ("set-public-address", Some(subcommand_matches)) => {
             commands::set_public_address::execute(subcommand_matches, &ledger_path);
         }
+        ("set-block-engine-config", Some(subcommand_matches)) => {
+            commands::block_engine::execute(subcommand_matches, &ledger_path);
+        }
+        ("set-relayer-config", Some(subcommand_matches)) => {
+            commands::relayer::execute(subcommand_matches, &ledger_path);
+        }
+        ("set-shred-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_receiver_execute(subcommand_matches, &ledger_path);
+        }
+        ("set-shred-retransmit-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_retransmit_receiver_execute(
+                subcommand_matches,
+                &ledger_path,
+            );
+        }
+        ("runtime-plugin", Some(plugin_subcommand_matches)) => {
+            commands::runtime_plugin::execute(plugin_subcommand_matches, &ledger_path);
+        }
         _ => unreachable!(),
     };
 }
