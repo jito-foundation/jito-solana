@@ -8,6 +8,7 @@ use {
             BankingTracer, ChannelLabel, Channels, TimedTracedEvent, TracedEvent, TracedSender,
             TracerThread, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME,
         },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::{BlockProductionMethod, TransactionStructure},
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
@@ -42,6 +43,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_turbine::broadcast_stage::{BroadcastStage, BroadcastStageType},
     std::{
+        collections,
         collections::BTreeMap,
         fmt::Display,
         fs::File,
@@ -816,6 +818,7 @@ impl BankingSimulator {
             shred_version,
             sender,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         info!("Start banking stage!...");
@@ -834,6 +837,9 @@ impl BankingSimulator {
             None,
             bank_forks.clone(),
             prioritization_fee_cache,
+            collections::HashSet::default(),
+            BundleAccountLocker::default(),
+            |_| 0,
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot

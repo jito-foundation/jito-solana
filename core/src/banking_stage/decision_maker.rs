@@ -6,7 +6,10 @@ use {
     solana_poh::poh_recorder::{BankStart, PohRecorder},
     solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus},
     std::{
-        sync::{atomic::{AtomicBool, Ordering::Relaxed}, Arc, RwLock},
+        sync::{
+            atomic::{AtomicBool, Ordering::Relaxed},
+            Arc, RwLock,
+        },
         time::{Duration, Instant},
     },
 };
@@ -126,7 +129,12 @@ pub(crate) struct DecisionMakerWrapper {
 impl DecisionMakerWrapper {
     pub(crate) fn new(decision_maker: DecisionMaker) -> Self {
         // Clone-off before hand to avoid lock contentions.
-        let is_exited = decision_maker.poh_recorder.read().unwrap().is_exited.clone();
+        let is_exited = decision_maker
+            .poh_recorder
+            .read()
+            .unwrap()
+            .is_exited
+            .clone();
 
         Self {
             is_exited,
@@ -272,11 +280,7 @@ mod tests {
         );
         // Leader other than me, forward the packets
         assert_matches!(
-            DecisionMaker::consume_or_forward_packets(
-                || None,
-                || false,
-                || false,
-            ),
+            DecisionMaker::consume_or_forward_packets(|| None, || false, || false,),
             BufferedPacketsDecision::Forward
         );
         // Will be leader shortly, hold the packets
@@ -290,11 +294,7 @@ mod tests {
         );
         // Will be leader (not shortly), forward and hold
         assert_matches!(
-            DecisionMaker::consume_or_forward_packets(
-                || None,
-                || false,
-                || true,
-            ),
+            DecisionMaker::consume_or_forward_packets(|| None, || false, || true,),
             BufferedPacketsDecision::ForwardAndHold
         );
     }
