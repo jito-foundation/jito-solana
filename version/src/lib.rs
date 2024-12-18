@@ -64,7 +64,7 @@ impl Default for Version {
             commit: compute_commit(option_env!("CI_COMMIT")).unwrap_or_default(),
             feature_set,
             // Other client implementations need to modify this line.
-            client: u16::try_from(ClientId::Agave).unwrap(),
+            client: u16::try_from(ClientId::JitoLabs).unwrap(),
         }
     }
 }
