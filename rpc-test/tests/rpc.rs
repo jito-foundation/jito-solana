@@ -1,12 +1,16 @@
 use {
+    assert_matches::assert_matches,
     bincode::serialize,
     crossbeam_channel::unbounded,
     futures_util::StreamExt,
     log::*,
     reqwest::{self, header::CONTENT_TYPE},
     serde_json::{json, Value},
-    solana_account_decoder::UiAccount,
-    solana_client::connection_cache::ConnectionCache,
+    solana_account_decoder::{UiAccount, UiAccountEncoding},
+    solana_client::{
+        connection_cache::ConnectionCache, rpc_config::RpcSimulateTransactionAccountsConfig,
+        rpc_request::RpcResponseErrorData,
+    },
     solana_commitment_config::CommitmentConfig,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -16,6 +20,10 @@ use {
     solana_rent::Rent,
     solana_rpc_client::rpc_client::RpcClient,
     solana_rpc_client_api::{
+        bundles::{
+            RpcBundleExecutionError, RpcBundleSimulationSummary, RpcSimulateBundleConfig,
+            SimulationSlotConfig,
+        },
         client_error::{ErrorKind as ClientErrorKind, Result as ClientResult},
         config::{RpcAccountInfoConfig, RpcSignatureSubscribeConfig, RpcSimulateTransactionConfig},
         request::RpcError,
@@ -27,8 +35,8 @@ use {
     solana_system_transaction as system_transaction,
     solana_test_validator::TestValidator,
     solana_tpu_client::tpu_client::{TpuClient, TpuClientConfig, DEFAULT_TPU_CONNECTION_POOL_SIZE},
-    solana_transaction::Transaction,
-    solana_transaction_status::TransactionStatus,
+    solana_transaction::{Transaction, TransactionError},
+    solana_transaction_status::{TransactionStatus, UiTransactionEncoding},
     std::{
         collections::HashSet,
         sync::{
@@ -37,6 +45,7 @@ use {
         },
         thread::sleep,
         time::{Duration, Instant},
+        vec,
     },
     tokio::runtime::Runtime,
 };
@@ -583,4 +592,792 @@ fn deserialize_rpc_error() -> ClientResult<()> {
             panic!()
         }
     }
+}
+
+#[test]
+fn test_simulate_bundle() {
+    agave_logger::setup();
+
+    let mint_keypair = Keypair::new();
+    let validator = TestValidator::with_custom_fees(
+        mint_keypair.pubkey(),
+        0,
+        None,
+        SocketAddrSpace::Unspecified,
+    );
+    let rpc_client = RpcClient::new(validator.rpc_url());
+
+    test_too_many_bundles(&rpc_client, &mint_keypair);
+    test_wrong_number_pre_accounts(&rpc_client, &mint_keypair);
+    test_wrong_number_post_accounts(&rpc_client, &mint_keypair);
+    test_invalid_transaction_encoding(&rpc_client, &mint_keypair);
+    test_wrong_pre_account_encoding(&rpc_client, &mint_keypair);
+    test_wrong_post_account_encoding(&rpc_client, &mint_keypair);
+    test_replace_recent_blockhash_with_sig_verify(&rpc_client, &mint_keypair);
+    test_bad_signature(&rpc_client, &mint_keypair);
+    test_bad_pubkey_pre_accounts(&rpc_client, &mint_keypair);
+    test_bad_pubkey_post_accounts(&rpc_client, &mint_keypair);
+    test_single_tx_ok(&rpc_client, &mint_keypair);
+    test_chained_transfers_ok(&rpc_client, &mint_keypair);
+    test_single_bad_tx(&rpc_client, &mint_keypair);
+    test_last_tx_fails(&rpc_client, &mint_keypair);
+    test_duplicate_transactions(&rpc_client, &mint_keypair);
+}
+
+fn test_too_many_bundles(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions: Vec<_> = (0..21)
+        .map(|_| {
+            system_transaction::transfer(
+                mint_keypair,
+                &Pubkey::new_unique(),
+                rent,
+                latest_blockhash,
+            )
+        })
+        .collect();
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(&transactions, RpcSimulateBundleConfig::default())
+        .unwrap_err();
+
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(message, "bundle size too large, max 20 transactions");
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_wrong_number_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![None; transactions.len().saturating_add(1)],
+                post_execution_accounts_configs: vec![None; transactions.len()],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "pre/post_execution_accounts_configs must be equal in length to the number of transactions"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_wrong_number_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![None; transactions.len()],
+                post_execution_accounts_configs: vec![None; transactions.len().saturating_add(1)],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "pre/post_execution_accounts_configs must be equal in length to the number of transactions"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_invalid_transaction_encoding(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![None; transactions.len()],
+                post_execution_accounts_configs: vec![None; transactions.len()],
+                transaction_encoding: Some(UiTransactionEncoding::Base58),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "Base64 is the only supported encoding for transactions"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_wrong_pre_account_encoding(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base58),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                post_execution_accounts_configs: vec![None; transactions.len()],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "Base64 is the only supported encoding for pre-execution accounts"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_wrong_post_account_encoding(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base58),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "Base64 is the only supported encoding for post-execution accounts"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_duplicate_transactions(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let pubkey = Pubkey::new_unique();
+    let transactions = vec![
+        system_transaction::transfer(mint_keypair, &pubkey, rent, latest_blockhash),
+        system_transaction::transfer(mint_keypair, &pubkey, rent, latest_blockhash),
+    ];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![None; transactions.len()],
+                post_execution_accounts_configs: vec![None; transactions.len()],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(message, "duplicate transactions");
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_replace_recent_blockhash_with_sig_verify(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base58),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: true,
+                replace_recent_blockhash: true,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "Base64 is the only supported encoding for post-execution accounts"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_bad_signature(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let mut transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+    transactions.get_mut(0).unwrap().signatures[0] = Signature::default();
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "transaction signature is invalid: Transaction did not pass signature verification"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_bad_pubkey_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec!["testing123".to_string()],
+                })],
+                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "invalid pubkey for pre/post accounts provided: testing123"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_bad_pubkey_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &Pubkey::new_unique(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string()],
+                })],
+                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec!["testing123".to_string()],
+                })],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap_err();
+    let ClientErrorKind::RpcError(RpcError::RpcResponseError {
+        code,
+        message,
+        data,
+    }) = simulate_result.kind()
+    else {
+        panic!("unexpected error");
+    };
+    assert_eq!(
+        message,
+        "invalid pubkey for pre/post accounts provided: testing123"
+    );
+    assert_eq!(*code, -32602);
+    assert_matches!(data, &RpcResponseErrorData::Empty);
+}
+
+fn test_single_tx_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let bob = Keypair::new();
+    let transactions = vec![system_transaction::transfer(
+        mint_keypair,
+        &bob.pubkey(),
+        rent,
+        latest_blockhash,
+    )];
+
+    let mint_balance = rpc_client.get_balance(&mint_keypair.pubkey()).unwrap();
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string(), bob.pubkey().to_string()],
+                })],
+                post_execution_accounts_configs: vec![Some(RpcSimulateTransactionAccountsConfig {
+                    encoding: Some(UiAccountEncoding::Base64),
+                    addresses: vec![mint_keypair.pubkey().to_string(), bob.pubkey().to_string()],
+                })],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap()
+        .value;
+    assert_eq!(
+        simulate_result.summary,
+        RpcBundleSimulationSummary::Succeeded
+    );
+    assert_eq!(simulate_result.transaction_results.len(), 1);
+    let result = simulate_result.transaction_results.first().unwrap();
+    assert_eq!(result.err, None);
+
+    let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
+    assert_eq!(pre_execution_accounts.len(), 2);
+    assert_eq!(pre_execution_accounts[0].lamports, mint_balance); // mint keypair balance
+    assert_eq!(pre_execution_accounts[1].lamports, 0); // bob balance
+
+    // mint keypair covers cost of rent for bob
+    let post_execution_accounts = result.post_execution_accounts.as_ref().unwrap();
+    assert_eq!(post_execution_accounts.len(), 2);
+    assert_eq!(
+        post_execution_accounts[0].lamports,
+        mint_balance.saturating_sub(rent)
+    );
+    assert_eq!(post_execution_accounts[1].lamports, rent);
+}
+
+fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let bob = Keypair::new();
+    let alice = Keypair::new();
+    let transactions = vec![
+        system_transaction::transfer(
+            mint_keypair,
+            &bob.pubkey(),
+            rent.saturating_mul(2),
+            latest_blockhash,
+        ),
+        system_transaction::transfer(&bob, &alice.pubkey(), rent, latest_blockhash),
+    ];
+
+    let mint_balance = rpc_client.get_balance(&mint_keypair.pubkey()).unwrap();
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![
+                    Some(RpcSimulateTransactionAccountsConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        addresses: vec![mint_keypair.pubkey().to_string()],
+                    }),
+                    Some(RpcSimulateTransactionAccountsConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        addresses: vec![
+                            mint_keypair.pubkey().to_string(),
+                            bob.pubkey().to_string(),
+                        ],
+                    }),
+                ],
+                post_execution_accounts_configs: vec![
+                    Some(RpcSimulateTransactionAccountsConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        addresses: vec![
+                            mint_keypair.pubkey().to_string(),
+                            bob.pubkey().to_string(),
+                        ],
+                    }),
+                    Some(RpcSimulateTransactionAccountsConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        addresses: vec![
+                            mint_keypair.pubkey().to_string(),
+                            bob.pubkey().to_string(),
+                            alice.pubkey().to_string(),
+                        ],
+                    }),
+                ],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap()
+        .value;
+
+    assert_eq!(
+        simulate_result.summary,
+        RpcBundleSimulationSummary::Succeeded
+    );
+    assert_eq!(simulate_result.transaction_results.len(), 2);
+
+    let result = simulate_result.transaction_results.first().unwrap();
+    assert_eq!(result.err, None);
+    let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
+    assert_eq!(pre_execution_accounts.len(), 1);
+    assert_eq!(pre_execution_accounts[0].lamports, mint_balance); // mint
+    let post_execution_accounts = result.post_execution_accounts.as_ref().unwrap();
+    assert_eq!(post_execution_accounts.len(), 2);
+    assert_eq!(
+        post_execution_accounts[0].lamports,
+        mint_balance.saturating_sub(rent.saturating_mul(2))
+    );
+    assert_eq!(post_execution_accounts[1].lamports, rent.saturating_mul(2)); // bob now has 2x rent
+
+    let result = simulate_result.transaction_results.get(1).unwrap();
+    assert_eq!(result.err, None);
+    let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
+    assert_eq!(pre_execution_accounts.len(), 2);
+    assert_eq!(
+        pre_execution_accounts[0].lamports,
+        mint_balance.saturating_sub(rent.saturating_mul(2))
+    ); // mint
+    assert_eq!(pre_execution_accounts[1].lamports, rent.saturating_mul(2)); // bob
+
+    let post_execution_accounts = result.post_execution_accounts.as_ref().unwrap();
+    assert_eq!(post_execution_accounts.len(), 3);
+    assert_eq!(
+        post_execution_accounts[0].lamports,
+        mint_balance.saturating_sub(rent.saturating_mul(2))
+    ); // mint
+    assert_eq!(post_execution_accounts[1].lamports, rent); // bob sent rent to alice
+    assert_eq!(post_execution_accounts[2].lamports, rent); // alice
+}
+
+fn test_single_bad_tx(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let account_not_found_tx = system_transaction::transfer(
+        &Keypair::new(),
+        &mint_keypair.pubkey(),
+        rent.saturating_mul(2),
+        latest_blockhash,
+    );
+
+    let transactions = vec![account_not_found_tx.clone()];
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![None; transactions.len()],
+                post_execution_accounts_configs: vec![None; transactions.len()],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap()
+        .value;
+
+    assert_eq!(
+        simulate_result.summary,
+        RpcBundleSimulationSummary::Failed {
+            error: RpcBundleExecutionError::TransactionFailure(
+                account_not_found_tx.signatures[0],
+                "Attempt to debit an account but found no record of a prior credit.".to_string()
+            ),
+            tx_signature: Some(account_not_found_tx.signatures[0].to_string())
+        }
+    );
+    assert_eq!(simulate_result.transaction_results.len(), 1);
+    let result = simulate_result.transaction_results.first().unwrap();
+    assert_eq!(result.err, Some(TransactionError::AccountNotFound));
+}
+
+fn test_last_tx_fails(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let transactions = vec![
+        system_transaction::transfer(mint_keypair, &Pubkey::new_unique(), rent, latest_blockhash),
+        system_transaction::transfer(
+            &Keypair::new(),
+            &mint_keypair.pubkey(),
+            rent,
+            latest_blockhash,
+        ),
+        system_transaction::transfer(mint_keypair, &Pubkey::new_unique(), rent, latest_blockhash),
+    ];
+
+    let bad_tx_signature = *transactions.get(1).unwrap().signatures.first().unwrap();
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![None; transactions.len()],
+                post_execution_accounts_configs: vec![None; transactions.len()],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap()
+        .value;
+
+    assert_eq!(
+        simulate_result.summary,
+        RpcBundleSimulationSummary::Failed {
+            error: RpcBundleExecutionError::TransactionFailure(
+                bad_tx_signature,
+                "Attempt to debit an account but found no record of a prior credit.".to_string()
+            ),
+            tx_signature: Some(bad_tx_signature.to_string())
+        }
+    );
+    // should get results back for only the first and secon one
+    assert_eq!(simulate_result.transaction_results.len(), 2);
+    let result = simulate_result.transaction_results.first().unwrap();
+    assert_eq!(result.err, None);
+
+    let result = simulate_result.transaction_results.get(1).unwrap();
+    assert_eq!(result.err, Some(TransactionError::AccountNotFound));
 }

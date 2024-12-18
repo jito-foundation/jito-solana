@@ -483,7 +483,7 @@ fn compute_slot_cost(
                 num_programs += transaction.message().instructions().len();
 
                 let tx_cost = CostModel::calculate_cost(&transaction, &feature_set);
-                let result = cost_tracker.try_add(&tx_cost);
+                let result = cost_tracker.try_add(&tx_cost, 0);
                 if result.is_err() {
                     println!(
                         "Slot: {slot}, CostModel rejected transaction {transaction:?}, reason \
@@ -1817,7 +1817,6 @@ fn main() {
                             process_options,
                             None,
                         );
-
                     println!(
                         "{}",
                         compute_shred_version(
@@ -2678,6 +2677,7 @@ fn main() {
                             process_options,
                             None,
                         );
+
                     let bank_forks = bank_forks.read().unwrap();
                     let slot = bank_forks.working_bank().slot();
                     let bank = bank_forks.get(slot).unwrap_or_else(|| {
