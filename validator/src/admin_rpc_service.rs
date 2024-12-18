@@ -16,6 +16,10 @@ use {
             BankingStage,
         },
         consensus::{tower_storage::TowerStorage, Tower},
+        proxy::{
+            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         repair::repair_service,
         validator::{
             BlockProductionMethod, SchedulerPacing, TransactionStructure, ValidatorStartProgress,
@@ -36,6 +40,7 @@ use {
         net::{IpAddr, SocketAddr},
         num::NonZeroUsize,
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, RwLock,
@@ -283,6 +288,34 @@ pub trait AdminRpc {
         num_workers: NonZeroUsize,
         scheduler_pacing: SchedulerPacing,
     ) -> Result<()>;
+
+    #[rpc(meta, name = "setBlockEngineConfig")]
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
+        trust_packets: bool,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setRelayerConfig")]
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setShredReceiverAddress")]
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()>;
+
+    #[rpc(meta, name = "setShredRetransmitReceiverAddress")]
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
+    ) -> Result<()>;
 }
 
 pub struct AdminRpcImpl;
@@ -515,6 +548,32 @@ impl AdminRpc for AdminRpcImpl {
         Ok(())
     }
 
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
+        trust_packets: bool,
+    ) -> Result<()> {
+        debug!("set_block_engine_config request received");
+        let config = BlockEngineConfig {
+            block_engine_url,
+            disable_block_engine_autoconfig,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if BlockEngineStage::is_valid_block_engine_config(&config) {
+            meta.with_post_init(|post_init| {
+                *post_init.block_engine_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set block engine config. see logs for details.",
+            ))
+        }
+    }
+
     fn set_identity(
         &self,
         meta: Self::Metadata,
@@ -549,13 +608,81 @@ impl AdminRpc for AdminRpcImpl {
         AdminRpcImpl::set_identity_keypair(meta, identity_keypair, require_tower)
     }
 
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()> {
+        debug!("set_relayer_config request received");
+        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+        let oldest_allowed_heartbeat =
+            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+        let config = RelayerConfig {
+            relayer_url,
+            expected_heartbeat_interval,
+            oldest_allowed_heartbeat,
+        };
+        // Detailed log messages are printed inside validate function
+        if RelayerStage::is_valid_relayer_config(&config) {
+            meta.with_post_init(|post_init| {
+                *post_init.relayer_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set relayer config. see logs for details.",
+            ))
+        }
+    }
+
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
+        let shred_receiver_address = if addr.is_empty() {
+            None
+        } else {
+            Some(SocketAddr::from_str(&addr).map_err(|_| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address: {addr}",
+                ))
+            })?)
+        };
+
+        meta.with_post_init(|post_init| {
+            post_init
+                .shred_receiver_address
+                .store(Arc::new(shred_receiver_address));
+            Ok(())
+        })
+    }
+
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
+    ) -> Result<()> {
+        let shred_receiver_address = if addr.is_empty() {
+            None
+        } else {
+            Some(SocketAddr::from_str(&addr).map_err(|_| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address: {addr}",
+                ))
+            })?)
+        };
+
+        meta.with_post_init(|post_init| {
+            post_init
+                .shred_retransmit_receiver_address
+                .store(Arc::new(shred_receiver_address));
+            Ok(())
+        })
+    }
+
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()> {
         let loaded_config = load_staked_nodes_overrides(&path)
             .map_err(|err| {
-                error!(
-                    "Failed to load staked nodes overrides from {}: {}",
-                    &path, err
-                );
+                error!("Failed to load staked nodes overrides from {path}: {err}");
                 jsonrpc_core::error::Error::internal_error()
             })?
             .staked_map_id;
@@ -1030,6 +1157,7 @@ pub fn load_staked_nodes_overrides(
 mod tests {
     use {
         super::*,
+        arc_swap::ArcSwap,
         serde_json::Value,
         solana_account::{Account, AccountSharedData},
         solana_accounts_db::{
@@ -1063,7 +1191,11 @@ mod tests {
         spl_token_2022_interface::state::{
             Account as TokenAccount, AccountState as TokenAccountState, Mint,
         },
-        std::{collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
+        std::{
+            collections::HashSet,
+            fs::remove_dir_all,
+            sync::{atomic::AtomicBool, Mutex},
+        },
         tokio::sync::mpsc,
     };
 
@@ -1105,6 +1237,10 @@ mod tests {
             let vote_account = vote_keypair.pubkey();
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
+            let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
+            let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
+            let shred_receiver_address = Arc::new(ArcSwap::default());
+            let shred_retransmit_receiver_address = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),
@@ -1128,6 +1264,10 @@ mod tests {
                     ),
                     node: None,
                     banking_control_sender: mpsc::channel(1).0,
+                    block_engine_config,
+                    relayer_config,
+                    shred_receiver_address,
+                    shred_retransmit_receiver_address,
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,

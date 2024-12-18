@@ -5,7 +5,9 @@ use {
         qos_service::QosService,
         scheduler_messages::MaxAge,
     },
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     itertools::Itertools,
+    solana_accounts_db::accounts::TransactionAccountLocksIterator,
     solana_clock::MAX_PROCESSING_AGE,
     solana_fee::FeeFeatures,
     solana_fee_structure::FeeBudgetLimits,
@@ -137,11 +139,13 @@ impl Consumer {
         &self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
+        bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionBatchOutput {
         let mut error_counters = TransactionErrorMetrics::default();
         let pre_results = vec![Ok(()); txs.len()];
         let check_results =
             bank.check_transactions(txs, &pre_results, MAX_PROCESSING_AGE, &mut error_counters);
+
         let check_results: Vec<_> = check_results
             .into_iter()
             .map(|result| match result {
@@ -149,11 +153,13 @@ impl Consumer {
                 Err(err) => Err(err),
             })
             .collect();
+
         let mut output = self.process_and_record_transactions_with_pre_results(
             bank,
             txs,
             check_results.into_iter(),
             ExecutionFlags::default(),
+            Some(bundle_account_locker),
         );
 
         // Accumulate error counters from the initial checks into final results
@@ -170,6 +176,7 @@ impl Consumer {
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
         flags: ExecutionFlags,
+        bundle_account_locker: Option<&BundleAccountLocker>,
     ) -> ProcessTransactionBatchOutput {
         // Need to filter out transactions since they were sanitized earlier.
         // This means that the transaction may cross and epoch boundary (not allowed),
@@ -181,7 +188,13 @@ impl Consumer {
                 max_age.alt_invalidation_slot,
             )
         });
-        self.process_and_record_transactions_with_pre_results(bank, txs, pre_results, flags)
+        self.process_and_record_transactions_with_pre_results(
+            bank,
+            txs,
+            pre_results,
+            flags,
+            bundle_account_locker,
+        )
     }
 
     fn process_and_record_transactions_with_pre_results(
@@ -190,6 +203,7 @@ impl Consumer {
         txs: &[impl TransactionWithMeta],
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
         flags: ExecutionFlags,
+        bundle_account_locker: Option<&BundleAccountLocker>,
     ) -> ProcessTransactionBatchOutput {
         let (
             (transaction_qos_cost_results, cost_model_throttled_transactions_count),
@@ -197,19 +211,44 @@ impl Consumer {
         ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
             bank,
             txs,
-            pre_results
+            pre_results,
         ));
 
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
-        // same account state
+        // same account state.
+        let l_bundle_account_locker = bundle_account_locker.map(|locker| locker.account_locks());
         let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
             txs,
-            transaction_qos_cost_results.iter().map(|r| match r {
-                Ok(_cost) => Ok(()),
-                Err(err) => Err(err.clone()),
-            })
+            transaction_qos_cost_results
+                .iter()
+                .zip(txs.iter())
+                .map(|(r, tx)| match r {
+                    Ok(_cost) => {
+                        if let Some(l_bundle_account_locker) = &l_bundle_account_locker {
+                            let transactions_account_locks =
+                                TransactionAccountLocksIterator::new(tx)
+                                    .accounts_with_is_writable();
+                            for (acc, writable) in transactions_account_locks {
+                                let is_writable_conflict = writable
+                                    && (l_bundle_account_locker.write_locks().contains_key(acc)
+                                        || l_bundle_account_locker.read_locks().contains_key(acc));
+                                let is_read_conflict = !writable
+                                    && l_bundle_account_locker.write_locks().contains_key(acc);
+
+                                if is_writable_conflict || is_read_conflict {
+                                    return Err(TransactionError::AccountInUse);
+                                }
+                            }
+                            Ok(())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    Err(err) => Err(err.clone()),
+                }),
         ));
+        drop(l_bundle_account_locker);
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
         // WouldExceedMaxAccountCostLimit, WouldExceedMaxVoteCostLimit
@@ -631,6 +670,7 @@ mod tests {
     fn execute_transactions_for_test(
         bank: Arc<Bank>,
         transactions: Vec<Transaction>,
+        bundle_account_locker: BundleAccountLocker,
     ) -> ProcessTransactionBatchOutput {
         let transactions = sanitize_transactions(transactions);
 
@@ -645,7 +685,7 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
         let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
-        consumer.process_and_record_transactions(&bank, &transactions)
+        consumer.process_and_record_transactions(&bank, &transactions, &bundle_account_locker)
     }
 
     fn generate_new_address_lookup_table(
@@ -710,9 +750,11 @@ mod tests {
             bank.confirmed_last_blockhash(),
         )]);
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
-
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
             commit_transactions_result,
@@ -745,8 +787,11 @@ mod tests {
             bank.confirmed_last_blockhash(),
         )]);
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -818,8 +863,11 @@ mod tests {
             bank.register_default_tick_for_test();
         }
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
             commit_transactions_result,
@@ -865,8 +913,11 @@ mod tests {
             sanitize_transactions(vec![tx])
         };
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -926,8 +977,11 @@ mod tests {
             bank.last_blockhash(),
         )]);
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -964,8 +1018,11 @@ mod tests {
         )]);
         bank.try_lock_accounts(&conflicting_transaction);
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -1077,8 +1134,11 @@ mod tests {
             bank.try_lock_accounts(&conflicting_transaction);
         }
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -1136,7 +1196,7 @@ mod tests {
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output,
             ..
-        } = execute_transactions_for_test(bank, transactions);
+        } = execute_transactions_for_test(bank, transactions, BundleAccountLocker::default());
 
         // All the transactions should have been replayed
         assert_eq!(
@@ -1213,7 +1273,7 @@ mod tests {
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output,
             ..
-        } = execute_transactions_for_test(bank, transactions);
+        } = execute_transactions_for_test(bank, transactions, BundleAccountLocker::default());
 
         // If SIMD-83 is enabled *and* the transactions are distinct, all are executed.
         // In the three other cases, only one is executed. In all four cases, all are attempted.
@@ -1282,8 +1342,11 @@ mod tests {
         // Channel shutdown should result in error returned on record.
         record_receiver.shutdown();
 
-        let process_transactions_summary =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_summary = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         let ProcessTransactionBatchOutput {
             mut execute_and_commit_transactions_output,
@@ -1368,7 +1431,11 @@ mod tests {
         bank.transfer(rent_exempt_amount, &mint_keypair, &keypair1.pubkey())
             .unwrap();
 
-        let _ = consumer.process_and_record_transactions(&bank, &transactions);
+        let _ = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
         drop(consumer); // drop/disconnect transaction_status_sender
 
         let status_messages = transaction_status_receiver.into_iter().collect::<Vec<_>>();
@@ -1460,7 +1527,11 @@ mod tests {
 
         bank.transfer(1, &mint_keypair, &keypair.pubkey()).unwrap();
 
-        let _ = consumer.process_and_record_transactions(&bank, slice::from_ref(&sanitized_tx));
+        let _ = consumer.process_and_record_transactions(
+            &bank,
+            slice::from_ref(&sanitized_tx),
+            &BundleAccountLocker::default(),
+        );
         drop(consumer); // drop/disconnect transaction_status_sender
 
         let status_messages = transaction_status_receiver.into_iter().collect::<Vec<_>>();
@@ -1479,5 +1550,67 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(committed_transaction.status.is_ok());
+    }
+
+    #[test]
+    fn test_process_and_record_transactions_with_pre_results_with_bundle_account_locks() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(10_000);
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let pubkey = solana_pubkey::new_rand();
+
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            &mint_keypair,
+            &pubkey,
+            1,
+            genesis_config.hash(),
+        )]);
+
+        let bundle_account_locker = BundleAccountLocker::default();
+
+        bundle_account_locker
+            .lock_bundle(&transactions, &bank)
+            .unwrap();
+
+        // Poh Recorder has no working bank, so should throw MaxHeightReached error on
+        // record
+        let (record_sender, _record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let consumer = Consumer::new(committer, recorder.clone(), QosService::new(1), None);
+
+        let process_transactions_summary =
+            consumer.process_and_record_transactions(&bank, &transactions, &bundle_account_locker);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output,
+            ..
+        } = process_transactions_summary;
+
+        bundle_account_locker
+            .unlock_bundle(&transactions, &bank)
+            .unwrap();
+
+        let result = execute_and_commit_transactions_output
+            .commit_transactions_result
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::AccountInUse)
+        );
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
     }
 }

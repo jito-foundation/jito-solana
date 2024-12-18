@@ -341,6 +341,13 @@ impl JsonRpcRequestProcessor {
             .expect("Failed to spawn blocking task")
     }
 
+    fn bank_from_slot(&self, slot: Slot) -> Option<Arc<Bank>> {
+        debug!("bank_from_slot: {slot}");
+
+        let r_bank_forks = self.bank_forks.read().unwrap();
+        r_bank_forks.get(slot)
+    }
+
     #[allow(deprecated)]
     fn bank(&self, commitment: Option<CommitmentConfig>) -> Arc<Bank> {
         debug!("RPC commitment_config: {commitment:?}");
@@ -465,7 +472,6 @@ impl JsonRpcRequestProcessor {
             ClusterInfo::new(contact_info, keypair, socket_addr_space)
         });
 
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let (transaction_sender, transaction_receiver) = unbounded();
 
         let config = JsonRpcConfig::default();
@@ -476,7 +482,12 @@ impl JsonRpcRequestProcessor {
             ..
         } = config;
         let runtime = service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj);
-        let client = Client::create_client(Some(runtime.handle().clone()), my_tpu_address, None, 1);
+        let client = Client::create_client(
+            Some(runtime.handle().clone()),
+            cluster_info.clone(),
+            None,
+            1,
+        );
 
         SendTransactionService::new(
             &bank_forks,
@@ -3442,8 +3453,14 @@ pub mod rpc_full {
     use {
         super::*,
         solana_message::{SanitizedVersionedMessage, VersionedMessage},
+        solana_rpc_client_api::bundles::{
+            RpcBundleExecutionError, RpcBundleRequest, RpcBundleSimulationSummary,
+            RpcSimulateBundleConfig, RpcSimulateBundleResult, RpcSimulateBundleTransactionResult,
+            SimulationSlotConfig,
+        },
         solana_transaction_status::{parse_ui_inner_instructions, UiLoadedAddresses},
     };
+
     #[rpc]
     pub trait Full {
         type Metadata;
@@ -3504,6 +3521,14 @@ pub mod rpc_full {
             data: String,
             config: Option<RpcSimulateTransactionConfig>,
         ) -> Result<RpcResponse<RpcSimulateTransactionResult>>;
+
+        #[rpc(meta, name = "simulateBundle")]
+        fn simulate_bundle(
+            &self,
+            meta: Self::Metadata,
+            rpc_bundle_request: RpcBundleRequest,
+            config: Option<RpcSimulateBundleConfig>,
+        ) -> Result<RpcResponse<RpcSimulateBundleResult>>;
 
         #[rpc(meta, name = "minimumLedgerSlot")]
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot>;
@@ -4102,6 +4127,250 @@ pub mod rpc_full {
             ))
         }
 
+        fn simulate_bundle(
+            &self,
+            meta: Self::Metadata,
+            rpc_bundle_request: RpcBundleRequest,
+            config: Option<RpcSimulateBundleConfig>,
+        ) -> Result<RpcResponse<RpcSimulateBundleResult>> {
+            const MAX_BUNDLES_SIMULATED: usize = 20;
+
+            if rpc_bundle_request.encoded_transactions.len() > MAX_BUNDLES_SIMULATED {
+                return Err(Error::invalid_params(
+                    "bundle size too large, max 20 transactions",
+                ));
+            }
+
+            debug!("simulate_bundle rpc request received");
+
+            let config = config.unwrap_or_else(|| RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![
+                    None;
+                    rpc_bundle_request.encoded_transactions.len()
+                ],
+                post_execution_accounts_configs: vec![
+                    None;
+                    rpc_bundle_request.encoded_transactions.len()
+                ],
+                ..RpcSimulateBundleConfig::default()
+            });
+
+            let RpcSimulateBundleConfig {
+                pre_execution_accounts_configs,
+                post_execution_accounts_configs,
+                transaction_encoding,
+                simulation_bank,
+                skip_sig_verify,
+                replace_recent_blockhash,
+            } = config;
+
+            // Run some request validations
+            if !(pre_execution_accounts_configs.len()
+                == rpc_bundle_request.encoded_transactions.len()
+                && post_execution_accounts_configs.len()
+                    == rpc_bundle_request.encoded_transactions.len())
+            {
+                return Err(Error::invalid_params(
+                    "pre/post_execution_accounts_configs must be equal in length to the number of \
+                     transactions",
+                ));
+            }
+
+            // base58 is slow
+            if let Some(transaction_encoding) = transaction_encoding {
+                if transaction_encoding != UiTransactionEncoding::Base64 {
+                    return Err(Error::invalid_params(
+                        "Base64 is the only supported encoding for transactions",
+                    ));
+                }
+            }
+            for config in pre_execution_accounts_configs.iter() {
+                if config
+                    .as_ref()
+                    .and_then(|c| c.encoding)
+                    .unwrap_or(UiAccountEncoding::Base64)
+                    != UiAccountEncoding::Base64
+                {
+                    return Err(Error::invalid_params(
+                        "Base64 is the only supported encoding for pre-execution accounts",
+                    ));
+                }
+            }
+            for config in post_execution_accounts_configs.iter() {
+                if config
+                    .as_ref()
+                    .and_then(|c| c.encoding)
+                    .unwrap_or(UiAccountEncoding::Base64)
+                    != UiAccountEncoding::Base64
+                {
+                    return Err(Error::invalid_params(
+                        "Base64 is the only supported encoding for post-execution accounts",
+                    ));
+                }
+            }
+
+            let tx_encoding = transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
+            let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
+                Error::invalid_params(format!(
+                    "Unsupported encoding: {tx_encoding:?}. Supported encodings are: base58 & \
+                     base64",
+                ))
+            })?;
+            let mut unsanitized_txs = rpc_bundle_request
+                .encoded_transactions
+                .into_iter()
+                .map(|encoded_tx| {
+                    decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)
+                        .map(|de| de.1)
+                })
+                .collect::<Result<Vec<VersionedTransaction>>>()?;
+
+            // check for duplicate transactions
+            let mut packet_hashes = HashSet::new();
+            for tx in unsanitized_txs.iter() {
+                if !packet_hashes.insert(tx.message.hash()) {
+                    return Err(Error::invalid_params("duplicate transactions"));
+                }
+            }
+
+            let bank = match simulation_bank.unwrap_or_default() {
+                SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
+                SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
+                    Error::invalid_params(format!("bank not found for the provided slot: {slot}"))
+                }),
+                SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
+            }?;
+
+            // Ensure an excessive amount of accounts are not requested per transaction
+            let max_accounts = bank.get_transaction_account_lock_limit();
+            if pre_execution_accounts_configs.iter().any(|config| {
+                if let Some(config) = config {
+                    config.addresses.len() > max_accounts
+                } else {
+                    false
+                }
+            }) {
+                return Err(Error::invalid_params(format!(
+                    "Too many accounts provided; max {max_accounts}"
+                )));
+            }
+            if post_execution_accounts_configs.iter().any(|config| {
+                if let Some(config) = config {
+                    config.addresses.len() > max_accounts
+                } else {
+                    false
+                }
+            }) {
+                return Err(Error::invalid_params(format!(
+                    "Too many accounts provided; max {max_accounts}"
+                )));
+            }
+
+            if replace_recent_blockhash {
+                if !skip_sig_verify {
+                    return Err(Error::invalid_params(
+                        "replace_recent_blockhash cannot be used with !skip_sig_verify",
+                    ));
+                }
+                let recent_blockhash = bank.last_blockhash();
+                unsanitized_txs.iter_mut().for_each(|tx| {
+                    tx.message.set_recent_blockhash(recent_blockhash);
+                });
+            }
+
+            let transactions = unsanitized_txs
+                .into_iter()
+                .map(|unsanitized_tx| {
+                    sanitize_transaction(
+                        unsanitized_tx,
+                        bank.as_ref(),
+                        bank.get_reserved_account_keys(),
+                        bank.feature_set
+                            .is_active(&agave_feature_set::static_instruction_limit::id()),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            if !config.skip_sig_verify {
+                for tx in &transactions {
+                    if let Err(e) = tx.verify() {
+                        return Err(Error::invalid_params(format!(
+                            "transaction signature is invalid: {e}",
+                        )));
+                    }
+                }
+            }
+
+            let pre_execution_accounts =
+                account_configs_to_accounts(&pre_execution_accounts_configs)?;
+            let post_execution_accounts =
+                account_configs_to_accounts(&post_execution_accounts_configs)?;
+
+            let results = bank.simulate_transactions_unchecked_with_pre_accounts(
+                &transactions,
+                &pre_execution_accounts,
+                &post_execution_accounts,
+                Some(1_000),
+            );
+            let result = RpcSimulateBundleResult {
+                // if any of them errored out, return the first one that did
+                summary: if let Some((tx, (_pre_accounts, result, _post_accounts))) = transactions
+                    .iter()
+                    .zip(results.iter())
+                    .find(|(_tx, (_pre_accounts, result, _post_accounts))| result.result.is_err())
+                {
+                    RpcBundleSimulationSummary::Failed {
+                        error: RpcBundleExecutionError::TransactionFailure(
+                            *tx.signature(),
+                            result.result.as_ref().err().unwrap().to_string(),
+                        ),
+                        tx_signature: Some(tx.signature().to_string()),
+                    }
+                } else {
+                    RpcBundleSimulationSummary::Succeeded
+                },
+                transaction_results: transactions
+                    .into_iter()
+                    .zip(results.into_iter())
+                    .map(|(_tx, (pre_accounts, result, post_accounts))| {
+                        Ok(RpcSimulateBundleTransactionResult {
+                            err: result.result.err(),
+                            logs: Some(result.logs),
+                            pre_execution_accounts: Some(
+                                pre_accounts
+                                    .iter()
+                                    .map(|(address, data)| {
+                                        encode_account(
+                                            data,
+                                            address,
+                                            UiAccountEncoding::Base64,
+                                            None,
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>>>()?,
+                            ),
+                            post_execution_accounts: Some(
+                                post_accounts
+                                    .iter()
+                                    .map(|(address, data)| {
+                                        encode_account(
+                                            data,
+                                            address,
+                                            UiAccountEncoding::Base64,
+                                            None,
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>>>()?,
+                            ),
+                            units_consumed: Some(result.units_consumed),
+                            return_data: result.return_data.map(|return_data| return_data.into()),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            };
+            Ok(new_response(&bank, result))
+        }
+
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot> {
             debug!("minimum_ledger_slot rpc request received");
             meta.minimum_ledger_slot()
@@ -4417,6 +4686,27 @@ fn sanitize_transaction(
     .map_err(|err| Error::invalid_params(format!("invalid transaction: {err}")))
 }
 
+/// Outer vector is for each transaction, inner vector is for each account
+pub fn account_configs_to_accounts(
+    accounts_config: &[Option<RpcSimulateTransactionAccountsConfig>],
+) -> Result<Vec<Vec<Pubkey>>> {
+    let mut execution_accounts = Vec::new();
+    for account_config in accounts_config {
+        let mut accounts = Vec::new();
+        if let Some(account_config) = account_config {
+            for address in &account_config.addresses {
+                accounts.push(Pubkey::from_str(address).map_err(|_| {
+                    Error::invalid_params(format!(
+                        "invalid pubkey for pre/post accounts provided: {address}"
+                    ))
+                })?);
+            }
+        }
+        execution_accounts.push(accounts);
+    }
+    Ok(execution_accounts)
+}
+
 pub fn create_validator_exit(exit: Arc<AtomicBool>) -> Arc<RwLock<Exit>> {
     let mut validator_exit = Exit::default();
     validator_exit.register_exit(Box::new(move || exit.store(true, Ordering::Relaxed)));
@@ -4520,6 +4810,7 @@ pub mod tests {
             rpc_subscriptions::RpcSubscriptions,
         },
         agave_reserved_account_keys::ReservedAccountKeys,
+        base64::engine::general_purpose,
         bincode::deserialize,
         jsonrpc_core::{futures, ErrorCode, MetaIoHandler, Output, Response, Value},
         jsonrpc_core_client::transports::local,
@@ -5951,6 +6242,146 @@ pub mod tests {
     }
 
     #[test]
+    fn test_rpc_simulate_bundle_happy_path() {
+        // 1. setup
+        let rpc = RpcHandler::start();
+        let bank = rpc.working_bank();
+
+        let recent_blockhash = bank.confirmed_last_blockhash();
+        let RpcHandler {
+            ref meta, ref io, ..
+        } = rpc;
+
+        let data_len = 100;
+        let lamports = bank.get_minimum_balance_for_rent_exemption(data_len);
+        let leader_pubkey = solana_pubkey::new_rand();
+        let leader_account_data = AccountSharedData::new(lamports, data_len, &system_program::id());
+        bank.store_account(&leader_pubkey, &leader_account_data);
+        bank.freeze();
+
+        // 2. build bundle
+
+        // let's pretend the RPC keypair is a searcher
+        let searcher_keypair = rpc.mint_keypair;
+
+        // create tip tx
+        let tip_amount = 10000;
+        let tip_tx = VersionedTransaction::from(system_transaction::transfer(
+            &searcher_keypair,
+            &leader_pubkey,
+            tip_amount,
+            recent_blockhash,
+        ));
+
+        // some random mev tx
+        let mev_amount = 20000;
+        let goku_pubkey = solana_pubkey::new_rand();
+        let mev_tx = VersionedTransaction::from(system_transaction::transfer(
+            &searcher_keypair,
+            &goku_pubkey,
+            mev_amount,
+            recent_blockhash,
+        ));
+
+        let encoded_mev_tx = general_purpose::STANDARD.encode(serialize(&mev_tx).unwrap());
+        let encoded_tip_tx = general_purpose::STANDARD.encode(serialize(&tip_tx).unwrap());
+        let b64_data = general_purpose::STANDARD.encode(leader_account_data.data());
+
+        // 3. test and assert
+        let skip_sig_verify = true;
+        let replace_recent_blockhash = false;
+        let expected_response = json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "context": {"slot": bank.slot(), "apiVersion": RpcApiVersion::default()},
+                "value":{
+                    "summary": "succeeded",
+                    "transactionResults": [
+                        {
+                            "err": null,
+                            "logs": ["Program 11111111111111111111111111111111 invoke [1]", "Program 11111111111111111111111111111111 success"],
+                            "returnData": null,
+                            "unitsConsumed": 150,
+                            "postExecutionAccounts": [],
+                            "preExecutionAccounts": [
+                                {
+                                    "data": [b64_data, "base64"],
+                                    "executable": false,
+                                    "lamports": leader_account_data.lamports(),
+                                    "owner": "11111111111111111111111111111111",
+                                    "rentEpoch": 0,
+                                    "space": 100
+                                }
+                            ],
+                        },
+                        {
+                            "err": null,
+                            "logs": ["Program 11111111111111111111111111111111 invoke [1]", "Program 11111111111111111111111111111111 success"],
+                            "returnData": null,
+                            "unitsConsumed": 150,
+                            "preExecutionAccounts": [],
+                            "postExecutionAccounts": [
+                                {
+                                    "data": [b64_data, "base64"],
+                                    "executable": false,
+                                    "lamports": leader_account_data.lamports() + tip_amount,
+                                    "owner": "11111111111111111111111111111111",
+                                    "rentEpoch": u64::MAX,
+                                    "space": 100
+                                }
+                            ],
+                        },
+                    ],
+                }
+            },
+            "id": 1,
+        });
+
+        let request = format!(
+            r#"{{"jsonrpc":"2.0",
+                 "id":1,
+                 "method":"simulateBundle",
+                 "params":[
+                   {{
+                     "encodedTransactions": ["{}", "{}"]
+                   }},
+                   {{
+                     "skipSigVerify": {},
+                     "replaceRecentBlockhash": {},
+                     "slot": {},
+                     "preExecutionAccountsConfigs": [
+                        {{ "encoding": "base64", "addresses": ["{}"] }},
+                        {{ "encoding": "base64", "addresses": [] }}
+                     ],
+                     "postExecutionAccountsConfigs": [
+                        {{ "encoding": "base64", "addresses": [] }},
+                        {{ "encoding": "base64", "addresses": ["{}"] }}
+                     ]
+                   }}
+                ]
+            }}"#,
+            encoded_mev_tx,
+            encoded_tip_tx,
+            skip_sig_verify,
+            replace_recent_blockhash,
+            bank.slot(),
+            leader_pubkey,
+            leader_pubkey,
+        );
+
+        let actual_response = io
+            .handle_request_sync(&request, meta.clone())
+            .expect("response");
+
+        let expected_response = serde_json::from_value::<Response>(expected_response)
+            .expect("expected_response deserialization");
+        let actual_response = serde_json::from_str::<Response>(&actual_response)
+            .expect("actual_response deserialization");
+
+        assert_eq!(expected_response, actual_response);
+    }
+
+    #[test]
     fn test_rpc_simulate_transaction() {
         let rpc = RpcHandler::start();
         let bank = rpc.working_bank();
@@ -6823,7 +7254,6 @@ pub mod tests {
             );
             ClusterInfo::new(contact_info, keypair, SocketAddrSpace::Unspecified)
         });
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let config = JsonRpcConfig::default();
         let JsonRpcConfig {
             rpc_threads,
@@ -6840,7 +7270,7 @@ pub mod tests {
             blockstore,
             validator_exit,
             health.clone(),
-            cluster_info,
+            cluster_info.clone(),
             Hash::default(),
             None,
             optimistically_confirmed_bank,
@@ -6854,7 +7284,7 @@ pub mod tests {
 
         let client = TpuClientNextClient::create_client(
             Some(runtime.handle().clone()),
-            my_tpu_address,
+            cluster_info.clone(),
             None,
             1,
         );
@@ -7139,7 +7569,7 @@ pub mod tests {
         )));
 
         let cluster_info = Arc::new(new_test_cluster_info());
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
+
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
         let config = JsonRpcConfig::default();
@@ -7152,7 +7582,7 @@ pub mod tests {
         let runtime = service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj);
         let client = TpuClientNextClient::create_client(
             Some(runtime.handle().clone()),
-            my_tpu_address,
+            cluster_info.clone(),
             None,
             1,
         );
@@ -7164,7 +7594,7 @@ pub mod tests {
             blockstore.clone(),
             validator_exit,
             RpcHealth::stub(optimistically_confirmed_bank.clone(), blockstore),
-            cluster_info,
+            cluster_info.clone(),
             Hash::default(),
             None,
             optimistically_confirmed_bank,

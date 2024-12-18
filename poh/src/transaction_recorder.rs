@@ -110,4 +110,61 @@ impl TransactionRecorder {
         self.record_sender
             .try_send(Record::new(mixins, transaction_batches, bank_id))
     }
+
+    pub fn record_bundle(
+        &self,
+        bank_id: BankId,
+        transactions: Vec<VersionedTransaction>,
+    ) -> RecordTransactionsSummary {
+        let mut record_transactions_timings = RecordTransactionsTimings::default();
+        let mut starting_transaction_index = None;
+
+        if !transactions.is_empty() {
+            let mut hashes = Vec::with_capacity(transactions.len());
+            let mut batches = Vec::with_capacity(transactions.len());
+            for tx in transactions {
+                let batch = vec![tx];
+                let (hash, hash_us) = measure_us!(hash_transactions(&batch));
+                record_transactions_timings.hash_us += hash_us;
+                hashes.push(hash);
+                batches.push(batch);
+            }
+
+            let (res, poh_record_us) = measure_us!(self.record(bank_id, hashes, batches));
+            record_transactions_timings.poh_record_us = Saturating(poh_record_us);
+
+            match res {
+                Ok(starting_index) => {
+                    starting_transaction_index = starting_index;
+                }
+                Err(RecordSenderError::InactiveBankId | RecordSenderError::Shutdown) => {
+                    return RecordTransactionsSummary {
+                        record_transactions_timings,
+                        result: Err(PohRecorderError::MaxHeightReached),
+                        starting_transaction_index: None,
+                    }
+                }
+                Err(RecordSenderError::Full) => {
+                    return RecordTransactionsSummary {
+                        record_transactions_timings,
+                        result: Err(PohRecorderError::ChannelFull),
+                        starting_transaction_index: None,
+                    };
+                }
+                Err(RecordSenderError::Disconnected) => {
+                    return RecordTransactionsSummary {
+                        record_transactions_timings,
+                        result: Err(PohRecorderError::ChannelDisconnected),
+                        starting_transaction_index: None,
+                    };
+                }
+            }
+        }
+
+        RecordTransactionsSummary {
+            record_transactions_timings,
+            result: Ok(()),
+            starting_transaction_index,
+        }
+    }
 }
