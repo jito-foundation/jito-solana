@@ -18,6 +18,7 @@ use {
         resolved_transaction_view::ResolvedTransactionView, transaction_data::TransactionData,
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
+    ahash::HashSet,
     arrayvec::ArrayVec,
     core::time::Duration,
     crossbeam_channel::{RecvTimeoutError, TryRecvError},
@@ -38,13 +39,14 @@ use {
     solana_svm_transaction::svm_message::SVMMessage,
     solana_transaction::sanitized::MessageHash,
     solana_transaction_error::TransactionError,
-    std::{collections::HashSet, sync::Arc, time::Instant},
+    std::{sync::Arc, time::Instant},
 };
 
 #[derive(Debug)]
 pub(crate) struct DisconnectedError;
 
 /// Stats/metrics returned by `receive_and_buffer_packets`.
+#[derive(Default)]
 pub(crate) struct ReceivingStats {
     pub num_received: usize,
     /// Count of packets that passed sigverify but were dropped
@@ -68,7 +70,7 @@ pub(crate) struct ReceivingStats {
 }
 
 impl ReceivingStats {
-    fn accumulate(&mut self, other: ReceivingStats) {
+    pub(crate) fn accumulate(&mut self, other: ReceivingStats) {
         self.num_received += other.num_received;
         self.num_dropped_without_parsing += other.num_dropped_without_parsing;
         self.num_dropped_on_parsing_and_sanitization +=
@@ -81,7 +83,6 @@ impl ReceivingStats {
         self.num_dropped_on_filter_key += other.num_dropped_on_filter_key;
         self.num_dropped_on_capacity += other.num_dropped_on_capacity;
         self.num_buffered += other.num_buffered;
-
         self.receive_time_us += other.receive_time_us;
         self.buffer_time_us += other.buffer_time_us;
     }
@@ -104,6 +105,16 @@ pub(crate) struct TransactionViewReceiveAndBuffer {
     pub receiver: BankingPacketReceiver,
     pub sharable_banks: SharableBanks,
     pub filter_keys: Arc<HashSet<Pubkey>>,
+}
+
+pub(crate) fn contains_blacklisted_account<'a>(
+    account_keys: impl IntoIterator<Item = &'a Pubkey>,
+    filter_keys: &HashSet<Pubkey>,
+) -> bool {
+    !filter_keys.is_empty()
+        && account_keys
+            .into_iter()
+            .any(|key| filter_keys.contains(key))
 }
 
 impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
@@ -222,7 +233,8 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
     }
 }
 
-pub(crate) enum PacketHandlingError {
+#[derive(Debug, PartialEq, Eq)]
+pub enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,
@@ -531,7 +543,7 @@ pub(crate) fn load_addresses_for_view<D: TransactionData>(
 /// slots, the value used here is the lower-bound on the deactivation
 /// period, i.e. the transaction's address lookups are valid until
 /// AT LEAST this slot.
-fn calculate_max_age(
+pub(crate) fn calculate_max_age(
     sanitized_epoch: Epoch,
     deactivation_slot: Slot,
     current_slot: Slot,
@@ -582,6 +594,7 @@ mod tests {
     fn setup_transaction_view_receive_and_buffer(
         receiver: Receiver<BankingPacketBatch>,
         bank_forks: Arc<RwLock<BankForks>>,
+        _blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         TransactionViewReceiveAndBuffer,
         TransactionViewStateContainer,
@@ -660,7 +673,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks);
+            setup_transaction_view_receive_and_buffer(receiver, bank_forks, HashSet::default());
 
         drop(sender); // disconnect channel
         let r = receive_and_buffer
@@ -672,8 +685,11 @@ mod tests {
     fn test_receive_and_buffer_no_hold() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &mint_keypair,
@@ -722,8 +738,11 @@ mod tests {
     fn test_receive_and_buffer_discard() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &mint_keypair,
@@ -776,7 +795,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks);
+            setup_transaction_view_receive_and_buffer(receiver, bank_forks, HashSet::default());
 
         let packet_batches = Arc::new(vec![PacketBatch::from(RecycledPacketBatch::new(vec![
             Packet::new([1u8; PACKET_DATA_SIZE], Meta::default()),
@@ -820,7 +839,7 @@ mod tests {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
         let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks);
+            setup_transaction_view_receive_and_buffer(receiver, bank_forks, HashSet::default());
 
         let transaction = transfer(&mint_keypair, &Pubkey::new_unique(), 1, Hash::new_unique());
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
@@ -862,8 +881,11 @@ mod tests {
     fn test_receive_and_buffer_simple_transfer_unfunded_fee_payer() {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &Keypair::new(),
@@ -910,8 +932,11 @@ mod tests {
     fn test_receive_and_buffer_failed_alt_resolve() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let to_pubkey = Pubkey::new_unique();
         let transaction = VersionedTransaction::try_new(
@@ -973,8 +998,11 @@ mod tests {
     fn test_receive_and_buffer_simple_transfer() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction = transfer(
             &mint_keypair,
@@ -1025,7 +1053,7 @@ mod tests {
             setup_transaction_view_receive_and_buffer_with_filter_keys(
                 receiver,
                 bank_forks.clone(),
-                Arc::new(HashSet::from([mint_keypair.pubkey()])),
+                Arc::new(HashSet::from_iter([mint_keypair.pubkey()])),
             );
 
         let transaction = transfer(
@@ -1056,7 +1084,7 @@ mod tests {
             setup_transaction_view_receive_and_buffer_with_filter_keys(
                 receiver,
                 bank_forks.clone(),
-                Arc::new(HashSet::from([filtered_key])),
+                Arc::new(HashSet::from_iter([filtered_key])),
             );
 
         let transaction = transfer(
@@ -1086,7 +1114,7 @@ mod tests {
             setup_transaction_view_receive_and_buffer_with_filter_keys(
                 receiver,
                 bank_forks.clone(),
-                Arc::new(HashSet::from([Pubkey::new_unique()])),
+                Arc::new(HashSet::from_iter([Pubkey::new_unique()])),
             );
 
         let transaction = transfer(
@@ -1112,8 +1140,11 @@ mod tests {
     fn test_receive_and_buffer_overfull() {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let num_transactions = 3 * TEST_CONTAINER_CAPACITY;
         let transactions = Vec::from_iter((0..num_transactions).map(|_| {
@@ -1191,8 +1222,11 @@ mod tests {
 
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
-        let (mut receive_and_buffer, mut container) =
-            setup_transaction_view_receive_and_buffer(receiver, bank_forks.clone());
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let transaction_account_lock_limit = bank_forks
             .read()

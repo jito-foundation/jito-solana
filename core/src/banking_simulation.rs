@@ -10,10 +10,12 @@ use {
             BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME, BankingTracer, ChannelLabel, Channels,
             TimedTracedEvent, TracedEvent, TracedSender, TracerThread,
         },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
     agave_votor_messages::migration::MigrationStatus,
+    arc_swap::ArcSwap,
     assert_matches::assert_matches,
     bincode::deserialize_from,
     crossbeam_channel::{Sender, bounded, unbounded},
@@ -836,6 +838,10 @@ impl BankingSimulator {
             shred_version,
             None,
             completed_block_sender,
+            Arc::new(ArcSwap::default()),
+            Arc::new(ArcSwap::default()),
+            Arc::new(ArcSwap::default()),
+            Arc::new(ArcSwap::default()),
         );
 
         info!("Start banking stage!...");
@@ -855,6 +861,9 @@ impl BankingSimulator {
             bank_forks.clone(),
             None,
             Arc::default(),
+            BundleAccountLocker::default(),
+            None,
+            None,
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot

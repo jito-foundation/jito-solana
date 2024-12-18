@@ -42,7 +42,7 @@ impl<T> StakeAccount<T> {
     }
 
     #[inline]
-    pub(crate) fn stake_state(&self) -> &StakeStateV2 {
+    pub fn stake_state(&self) -> &StakeStateV2 {
         &self.stake_state
     }
 
@@ -55,7 +55,7 @@ impl<T> StakeAccount<T> {
 impl StakeAccount<Delegation> {
     #[inline]
     #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
-    pub(crate) fn delegation(&self) -> &Delegation {
+    pub fn delegation(&self) -> &Delegation {
         // Safe to unwrap here because StakeAccount<Delegation> will always
         // only wrap a stake-state which is a delegation.
         self.stake_state.delegation_ref().unwrap()
