@@ -64,6 +64,7 @@ solana-rayon-threadlimit = { workspace = true }
 solana-rent = { workspace = true, optional = true }
 solana-rent-collector = { workspace = true }
 solana-reward-info = { workspace = true, features = ["serde"] }
+solana-sdk = { workspace = true }
 solana-sha256-hasher = { workspace = true }
 solana-signer = { workspace = true, optional = true }
 solana-slot-hashes = { workspace = true }
