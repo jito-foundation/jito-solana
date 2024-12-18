@@ -1,10 +1,10 @@
 use {
     super::*,
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{cluster_nodes::ClusterNodesCache, ShredReceiverAddresses},
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
-    std::{thread::sleep, time::Duration},
+    std::{net::SocketAddr, thread::sleep, time::Duration},
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
@@ -182,6 +182,8 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
@@ -194,6 +196,8 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
+            &shredstream_receiver_address.load(),
+            &shred_receiver_addresses.load(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
