@@ -204,6 +204,7 @@ fn get_shred_config_from_ledger(
         blockstore.clone(),
         process_options,
         None,
+        true,
     );
 
     let bank = bank_forks.read().unwrap().working_bank();
