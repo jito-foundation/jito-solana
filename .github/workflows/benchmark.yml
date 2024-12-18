@@ -70,6 +70,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          submodules: 'recursive'
+          token: ${{ secrets.ACCESS_TOKEN }}
 
       - name: Before Command
         if: ${{ matrix.test.before_command != '' }}
