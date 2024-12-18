@@ -75,6 +75,18 @@ pub fn main() {
         ("manage-block-production", Some(subcommand_matches)) => {
             commands::manage_block_production::execute(subcommand_matches, &ledger_path)
         }
+        ("set-block-engine-config", Some(subcommand_matches)) => {
+            commands::block_engine::execute(subcommand_matches, &ledger_path)
+        }
+        ("set-relayer-config", Some(subcommand_matches)) => {
+            commands::relayer::execute(subcommand_matches, &ledger_path)
+        }
+        ("set-shred-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_receiver_execute(subcommand_matches, &ledger_path)
+        }
+        ("set-shred-retransmit-receiver-address", Some(subcommand_matches)) => {
+            commands::shred::set_shred_retransmit_receiver_execute(subcommand_matches, &ledger_path)
+        }
         _ => unreachable!(),
     }
     .unwrap_or_else(|err| {

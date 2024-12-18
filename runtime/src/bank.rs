@@ -69,6 +69,7 @@ use {
     },
     ahash::AHashSet,
     dashmap::DashMap,
+    itertools::izip,
     log::*,
     partitioned_epoch_rewards::PartitionedRewardsCalculation,
     rayon::{ThreadPool, ThreadPoolBuilder},
@@ -135,6 +136,7 @@ use {
         account_loader::LoadedTransaction,
         account_overrides::AccountOverrides,
         program_loader::load_program_with_pubkey,
+        rollback_accounts::RollbackAccounts,
         transaction_balances::{BalanceCollector, SvmTokenInfo},
         transaction_commit_result::{CommittedTransaction, TransactionCommitResult},
         transaction_error_metrics::TransactionErrorMetrics,
@@ -181,6 +183,7 @@ use {
             Arc, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
         },
         time::{Duration, Instant},
+        vec,
     },
 };
 #[cfg(feature = "dev-context-only-utils")]
@@ -297,6 +300,7 @@ impl BankRc {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadAndExecuteTransactionsOutput {
     // Vector of results indicating whether a transaction was processed or could not
     // be processed. Note processed transactions can still have failed!
@@ -307,6 +311,22 @@ pub struct LoadAndExecuteTransactionsOutput {
     // Balances accumulated for TransactionStatusSender when transaction
     // balance recording is enabled.
     pub balance_collector: Option<BalanceCollector>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BundleTransactionSimulationResult {
+    pub result: Result<()>,
+    pub logs: TransactionLogMessages,
+    pub pre_execution_accounts: Option<Vec<AccountData>>,
+    pub post_execution_accounts: Option<Vec<AccountData>>,
+    pub return_data: Option<TransactionReturnData>,
+    pub units_consumed: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountData {
+    pub pubkey: Pubkey,
+    pub data: AccountSharedData,
 }
 
 #[derive(Debug, PartialEq)]
@@ -824,7 +844,7 @@ pub struct Bank {
     inflation: Arc<RwLock<Inflation>>,
 
     /// cache of vote_account and stake_account state for this fork
-    stakes_cache: StakesCache,
+    pub stakes_cache: StakesCache,
 
     /// staked nodes on epoch boundaries, saved off when a bank.slot() is at
     ///   a leader schedule calculation boundary
@@ -2977,7 +2997,12 @@ impl Bank {
 
     /// Attempt to take locks on the accounts in a transaction batch
     pub fn try_lock_accounts(&self, txs: &[impl TransactionWithMeta]) -> Vec<Result<()>> {
-        self.try_lock_accounts_with_results(txs, txs.iter().map(|_| Ok(())))
+        self.try_lock_accounts_with_results(
+            txs,
+            txs.iter().map(|_| Ok(())),
+            self.feature_set
+                .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+        )
     }
 
     /// Attempt to take locks on the accounts in a transaction batch, and their cost
@@ -2986,11 +3011,9 @@ impl Bank {
         &self,
         txs: &[impl TransactionWithMeta],
         tx_results: impl Iterator<Item = Result<()>>,
+        relax_intrabatch_account_locks: bool,
     ) -> Vec<Result<()>> {
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
-        let relax_intrabatch_account_locks = self
-            .feature_set
-            .is_active(&feature_set::relax_intrabatch_account_locks::id());
 
         // with simd83 enabled, we must fail transactions that duplicate a prior message hash
         // previously, conflicting account locks would fail such transactions as a side effect
@@ -3026,6 +3049,26 @@ impl Bank {
         self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())))
     }
 
+    /// Override the relax_intrabatch_account_locks feature flag and use the SIMD83 logic for bundle execution
+    pub fn prepare_sanitized_batch_relax_intrabatch_account_locks<
+        'a,
+        'b,
+        Tx: TransactionWithMeta,
+    >(
+        &'a self,
+        transactions: &'b [Tx],
+    ) -> TransactionBatch<'a, 'b, Tx> {
+        TransactionBatch::new(
+            self.try_lock_accounts_with_results(
+                transactions,
+                transactions.iter().map(|_| Ok(())),
+                true,
+            ),
+            self,
+            OwnedOrBorrowed::Borrowed(transactions),
+        )
+    }
+
     /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
     /// limited packing status
     pub fn prepare_sanitized_batch_with_results<'a, 'b, Tx: TransactionWithMeta>(
@@ -3035,7 +3078,12 @@ impl Bank {
     ) -> TransactionBatch<'a, 'b, Tx> {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         TransactionBatch::new(
-            self.try_lock_accounts_with_results(transactions, transaction_results),
+            self.try_lock_accounts_with_results(
+                transactions,
+                transaction_results,
+                self.feature_set
+                    .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+            ),
             self,
             OwnedOrBorrowed::Borrowed(transactions),
         )
@@ -3233,7 +3281,229 @@ impl Bank {
         }
     }
 
-    fn get_account_overrides_for_simulation(&self, account_keys: &AccountKeys) -> AccountOverrides {
+    /// Simulates transactions against a potentially unfrozen bank with pre-execution accounts
+    pub fn simulate_transactions_unchecked_with_pre_accounts<Tx: TransactionWithMeta>(
+        &self,
+        transactions: &[Tx],
+        pre_accounts: &Vec<Vec<Pubkey>>,
+        post_accounts: &Vec<Vec<Pubkey>>,
+        log_messages_bytes_limit: Option<usize>,
+    ) -> Vec<(
+        Vec<KeyedAccountSharedData>, /* pre-accounts */
+        TransactionSimulationResult, /* post-simulation result, which also contains the accounts */
+        Vec<KeyedAccountSharedData>, /* post-accounts; results are stored in the simulation result, but there's no requirement for the tx being present*/
+    )> {
+        if transactions.is_empty() {
+            return vec![];
+        }
+        let mut simulation_results = Vec::new();
+
+        let mut account_overrides = AccountOverrides::default();
+
+        // Pre-load all the account state into account overrides
+        for transaction in transactions {
+            let account_keys = transaction.account_keys();
+            account_overrides.merge(self.get_account_overrides_for_simulation(&account_keys));
+            for account in transaction.account_keys().iter() {
+                if !account_overrides.accounts().contains_key(account) {
+                    if let Some((account_shared_data, _slot)) =
+                        self.get_account_shared_data(account)
+                    {
+                        account_overrides.set_account(account, Some(account_shared_data));
+                    }
+                }
+            }
+        }
+
+        // execute each transaction (this could be faster, but the dumb pre-execution accounts logic makes it difficult)
+        for (transaction, pre_accounts, post_accounts) in
+            izip!(transactions, pre_accounts, post_accounts)
+        {
+            let mut accounts_pre_loaded: Vec<KeyedAccountSharedData> = Vec::new();
+
+            // fill out the pre-accounts from the account overrides or bank
+            // shouldn't need to hit the bank unless pre_account isn't in transaction keys
+            for pubkey in pre_accounts {
+                if let Some(account) = account_overrides.get(pubkey) {
+                    accounts_pre_loaded.push((*pubkey, account.clone()));
+                } else if let Some((account_shared_data, _slot)) =
+                    self.get_account_shared_data(pubkey)
+                {
+                    accounts_pre_loaded.push((*pubkey, account_shared_data));
+                } else {
+                    accounts_pre_loaded.push((*pubkey, AccountSharedData::default()));
+                }
+            }
+
+            let number_of_accounts = transaction.account_keys().len();
+
+            let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
+
+            let LoadAndExecuteTransactionsOutput {
+                mut processing_results,
+                balance_collector,
+                ..
+            } = self.load_and_execute_transactions(
+                &batch,
+                MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+                &mut ExecuteTimings::default(),
+                &mut TransactionErrorMetrics::default(),
+                TransactionProcessingConfig {
+                    account_overrides: Some(&account_overrides),
+                    check_program_modification_slot: self.check_program_modification_slot,
+                    log_messages_bytes_limit,
+                    limit_to_load_programs: true,
+                    recording_config: ExecutionRecordingConfig {
+                        enable_cpi_recording: false,
+                        enable_log_recording: true,
+                        enable_return_data_recording: true,
+                        enable_transaction_balance_recording: true,
+                    },
+                    drop_on_failure: true,
+                    all_or_nothing: true,
+                },
+            );
+
+            let processing_result = processing_results
+                .pop()
+                .unwrap_or(Err(TransactionError::InvalidProgramForExecution));
+            let (
+                post_simulation_accounts,
+                result,
+                fee,
+                logs,
+                return_data,
+                inner_instructions,
+                units_consumed,
+                loaded_accounts_data_size,
+            ) = match processing_result {
+                Ok(processed_tx) => {
+                    let executed_units = processed_tx.executed_units();
+                    let loaded_accounts_data_size = processed_tx.loaded_accounts_data_size();
+
+                    match processed_tx {
+                        ProcessedTransaction::Executed(executed_tx) => {
+                            // write accounts into the account overrides
+                            for (pubkey, account) in executed_tx.loaded_transaction.accounts.iter()
+                            {
+                                account_overrides.set_account(pubkey, Some(account.clone()));
+                            }
+
+                            let details = executed_tx.execution_details;
+                            let post_simulation_accounts = executed_tx
+                                .loaded_transaction
+                                .accounts
+                                .into_iter()
+                                .take(number_of_accounts)
+                                .collect::<Vec<_>>();
+                            (
+                                post_simulation_accounts,
+                                details.status,
+                                Some(executed_tx.loaded_transaction.fee_details.total_fee()),
+                                details.log_messages,
+                                details.return_data,
+                                details.inner_instructions,
+                                executed_units,
+                                loaded_accounts_data_size,
+                            )
+                        }
+                        ProcessedTransaction::FeesOnly(fees_only_tx) => {
+                            // write accounts into the account overrides
+                            match fees_only_tx.rollback_accounts {
+                                RollbackAccounts::FeePayerOnly { fee_payer } => {
+                                    account_overrides
+                                        .set_account(&fee_payer.0, Some(fee_payer.1.clone()));
+                                }
+                                RollbackAccounts::SameNonceAndFeePayer { nonce } => {
+                                    account_overrides.set_account(&nonce.0, Some(nonce.1.clone()));
+                                }
+                                RollbackAccounts::SeparateNonceAndFeePayer { nonce, fee_payer } => {
+                                    account_overrides.set_account(&nonce.0, Some(nonce.1.clone()));
+                                    account_overrides
+                                        .set_account(&fee_payer.0, Some(fee_payer.1.clone()));
+                                }
+                            }
+
+                            (
+                                vec![],
+                                Err(fees_only_tx.load_error),
+                                Some(fees_only_tx.fee_details.total_fee()),
+                                None,
+                                None,
+                                None,
+                                executed_units,
+                                loaded_accounts_data_size,
+                            )
+                        }
+                    }
+                }
+                Err(error) => (vec![], Err(error), None, None, None, None, 0, 0),
+            };
+            let logs = logs.unwrap_or_default();
+
+            let (pre_balances, post_balances, pre_token_balances, post_token_balances) =
+                match balance_collector {
+                    Some(balance_collector) => {
+                        let (mut native_pre, mut native_post, mut token_pre, mut token_post) =
+                            balance_collector.into_vecs();
+
+                        (
+                            native_pre.pop(),
+                            native_post.pop(),
+                            token_pre.pop(),
+                            token_post.pop(),
+                        )
+                    }
+                    None => (None, None, None, None),
+                };
+
+            let execution_result = result.clone();
+
+            let mut accounts_post_loaded: Vec<KeyedAccountSharedData> = Vec::new();
+            for pubkey in post_accounts {
+                if let Some(account) = account_overrides.get(pubkey) {
+                    accounts_post_loaded.push((*pubkey, account.clone()));
+                } else if let Some((account_shared_data, _slot)) =
+                    self.get_account_shared_data(pubkey)
+                {
+                    accounts_post_loaded.push((*pubkey, account_shared_data));
+                } else {
+                    accounts_post_loaded.push((*pubkey, AccountSharedData::default()));
+                }
+            }
+
+            simulation_results.push((
+                accounts_pre_loaded,
+                TransactionSimulationResult {
+                    result,
+                    logs,
+                    post_simulation_accounts,
+                    units_consumed,
+                    loaded_accounts_data_size,
+                    return_data,
+                    inner_instructions,
+                    fee,
+                    pre_balances,
+                    post_balances,
+                    pre_token_balances,
+                    post_token_balances,
+                },
+                accounts_post_loaded,
+            ));
+
+            // bail out early if the execution result is an error
+            if execution_result.is_err() {
+                break;
+            }
+        }
+
+        simulation_results
+    }
+
+    pub fn get_account_overrides_for_simulation(
+        &self,
+        account_keys: &AccountKeys,
+    ) -> AccountOverrides {
         let mut account_overrides = AccountOverrides::default();
         let slot_history_id = sysvar::slot_history::id();
         if account_keys.iter().any(|pubkey| *pubkey == slot_history_id) {

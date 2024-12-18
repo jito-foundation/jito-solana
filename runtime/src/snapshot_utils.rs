@@ -2256,7 +2256,7 @@ mod tests {
             assert_eq!(
                 get_highest_incremental_snapshot_archive_slot(
                     incremental_snapshot_archives_dir.path(),
-                    full_snapshot_slot
+                    full_snapshot_slot,
                 ),
                 Some(max_incremental_snapshot_slot - 1)
             );
@@ -2265,7 +2265,7 @@ mod tests {
         assert_eq!(
             get_highest_incremental_snapshot_archive_slot(
                 incremental_snapshot_archives_dir.path(),
-                max_full_snapshot_slot
+                max_full_snapshot_slot,
             ),
             None
         );
