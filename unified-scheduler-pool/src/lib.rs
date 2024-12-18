@@ -891,7 +891,7 @@ impl TaskHandler for DefaultTaskHandler {
                 );
                 // Note that we're about to partially commit side effects to bank in _pre commit_
                 // callback. Extra care must be taken in the case of poh failure just below;
-                bank.write_cost_tracker().unwrap().try_add(&cost)?;
+                bank.write_cost_tracker().unwrap().try_add(&cost, 0)?;
 
                 let RecordTransactionsSummary {
                     result,
