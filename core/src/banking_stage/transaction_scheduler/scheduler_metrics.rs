@@ -64,6 +64,8 @@ pub struct SchedulerCountMetricsInner {
     pub num_finished: Saturating<usize>,
     /// Number of transactions that were retryable.
     pub num_retryable: Saturating<usize>,
+    /// Number of transactions that were dropped due to blacklisted account.
+    pub num_dropped_on_blacklisted_account: Saturating<usize>,
 
     /// Number of transactions that were immediately dropped on receive.
     pub num_dropped_on_receive: Saturating<usize>,
@@ -141,6 +143,7 @@ impl SchedulerCountMetricsInner {
             num_dropped_on_clear: Saturating(num_dropped_on_clear),
             num_dropped_on_clean: Saturating(num_dropped_on_clean),
             num_dropped_on_capacity: Saturating(num_dropped_on_capacity),
+            num_dropped_on_blacklisted_account: Saturating(num_dropped_on_blacklisted_account),
             min_prioritization_fees: _min_prioritization_fees,
             max_prioritization_fees: _max_prioritization_fees,
         } = self;
@@ -193,7 +196,8 @@ impl SchedulerCountMetricsInner {
             ),
             ("num_dropped_on_capacity", num_dropped_on_capacity, i64),
             ("min_priority", self.get_min_priority(), i64),
-            ("max_priority", self.get_max_priority(), i64)
+            ("max_priority", self.get_max_priority(), i64),
+            ("num_dropped_on_blacklisted_account", num_dropped_on_blacklisted_account, i64)
         );
         if let Some(slot) = slot {
             datapoint.add_field_i64("slot", slot as i64);
@@ -210,6 +214,7 @@ impl SchedulerCountMetricsInner {
             || self.num_schedule_filtered_out != Saturating(0)
             || self.num_finished != Saturating(0)
             || self.num_retryable != Saturating(0)
+            || self.num_dropped_on_blacklisted_account != Saturating(0)
     }
 
     fn reset(&mut self) {
@@ -233,6 +238,7 @@ impl SchedulerCountMetricsInner {
         self.num_dropped_on_capacity = Saturating(0);
         self.min_prioritization_fees = u64::MAX;
         self.max_prioritization_fees = 0;
+        self.num_dropped_on_blacklisted_account = Saturating(0);
     }
 
     pub fn update_priority_stats(&mut self, min_max_fees: MinMaxResult<u64>) {
