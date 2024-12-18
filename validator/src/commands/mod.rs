@@ -1,14 +1,18 @@
 pub mod authorized_voter;
+pub mod block_engine;
 pub mod contact_info;
 pub mod exit;
 pub mod monitor;
 pub mod plugin;
+pub mod relayer;
 pub mod repair_shred_from_peer;
 pub mod repair_whitelist;
 pub mod run;
+pub mod runtime_plugin;
 pub mod set_identity;
 pub mod set_log_filter;
 pub mod set_public_address;
+pub mod shred;
 pub mod staked_nodes_overrides;
 pub mod wait_for_restart_window;
 
