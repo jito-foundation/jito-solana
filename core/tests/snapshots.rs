@@ -804,6 +804,7 @@ fn test_snapshots_with_background_services(
                 &snapshot_test_config
                     .snapshot_config
                     .full_snapshot_archives_dir,
+                None,
             ) != Some(slot)
             {
                 assert!(
@@ -823,6 +824,7 @@ fn test_snapshots_with_background_services(
                     .snapshot_config
                     .incremental_snapshot_archives_dir,
                 latest_full_snapshot_slot.unwrap(),
+                None,
             ) != Some(slot)
             {
                 assert!(

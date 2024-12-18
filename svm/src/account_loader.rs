@@ -24,7 +24,9 @@ use {
     solana_rent_debits::RentDebits,
     solana_sdk_ids::{
         native_loader,
-        sysvar::{self, slot_history},
+        sysvar::{
+            slot_history, {self},
+        },
     },
     solana_svm_callback::{AccountState, TransactionProcessingCallback},
     solana_svm_feature_set::SVMFeatureSet,
@@ -176,6 +178,12 @@ impl<'a, CB: TransactionProcessingCallback> AccountLoader<'a, CB> {
         {
             loaded_accounts.insert(slot_history::id(), slot_history.clone());
         }
+
+        //         if let Some(overrides) = account_overrides {
+        //             for (key, account) in overrides.accounts() {
+        //                 account_cache.insert(*key, account.clone());
+        //             }
+        // >>>>>>> 0b061cc24e (Jito Patch)
 
         Self {
             loaded_accounts,

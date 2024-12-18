@@ -282,7 +282,6 @@ pub fn execute_batch<'a>(
             .iter()
             .map(|tx| tx.as_sanitized_transaction().into_owned())
             .collect();
-
         // There are two cases where balance_collector could be None:
         // * Balance recording is disabled. If that were the case, there would
         //   be no TransactionStatusSender, and we would not be in this branch.
@@ -349,7 +348,7 @@ fn check_block_cost_limits<Tx: TransactionWithMeta>(
     let mut cost_tracker = bank.write_cost_tracker().unwrap();
     for tx_cost in tx_costs.iter().flatten() {
         cost_tracker
-            .try_add(tx_cost)
+            .try_add(tx_cost, 0)
             .map_err(TransactionError::from)?;
     }
 
@@ -883,6 +882,7 @@ pub fn test_process_blockstore(
         None,
         None,
         exit.clone(),
+        true,
     )
     .unwrap();
 

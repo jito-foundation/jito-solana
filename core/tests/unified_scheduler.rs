@@ -18,7 +18,6 @@ use {
         replay_stage::ReplayStage,
         unfrozen_gossip_verified_vote_hashes::UnfrozenGossipVerifiedVoteHashes,
     },
-    solana_entry::entry::Entry,
     solana_gossip::cluster_info::{ClusterInfo, Node},
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -27,7 +26,7 @@ use {
         genesis_utils::create_genesis_config, leader_schedule_cache::LeaderScheduleCache,
     },
     solana_perf::packet::to_packet_batches,
-    solana_poh::poh_recorder::create_test_recorder,
+    solana_poh::poh_recorder::{create_test_recorder, WorkingBankEntry},
     solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, genesis_utils::GenesisConfigInfo,
@@ -300,9 +299,18 @@ fn test_scheduler_producing_blocks() {
 
     // Verify transactions are committed and poh-recorded
     assert_eq!(tpu_bank.transaction_count(), 1);
-    assert_matches!(
-        signal_receiver.into_iter().find(|(_, (entry, _))| !entry.is_tick()),
-        Some((_, (Entry {transactions, ..}, _))) if transactions == [tx.to_versioned_transaction()]
+    let wbe = signal_receiver
+        .into_iter()
+        .find(
+            |WorkingBankEntry {
+                 bank: _,
+                 entries_ticks,
+             }| !entries_ticks[0].0.is_tick(),
+        )
+        .unwrap();
+    assert_eq!(
+        wbe.entries_ticks[0].0.transactions,
+        [tx.to_versioned_transaction()]
     );
 
     // Stop things.

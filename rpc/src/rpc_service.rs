@@ -16,7 +16,7 @@ use {
         RequestMiddlewareAction, ServerBuilder,
     },
     regex::Regex,
-    solana_client::connection_cache::{ConnectionCache, Protocol},
+    solana_client::connection_cache::ConnectionCache,
     solana_genesis_config::DEFAULT_GENESIS_DOWNLOAD_PATH,
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
@@ -346,6 +346,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                 let full_snapshot_archive_info =
                     snapshot_utils::get_highest_full_snapshot_archive_info(
                         &snapshot_config.full_snapshot_archives_dir,
+                        None,
                     );
                 let snapshot_archive_info =
                     if let Some(full_snapshot_archive_info) = full_snapshot_archive_info {
@@ -355,6 +356,7 @@ impl RequestMiddleware for RpcRequestMiddleware {
                             snapshot_utils::get_highest_incremental_snapshot_archive_info(
                                 &snapshot_config.incremental_snapshot_archives_dir,
                                 full_snapshot_archive_info.slot(),
+                                None,
                             )
                             .map(|incremental_snapshot_archive_info| {
                                 incremental_snapshot_archive_info
@@ -512,17 +514,9 @@ impl JsonRpcService {
 
         match config.client_option {
             ClientOption::ConnectionCache(connection_cache) => {
-                let my_tpu_address = config
-                    .cluster_info
-                    .my_contact_info()
-                    .tpu(connection_cache.protocol())
-                    .ok_or(format!(
-                        "Invalid {:?} socket address for TPU",
-                        connection_cache.protocol()
-                    ))?;
                 let client = ConnectionCacheClient::new(
                     connection_cache,
-                    my_tpu_address,
+                    config.cluster_info.clone(),
                     config.send_transaction_service_config.tpu_peers.clone(),
                     leader_info,
                     config.send_transaction_service_config.leader_forward_count,
@@ -554,17 +548,9 @@ impl JsonRpcService {
                 Ok(json_rpc_service)
             }
             ClientOption::TpuClientNext(identity_keypair, tpu_client_socket, client_runtime) => {
-                let my_tpu_address = config
-                    .cluster_info
-                    .my_contact_info()
-                    .tpu(Protocol::QUIC)
-                    .ok_or(format!(
-                        "Invalid {:?} socket address for TPU",
-                        Protocol::QUIC
-                    ))?;
                 let client = TpuClientNextClient::new(
                     client_runtime,
-                    my_tpu_address,
+                    config.cluster_info.clone(),
                     config.send_transaction_service_config.tpu_peers.clone(),
                     leader_info,
                     config.send_transaction_service_config.leader_forward_count,
@@ -632,21 +618,11 @@ impl JsonRpcService {
             config.rpc_niceness_adj,
         );
 
-        let tpu_address = cluster_info
-            .my_contact_info()
-            .tpu(connection_cache.protocol())
-            .ok_or_else(|| {
-                format!(
-                    "Invalid {:?} socket address for TPU",
-                    connection_cache.protocol()
-                )
-            })?;
-
         let leader_info =
             poh_recorder.map(|recorder| ClusterTpuInfo::new(cluster_info.clone(), recorder));
         let client = ConnectionCacheClient::new(
             connection_cache,
-            tpu_address,
+            cluster_info.clone(),
             send_transaction_service_config.tpu_peers.clone(),
             leader_info,
             send_transaction_service_config.leader_forward_count,

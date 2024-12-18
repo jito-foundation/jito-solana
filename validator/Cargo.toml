@@ -65,6 +65,8 @@ solana-rpc = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-runtime = { workspace = true }
+solana-runtime-plugin = { workspace = true }
+solana-sdk = { version = "=2.2.2", features = ["openssl-vendored"] }
 solana-sdk-ids = { workspace = true }
 solana-send-transaction-service = { workspace = true }
 solana-signer = { workspace = true }
@@ -81,6 +83,7 @@ solana-vote-program = { workspace = true }
 symlink = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tonic = { workspace = true, features = ["tls", "tls-roots"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
