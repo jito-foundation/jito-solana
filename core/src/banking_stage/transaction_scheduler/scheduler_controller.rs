@@ -19,6 +19,7 @@ use {
         ForwardOption, LikeClusterInfo, TOTAL_BUFFERED_PACKETS,
     },
     solana_measure::measure_us,
+    solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_sdk::{
         self,
@@ -26,7 +27,9 @@ use {
         saturating_add_assign,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
+    solana_svm_transaction::svm_message::SVMMessage,
     std::{
+        collections::HashSet,
         sync::{Arc, RwLock},
         time::{Duration, Instant},
     },
@@ -60,6 +63,8 @@ where
     worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
     /// State for forwarding packets to the leader, if enabled.
     forwarder: Option<Forwarder<C>>,
+    /// Blacklisted accounts
+    blacklisted_accounts: HashSet<Pubkey>,
 }
 
 impl<C, R, S> SchedulerController<C, R, S>
@@ -75,6 +80,7 @@ where
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
         forwarder: Option<Forwarder<C>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         Self {
             decision_maker,
@@ -87,6 +93,7 @@ where
             timing_metrics: SchedulerTimingMetrics::default(),
             worker_metrics,
             forwarder,
+            blacklisted_accounts,
         }
     }
 
@@ -157,7 +164,7 @@ where
                             MAX_PROCESSING_AGE,
                         )
                     },
-                    |_| true // no pre-lock filter for now
+                    |tx| { Self::pre_lock_filter(tx, &self.blacklisted_accounts) }
                 )?);
 
                 self.count_metrics.update(|count_metrics| {
@@ -452,6 +459,12 @@ where
             decision,
         )
     }
+
+    fn pre_lock_filter(tx: &R::Transaction, blacklisted_accounts: &HashSet<Pubkey>) -> bool {
+        !tx.account_keys()
+            .iter()
+            .any(|a| blacklisted_accounts.contains(a))
+    }
 }
 
 #[cfg(test)]
@@ -595,6 +608,7 @@ mod tests {
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
             None,
+            HashSet::default(),
         );
 
         (test_frame, scheduler_controller)
