@@ -176,7 +176,7 @@ pub fn execute_batch<'a>(
     let mut mint_decimals: HashMap<Pubkey, u8> = HashMap::new();
 
     let pre_token_balances = if record_token_balances {
-        collect_token_balances(bank, batch, &mut mint_decimals)
+        collect_token_balances(bank, batch, &mut mint_decimals, None)
     } else {
         vec![]
     };
@@ -248,7 +248,7 @@ pub fn execute_batch<'a>(
             .map(|tx| tx.as_sanitized_transaction().into_owned())
             .collect();
         let post_token_balances = if record_token_balances {
-            collect_token_balances(bank, batch, &mut mint_decimals)
+            collect_token_balances(bank, batch, &mut mint_decimals, None)
         } else {
             vec![]
         };
@@ -302,7 +302,7 @@ fn check_block_cost_limits(
         let mut cost_tracker = bank.write_cost_tracker().unwrap();
         for tx_cost in &tx_costs_with_actual_execution_units {
             cost_tracker
-                .try_add(tx_cost)
+                .try_add(tx_cost, 0)
                 .map_err(TransactionError::from)?;
         }
     }
@@ -964,6 +964,7 @@ pub fn test_process_blockstore(
         None,
         None,
         exit,
+        true,
     )
     .unwrap();
 
