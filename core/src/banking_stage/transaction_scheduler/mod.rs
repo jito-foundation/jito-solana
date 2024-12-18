@@ -1,5 +1,8 @@
 use conditional_mod::conditional_vis_mod;
 
+pub(crate) mod bam_receive_and_buffer;
+pub(crate) mod bam_scheduler;
+pub(crate) mod bam_utils;
 mod batch_id_generator;
 conditional_vis_mod!(greedy_scheduler, feature = "dev-context-only-utils", pub, pub(crate));
 mod in_flight_tracker;

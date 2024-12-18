@@ -341,7 +341,7 @@ fn check_block_cost_limits<Tx: TransactionWithMeta>(
     let mut cost_tracker = bank.write_cost_tracker().unwrap();
     for tx_cost in tx_costs.iter().flatten() {
         cost_tracker
-            .try_add(tx_cost)
+            .try_add(tx_cost, 0)
             .map_err(TransactionError::from)?;
     }
 
@@ -735,7 +735,7 @@ fn queue_batches_with_lock_retry(
     ) -> Result<()>,
 ) -> Result<()> {
     // try to lock the accounts
-    let lock_results = bank.try_lock_accounts(&transactions);
+    let lock_results = bank.try_lock_accounts(&transactions, false);
     let first_lock_err = first_err(&lock_results);
     if first_lock_err.is_ok() {
         batches.push(LockedTransactionsWithIndexes {
@@ -759,7 +759,7 @@ fn queue_batches_with_lock_retry(
     process_batches(batches.drain(..))?;
 
     // Retry the lock
-    let lock_results = bank.try_lock_accounts(&transactions);
+    let lock_results = bank.try_lock_accounts(&transactions, false);
     match first_err(&lock_results) {
         Ok(()) => {
             batches.push(LockedTransactionsWithIndexes {
@@ -872,6 +872,7 @@ pub fn test_process_blockstore(
         None,
         None,
         exit.clone(),
+        true,
     )
     .unwrap();
 
@@ -5116,7 +5117,7 @@ pub mod tests {
         let bank = BankWithScheduler::new(bank, Some(Box::new(mocked_scheduler)));
 
         let locked_entry = LockedTransactionsWithIndexes {
-            lock_results: bank.try_lock_accounts(&txs),
+            lock_results: bank.try_lock_accounts(&txs, false),
             transactions: txs,
             starting_index: 0,
         };

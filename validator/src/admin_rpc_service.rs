@@ -12,12 +12,17 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::{tower_storage::TowerStorage, Tower},
+        proxy::{
+            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         repair::repair_service,
         validator::ValidatorStartProgress,
     },
     solana_geyser_plugin_manager::GeyserPluginManagerRequest,
     solana_gossip::contact_info::{ContactInfo, Protocol, SOCKET_ADDR_UNSPECIFIED},
     solana_keypair::{read_keypair_file, Keypair},
+    solana_metrics::datapoint_info,
     solana_pubkey::Pubkey,
     solana_rpc::rpc::verify_pubkey,
     solana_rpc_client_api::{config::RpcAccountIndex, custom_error::RpcCustomError},
@@ -29,14 +34,16 @@ use {
         fmt::{self, Display},
         net::{IpAddr, SocketAddr},
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder},
         time::{Duration, SystemTime},
     },
     tokio::runtime::Runtime,
+    tonic::transport::Endpoint,
 };
 
 #[derive(Clone)]
@@ -51,6 +58,7 @@ pub struct AdminRpcRequestMetadata {
     pub staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
+    pub bam_url: Arc<Mutex<Option<String>>>,
 }
 
 impl Metadata for AdminRpcRequestMetadata {}
@@ -258,6 +266,37 @@ pub trait AdminRpc {
         &self,
         meta: Self::Metadata,
         public_tpu_forwards_addr: SocketAddr,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setBlockEngineConfig")]
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
+        trust_packets: bool,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setBamUrl")]
+    fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()>;
+
+    #[rpc(meta, name = "setRelayerConfig")]
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setShredReceiverAddress")]
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()>;
+
+    #[rpc(meta, name = "setShredRetransmitReceiverAddress")]
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
     ) -> Result<()>;
 }
 
@@ -491,6 +530,57 @@ impl AdminRpc for AdminRpcImpl {
         Ok(())
     }
 
+    fn set_block_engine_config(
+        &self,
+        meta: Self::Metadata,
+        block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
+        trust_packets: bool,
+    ) -> Result<()> {
+        debug!("set_block_engine_config request received");
+        let config = BlockEngineConfig {
+            block_engine_url,
+            disable_block_engine_autoconfig,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if BlockEngineStage::is_valid_block_engine_config(&config) {
+            meta.with_post_init(|post_init| {
+                *post_init.block_engine_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set block engine config. see logs for details.",
+            ))
+        }
+    }
+
+    fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
+        let old_bam_url = meta.bam_url.lock().unwrap().clone();
+        let new_bam_url = bam_url.as_ref().map(|url| url.to_string());
+        debug!("set_bam_url old= {:?}, new={:?}", old_bam_url, new_bam_url);
+
+        if let Some(new_bam_url) = &new_bam_url {
+            if !new_bam_url.is_empty() {
+                if let Err(e) = Endpoint::from_str(new_bam_url) {
+                    return Err(jsonrpc_core::error::Error::invalid_params(format!(
+                        "Could not create endpoint: {e}"
+                    )));
+                }
+            } else {
+                datapoint_info!(
+                    "bam_manually_disconnected",
+                    ("count", 1, i64),
+                    ("previous_bam_url", old_bam_url.unwrap_or_default(), String)
+                );
+            }
+        }
+
+        *meta.bam_url.lock().unwrap() = bam_url;
+        Ok(())
+    }
+
     fn set_identity(
         &self,
         meta: Self::Metadata,
@@ -523,6 +613,79 @@ impl AdminRpc for AdminRpcImpl {
         })?;
 
         AdminRpcImpl::set_identity_keypair(meta, identity_keypair, require_tower)
+    }
+
+    fn set_relayer_config(
+        &self,
+        meta: Self::Metadata,
+        relayer_url: String,
+        expected_heartbeat_interval_ms: u64,
+        max_failed_heartbeats: u64,
+    ) -> Result<()> {
+        debug!("set_relayer_config request received");
+        let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
+        let oldest_allowed_heartbeat =
+            Duration::from_millis(max_failed_heartbeats * expected_heartbeat_interval_ms);
+        let config = RelayerConfig {
+            relayer_url,
+            expected_heartbeat_interval,
+            oldest_allowed_heartbeat,
+        };
+        // Detailed log messages are printed inside validate function
+        if RelayerStage::is_valid_relayer_config(&config) {
+            meta.with_post_init(|post_init| {
+                *post_init.relayer_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set relayer config. see logs for details.",
+            ))
+        }
+    }
+
+    fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
+        let shred_receiver_address = if addr.is_empty() {
+            None
+        } else {
+            Some(SocketAddr::from_str(&addr).map_err(|_| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address: {}",
+                    addr
+                ))
+            })?)
+        };
+
+        meta.with_post_init(|post_init| {
+            post_init
+                .shred_receiver_address
+                .store(Arc::new(shred_receiver_address));
+            Ok(())
+        })
+    }
+
+    fn set_shred_retransmit_receiver_address(
+        &self,
+        meta: Self::Metadata,
+        addr: String,
+    ) -> Result<()> {
+        let shred_receiver_address = if addr.is_empty() {
+            None
+        } else {
+            Some(SocketAddr::from_str(&addr).map_err(|_| {
+                jsonrpc_core::error::Error::invalid_params(format!(
+                    "invalid shred receiver address: {}",
+                    addr
+                ))
+            })?)
+        };
+
+        meta.with_post_init(|post_init| {
+            post_init
+                .shred_retransmit_receiver_address
+                .store(Arc::new(shred_receiver_address));
+            Ok(())
+        })
     }
 
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()> {
@@ -928,6 +1091,7 @@ pub fn load_staked_nodes_overrides(
 mod tests {
     use {
         super::*,
+        arc_swap::ArcSwap,
         serde_json::Value,
         solana_account::{Account, AccountSharedData},
         solana_accounts_db::{
@@ -962,7 +1126,12 @@ mod tests {
         spl_token_2022_interface::state::{
             Account as TokenAccount, AccountState as TokenAccountState, Mint,
         },
-        std::{collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
+        std::{
+            collections::HashSet,
+            fs::remove_dir_all,
+            sync::{atomic::AtomicBool, Mutex},
+            thread::sleep,
+        },
     };
 
     #[derive(Default)]
@@ -1003,6 +1172,10 @@ mod tests {
             let vote_account = vote_keypair.pubkey();
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
+            let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
+            let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
+            let shred_receiver_address = Arc::new(ArcSwap::default());
+            let shred_retransmit_receiver_address = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),
@@ -1025,9 +1198,14 @@ mod tests {
                         solana_core::cluster_slots_service::cluster_slots::ClusterSlots::default(),
                     ),
                     node: None,
+                    block_engine_config,
+                    relayer_config,
+                    shred_receiver_address,
+                    shred_retransmit_receiver_address,
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                bam_url: Arc::new(Mutex::new(None)),
             };
             let mut io = MetaIoHandler::default();
             io.extend_with(AdminRpcImpl.to_delegate());
@@ -1448,6 +1626,7 @@ mod tests {
                 post_init: post_init.clone(),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                bam_url: Arc::new(Mutex::new(None)),
             };
 
             let _validator = Validator::new(
@@ -1464,12 +1643,14 @@ mod tests {
                 SocketAddrSpace::Unspecified,
                 ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
                 post_init.clone(),
+                None,
             )
             .expect("assume successful validator start");
             assert_eq!(
                 *start_progress.read().unwrap(),
                 ValidatorStartProgress::Running
             );
+            sleep(Duration::from_secs(1)); // wait for KeyUpdaterType::BamConnection to come up
             let post_init = post_init.read().unwrap();
 
             assert!(post_init.is_some());
@@ -1484,7 +1665,8 @@ mod tests {
                     KeyUpdaterType::TpuForwards,
                     KeyUpdaterType::TpuVote,
                     KeyUpdaterType::Forward,
-                    KeyUpdaterType::RpcService
+                    KeyUpdaterType::RpcService,
+                    KeyUpdaterType::BamConnection
                 ])
             );
             let mut io = MetaIoHandler::default();
@@ -1550,6 +1732,66 @@ mod tests {
         let exit_response = test_validator.handle_request(&contact_info_request);
         let actual_parsed_response: Value =
             serde_json::from_str(&exit_response.expect("actual response"))
+                .expect("actual response deserialization");
+        assert_eq!(actual_parsed_response, expected_parsed_response);
+    }
+
+    // This test checks that `setBamUrl` call works as expected when setting and clearing the BAM URL.
+    #[test]
+    fn test_set_bam_url() {
+        let test_validator = TestValidatorWithAdminRpc::new();
+
+        let set_initial_bam_url_request = r#"{"jsonrpc":"2.0","id":1,"method":"setBamUrl","params":["http://example.com:8080/bam"]}"#;
+        let response = test_validator.handle_request(set_initial_bam_url_request);
+
+        let expected_parsed_response: Value = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": null
+            }"#,
+        )
+        .expect("Failed to parse expected response");
+        let actual_parsed_response: Value =
+            serde_json::from_str(&response.expect("actual response"))
+                .expect("actual response deserialization");
+        assert_eq!(actual_parsed_response, expected_parsed_response);
+
+        let set_bad_string_bam_url_request =
+            r#"{"jsonrpc":"2.0","id":1,"method":"setBamUrl","params":["not a url"]}"#;
+        let response = test_validator.handle_request(set_bad_string_bam_url_request);
+
+        let expected_error_response: Value = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32602,
+                    "message": "Could not create endpoint: invalid URI"
+                }
+            }"#,
+        )
+        .expect("Failed to parse expected error response");
+        let actual_error_response: Value =
+            serde_json::from_str(&response.expect("actual response"))
+                .expect("actual response deserialization");
+        assert_eq!(actual_error_response, expected_error_response);
+
+        let disable_bam_url_request =
+            r#"{"jsonrpc":"2.0","id":1,"method":"setBamUrl","params":[null]}"#;
+
+        let response = test_validator.handle_request(disable_bam_url_request);
+
+        let expected_parsed_response: Value = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "jsonrpc": "2.0",
+                "result": null
+            }"#,
+        )
+        .expect("Failed to parse expected response");
+        let actual_parsed_response: Value =
+            serde_json::from_str(&response.expect("actual response"))
                 .expect("actual response deserialization");
         assert_eq!(actual_parsed_response, expected_parsed_response);
     }
