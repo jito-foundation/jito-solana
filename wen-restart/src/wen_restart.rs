@@ -516,7 +516,7 @@ pub(crate) fn generate_snapshot(
     // snapshot on disk, which might be too old to generate an incremental snapshot from.
     // In this case we also set full_snapshot_slot to None.
     let full_snapshot_slot = if snapshot_config.should_generate_snapshots() {
-        get_highest_full_snapshot_archive_slot(directory)
+        get_highest_full_snapshot_archive_slot(directory, None)
     } else {
         None
     };
@@ -536,7 +536,7 @@ pub(crate) fn generate_snapshot(
         )?;
         directory = &snapshot_config.incremental_snapshot_archives_dir;
         if let Some(incremental_snapshot_slot) =
-            get_highest_incremental_snapshot_archive_slot(directory, full_snapshot_slot)
+            get_highest_incremental_snapshot_archive_slot(directory, full_snapshot_slot, None)
         {
             check_slot_smaller_than_intended_snapshot_slot(
                 incremental_snapshot_slot,

@@ -1054,6 +1054,7 @@ impl TestValidator {
                 tpu_max_connections_per_ipaddr_per_minute: 32, // max connections per IpAddr per minute for test
             },
             config.admin_rpc_service_post_init.clone(),
+            None,
         )?);
 
         // Needed to avoid panics in `solana-responder-gossip` in tests that create a number of

@@ -41,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
@@ -68,7 +70,7 @@ jobs:
         arrays:
           [
             {
-              test_paths: ["token/cli"],
+              test_paths: [ "token/cli" ],
               required_programs:
                 [
                   "token/program",
@@ -78,14 +80,14 @@ jobs:
                 ],
             },
             {
-              test_paths: ["single-pool/cli"],
+              test_paths: [ "single-pool/cli" ],
               required_programs:
                 [
                   "single-pool/program",
                 ],
             },
             {
-              test_paths: ["token-upgrade/cli"],
+              test_paths: [ "token-upgrade/cli" ],
               required_programs:
                 [
                   "token-upgrade/program",
@@ -94,6 +96,8 @@ jobs:
           ]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
@@ -129,24 +133,26 @@ jobs:
     strategy:
       matrix:
         programs:
-          - [token/program]
+          - [ token/program ]
           - [
-              instruction-padding/program,
-              token/program-2022,
-              token/program-2022-test,
-            ]
+            instruction-padding/program,
+            token/program-2022,
+            token/program-2022-test,
+          ]
           - [
-              associated-token-account/program,
-              associated-token-account/program-test,
-            ]
-          - [token-upgrade/program]
-          - [feature-proposal/program]
-          - [governance/addin-mock/program, governance/program]
-          - [name-service/program]
-          - [stake-pool/program]
-          - [single-pool/program]
+            associated-token-account/program,
+            associated-token-account/program-test,
+          ]
+          - [ token-upgrade/program ]
+          - [ feature-proposal/program ]
+          - [ governance/addin-mock/program, governance/program ]
+          - [ name-service/program ]
+          - [ stake-pool/program ]
+          - [ single-pool/program ]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |

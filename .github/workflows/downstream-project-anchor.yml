@@ -42,9 +42,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        version: ["master"]
+        version: [ "master" ]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - shell: bash
         run: |
