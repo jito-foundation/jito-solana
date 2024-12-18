@@ -40,5 +40,5 @@ else
   codecov -t "${CODECOV_TOKEN}" --dir "$here/../target/cov/${SHORT_CI_COMMIT}"
 
   annotate --style success --context codecov.io \
-    "CodeCov report: https://codecov.io/github/anza-xyz/agave/commit/$CI_COMMIT"
+    "CodeCov report: https://codecov.io/github/jito-foundation/jito-solana/commit/$CI_COMMIT"
 fi
