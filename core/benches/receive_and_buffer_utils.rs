@@ -28,7 +28,10 @@ use {
     solana_sdk_ids::system_program,
     solana_signer::Signer,
     solana_transaction::versioned::VersionedTransaction,
-    std::sync::{Arc, RwLock},
+    std::{
+        collections::HashSet,
+        sync::{Arc, RwLock},
+    },
 };
 
 // the max number of instructions of given type that we can put into packet.
@@ -145,6 +148,7 @@ impl ReceiveAndBufferCreator for TransactionViewReceiveAndBuffer {
         TransactionViewReceiveAndBuffer {
             receiver,
             bank_forks,
+            blacklisted_accounts: HashSet::default(),
         }
     }
 }
@@ -154,7 +158,11 @@ impl ReceiveAndBufferCreator for SanitizedTransactionReceiveAndBuffer {
         receiver: Receiver<Arc<Vec<PacketBatch>>>,
         bank_forks: Arc<RwLock<BankForks>>,
     ) -> Self {
-        SanitizedTransactionReceiveAndBuffer::new(PacketDeserializer::new(receiver), bank_forks)
+        SanitizedTransactionReceiveAndBuffer::new(
+            PacketDeserializer::new(receiver),
+            bank_forks,
+            HashSet::default(),
+        )
     }
 }
 
