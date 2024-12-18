@@ -10,11 +10,7 @@ use {
     },
     solana_client::connection_cache::ConnectionCache,
     solana_gossip::cluster_info::ClusterInfo,
-    solana_net_utils::sockets::{bind_to, localhost_port_range_for_tests},
-    std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::Arc,
-    },
+    std::{net::SocketAddr, sync::Arc},
     tokio::runtime::Handle,
     tokio_util::sync::CancellationToken,
 };

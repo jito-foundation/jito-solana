@@ -197,19 +197,14 @@ impl BundleStageStatsMetricsTracker {
                             .sanitize_transaction_failed_sig_verify_failed
                             .add_assign(Saturating(1));
                     }
+                    DeserializedBundleError::PacketFilterFailure(_) => {
+                        bundle_stage_metrics
+                            .packet_filter_failure
+                            .add_assign(Saturating(1));
+                    }
                     DeserializedBundleError::FailedVerifyPrecompiles => {
                         bundle_stage_metrics
                             .failed_verify_precompiles
-                            .add_assign(Saturating(1));
-                    }
-                    DeserializedBundleError::TooManyAccountLocks => {
-                        bundle_stage_metrics
-                            .sanitize_transaction_failed_too_many_account_locks
-                            .add_assign(Saturating(1));
-                    }
-                    DeserializedBundleError::InvalidComputeBudgetLimits => {
-                        bundle_stage_metrics
-                            .sanitize_transaction_failed_invalid_compute_budget_limits
                             .add_assign(Saturating(1));
                     }
                 },
@@ -360,6 +355,7 @@ pub struct BundleStageStats {
     sanitize_transaction_failed_too_many_packets: Saturating<u64>,
     sanitize_transaction_failed_marked_discard: Saturating<u64>,
     sanitize_transaction_failed_sig_verify_failed: Saturating<u64>,
+    packet_filter_failure: Saturating<u64>,
     failed_verify_precompiles: Saturating<u64>,
 
     locked_bundle_elapsed_us: Saturating<u64>,
@@ -386,9 +382,6 @@ pub struct BundleStageStats {
     execution_results_max_retries: Saturating<u64>,
 
     bad_argument: Saturating<u64>,
-
-    sanitize_transaction_failed_too_many_account_locks: Saturating<u64>,
-    sanitize_transaction_failed_invalid_compute_budget_limits: Saturating<u64>,
 }
 
 impl BundleStageStats {
@@ -468,6 +461,7 @@ impl BundleStageStats {
                 self.sanitize_transaction_failed_sig_verify_failed.0,
                 i64
             ),
+            ("packet_filter_failure", self.packet_filter_failure.0, i64),
             (
                 "failed_verify_precompiles",
                 self.failed_verify_precompiles.0,
@@ -535,17 +529,6 @@ impl BundleStageStats {
             (
                 "execution_results_max_retries",
                 self.execution_results_max_retries.0,
-                i64
-            ),
-            (
-                "sanitize_transaction_failed_too_many_account_locks",
-                self.sanitize_transaction_failed_too_many_account_locks.0,
-                i64
-            ),
-            (
-                "sanitize_transaction_failed_invalid_compute_budget_limits",
-                self.sanitize_transaction_failed_invalid_compute_budget_limits
-                    .0,
                 i64
             ),
             ("bad_argument", self.bad_argument.0, i64)

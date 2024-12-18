@@ -607,7 +607,7 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
-        xdp_sender: Option<XdpSender>,
+        xdp_config: Option<XdpConfig>,
         shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(

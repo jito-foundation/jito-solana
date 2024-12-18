@@ -122,6 +122,10 @@ use {
         runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
         runtime_plugin_service::RuntimePluginService,
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
+        runtime_plugin_service::RuntimePluginService,
+    },
     solana_send_transaction_service::send_transaction_service::Config as SendTransactionServiceConfig,
     solana_shred_version::compute_shred_version,
     solana_signer::Signer,
@@ -303,7 +307,7 @@ pub struct ValidatorConfig {
     pub delay_leader_block_for_pending_fork: bool,
     pub use_tpu_client_next: bool,
     pub retransmit_xdp: Option<XdpConfig>,
-    pub repair_handler_type: RepairHandlerType,
+
     // jito configuration
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
@@ -382,6 +386,34 @@ impl ValidatorConfig {
             wen_restart_coordinator: None,
             unified_scheduler_handler_threads: None,
             ip_echo_server_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
+            rayon_global_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
+            replay_forks_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
+            replay_transactions_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
+            tvu_shred_sigverify_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
+            delay_leader_block_for_pending_fork: false,
+            use_tpu_client_next: true,
+            retransmit_xdp: None,
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            shred_receiver_address: Arc::new(RwLock::new(None)),
+            shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
+            tip_manager_config: TipManagerConfig::default(),
+            preallocated_bundle_cost: 0,
+        }
+    }
+}
+
+impl ValidatorConfig {
+    pub fn default_for_test() -> Self {
+        let max_thread_count =
+            NonZeroUsize::new(get_max_thread_count()).expect("thread count is non-zero");
+
+        Self {
+            accounts_db_config: Some(ACCOUNTS_DB_CONFIG_FOR_TESTING),
+            blockstore_options: BlockstoreOptions::default_for_tests(),
+            rpc_config: JsonRpcConfig::default_for_test(),
+            block_production_method: BlockProductionMethod::default(),
+            enable_block_production_forwarding: true, // enable forwarding by default for tests
             rayon_global_threads: max_thread_count,
             replay_forks_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             replay_transactions_threads: max_thread_count,
@@ -1062,6 +1094,19 @@ impl Validator {
             })?;
         }
 
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .map_err(|e| {
+                ValidatorError::Other(format!("Failed to start runtime plugin service: {e:?}"))
+            })?;
+        }
+
         let max_slots = Arc::new(MaxSlots::default());
 
         let staked_nodes = Arc::new(RwLock::new(StakedNodes::default()));
@@ -1705,7 +1750,6 @@ impl Validator {
             repair_socket: Arc::new(node.sockets.repair),
             outstanding_repair_requests,
             cluster_slots,
-            gossip_socket: Some(node.sockets.gossip.clone()),
             block_engine_config: config.block_engine_config.clone(),
             relayer_config: config.relayer_config.clone(),
             shred_receiver_address: config.shred_receiver_address.clone(),

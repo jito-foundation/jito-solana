@@ -178,7 +178,7 @@ impl StandardBroadcastRun {
         let _ = self.transmit(
             &srecv,
             cluster_info,
-            BroadcastSocket::Udp(sock),
+            sock,
             bank_forks,
             quic_endpoint_sender,
             &Arc::new(RwLock::new(None)),

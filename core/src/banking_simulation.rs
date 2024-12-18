@@ -817,7 +817,6 @@ impl BankingSimulator {
             bank_forks.clone(),
             shred_version,
             sender,
-            None,
             Arc::new(RwLock::new(None)),
         );
 

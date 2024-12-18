@@ -1,6 +1,7 @@
 use {
     super::BundleStageLoopMetrics,
     crate::{
+        banking_stage::immutable_deserialized_packet::ImmutableDeserializedPacket,
         bundle_stage::{
             bundle_packet_deserializer::{BundlePacketDeserializer, ReceiveBundleResults},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
@@ -46,7 +47,16 @@ impl BundleReceiver {
             let recv_timeout = Self::get_receive_timeout(bundle_storage);
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
             self.bundle_packet_deserializer
-                .receive_bundles(recv_timeout, bundle_storage.max_receive_size())
+                .receive_bundles(
+                    recv_timeout,
+                    bundle_storage.max_receive_size(),
+                    &|packet: ImmutableDeserializedPacket| {
+                        // see packet_receiver.rs
+                        packet.check_insufficent_compute_unit_limit()?;
+                        packet.check_excessive_precompiles()?;
+                        Ok(packet)
+                    },
+                )
                 // Consumes results if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
                     self.buffer_bundles(

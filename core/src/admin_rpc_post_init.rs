@@ -80,7 +80,6 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub repair_socket: Arc<UdpSocket>,
     pub outstanding_repair_requests: Arc<RwLock<OutstandingRequests<ShredRepairType>>>,
     pub cluster_slots: Arc<ClusterSlots>,
-    pub gossip_socket: Option<AtomicUdpSocket>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,

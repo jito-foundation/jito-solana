@@ -73,6 +73,7 @@ mod latest_validator_vote_packet;
 pub(crate) mod leader_slot_timing_metrics;
 mod vote_worker;
 conditional_vis_mod!(packet_deserializer, feature = "dev-context-only-utils", pub);
+pub(crate) mod packet_filter;
 mod packet_receiver;
 mod read_write_account_set;
 conditional_vis_mod!(scheduler_messages, feature = "dev-context-only-utils", pub);
@@ -422,28 +423,34 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
-        let use_greedy_scheduler = matches!(
-            block_production_method,
-            BlockProductionMethod::CentralSchedulerGreedy
-        );
-        Self::new_central_scheduler(
-            transaction_struct,
-            use_greedy_scheduler,
-            poh_recorder,
-            transaction_recorder,
-            non_vote_receiver,
-            tpu_vote_receiver,
-            gossip_vote_receiver,
-            num_threads,
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            bank_forks,
-            prioritization_fee_cache,
-            blacklisted_accounts,
-            bundle_account_locker,
-            block_cost_limit_reservation_cb,
-        )
+        match block_production_method {
+            BlockProductionMethod::CentralScheduler
+            | BlockProductionMethod::CentralSchedulerGreedy => {
+                let use_greedy_scheduler = matches!(
+                    block_production_method,
+                    BlockProductionMethod::CentralSchedulerGreedy
+                );
+                Self::new_central_scheduler(
+                    transaction_struct,
+                    use_greedy_scheduler,
+                    cluster_info,
+                    poh_recorder,
+                    transaction_recorder,
+                    non_vote_receiver,
+                    tpu_vote_receiver,
+                    gossip_vote_receiver,
+                    num_threads,
+                    transaction_status_sender,
+                    replay_vote_sender,
+                    log_messages_bytes_limit,
+                    bank_forks,
+                    prioritization_fee_cache,
+                    blacklisted_accounts,
+                    bundle_account_locker,
+                    block_cost_limit_reservation_cb,
+                )
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1375,7 +1382,8 @@ mod tests {
                     );
                     let (exit, poh_recorder, transaction_recorder, poh_service, entry_receiver) =
                         create_test_recorder(bank.clone(), blockstore, None, None);
-
+                    let (_, cluster_info) = new_test_cluster_info(/*keypair:*/ None);
+                    let cluster_info = Arc::new(cluster_info);
                     let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
                     let blacklisted_keypair = Keypair::new();
@@ -1383,6 +1391,7 @@ mod tests {
                     let banking_stage = BankingStage::new(
                         block_production_method.clone(),
                         transaction_struct.clone(),
+                        &cluster_info,
                         &poh_recorder,
                         transaction_recorder,
                         non_vote_receiver,

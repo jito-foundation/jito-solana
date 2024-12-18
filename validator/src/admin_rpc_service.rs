@@ -1102,9 +1102,7 @@ mod tests {
         solana_system_interface::program as system_program,
         solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
         spl_generic_token::token,
-        spl_token_2022_interface::state::{
-            Account as TokenAccount, AccountState as TokenAccountState, Mint,
-        },
+        spl_token_2022::state::{Account as TokenAccount, AccountState as TokenAccountState, Mint},
         std::{
             collections::HashSet,
             fs::remove_dir_all,
@@ -1175,7 +1173,6 @@ mod tests {
                     cluster_slots: Arc::new(
                         solana_core::cluster_slots_service::cluster_slots::ClusterSlots::default(),
                     ),
-                    gossip_socket: None,
                     block_engine_config,
                     relayer_config,
                     shred_receiver_address,

@@ -257,7 +257,7 @@ impl BundleStage {
             replay_vote_sender,
             prioritization_fee_cache.clone(),
         );
-        let decision_maker = DecisionMaker::new(poh_recorder.clone());
+        let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
 
         let unprocessed_bundle_storage = BundleStorage::default();
 

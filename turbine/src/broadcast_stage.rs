@@ -124,7 +124,6 @@ impl BroadcastStageType {
         bank_forks: Arc<RwLock<BankForks>>,
         shred_version: u16,
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
-        xdp_sender: Option<XdpSender>,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     ) -> BroadcastStage {
         match self {
@@ -138,7 +137,6 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 StandardBroadcastRun::new(shred_version),
-                xdp_sender,
                 shred_receiver_address,
             ),
 
@@ -152,7 +150,6 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 FailEntryVerificationBroadcastRun::new(shred_version),
-                xdp_sender,
                 Arc::new(RwLock::new(None)),
             ),
 
@@ -166,7 +163,6 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 BroadcastFakeShredsRun::new(0, shred_version),
-                xdp_sender,
                 Arc::new(RwLock::new(None)),
             ),
 
@@ -180,7 +176,6 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
-                xdp_sender,
                 Arc::new(RwLock::new(None)),
             ),
         }
@@ -300,7 +295,6 @@ impl BroadcastStage {
         bank_forks: Arc<RwLock<BankForks>>,
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
         mut broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
-        xdp_sender: Option<XdpSender>,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
@@ -333,7 +327,6 @@ impl BroadcastStage {
             let cluster_info = cluster_info.clone();
             let bank_forks = bank_forks.clone();
             let quic_endpoint_sender = quic_endpoint_sender.clone();
-            let xdp_sender = xdp_sender.clone();
             let shred_receiver_address = shred_receiver_address.clone();
 
             let run_transmit = move || loop {
@@ -483,18 +476,6 @@ pub fn broadcast_shreds(
         let bank_forks = bank_forks.read().unwrap();
         (bank_forks.root_bank(), bank_forks.working_bank())
     };
-    // Implementation note:
-    // We are gathering the indexes of the shreds in the `shreds` vector rather than the shred
-    // payloads themselves. This is because, in the XDP case, the shred payloads will be sent to
-    // the XDP thread(s) via a channel, and the lifetime of the shred payloads must extend to that
-    // of the XDP thread(s).
-    //
-    // Because the `shreds` vector is behind a shared (`Arc`) reference, we must pass that reference
-    // along to the XDP thread(s) via the Xdp channel message payload. This allows us to extend the
-    // lifetime of the shred payloads to the XDP thread(s) without cloning each payload.
-    //
-    // When `shred::Payload` is refactored to use `Bytes`, this can be adjusted to simply pass the payload
-    // `Bytes` directly to the XDP thread(s).
     let (mut packets, quic_packets): (Vec<_>, Vec<_>) = shreds
         .iter()
         .enumerate()
@@ -504,7 +485,7 @@ pub fn broadcast_shreds(
             let cluster_nodes =
                 cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
             update_peer_stats(&cluster_nodes, last_datapoint_submit);
-            shreds.filter_map(move |(idx, shred)| {
+            shreds.flat_map(move |shred| {
                 let key = shred.id();
                 let protocol = cluster_nodes::get_broadcast_protocol(&key);
                 cluster_nodes
@@ -522,7 +503,7 @@ pub fn broadcast_shreds(
         .partition_map(std::convert::identity);
 
     if let Some(addr) = shred_receiver_address {
-        packets.extend(shreds.iter().enumerate().map(|(idx, _shred)| (idx, *addr)));
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
     }
 
     shred_select.stop();
@@ -782,7 +763,6 @@ pub mod test {
             bank_forks,
             quic_endpoint_sender,
             StandardBroadcastRun::new(0),
-            None,
             Arc::new(RwLock::new(None)),
         );
 

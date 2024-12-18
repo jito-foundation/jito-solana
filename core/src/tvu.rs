@@ -227,7 +227,7 @@ impl Tvu {
             max_slots.clone(),
             rpc_subscriptions.clone(),
             slot_status_notifier.clone(),
-            tvu_config.xdp_sender,
+            tvu_config.retransmit_xdp.clone(),
             shred_receiver_addr,
         );
 

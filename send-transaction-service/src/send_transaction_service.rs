@@ -14,6 +14,8 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError},
     itertools::Itertools,
     log::*,
+    solana_client::connection_cache::ConnectionCache,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
     solana_nonce_account as nonce_account,
     solana_pubkey::Pubkey,
@@ -160,6 +162,55 @@ impl Default for Config {
 pub const MAX_RETRY_SLEEP_MS: u64 = 1000;
 
 impl SendTransactionService {
+    #[deprecated(since = "2.2.0", note = "Please use `new_with_client` instead.")]
+    pub fn new<T: TpuInfo + std::marker::Send + 'static>(
+        cluster_info: Arc<ClusterInfo>,
+        bank_forks: &Arc<RwLock<BankForks>>,
+        leader_info: Option<T>,
+        receiver: Receiver<TransactionInfo>,
+        connection_cache: &Arc<ConnectionCache>,
+        retry_rate_ms: u64,
+        leader_forward_count: u64,
+        exit: Arc<AtomicBool>,
+    ) -> Self {
+        let config = Config {
+            retry_rate_ms,
+            leader_forward_count,
+            ..Config::default()
+        };
+        #[allow(deprecated)]
+        Self::new_with_config(
+            cluster_info,
+            bank_forks,
+            leader_info,
+            receiver,
+            connection_cache,
+            config,
+            exit,
+        )
+    }
+
+    #[deprecated(since = "2.2.0", note = "Please use `new_with_client` instead.")]
+    pub fn new_with_config<T: TpuInfo + std::marker::Send + 'static>(
+        cluster_info: Arc<ClusterInfo>,
+        bank_forks: &Arc<RwLock<BankForks>>,
+        leader_info: Option<T>,
+        receiver: Receiver<TransactionInfo>,
+        connection_cache: &Arc<ConnectionCache>,
+        config: Config,
+        exit: Arc<AtomicBool>,
+    ) -> Self {
+        let client = ConnectionCacheClient::new(
+            connection_cache.clone(),
+            cluster_info,
+            config.tpu_peers.clone(),
+            leader_info,
+            config.leader_forward_count,
+        );
+
+        Self::new_with_client(bank_forks, receiver, client, config, exit)
+    }
+
     pub fn new_with_client<Client: TransactionClient + Clone + std::marker::Send + 'static>(
         bank_forks: &Arc<RwLock<BankForks>>,
         receiver: Receiver<TransactionInfo>,

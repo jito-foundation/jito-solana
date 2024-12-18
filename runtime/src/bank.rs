@@ -77,6 +77,14 @@ use {
         accounts::{
             AccountAddressFilter, Accounts, PubkeyAccountSlot, TransactionAccountLocksIterator,
         },
+        accounts_db::{
+            AccountStorageEntry, AccountsDb, AccountsDbConfig, CalcAccountsHashDataSource,
+            DuplicatesLtHash, PubkeyHashAccount, VerifyAccountsHashAndLamportsConfig,
+        },
+        accounts_hash::{
+            AccountHash, AccountsHash, AccountsLtHash, CalcAccountsHashConfig, HashStats,
+            IncrementalAccountsHash, MerkleOrLatticeAccountsHash,
+        },
         accounts_db::{self, AccountStorageEntry, AccountsDb, AccountsDbConfig, DuplicatesLtHash},
         accounts_hash::AccountsLtHash,
         accounts_index::{IndexKey, ScanConfig, ScanResult},

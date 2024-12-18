@@ -71,7 +71,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         work: ConsumeWork<Tx>,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Result<(), ConsumeWorkerError<Tx>> {
-        let (maybe_consume_bank, get_bank_us) = measure_us!(self.working_bank_with_timeout());
+        let (maybe_consume_bank, get_bank_us) = measure_us!(self.get_consume_bank());
         let Some(mut bank) = maybe_consume_bank else {
             self.metrics
                 .timing_metrics

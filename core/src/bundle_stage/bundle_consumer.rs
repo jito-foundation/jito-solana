@@ -875,7 +875,10 @@ mod tests {
             &poh_config,
             exit.clone(),
         );
-        poh_recorder.set_bank(BankWithScheduler::new_without_scheduler(bank.clone()));
+        poh_recorder.set_bank(
+            BankWithScheduler::new_without_scheduler(bank.clone()),
+            false,
+        );
 
         let (record_sender, record_receiver) = unbounded();
         let transaction_recorder = TransactionRecorder::new(record_sender, exit.clone());
@@ -1075,9 +1078,12 @@ mod tests {
             genesis_config_info.genesis_config.hash(),
             10_000,
         );
-        let deserialized_bundle =
-            BundlePacketDeserializer::deserialize_bundle(packet_bundles.get_mut(0).unwrap(), None)
-                .unwrap();
+        let deserialized_bundle = BundlePacketDeserializer::deserialize_bundle(
+            packet_bundles.get_mut(0).unwrap(),
+            None,
+            &Ok,
+        )
+        .unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
         let sanitized_bundle = deserialized_bundle
             .build_sanitized_bundle(
@@ -1211,7 +1217,7 @@ mod tests {
         };
 
         let deserialized_bundle =
-            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, None).unwrap();
+            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, None, &Ok).unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
         let sanitized_bundle = deserialized_bundle
             .build_sanitized_bundle(

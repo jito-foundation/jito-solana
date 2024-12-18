@@ -123,6 +123,20 @@ fn calculate_block_cost_limit_reservation(
     }
 }
 
+/// For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
+/// from the Bank's block cost limit.
+fn calculate_block_cost_limit_reservation(
+    bank: &Bank,
+    reserved_ticks: u64,
+    preallocated_bundle_cost: u64,
+) -> u64 {
+    if bank.tick_height() % bank.ticks_per_slot() < reserved_ticks {
+        preallocated_bundle_cost
+    } else {
+        0
+    }
+}
+
 pub struct Tpu {
     fetch_stage: FetchStage,
     sig_verifier: SigVerifier,
@@ -270,27 +284,22 @@ impl Tpu {
         )
         .unwrap();
 
-        let (tpu_quic_t, key_updater) = if vortexor_receivers.is_none() {
-            // Streamer for TPU
-            let SpawnServerResult {
-                endpoints: _,
-                thread: tpu_quic_t,
-                key_updater,
-            } = spawn_server(
-                "solQuicTpu",
-                "quic_streamer_tpu",
-                transactions_quic_sockets,
-                keypair,
-                fetch_stage_manager_sender.clone(),
-                exit.clone(),
-                staked_nodes.clone(),
-                tpu_quic_server_config,
-            )
-            .unwrap();
-            (Some(tpu_quic_t), Some(key_updater))
-        } else {
-            (None, None)
-        };
+        // Streamer for TPU
+        let SpawnServerResult {
+            endpoints: _,
+            thread: tpu_quic_t,
+            key_updater,
+        } = spawn_server_multi(
+            "solQuicTpu",
+            "quic_streamer_tpu",
+            transactions_quic_sockets,
+            keypair,
+            fetch_stage_manager_sender.clone(),
+            exit.clone(),
+            staked_nodes.clone(),
+            tpu_quic_server_config,
+        )
+        .unwrap();
 
         let (tpu_forwards_quic_t, forwards_key_updater) = if vortexor_receivers.is_none() {
             // Streamer for TPU forward
@@ -333,12 +342,12 @@ impl Tpu {
                 banking_stage_sender.clone(),
                 enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
             );
-            SigVerifier::Local(SigVerifyStage::new(
+            SigVerifyStage::new(
                 sigverify_stage_receiver,
                 verifier,
                 "solSigVerTpu",
                 "tpu-verifier",
-            ))
+            )
         };
 
         let vote_sigverify_stage = {
@@ -494,7 +503,6 @@ impl Tpu {
             bank_forks,
             shred_version,
             turbine_quic_endpoint_sender,
-            xdp_sender,
             shred_receiver_address,
         );
 

@@ -4,6 +4,7 @@ use {
         HOLD_TRANSACTIONS_SLOT_OFFSET,
     },
     solana_poh::poh_recorder::{BankStart, PohRecorder},
+    solana_pubkey::Pubkey,
     solana_unified_scheduler_pool::{BankingStageMonitor, BankingStageStatus},
     std::{
         sync::{

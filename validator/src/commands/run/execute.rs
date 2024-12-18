@@ -31,7 +31,6 @@ use {
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
-        repair::repair_handler::RepairHandlerType,
         snapshot_packager_service::SnapshotPackagerService,
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
@@ -512,42 +511,6 @@ pub fn execute(
         )
     });
 
-    let account_paths: Vec<PathBuf> =
-        if let Ok(account_paths) = values_t!(matches, "account_paths", String) {
-            account_paths
-                .join(",")
-                .split(',')
-                .map(PathBuf::from)
-                .collect()
-        } else {
-            vec![ledger_path.join("accounts")]
-        };
-    let account_paths = create_and_canonicalize_directories(account_paths)
-        .map_err(|err| format!("unable to access account path: {err}"))?;
-
-    // From now on, use run/ paths in the same way as the previous account_paths.
-    let (account_run_paths, account_snapshot_paths) =
-        create_all_accounts_run_and_snapshot_dirs(&account_paths)
-            .map_err(|err| format!("unable to create account directories: {err}"))?;
-
-    // These snapshot paths are only used for initial clean up, add in shrink paths if they exist.
-    let account_snapshot_paths =
-        if let Some(account_shrink_snapshot_paths) = account_shrink_snapshot_paths {
-            account_snapshot_paths
-                .into_iter()
-                .chain(account_shrink_snapshot_paths)
-                .collect()
-        } else {
-            account_snapshot_paths
-        };
-
-    let snapshot_config = new_snapshot_config(
-        matches,
-        &ledger_path,
-        &account_paths,
-        run_args.rpc_bootstrap_config.incremental_snapshot_fetch,
-    )?;
-
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
 
     let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
@@ -759,31 +722,6 @@ pub fn execute(
         retransmit_xdp,
         broadcast_stage_type: BroadcastStageType::Standard,
         use_tpu_client_next: !matches.is_present("use_connection_cache"),
-        block_verification_method: value_t_or_exit!(
-            matches,
-            "block_verification_method",
-            BlockVerificationMethod
-        ),
-        unified_scheduler_handler_threads: value_t!(
-            matches,
-            "unified_scheduler_handler_threads",
-            usize
-        )
-        .ok(),
-        block_production_method: value_t_or_exit!(
-            matches,
-            "block_production_method",
-            BlockProductionMethod
-        ),
-        transaction_struct: value_t_or_exit!(matches, "transaction_struct", TransactionStructure),
-        enable_block_production_forwarding: staked_nodes_overrides_path.is_some(),
-        banking_trace_dir_byte_limit: parse_banking_trace_dir_byte_limit(matches),
-        validator_exit: Arc::new(RwLock::new(Exit::default())),
-        validator_exit_backpressure: [(
-            SnapshotPackagerService::NAME.to_string(),
-            Arc::new(AtomicBool::new(false)),
-        )]
-        .into(),
         // jito config
         relayer_config,
         block_engine_config,
@@ -792,6 +730,7 @@ pub fn execute(
         tip_manager_config,
         preallocated_bundle_cost: value_of(matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
+        ..ValidatorConfig::default()
     };
 
     let reserved = validator_config
