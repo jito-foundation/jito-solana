@@ -36,6 +36,8 @@ members = [
     "bucket_map",
     "builtins",
     "builtins-default-costs",
+    "bundle",
+    "bundle-sdk",
     "cargo-registry",
     "clap-utils",
     "clap-v3-utils",
@@ -128,6 +130,7 @@ members = [
     "svm-transaction",
     "test-validator",
     "thin-client",
+    "tip-distributor",
     "thread-manager",
     "timings",
     "tls-utils",
@@ -160,7 +163,7 @@ members = [
     "zk-token-sdk",
 ]
 
-exclude = ["programs/sbf", "svm/examples", "svm/tests/example-programs"]
+exclude = ["programs/sbf", "svm/examples", "svm/tests/example-programs", "anchor", "jito-programs"]
 
 resolver = "2"
 
@@ -199,6 +202,7 @@ agave-precompiles = { path = "precompiles", version = "=2.3.1" }
 agave-reserved-account-keys = { path = "reserved-account-keys", version = "=2.3.1" }
 agave-transaction-view = { path = "transaction-view", version = "=2.3.1" }
 agave-xdp = { path = "xdp", version = "=2.3.1" }
+anchor-lang = { path = "anchor/lang" }
 aquamarine = "0.6.0"
 aes-gcm-siv = "0.11.1"
 ahash = "0.8.11"
@@ -295,6 +299,9 @@ itertools = "0.12.1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
+jito-protos = { path = "jito-protos", version = "=2.3.1" }
+jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
+jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
 js-sys = "0.3.77"
 json5 = "0.4.1"
 jsonrpc-core = "18.0.0"
@@ -303,7 +310,9 @@ jsonrpc-derive = "18.0.0"
 jsonrpc-http-server = "18.0.0"
 jsonrpc-ipc-server = "18.0.0"
 jsonrpc-pubsub = "18.0.0"
+jsonrpc-server-utils = "18.0.0"
 lazy-lru = "0.1.3"
+lazy_static = "1.5.0"
 libc = "0.2.172"
 libloading = "0.7.4"
 libsecp256k1 = { version = "0.6.0", default-features = false, features = [
@@ -400,6 +409,8 @@ solana-bpf-loader-program = { path = "programs/bpf_loader", version = "=2.3.1" }
 solana-bucket-map = { path = "bucket_map", version = "=2.3.1" }
 solana-builtins = { path = "builtins", version = "=2.3.1" }
 solana-builtins-default-costs = { path = "builtins-default-costs", version = "=2.3.1" }
+solana-bundle = { path = "bundle", version = "=2.3.1" }
+solana-bundle-sdk = { path = "bundle-sdk", version = "=2.3.1" }
 agave-cargo-registry = { path = "cargo-registry", version = "=2.3.1" }
 agave-thread-manager = { path = "thread-manager", version = "=2.3.1" }
 solana-clap-utils = { path = "clap-utils", version = "=2.3.1" }
@@ -503,6 +514,7 @@ solana-rent = "2.2.1"
 solana-rent-collector = "2.2.1"
 solana-rent-debits = "2.2.1"
 solana-reward-info = "2.2.1"
+solana-runtime-plugin = { path = "runtime-plugin", version = "=2.3.1" }
 solana-sanitize = "2.2.1"
 solana-secp256r1-program = "2.2.3"
 solana-seed-derivable = "2.2.1"
