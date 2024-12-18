@@ -217,6 +217,10 @@ impl Version {
         &self.client
     }
 
+    pub fn set_client(&mut self, client: ClientId) {
+        self.client = client;
+    }
+
     pub fn prerelease(&self) -> &Prerelease {
         &self.prerelease
     }
@@ -303,7 +307,7 @@ impl Serialize for Version {
 
         let (packed_minor, patch) = PackedMinor::try_pack(minor, patch, prerelease)
             .map_err(|err| S::Error::custom(format!("{err:?}")))?;
-        let client = u16::try_from(client.clone()).map_err(S::Error::custom)?;
+        let client = u16::try_from(*client).map_err(S::Error::custom)?;
 
         let serialized_version = SerializedVersion {
             major,
@@ -690,7 +694,7 @@ mod tests {
             Version::new_from_parts(0, 0, 0, 0, 0, ClientId::this_client(), Prerelease::Stable);
         assert_eq!(
             version.as_detailed_string(),
-            "0.0.0 (src:00000000; feat:00000000, client:Agave)",
+            "0.0.0 (src:00000000; feat:00000000, client:JitoLabs)",
         );
 
         let version = Version::new_from_parts(
@@ -704,7 +708,7 @@ mod tests {
         );
         assert_eq!(
             version.as_detailed_string(),
-            "0.0.0-rc.0 (src:00000000; feat:00000000, client:Agave)",
+            "0.0.0-rc.0 (src:00000000; feat:00000000, client:JitoLabs)",
         );
     }
 }
