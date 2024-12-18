@@ -3589,6 +3589,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-protos"
+version = "3.1.5"
+dependencies = [
+ "bytes",
+ "prost",
+ "prost-types",
+ "protobuf-src",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6381,6 +6393,7 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-commitment-config",
+ "solana-gossip",
  "solana-hash 3.1.0",
  "solana-message",
  "solana-pubkey",
@@ -6632,6 +6645,15 @@ dependencies = [
  "solana-sdk-ids",
  "solana-system-program",
  "solana-vote-program",
+]
+
+[[package]]
+name = "solana-bundle"
+version = "3.1.5"
+dependencies = [
+ "itertools 0.12.1",
+ "sha2 0.10.9",
+ "solana-runtime-transaction",
 ]
 
 [[package]]
@@ -6918,6 +6940,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bincode",
+ "borsh",
  "bs58",
  "bytemuck",
  "bytes",
@@ -6928,6 +6951,8 @@ dependencies = [
  "futures 0.3.31",
  "histogram",
  "itertools 0.12.1",
+ "jito-protos",
+ "lazy_static",
  "libc",
  "log",
  "lru",
@@ -6935,6 +6960,8 @@ dependencies = [
  "num_cpus",
  "num_enum",
  "prio-graph",
+ "prost",
+ "prost-types",
  "qualifier_attr",
  "quinn",
  "rand 0.8.5",
@@ -6953,6 +6980,7 @@ dependencies = [
  "solana-bincode",
  "solana-bloom",
  "solana-builtins-default-costs",
+ "solana-bundle",
  "solana-client",
  "solana-clock",
  "solana-cluster-type",
@@ -7038,6 +7066,8 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-util 0.7.16",
+ "tonic",
+ "tonic-build",
  "trees",
 ]
 
@@ -8510,6 +8540,7 @@ dependencies = [
  "solana-poh",
  "solana-poh-config",
  "solana-program-pack",
+ "solana-program-runtime",
  "solana-pubkey",
  "solana-quic-definitions",
  "solana-rayon-threadlimit",
@@ -8595,8 +8626,11 @@ dependencies = [
  "serde_json",
  "solana-account-decoder-client-types",
  "solana-clock",
+ "solana-commitment-config",
  "solana-rpc-client-types",
+ "solana-signature",
  "solana-signer",
+ "solana-svm",
  "solana-transaction-error",
  "solana-transaction-status-client-types",
  "thiserror 2.0.17",
@@ -8911,6 +8945,7 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-connection-cache",
+ "solana-gossip",
  "solana-hash 3.1.0",
  "solana-keypair",
  "solana-measure",
@@ -9666,6 +9701,7 @@ dependencies = [
  "agave-feature-set",
  "agave-votor",
  "agave-xdp",
+ "arc-swap",
  "bincode",
  "bytes",
  "caps",

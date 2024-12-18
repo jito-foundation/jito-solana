@@ -7,6 +7,7 @@ use {
     crate::banking_stage::consumer::RetryableIndex,
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
+    solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_time_utils::AtomicInterval,
@@ -67,7 +68,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    pub fn run(self) -> Result<(), ConsumeWorkerError<Tx>> {
+    pub fn run(self, reservation_cb: impl Fn(&Bank) -> u64) -> Result<(), ConsumeWorkerError<Tx>> {
         let mut did_work = false;
         let mut last_empty_time = Instant::now();
         let mut sleep_duration = STARTING_SLEEP_DURATION;
@@ -76,7 +77,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             match self.consume_receiver.try_recv() {
                 Ok(work) => {
                     did_work = true;
-                    match self.consume(work)? {
+                    match self.consume(work, &reservation_cb)? {
                         ProcessingStatus::Processed => {}
                         ProcessingStatus::CouldNotProcess(work) => {
                             self.retry_drain(work)?;
@@ -105,6 +106,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     fn consume(
         &self,
         work: ConsumeWork<Tx>,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
         let Some(leader_state) = active_leader_state_with_timeout(&self.shared_leader_state) else {
             return Ok(ProcessingStatus::CouldNotProcess(work));
@@ -121,6 +123,8 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             bank,
             &work.transactions,
             &work.max_ages,
+            reservation_cb,
+            None, // bundle account locker checked in scheduler
         );
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
@@ -176,12 +180,15 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
 pub(crate) mod external {
     use {
         super::*,
-        crate::banking_stage::{
-            committer::CommitTransactionDetails,
-            scheduler_messages::MaxAge,
-            transaction_scheduler::receive_and_buffer::{
-                load_addresses_for_view, translate_to_runtime_view, PacketHandlingError,
+        crate::{
+            banking_stage::{
+                committer::CommitTransactionDetails,
+                scheduler_messages::MaxAge,
+                transaction_scheduler::receive_and_buffer::{
+                    load_addresses_for_view, translate_to_runtime_view, PacketHandlingError,
+                },
             },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         agave_scheduler_bindings::{
             pack_message_flags,
@@ -225,6 +232,7 @@ pub(crate) mod external {
         shared_leader_state: SharedLeaderState,
         sharable_banks: SharableBanks,
         metrics: Arc<ConsumeWorkerMetrics>,
+        bundle_account_locker: BundleAccountLocker,
     }
 
     type Tx = RuntimeTransaction<ResolvedTransactionView<TransactionPtr>>;
@@ -239,6 +247,7 @@ pub(crate) mod external {
             allocator: rts_alloc::Allocator,
             shared_leader_state: SharedLeaderState,
             sharable_banks: SharableBanks,
+            bundle_account_locker: BundleAccountLocker,
         ) -> Self {
             Self {
                 exit,
@@ -249,6 +258,7 @@ pub(crate) mod external {
                 shared_leader_state,
                 sharable_banks,
                 metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
+                bundle_account_locker,
             }
         }
 
@@ -359,6 +369,8 @@ pub(crate) mod external {
                     bank,
                     &transactions,
                     &max_ages,
+                    &|_| 0,
+                    Some(&self.bundle_account_locker),
                 );
 
                 self.metrics.update_for_consume(&output);
@@ -1064,7 +1076,7 @@ fn backoff(idle_duration: Duration, sleep_duration: &Duration) -> Duration {
 /// These are atomic, and intended to be reported by the scheduling thread
 /// since the consume worker thread is sleeping unless there is work to be
 /// done.
-pub(crate) struct ConsumeWorkerMetrics {
+pub struct ConsumeWorkerMetrics {
     id: String,
     interval: AtomicInterval,
     has_data: AtomicBool,
@@ -1087,7 +1099,11 @@ impl ConsumeWorkerMetrics {
         }
     }
 
-    fn new(id: u32) -> Self {
+    pub(crate) fn set_has_data(&self, has_data: bool) {
+        self.has_data.store(has_data, Ordering::Relaxed);
+    }
+
+    pub(crate) fn new(id: u32) -> Self {
         Self {
             id: id.to_string(),
             interval: AtomicInterval::default(),
@@ -1098,7 +1114,7 @@ impl ConsumeWorkerMetrics {
         }
     }
 
-    fn update_for_consume(
+    pub(crate) fn update_for_consume(
         &self,
         ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,
@@ -1734,7 +1750,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
 
         let pubkey1 = Pubkey::new_unique();
 
@@ -1783,7 +1799,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),
@@ -1837,7 +1853,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),
@@ -1902,7 +1918,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),
@@ -1981,7 +1997,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),
