@@ -1,0 +1,22 @@
+[package]
+name = "solana-bundle-sdk"
+description = "Library related to handling bundles"
+documentation = "https://docs.rs/solana-bundle-sdk"
+readme = "../README.md"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[dependencies]
+digest = { workspace = true }
+itertools = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+solana-sdk = { workspace = true }
+
+[lib]
+crate-type = ["lib"]
+name = "solana_bundle_sdk"

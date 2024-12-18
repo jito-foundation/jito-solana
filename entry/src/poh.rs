@@ -73,19 +73,30 @@ impl Poh {
     }
 
     pub fn record(&mut self, mixin: Hash) -> Option<PohEntry> {
-        if self.remaining_hashes == 1 {
+        let entries = self.record_bundle(&[mixin]);
+        entries.unwrap_or_default().pop()
+    }
+
+    pub fn record_bundle(&mut self, mixins: &[Hash]) -> Option<Vec<PohEntry>> {
+        if self.remaining_hashes <= mixins.len() as u64 {
             return None; // Caller needs to `tick()` first
         }
 
-        self.hash = hashv(&[self.hash.as_ref(), mixin.as_ref()]);
-        let num_hashes = self.num_hashes + 1;
-        self.num_hashes = 0;
-        self.remaining_hashes -= 1;
+        let entries = mixins
+            .iter()
+            .map(|m| {
+                self.hash = hashv(&[self.hash.as_ref(), m.as_ref()]);
+                let num_hashes = self.num_hashes + 1;
+                self.num_hashes = 0;
+                self.remaining_hashes -= 1;
+                PohEntry {
+                    num_hashes,
+                    hash: self.hash,
+                }
+            })
+            .collect();
 
-        Some(PohEntry {
-            num_hashes,
-            hash: self.hash,
-        })
+        Some(entries)
     }
 
     pub fn tick(&mut self) -> Option<PohEntry> {
