@@ -184,6 +184,13 @@ impl<'a, CB: TransactionProcessingCallback> AccountLoader<'a, CB> {
             loaded_accounts.insert(slot_history::id(), slot_history.clone());
         }
 
+        // Jito added: let's use pre-execution accounts
+        if let Some(overrides) = account_overrides {
+            for (pubkey, account) in overrides.accounts().iter() {
+                loaded_accounts.insert(*pubkey, account.clone());
+            }
+        }
+
         Self {
             loaded_accounts,
             callbacks,
