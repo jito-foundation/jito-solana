@@ -394,7 +394,34 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             }
 
             program_cache_for_tx_batch
-        };
+        });
+        execute_timings
+            .saturating_add_in_place(ExecuteTimingType::ProgramCacheUs, program_cache_us);
+
+        // Determine a capacity for the internal account cache. This
+        // over-allocates but avoids ever reallocating, and spares us from
+        // deduplicating the account keys lists.
+        let account_keys_in_batch: usize =
+            sanitized_txs.iter().map(|tx| tx.account_keys().len()).sum();
+
+        // Create the account loader, which wraps all external account fetching.
+        let mut account_loader = AccountLoader::new_with_loaded_accounts_capacity(
+            config.account_overrides,
+            callbacks,
+            &environment.feature_set,
+            account_keys_in_batch.saturating_add(
+                config
+                    .account_overrides
+                    .map(|a| a.len())
+                    .unwrap_or_default(),
+            ),
+        );
+
+        // Create the transaction balance collector if recording is enabled.
+        let mut balance_collector = config
+            .recording_config
+            .enable_transaction_balance_recording
+            .then(|| BalanceCollector::new_with_transaction_count(sanitized_txs.len()));
 
         let (mut load_us, mut execution_us): (u64, u64) = (0, 0);
 

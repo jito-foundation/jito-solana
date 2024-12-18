@@ -244,7 +244,8 @@ dependencies = [
  "solana-keypair",
  "solana-ledger",
  "solana-loader-v3-interface 5.0.0",
- "solana-logger 3.0.0",
+ "solana-log-collector",
+ "solana-logger",
  "solana-measure",
  "solana-message",
  "solana-native-token",
@@ -364,6 +365,8 @@ dependencies = [
  "solana-keccak-hasher",
  "solana-last-restart-slot",
  "solana-loader-v3-interface 5.0.0",
+ "solana-log-collector",
+ "solana-measure",
  "solana-poseidon",
  "solana-program",
  "solana-program-entrypoint",
@@ -384,7 +387,9 @@ dependencies = [
  "solana-svm-type-overrides",
  "solana-sysvar",
  "solana-sysvar-id",
+ "solana-timings",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
  "static_assertions",
  "test-case",
  "thiserror 2.0.12",
@@ -7589,6 +7594,7 @@ dependencies = [
  "solana-svm-type-overrides",
  "solana-system-interface",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
  "static_assertions",
  "test-case",
 ]
@@ -7685,7 +7691,7 @@ dependencies = [
  "sha2 0.10.9",
  "solana-accounts-db",
  "solana-ledger",
- "solana-logger 3.0.0",
+ "solana-logger",
  "solana-measure",
  "solana-poh",
  "solana-program-runtime",
@@ -7693,7 +7699,7 @@ dependencies = [
  "solana-runtime-transaction",
  "solana-sdk",
  "solana-svm",
- "solana-svm-timings",
+ "solana-timings",
  "solana-transaction-status",
  "thiserror 2.0.12",
 ]
@@ -8246,7 +8252,6 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "bs58 0.5.1",
- "bytemuck",
  "bytes",
  "chrono",
  "conditional-mod",
@@ -8318,7 +8323,7 @@ dependencies = [
  "solana-keypair",
  "solana-ledger",
  "solana-loader-v3-interface 5.0.0",
- "solana-logger 3.0.0",
+ "solana-logger",
  "solana-measure",
  "solana-message",
  "solana-metrics",
@@ -8854,17 +8859,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-frozen-abi-macro"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d42809b90c84963eb5f2e17afafb1384892341b0d8ec12ae8f4a8c69a96138e4"
-dependencies = [
- "proc-macro2 1.0.95",
- "quote 1.0.40",
- "syn 2.0.104",
-]
-
-[[package]]
 name = "solana-genesis"
 version = "3.0.0"
 dependencies = [
@@ -8892,7 +8886,7 @@ dependencies = [
  "solana-keypair",
  "solana-ledger",
  "solana-loader-v3-interface 5.0.0",
- "solana-logger 3.0.0",
+ "solana-logger",
  "solana-native-token",
  "solana-poh-config",
  "solana-pubkey",
@@ -9410,6 +9404,7 @@ dependencies = [
  "solana-svm-type-overrides",
  "solana-sysvar",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
 ]
 
 [[package]]
@@ -10031,6 +10026,7 @@ dependencies = [
  "solana-sysvar-id",
  "solana-transaction",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
  "test-case",
 ]
 
@@ -10065,7 +10061,8 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-loader-v3-interface 5.0.0",
- "solana-logger 3.0.0",
+ "solana-log-collector",
+ "solana-logger",
  "solana-message",
  "solana-msg",
  "solana-native-token",
@@ -10849,7 +10846,7 @@ dependencies = [
  "solana-system-transaction",
  "solana-time-utils",
  "solana-transaction",
- "solana-transaction-context 2.3.7",
+ "solana-transaction-context 2.3.6",
  "solana-transaction-error",
  "solana-validator-exit",
  "thiserror 2.0.12",
@@ -11197,6 +11194,7 @@ dependencies = [
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
  "solana-vote-interface",
  "solana-vote-program",
  "test-case",
@@ -11530,6 +11528,7 @@ dependencies = [
  "solana-system-interface",
  "solana-sysvar",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
 ]
 
 [[package]]
@@ -11623,7 +11622,7 @@ dependencies = [
  "solana-keypair",
  "solana-ledger",
  "solana-loader-v3-interface 5.0.0",
- "solana-logger 3.0.0",
+ "solana-logger",
  "solana-message",
  "solana-native-token",
  "solana-net-utils",
@@ -11834,9 +11833,9 @@ dependencies = [
 
 [[package]]
 name = "solana-transaction-context"
-version = "2.3.7"
+version = "2.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefd75e49dd990f7fdbe562a539a7b046a839aadf43843845d766a2a6a2adfef"
+checksum = "62899fc8ec399458db3332ec51dfc8379ca8bb5615133510c8b4dca4c5d48111"
 dependencies = [
  "bincode",
  "serde",

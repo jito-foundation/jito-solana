@@ -30,7 +30,7 @@ solana-runtime = { workspace = true }
 solana-runtime-transaction = { workspace = true }
 solana-sdk = { workspace = true }
 solana-svm = { workspace = true }
-solana-svm-timings = { workspace = true }
+solana-timings = { workspace = true }
 solana-transaction-status = { workspace = true }
 thiserror = { workspace = true }
 

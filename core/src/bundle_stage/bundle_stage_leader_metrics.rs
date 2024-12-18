@@ -7,8 +7,8 @@ use {
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
     },
     solana_clock::Slot,
-    solana_runtime::bank::Bank,
-    std::{num::Saturating, ops::AddAssign, sync::Arc},
+    solana_poh::poh_recorder::BankStart,
+    std::{num::Saturating, ops::AddAssign},
 };
 
 pub struct BundleStageLeaderMetrics {
@@ -33,17 +33,17 @@ impl BundleStageLeaderMetrics {
 
     pub(crate) fn check_leader_slot_boundary(
         &mut self,
-        bank: Option<&Arc<Bank>>,
+        bank_start: Option<&BankStart>,
     ) -> (
         leader_slot_metrics::MetricsTrackerAction,
         MetricsTrackerAction,
     ) {
         let banking_stage_metrics_action = self
             .leader_slot_metrics_tracker
-            .check_leader_slot_boundary(bank);
+            .check_leader_slot_boundary(bank_start);
         let bundle_stage_metrics_action = self
             .bundle_stage_metrics_tracker
-            .check_leader_slot_boundary(bank);
+            .check_leader_slot_boundary(bank_start);
         (banking_stage_metrics_action, bundle_stage_metrics_action)
     }
 
@@ -83,21 +83,21 @@ impl BundleStageStatsMetricsTracker {
     /// Similar to as LeaderSlotMetricsTracker::check_leader_slot_boundary
     pub(crate) fn check_leader_slot_boundary(
         &mut self,
-        bank: Option<&Arc<Bank>>,
+        bank_start: Option<&BankStart>,
     ) -> MetricsTrackerAction {
-        match (self.bundle_stage_metrics.as_mut(), bank) {
+        match (self.bundle_stage_metrics.as_mut(), bank_start) {
             (None, None) => MetricsTrackerAction::Noop,
             (Some(_), None) => MetricsTrackerAction::ReportAndResetTracker,
             // Our leader slot has begun, time to create a new slot tracker
-            (None, Some(bank)) => {
-                MetricsTrackerAction::NewTracker(Some(BundleStageStats::new(self.id, bank.slot())))
-            }
-            (Some(bundle_stage_metrics), Some(bank)) => {
-                if bundle_stage_metrics.slot != bank.slot() {
+            (None, Some(bank_start)) => MetricsTrackerAction::NewTracker(Some(
+                BundleStageStats::new(self.id, bank_start.working_bank.slot()),
+            )),
+            (Some(bundle_stage_metrics), Some(bank_start)) => {
+                if bundle_stage_metrics.slot != bank_start.working_bank.slot() {
                     // Last slot has ended, new slot has began
                     MetricsTrackerAction::ReportAndNewTracker(Some(BundleStageStats::new(
                         self.id,
-                        bank.slot(),
+                        bank_start.working_bank.slot(),
                     )))
                 } else {
                     MetricsTrackerAction::Noop

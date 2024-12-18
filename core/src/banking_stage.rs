@@ -425,6 +425,56 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
+        let use_greedy_scheduler = matches!(
+            block_production_method,
+            BlockProductionMethod::CentralSchedulerGreedy
+        );
+        Self::new_central_scheduler(
+            transaction_struct,
+            use_greedy_scheduler,
+            poh_recorder,
+            transaction_recorder,
+            non_vote_receiver,
+            tpu_vote_receiver,
+            gossip_vote_receiver,
+            num_threads,
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            bank_forks,
+            prioritization_fee_cache,
+            blacklisted_accounts,
+            bundle_account_locker,
+            block_cost_limit_reservation_cb,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_central_scheduler(
+        transaction_struct: TransactionStructure,
+        use_greedy_scheduler: bool,
+        poh_recorder: &Arc<RwLock<PohRecorder>>,
+        transaction_recorder: TransactionRecorder,
+        non_vote_receiver: BankingPacketReceiver,
+        tpu_vote_receiver: BankingPacketReceiver,
+        gossip_vote_receiver: BankingPacketReceiver,
+        num_threads: u32,
+        transaction_status_sender: Option<TransactionStatusSender>,
+        replay_vote_sender: ReplayVoteSender,
+        log_messages_bytes_limit: Option<usize>,
+        bank_forks: Arc<RwLock<BankForks>>,
+        prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+    ) -> Self {
+        assert!(num_threads >= MIN_TOTAL_THREADS);
+        let vote_storage = {
+            let bank = bank_forks.read().unwrap().working_bank();
+            VoteStorage::new(&bank)
+        };
+
+        let decision_maker = DecisionMaker::new(poh_recorder.clone());
         let committer = Committer::new(
             transaction_status_sender.clone(),
             replay_vote_sender.clone(),
@@ -438,10 +488,10 @@ impl BankingStage {
             bank_forks.clone(),
             committer.clone(),
             log_messages_bytes_limit,
-            VoteStorage::new(&bank_forks.read().unwrap().working_bank()),
+            vote_storage,
             bundle_account_locker.clone(),
             block_cost_limit_reservation_cb.clone(),
-        );
+        ));
 
         let use_greedy_scheduler = matches!(
             block_production_method,
@@ -497,11 +547,9 @@ impl BankingStage {
                     transaction_recorder,
                     poh_recorder,
                     bank_forks,
-                    committer,
-                    log_messages_bytes_limit,
-                    bundle_account_locker,
-                    block_cost_limit_reservation_cb,
-                )
+                    bundle_account_locker.clone(),
+                    block_cost_limit_reservation_cb.clone(),
+                );
             }
             TransactionStructure::View => {
                 let receive_and_buffer = TransactionViewReceiveAndBuffer {
@@ -516,11 +564,9 @@ impl BankingStage {
                     transaction_recorder,
                     poh_recorder,
                     bank_forks,
-                    committer,
-                    log_messages_bytes_limit,
-                    bundle_account_locker,
-                    block_cost_limit_reservation_cb,
-                )
+                    bundle_account_locker.clone(),
+                    block_cost_limit_reservation_cb.clone(),
+                );
             }
         }
     }
@@ -533,14 +579,9 @@ impl BankingStage {
         transaction_recorder: TransactionRecorder,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         bank_forks: Arc<RwLock<BankForks>>,
-        committer: Committer,
-        log_messages_bytes_limit: Option<usize>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
-    ) -> Vec<JoinHandle<()>> {
-        // + 1 for scheduler thread
-        let mut thread_hdls = Vec::with_capacity(num_workers as usize + 1);
-
+    ) {
         // Create channels for communication between scheduler and workers
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
             (0..num_workers).map(|_| unbounded()).unzip();
@@ -567,7 +608,7 @@ impl BankingStage {
 
             worker_metrics.push(consume_worker.metrics_handle());
             let cb = block_cost_limit_reservation_cb.clone();
-            thread_hdls.push(
+            bank_thread_hdls.push(
                 Builder::new()
                     .name(format!("solCoWorker{id:02}"))
                     .spawn(move || {

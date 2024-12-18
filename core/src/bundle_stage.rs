@@ -357,7 +357,7 @@ impl BundleStage {
             measure_us!(decision_maker.make_consume_or_forward_decision());
 
         let (metrics_action, banking_stage_metrics_action) =
-            bundle_stage_leader_metrics.check_leader_slot_boundary(decision.bank());
+            bundle_stage_leader_metrics.check_leader_slot_boundary(decision.bank_start());
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time_us);
@@ -365,7 +365,7 @@ impl BundleStage {
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
-            BufferedPacketsDecision::Consume(bank) => {
+            BufferedPacketsDecision::Consume(bank_start) => {
                 // Take metrics action before consume packets (potentially resetting the
                 // slot metrics tracker to the next slot) so that we don't count the
                 // packet processing metrics from the next slot towards the metrics
@@ -374,7 +374,11 @@ impl BundleStage {
                     .apply_action(metrics_action, banking_stage_metrics_action);
 
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
-                    .consume_buffered_bundles(&bank, bundle_storage, bundle_stage_leader_metrics,));
+                    .consume_buffered_bundles(
+                        &bank_start,
+                        bundle_storage,
+                        bundle_stage_leader_metrics,
+                    ));
                 bundle_stage_leader_metrics
                     .leader_slot_metrics_tracker()
                     .increment_consume_buffered_packets_us(consume_buffered_packets_time_us);

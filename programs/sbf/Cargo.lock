@@ -172,7 +172,9 @@ dependencies = [
  "solana-svm-type-overrides",
  "solana-sysvar",
  "solana-sysvar-id",
+ "solana-timings",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
  "thiserror 2.0.12",
 ]
 
@@ -6136,6 +6138,7 @@ dependencies = [
  "solana-svm-type-overrides",
  "solana-system-interface",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
 ]
 
 [[package]]
@@ -6202,7 +6205,7 @@ dependencies = [
  "sha2 0.10.9",
  "solana-accounts-db",
  "solana-ledger",
- "solana-logger 3.0.0",
+ "solana-logger",
  "solana-measure",
  "solana-poh",
  "solana-program-runtime",
@@ -6210,7 +6213,7 @@ dependencies = [
  "solana-runtime-transaction",
  "solana-sdk",
  "solana-svm",
- "solana-svm-timings",
+ "solana-timings",
  "solana-transaction-status",
  "thiserror 2.0.12",
 ]
@@ -6523,7 +6526,6 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "bs58 0.5.1",
- "bytemuck",
  "bytes",
  "chrono",
  "conditional-mod",
@@ -7407,10 +7409,15 @@ dependencies = [
  "solana-pubkey",
  "solana-sbpf",
  "solana-sdk-ids",
- "solana-svm-log-collector",
- "solana-svm-measure",
- "solana-svm-type-overrides",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
+]
+
+[[package]]
+name = "solana-log-collector"
+version = "3.0.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -7865,7 +7872,9 @@ dependencies = [
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
+ "solana-timings",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
 ]
 
 [[package]]
@@ -9302,7 +9311,7 @@ dependencies = [
  "solana-system-transaction",
  "solana-time-utils",
  "solana-transaction",
- "solana-transaction-context 2.3.7",
+ "solana-transaction-context 2.3.6",
  "solana-transaction-error",
  "solana-validator-exit",
  "thiserror 2.0.12",
@@ -9595,6 +9604,7 @@ dependencies = [
  "solana-svm-type-overrides",
  "solana-sysvar",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
  "solana-vote-interface",
 ]
 
@@ -9746,6 +9756,7 @@ dependencies = [
  "solana-svm-type-overrides",
  "solana-system-interface",
  "solana-sysvar-id",
+ "solana-timings",
  "solana-transaction-context 3.0.0",
  "solana-transaction-error",
  "spl-generic-token",
@@ -9844,6 +9855,7 @@ dependencies = [
  "solana-system-interface",
  "solana-sysvar",
  "solana-transaction-context 3.0.0",
+ "solana-type-overrides",
 ]
 
 [[package]]
@@ -10060,9 +10072,9 @@ dependencies = [
 
 [[package]]
 name = "solana-transaction-context"
-version = "2.3.7"
+version = "2.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefd75e49dd990f7fdbe562a539a7b046a839aadf43843845d766a2a6a2adfef"
+checksum = "62899fc8ec399458db3332ec51dfc8379ca8bb5615133510c8b4dca4c5d48111"
 dependencies = [
  "bincode",
  "serde",

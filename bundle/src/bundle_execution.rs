@@ -22,7 +22,7 @@ use {
         transaction_processing_result::{ProcessedTransaction, TransactionProcessingResult},
         transaction_processor::{ExecutionRecordingConfig, TransactionProcessingConfig},
     },
-    solana_svm_timings::ExecuteTimings,
+    solana_timings::ExecuteTimings,
     std::{
         cmp::{max, min},
         num::Saturating,
@@ -236,10 +236,7 @@ pub fn load_and_execute_bundle<'a>(
                     for pk in account_keys.iter() {
                         // Save on a disk read.
                         if account_overrides.get(pk).is_none() {
-                            account_overrides.set_account(
-                                pk,
-                                bank.get_account_shared_data(pk).map(|data| data.0),
-                            );
+                            account_overrides.set_account(pk, bank.get_account_shared_data(pk));
                         }
                     }
                 }
