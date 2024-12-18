@@ -321,6 +321,7 @@ where
                 num_dropped_on_fee_payer,
                 num_dropped_on_capacity,
                 num_buffered,
+                num_dropped_on_blacklisted_account,
                 receive_time_us: _,
                 buffer_time_us: _,
             } = &receiving_stats;
@@ -337,6 +338,8 @@ where
             count_metrics.num_dropped_on_receive_fee_payer += *num_dropped_on_fee_payer;
             count_metrics.num_dropped_on_capacity += *num_dropped_on_capacity;
             count_metrics.num_buffered += *num_buffered;
+            count_metrics.num_dropped_on_blacklisted_account +=
+                *num_dropped_on_blacklisted_account;
         });
 
         self.timing_metrics.update(|timing_metrics| {
@@ -350,6 +353,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use {
         super::*,
         crate::banking_stage::{
@@ -404,24 +408,35 @@ mod tests {
     fn test_create_sanitized_transaction_receive_and_buffer(
         receiver: BankingPacketReceiver,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> SanitizedTransactionReceiveAndBuffer {
-        SanitizedTransactionReceiveAndBuffer::new(PacketDeserializer::new(receiver), bank_forks)
+        SanitizedTransactionReceiveAndBuffer::new(
+            PacketDeserializer::new(receiver),
+            bank_forks,
+            blacklisted_accounts,
+        )
     }
 
     fn test_create_transaction_view_receive_and_buffer(
         receiver: BankingPacketReceiver,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
         TransactionViewReceiveAndBuffer {
             receiver,
             bank_forks,
+            blacklisted_accounts,
         }
     }
 
     #[allow(clippy::type_complexity)]
     fn create_test_frame<R: ReceiveAndBuffer>(
         num_threads: usize,
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) -> (
         TestFrame<R::Transaction>,
         SchedulerController<R, PrioGraphScheduler<R::Transaction>>,
@@ -445,8 +460,11 @@ mod tests {
         );
 
         let (banking_packet_sender, banking_packet_receiver) = unbounded();
-        let receive_and_buffer =
-            create_receive_and_buffer(banking_packet_receiver, bank_forks.clone());
+        let receive_and_buffer = create_receive_and_buffer(
+            banking_packet_receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let (consume_work_senders, consume_work_receivers) = create_channels(num_threads);
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
@@ -540,7 +558,11 @@ mod tests {
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     #[should_panic(expected = "batch id 0 is not being tracked")]
     fn test_unexpected_batch_id<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (test_frame, scheduler_controller) = create_test_frame(1, create_receive_and_buffer);
         let TestFrame {
@@ -566,7 +588,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_single_threaded_no_conflicts<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
@@ -623,7 +649,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_single_threaded_conflict<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
@@ -683,7 +713,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_single_threaded_multi_batch<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
@@ -748,7 +782,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_simple_thread_selection<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(2, create_receive_and_buffer);
@@ -816,7 +854,11 @@ mod tests {
     #[test_case(test_create_sanitized_transaction_receive_and_buffer; "Sdk")]
     #[test_case(test_create_transaction_view_receive_and_buffer; "View")]
     fn test_schedule_consume_retryable<R: ReceiveAndBuffer>(
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
     ) {
         let (mut test_frame, mut scheduler_controller) =
             create_test_frame(1, create_receive_and_buffer);
