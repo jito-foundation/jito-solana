@@ -82,7 +82,7 @@ jobs:
           name: windows-artifact
           path: ./windows-release
 
-      - name: Setup crediential
+      - name: Setup credential
         uses: "google-github-actions/auth@v2"
         with:
           credentials_json: "${{ secrets.GCS_RELEASE_BUCKET_WRITER_CREDIENTIAL }}"
