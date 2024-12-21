@@ -144,7 +144,7 @@ jobs:
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      # check to see if different branch since CI build can take awhile and these steps are not atomic
+      # check to see if different branch since CI build can take a while and these steps are not atomic
       - name: Fetch the latest remote changes
         run: git fetch origin ${{ matrix.branch }}
       - name: Check if origin HEAD has changed from the beginning of the workflow

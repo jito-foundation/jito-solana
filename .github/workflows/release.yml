@@ -56,7 +56,7 @@ jobs:
           next_version=$major.$minor.$((patch+1))
           : "${next_version:?}"
 
-          # get the traget branch
+          # get the target branch
           target_branch=$major.$minor
           : "${target_branch:?}"
 
