@@ -9990,7 +9990,7 @@ dependencies = [
  "solana-streamer",
  "solana-transaction-metrics-tracker",
  "solana-version",
- "thiserror 2.0.6",
+ "thiserror 2.0.8",
  "tokio",
  "x509-parser",
 ]
