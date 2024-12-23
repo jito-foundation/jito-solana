@@ -28,32 +28,30 @@ RUN \
   if [ -z "$RUST_NIGHTLY_VERSION" ]; then echo "ERROR: The RUST_NIGHTLY_VERSION argument is required!" && exit 1; fi && \
   apt-get update && \
   apt-get install --no-install-recommends -y \
-  # basic
-  tzdata \
-  apt-transport-https \
-  sudo \
-  build-essential \
-  git \
-  vim \
-  jq \
-  ca-certificates \
-  curl \
-  gnupg \
-  lld \
-  cmake \
-  # docs
-  mscgen \
-  # solana compiling
-  libssl-dev \
-  libudev-dev \
-  pkg-config \
-  zlib1g-dev \
-  llvm \
-  clang \
-  cmake \
-  make \
-  libprotobuf-dev \
-  protobuf-compiler \
+    # basic
+    apt-transport-https \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    gnupg \
+    jq \
+    sudo \
+    tzdata \
+    vim \
+    # docker
+    rsync \
+    # solana compiling
+    clang \
+    cmake \
+    libprotobuf-dev \
+    libssl-dev \
+    libudev-dev \
+    llvm \
+    make \
+    pkg-config \
+    protobuf-compiler \
+    zlib1g-dev \
   && \
   # buildkite
   curl -fsSL https://keys.openpgp.org/vks/v1/by-fingerprint/32A37959C2FA5C3C99EFBC32A79206696452D198 | gpg --dearmor -o /usr/share/keyrings/buildkite-agent-archive-keyring.gpg && \
