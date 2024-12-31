@@ -35,9 +35,9 @@ jobs:
           - branch: v2.0
             upstream_branch: v2.0
             upstream_repo: https://github.com/anza-xyz/agave.git
-          - branch: v1.18
-            upstream_branch: v1.18
-            upstream_repo: https://github.com/solana-labs/solana.git
+          - branch: v2.1
+            upstream_branch: v2.1
+            upstream_repo: https://github.com/anza-xyz/agave.git
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
