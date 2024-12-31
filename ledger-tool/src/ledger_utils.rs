@@ -17,9 +17,7 @@ use {
     solana_ledger::{
         bank_forks_utils::{self, BankForksUtilsError},
         blockstore::{Blockstore, BlockstoreError},
-        blockstore_options::{
-            AccessType, BlockstoreOptions, BlockstoreRecoveryMode, LedgerColumnOptions,
-        },
+        blockstore_options::{AccessType, BlockstoreOptions, BlockstoreRecoveryMode},
         blockstore_processor::{
             self, BlockstoreProcessorError, ProcessOptions, TransactionStatusSender,
         },
@@ -471,7 +469,7 @@ pub fn open_blockstore(
             access_type: access_type.clone(),
             recovery_mode: wal_recovery_mode.clone(),
             enforce_ulimit_nofile,
-            column_options: LedgerColumnOptions::default(),
+            ..BlockstoreOptions::default()
         },
     ) {
         Ok(blockstore) => blockstore,
