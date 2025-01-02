@@ -9344,7 +9344,7 @@ impl AccountsDb {
     ) {
         let ancestors = vec![(slot, 0)].into_iter().collect();
         for t in 0..num {
-            let pubkey = solana_sdk::pubkey::new_rand();
+            let pubkey = solana_pubkey::new_rand();
             let account =
                 AccountSharedData::new((t + 1) as u64, space, AccountSharedData::default().owner());
             pubkeys.push(pubkey);
@@ -9352,7 +9352,7 @@ impl AccountsDb {
             self.store_for_tests(slot, &[(&pubkey, &account)]);
         }
         for t in 0..num_vote {
-            let pubkey = solana_sdk::pubkey::new_rand();
+            let pubkey = solana_pubkey::new_rand();
             let account =
                 AccountSharedData::new((num + t + 1) as u64, space, &solana_vote_program::id());
             pubkeys.push(pubkey);
@@ -9491,7 +9491,7 @@ pub mod test_utils {
         }
 
         for t in 0..num {
-            let pubkey = solana_sdk::pubkey::new_rand();
+            let pubkey = solana_pubkey::new_rand();
             let account = AccountSharedData::new(
                 (t + 1) as u64,
                 data_size,
