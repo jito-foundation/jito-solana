@@ -8776,24 +8776,13 @@ impl AccountsDb {
                 struct DuplicatePubkeysVisitedInfo {
                     accounts_data_len_from_duplicates: u64,
                     num_duplicate_accounts: u64,
-                    uncleaned_roots: IntSet<Slot>,
                     duplicates_lt_hash: Option<Box<DuplicatesLtHash>>,
                 }
                 impl DuplicatePubkeysVisitedInfo {
-                    fn reduce(mut a: Self, mut b: Self) -> Self {
-                        if a.uncleaned_roots.len() >= b.uncleaned_roots.len() {
-                            a.merge(b);
-                            a
-                        } else {
-                            b.merge(a);
-                            b
-                        }
-                    }
-                    fn merge(&mut self, other: Self) {
+                    fn reduce(mut self, other: Self) -> Self {
                         self.accounts_data_len_from_duplicates +=
                             other.accounts_data_len_from_duplicates;
                         self.num_duplicate_accounts += other.num_duplicate_accounts;
-                        self.uncleaned_roots.extend(other.uncleaned_roots);
 
                         match (
                             self.duplicates_lt_hash.is_some(),
@@ -8818,6 +8807,7 @@ impl AccountsDb {
                                 // nothing to do; no duplicates lt hash at all
                             }
                         }
+                        self
                     }
                 }
 
@@ -8835,7 +8825,6 @@ impl AccountsDb {
                 let DuplicatePubkeysVisitedInfo {
                     accounts_data_len_from_duplicates,
                     num_duplicate_accounts,
-                    uncleaned_roots,
                     duplicates_lt_hash,
                 } = unique_pubkeys_by_bin
                     .par_iter()
@@ -8848,7 +8837,6 @@ impl AccountsDb {
                                     let (
                                         accounts_data_len_from_duplicates,
                                         accounts_duplicates_num,
-                                        uncleaned_roots,
                                         duplicates_lt_hash,
                                     ) = self.visit_duplicate_pubkeys_during_startup(
                                         pubkeys,
@@ -8859,7 +8847,6 @@ impl AccountsDb {
                                     let intermediate = DuplicatePubkeysVisitedInfo {
                                         accounts_data_len_from_duplicates,
                                         num_duplicate_accounts: accounts_duplicates_num,
-                                        uncleaned_roots,
                                         duplicates_lt_hash,
                                     };
                                     DuplicatePubkeysVisitedInfo::reduce(accum, intermediate)
@@ -8877,7 +8864,6 @@ impl AccountsDb {
                     );
                 accounts_data_len_dedup_timer.stop();
                 timings.accounts_data_len_dedup_time_us = accounts_data_len_dedup_timer.as_us();
-                timings.slots_to_clean = uncleaned_roots.len() as u64;
                 timings.num_duplicate_accounts = num_duplicate_accounts;
 
                 accounts_data_len.fetch_sub(accounts_data_len_from_duplicates, Ordering::Relaxed);
@@ -9001,10 +8987,9 @@ impl AccountsDb {
         rent_collector: &RentCollector,
         timings: &GenerateIndexTimings,
         should_calculate_duplicates_lt_hash: bool,
-    ) -> (u64, u64, IntSet<Slot>, Option<Box<DuplicatesLtHash>>) {
+    ) -> (u64, u64, Option<Box<DuplicatesLtHash>>) {
         let mut accounts_data_len_from_duplicates = 0;
         let mut num_duplicate_accounts = 0_u64;
-        let mut uncleaned_slots = IntSet::default();
         let mut duplicates_lt_hash =
             should_calculate_duplicates_lt_hash.then(|| Box::new(DuplicatesLtHash::default()));
         let mut removed_rent_paying = 0;
@@ -9022,7 +9007,6 @@ impl AccountsDb {
                         // the slot where duplicate accounts are found in the index need to be in 'uncleaned_slots' list, too.
                         let max = slot_list.iter().map(|(slot, _)| slot).max().unwrap();
                         slot_list.iter().for_each(|(slot, account_info)| {
-                            uncleaned_slots.insert(*slot);
                             if slot == max {
                                 // the info in 'max' is the most recent, current info for this pubkey
                                 return;
@@ -9080,7 +9064,6 @@ impl AccountsDb {
         (
             accounts_data_len_from_duplicates as u64,
             num_duplicate_accounts,
-            uncleaned_slots,
             duplicates_lt_hash,
         )
     }
