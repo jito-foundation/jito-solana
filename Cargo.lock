@@ -113,7 +113,9 @@ name = "agave-geyser-plugin-interface"
 version = "2.2.0"
 dependencies = [
  "log",
- "solana-sdk",
+ "solana-clock",
+ "solana-signature",
+ "solana-transaction",
  "solana-transaction-status",
  "thiserror 2.0.9",
 ]
