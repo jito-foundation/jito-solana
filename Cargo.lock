@@ -9867,6 +9867,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "solana-account-decoder",
+ "solana-pubkey",
  "solana-sdk",
  "solana-transaction-status-client-types",
  "spl-associated-token-account",
