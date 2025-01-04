@@ -5599,7 +5599,7 @@ dependencies = [
 name = "solana-fee"
 version = "2.2.0"
 dependencies = [
- "solana-sdk",
+ "solana-fee-structure",
  "solana-svm-transaction",
 ]
 
