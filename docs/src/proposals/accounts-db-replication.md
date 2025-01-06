@@ -61,7 +61,7 @@ the lifecycle of BankForks, BlockCommitmentCache (for the highest confirmed slot
 the optimistically confirmed bank.
 
 The `ReplicaSlotConfirmationServer`: this service is responsible for serving the
-`ReplicaSlotConfirmationRequest` and sends the `ReplicaSlotConfirmationResponse` back to the requestor.
+`ReplicaSlotConfirmationRequest` and sends the `ReplicaSlotConfirmationResponse` back to the requester.
 The response consists of a vector of new slots the validator knows of which is later than the
 specified last_replicated_slot. This service also runs in the main validator. This service
 gets the slots for replication from the BankForks, BlockCommitmentCache and OptimiscallyConfirmBank.
