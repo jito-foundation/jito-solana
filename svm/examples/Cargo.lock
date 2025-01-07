@@ -4879,11 +4879,17 @@ dependencies = [
  "log",
  "num-derive",
  "num-traits",
+ "solana-bincode",
+ "solana-clock",
  "solana-feature-set",
+ "solana-instruction",
  "solana-log-collector",
+ "solana-packet",
  "solana-program",
  "solana-program-runtime",
- "solana-sdk",
+ "solana-pubkey",
+ "solana-system-interface",
+ "solana-transaction-context",
  "thiserror 2.0.9",
 ]
 
