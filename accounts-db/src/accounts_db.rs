@@ -783,7 +783,8 @@ struct StorageSizeAndCount {
     /// number of accounts in the storage including both alive and dead accounts
     pub count: usize,
 }
-type StorageSizeAndCountMap = DashMap<AccountsFileId, StorageSizeAndCount>;
+type StorageSizeAndCountMap =
+    DashMap<AccountsFileId, StorageSizeAndCount, BuildNoHashHasher<AccountsFileId>>;
 
 impl GenerateIndexTimings {
     pub fn report(&self, startup_stats: &StartupStats) {
