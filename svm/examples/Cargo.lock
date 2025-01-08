@@ -4785,7 +4785,6 @@ dependencies = [
  "solana-program-pack",
  "solana-pubkey",
  "solana-rent",
- "solana-sdk",
  "solana-sdk-ids",
  "solana-slot-hashes",
  "solana-slot-history",
