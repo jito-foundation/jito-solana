@@ -881,6 +881,10 @@ pub mod migrate_stake_program_to_core_bpf {
     solana_pubkey::declare_id!("6M4oQ6eXneVhtLoiAr4yRYQY43eVLjrKbiDZDJc892yk");
 }
 
+pub mod deplete_cu_meter_on_vm_failure {
+    solana_pubkey::declare_id!("B7H2caeia4ZFcpE3QcgMqbiWiBtWrdBRBSJ1DY6Ktxbq");
+}
+
 lazy_static! {
     /// Map of feature identifiers to user-visible description
     pub static ref FEATURE_NAMES: HashMap<Pubkey, &'static str> = [
@@ -1096,6 +1100,7 @@ lazy_static! {
         (disable_account_loader_special_case::id(), "Disable account loader special case #3513"),
         (enable_secp256r1_precompile::id(), "Enable secp256r1 precompile SIMD-0075"),
         (migrate_stake_program_to_core_bpf::id(), "Migrate Stake program to Core BPF SIMD-0196 #3655"),
+        (deplete_cu_meter_on_vm_failure::id(), "Deplete compute meter for vm errors SIMD-0182 #3993"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
