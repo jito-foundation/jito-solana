@@ -3,19 +3,17 @@
 extern crate test;
 
 use {
+    solana_account::{Account, AccountSharedData},
     solana_bpf_loader_program::serialization::serialize_parameters,
-    solana_sdk::{
-        account::{Account, AccountSharedData},
-        bpf_loader, bpf_loader_deprecated,
-        pubkey::Pubkey,
-        sysvar::rent::Rent,
-        transaction_context::{IndexOfAccount, InstructionAccount, TransactionContext},
-    },
+    solana_pubkey::Pubkey,
+    solana_rent::Rent,
+    solana_sdk_ids::{bpf_loader, bpf_loader_deprecated},
+    solana_transaction_context::{IndexOfAccount, InstructionAccount, TransactionContext},
     test::Bencher,
 };
 
 fn create_inputs(owner: Pubkey, num_instruction_accounts: usize) -> TransactionContext {
-    let program_id = solana_sdk::pubkey::new_rand();
+    let program_id = solana_pubkey::new_rand();
     let transaction_accounts = vec![
         (
             program_id,
@@ -28,7 +26,7 @@ fn create_inputs(owner: Pubkey, num_instruction_accounts: usize) -> TransactionC
             }),
         ),
         (
-            solana_sdk::pubkey::new_rand(),
+            solana_pubkey::new_rand(),
             AccountSharedData::from(Account {
                 lamports: 1,
                 data: vec![1u8; 100000],
@@ -38,7 +36,7 @@ fn create_inputs(owner: Pubkey, num_instruction_accounts: usize) -> TransactionC
             }),
         ),
         (
-            solana_sdk::pubkey::new_rand(),
+            solana_pubkey::new_rand(),
             AccountSharedData::from(Account {
                 lamports: 2,
                 data: vec![11u8; 100000],
@@ -48,7 +46,7 @@ fn create_inputs(owner: Pubkey, num_instruction_accounts: usize) -> TransactionC
             }),
         ),
         (
-            solana_sdk::pubkey::new_rand(),
+            solana_pubkey::new_rand(),
             AccountSharedData::from(Account {
                 lamports: 3,
                 data: vec![],
@@ -58,7 +56,7 @@ fn create_inputs(owner: Pubkey, num_instruction_accounts: usize) -> TransactionC
             }),
         ),
         (
-            solana_sdk::pubkey::new_rand(),
+            solana_pubkey::new_rand(),
             AccountSharedData::from(Account {
                 lamports: 4,
                 data: vec![1u8; 100000],
@@ -68,7 +66,7 @@ fn create_inputs(owner: Pubkey, num_instruction_accounts: usize) -> TransactionC
             }),
         ),
         (
-            solana_sdk::pubkey::new_rand(),
+            solana_pubkey::new_rand(),
             AccountSharedData::from(Account {
                 lamports: 5,
                 data: vec![11u8; 10000],
@@ -78,7 +76,7 @@ fn create_inputs(owner: Pubkey, num_instruction_accounts: usize) -> TransactionC
             }),
         ),
         (
-            solana_sdk::pubkey::new_rand(),
+            solana_pubkey::new_rand(),
             AccountSharedData::from(Account {
                 lamports: 6,
                 data: vec![],
