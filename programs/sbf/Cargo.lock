@@ -6109,13 +6109,19 @@ name = "solana-loader-v4-program"
 version = "2.2.0"
 dependencies = [
  "log",
+ "solana-account",
+ "solana-bincode",
  "solana-bpf-loader-program",
  "solana-compute-budget",
+ "solana-instruction",
  "solana-log-collector",
  "solana-measure",
+ "solana-packet",
+ "solana-program",
  "solana-program-runtime",
+ "solana-pubkey",
  "solana-sbpf",
- "solana-sdk",
+ "solana-transaction-context",
  "solana-type-overrides",
 ]
 
