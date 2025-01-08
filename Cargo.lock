@@ -6191,10 +6191,12 @@ name = "solana-bench-vote"
 version = "2.2.0"
 dependencies = [
  "bincode",
- "clap 3.2.23",
+ "clap 2.33.3",
  "crossbeam-channel",
+ "solana-clap-utils",
  "solana-client",
  "solana-connection-cache",
+ "solana-logger",
  "solana-net-utils",
  "solana-sdk",
  "solana-streamer",
