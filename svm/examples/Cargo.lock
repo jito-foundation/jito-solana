@@ -7096,6 +7096,7 @@ dependencies = [
  "solana-feature-set",
  "solana-log-collector",
  "solana-program-runtime",
+ "solana-pubkey",
  "solana-sdk",
  "solana-type-overrides",
  "solana-vote-program",

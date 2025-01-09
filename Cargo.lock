@@ -9272,6 +9272,7 @@ dependencies = [
  "solana-log-collector",
  "solana-logger",
  "solana-program-runtime",
+ "solana-pubkey",
  "solana-sdk",
  "solana-type-overrides",
  "solana-vote-program",
