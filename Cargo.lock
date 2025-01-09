@@ -8960,6 +8960,7 @@ dependencies = [
  "solana-instructions-sysvar",
  "solana-keypair",
  "solana-logger",
+ "solana-message",
  "solana-native-token",
  "solana-nonce-account",
  "solana-offchain-message",
