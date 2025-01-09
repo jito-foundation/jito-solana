@@ -10062,8 +10062,11 @@ name = "solana-unified-scheduler-logic"
 version = "2.2.0"
 dependencies = [
  "assert_matches",
+ "solana-instruction",
+ "solana-message",
+ "solana-pubkey",
  "solana-runtime-transaction",
- "solana-sdk",
+ "solana-transaction",
  "static_assertions",
 ]
 
