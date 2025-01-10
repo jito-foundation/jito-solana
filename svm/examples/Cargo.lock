@@ -5285,11 +5285,17 @@ name = "solana-compute-budget-instruction"
 version = "2.2.0"
 dependencies = [
  "log",
+ "solana-borsh",
  "solana-builtins-default-costs",
  "solana-compute-budget",
+ "solana-compute-budget-interface",
+ "solana-feature-set",
+ "solana-instruction",
+ "solana-packet",
  "solana-pubkey",
- "solana-sdk",
+ "solana-sdk-ids",
  "solana-svm-transaction",
+ "solana-transaction-error",
  "thiserror 2.0.9",
 ]
 
