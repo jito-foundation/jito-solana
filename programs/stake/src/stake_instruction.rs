@@ -390,15 +390,14 @@ mod tests {
         },
         assert_matches::assert_matches,
         bincode::serialize,
+        solana_account::{
+            create_account_shared_data_for_test, state_traits::StateMut, AccountSharedData,
+            ReadableAccount, WritableAccount,
+        },
         solana_feature_set::FeatureSet,
         solana_program_runtime::invoke_context::mock_process_instruction,
         solana_pubkey::Pubkey,
         solana_sdk::{
-            account::{
-                create_account_shared_data_for_test, AccountSharedData, ReadableAccount,
-                WritableAccount,
-            },
-            account_utils::StateMut,
             clock::{Clock, Epoch, UnixTimestamp},
             epoch_schedule::EpochSchedule,
             instruction::{AccountMeta, Instruction},

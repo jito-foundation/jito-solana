@@ -9,13 +9,12 @@
 )]
 pub use solana_sdk::stake::state::*;
 use {
+    solana_account::{state_traits::StateMut, AccountSharedData, ReadableAccount},
     solana_feature_set::FeatureSet,
     solana_log_collector::ic_msg,
     solana_program_runtime::invoke_context::InvokeContext,
     solana_pubkey::Pubkey,
     solana_sdk::{
-        account::{AccountSharedData, ReadableAccount},
-        account_utils::StateMut,
         clock::{Clock, Epoch},
         instruction::{checked_add, InstructionError},
         rent::Rent,
@@ -1447,10 +1446,10 @@ mod tests {
     use {
         super::*,
         proptest::prelude::*,
+        solana_account::{create_account_shared_data_for_test, AccountSharedData},
         solana_program_runtime::with_mock_invoke_context,
         solana_pubkey::Pubkey,
         solana_sdk::{
-            account::{create_account_shared_data_for_test, AccountSharedData},
             epoch_schedule::EpochSchedule,
             stake::state::warmup_cooldown_rate,
             sysvar::{epoch_schedule, SysvarId},

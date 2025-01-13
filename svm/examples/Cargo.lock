@@ -7179,6 +7179,7 @@ version = "2.2.0"
 dependencies = [
  "bincode",
  "log",
+ "solana-account",
  "solana-config-program",
  "solana-feature-set",
  "solana-log-collector",

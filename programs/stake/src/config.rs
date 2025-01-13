@@ -9,12 +9,9 @@ use solana_sdk::stake::config;
 pub use solana_sdk::stake::config::*;
 use {
     bincode::deserialize,
+    solana_account::{AccountSharedData, ReadableAccount, WritableAccount},
     solana_config_program::{create_config_account, get_config_data},
-    solana_sdk::{
-        account::{AccountSharedData, ReadableAccount, WritableAccount},
-        genesis_config::GenesisConfig,
-        transaction_context::BorrowedAccount,
-    },
+    solana_sdk::{genesis_config::GenesisConfig, transaction_context::BorrowedAccount},
 };
 
 #[allow(deprecated)]

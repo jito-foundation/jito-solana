@@ -6,8 +6,8 @@ use {
         calculate_stake_points_and_credits, CalculatedStakePoints, InflationPointCalculationEvent,
         PointValue, SkippedReason,
     },
+    solana_account::{AccountSharedData, WritableAccount},
     solana_sdk::{
-        account::{AccountSharedData, WritableAccount},
         account_utils::StateMut,
         clock::Epoch,
         instruction::InstructionError,

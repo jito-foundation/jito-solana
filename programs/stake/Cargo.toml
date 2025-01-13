@@ -12,6 +12,7 @@ edition = { workspace = true }
 [dependencies]
 bincode = { workspace = true }
 log = { workspace = true }
+solana-account = { workspace = true }
 solana-config-program = { workspace = true }
 solana-feature-set = { workspace = true }
 solana-log-collector = { workspace = true }

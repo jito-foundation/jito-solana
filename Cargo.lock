@@ -9292,6 +9292,7 @@ dependencies = [
  "criterion",
  "log",
  "proptest",
+ "solana-account",
  "solana-compute-budget",
  "solana-config-program",
  "solana-feature-set",
