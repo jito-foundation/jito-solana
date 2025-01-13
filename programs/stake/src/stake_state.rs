@@ -11,12 +11,12 @@ pub use solana_sdk::stake::state::*;
 use {
     solana_account::{state_traits::StateMut, AccountSharedData, ReadableAccount},
     solana_feature_set::FeatureSet,
+    solana_instruction::error::InstructionError,
     solana_log_collector::ic_msg,
     solana_program_runtime::invoke_context::InvokeContext,
     solana_pubkey::Pubkey,
     solana_sdk::{
         clock::{Clock, Epoch},
-        instruction::{checked_add, InstructionError},
         rent::Rent,
         stake::{
             instruction::{LockupArgs, StakeError},
@@ -66,6 +66,10 @@ pub(crate) fn new_warmup_cooldown_rate_epoch(invoke_context: &InvokeContext) -> 
     invoke_context
         .get_feature_set()
         .new_warmup_cooldown_rate_epoch(epoch_schedule.as_ref())
+}
+
+fn checked_add(a: u64, b: u64) -> Result<u64, InstructionError> {
+    a.checked_add(b).ok_or(InstructionError::InsufficientFunds)
 }
 
 fn get_stake_status(

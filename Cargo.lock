@@ -9303,6 +9303,7 @@ dependencies = [
  "solana-compute-budget",
  "solana-config-program",
  "solana-feature-set",
+ "solana-instruction",
  "solana-log-collector",
  "solana-logger",
  "solana-program-runtime",

@@ -7853,6 +7853,7 @@ dependencies = [
  "solana-account",
  "solana-config-program",
  "solana-feature-set",
+ "solana-instruction",
  "solana-log-collector",
  "solana-program-runtime",
  "solana-pubkey",

@@ -7,10 +7,10 @@ use {
         PointValue, SkippedReason,
     },
     solana_account::{AccountSharedData, WritableAccount},
+    solana_instruction::error::InstructionError,
     solana_sdk::{
         account_utils::StateMut,
         clock::Epoch,
-        instruction::InstructionError,
         stake::{
             instruction::StakeError,
             state::{Stake, StakeStateV2},

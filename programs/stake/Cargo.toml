@@ -15,6 +15,7 @@ log = { workspace = true }
 solana-account = { workspace = true }
 solana-config-program = { workspace = true }
 solana-feature-set = { workspace = true }
+solana-instruction = { workspace = true }
 solana-log-collector = { workspace = true }
 solana-program-runtime = { workspace = true }
 solana-pubkey = { workspace = true }

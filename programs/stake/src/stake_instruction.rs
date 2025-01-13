@@ -5,12 +5,12 @@ use {
         withdraw,
     },
     log::*,
+    solana_instruction::error::InstructionError,
     solana_program_runtime::{
         declare_process_instruction, sysvar_cache::get_sysvar_with_account_check,
     },
     solana_pubkey::Pubkey,
     solana_sdk::{
-        instruction::InstructionError,
         program_utils::limited_deserialize,
         stake::{
             instruction::{LockupArgs, StakeError, StakeInstruction},
@@ -395,12 +395,12 @@ mod tests {
             ReadableAccount, WritableAccount,
         },
         solana_feature_set::FeatureSet,
+        solana_instruction::{AccountMeta, Instruction},
         solana_program_runtime::invoke_context::mock_process_instruction,
         solana_pubkey::Pubkey,
         solana_sdk::{
             clock::{Clock, Epoch, UnixTimestamp},
             epoch_schedule::EpochSchedule,
-            instruction::{AccountMeta, Instruction},
             rent::Rent,
             stake::{
                 config as stake_config,
