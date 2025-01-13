@@ -35,6 +35,7 @@ use {
         epoch_schedule::EpochSchedule,
         genesis_config::{ClusterType, GenesisConfig},
         message::Message,
+        native_token::LAMPORTS_PER_SOL,
         poh_config::PohConfig,
         pubkey::Pubkey,
         signature::{Keypair, Signature, Signer},
@@ -68,6 +69,7 @@ use {
     },
 };
 
+pub const DEFAULT_MINT_LAMPORTS: u64 = 10_000_000 * LAMPORTS_PER_SOL;
 const DUMMY_SNAPSHOT_CONFIG_PATH_MARKER: &str = "dummy";
 
 pub struct ClusterConfig {
@@ -85,8 +87,8 @@ pub struct ClusterConfig {
     pub node_stakes: Vec<u64>,
     /// Optional vote keypairs to use for each node
     pub node_vote_keys: Option<Vec<Arc<Keypair>>>,
-    /// The total lamports available to the cluster
-    pub cluster_lamports: u64,
+    /// The number of lamports in the mint account
+    pub mint_lamports: u64,
     pub ticks_per_slot: u64,
     pub slots_per_epoch: u64,
     pub stakers_slot_offset: u64,
@@ -103,12 +105,12 @@ pub struct ClusterConfig {
 impl ClusterConfig {
     pub fn new_with_equal_stakes(
         num_nodes: usize,
-        cluster_lamports: u64,
+        mint_lamports: u64,
         lamports_per_node: u64,
     ) -> Self {
         Self {
             node_stakes: vec![lamports_per_node; num_nodes],
-            cluster_lamports,
+            mint_lamports,
             validator_configs: make_identical_validator_configs(
                 &ValidatorConfig::default_for_test(),
                 num_nodes,
@@ -126,7 +128,7 @@ impl Default for ClusterConfig {
             validator_keys: None,
             node_stakes: vec![],
             node_vote_keys: None,
-            cluster_lamports: 0,
+            mint_lamports: DEFAULT_MINT_LAMPORTS,
             ticks_per_slot: DEFAULT_TICKS_PER_SLOT,
             slots_per_epoch: DEFAULT_DEV_SLOTS_PER_EPOCH,
             stakers_slot_offset: DEFAULT_DEV_SLOTS_PER_EPOCH,
@@ -155,16 +157,12 @@ pub struct LocalCluster {
 impl LocalCluster {
     pub fn new_with_equal_stakes(
         num_nodes: usize,
-        cluster_lamports: u64,
+        mint_lamports: u64,
         lamports_per_node: u64,
         socket_addr_space: SocketAddrSpace,
     ) -> Self {
         Self::new(
-            &mut ClusterConfig::new_with_equal_stakes(
-                num_nodes,
-                cluster_lamports,
-                lamports_per_node,
-            ),
+            &mut ClusterConfig::new_with_equal_stakes(num_nodes, mint_lamports, lamports_per_node),
             socket_addr_space,
         )
     }
@@ -254,6 +252,10 @@ impl LocalCluster {
             }
         };
 
+        // Mint used to fund validator identities for non-genesis accounts.
+        // Verify we have enough lamports in the mint address to do those transfers.
+        let mut required_mint_lamports = 0;
+
         // Bootstrap leader should always be in genesis block
         validator_keys[0].1 = true;
         let (keys_in_genesis, stakes_in_genesis): (Vec<ValidatorVoteKeypairs>, Vec<u64>) =
@@ -278,10 +280,18 @@ impl LocalCluster {
                             stake,
                         ))
                     } else {
+                        required_mint_lamports += Self::required_validator_funding(*stake);
                         None
                     }
                 })
                 .unzip();
+
+        // Verify mint has enough lamports to fund all required validators.
+        assert!(
+            config.mint_lamports >= required_mint_lamports,
+            "mint requires additional lamports to fund validators"
+        );
+
         let leader_keypair = &keys_in_genesis[0].node_keypair;
         let leader_vote_keypair = &keys_in_genesis[0].vote_keypair;
         let leader_pubkey = leader_keypair.pubkey();
@@ -292,7 +302,7 @@ impl LocalCluster {
             mint_keypair,
             ..
         } = create_genesis_config_with_vote_accounts_and_cluster_type(
-            config.cluster_lamports,
+            config.mint_lamports,
             &keys_in_genesis,
             stakes_in_genesis,
             config.cluster_type,
@@ -519,7 +529,7 @@ impl LocalCluster {
                 &client,
                 &self.funding_keypair,
                 &validator_pubkey,
-                stake * 2 + 2,
+                Self::required_validator_funding(stake),
             );
             info!(
                 "validator {} balance {}",
@@ -971,6 +981,10 @@ impl LocalCluster {
         .map_err(|err| Error::new(ErrorKind::Other, format!("TpuSenderError: {}", err)))?;
 
         Ok(tpu_client)
+    }
+
+    fn required_validator_funding(stake: u64) -> u64 {
+        stake.saturating_mul(2).saturating_add(2)
     }
 }
 
