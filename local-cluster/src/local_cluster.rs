@@ -525,12 +525,17 @@ impl LocalCluster {
             // setup as a listener
             info!("listener {} ", validator_pubkey,);
         } else if should_create_vote_pubkey {
-            let validator_balance = Self::transfer_with_client(
+            Self::transfer_with_client(
                 &client,
                 &self.funding_keypair,
                 &validator_pubkey,
                 Self::required_validator_funding(stake),
             );
+            let validator_balance = client
+                .rpc_client()
+                .get_balance_with_commitment(&validator_pubkey, CommitmentConfig::processed())
+                .expect("received response")
+                .value;
             info!(
                 "validator {} balance {}",
                 validator_pubkey, validator_balance
@@ -603,11 +608,11 @@ impl LocalCluster {
         self.close_preserve_ledgers();
     }
 
-    pub fn transfer(&self, source_keypair: &Keypair, dest_pubkey: &Pubkey, lamports: u64) -> u64 {
+    pub fn transfer(&self, source_keypair: &Keypair, dest_pubkey: &Pubkey, lamports: u64) {
         let client = self
             .build_validator_tpu_quic_client(self.entry_point_info.pubkey())
             .expect("new tpu quic client");
-        Self::transfer_with_client(&client, source_keypair, dest_pubkey, lamports)
+        Self::transfer_with_client(&client, source_keypair, dest_pubkey, lamports);
     }
 
     fn discover_nodes(
@@ -751,7 +756,7 @@ impl LocalCluster {
         source_keypair: &Keypair,
         dest_pubkey: &Pubkey,
         lamports: u64,
-    ) -> u64 {
+    ) {
         trace!("getting leader blockhash");
         let (blockhash, _) = client
             .rpc_client()
@@ -767,14 +772,6 @@ impl LocalCluster {
 
         LocalCluster::send_transaction_with_retries(client, &[source_keypair], &mut tx, 10, 0)
             .expect("client transfer should succeed");
-        client
-            .rpc_client()
-            .wait_for_balance_with_commitment(
-                dest_pubkey,
-                Some(lamports),
-                CommitmentConfig::processed(),
-            )
-            .expect("get balance should succeed")
     }
 
     fn setup_vote_and_stake_accounts(
