@@ -5377,7 +5377,6 @@ name = "solana-compute-budget-program"
 version = "2.2.0"
 dependencies = [
  "solana-program-runtime",
- "solana-sdk",
 ]
 
 [[package]]
