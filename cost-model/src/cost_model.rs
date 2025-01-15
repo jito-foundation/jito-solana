@@ -7,7 +7,7 @@
 
 use {
     crate::{block_cost_limits::*, transaction_cost::*},
-    solana_builtins_default_costs::BUILTIN_INSTRUCTION_COSTS,
+    solana_builtins_default_costs::get_builtin_instruction_cost,
     solana_compute_budget::compute_budget_limits::{
         DEFAULT_HEAP_COST, DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT, MAX_COMPUTE_UNIT_LIMIT,
     },
@@ -193,8 +193,8 @@ impl CostModel {
 
         for (program_id, instruction) in transaction.program_instructions_iter() {
             let ix_execution_cost =
-                if let Some(builtin_cost) = BUILTIN_INSTRUCTION_COSTS.get(program_id) {
-                    *builtin_cost
+                if let Some(builtin_cost) = get_builtin_instruction_cost(program_id, feature_set) {
+                    builtin_cost
                 } else {
                     has_user_space_instructions = true;
                     u64::from(DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT)
