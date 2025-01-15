@@ -6529,6 +6529,7 @@ dependencies = [
  "solana-cli-config",
  "solana-cli-output",
  "solana-client",
+ "solana-commitment-config",
  "solana-compute-budget",
  "solana-config-program",
  "solana-connection-cache",
