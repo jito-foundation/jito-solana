@@ -40,6 +40,10 @@ impl BundleReservedSpaceManager {
         } else if self.last_slot_updated != bank.slot() && self.is_in_reserved_tick_period(bank) {
             // new slot, if in the first max_tick - tick_height slots reserve space
             // otherwise can leave the current block limit as is
+
+            // handles new block updates for SIMD-0207 and future block cost limit increases
+            self.block_cost_limit = bank.read_cost_tracker().unwrap().block_cost_limit();
+
             let new_block_cost_limit = self.reduced_block_cost_limit();
             debug!(
                 "slot: {} ticks: {}, reserving block_cost_limit with block_cost_limit of {}",
@@ -82,8 +86,11 @@ impl BundleReservedSpaceManager {
 mod tests {
     use {
         crate::bundle_stage::bundle_reserved_space_manager::BundleReservedSpaceManager,
-        solana_ledger::genesis_utils::create_genesis_config, solana_runtime::bank::Bank,
-        solana_sdk::pubkey::Pubkey, std::sync::Arc,
+        solana_cost_model::block_cost_limits::{MAX_BLOCK_UNITS, MAX_BLOCK_UNITS_SIMD_0207},
+        solana_ledger::genesis_utils::create_genesis_config,
+        solana_runtime::bank::Bank,
+        solana_sdk::pubkey::Pubkey,
+        std::sync::Arc,
     };
 
     #[test]
@@ -232,6 +239,42 @@ mod tests {
         assert_eq!(
             bank1.read_cost_tracker().unwrap().block_cost_limit(),
             solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS_SIMD_0207,
+        );
+    }
+
+    #[test]
+    fn test_block_limits_simd_0207() {
+        const BUNDLE_BLOCK_COST_LIMITS_RESERVATION: u64 = 100;
+        const RESERVED_TICKS: u64 = 5;
+        let genesis_config_info = create_genesis_config(100);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config_info.genesis_config));
+        assert_eq!(
+            bank.read_cost_tracker().unwrap().block_cost_limit(),
+            MAX_BLOCK_UNITS_SIMD_0207,
+        );
+
+        // assume the validator was started with the old block cost limits
+        let mut reserved_space = BundleReservedSpaceManager::new(
+            MAX_BLOCK_UNITS,
+            BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
+            RESERVED_TICKS,
+        );
+
+        // This tick shall pull in the new updated block cost limits, but also reserve the
+        // requested reservation amount
+        reserved_space.tick(&bank);
+        assert_eq!(
+            bank.read_cost_tracker().unwrap().block_cost_limit(),
+            MAX_BLOCK_UNITS_SIMD_0207 - BUNDLE_BLOCK_COST_LIMITS_RESERVATION
+        );
+        for _ in 0..=RESERVED_TICKS {
+            bank.register_default_tick_for_test();
+        }
+        // This tick shall reset the block cost limits back to the increased amount
+        reserved_space.tick(&bank);
+        assert_eq!(
+            bank.read_cost_tracker().unwrap().block_cost_limit(),
+            MAX_BLOCK_UNITS_SIMD_0207
         );
     }
 }
