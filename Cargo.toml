@@ -2,7 +2,7 @@
 inherits = "release"
 debug = true
 split-debuginfo = "packed"
-lto = false # Preserve the 'thin local LTO' for this build.
+lto = false                # Preserve the 'thin local LTO' for this build.
 
 [profile.release]
 split-debuginfo = "unpacked"
@@ -374,7 +374,7 @@ lru = "0.7.7"
 lz4 = "1.28.1"
 memmap2 = "0.5.10"
 memoffset = "0.9"
-merlin = "3"
+merlin = { version = "3", default-features = false }
 min-max-heap = "1.3.0"
 mockall = "0.11.4"
 modular-bitfield = "0.11.2"
