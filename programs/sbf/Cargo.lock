@@ -5903,6 +5903,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-genesis-config"
+version = "2.2.0"
+dependencies = [
+ "bincode",
+ "chrono",
+ "memmap2",
+ "serde",
+ "serde_derive",
+ "solana-account",
+ "solana-clock",
+ "solana-cluster-type",
+ "solana-epoch-schedule",
+ "solana-fee-calculator",
+ "solana-hash",
+ "solana-inflation",
+ "solana-keypair",
+ "solana-logger",
+ "solana-native-token",
+ "solana-poh-config",
+ "solana-pubkey",
+ "solana-rent",
+ "solana-sdk-ids",
+ "solana-sha256-hasher",
+ "solana-shred-version",
+ "solana-signer",
+ "solana-time-utils",
+]
+
+[[package]]
 name = "solana-genesis-utils"
 version = "2.2.0"
 dependencies = [
@@ -7572,7 +7601,6 @@ dependencies = [
  "bytemuck",
  "bytemuck_derive",
  "byteorder 1.5.0",
- "chrono",
  "digest 0.10.7",
  "ed25519-dalek",
  "getrandom 0.1.14",
@@ -7581,7 +7609,6 @@ dependencies = [
  "lazy_static",
  "libsecp256k1 0.6.0",
  "log",
- "memmap2",
  "num-derive",
  "num-traits",
  "qualifier_attr",
@@ -7607,6 +7634,7 @@ dependencies = [
  "solana-epoch-rewards-hasher",
  "solana-feature-set",
  "solana-fee-structure",
+ "solana-genesis-config",
  "solana-hard-forks",
  "solana-inflation",
  "solana-instruction",

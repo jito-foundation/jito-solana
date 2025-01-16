@@ -7388,6 +7388,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-genesis-config"
+version = "2.2.0"
+dependencies = [
+ "bincode",
+ "chrono",
+ "memmap2",
+ "serde",
+ "serde_derive",
+ "solana-account",
+ "solana-clock",
+ "solana-cluster-type",
+ "solana-epoch-schedule",
+ "solana-fee-calculator",
+ "solana-frozen-abi",
+ "solana-frozen-abi-macro",
+ "solana-genesis-config",
+ "solana-hash",
+ "solana-inflation",
+ "solana-keypair",
+ "solana-logger",
+ "solana-native-token",
+ "solana-poh-config",
+ "solana-pubkey",
+ "solana-rent",
+ "solana-sdk-ids",
+ "solana-sha256-hasher",
+ "solana-shred-version",
+ "solana-signer",
+ "solana-time-utils",
+]
+
+[[package]]
 name = "solana-genesis-utils"
 version = "2.2.0"
 dependencies = [
@@ -8947,7 +8979,6 @@ dependencies = [
  "bytemuck",
  "bytemuck_derive",
  "byteorder",
- "chrono",
  "curve25519-dalek 4.1.3",
  "digest 0.10.7",
  "ed25519-dalek",
@@ -8958,7 +8989,6 @@ dependencies = [
  "lazy_static",
  "libsecp256k1",
  "log",
- "memmap2",
  "num-derive",
  "num-traits",
  "openssl",
@@ -8987,6 +9017,7 @@ dependencies = [
  "solana-fee-structure",
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
+ "solana-genesis-config",
  "solana-hard-forks",
  "solana-inflation",
  "solana-instruction",
