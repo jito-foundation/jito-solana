@@ -38,6 +38,7 @@ use {
         rpc_subscriptions::RpcSubscriptions,
     },
     solana_runtime::{
+        bank::Bank,
         bank_forks::BankForks,
         prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
@@ -77,6 +78,20 @@ pub struct TpuSockets {
     pub transactions_quic: Vec<UdpSocket>,
     pub transactions_forwards_quic: Vec<UdpSocket>,
     pub vote_quic: Vec<UdpSocket>,
+}
+
+/// For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
+/// from the Bank's block cost limit.
+fn calculate_block_cost_limit_reservation(
+    bank: &Bank,
+    reserved_ticks: u64,
+    preallocated_bundle_cost: u64,
+) -> u64 {
+    if bank.tick_height() % bank.ticks_per_slot() < reserved_ticks {
+        preallocated_bundle_cost
+    } else {
+        0
+    }
 }
 
 pub struct Tpu {
@@ -360,11 +375,11 @@ impl Tpu {
             blacklisted_accounts,
             bundle_account_locker.clone(),
             move |bank| {
-                if bank.tick_height() < reserved_ticks {
-                    preallocated_bundle_cost
-                } else {
-                    0
-                }
+                calculate_block_cost_limit_reservation(
+                    bank,
+                    reserved_ticks,
+                    preallocated_bundle_cost,
+                )
             },
         );
 
@@ -465,5 +480,50 @@ impl Tpu {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use {
+        super::calculate_block_cost_limit_reservation,
+        solana_ledger::genesis_utils::create_genesis_config, solana_pubkey::Pubkey,
+        solana_runtime::bank::Bank, std::sync::Arc,
+    };
+
+    #[test]
+    fn test_calculate_block_cost_limit_reservation() {
+        const BUNDLE_BLOCK_COST_LIMITS_RESERVATION: u64 = 100;
+        const RESERVED_TICKS: u64 = 5;
+        let genesis_config_info = create_genesis_config(100);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config_info.genesis_config));
+
+        for _ in 0..genesis_config_info.genesis_config.ticks_per_slot {
+            bank.register_default_tick_for_test();
+        }
+        assert!(bank.is_complete());
+        bank.freeze();
+        let bank1 = Arc::new(Bank::new_from_parent(bank.clone(), &Pubkey::default(), 1));
+
+        // wait for reservation to be over
+        (0..RESERVED_TICKS).for_each(|_| {
+            assert_eq!(
+                calculate_block_cost_limit_reservation(
+                    &bank1,
+                    RESERVED_TICKS,
+                    BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
+                ),
+                BUNDLE_BLOCK_COST_LIMITS_RESERVATION
+            );
+            bank1.register_default_tick_for_test();
+        });
+        assert_eq!(
+            calculate_block_cost_limit_reservation(
+                &bank1,
+                RESERVED_TICKS,
+                BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
+            ),
+            0
+        );
     }
 }
