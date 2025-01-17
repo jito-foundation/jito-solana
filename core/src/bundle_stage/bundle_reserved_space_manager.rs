@@ -86,7 +86,7 @@ impl BundleReservedSpaceManager {
 mod tests {
     use {
         crate::bundle_stage::bundle_reserved_space_manager::BundleReservedSpaceManager,
-        solana_cost_model::block_cost_limits::{MAX_BLOCK_UNITS, MAX_BLOCK_UNITS_SIMD_0207},
+        // solana_cost_model::block_cost_limits::{MAX_BLOCK_UNITS, MAX_BLOCK_UNITS_SIMD_0207},
         solana_ledger::genesis_utils::create_genesis_config,
         solana_runtime::bank::Bank,
         solana_sdk::pubkey::Pubkey,
