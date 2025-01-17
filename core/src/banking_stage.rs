@@ -367,7 +367,7 @@ impl BankingStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         // callback function for compute space reservation for BundleStage
-        reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        block_cost_limit_block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         Self::new_num_threads(
             block_production_method,
@@ -386,7 +386,7 @@ impl BankingStage {
             enable_forwarding,
             blacklisted_accounts,
             bundle_account_locker,
-            reservation_cb,
+            block_cost_limit_block_cost_limit_reservation_cb,
         )
     }
 
@@ -408,7 +408,7 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
-        reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         match block_production_method {
             BlockProductionMethod::CentralScheduler => Self::new_central_scheduler(
@@ -427,7 +427,7 @@ impl BankingStage {
                 enable_forwarding,
                 blacklisted_accounts,
                 bundle_account_locker,
-                reservation_cb,
+                block_cost_limit_reservation_cb,
             ),
         }
     }
@@ -449,7 +449,7 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
-        reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -498,7 +498,7 @@ impl BankingStage {
                 ),
                 blacklisted_accounts.clone(),
                 bundle_account_locker.clone(),
-                reservation_cb.clone(),
+                block_cost_limit_reservation_cb.clone(),
             ));
         }
 
@@ -528,7 +528,7 @@ impl BankingStage {
             );
 
             worker_metrics.push(consume_worker.metrics_handle());
-            let cb = reservation_cb.clone();
+            let cb = block_cost_limit_reservation_cb.clone();
             bank_thread_hdls.push(
                 Builder::new()
                     .name(format!("solCoWorker{id:02}"))
@@ -597,7 +597,7 @@ impl BankingStage {
         unprocessed_transaction_storage: UnprocessedTransactionStorage,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
-        reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> JoinHandle<()> {
         let mut packet_receiver = PacketReceiver::new(id, packet_receiver);
         let consumer = Consumer::new(
@@ -619,7 +619,7 @@ impl BankingStage {
                     &consumer,
                     id,
                     unprocessed_transaction_storage,
-                    reservation_cb,
+                    block_cost_limit_reservation_cb,
                 )
             })
             .unwrap()
@@ -633,7 +633,7 @@ impl BankingStage {
         unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
-        reservation_cb: &impl Fn(&Bank) -> u64,
+        block_cost_limit_reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
         if unprocessed_transaction_storage.should_not_process() {
             return;
@@ -659,7 +659,7 @@ impl BankingStage {
                         unprocessed_transaction_storage,
                         banking_stage_stats,
                         slot_metrics_tracker,
-                        reservation_cb
+                        block_cost_limit_reservation_cb
                     ));
                 slot_metrics_tracker
                     .increment_consume_buffered_packets_us(consume_buffered_packets_us);
@@ -698,7 +698,7 @@ impl BankingStage {
         consumer: &Consumer,
         id: u32,
         mut unprocessed_transaction_storage: UnprocessedTransactionStorage,
-        reservation_cb: impl Fn(&Bank) -> u64,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64,
     ) {
         let mut banking_stage_stats = BankingStageStats::new(id);
 
@@ -716,7 +716,7 @@ impl BankingStage {
                     &mut unprocessed_transaction_storage,
                     &banking_stage_stats,
                     &mut slot_metrics_tracker,
-                    &reservation_cb
+                    &block_cost_limit_reservation_cb
                 ));
                 slot_metrics_tracker
                     .increment_process_buffered_packets_us(process_buffered_packets_us);

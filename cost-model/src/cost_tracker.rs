@@ -166,9 +166,9 @@ impl CostTracker {
     pub fn try_add(
         &mut self,
         tx_cost: &TransactionCost<impl TransactionWithMeta>,
-        reservation_amount: u64,
+        block_cost_limit_reservation: u64,
     ) -> Result<UpdatedCosts, CostTrackerError> {
-        self.would_fit(tx_cost, reservation_amount)?;
+        self.would_fit(tx_cost, block_cost_limit_reservation)?;
         let updated_costliest_account_cost = self.add_transaction_cost(tx_cost);
         Ok(UpdatedCosts {
             updated_block_cost: self.block_cost,
@@ -285,7 +285,7 @@ impl CostTracker {
     fn would_fit(
         &self,
         tx_cost: &TransactionCost<impl TransactionWithMeta>,
-        reservation_amount: u64,
+        block_cost_limit_reservation: u64,
     ) -> Result<(), CostTrackerError> {
         let cost: u64 = tx_cost.sum();
 
@@ -297,7 +297,9 @@ impl CostTracker {
         }
 
         if self.block_cost.saturating_add(cost)
-            > self.block_cost_limit.saturating_sub(reservation_amount)
+            > self
+                .block_cost_limit
+                .saturating_sub(block_cost_limit_reservation)
         {
             // check against the total package cost
             return Err(CostTrackerError::WouldExceedBlockMaxLimit);
@@ -977,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cost_tracker_would_fit_with_reservation() {
+    fn test_cost_tracker_try_add_with_reservation() {
         let mut cost_tracker = CostTracker {
             block_cost_limit: 100,
             ..CostTracker::default()
