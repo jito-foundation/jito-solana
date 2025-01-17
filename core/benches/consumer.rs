@@ -176,6 +176,7 @@ fn bench_process_and_record_transactions(bencher: &mut Bencher, batch_size: usiz
                 &bank,
                 transaction_iter.next().unwrap(),
                 0,
+                &|_| 0,
             );
             assert!(summary
                 .execute_and_commit_transactions_output

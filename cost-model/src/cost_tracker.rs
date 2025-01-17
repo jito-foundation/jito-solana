@@ -978,8 +978,10 @@ mod tests {
 
     #[test]
     fn test_cost_tracker_would_fit_with_reservation() {
-        let mut cost_tracker = CostTracker::default();
-        cost_tracker.block_cost_limit = 100;
+        let mut cost_tracker = CostTracker {
+            block_cost_limit: 100,
+            ..CostTracker::default()
+        };
 
         let transaction = WritableKeysTransaction(vec![Pubkey::new_unique()]);
         let tx_cost = simple_transaction_cost(&transaction, 100);
