@@ -332,6 +332,15 @@ impl Tpu {
         let bundle_account_locker = BundleAccountLocker::default();
 
         // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
+        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
+        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
+        let reserved_ticks = poh_recorder
+            .read()
+            .unwrap()
+            .ticks_per_slot()
+            .saturating_mul(8)
+            .saturating_div(10);
+
         let mut blacklisted_accounts = HashSet::new();
         blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
         let banking_stage = BankingStage::new(
@@ -350,6 +359,13 @@ impl Tpu {
             enable_block_production_forwarding,
             blacklisted_accounts,
             bundle_account_locker.clone(),
+            move |bank| {
+                if bank.tick_height() < reserved_ticks {
+                    preallocated_bundle_cost
+                } else {
+                    0
+                }
+            },
         );
 
         let bundle_stage = BundleStage::new(
@@ -363,7 +379,6 @@ impl Tpu {
             tip_manager,
             bundle_account_locker,
             &block_builder_fee_info,
-            preallocated_bundle_cost,
             prioritization_fee_cache,
         );
 
