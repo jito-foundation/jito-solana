@@ -42,7 +42,7 @@ impl BundleReservedSpaceManager {
             // otherwise can leave the current block limit as is
 
             // handles new block updates for SIMD-0207 and future block cost limit increases
-            // self.block_cost_limit = bank.read_cost_tracker().unwrap().block_cost_limit();
+            self.block_cost_limit = bank.read_cost_tracker().unwrap().block_cost_limit();
 
             let new_block_cost_limit = self.reduced_block_cost_limit();
             debug!(
