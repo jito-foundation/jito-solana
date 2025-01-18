@@ -1468,13 +1468,7 @@ mod tests {
             BundleConsumer::reserve_bundle_blockspace(&qos_service, &sanitized_bundle, &bank)
                 .is_err()
         );
+        // the block cost shall not be modified
         assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
-        assert_eq!(
-            bank.read_cost_tracker().unwrap().block_cost_limit(),
-            bank.read_cost_tracker()
-                .unwrap()
-                .block_cost_limit()
-                .saturating_sub(50)
-        );
     }
 }
