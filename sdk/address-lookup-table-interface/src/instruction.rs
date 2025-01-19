@@ -1,15 +1,14 @@
+#[cfg(feature = "serde")]
+use serde_derive::{Deserialize, Serialize};
+use {solana_clock::Slot, solana_pubkey::Pubkey, solana_sdk_ids::address_lookup_table::id};
+#[cfg(feature = "bincode")]
 use {
-    crate::{
-        address_lookup_table::program::id,
-        instruction::{AccountMeta, Instruction},
-        pubkey::Pubkey,
-        system_program,
-    },
-    serde_derive::{Deserialize, Serialize},
-    solana_clock::Slot,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_sdk_ids::system_program,
 };
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ProgramInstruction {
     /// Create an address lookup table
     ///
@@ -78,6 +77,7 @@ pub fn derive_lookup_table_address(
     )
 }
 
+#[cfg(feature = "bincode")]
 /// Constructs an instruction to create a table account and returns
 /// the instruction and the table account's derived address.
 fn create_lookup_table_common(
@@ -114,6 +114,7 @@ fn create_lookup_table_common(
 /// in v1.12 the address lookup table program will no longer require
 /// the authority to sign the transaction.
 #[deprecated(since = "2.2.0", note = "use `create_lookup_table` instead")]
+#[cfg(feature = "bincode")]
 pub fn create_lookup_table_signed(
     authority_address: Pubkey,
     payer_address: Pubkey,
@@ -130,6 +131,7 @@ pub fn create_lookup_table_signed(
 /// This instruction doesn't require the authority to be a signer but
 /// until v1.12 the address lookup table program still requires the
 /// authority to sign the transaction.
+#[cfg(feature = "bincode")]
 pub fn create_lookup_table(
     authority_address: Pubkey,
     payer_address: Pubkey,
@@ -141,6 +143,7 @@ pub fn create_lookup_table(
 /// Constructs an instruction that freezes an address lookup
 /// table so that it can never be closed or extended again. Empty
 /// lookup tables cannot be frozen.
+#[cfg(feature = "bincode")]
 pub fn freeze_lookup_table(lookup_table_address: Pubkey, authority_address: Pubkey) -> Instruction {
     Instruction::new_with_bincode(
         id(),
@@ -154,6 +157,7 @@ pub fn freeze_lookup_table(lookup_table_address: Pubkey, authority_address: Pubk
 
 /// Constructs an instruction which extends an address lookup
 /// table account with new addresses.
+#[cfg(feature = "bincode")]
 pub fn extend_lookup_table(
     lookup_table_address: Pubkey,
     authority_address: Pubkey,
@@ -182,6 +186,7 @@ pub fn extend_lookup_table(
 /// Constructs an instruction that deactivates an address lookup
 /// table so that it cannot be extended again and will be unusable
 /// and eligible for closure after a short amount of time.
+#[cfg(feature = "bincode")]
 pub fn deactivate_lookup_table(
     lookup_table_address: Pubkey,
     authority_address: Pubkey,
@@ -199,6 +204,7 @@ pub fn deactivate_lookup_table(
 /// Returns an instruction that closes an address lookup table
 /// account. The account will be deallocated and the lamports
 /// will be drained to the recipient address.
+#[cfg(feature = "bincode")]
 pub fn close_lookup_table(
     lookup_table_address: Pubkey,
     authority_address: Pubkey,

@@ -27,6 +27,7 @@ serde = { workspace = true }
 serde_bytes = { workspace = true }
 serde_derive = { workspace = true }
 solana-account-info = { workspace = true, features = ["bincode"] }
+solana-address-lookup-table-interface = { workspace = true, features = ["bincode", "bytemuck"] }
 solana-atomic-u64 = { workspace = true }
 solana-bincode = { workspace = true }
 solana-borsh = { workspace = true, optional = true }

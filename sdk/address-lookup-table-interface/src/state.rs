@@ -1,15 +1,14 @@
+#[cfg(feature = "serde")]
+use serde_derive::{Deserialize, Serialize};
 #[cfg(feature = "frozen-abi")]
 use solana_frozen_abi_macro::{AbiEnumVisitor, AbiExample};
+#[cfg(feature = "bincode")]
+use solana_instruction::error::InstructionError;
 use {
-    crate::slot_hashes::get_entries,
-    serde_derive::{Deserialize, Serialize},
+    crate::error::AddressLookupError,
     solana_clock::Slot,
-    solana_program::{
-        address_lookup_table::error::AddressLookupError,
-        instruction::InstructionError,
-        pubkey::Pubkey,
-        slot_hashes::{SlotHashes, MAX_ENTRIES},
-    },
+    solana_pubkey::Pubkey,
+    solana_slot_hashes::{get_entries, SlotHashes, MAX_ENTRIES},
     std::borrow::Cow,
 };
 
@@ -42,7 +41,8 @@ pub enum LookupTableStatus {
 
 /// Address lookup table metadata
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct LookupTableMeta {
     /// Lookup tables cannot be closed until the deactivation slot is
     /// no longer "recent" (not accessible in the `SlotHashes` sysvar).
@@ -120,7 +120,8 @@ impl LookupTableMeta {
 
 /// Program account states
 #[cfg_attr(feature = "frozen-abi", derive(AbiEnumVisitor, AbiExample))]
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum ProgramState {
     /// Account is not initialized.
@@ -139,6 +140,7 @@ pub struct AddressLookupTable<'a> {
 impl<'a> AddressLookupTable<'a> {
     /// Serialize an address table's updated meta data and zero
     /// any leftover bytes.
+    #[cfg(feature = "bincode")]
     pub fn overwrite_meta_data(
         data: &mut [u8],
         lookup_table_meta: LookupTableMeta,
@@ -210,6 +212,7 @@ impl<'a> AddressLookupTable<'a> {
     }
 
     /// Serialize an address table including its addresses
+    #[cfg(feature = "bincode")]
     pub fn serialize_for_tests(self) -> Result<Vec<u8>, InstructionError> {
         let mut data = vec![0; LOOKUP_TABLE_META_SIZE];
         Self::overwrite_meta_data(&mut data, self.meta)?;
@@ -221,6 +224,7 @@ impl<'a> AddressLookupTable<'a> {
 
     /// Efficiently deserialize an address table without allocating
     /// for stored addresses.
+    #[cfg(all(feature = "bincode", feature = "bytemuck"))]
     pub fn deserialize(data: &'a [u8]) -> Result<AddressLookupTable<'a>, InstructionError> {
         let program_state: ProgramState =
             bincode::deserialize(data).map_err(|_| InstructionError::InvalidAccountData)?;
@@ -250,7 +254,7 @@ impl<'a> AddressLookupTable<'a> {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, crate::hash::Hash};
+    use {super::*, solana_hash::Hash};
 
     impl AddressLookupTable<'_> {
         fn new_for_tests(meta: LookupTableMeta, num_addresses: usize) -> Self {

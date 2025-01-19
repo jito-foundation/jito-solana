@@ -5079,6 +5079,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-address-lookup-table-interface"
+version = "2.2.0"
+dependencies = [
+ "bincode",
+ "bytemuck",
+ "serde",
+ "serde_derive",
+ "solana-clock",
+ "solana-instruction",
+ "solana-pubkey",
+ "solana-sdk-ids",
+ "solana-slot-hashes",
+]
+
+[[package]]
 name = "solana-address-lookup-table-program"
 version = "2.2.0"
 dependencies = [
@@ -6514,6 +6529,7 @@ dependencies = [
  "serde_bytes",
  "serde_derive",
  "solana-account-info",
+ "solana-address-lookup-table-interface",
  "solana-atomic-u64",
  "solana-bincode",
  "solana-borsh",
