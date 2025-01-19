@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(feature = "frozen-abi", feature(min_specialization))]
 //! The [vote native program][np].
 //!
 //! [np]: https://docs.solanalabs.com/runtime/programs#vote-program

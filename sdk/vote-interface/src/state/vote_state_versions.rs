@@ -1,8 +1,22 @@
-use super::{vote_state_0_23_5::VoteState0_23_5, vote_state_1_14_11::VoteState1_14_11, *};
 #[cfg(test)]
 use arbitrary::{Arbitrary, Unstructured};
+use {
+    crate::{
+        authorized_voters::AuthorizedVoters,
+        state::{
+            vote_state_0_23_5::VoteState0_23_5, vote_state_1_14_11::VoteState1_14_11, CircBuf,
+            LandedVote, Lockout, VoteState,
+        },
+    },
+    solana_pubkey::Pubkey,
+    std::collections::VecDeque,
+};
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_derive::Deserialize, serde_derive::Serialize)
+)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum VoteStateVersions {
     V0_23_5(Box<VoteState0_23_5>),
     V1_14_11(Box<VoteState1_14_11>),

@@ -502,7 +502,6 @@ pub mod syscalls;
 pub mod system_instruction;
 pub mod system_program;
 pub mod sysvar;
-pub mod vote;
 pub mod wasm;
 
 #[deprecated(since = "2.2.0", note = "Use `solana-big-mod-exp` crate instead")]
@@ -549,6 +548,8 @@ pub use solana_short_vec as short_vec;
 pub use solana_stable_layout as stable_layout;
 #[cfg(not(target_os = "solana"))]
 pub use solana_sysvar::program_stubs;
+#[deprecated(since = "2.2.0", note = "Use `solana-vote-interface` crate instead")]
+pub use solana_vote_interface as vote;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen::prelude::wasm_bindgen;
 pub use {

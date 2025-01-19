@@ -1,37 +1,34 @@
 //! Vote state
 
-#[cfg(not(target_os = "solana"))]
+#[cfg(all(not(target_os = "solana"), feature = "bincode"))]
 use bincode::deserialize;
+#[cfg(feature = "bincode")]
+use bincode::{serialize_into, ErrorKind};
+#[cfg(feature = "serde")]
+use serde_derive::{Deserialize, Serialize};
+#[cfg(feature = "frozen-abi")]
+use solana_frozen_abi_macro::{frozen_abi, AbiExample};
+use {
+    crate::{authorized_voters::AuthorizedVoters, error::VoteError},
+    solana_clock::{Clock, Epoch, Slot, UnixTimestamp},
+    solana_hash::Hash,
+    solana_instruction::error::InstructionError,
+    solana_pubkey::Pubkey,
+    solana_rent::Rent,
+    std::{collections::VecDeque, fmt::Debug},
+};
 #[cfg(test)]
 use {
-    crate::epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
     arbitrary::{Arbitrary, Unstructured},
-};
-use {
-    crate::{
-        hash::Hash,
-        instruction::InstructionError,
-        pubkey::Pubkey,
-        rent::Rent,
-        serialize_utils::cursor::read_u32,
-        sysvar::clock::Clock,
-        vote::{authorized_voters::AuthorizedVoters, error::VoteError},
-    },
-    bincode::{serialize_into, ErrorKind},
-    serde_derive::{Deserialize, Serialize},
-    solana_clock::{Epoch, Slot, UnixTimestamp},
-    std::{
-        collections::VecDeque,
-        fmt::Debug,
-        io::Cursor,
-        mem::{self, MaybeUninit},
-    },
+    solana_epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
 };
 
 mod vote_state_0_23_5;
 pub mod vote_state_1_14_11;
 pub use vote_state_1_14_11::*;
+#[cfg(any(target_os = "solana", feature = "bincode"))]
 mod vote_state_deserialize;
+#[cfg(any(target_os = "solana", feature = "bincode"))]
 use vote_state_deserialize::deserialize_vote_state_into;
 pub mod vote_state_versions;
 pub use vote_state_versions::*;
@@ -57,7 +54,8 @@ pub const VOTE_CREDITS_MAXIMUM_PER_SLOT: u8 = 16;
     frozen_abi(digest = "GvUzgtcxhKVVxPAjSntXGPqjLZK5ovgZzCiUP1tDpB9q"),
     derive(AbiExample)
 )]
-#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct Vote {
     /// A stack of votes starting with the oldest vote
     pub slots: Vec<Slot>,
@@ -82,7 +80,8 @@ impl Vote {
 }
 
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
-#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Eq, Copy, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Default, Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct Lockout {
     slot: Slot,
@@ -131,7 +130,8 @@ impl Lockout {
 }
 
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
-#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Eq, Copy, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Default, Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct LandedVote {
     // Latency is the difference in slot number between the slot that was voted on (lockout.slot) and the slot in
@@ -168,10 +168,11 @@ impl From<Lockout> for LandedVote {
 
 #[cfg_attr(
     feature = "frozen-abi",
-    frozen_abi(digest = "DRKTb72wifCUcCTSJs6PqWrQQK5Pfis4SCLEvXqWnDaL"),
+    frozen_abi(digest = "CxyuwbaEdzP7jDCZyxjgQvLGXadBUZF3LoUvbSpQ6tYN"),
     derive(AbiExample)
 )]
-#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct VoteStateUpdate {
     /// The proposed tower
     pub lockouts: VecDeque<Lockout>,
@@ -221,10 +222,11 @@ impl VoteStateUpdate {
 
 #[cfg_attr(
     feature = "frozen-abi",
-    frozen_abi(digest = "5PFw9pyF1UG1DXVsw7gpjHegNyRycAAxWf2GA9wUXPs5"),
+    frozen_abi(digest = "6UDiQMH4wbNwkMHosPMtekMYu2Qa6CHPZ2ymK4mc6FGu"),
     derive(AbiExample)
 )]
-#[derive(Serialize, Default, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct TowerSync {
     /// The proposed tower
     pub lockouts: VecDeque<Lockout>,
@@ -316,7 +318,8 @@ impl TowerSync {
     }
 }
 
-#[derive(Default, Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct VoteInit {
     pub node_pubkey: Pubkey,
     pub authorized_voter: Pubkey,
@@ -324,13 +327,15 @@ pub struct VoteInit {
     pub commission: u8,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum VoteAuthorize {
     Voter,
     Withdrawer,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct VoteAuthorizeWithSeedArgs {
     pub authorization_type: VoteAuthorize,
     pub current_authority_derived_key_owner: Pubkey,
@@ -338,7 +343,8 @@ pub struct VoteAuthorizeWithSeedArgs {
     pub new_authority: Pubkey,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct VoteAuthorizeCheckedWithSeedArgs {
     pub authorization_type: VoteAuthorize,
     pub current_authority_derived_key_owner: Pubkey,
@@ -346,7 +352,8 @@ pub struct VoteAuthorizeCheckedWithSeedArgs {
 }
 
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct BlockTimestamp {
     pub slot: Slot,
@@ -356,8 +363,9 @@ pub struct BlockTimestamp {
 // this is how many epochs a voter can be remembered for slashing
 const MAX_ITEMS: usize = 32;
 
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 #[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct CircBuf<I> {
     buf: [I; MAX_ITEMS],
@@ -406,10 +414,11 @@ impl<I> CircBuf<I> {
 
 #[cfg_attr(
     feature = "frozen-abi",
-    frozen_abi(digest = "87ULMjjHnMsPmCTEyzj4KPn2u5gdX1rmgtSdycpbSaLs"),
+    frozen_abi(digest = "BRwozbypfYXsHqFVj9w3iH5x1ak2NWHqCCn6pr3gHBkG"),
     derive(AbiExample)
 )]
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct VoteState {
     /// the node that votes in this account
@@ -499,6 +508,7 @@ impl VoteState {
     // conversion of V0_23_5 to current must be handled specially, however
     // because it inserts a null voter into `authorized_voters`
     // which `VoteStateVersions::is_uninitialized` erroneously reports as initialized
+    #[cfg(any(target_os = "solana", feature = "bincode"))]
     pub fn deserialize(input: &[u8]) -> Result<Self, InstructionError> {
         #[cfg(not(target_os = "solana"))]
         {
@@ -521,6 +531,7 @@ impl VoteState {
     ///
     /// On success, `vote_state` reflects the state of the input data. On failure, `vote_state` is
     /// reset to `VoteState::default()`.
+    #[cfg(any(target_os = "solana", feature = "bincode"))]
     pub fn deserialize_into(
         input: &[u8],
         vote_state: &mut VoteState,
@@ -564,7 +575,7 @@ impl VoteState {
 
         let res = VoteState::deserialize_into_ptr(input, vote_state);
         if res.is_ok() {
-            mem::forget(guard);
+            std::mem::forget(guard);
         }
 
         res
@@ -579,20 +590,22 @@ impl VoteState {
     /// On success, `vote_state` is fully initialized and can be converted to `VoteState` using
     /// [MaybeUninit::assume_init]. On failure, `vote_state` may still be uninitialized and must not
     /// be converted to `VoteState`.
+    #[cfg(any(target_os = "solana", feature = "bincode"))]
     pub fn deserialize_into_uninit(
         input: &[u8],
-        vote_state: &mut MaybeUninit<VoteState>,
+        vote_state: &mut std::mem::MaybeUninit<VoteState>,
     ) -> Result<(), InstructionError> {
         VoteState::deserialize_into_ptr(input, vote_state.as_mut_ptr())
     }
 
+    #[cfg(any(target_os = "solana", feature = "bincode"))]
     fn deserialize_into_ptr(
         input: &[u8],
         vote_state: *mut VoteState,
     ) -> Result<(), InstructionError> {
-        let mut cursor = Cursor::new(input);
+        let mut cursor = std::io::Cursor::new(input);
 
-        let variant = read_u32(&mut cursor)?;
+        let variant = solana_serialize_utils::cursor::read_u32(&mut cursor)?;
         match variant {
             // V0_23_5. not supported for bpf targets; these should not exist on mainnet
             // supported for non-bpf targets for backwards compatibility
@@ -626,6 +639,7 @@ impl VoteState {
         Ok(())
     }
 
+    #[cfg(feature = "bincode")]
     pub fn serialize(
         versioned: &VoteStateVersions,
         output: &mut [u8],
@@ -970,10 +984,11 @@ impl VoteState {
     }
 }
 
+#[cfg(feature = "serde")]
 pub mod serde_compact_vote_state_update {
     use {
         super::*,
-        crate::vote::state::Lockout,
+        crate::state::Lockout,
         serde::{Deserialize, Deserializer, Serialize, Serializer},
         solana_serde_varint as serde_varint, solana_short_vec as short_vec,
     };
@@ -1064,10 +1079,11 @@ pub mod serde_compact_vote_state_update {
     }
 }
 
+#[cfg(feature = "serde")]
 pub mod serde_tower_sync {
     use {
         super::*,
-        crate::vote::state::Lockout,
+        crate::state::Lockout,
         serde::{Deserialize, Deserializer, Serialize, Serializer},
         solana_serde_varint as serde_varint, solana_short_vec as short_vec,
     };
@@ -1161,7 +1177,9 @@ pub mod serde_tower_sync {
 
 #[cfg(test)]
 mod tests {
-    use {super::*, bincode::serialized_size, itertools::Itertools, rand::Rng};
+    use {
+        super::*, bincode::serialized_size, core::mem::MaybeUninit, itertools::Itertools, rand::Rng,
+    };
 
     #[test]
     fn test_vote_serialize() {
@@ -1766,7 +1784,7 @@ mod tests {
 
     #[test]
     fn test_minimum_balance() {
-        let rent = solana_program::rent::Rent::default();
+        let rent = solana_rent::Rent::default();
         let minimum_balance = rent.minimum_balance(VoteState::size_of());
         // golden, may need updating when vote_state grows
         assert!(minimum_balance as f64 / 10f64.powf(9.0) < 0.04)

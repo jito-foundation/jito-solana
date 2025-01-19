@@ -5,7 +5,8 @@ use arbitrary::{Arbitrary, Unstructured};
 
 const MAX_ITEMS: usize = 32;
 
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct VoteState0_23_5 {
     /// the node that votes in this account
@@ -37,7 +38,8 @@ pub struct VoteState0_23_5 {
     pub last_timestamp: BlockTimestamp,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct CircBuf<I> {
     pub buf: [I; MAX_ITEMS],
@@ -66,7 +68,7 @@ impl<I> CircBuf<I> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, core::mem::MaybeUninit};
 
     #[test]
     fn test_vote_deserialize_0_23_5() {

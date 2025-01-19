@@ -7,10 +7,11 @@ const DEFAULT_PRIOR_VOTERS_OFFSET: usize = 82;
 
 #[cfg_attr(
     feature = "frozen-abi",
-    frozen_abi(digest = "64duaG8iUgwmgMM9y1Pdi8S9jBGoPcjS5HrE8RRfsxJJ"),
-    derive(AbiExample)
+    solana_frozen_abi_macro::frozen_abi(digest = "HF4NfshaLg9e93RURYWTJRowtRrpLf5mWiF4G2Gnfu2r"),
+    derive(solana_frozen_abi_macro::AbiExample)
 )]
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 #[cfg_attr(test, derive(Arbitrary))]
 pub struct VoteState1_14_11 {
     /// the node that votes in this account
@@ -85,7 +86,7 @@ impl From<VoteState> for VoteState1_14_11 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, core::mem::MaybeUninit};
 
     #[test]
     fn test_vote_deserialize_1_14_11() {

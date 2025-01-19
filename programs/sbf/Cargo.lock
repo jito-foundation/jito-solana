@@ -6581,6 +6581,7 @@ dependencies = [
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
+ "solana-vote-interface",
  "thiserror 2.0.11",
  "wasm-bindgen",
 ]
@@ -8566,6 +8567,28 @@ dependencies = [
  "solana-svm-transaction",
  "solana-transaction",
  "thiserror 2.0.11",
+]
+
+[[package]]
+name = "solana-vote-interface"
+version = "2.2.0"
+dependencies = [
+ "bincode",
+ "num-derive",
+ "num-traits",
+ "serde",
+ "serde_derive",
+ "solana-clock",
+ "solana-decode-error",
+ "solana-hash",
+ "solana-instruction",
+ "solana-pubkey",
+ "solana-rent",
+ "solana-sdk-ids",
+ "solana-serde-varint",
+ "solana-serialize-utils",
+ "solana-short-vec",
+ "solana-system-interface",
 ]
 
 [[package]]

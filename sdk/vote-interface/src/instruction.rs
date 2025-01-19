@@ -2,25 +2,28 @@
 
 use {
     super::state::TowerSync,
-    crate::{
-        hash::Hash,
-        instruction::{AccountMeta, Instruction},
-        pubkey::Pubkey,
-        system_instruction, sysvar,
-        vote::{
-            program::id,
-            state::{
-                serde_compact_vote_state_update, serde_tower_sync, Vote, VoteAuthorize,
-                VoteAuthorizeCheckedWithSeedArgs, VoteAuthorizeWithSeedArgs, VoteInit,
-                VoteStateUpdate, VoteStateVersions,
-            },
-        },
+    crate::state::{
+        Vote, VoteAuthorize, VoteAuthorizeCheckedWithSeedArgs, VoteAuthorizeWithSeedArgs, VoteInit,
+        VoteStateUpdate, VoteStateVersions,
     },
-    serde_derive::{Deserialize, Serialize},
     solana_clock::{Slot, UnixTimestamp},
+    solana_hash::Hash,
+    solana_pubkey::Pubkey,
+};
+#[cfg(feature = "bincode")]
+use {
+    crate::program::id,
+    solana_instruction::{AccountMeta, Instruction},
+    solana_sdk_ids::sysvar,
+};
+#[cfg(feature = "serde")]
+use {
+    crate::state::{serde_compact_vote_state_update, serde_tower_sync},
+    serde_derive::{Deserialize, Serialize},
 };
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum VoteInstruction {
     /// Initialize a vote account
     ///
@@ -135,7 +138,7 @@ pub enum VoteInstruction {
     /// # Account references
     ///   0. `[Write]` Vote account to vote with
     ///   1. `[SIGNER]` Vote authority
-    #[serde(with = "serde_compact_vote_state_update")]
+    #[cfg_attr(feature = "serde", serde(with = "serde_compact_vote_state_update"))]
     CompactUpdateVoteState(VoteStateUpdate),
 
     /// Update the onchain vote state for the signer along with a switching proof.
@@ -144,7 +147,8 @@ pub enum VoteInstruction {
     ///   0. `[Write]` Vote account to vote with
     ///   1. `[SIGNER]` Vote authority
     CompactUpdateVoteStateSwitch(
-        #[serde(with = "serde_compact_vote_state_update")] VoteStateUpdate,
+        #[cfg_attr(feature = "serde", serde(with = "serde_compact_vote_state_update"))]
+        VoteStateUpdate,
         Hash,
     ),
 
@@ -153,7 +157,7 @@ pub enum VoteInstruction {
     /// # Account references
     ///   0. `[Write]` Vote account to vote with
     ///   1. `[SIGNER]` Vote authority
-    #[serde(with = "serde_tower_sync")]
+    #[cfg_attr(feature = "serde", serde(with = "serde_tower_sync"))]
     TowerSync(TowerSync),
 
     /// Sync the onchain vote state with local tower along with a switching proof
@@ -161,7 +165,10 @@ pub enum VoteInstruction {
     /// # Account references
     ///   0. `[Write]` Vote account to vote with
     ///   1. `[SIGNER]` Vote authority
-    TowerSyncSwitch(#[serde(with = "serde_tower_sync")] TowerSync, Hash),
+    TowerSyncSwitch(
+        #[cfg_attr(feature = "serde", serde(with = "serde_tower_sync"))] TowerSync,
+        Hash,
+    ),
 }
 
 impl VoteInstruction {
@@ -241,6 +248,7 @@ impl VoteInstruction {
     }
 }
 
+#[cfg(feature = "bincode")]
 fn initialize_account(vote_pubkey: &Pubkey, vote_init: &VoteInit) -> Instruction {
     let account_metas = vec![
         AccountMeta::new(*vote_pubkey, false),
@@ -270,6 +278,7 @@ impl Default for CreateVoteAccountConfig<'_> {
     }
 }
 
+#[cfg(feature = "bincode")]
 pub fn create_account_with_config(
     from_pubkey: &Pubkey,
     vote_pubkey: &Pubkey,
@@ -277,12 +286,18 @@ pub fn create_account_with_config(
     lamports: u64,
     config: CreateVoteAccountConfig,
 ) -> Vec<Instruction> {
-    let create_ix =
-        system_instruction::create_account(from_pubkey, vote_pubkey, lamports, config.space, &id());
+    let create_ix = solana_system_interface::instruction::create_account(
+        from_pubkey,
+        vote_pubkey,
+        lamports,
+        config.space,
+        &id(),
+    );
     let init_ix = initialize_account(vote_pubkey, vote_init);
     vec![create_ix, init_ix]
 }
 
+#[cfg(feature = "bincode")]
 pub fn authorize(
     vote_pubkey: &Pubkey,
     authorized_pubkey: &Pubkey, // currently authorized
@@ -302,6 +317,7 @@ pub fn authorize(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn authorize_checked(
     vote_pubkey: &Pubkey,
     authorized_pubkey: &Pubkey, // currently authorized
@@ -322,6 +338,7 @@ pub fn authorize_checked(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn authorize_with_seed(
     vote_pubkey: &Pubkey,
     current_authority_base_key: &Pubkey,
@@ -348,6 +365,7 @@ pub fn authorize_with_seed(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn authorize_checked_with_seed(
     vote_pubkey: &Pubkey,
     current_authority_base_key: &Pubkey,
@@ -374,6 +392,7 @@ pub fn authorize_checked_with_seed(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn update_validator_identity(
     vote_pubkey: &Pubkey,
     authorized_withdrawer_pubkey: &Pubkey,
@@ -392,6 +411,7 @@ pub fn update_validator_identity(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn update_commission(
     vote_pubkey: &Pubkey,
     authorized_withdrawer_pubkey: &Pubkey,
@@ -409,6 +429,7 @@ pub fn update_commission(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn vote(vote_pubkey: &Pubkey, authorized_voter_pubkey: &Pubkey, vote: Vote) -> Instruction {
     let account_metas = vec![
         AccountMeta::new(*vote_pubkey, false),
@@ -420,6 +441,7 @@ pub fn vote(vote_pubkey: &Pubkey, authorized_voter_pubkey: &Pubkey, vote: Vote) 
     Instruction::new_with_bincode(id(), &VoteInstruction::Vote(vote), account_metas)
 }
 
+#[cfg(feature = "bincode")]
 pub fn vote_switch(
     vote_pubkey: &Pubkey,
     authorized_voter_pubkey: &Pubkey,
@@ -440,6 +462,7 @@ pub fn vote_switch(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn update_vote_state(
     vote_pubkey: &Pubkey,
     authorized_voter_pubkey: &Pubkey,
@@ -457,6 +480,7 @@ pub fn update_vote_state(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn update_vote_state_switch(
     vote_pubkey: &Pubkey,
     authorized_voter_pubkey: &Pubkey,
@@ -475,6 +499,7 @@ pub fn update_vote_state_switch(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn compact_update_vote_state(
     vote_pubkey: &Pubkey,
     authorized_voter_pubkey: &Pubkey,
@@ -492,6 +517,7 @@ pub fn compact_update_vote_state(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn compact_update_vote_state_switch(
     vote_pubkey: &Pubkey,
     authorized_voter_pubkey: &Pubkey,
@@ -510,6 +536,7 @@ pub fn compact_update_vote_state_switch(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn tower_sync(
     vote_pubkey: &Pubkey,
     authorized_voter_pubkey: &Pubkey,
@@ -523,6 +550,7 @@ pub fn tower_sync(
     Instruction::new_with_bincode(id(), &VoteInstruction::TowerSync(tower_sync), account_metas)
 }
 
+#[cfg(feature = "bincode")]
 pub fn tower_sync_switch(
     vote_pubkey: &Pubkey,
     authorized_voter_pubkey: &Pubkey,
@@ -541,6 +569,7 @@ pub fn tower_sync_switch(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn withdraw(
     vote_pubkey: &Pubkey,
     authorized_withdrawer_pubkey: &Pubkey,
