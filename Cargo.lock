@@ -6240,6 +6240,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-big-mod-exp"
+version = "2.2.0"
+dependencies = [
+ "array-bytes",
+ "num-bigint 0.4.6",
+ "num-traits",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "solana-define-syscall",
+]
+
+[[package]]
 name = "solana-bincode"
 version = "2.2.0"
 dependencies = [
@@ -8297,6 +8310,7 @@ dependencies = [
  "solana-account-info",
  "solana-address-lookup-table-interface",
  "solana-atomic-u64",
+ "solana-big-mod-exp",
  "solana-bincode",
  "solana-borsh",
  "solana-clock",

@@ -471,7 +471,6 @@
 extern crate self as solana_program;
 
 pub mod address_lookup_table;
-pub mod big_mod_exp;
 pub mod blake3;
 pub mod bpf_loader;
 pub mod bpf_loader_deprecated;
@@ -506,6 +505,8 @@ pub mod sysvar;
 pub mod vote;
 pub mod wasm;
 
+#[deprecated(since = "2.2.0", note = "Use `solana-big-mod-exp` crate instead")]
+pub use solana_big_mod_exp as big_mod_exp;
 #[cfg(feature = "borsh")]
 #[deprecated(since = "2.1.0", note = "Use `solana-borsh` crate instead")]
 pub use solana_borsh::deprecated as borsh;

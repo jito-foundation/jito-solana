@@ -111,6 +111,7 @@ members = [
     "sdk/account-info",
     "sdk/address-lookup-table-interface",
     "sdk/atomic-u64",
+    "sdk/big-mod-exp",
     "sdk/bincode",
     "sdk/borsh",
     "sdk/cargo-build-sbf",
@@ -451,6 +452,7 @@ solana-banks-client = { path = "banks-client", version = "=2.2.0" }
 solana-banks-interface = { path = "banks-interface", version = "=2.2.0" }
 solana-banks-server = { path = "banks-server", version = "=2.2.0" }
 solana-bench-tps = { path = "bench-tps", version = "=2.2.0" }
+solana-big-mod-exp = { path = "sdk/big-mod-exp", version = "=2.2.0" }
 solana-bincode = { path = "sdk/bincode", version = "=2.2.0" }
 solana-bloom = { path = "bloom", version = "=2.2.0" }
 solana-bn254 = { path = "curves/bn254", version = "=2.2.0" }
