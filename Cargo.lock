@@ -248,8 +248,10 @@ dependencies = [
  "ahash 0.8.11",
  "clap 2.33.3",
  "rayon",
+ "solana-account",
  "solana-accounts-db",
- "solana-sdk",
+ "solana-pubkey",
+ "solana-system-interface",
  "solana-version",
 ]
 
