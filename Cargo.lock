@@ -10446,7 +10446,6 @@ dependencies = [
  "solana-logger",
  "solana-metrics",
  "solana-packet",
- "solana-program",
  "solana-program-runtime",
  "solana-pubkey",
  "solana-rent",
@@ -10456,6 +10455,7 @@ dependencies = [
  "solana-slot-hashes",
  "solana-transaction",
  "solana-transaction-context",
+ "solana-vote-interface",
  "test-case",
  "thiserror 2.0.11",
 ]

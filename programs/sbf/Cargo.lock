@@ -8611,7 +8611,6 @@ dependencies = [
  "solana-keypair",
  "solana-metrics",
  "solana-packet",
- "solana-program",
  "solana-program-runtime",
  "solana-pubkey",
  "solana-rent",
@@ -8620,6 +8619,7 @@ dependencies = [
  "solana-slot-hashes",
  "solana-transaction",
  "solana-transaction-context",
+ "solana-vote-interface",
  "thiserror 2.0.11",
 ]
 

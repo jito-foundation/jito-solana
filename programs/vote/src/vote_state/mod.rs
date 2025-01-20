@@ -1,6 +1,6 @@
 //! Vote state, vote program
 //! Receive and processes votes from validators
-pub use solana_program::vote::state::{vote_state_versions::*, *};
+pub use solana_vote_interface::state::{vote_state_versions::*, *};
 use {
     log::*,
     serde_derive::{Deserialize, Serialize},
@@ -10,13 +10,13 @@ use {
     solana_feature_set::{self as feature_set, FeatureSet},
     solana_hash::Hash,
     solana_instruction::error::InstructionError,
-    solana_program::vote::{error::VoteError, program::id},
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_slot_hashes::SlotHash,
     solana_transaction_context::{
         BorrowedAccount, IndexOfAccount, InstructionContext, TransactionContext,
     },
+    solana_vote_interface::{error::VoteError, program::id},
     std::{
         cmp::Ordering,
         collections::{HashSet, VecDeque},

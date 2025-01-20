@@ -58,7 +58,8 @@ frozen-abi = [
     "dep:solana-frozen-abi-macro",
     "serde",
     "solana-hash/frozen-abi",
-    "solana-pubkey/frozen-abi"
+    "solana-pubkey/frozen-abi",
+    "solana-short-vec/frozen-abi",
 ]
 serde = [
     "dep:serde",
