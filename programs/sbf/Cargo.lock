@@ -8560,12 +8560,12 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-packet",
- "solana-program",
  "solana-pubkey",
  "solana-sdk-ids",
  "solana-signature",
  "solana-svm-transaction",
  "solana-transaction",
+ "solana-vote-interface",
  "thiserror 2.0.11",
 ]
 
