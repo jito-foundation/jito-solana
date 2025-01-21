@@ -7344,6 +7344,7 @@ dependencies = [
  "bincode",
  "serde",
  "serde_derive",
+ "solana-account",
  "solana-account-info",
  "solana-feature-gate-interface",
  "solana-instruction",

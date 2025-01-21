@@ -5869,6 +5869,7 @@ dependencies = [
  "bincode",
  "serde",
  "serde_derive",
+ "solana-account",
  "solana-account-info",
  "solana-instruction",
  "solana-program-error",
