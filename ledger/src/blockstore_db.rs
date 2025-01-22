@@ -1,8 +1,7 @@
 pub use rocksdb::Direction as IteratorDirection;
 use {
     crate::{
-        blockstore_meta,
-        blockstore_meta::MerkleRootMeta,
+        blockstore_meta::{self, MerkleRootMeta},
         blockstore_metrics::{
             maybe_enable_rocksdb_perf, report_rocksdb_read_perf, report_rocksdb_write_perf,
             BlockstoreRocksDbColumnFamilyMetrics, PerfSamplingStatus, PERF_METRIC_OP_NAME_GET,
@@ -13,7 +12,7 @@ use {
             AccessType, BlockstoreOptions, LedgerColumnOptions, ShredStorageType,
         },
     },
-    bincode::{deserialize, serialize},
+    bincode::{deserialize, Options as BincodeOptions},
     byteorder::{BigEndian, ByteOrder},
     log::*,
     prost::Message,
@@ -790,6 +789,14 @@ pub trait ColumnName {
 
 pub trait TypedColumn: Column {
     type Type: Serialize + DeserializeOwned;
+
+    fn deserialize(data: &[u8]) -> Result<Self::Type> {
+        Ok(bincode::deserialize(data)?)
+    }
+
+    fn serialize(data: &Self::Type) -> Result<Vec<u8>> {
+        Ok(bincode::serialize(data)?)
+    }
 }
 
 impl TypedColumn for columns::AddressSignatures {
@@ -1207,6 +1214,28 @@ impl ColumnName for columns::Index {
 }
 impl TypedColumn for columns::Index {
     type Type = blockstore_meta::Index;
+
+    fn deserialize(data: &[u8]) -> Result<Self::Type> {
+        let config = bincode::DefaultOptions::new()
+            // `bincode::serialize` uses fixint encoding by default, so we need to use the same here
+            .with_fixint_encoding()
+            .reject_trailing_bytes();
+
+        // Migration strategy for new column format:
+        // 1. Release 1: Add ability to read new format as fallback, keep writing old format
+        // 2. Release 2: Switch to writing new format, keep reading old format as fallback
+        // 3. Release 3: Remove old format support once stable
+        // This allows safe downgrade to Release 1 since it can read both formats
+        // https://github.com/anza-xyz/agave/issues/3570
+        let index: bincode::Result<blockstore_meta::Index> = config.deserialize(data);
+        match index {
+            Ok(index) => Ok(index),
+            Err(_) => {
+                let index: blockstore_meta::IndexV2 = config.deserialize(data)?;
+                Ok(index.into())
+            }
+        }
+    }
 }
 
 impl SlotColumn for columns::DeadSlots {}
@@ -1436,7 +1465,7 @@ impl Database {
             .backend
             .get_pinned_cf(self.cf_handle::<C>(), &C::key(key))?
         {
-            let value = deserialize(pinnable_slice.as_ref())?;
+            let value = C::deserialize(pinnable_slice.as_ref())?;
             Ok(Some(value))
         } else {
             Ok(None)
@@ -1701,7 +1730,7 @@ where
             let result = self
                 .backend
                 .multi_get_cf(self.handle(), &keys)
-                .map(|out| Ok(out?.as_deref().map(deserialize).transpose()?))
+                .map(|out| out?.as_deref().map(C::deserialize).transpose())
                 .collect::<Vec<Result<Option<_>>>>();
             if let Some(op_start_instant) = is_perf_enabled {
                 // use multi-get instead
@@ -1728,7 +1757,7 @@ where
             &self.read_perf_status,
         );
         if let Some(pinnable_slice) = self.backend.get_pinned_cf(self.handle(), key)? {
-            let value = deserialize(pinnable_slice.as_ref())?;
+            let value = C::deserialize(pinnable_slice.as_ref())?;
             result = Ok(Some(value))
         }
 
@@ -1748,7 +1777,7 @@ where
             self.column_options.rocks_perf_sample_interval,
             &self.write_perf_status,
         );
-        let serialized_value = serialize(value)?;
+        let serialized_value = C::serialize(value)?;
 
         let result = self
             .backend
@@ -1910,7 +1939,7 @@ impl<'a> WriteBatch<'a> {
         key: C::Index,
         value: &C::Type,
     ) -> Result<()> {
-        let serialized_value = serialize(&value)?;
+        let serialized_value = C::serialize(value)?;
         self.write_batch
             .put_cf(self.get_cf::<C>(), C::key(key), serialized_value);
         Ok(())
@@ -2371,7 +2400,7 @@ pub mod tests {
         C: ColumnIndexDeprecation + TypedColumn + ColumnName,
     {
         pub fn put_deprecated(&self, key: C::DeprecatedIndex, value: &C::Type) -> Result<()> {
-            let serialized_value = serialize(value)?;
+            let serialized_value = C::serialize(value)?;
             self.backend
                 .put_cf(self.handle(), &C::deprecated_key(key), &serialized_value)
         }
