@@ -484,7 +484,6 @@ pub mod hash;
 pub mod incinerator;
 pub mod instruction;
 pub mod lamports;
-pub mod loader_instruction;
 pub mod loader_upgradeable_instruction {
     #[deprecated(
         since = "2.2.0",
@@ -534,6 +533,11 @@ pub use solana_fee_calculator as fee_calculator;
 pub use solana_keccak_hasher as keccak;
 #[deprecated(since = "2.1.0", note = "Use `solana-last-restart-slot` crate instead")]
 pub use solana_last_restart_slot as last_restart_slot;
+#[deprecated(
+    since = "2.2.0",
+    note = "Use `solana-loader-v2-interface` crate instead"
+)]
+pub use solana_loader_v2_interface as loader_instruction;
 #[deprecated(since = "2.2.0", note = "Use `solana-message` crate instead")]
 pub use solana_message as message;
 #[deprecated(since = "2.1.0", note = "Use `solana-program-memory` crate instead")]

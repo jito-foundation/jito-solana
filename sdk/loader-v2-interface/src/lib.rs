@@ -1,14 +1,18 @@
-//! Instructions for the [non-upgradable BPF loader][nubpfl].
-//!
-//! [nubpfl]: crate::bpf_loader
+//! Instructions for the non-upgradable BPF loader.
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-use crate::{
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-    sysvar::rent,
+#[cfg(feature = "bincode")]
+use {
+    solana_instruction::{AccountMeta, Instruction},
+    solana_pubkey::Pubkey,
+    solana_sdk_ids::sysvar::rent,
 };
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_derive::Deserialize, serde_derive::Serialize)
+)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum LoaderInstruction {
     /// Write program data into an account
     ///
@@ -19,7 +23,7 @@ pub enum LoaderInstruction {
         offset: u32,
 
         /// Serialized program data
-        #[serde(with = "serde_bytes")]
+        #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
         bytes: Vec<u8>,
     },
 
@@ -34,6 +38,7 @@ pub enum LoaderInstruction {
     Finalize,
 }
 
+#[cfg(feature = "bincode")]
 pub fn write(
     account_pubkey: &Pubkey,
     program_id: &Pubkey,
@@ -48,6 +53,7 @@ pub fn write(
     )
 }
 
+#[cfg(feature = "bincode")]
 pub fn finalize(account_pubkey: &Pubkey, program_id: &Pubkey) -> Instruction {
     let account_metas = vec![
         AccountMeta::new(*account_pubkey, true),
