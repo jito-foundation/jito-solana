@@ -113,6 +113,7 @@ members = [
     "sdk/atomic-u64",
     "sdk/big-mod-exp",
     "sdk/bincode",
+    "sdk/blake3-hasher",
     "sdk/borsh",
     "sdk/cargo-build-sbf",
     "sdk/cargo-test-sbf",
@@ -460,6 +461,7 @@ solana-banks-server = { path = "banks-server", version = "=2.2.0" }
 solana-bench-tps = { path = "bench-tps", version = "=2.2.0" }
 solana-big-mod-exp = { path = "sdk/big-mod-exp", version = "=2.2.0" }
 solana-bincode = { path = "sdk/bincode", version = "=2.2.0" }
+solana-blake3-hasher = { path = "sdk/blake3-hasher" }
 solana-bloom = { path = "bloom", version = "=2.2.0" }
 solana-bn254 = { path = "curves/bn254", version = "=2.2.0" }
 solana-borsh = { path = "sdk/borsh", version = "=2.2.0" }

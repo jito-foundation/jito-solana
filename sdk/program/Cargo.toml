@@ -31,6 +31,7 @@ solana-address-lookup-table-interface = { workspace = true, features = ["bincode
 solana-atomic-u64 = { workspace = true }
 solana-big-mod-exp = { workspace = true }
 solana-bincode = { workspace = true }
+solana-blake3-hasher = { workspace = true, features = ["blake3"] }
 solana-borsh = { workspace = true, optional = true }
 solana-clock = { workspace = true, features = ["serde", "sysvar"] }
 solana-cpi = { workspace = true }

@@ -5187,6 +5187,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-blake3-hasher"
+version = "2.2.0"
+dependencies = [
+ "blake3",
+ "solana-define-syscall",
+ "solana-hash",
+ "solana-sanitize",
+]
+
+[[package]]
 name = "solana-bloom"
 version = "2.2.0"
 dependencies = [
@@ -6568,6 +6578,7 @@ dependencies = [
  "solana-atomic-u64",
  "solana-big-mod-exp",
  "solana-bincode",
+ "solana-blake3-hasher",
  "solana-borsh",
  "solana-clock",
  "solana-cpi",
