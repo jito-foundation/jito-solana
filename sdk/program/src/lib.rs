@@ -485,7 +485,13 @@ pub mod incinerator;
 pub mod instruction;
 pub mod lamports;
 pub mod loader_instruction;
-pub mod loader_upgradeable_instruction;
+pub mod loader_upgradeable_instruction {
+    #[deprecated(
+        since = "2.2.0",
+        note = "Use solana_loader_v3_interface::instruction instead"
+    )]
+    pub use solana_loader_v3_interface::instruction::UpgradeableLoaderInstruction;
+}
 pub mod loader_v4;
 pub mod loader_v4_instruction;
 pub mod log;

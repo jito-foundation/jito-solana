@@ -6072,6 +6072,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-loader-v3-interface"
+version = "2.2.0"
+dependencies = [
+ "serde",
+ "serde_bytes",
+ "serde_derive",
+ "solana-instruction",
+ "solana-pubkey",
+ "solana-sdk-ids",
+ "solana-system-interface",
+]
+
+[[package]]
 name = "solana-loader-v4-program"
 version = "2.2.0"
 dependencies = [
@@ -6386,6 +6399,7 @@ dependencies = [
  "solana-instructions-sysvar",
  "solana-keccak-hasher",
  "solana-last-restart-slot",
+ "solana-loader-v3-interface",
  "solana-message",
  "solana-msg",
  "solana-native-token",
