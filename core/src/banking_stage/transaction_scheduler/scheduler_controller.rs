@@ -122,8 +122,8 @@ impl<T: LikeClusterInfo> SchedulerController<T> {
             self.timing_metrics
                 .maybe_report_and_reset_slot(new_leader_slot);
 
-            self.process_transactions(&decision)?;
             self.receive_completed()?;
+            self.process_transactions(&decision)?;
             if !self.receive_and_buffer_packets(&decision) {
                 break;
             }
@@ -438,11 +438,11 @@ impl<T: LikeClusterInfo> SchedulerController<T> {
 
     /// Returns whether the packet receiver is still connected.
     fn receive_and_buffer_packets(&mut self, decision: &BufferedPacketsDecision) -> bool {
-        let remaining_queue_capacity = self.container.remaining_queue_capacity();
+        const MAX_RECEIVE_PACKETS: usize = 5_000;
 
         const MAX_PACKET_RECEIVE_TIME: Duration = Duration::from_millis(10);
         let (recv_timeout, should_buffer) = match decision {
-            BufferedPacketsDecision::Consume(_) => (
+            BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold => (
                 if self.container.is_empty() {
                     MAX_PACKET_RECEIVE_TIME
                 } else {
@@ -451,14 +451,12 @@ impl<T: LikeClusterInfo> SchedulerController<T> {
                 true,
             ),
             BufferedPacketsDecision::Forward => (MAX_PACKET_RECEIVE_TIME, self.forwarder.is_some()),
-            BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold => {
-                (MAX_PACKET_RECEIVE_TIME, true)
-            }
+            BufferedPacketsDecision::ForwardAndHold => (MAX_PACKET_RECEIVE_TIME, true),
         };
 
         let (received_packet_results, receive_time_us) = measure_us!(self
             .packet_receiver
-            .receive_packets(recv_timeout, remaining_queue_capacity, |packet| {
+            .receive_packets(recv_timeout, MAX_RECEIVE_PACKETS, |packet| {
                 packet.check_excessive_precompiles()?;
                 Ok(packet)
             }));
