@@ -520,6 +520,7 @@ pub fn main() {
                             trust_packets,
                             expected_heartbeat_interval_ms,
                             max_failed_heartbeats,
+                            bind_address,
                         )
                         .await
                 })
@@ -1608,6 +1609,7 @@ pub fn main() {
             max_failed_heartbeats * expected_heartbeat_interval_ms,
         ),
         trust_packets: matches.is_present("trust_relayer_packets"),
+        bind_address,
     };
 
     let mut validator_config = ValidatorConfig {

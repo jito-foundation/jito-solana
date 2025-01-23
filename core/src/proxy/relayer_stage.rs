@@ -70,7 +70,7 @@ impl RelayerStageStats {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelayerConfig {
     /// Relayer URL
     pub relayer_url: String,
@@ -83,7 +83,21 @@ pub struct RelayerConfig {
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
+
+    /// Address of local interface to bind socket.  Set from cli arg in solana-validator.
+    /// Needed for e.g. connecting over double zero.
+    pub bind_address: IpAddr,
 }
+
+impl Default for RelayerConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            ..Default::default()
+        }
+    }
+}
+
 
 pub struct RelayerStage {
     t_hdls: Vec<JoinHandle<()>>,
