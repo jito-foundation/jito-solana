@@ -130,6 +130,7 @@ impl Vortexor {
             max_connections_per_ipaddr_per_min,
             wait_for_chunk_timeout: DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             coalesce: tpu_coalesce,
+            ..Default::default()
         };
 
         let TpuSockets {
