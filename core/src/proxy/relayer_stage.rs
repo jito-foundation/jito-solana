@@ -44,9 +44,10 @@ use {
     },
     tonic::{
         codegen::InterceptedService,
-        transport::{Channel, Endpoint},
+        transport::{Channel, Endpoint, Uri},
         Streaming,
     },
+    tower::service_fn,
 };
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
@@ -97,7 +98,6 @@ impl Default for RelayerConfig {
         }
     }
 }
-
 
 pub struct RelayerStage {
     t_hdls: Vec<JoinHandle<()>>,
@@ -216,6 +216,7 @@ impl RelayerStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
+        let tls_config = tonic::transport::ClientTlsConfig::new();
 
         let mut backend_endpoint = Endpoint::from_shared(local_relayer_config.relayer_url.clone())
             .map_err(|_| {
@@ -227,7 +228,7 @@ impl RelayerStage {
             .tcp_keepalive(Some(Duration::from_secs(60)));
         if local_relayer_config.relayer_url.starts_with("https") {
             backend_endpoint = backend_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .tls_config(tls_config.clone())
                 .map_err(|_| {
                     ProxyError::RelayerConnectionError(
                         "failed to set tls_config for relayer service".to_string(),
@@ -236,10 +237,32 @@ impl RelayerStage {
         }
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+        let auth_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
+                let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
+                // Convert IpAddr to SocketAddr by adding port 0 (random port)
+                let local_addr = SocketAddr::new(local_ip, 0);
+
+                let tls = tls_config.clone();
+
+                async move {
+                    let tcp = if local_addr.is_ipv4() {
+                        tokio::net::TcpSocket::new_v4()?
+                    } else {
+                        tokio::net::TcpSocket::new_v6()?
+                    };
+                    tcp.bind(local_addr)?;
+                    let stream = tcp
+                        .connect(dst.authority().unwrap().as_str().parse()?)
+                        .await?;
+
+                    // Wrap with TLS if needed
+                    // ToDo:  not working, do we need this?  claude suggestion
+                    // tls.connect(dst.authority().unwrap().as_str(), stream).await
+                }
+            })),
+        );
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -261,10 +284,32 @@ impl RelayerStage {
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
         );
-        let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::RelayerConnectionTimeout)?
-            .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
+        let relayer_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
+                let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
+                // Convert IpAddr to SocketAddr by adding port 0 (random port)
+                let local_addr = SocketAddr::new(local_ip, 0);
+
+                let tls = tls_config.clone();
+
+                async move {
+                    let tcp = if local_addr.is_ipv4() {
+                        tokio::net::TcpSocket::new_v4()?
+                    } else {
+                        tokio::net::TcpSocket::new_v6()?
+                    };
+                    tcp.bind(local_addr)?;
+                    let stream = tcp
+                        .connect(dst.authority().unwrap().as_str().parse()?)
+                        .await?;
+
+                    // Wrap with TLS if needed
+                    // ToDo:  not working, do we need this?  claude suggestion
+                    // tls.connect(dst.authority().unwrap().as_str(), stream).await
+                }
+            })),
+        );
 
         let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(

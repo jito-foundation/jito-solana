@@ -3,7 +3,6 @@
 //! The Block Engine is responsible for the following:
 //! - Acts as a system that sends high profit bundles and transactions to a validator.
 //! - Sends transactions and bundles to the validator.
-use std::net::{IpAddr, Ipv4Addr};
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -28,6 +27,7 @@ use {
         pubkey::Pubkey, saturating_add_assign, signature::Signer, signer::keypair::Keypair,
     },
     std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -42,9 +42,10 @@ use {
     },
     tonic::{
         codegen::InterceptedService,
-        transport::{Channel, Endpoint},
+        transport::{Channel, Endpoint, Uri},
         Status, Streaming,
     },
+    tower::service_fn,
 };
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
@@ -219,6 +220,7 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
+        let tls_config = tonic::transport::ClientTlsConfig::new();
 
         let mut backend_endpoint =
             Endpoint::from_shared(local_block_engine_config.block_engine_url.clone())
@@ -234,7 +236,7 @@ impl BlockEngineStage {
             .starts_with("https")
         {
             backend_endpoint = backend_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .tls_config(tls_config.clone())
                 .map_err(|_| {
                     ProxyError::BlockEngineConnectionError(
                         "failed to set tls_config for block engine service".to_string(),
@@ -246,10 +248,35 @@ impl BlockEngineStage {
             "connecting to auth: {}",
             local_block_engine_config.block_engine_url
         );
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+        let auth_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
+                let local_ip: IpAddr = local_block_engine_config.bind_address; /* your IpAddr */
+                // Convert IpAddr to SocketAddr by adding port 0 (random port)
+                let local_addr = SocketAddr::new(local_ip, 0);
+
+                let tls = tls_config.clone();
+
+                async move {
+                    let tcp = if local_addr.is_ipv4() {
+                        tokio::net::TcpSocket::new_v4()?
+                    } else {
+                        tokio::net::TcpSocket::new_v6()?
+                    };
+                    tcp.bind(local_addr)?;
+                    let stream = tcp
+                        .connect(dst.authority().unwrap().as_str().parse()?)
+                        .await?;
+
+                    // Wrap with TLS if needed
+                    // ToDo:  not working, do we need this?  claude suggestion
+                    // tls.connect(dst.authority().unwrap().as_str(), stream).await
+                }
+            })),
+        )
+        .await
+        .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+        .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -271,10 +298,35 @@ impl BlockEngineStage {
             "connecting to block engine: {}",
             local_block_engine_config.block_engine_url
         );
-        let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
-            .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
+        let block_engine_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
+                let local_ip: IpAddr = local_block_engine_config.bind_address; /* your IpAddr */
+                // Convert IpAddr to SocketAddr by adding port 0 (random port)
+                let local_addr = SocketAddr::new(local_ip, 0);
+
+                let tls = tls_config.clone();
+
+                async move {
+                    let tcp = if local_addr.is_ipv4() {
+                        tokio::net::TcpSocket::new_v4()?
+                    } else {
+                        tokio::net::TcpSocket::new_v6()?
+                    };
+                    tcp.bind(local_addr)?;
+                    let stream = tcp
+                        .connect(dst.authority().unwrap().as_str().parse()?)
+                        .await?;
+
+                    // Wrap with TLS if needed
+                    // ToDo:  not working, do we need this?  claude suggestion
+                    // tls.connect(dst.authority().unwrap().as_str(), stream).await
+                }
+            })),
+        )
+        .await
+        .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
+        .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(

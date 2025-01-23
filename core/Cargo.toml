@@ -105,6 +105,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tonic = { workspace = true }
+tower = "0.4.13"
 trees = { workspace = true }
 
 [dev-dependencies]

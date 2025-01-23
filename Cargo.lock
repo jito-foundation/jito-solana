@@ -6885,6 +6885,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "tower",
  "trees",
 ]
 
