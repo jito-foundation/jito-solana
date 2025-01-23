@@ -1,5 +1,9 @@
 use {
-    crossbeam_channel::Sender,
+    crossbeam_channel::{Receiver, Sender},
+    solana_core::{
+        banking_trace::TracedSender, sigverify::TransactionSigVerifier,
+        sigverify_stage::SigVerifyStage,
+    },
     solana_net_utils::{bind_in_range_with_config, bind_more_with_config, SocketConfig},
     solana_perf::packet::PacketBatch,
     solana_sdk::{quic::NotifyKeyUpdate, signature::Keypair},
@@ -86,6 +90,19 @@ impl Vortexor {
             tpu_quic,
             tpu_quic_fwd,
         }
+    }
+
+    pub fn create_sigverify_stage(
+        tpu_receiver: Receiver<solana_perf::packet::PacketBatch>,
+        non_vote_sender: TracedSender,
+    ) -> SigVerifyStage {
+        let verifier = TransactionSigVerifier::new(non_vote_sender);
+        SigVerifyStage::new(
+            tpu_receiver,
+            verifier,
+            "solSigVtxTpu",
+            "tpu-vortexor-verifier",
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
