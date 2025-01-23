@@ -2306,7 +2306,8 @@ pub mod tests {
         crate::{
             blockstore_options::{AccessType, BlockstoreOptions},
             genesis_utils::{
-                create_genesis_config, create_genesis_config_with_leader, GenesisConfigInfo,
+                create_genesis_config, create_genesis_config_with_leader,
+                create_genesis_config_with_mint_keypair, GenesisConfigInfo,
             },
         },
         assert_matches::assert_matches,
@@ -2333,6 +2334,7 @@ pub mod tests {
             pubkey::Pubkey,
             rent_debits::RentDebits,
             signature::{Keypair, Signer},
+            signer::SeedDerivable,
             system_instruction::SystemError,
             system_transaction,
             transaction::{Transaction, TransactionError},
@@ -2349,6 +2351,7 @@ pub mod tests {
             vote_transaction,
         },
         std::{collections::BTreeSet, sync::RwLock},
+        test_case::test_case,
         trees::tr,
     };
 
@@ -3411,14 +3414,19 @@ pub mod tests {
         }
     }
 
-    #[test]
-    fn test_transaction_result_does_not_affect_bankhash() {
+    #[test_case(true; "rent_collected")]
+    #[test_case(false; "rent_not_collected")]
+    fn test_transaction_result_does_not_affect_bankhash(fee_payer_in_rent_partition: bool) {
         solana_logger::setup();
         let GenesisConfigInfo {
             genesis_config,
             mint_keypair,
             ..
-        } = create_genesis_config(1000);
+        } = if fee_payer_in_rent_partition {
+            create_genesis_config(1000)
+        } else {
+            create_genesis_config_with_mint_keypair(Keypair::from_seed(&[1u8; 32]).unwrap(), 1000)
+        };
 
         fn get_instruction_errors() -> Vec<InstructionError> {
             vec![
@@ -3484,7 +3492,7 @@ pub mod tests {
             Ok(())
         });
 
-        let mock_program_id = solana_sdk::pubkey::new_rand();
+        let mock_program_id = Pubkey::new_unique();
 
         let (bank, _bank_forks) = Bank::new_with_mockup_builtin_for_tests(
             &genesis_config,
@@ -3548,11 +3556,12 @@ pub mod tests {
 
             let entry = next_entry(&bank.last_blockhash(), 1, vec![tx]);
             let bank = Arc::new(bank);
-            let _result = process_entries_for_tests_without_scheduler(&bank, vec![entry]);
+            let result = process_entries_for_tests_without_scheduler(&bank, vec![entry]);
+            assert!(result.is_ok()); // No failing transaction error - only instruction errors
             bank.freeze();
 
             assert_eq!(blockhash_ok, bank.last_blockhash());
-            assert!(bankhash_ok != bank.hash());
+            assert_eq!(bankhash_ok == bank.hash(), fee_payer_in_rent_partition);
             if let Some(bankhash) = bankhash_err {
                 assert_eq!(bankhash, bank.hash());
             }
