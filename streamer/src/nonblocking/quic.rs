@@ -367,19 +367,7 @@ async fn run_server(
 
             let remote_address = incoming.remote_address();
 
-            // first check overall connection rate limit:
-            if !overall_connection_rate_limiter.is_allowed() {
-                debug!(
-                    "Reject connection from {:?} -- total rate limiting exceeded",
-                    remote_address.ip()
-                );
-                stats
-                    .connection_rate_limited_across_all
-                    .fetch_add(1, Ordering::Relaxed);
-                incoming.ignore();
-                continue;
-            }
-
+            // first do per IpAddr rate limiting
             if rate_limiter.len() > CONNECTION_RATE_LIMITER_CLEANUP_SIZE_THRESHOLD {
                 rate_limiter.retain_recent();
             }
@@ -394,6 +382,19 @@ async fn run_server(
                 );
                 stats
                     .connection_rate_limited_per_ipaddr
+                    .fetch_add(1, Ordering::Relaxed);
+                incoming.ignore();
+                continue;
+            }
+
+            // then check overall connection rate limit:
+            if !overall_connection_rate_limiter.is_allowed() {
+                debug!(
+                    "Reject connection from {:?} -- total rate limiting exceeded",
+                    remote_address.ip()
+                );
+                stats
+                    .connection_rate_limited_across_all
                     .fetch_add(1, Ordering::Relaxed);
                 incoming.ignore();
                 continue;
