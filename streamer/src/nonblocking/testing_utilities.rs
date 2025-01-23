@@ -18,7 +18,7 @@ use {
     solana_perf::packet::PacketBatch,
     solana_sdk::{
         net::DEFAULT_TPU_COALESCE,
-        quic::{QUIC_KEEP_ALIVE, QUIC_MAX_TIMEOUT},
+        quic::{QUIC_KEEP_ALIVE, QUIC_MAX_TIMEOUT, QUIC_SEND_FAIRNESS},
         signer::keypair::Keypair,
     },
     std::{
@@ -100,6 +100,7 @@ pub fn get_client_config(keypair: &Keypair) -> ClientConfig {
     let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
     transport_config.max_idle_timeout(Some(timeout));
     transport_config.keep_alive_interval(Some(QUIC_KEEP_ALIVE));
+    transport_config.send_fairness(QUIC_SEND_FAIRNESS);
     config.transport_config(Arc::new(transport_config));
 
     config

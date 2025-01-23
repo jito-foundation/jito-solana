@@ -6,7 +6,7 @@ use {
         TransportConfig,
     },
     skip_server_verification::SkipServerVerification,
-    solana_sdk::quic::{QUIC_KEEP_ALIVE, QUIC_MAX_TIMEOUT},
+    solana_sdk::quic::{QUIC_KEEP_ALIVE, QUIC_MAX_TIMEOUT, QUIC_SEND_FAIRNESS},
     solana_streamer::nonblocking::quic::ALPN_TPU_PROTOCOL_ID,
     std::{net::SocketAddr, sync::Arc},
 };
@@ -39,6 +39,7 @@ pub(crate) fn create_client_config(client_certificate: Arc<QuicClientCertificate
         let timeout = IdleTimeout::try_from(QUIC_MAX_TIMEOUT).unwrap();
         res.max_idle_timeout(Some(timeout));
         res.keep_alive_interval(Some(QUIC_KEEP_ALIVE));
+        res.send_fairness(QUIC_SEND_FAIRNESS);
 
         res
     };
