@@ -32,7 +32,7 @@ use {
         collections::{HashMap, HashSet},
         env, error,
         fmt::{self, Display},
-        net::SocketAddr,
+        net::{SocketAddr, IpAddr},
         path::{Path, PathBuf},
         str::FromStr,
         sync::{Arc, RwLock},
@@ -255,6 +255,7 @@ pub trait AdminRpc {
         meta: Self::Metadata,
         block_engine_url: String,
         trust_packets: bool,
+        bind_address: IpAddr,
     ) -> Result<()>;
 
     #[rpc(meta, name = "setRelayerConfig")]
@@ -484,11 +485,13 @@ impl AdminRpc for AdminRpcImpl {
         meta: Self::Metadata,
         block_engine_url: String,
         trust_packets: bool,
+        bind_address: IpAddr,
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
         let config = BlockEngineConfig {
             block_engine_url,
             trust_packets,
+            bind_address,
         };
         // Detailed log messages are printed inside validate function
         if BlockEngineStage::is_valid_block_engine_config(&config) {

@@ -3,6 +3,7 @@
 //! The Block Engine is responsible for the following:
 //! - Acts as a system that sends high profit bundles and transactions to a validator.
 //! - Sends transactions and bundles to the validator.
+use std::net::{IpAddr, Ipv4Addr};
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -74,13 +75,26 @@ pub struct BlockBuilderFeeInfo {
     pub block_builder_commission: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockEngineConfig {
     /// Block Engine URL
     pub block_engine_url: String,
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
+
+    /// Address of local interface to bind socket.  Set from cli arg in solana-validator.
+    /// Needed for e.g. connecting over double zero.
+    pub bind_address: IpAddr,
+}
+
+impl Default for BlockEngineConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            ..Default::default()
+        }
+    }
 }
 
 pub struct BlockEngineStage {
