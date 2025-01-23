@@ -87,7 +87,7 @@ dependencies = [
  "rayon",
  "solana-accounts-db",
  "solana-clap-utils",
- "solana-program",
+ "solana-pubkey",
  "solana-version",
 ]
 
