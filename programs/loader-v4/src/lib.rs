@@ -4,18 +4,20 @@ use {
     solana_bincode::limited_deserialize,
     solana_bpf_loader_program::{deploy_program, execute},
     solana_instruction::error::InstructionError,
+    solana_loader_v4_interface::{
+        instruction::LoaderV4Instruction,
+        state::{LoaderV4State, LoaderV4Status},
+        DEPLOYMENT_COOLDOWN_IN_SLOTS,
+    },
     solana_log_collector::{ic_logger_msg, LogCollector},
     solana_measure::measure::Measure,
-    solana_program::{
-        loader_v4::{self, LoaderV4State, LoaderV4Status, DEPLOYMENT_COOLDOWN_IN_SLOTS},
-        loader_v4_instruction::LoaderV4Instruction,
-    },
     solana_program_runtime::{
         invoke_context::InvokeContext,
         loaded_programs::{ProgramCacheEntry, ProgramCacheEntryOwner, ProgramCacheEntryType},
     },
     solana_pubkey::Pubkey,
     solana_sbpf::{declare_builtin_function, memory_region::MemoryMapping},
+    solana_sdk_ids::loader_v4,
     solana_transaction_context::{BorrowedAccount, InstructionContext},
     solana_type_overrides::sync::{atomic::Ordering, Arc},
     std::{cell::RefCell, rc::Rc},
@@ -536,8 +538,7 @@ mod tests {
         let mut elf_bytes = Vec::new();
         file.read_to_end(&mut elf_bytes).unwrap();
         let rent = rent::Rent::default();
-        let account_size =
-            loader_v4::LoaderV4State::program_data_offset().saturating_add(elf_bytes.len());
+        let account_size = LoaderV4State::program_data_offset().saturating_add(elf_bytes.len());
         let mut program_account = AccountSharedData::new(
             rent.minimum_balance(account_size),
             account_size,
@@ -547,7 +548,7 @@ mod tests {
         state.slot = 0;
         state.authority_address_or_next_version = authority_address;
         state.status = status;
-        program_account.data_as_mut_slice()[loader_v4::LoaderV4State::program_data_offset()..]
+        program_account.data_as_mut_slice()[LoaderV4State::program_data_offset()..]
             .copy_from_slice(&elf_bytes);
         program_account
     }
@@ -739,7 +740,7 @@ mod tests {
                     .1
                     .data()
                     .len()
-                    .saturating_sub(loader_v4::LoaderV4State::program_data_offset())
+                    .saturating_sub(LoaderV4State::program_data_offset())
                     .saturating_sub(3) as u32,
                 bytes: vec![8, 8, 8, 8],
             })
@@ -816,7 +817,7 @@ mod tests {
                     .1
                     .data()
                     .len()
-                    .saturating_sub(loader_v4::LoaderV4State::program_data_offset())
+                    .saturating_sub(LoaderV4State::program_data_offset())
                     as u32,
             })
             .unwrap(),
@@ -841,7 +842,7 @@ mod tests {
                     .1
                     .data()
                     .len()
-                    .saturating_sub(loader_v4::LoaderV4State::program_data_offset())
+                    .saturating_sub(LoaderV4State::program_data_offset())
                     as u32,
             })
             .unwrap(),
@@ -865,7 +866,7 @@ mod tests {
                     .1
                     .data()
                     .len()
-                    .saturating_sub(loader_v4::LoaderV4State::program_data_offset())
+                    .saturating_sub(LoaderV4State::program_data_offset())
                     as u32,
             })
             .unwrap(),
@@ -886,7 +887,7 @@ mod tests {
                     .1
                     .data()
                     .len()
-                    .saturating_sub(loader_v4::LoaderV4State::program_data_offset())
+                    .saturating_sub(LoaderV4State::program_data_offset())
                     as u32,
             })
             .unwrap(),
@@ -1007,7 +1008,7 @@ mod tests {
                     .1
                     .data()
                     .len()
-                    .saturating_sub(loader_v4::LoaderV4State::program_data_offset())
+                    .saturating_sub(LoaderV4State::program_data_offset())
                     .saturating_add(1) as u32,
             })
             .unwrap(),
