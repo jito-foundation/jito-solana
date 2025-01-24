@@ -10666,6 +10666,7 @@ version = "2.2.0"
 dependencies = [
  "assert_matches",
  "bincode",
+ "criterion",
  "log",
  "num-derive",
  "num-traits",
@@ -10687,6 +10688,7 @@ dependencies = [
  "solana-program-runtime",
  "solana-pubkey",
  "solana-rent",
+ "solana-sdk",
  "solana-sdk-ids",
  "solana-sha256-hasher",
  "solana-signer",
