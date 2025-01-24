@@ -248,25 +248,25 @@ impl BlockEngineStage {
             "connecting to auth: {}",
             local_block_engine_config.block_engine_url
         );
+        let local_ip: IpAddr = local_block_engine_config.bind_address;
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
         let auth_channel = timeout(
             *connection_timeout,
             backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
-                let local_ip: IpAddr = local_block_engine_config.bind_address; /* your IpAddr */
-                // Convert IpAddr to SocketAddr by adding port 0 (random port)
-                let local_addr = SocketAddr::new(local_ip, 0);
-
-                let tls = tls_config.clone();
+                // let tls = tls_config.clone();
 
                 async move {
                     let tcp = if local_addr.is_ipv4() {
-                        tokio::net::TcpSocket::new_v4()?
+                        tokio::net::TcpSocket::new_v4().unwrap()
                     } else {
-                        tokio::net::TcpSocket::new_v6()?
+                        tokio::net::TcpSocket::new_v6().unwrap()
                     };
-                    tcp.bind(local_addr)?;
-                    let stream = tcp
-                        .connect(dst.authority().unwrap().as_str().parse()?)
-                        .await?;
+                    tcp.bind(local_addr).unwrap();
+
+                    tcp.connect(dst.authority().unwrap().as_str().parse().unwrap())
+                        .await
 
                     // Wrap with TLS if needed
                     // ToDo:  not working, do we need this?  claude suggestion
@@ -298,25 +298,25 @@ impl BlockEngineStage {
             "connecting to block engine: {}",
             local_block_engine_config.block_engine_url
         );
+        let local_ip: IpAddr = local_block_engine_config.bind_address; /* your IpAddr */
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
         let block_engine_channel = timeout(
             *connection_timeout,
             backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
-                let local_ip: IpAddr = local_block_engine_config.bind_address; /* your IpAddr */
-                // Convert IpAddr to SocketAddr by adding port 0 (random port)
-                let local_addr = SocketAddr::new(local_ip, 0);
-
-                let tls = tls_config.clone();
+                // let tls = tls_config.clone();
 
                 async move {
                     let tcp = if local_addr.is_ipv4() {
-                        tokio::net::TcpSocket::new_v4()?
+                        tokio::net::TcpSocket::new_v4().unwrap()
                     } else {
-                        tokio::net::TcpSocket::new_v6()?
+                        tokio::net::TcpSocket::new_v6().unwrap()
                     };
-                    tcp.bind(local_addr)?;
-                    let stream = tcp
-                        .connect(dst.authority().unwrap().as_str().parse()?)
-                        .await?;
+                    tcp.bind(local_addr).unwrap();
+
+                    tcp.connect(dst.authority().unwrap().as_str().parse().unwrap())
+                        .await
 
                     // Wrap with TLS if needed
                     // ToDo:  not working, do we need this?  claude suggestion

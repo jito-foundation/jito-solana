@@ -237,32 +237,35 @@ impl RelayerStage {
         }
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
+        let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
         let auth_channel = timeout(
             *connection_timeout,
             backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
-                let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
-                // Convert IpAddr to SocketAddr by adding port 0 (random port)
-                let local_addr = SocketAddr::new(local_ip, 0);
-
-                let tls = tls_config.clone();
+                // let tls = tls_config.clone();
 
                 async move {
                     let tcp = if local_addr.is_ipv4() {
-                        tokio::net::TcpSocket::new_v4()?
+                        tokio::net::TcpSocket::new_v4().unwrap()
                     } else {
-                        tokio::net::TcpSocket::new_v6()?
+                        tokio::net::TcpSocket::new_v6().unwrap()
                     };
-                    tcp.bind(local_addr)?;
-                    let stream = tcp
-                        .connect(dst.authority().unwrap().as_str().parse()?)
-                        .await?;
+                    tcp.bind(local_addr).unwrap();
+
+                    tcp.connect(dst.authority().unwrap().as_str().parse().unwrap())
+                        .await
 
                     // Wrap with TLS if needed
                     // ToDo:  not working, do we need this?  claude suggestion
                     // tls.connect(dst.authority().unwrap().as_str(), stream).await
                 }
             })),
-        );
+        )
+        .await
+        .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+        .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -284,32 +287,35 @@ impl RelayerStage {
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
         );
+        let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
         let relayer_channel = timeout(
             *connection_timeout,
             backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
-                let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
-                // Convert IpAddr to SocketAddr by adding port 0 (random port)
-                let local_addr = SocketAddr::new(local_ip, 0);
-
-                let tls = tls_config.clone();
+                // let tls = tls_config.clone();
 
                 async move {
                     let tcp = if local_addr.is_ipv4() {
-                        tokio::net::TcpSocket::new_v4()?
+                        tokio::net::TcpSocket::new_v4().unwrap()
                     } else {
-                        tokio::net::TcpSocket::new_v6()?
+                        tokio::net::TcpSocket::new_v6().unwrap()
                     };
-                    tcp.bind(local_addr)?;
-                    let stream = tcp
-                        .connect(dst.authority().unwrap().as_str().parse()?)
-                        .await?;
+                    tcp.bind(local_addr).unwrap();
+
+                    tcp.connect(dst.authority().unwrap().as_str().parse().unwrap())
+                        .await
 
                     // Wrap with TLS if needed
                     // ToDo:  not working, do we need this?  claude suggestion
                     // tls.connect(dst.authority().unwrap().as_str(), stream).await
                 }
             })),
-        );
+        )
+        .await
+        .map_err(|_| ProxyError::RelayerConnectionTimeout)?
+        .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(
