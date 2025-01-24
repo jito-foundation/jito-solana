@@ -561,6 +561,10 @@ pub mod enable_alt_bn128_compression_syscall {
     solana_pubkey::declare_id!("EJJewYSddEEtSZHiqugnvhQHiWyZKjkFDQASd7oKSagn");
 }
 
+pub mod fix_alt_bn128_multiplication_input_length {
+    solana_pubkey::declare_id!("bn2puAyxUx6JUabAxYdKdJ5QHbNNmKw8dCGuGCyRrFN");
+}
+
 pub mod enable_program_redeployment_cooldown {
     solana_pubkey::declare_id!("J4HFT8usBxpcF63y46t1upYobJgChmKyZPm5uTBRg25Z");
 }
@@ -1145,6 +1149,7 @@ lazy_static! {
         (deplete_cu_meter_on_vm_failure::id(), "Deplete compute meter for vm errors SIMD-0182 #3993"),
         (reserve_minimal_cus_for_builtin_instructions::id(), "Reserve minimal CUs for builtin instructions SIMD-170 #2562"),
         (raise_block_limits_to_50m::id(), "Raise block limit to 50M SIMD-0207"),
+        (fix_alt_bn128_multiplication_input_length::id(), "fix alt_bn128 multiplication input length SIMD-0222 #3686"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
