@@ -8,6 +8,7 @@
 //! - Expected to send heartbeat to validator as watchdog. If watchdog times out, the validator
 //!   disconnects and reverts the TPU and TPU forward settings.
 
+use std::io;
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -216,7 +217,6 @@ impl RelayerStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
-        let tls_config = tonic::transport::ClientTlsConfig::new();
 
         let mut backend_endpoint = Endpoint::from_shared(local_relayer_config.relayer_url.clone())
             .map_err(|_| {
@@ -228,7 +228,7 @@ impl RelayerStage {
             .tcp_keepalive(Some(Duration::from_secs(60)));
         if local_relayer_config.relayer_url.starts_with("https") {
             backend_endpoint = backend_endpoint
-                .tls_config(tls_config.clone())
+                .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
                     ProxyError::RelayerConnectionError(
                         "failed to set tls_config for relayer service".to_string(),
@@ -237,30 +237,28 @@ impl RelayerStage {
         }
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
-        let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
+        let local_ip: IpAddr = local_relayer_config.bind_address;
         // Convert IpAddr to SocketAddr by adding port 0 (random port)
         let local_addr = SocketAddr::new(local_ip, 0);
 
         let auth_channel = timeout(
             *connection_timeout,
-            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
-                // let tls = tls_config.clone();
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| async move {
+                let tcp = if local_addr.is_ipv4() {
+                    tokio::net::TcpSocket::new_v4()?
+                } else {
+                    tokio::net::TcpSocket::new_v6()?
+                };
+                tcp.bind(local_addr)?;
 
-                async move {
-                    let tcp = if local_addr.is_ipv4() {
-                        tokio::net::TcpSocket::new_v4().unwrap()
-                    } else {
-                        tokio::net::TcpSocket::new_v6().unwrap()
-                    };
-                    tcp.bind(local_addr).unwrap();
-
-                    tcp.connect(dst.authority().unwrap().as_str().parse().unwrap())
-                        .await
-
-                    // Wrap with TLS if needed
-                    // ToDo:  not working, do we need this?  claude suggestion
-                    // tls.connect(dst.authority().unwrap().as_str(), stream).await
-                }
+                tcp.connect(
+                    dst.authority()
+                        .unwrap()
+                        .as_str()
+                        .parse()
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                )
+                .await
             })),
         )
         .await
@@ -287,7 +285,7 @@ impl RelayerStage {
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
         );
-        let local_ip: IpAddr = local_relayer_config.bind_address; /* your IpAddr */
+        let local_ip: IpAddr = local_relayer_config.bind_address;
         // Convert IpAddr to SocketAddr by adding port 0 (random port)
         let local_addr = SocketAddr::new(local_ip, 0);
 
@@ -298,18 +296,20 @@ impl RelayerStage {
 
                 async move {
                     let tcp = if local_addr.is_ipv4() {
-                        tokio::net::TcpSocket::new_v4().unwrap()
+                        tokio::net::TcpSocket::new_v4()?
                     } else {
-                        tokio::net::TcpSocket::new_v6().unwrap()
+                        tokio::net::TcpSocket::new_v6()?
                     };
-                    tcp.bind(local_addr).unwrap();
+                    tcp.bind(local_addr)?;
 
-                    tcp.connect(dst.authority().unwrap().as_str().parse().unwrap())
-                        .await
-
-                    // Wrap with TLS if needed
-                    // ToDo:  not working, do we need this?  claude suggestion
-                    // tls.connect(dst.authority().unwrap().as_str(), stream).await
+                    tcp.connect(
+                        dst.authority()
+                            .unwrap()
+                            .as_str()
+                            .parse()
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                    )
+                    .await
                 }
             })),
         )
