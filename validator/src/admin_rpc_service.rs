@@ -32,7 +32,7 @@ use {
         collections::{HashMap, HashSet},
         env, error,
         fmt::{self, Display},
-        net::{SocketAddr, IpAddr},
+        net::{IpAddr, SocketAddr},
         path::{Path, PathBuf},
         str::FromStr,
         sync::{Arc, RwLock},

@@ -8,7 +8,6 @@
 //! - Expected to send heartbeat to validator as watchdog. If watchdog times out, the validator
 //!   disconnects and reverts the TPU and TPU forward settings.
 
-use std::io;
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -30,6 +29,7 @@ use {
         signature::{Keypair, Signer},
     },
     std::{
+        io,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         str::FromStr,
         sync::{

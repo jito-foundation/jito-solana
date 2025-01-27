@@ -3,7 +3,6 @@
 //! The Block Engine is responsible for the following:
 //! - Acts as a system that sends high profit bundles and transactions to a validator.
 //! - Sends transactions and bundles to the validator.
-use std::io;
 use {
     crate::{
         banking_trace::BankingPacketSender,
@@ -28,6 +27,7 @@ use {
         pubkey::Pubkey, saturating_add_assign, signature::Signer, signer::keypair::Keypair,
     },
     std::{
+        io,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         str::FromStr,
         sync::{
