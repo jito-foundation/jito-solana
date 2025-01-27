@@ -93,8 +93,9 @@ pub struct BlockEngineConfig {
 impl Default for BlockEngineConfig {
     fn default() -> Self {
         Self {
+            block_engine_url: String::default(),
+            trust_packets: bool::default(),
             bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            ..Default::default()
         }
     }
 }

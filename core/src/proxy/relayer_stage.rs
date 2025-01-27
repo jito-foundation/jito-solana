@@ -94,8 +94,11 @@ pub struct RelayerConfig {
 impl Default for RelayerConfig {
     fn default() -> Self {
         Self {
+            relayer_url: String::default(),
+            expected_heartbeat_interval: Duration::default(),
+            oldest_allowed_heartbeat: Duration::default(),
+            trust_packets: bool::default(),
             bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            ..Default::default()
         }
     }
 }
