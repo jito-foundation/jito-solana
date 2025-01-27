@@ -27,6 +27,8 @@ use {
         pubkey::Pubkey, saturating_add_assign, signature::Signer, signer::keypair::Keypair,
     },
     std::{
+        io,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -41,9 +43,10 @@ use {
     },
     tonic::{
         codegen::InterceptedService,
-        transport::{Channel, Endpoint},
+        transport::{Channel, Endpoint, Uri},
         Status, Streaming,
     },
+    tower::service_fn,
 };
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
@@ -74,13 +77,27 @@ pub struct BlockBuilderFeeInfo {
     pub block_builder_commission: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockEngineConfig {
     /// Block Engine URL
     pub block_engine_url: String,
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
+
+    /// Address of local interface to bind socket.  Set from cli arg in solana-validator.
+    /// Needed for e.g. connecting over double zero.
+    pub bind_address: IpAddr,
+}
+
+impl Default for BlockEngineConfig {
+    fn default() -> Self {
+        Self {
+            block_engine_url: String::default(),
+            trust_packets: bool::default(),
+            bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        }
+    }
 }
 
 pub struct BlockEngineStage {
@@ -232,10 +249,33 @@ impl BlockEngineStage {
             "connecting to auth: {}",
             local_block_engine_config.block_engine_url
         );
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+        let local_ip: IpAddr = local_block_engine_config.bind_address;
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
+        let auth_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| async move {
+                let tcp = if local_addr.is_ipv4() {
+                    tokio::net::TcpSocket::new_v4()?
+                } else {
+                    tokio::net::TcpSocket::new_v6()?
+                };
+                tcp.bind(local_addr)?;
+
+                tcp.connect(
+                    dst.authority()
+                        .unwrap()
+                        .as_str()
+                        .parse()
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                )
+                .await
+            })),
+        )
+        .await
+        .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+        .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -257,10 +297,33 @@ impl BlockEngineStage {
             "connecting to block engine: {}",
             local_block_engine_config.block_engine_url
         );
-        let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
-            .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
+        let local_ip: IpAddr = local_block_engine_config.bind_address;
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
+        let block_engine_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| async move {
+                let tcp = if local_addr.is_ipv4() {
+                    tokio::net::TcpSocket::new_v4()?
+                } else {
+                    tokio::net::TcpSocket::new_v6()?
+                };
+                tcp.bind(local_addr)?;
+
+                tcp.connect(
+                    dst.authority()
+                        .unwrap()
+                        .as_str()
+                        .parse()
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                )
+                .await
+            })),
+        )
+        .await
+        .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
+        .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(

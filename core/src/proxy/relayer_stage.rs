@@ -29,6 +29,7 @@ use {
         signature::{Keypair, Signer},
     },
     std::{
+        io,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         str::FromStr,
         sync::{
@@ -44,9 +45,10 @@ use {
     },
     tonic::{
         codegen::InterceptedService,
-        transport::{Channel, Endpoint},
+        transport::{Channel, Endpoint, Uri},
         Streaming,
     },
+    tower::service_fn,
 };
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
@@ -70,7 +72,7 @@ impl RelayerStageStats {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelayerConfig {
     /// Relayer URL
     pub relayer_url: String,
@@ -83,6 +85,22 @@ pub struct RelayerConfig {
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
+
+    /// Address of local interface to bind socket.  Set from cli arg in solana-validator.
+    /// Needed for e.g. connecting over double zero.
+    pub bind_address: IpAddr,
+}
+
+impl Default for RelayerConfig {
+    fn default() -> Self {
+        Self {
+            relayer_url: String::default(),
+            expected_heartbeat_interval: Duration::default(),
+            oldest_allowed_heartbeat: Duration::default(),
+            trust_packets: bool::default(),
+            bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        }
+    }
 }
 
 pub struct RelayerStage {
@@ -222,10 +240,33 @@ impl RelayerStage {
         }
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+        let local_ip: IpAddr = local_relayer_config.bind_address;
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
+        let auth_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| async move {
+                let tcp = if local_addr.is_ipv4() {
+                    tokio::net::TcpSocket::new_v4()?
+                } else {
+                    tokio::net::TcpSocket::new_v6()?
+                };
+                tcp.bind(local_addr)?;
+
+                tcp.connect(
+                    dst.authority()
+                        .unwrap()
+                        .as_str()
+                        .parse()
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                )
+                .await
+            })),
+        )
+        .await
+        .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+        .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -247,10 +288,37 @@ impl RelayerStage {
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
         );
-        let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::RelayerConnectionTimeout)?
-            .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
+        let local_ip: IpAddr = local_relayer_config.bind_address;
+        // Convert IpAddr to SocketAddr by adding port 0 (random port)
+        let local_addr = SocketAddr::new(local_ip, 0);
+
+        let relayer_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(service_fn(move |dst: Uri| {
+                // let tls = tls_config.clone();
+
+                async move {
+                    let tcp = if local_addr.is_ipv4() {
+                        tokio::net::TcpSocket::new_v4()?
+                    } else {
+                        tokio::net::TcpSocket::new_v6()?
+                    };
+                    tcp.bind(local_addr)?;
+
+                    tcp.connect(
+                        dst.authority()
+                            .unwrap()
+                            .as_str()
+                            .parse()
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+                    )
+                    .await
+                }
+            })),
+        )
+        .await
+        .map_err(|_| ProxyError::RelayerConnectionTimeout)?
+        .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(
