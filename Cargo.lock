@@ -7983,6 +7983,7 @@ dependencies = [
  "bzip2",
  "chrono",
  "chrono-humanize",
+ "criterion",
  "crossbeam-channel",
  "dashmap",
  "eager",
