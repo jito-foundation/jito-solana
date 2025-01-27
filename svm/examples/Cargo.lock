@@ -5693,6 +5693,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-example-mocks"
+version = "2.2.0"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "solana-address-lookup-table-interface",
+ "solana-clock",
+ "solana-hash",
+ "solana-instruction",
+ "solana-keccak-hasher",
+ "solana-message",
+ "solana-nonce",
+ "solana-pubkey",
+ "solana-sdk-ids",
+ "solana-system-interface",
+ "thiserror 2.0.11",
+]
+
+[[package]]
 name = "solana-faucet"
 version = "2.2.0"
 dependencies = [
@@ -6433,6 +6452,7 @@ dependencies = [
  "solana-define-syscall",
  "solana-epoch-rewards",
  "solana-epoch-schedule",
+ "solana-example-mocks",
  "solana-feature-gate-interface",
  "solana-fee-calculator",
  "solana-hash",

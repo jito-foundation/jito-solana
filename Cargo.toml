@@ -132,6 +132,7 @@ members = [
     "sdk/epoch-rewards",
     "sdk/epoch-rewards-hasher",
     "sdk/epoch-schedule",
+    "sdk/example-mocks",
     "sdk/feature-gate-interface",
     "sdk/feature-set",
     "sdk/fee-calculator",
@@ -503,6 +504,7 @@ solana-epoch-info = { path = "sdk/epoch-info", version = "=2.2.0" }
 solana-epoch-rewards = { path = "sdk/epoch-rewards", version = "=2.2.0" }
 solana-epoch-rewards-hasher = { path = "sdk/epoch-rewards-hasher", version = "=2.2.0" }
 solana-epoch-schedule = { path = "sdk/epoch-schedule", version = "=2.2.0" }
+solana-example-mocks = { path = "sdk/example-mocks", version = "=2.2.0" }
 solana-faucet = { path = "faucet", version = "=2.2.0" }
 solana-feature-gate-client = "0.0.2"
 solana-feature-gate-interface = { path = "sdk/feature-gate-interface", version = "=2.2.0" }
