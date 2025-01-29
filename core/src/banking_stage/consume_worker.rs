@@ -59,14 +59,18 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    pub fn run(self) -> Result<(), ConsumeWorkerError<Tx>> {
+    pub fn run(self, reservation_cb: impl Fn(&Bank) -> u64) -> Result<(), ConsumeWorkerError<Tx>> {
         loop {
             let work = self.consume_receiver.recv()?;
-            self.consume_loop(work)?;
+            self.consume_loop(work, &reservation_cb)?;
         }
     }
 
-    fn consume_loop(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
+    fn consume_loop(
+        &self,
+        work: ConsumeWork<Tx>,
+        reservation_cb: &impl Fn(&Bank) -> u64,
+    ) -> Result<(), ConsumeWorkerError<Tx>> {
         let (maybe_consume_bank, get_bank_us) = measure_us!(self.get_consume_bank());
         let Some(mut bank) = maybe_consume_bank else {
             self.metrics
@@ -97,7 +101,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                     return self.retry_drain(work);
                 }
             }
-            self.consume(&bank, work)?;
+            self.consume(&bank, work, reservation_cb)?;
         }
 
         Ok(())
@@ -108,11 +112,13 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         &self,
         bank: &Arc<Bank>,
         work: ConsumeWork<Tx>,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Result<(), ConsumeWorkerError<Tx>> {
         let output = self.consumer.process_and_record_aged_transactions(
             bank,
             &work.transactions,
             &work.max_ages,
+            reservation_cb,
         );
 
         self.metrics.update_for_consume(&output);
@@ -904,7 +910,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
 
         let pubkey1 = Pubkey::new_unique();
 
@@ -949,7 +955,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()
@@ -998,7 +1004,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()
@@ -1050,7 +1056,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()
@@ -1125,7 +1131,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         poh_recorder
             .write()
             .unwrap()
