@@ -9014,6 +9014,7 @@ dependencies = [
  "solana-poh",
  "solana-pubkey",
  "solana-rayon-threadlimit",
+ "solana-rpc",
  "solana-rpc-client-api",
  "solana-runtime",
  "solana-runtime-transaction",
