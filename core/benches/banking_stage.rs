@@ -135,6 +135,7 @@ fn bench_consume_buffered(bencher: &mut Bencher) {
             &mut transaction_buffer,
             &BankingStageStats::default(),
             &mut LeaderSlotMetricsTracker::new(0),
+            &|_| 0,
         );
     });
 
@@ -322,6 +323,7 @@ fn bench_banking(bencher: &mut Bencher, tx_type: TransactionType) {
         false,
         HashSet::default(),
         BundleAccountLocker::default(),
+        |_| 0,
     );
 
     let chunk_len = verified.len() / CHUNKS;

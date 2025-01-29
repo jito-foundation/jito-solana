@@ -123,6 +123,7 @@ impl Consumer {
         unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
         let mut rebuffered_packet_count = 0;
         let mut consumed_buffered_packets_count = 0;
@@ -141,6 +142,7 @@ impl Consumer {
                     &mut consumed_buffered_packets_count,
                     &mut rebuffered_packet_count,
                     packets_to_process,
+                    reservation_cb,
                 )
             },
             &self.blacklisted_accounts,
@@ -181,6 +183,7 @@ impl Consumer {
         consumed_buffered_packets_count: &mut usize,
         rebuffered_packet_count: &mut usize,
         packets_to_process: &[Arc<ImmutableDeserializedPacket>],
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Option<Vec<usize>> {
         if payload.reached_end_of_slot {
             return None;
@@ -194,6 +197,7 @@ impl Consumer {
                 &payload.sanitized_transactions,
                 banking_stage_stats,
                 payload.slot_metrics_tracker,
+                reservation_cb
             ));
         payload
             .slot_metrics_tracker
@@ -241,10 +245,15 @@ impl Consumer {
         sanitized_transactions: &[SanitizedTransaction],
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
-        let (mut process_transactions_summary, process_transactions_us) = measure_us!(
-            self.process_transactions(bank, bank_creation_time, sanitized_transactions)
-        );
+        let (mut process_transactions_summary, process_transactions_us) = measure_us!(self
+            .process_transactions(
+                bank,
+                bank_creation_time,
+                sanitized_transactions,
+                reservation_cb
+            ));
         slot_metrics_tracker.increment_process_transactions_us(process_transactions_us);
         banking_stage_stats
             .transaction_processing_elapsed
@@ -295,6 +304,7 @@ impl Consumer {
         bank: &Arc<Bank>,
         bank_creation_time: &Instant,
         transactions: &[SanitizedTransaction],
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
         let mut chunk_start = 0;
         let mut all_retryable_tx_indexes = vec![];
@@ -315,6 +325,7 @@ impl Consumer {
                 bank,
                 &transactions[chunk_start..chunk_end],
                 chunk_start,
+                reservation_cb,
             );
 
             let ProcessTransactionBatchOutput {
@@ -398,6 +409,7 @@ impl Consumer {
         bank: &Arc<Bank>,
         txs: &[SanitizedTransaction],
         chunk_offset: usize,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionBatchOutput {
         let mut error_counters = TransactionErrorMetrics::default();
         let pre_results = vec![Ok(()); txs.len()];
@@ -426,6 +438,7 @@ impl Consumer {
             txs,
             chunk_offset,
             check_results.into_iter(),
+            reservation_cb,
         );
 
         // Accumulate error counters from the initial checks into final results
@@ -441,6 +454,7 @@ impl Consumer {
         bank: &Arc<Bank>,
         txs: &[SanitizedTransaction],
         max_ages: &[MaxAge],
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionBatchOutput {
         let move_precompile_verification_to_svm = bank
             .feature_set
@@ -477,7 +491,13 @@ impl Consumer {
 
             Ok(())
         });
-        self.process_and_record_transactions_with_pre_results(bank, txs, 0, pre_results)
+        self.process_and_record_transactions_with_pre_results(
+            bank,
+            txs,
+            0,
+            pre_results,
+            reservation_cb,
+        )
     }
 
     fn process_and_record_transactions_with_pre_results(
@@ -486,15 +506,16 @@ impl Consumer {
         txs: &[SanitizedTransaction],
         chunk_offset: usize,
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionBatchOutput {
         let (
             (transaction_qos_cost_results, cost_model_throttled_transactions_count),
             cost_model_us,
         ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
             bank,
-            &mut bank.write_cost_tracker().unwrap(),
             txs,
-            pre_results
+            pre_results,
+            reservation_cb
         ));
 
         // Only lock accounts for those transactions are selected for the block;
@@ -954,7 +975,7 @@ mod tests {
             BundleAccountLocker::default(),
         );
         let process_transactions_summary =
-            consumer.process_transactions(&bank, &Instant::now(), &transactions);
+            consumer.process_transactions(&bank, &Instant::now(), &transactions, &|_| 0);
 
         poh_recorder
             .read()
@@ -1137,7 +1158,7 @@ mod tests {
             );
 
             let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0);
+                consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
 
             let ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
@@ -1191,7 +1212,7 @@ mod tests {
             )]);
 
             let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0);
+                consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
 
             let ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
@@ -1339,7 +1360,7 @@ mod tests {
             );
 
             let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0);
+                consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
             let ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
                 commit_transactions_result,
@@ -1454,7 +1475,7 @@ mod tests {
             );
 
             let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0);
+                consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
 
             let ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
@@ -1556,7 +1577,7 @@ mod tests {
             )]);
 
             let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0);
+                consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
 
             let ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
@@ -1586,7 +1607,7 @@ mod tests {
             ]);
 
             let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0);
+                consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
 
             let ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
@@ -1710,7 +1731,7 @@ mod tests {
             );
 
             let process_transactions_batch_output =
-                consumer.process_and_record_transactions(&bank, &transactions, 0);
+                consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
 
             poh_recorder
                 .read()
@@ -1922,7 +1943,7 @@ mod tests {
             );
 
             let process_transactions_summary =
-                consumer.process_transactions(&bank, &Instant::now(), &transactions);
+                consumer.process_transactions(&bank, &Instant::now(), &transactions, &|_| 0);
 
             let ProcessTransactionsSummary {
                 reached_max_poh_height,
@@ -2057,7 +2078,7 @@ mod tests {
                 BundleAccountLocker::default(),
             );
 
-            let _ = consumer.process_and_record_transactions(&bank, &transactions, 0);
+            let _ = consumer.process_and_record_transactions(&bank, &transactions, 0, &|_| 0);
 
             drop(consumer); // drop/disconnect transaction_status_sender
             transaction_status_service.join().unwrap();
@@ -2209,7 +2230,8 @@ mod tests {
                 BundleAccountLocker::default(),
             );
 
-            let _ = consumer.process_and_record_transactions(&bank, &[sanitized_tx.clone()], 0);
+            let _ =
+                consumer.process_and_record_transactions(&bank, &[sanitized_tx.clone()], 0, &|_| 0);
 
             drop(consumer); // drop/disconnect transaction_status_sender
             transaction_status_service.join().unwrap();
@@ -2289,6 +2311,7 @@ mod tests {
                 &mut buffered_packet_batches,
                 &banking_stage_stats,
                 &mut LeaderSlotMetricsTracker::new(0),
+                &|_| 0,
             );
 
             // Check that all packets were processed without retrying
@@ -2380,6 +2403,7 @@ mod tests {
                 &mut buffered_packet_batches,
                 &BankingStageStats::default(),
                 &mut LeaderSlotMetricsTracker::new(0),
+                &|_| 0,
             );
             assert!(buffered_packet_batches.is_empty());
             poh_recorder
@@ -2458,6 +2482,7 @@ mod tests {
                 &mut buffered_packet_batches,
                 &banking_stage_stats,
                 &mut LeaderSlotMetricsTracker::new(0),
+                &|_| 0,
             );
 
             // Check that all but 1 transaction was processed. And that it was rebuffered.
@@ -2579,6 +2604,7 @@ mod tests {
                 &mut buffered_packet_batches,
                 &banking_stage_stats,
                 &mut LeaderSlotMetricsTracker::new(0),
+                &|_| 0,
             );
 
             // Check that all packets were processed without retrying

@@ -10,7 +10,6 @@ use {
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
             bundle_packet_receiver::BundleReceiver,
-            bundle_reserved_space_manager::BundleReservedSpaceManager,
             bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
         },
         packet_bundle::PacketBundle,
@@ -18,7 +17,6 @@ use {
         tip_manager::TipManager,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
-    solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure_us,
@@ -41,7 +39,6 @@ pub mod bundle_account_locker;
 mod bundle_consumer;
 mod bundle_packet_deserializer;
 mod bundle_packet_receiver;
-mod bundle_reserved_space_manager;
 pub(crate) mod bundle_stage_leader_metrics;
 mod committer;
 
@@ -208,7 +205,6 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
-        preallocated_bundle_cost: u64,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Self {
         Self::start_bundle_thread(
@@ -223,7 +219,6 @@ impl BundleStage {
             bundle_account_locker,
             MAX_BUNDLE_RETRY_DURATION,
             block_builder_fee_info,
-            preallocated_bundle_cost,
             prioritization_fee_cache,
         )
     }
@@ -245,7 +240,6 @@ impl BundleStage {
         bundle_account_locker: BundleAccountLocker,
         max_bundle_retry_duration: Duration,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
-        preallocated_bundle_cost: u64,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Self {
         const BUNDLE_STAGE_ID: u32 = 10_000;
@@ -263,21 +257,6 @@ impl BundleStage {
 
         let unprocessed_bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
 
-        let reserved_ticks = poh_recorder
-            .read()
-            .unwrap()
-            .ticks_per_slot()
-            .saturating_mul(8)
-            .saturating_div(10);
-
-        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
-        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
-        let reserved_space = BundleReservedSpaceManager::new(
-            MAX_BLOCK_UNITS,
-            preallocated_bundle_cost,
-            reserved_ticks,
-        );
-
         let consumer = BundleConsumer::new(
             committer,
             poh_recorder.read().unwrap().new_recorder(),
@@ -288,7 +267,6 @@ impl BundleStage {
             block_builder_fee_info.clone(),
             max_bundle_retry_duration,
             cluster_info,
-            reserved_space,
         );
 
         let bundle_thread = Builder::new()

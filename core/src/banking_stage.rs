@@ -38,7 +38,7 @@ use {
     solana_perf::{data_budget::DataBudget, packet::PACKETS_PER_BATCH},
     solana_poh::poh_recorder::{PohRecorder, TransactionRecorder},
     solana_runtime::{
-        bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
+        bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::{pubkey::Pubkey, timing::AtomicInterval},
@@ -365,6 +365,8 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        // callback function for compute space reservation for BundleStage
+        block_cost_limit_block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         Self::new_num_threads(
             block_production_method,
@@ -383,6 +385,7 @@ impl BankingStage {
             enable_forwarding,
             blacklisted_accounts,
             bundle_account_locker,
+            block_cost_limit_block_cost_limit_reservation_cb,
         )
     }
 
@@ -404,6 +407,7 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         match block_production_method {
             BlockProductionMethod::ThreadLocalMultiIterator => {
@@ -422,6 +426,7 @@ impl BankingStage {
                     prioritization_fee_cache,
                     blacklisted_accounts,
                     bundle_account_locker,
+                    block_cost_limit_reservation_cb,
                 )
             }
             BlockProductionMethod::CentralScheduler => Self::new_central_scheduler(
@@ -440,6 +445,7 @@ impl BankingStage {
                 enable_forwarding,
                 blacklisted_accounts,
                 bundle_account_locker,
+                block_cost_limit_reservation_cb,
             ),
         }
     }
@@ -460,6 +466,7 @@ impl BankingStage {
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -528,6 +535,7 @@ impl BankingStage {
                     unprocessed_transaction_storage,
                     blacklisted_accounts.clone(),
                     bundle_account_locker.clone(),
+                    block_cost_limit_reservation_cb.clone(),
                 )
             })
             .collect();
@@ -551,6 +559,7 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -599,6 +608,7 @@ impl BankingStage {
                 ),
                 blacklisted_accounts.clone(),
                 bundle_account_locker.clone(),
+                block_cost_limit_reservation_cb.clone(),
             ));
         }
 
@@ -628,11 +638,12 @@ impl BankingStage {
             );
 
             worker_metrics.push(consume_worker.metrics_handle());
+            let cb = block_cost_limit_reservation_cb.clone();
             bank_thread_hdls.push(
                 Builder::new()
                     .name(format!("solCoWorker{id:02}"))
                     .spawn(move || {
-                        let _ = consume_worker.run();
+                        let _ = consume_worker.run(cb);
                     })
                     .unwrap(),
             )
@@ -687,6 +698,7 @@ impl BankingStage {
         unprocessed_transaction_storage: UnprocessedTransactionStorage,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> JoinHandle<()> {
         let mut packet_receiver = PacketReceiver::new(id, packet_receiver);
         let consumer = Consumer::new(
@@ -708,6 +720,7 @@ impl BankingStage {
                     &consumer,
                     id,
                     unprocessed_transaction_storage,
+                    block_cost_limit_reservation_cb,
                 )
             })
             .unwrap()
@@ -722,6 +735,7 @@ impl BankingStage {
         banking_stage_stats: &BankingStageStats,
         slot_metrics_tracker: &mut LeaderSlotMetricsTracker,
         tracer_packet_stats: &mut TracerPacketStats,
+        block_cost_limit_reservation_cb: &impl Fn(&Bank) -> u64,
     ) {
         if unprocessed_transaction_storage.should_not_process() {
             return;
@@ -747,6 +761,7 @@ impl BankingStage {
                         unprocessed_transaction_storage,
                         banking_stage_stats,
                         slot_metrics_tracker,
+                        block_cost_limit_reservation_cb
                     ));
                 slot_metrics_tracker
                     .increment_consume_buffered_packets_us(consume_buffered_packets_us);
@@ -787,6 +802,7 @@ impl BankingStage {
         consumer: &Consumer,
         id: u32,
         mut unprocessed_transaction_storage: UnprocessedTransactionStorage,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64,
     ) {
         let mut banking_stage_stats = BankingStageStats::new(id);
         let mut tracer_packet_stats = TracerPacketStats::new(id);
@@ -806,6 +822,7 @@ impl BankingStage {
                     &banking_stage_stats,
                     &mut slot_metrics_tracker,
                     &mut tracer_packet_stats,
+                    &block_cost_limit_reservation_cb
                 ));
                 slot_metrics_tracker
                     .increment_process_buffered_packets_us(process_buffered_packets_us);
@@ -939,6 +956,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                |_| 0,
             );
             drop(non_vote_sender);
             drop(tpu_vote_sender);
@@ -997,6 +1015,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                |_| 0,
             );
             trace!("sending bank");
             drop(non_vote_sender);
@@ -1084,6 +1103,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                |_| 0,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -1261,6 +1281,7 @@ mod tests {
                     &Arc::new(PrioritizationFeeCache::new(0u64)),
                     HashSet::default(),
                     BundleAccountLocker::default(),
+                    |_| 0,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -1464,6 +1485,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                |_| 0,
             );
 
             let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();

@@ -9,7 +9,6 @@ use {
         },
         bundle_stage::{
             bundle_account_locker::{BundleAccountLocker, LockedBundle},
-            bundle_reserved_space_manager::BundleReservedSpaceManager,
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             committer::Committer,
         },
@@ -74,8 +73,6 @@ pub struct BundleConsumer {
     max_bundle_retry_duration: Duration,
 
     cluster_info: Arc<ClusterInfo>,
-
-    reserved_space: BundleReservedSpaceManager,
 }
 
 impl BundleConsumer {
@@ -90,7 +87,6 @@ impl BundleConsumer {
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         max_bundle_retry_duration: Duration,
         cluster_info: Arc<ClusterInfo>,
-        reserved_space: BundleReservedSpaceManager,
     ) -> Self {
         let blacklisted_accounts = HashSet::from_iter([tip_manager.tip_payment_program_id()]);
         Self {
@@ -106,7 +102,6 @@ impl BundleConsumer {
             block_builder_fee_info,
             max_bundle_retry_duration,
             cluster_info,
-            reserved_space,
         }
     }
 
@@ -133,8 +128,6 @@ impl BundleConsumer {
         unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
-        self.reserved_space.tick(&bank_start.working_bank);
-
         let reached_end_of_slot = unprocessed_transaction_storage.process_bundles(
             bank_start.working_bank.clone(),
             bundle_stage_leader_metrics,
@@ -151,7 +144,6 @@ impl BundleConsumer {
                     &self.qos_service,
                     &self.log_messages_bytes_limit,
                     self.max_bundle_retry_duration,
-                    &self.reserved_space,
                     bundles,
                     bank_start,
                     bundle_stage_leader_metrics,
@@ -180,7 +172,6 @@ impl BundleConsumer {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        reserved_space: &BundleReservedSpaceManager,
         bundles: &[(ImmutableDeserializedBundle, SanitizedBundle)],
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
@@ -217,7 +208,6 @@ impl BundleConsumer {
                             qos_service,
                             log_messages_bytes_limit,
                             max_bundle_retry_duration,
-                            reserved_space,
                             &locked_bundle,
                             bank_start,
                             bundle_stage_leader_metrics,
@@ -257,7 +247,6 @@ impl BundleConsumer {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        reserved_space: &BundleReservedSpaceManager,
         locked_bundle: &LockedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
@@ -286,7 +275,6 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                reserved_space,
                 bank_start,
                 bundle_stage_leader_metrics,
             );
@@ -306,7 +294,6 @@ impl BundleConsumer {
             qos_service,
             log_messages_bytes_limit,
             max_bundle_retry_duration,
-            reserved_space,
             locked_bundle.sanitized_bundle(),
             bank_start,
             bundle_stage_leader_metrics,
@@ -327,7 +314,6 @@ impl BundleConsumer {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        reserved_space: &BundleReservedSpaceManager,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
@@ -356,7 +342,6 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                reserved_space,
                 locked_init_tip_programs_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
@@ -409,7 +394,6 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                reserved_space,
                 locked_tip_crank_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
@@ -438,26 +422,17 @@ impl BundleConsumer {
     /// Rolls back the reserved space if there's not enough blockspace for all transactions in the bundle.
     fn reserve_bundle_blockspace<'a>(
         qos_service: &QosService,
-        reserved_space: &BundleReservedSpaceManager,
         sanitized_bundle: &'a SanitizedBundle,
         bank: &Arc<Bank>,
     ) -> ReserveBundleBlockspaceResult<'a> {
-        let mut write_cost_tracker = bank.write_cost_tracker().unwrap();
-
-        // set the block cost limit to the original block cost limit, run the select + accumulate
-        // then reset back to the expected block cost limit. this allows bundle stage to potentially
-        // increase block_compute_limits, allocate the space, and reset the block_cost_limits to
-        // the reserved space without BankingStage racing to allocate this extra reserved space
-        write_cost_tracker.set_block_cost_limit(reserved_space.block_cost_limit());
         let (transaction_qos_cost_results, cost_model_throttled_transactions_count) = qos_service
             .select_and_accumulate_transaction_costs(
                 bank,
-                &mut write_cost_tracker,
                 &sanitized_bundle.transactions,
                 std::iter::repeat(Ok(())),
+                // bundle stage does not respect the cost model reservation
+                &|_| 0,
             );
-        write_cost_tracker.set_block_cost_limit(reserved_space.expected_block_cost_limits(bank));
-        drop(write_cost_tracker);
 
         // rollback all transaction costs if it can't fit and
         if transaction_qos_cost_results.iter().any(|c| c.is_err()) {
@@ -477,7 +452,6 @@ impl BundleConsumer {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        reserved_space: &BundleReservedSpaceManager,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
@@ -493,7 +467,6 @@ impl BundleConsumer {
             cost_model_elapsed_us,
         ) = measure_us!(Self::reserve_bundle_blockspace(
             qos_service,
-            reserved_space,
             sanitized_bundle,
             &bank_start.working_bank
         )?);
@@ -743,7 +716,6 @@ mod tests {
             bundle_stage::{
                 bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
                 bundle_packet_deserializer::BundlePacketDeserializer,
-                bundle_reserved_space_manager::BundleReservedSpaceManager,
                 bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
                 QosService, UnprocessedTransactionStorage,
             },
@@ -755,7 +727,7 @@ mod tests {
         jito_tip_distribution::sdk::derive_tip_distribution_account_address,
         rand::{thread_rng, RngCore},
         solana_bundle::SanitizedBundle,
-        solana_cost_model::{block_cost_limits::MAX_BLOCK_UNITS, cost_model::CostModel},
+        solana_cost_model::cost_model::CostModel,
         solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
         solana_ledger::{
             blockstore::Blockstore, genesis_utils::create_genesis_config,
@@ -1042,16 +1014,6 @@ mod tests {
             block_builder_info,
             Duration::from_secs(10),
             cluster_info,
-            BundleReservedSpaceManager::new(
-                MAX_BLOCK_UNITS,
-                3_000_000,
-                poh_recorder
-                    .read()
-                    .unwrap()
-                    .ticks_per_slot()
-                    .saturating_mul(8)
-                    .saturating_div(10),
-            ),
         );
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
@@ -1190,16 +1152,6 @@ mod tests {
             block_builder_info,
             Duration::from_secs(10),
             cluster_info.clone(),
-            BundleReservedSpaceManager::new(
-                MAX_BLOCK_UNITS,
-                3_000_000,
-                poh_recorder
-                    .read()
-                    .unwrap()
-                    .ticks_per_slot()
-                    .saturating_mul(8)
-                    .saturating_div(10),
-            ),
         );
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
@@ -1360,12 +1312,6 @@ mod tests {
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
-        let reserved_ticks = bank.max_tick_height().saturating_mul(8).saturating_div(10);
-
-        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
-        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
-        let reserved_space =
-            BundleReservedSpaceManager::new(MAX_BLOCK_UNITS, 3_000_000, reserved_ticks);
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
         assert_matches!(
             BundleConsumer::handle_tip_programs(
@@ -1378,7 +1324,6 @@ mod tests {
                 &QosService::new(1),
                 &None,
                 Duration::from_secs(10),
-                &reserved_space,
                 &bank_start,
                 &mut bundle_stage_leader_metrics
             ),
@@ -1471,20 +1416,10 @@ mod tests {
             CostModel::calculate_cost(&sanitized_bundle.transactions[0], &bank.feature_set);
 
         let qos_service = QosService::new(1);
-        let reserved_ticks = bank.max_tick_height().saturating_mul(8).saturating_div(10);
-
-        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
-        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
-        let reserved_space =
-            BundleReservedSpaceManager::new(MAX_BLOCK_UNITS, 3_000_000, reserved_ticks);
-
-        assert!(BundleConsumer::reserve_bundle_blockspace(
-            &qos_service,
-            &reserved_space,
-            &sanitized_bundle,
-            &bank
-        )
-        .is_ok());
+        assert!(
+            BundleConsumer::reserve_bundle_blockspace(&qos_service, &sanitized_bundle, &bank)
+                .is_ok()
+        );
         assert_eq!(
             bank.read_cost_tracker().unwrap().block_cost(),
             transfer_cost.sum()
@@ -1524,30 +1459,12 @@ mod tests {
             .set_block_cost_limit(transfer_cost.sum());
 
         let qos_service = QosService::new(1);
-        let reserved_ticks = bank.max_tick_height().saturating_mul(8).saturating_div(10);
 
-        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
-        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
-        let reserved_space = BundleReservedSpaceManager::new(
-            bank.read_cost_tracker().unwrap().block_cost(),
-            50,
-            reserved_ticks,
+        assert!(
+            BundleConsumer::reserve_bundle_blockspace(&qos_service, &sanitized_bundle, &bank)
+                .is_err()
         );
-
-        assert!(BundleConsumer::reserve_bundle_blockspace(
-            &qos_service,
-            &reserved_space,
-            &sanitized_bundle,
-            &bank
-        )
-        .is_err());
+        // the block cost shall not be modified
         assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
-        assert_eq!(
-            bank.read_cost_tracker().unwrap().block_cost_limit(),
-            bank.read_cost_tracker()
-                .unwrap()
-                .block_cost_limit()
-                .saturating_sub(50)
-        );
     }
 }
