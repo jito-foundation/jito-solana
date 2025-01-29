@@ -21,7 +21,7 @@ use {
     solana_feature_gate_client::{
         errors::SolanaFeatureGateError, instructions::RevokePendingActivation,
     },
-    solana_feature_gate_interface::Feature,
+    solana_feature_gate_interface::{activate_with_lamports, from_account, Feature},
     solana_feature_set::FEATURE_NAMES,
     solana_message::Message,
     solana_pubkey::Pubkey,
@@ -31,7 +31,6 @@ use {
         client_error::Error as ClientError, request::MAX_MULTIPLE_ACCOUNTS,
         response::RpcVoteAccountInfo,
     },
-    solana_sdk::feature,
     solana_sdk_ids::{incinerator, system_program},
     solana_system_interface::error::SystemError,
     solana_transaction::Transaction,
@@ -878,7 +877,7 @@ fn feature_activation_allowed(
 }
 
 pub(super) fn status_from_account(account: Account) -> Option<CliFeatureStatus> {
-    feature::from_account(&account).map(|feature| match feature.activated_at {
+    from_account(&account).map(|feature| match feature.activated_at {
         None => CliFeatureStatus::Pending,
         Some(activation_slot) => CliFeatureStatus::Active(activation_slot),
     })
@@ -1000,7 +999,7 @@ fn process_activate(
         .unwrap();
 
     if let Some(account) = account {
-        if feature::from_account(&account).is_some() {
+        if from_account(&account).is_some() {
             return Err(format!("{feature_id} has already been activated").into());
         }
     }
@@ -1033,7 +1032,7 @@ fn process_activate(
         ComputeUnitLimit::Default,
         |lamports| {
             Message::new(
-                &feature::activate_with_lamports(&feature_id, &fee_payer.pubkey(), lamports),
+                &activate_with_lamports(&feature_id, &fee_payer.pubkey(), lamports),
                 Some(&fee_payer.pubkey()),
             )
         },
