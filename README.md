@@ -61,6 +61,17 @@ $ git clone https://github.com/jito-foundation/jito-solana.git
 $ cd jito-solana
 ```
 
+> [!NOTE]  
+> If you encounter build errors related to missing dependencies (like `anchor-lang`), you may need to initialize and update Git submodules:
+> ```bash
+> $ git submodule init
+> $ git submodule update --init --recursive
+> ```
+> Alternatively, you can clone the repository with submodules initially using:
+> ```bash
+> $ git clone --recurse-submodules https://github.com/jito-foundation/jito-solana.git
+> ```
+
 ## **3. Build.**
 
 ```bash
