@@ -434,6 +434,8 @@ fn delta(bit_lengths: &[usize], y: &Scalar, z: &Scalar) -> Scalar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encryption::pedersen::{PedersenCommitment, PedersenOpening};
+    use merlin::Transcript;
 
     #[test]
     fn test_single_rangeproof() {
@@ -476,5 +478,38 @@ mod tests {
             .is_ok());
     }
 
-    // TODO: write test for serialization/deserialization
+    #[test]
+    fn test_range_proof_serialization() {
+        // Create a range proof for testing
+        let amount = 55_u64;
+        let opening = PedersenOpening::random(&mut rand::thread_rng());
+        let commitment = PedersenCommitment::new(amount, &opening);
+
+        let mut transcript_prover = Transcript::new(b"test");
+        let proof = RangeProof::new(
+            vec![amount],
+            vec![64],
+            vec![&opening],
+            &mut transcript_prover,
+        )
+        .unwrap();
+
+        // Test that the proof is valid before serialization
+        let mut transcript_verify = Transcript::new(b"test");
+        assert!(proof
+            .verify(vec![&commitment], vec![64], &mut transcript_verify)
+            .is_ok());
+
+        // Serialize the proof to bytes
+        let serialized = proof.to_bytes();
+
+        // Deserialize back to a RangeProof
+        let deserialized = RangeProof::from_bytes(&serialized).unwrap();
+
+        // Verify that the deserialized proof is still valid
+        let mut transcript_verify = Transcript::new(b"test");
+        assert!(deserialized
+            .verify(vec![&commitment], vec![64], &mut transcript_verify)
+            .is_ok());
+    }
 }
