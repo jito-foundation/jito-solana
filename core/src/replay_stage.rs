@@ -9246,7 +9246,7 @@ pub(crate) mod tests {
 
         assert!(!duplicate_confirmed_slots.contains_key(&0));
 
-        // Mark 5 as duplicate confirmed, should suceed
+        // Mark 5 as duplicate confirmed, should succeed
         let bank_hash_5 = bank_forks.read().unwrap().bank_hash(5).unwrap();
         let confirmed_slots = [(5, bank_hash_5)];
 
@@ -9385,7 +9385,7 @@ pub(crate) mod tests {
             .is_duplicate_confirmed(&(5, bank_hash_5))
             .unwrap_or(false));
 
-        // Mark 5 and 6 as duplicate confirmed, should suceed
+        // Mark 5 and 6 as duplicate confirmed, should succeed
         let bank_hash_6 = bank_forks.read().unwrap().bank_hash(6).unwrap();
         if same_batch {
             sender
