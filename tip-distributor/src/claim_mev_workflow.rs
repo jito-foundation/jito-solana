@@ -149,7 +149,7 @@ pub async fn claim_mev_tips(
 ) -> Result<(), ClaimMevError> {
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         rpc_url,
-        Duration::from_secs(2400),
+        Duration::from_secs(3600),
         CommitmentConfig::confirmed(),
     );
     let rpc_sender_client = RpcClient::new(rpc_sender_url);
