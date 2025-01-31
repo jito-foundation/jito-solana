@@ -613,6 +613,7 @@ solana-send-transaction-service = { path = "send-transaction-service", version =
 solana-short-vec = { path = "sdk/short-vec", version = "=2.2.0" }
 solana-shred-version = { path = "sdk/shred-version", version = "=2.2.0" }
 solana-stable-layout = { path = "sdk/stable-layout", version = "=2.2.0" }
+solana-stake-interface = { version = "1.2.1" }
 solana-stake-program = { path = "programs/stake", version = "=2.2.0", default-features = false }
 solana-storage-bigtable = { path = "storage-bigtable", version = "=2.2.0" }
 solana-storage-proto = { path = "storage-proto", version = "=2.2.0" }
@@ -735,11 +736,14 @@ crossbeam-epoch = { git = "https://github.com/anza-xyz/crossbeam", rev = "fd279d
 #
 # There is a similar override in `programs/sbf/Cargo.toml`.  Please keep both
 # comments and the overrides in sync.
+solana-clock = { path = "sdk/clock" }
 solana-curve25519 = { path = "curves/curve25519" }
 solana-account-info = { path = "sdk/account-info" }
 solana-borsh = { path = "sdk/borsh" }
 solana-cpi = { path = "sdk/cpi" }
 solana-decode-error = { path = "sdk/decode-error" }
+solana-frozen-abi = { path = "sdk/frozen-abi" }
+solana-frozen-abi-macro = { path = "sdk/frozen-abi/macro" }
 solana-hash = { path = "sdk/hash" }
 solana-instruction = { path = "sdk/instruction" }
 solana-msg = { path = "sdk/msg" }
@@ -750,6 +754,7 @@ solana-program-option = { path = "sdk/program-option" }
 solana-program-pack = { path = "sdk/program-pack" }
 solana-pubkey = { path = "sdk/pubkey" }
 solana-sha256-hasher = { path = "sdk/sha256-hasher" }
+solana-sysvar-id = { path = "sdk/sysvar-id" }
 solana-zk-sdk = { path = "zk-sdk" }
 
 # curve25519-dalek uses the simd backend by default in v4 if possible,

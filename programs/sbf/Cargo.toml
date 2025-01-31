@@ -247,6 +247,7 @@ members = [
 #
 # There is a similar override in `../../Cargo.toml`.  Please keep both comments
 # and the overrides in sync.
+solana-clock = { path = "../../sdk/clock" }
 solana-curve25519 = { path = "../../curves/curve25519" }
 solana-account-info = { path = "../../sdk/account-info" }
 solana-borsh = { path = "../../sdk/borsh" }
@@ -262,4 +263,5 @@ solana-program-option = { path = "../../sdk/program-option" }
 solana-program-pack = { path = "../../sdk/program-pack" }
 solana-pubkey = { path = "../../sdk/pubkey" }
 solana-sha256-hasher = { path = "../../sdk/sha256-hasher" }
+solana-sysvar-id = { path = "../../sdk/sysvar-id" }
 solana-zk-sdk = { path = "../../zk-sdk" }

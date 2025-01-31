@@ -8676,6 +8676,7 @@ dependencies = [
  "solana-slot-hashes",
  "solana-slot-history",
  "solana-stable-layout",
+ "solana-stake-interface",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
@@ -9699,6 +9700,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-stake-interface"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5269e89fde216b4d7e1d1739cf5303f8398a1ff372a81232abbee80e554a838c"
+dependencies = [
+ "borsh 0.10.3",
+ "borsh 1.5.5",
+ "num-traits",
+ "serde",
+ "serde_derive",
+ "solana-clock",
+ "solana-cpi",
+ "solana-decode-error",
+ "solana-frozen-abi",
+ "solana-frozen-abi-macro",
+ "solana-instruction",
+ "solana-program-error",
+ "solana-pubkey",
+ "solana-system-interface",
+ "solana-sysvar-id",
+]
+
+[[package]]
 name = "solana-stake-program"
 version = "2.2.0"
 dependencies = [
@@ -10071,6 +10095,7 @@ dependencies = [
  "solana-sha256-hasher",
  "solana-slot-hashes",
  "solana-slot-history",
+ "solana-stake-interface",
  "solana-sysvar",
  "solana-sysvar-id",
  "test-case",
