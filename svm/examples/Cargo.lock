@@ -7388,7 +7388,7 @@ dependencies = [
  "solana-sysvar",
  "solana-transaction-context",
  "solana-type-overrides",
- "solana-vote-program",
+ "solana-vote-interface",
 ]
 
 [[package]]

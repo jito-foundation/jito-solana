@@ -14,7 +14,7 @@ use {
         state::{Stake, StakeStateV2},
     },
     solana_sysvar::stake_history::StakeHistory,
-    solana_vote_program::vote_state::VoteState,
+    solana_vote_interface::state::VoteState,
 };
 
 #[derive(Debug, PartialEq, Eq)]
