@@ -6593,8 +6593,6 @@ dependencies = [
  "enum-iterator",
  "itertools 0.12.1",
  "log",
- "num-derive",
- "num-traits",
  "percentage",
  "rand 0.8.5",
  "serde",
