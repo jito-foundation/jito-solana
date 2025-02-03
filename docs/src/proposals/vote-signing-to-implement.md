@@ -18,7 +18,7 @@ The following sections outline how this architecture would work:
 
      node
 
-   - The keypair is ephemeral. A new keypair is generated on node bootup. A
+   - The keypair is ephemeral. A new keypair is generated on node boot up, boot-up. A
 
      new keypair might also be generated at runtime based on some to be determined
 
