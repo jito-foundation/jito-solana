@@ -61,7 +61,7 @@ the lifecycle of BankForks, BlockCommitmentCache (for the highest confirmed slot
 the optimistically confirmed bank.
 
 The `ReplicaSlotConfirmationServer`: this service is responsible for serving the
-`ReplicaSlotConfirmationRequest` and sends the `ReplicaSlotConfirmationResponse` back to the requestor.
+`ReplicaSlotConfirmationRequest` and sends the `ReplicaSlotConfirmationResponse` back to the requester.
 The response consists of a vector of new slots the validator knows of which is later than the
 specified last_replicated_slot. This service also runs in the main validator. This service
 gets the slots for replication from the BankForks, BlockCommitmentCache and OptimiscallyConfirmBank.
@@ -73,7 +73,7 @@ the `ReplicaAccountMeta`, Hash and the AccountData. The `ReplicaAccountMeta` con
 the existing `AccountMeta` in addition to the account data length in bytes.
 
 The `ReplicaAccountsServer`: this service is responsible for serving the `ReplicaAccountsRequest`
-and sends `ReplicaAccountsResponse` to the requestor. The response contains the count of the
+and sends `ReplicaAccountsResponse` to the requester. The response contains the count of the
 ReplAccountInfo and the vector of ReplAccountInfo. This service runs both in the validator
 and the replica relaying replication information. The server can stream the account information
 from its AccountCache or from the storage if already flushed. This is similar to how a snapshot
