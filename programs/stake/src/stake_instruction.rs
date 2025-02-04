@@ -7,15 +7,16 @@ use {
     log::*,
     solana_bincode::limited_deserialize,
     solana_instruction::error::InstructionError,
-    solana_program::stake::{
-        instruction::{LockupArgs, StakeError, StakeInstruction},
-        program::id,
-        state::{Authorized, Lockup},
-    },
     solana_program_runtime::{
         declare_process_instruction, sysvar_cache::get_sysvar_with_account_check,
     },
     solana_pubkey::Pubkey,
+    solana_stake_interface::{
+        error::StakeError,
+        instruction::{LockupArgs, StakeInstruction},
+        program::id,
+        state::{Authorized, Lockup},
+    },
     solana_transaction_context::{IndexOfAccount, InstructionContext, TransactionContext},
 };
 
@@ -398,20 +399,6 @@ mod tests {
         solana_epoch_schedule::EpochSchedule,
         solana_feature_set::FeatureSet,
         solana_instruction::{AccountMeta, Instruction},
-        solana_program::{
-            stake::{
-                config as stake_config,
-                instruction::{
-                    self, authorize_checked, authorize_checked_with_seed, initialize_checked,
-                    set_lockup_checked, AuthorizeCheckedWithSeedArgs, AuthorizeWithSeedArgs,
-                    LockupArgs, StakeError,
-                },
-                stake_flags::StakeFlags,
-                state::{warmup_cooldown_rate, Authorized, Lockup, StakeAuthorize},
-                MINIMUM_DELINQUENT_EPOCHS_FOR_DEACTIVATION,
-            },
-            vote::state::{VoteState, VoteStateVersions},
-        },
         solana_program_runtime::invoke_context::mock_process_instruction,
         solana_pubkey::Pubkey,
         solana_rent::Rent,
@@ -419,10 +406,23 @@ mod tests {
             system_program,
             sysvar::{clock, epoch_rewards, epoch_schedule, rent, rewards, stake_history},
         },
+        solana_stake_interface::{
+            config as stake_config,
+            error::StakeError,
+            instruction::{
+                self, authorize_checked, authorize_checked_with_seed, initialize_checked,
+                set_lockup_checked, AuthorizeCheckedWithSeedArgs, AuthorizeWithSeedArgs,
+                LockupArgs,
+            },
+            stake_flags::StakeFlags,
+            state::{warmup_cooldown_rate, Authorized, Lockup, StakeAuthorize},
+            MINIMUM_DELINQUENT_EPOCHS_FOR_DEACTIVATION,
+        },
         solana_sysvar::{
             rewards::Rewards,
             stake_history::{StakeHistory, StakeHistoryEntry},
         },
+        solana_vote_interface::state::{VoteState, VoteStateVersions},
         solana_vote_program::vote_state,
         std::{collections::HashSet, str::FromStr, sync::Arc},
         test_case::test_case,

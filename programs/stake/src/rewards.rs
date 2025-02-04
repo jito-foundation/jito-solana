@@ -9,8 +9,8 @@ use {
     solana_account::{state_traits::StateMut, AccountSharedData, WritableAccount},
     solana_clock::Epoch,
     solana_instruction::error::InstructionError,
-    solana_program::stake::{
-        instruction::StakeError,
+    solana_stake_interface::{
+        error::StakeError,
         state::{Stake, StakeStateV2},
     },
     solana_sysvar::stake_history::StakeHistory,
