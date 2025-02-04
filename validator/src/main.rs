@@ -7,9 +7,7 @@ use {
         admin_rpc_service::{load_staked_nodes_overrides, StakedNodesOverrides},
         bootstrap,
         cli::{self, app, warn_for_deprecated_arguments, DefaultArgs},
-        commands,
-        dashboard::Dashboard,
-        ledger_lockfile, lock_ledger, redirect_stderr_to_file,
+        commands, ledger_lockfile, lock_ledger, redirect_stderr_to_file,
     },
     clap::{crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit, ArgMatches},
     crossbeam_channel::unbounded,
@@ -97,18 +95,6 @@ enum Operation {
 }
 
 const MILLIS_PER_SECOND: u64 = 1000;
-
-fn monitor_validator(ledger_path: &Path) {
-    let dashboard = Dashboard::new(ledger_path, None, None).unwrap_or_else(|err| {
-        println!(
-            "Error: Unable to connect to validator at {}: {:?}",
-            ledger_path.display(),
-            err,
-        );
-        exit(1);
-    });
-    dashboard.run(Duration::from_secs(2));
-}
 
 fn set_repair_whitelist(
     ledger_path: &Path,
@@ -337,12 +323,12 @@ pub fn main() {
             println!("Exit request sent");
 
             if monitor {
-                monitor_validator(&ledger_path);
+                commands::monitor::monitor_validator(&ledger_path);
             }
             return;
         }
         ("monitor", _) => {
-            monitor_validator(&ledger_path);
+            commands::monitor::execute(&matches, &ledger_path);
             return;
         }
         ("staked-nodes-overrides", Some(subcommand_matches)) => {
