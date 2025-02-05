@@ -9382,6 +9382,7 @@ dependencies = [
  "solana-runtime",
  "solana-sdk",
  "solana-tpu-client",
+ "tokio",
 ]
 
 [[package]]
