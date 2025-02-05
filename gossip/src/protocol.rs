@@ -1,6 +1,7 @@
+//! Definitions for the base of all Gossip protocol messages
 use {
     crate::{
-        crds_data::MAX_WALLCLOCK,
+        crds_data::{CrdsData, MAX_WALLCLOCK},
         crds_gossip_pull::CrdsFilter,
         crds_value::CrdsValue,
         ping_pong::{self, Pong},
@@ -42,10 +43,10 @@ const GOSSIP_PING_TOKEN_SIZE: usize = 32;
 pub(crate) const PULL_RESPONSE_MIN_SERIALIZED_SIZE: usize = 161;
 
 // TODO These messages should go through the gpu pipeline for spam filtering
+/// Gossip protocol messages base enum
 #[derive(Serialize, Deserialize, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Protocol {
-    /// Gossip protocol messages
     PullRequest(CrdsFilter, CrdsValue),
     PullResponse(Pubkey, Vec<CrdsValue>),
     PushMessage(Pubkey, Vec<CrdsValue>),
@@ -152,10 +153,23 @@ impl Sanitize for Protocol {
         match self {
             Protocol::PullRequest(filter, val) => {
                 filter.sanitize()?;
+                // PullRequest is only allowed to have ContactInfo in its CrdsData
+                match val.data() {
+                    CrdsData::LegacyContactInfo(_) | CrdsData::ContactInfo(_) => val.sanitize(),
+                    _ => Err(SanitizeError::InvalidValue),
+                }
+            }
+            Protocol::PullResponse(_, val) => {
+                // PullResponse is allowed to carry anything in its CrdsData, including deprecated Crds
+                // such that a deprecated Crds does not get pulled and then rejected.
                 val.sanitize()
             }
-            Protocol::PullResponse(_, val) => val.sanitize(),
-            Protocol::PushMessage(_, val) => val.sanitize(),
+            Protocol::PushMessage(_, val) => {
+                // PushMessage is allowed to carry anything in its CrdsData, including deprecated Crds
+                // such that a deprecated Crds gets ingested instead of the node having to pull it from
+                // other nodes that have inserted it into their Crds table
+                val.sanitize()
+            }
             Protocol::PruneMessage(from, val) => {
                 if *from != val.pubkey {
                     Err(SanitizeError::InvalidValue)
