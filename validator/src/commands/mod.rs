@@ -4,5 +4,6 @@ pub mod exit;
 pub mod monitor;
 pub mod plugin;
 pub mod set_identity;
+pub mod set_log_filter;
 pub mod staked_nodes_overrides;
 pub mod wait_for_restart_window;

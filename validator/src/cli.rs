@@ -1817,18 +1817,7 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(SubCommand::with_name("run").about("Run the validator"))
         .subcommand(commands::plugin::command(default_args))
         .subcommand(commands::set_identity::command(default_args))
-        .subcommand(
-            SubCommand::with_name("set-log-filter")
-                .about("Adjust the validator log filter")
-                .arg(
-                    Arg::with_name("filter").takes_value(true).index(1).help(
-                        "New filter using the same format as the RUST_LOG environment variable",
-                    ),
-                )
-                .after_help(
-                    "Note: the new filter only applies to the currently running validator instance",
-                ),
-        )
+        .subcommand(commands::set_log_filter::command(default_args))
         .subcommand(commands::staked_nodes_overrides::command(default_args))
         .subcommand(commands::wait_for_restart_window::command(default_args))
         .subcommand(

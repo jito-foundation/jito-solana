@@ -221,14 +221,7 @@ pub fn main() {
             return;
         }
         ("set-log-filter", Some(subcommand_matches)) => {
-            let filter = value_t_or_exit!(subcommand_matches, "filter", String);
-            let admin_client = admin_rpc_service::connect(&ledger_path);
-            admin_rpc_service::runtime()
-                .block_on(async move { admin_client.await?.set_log_filter(filter).await })
-                .unwrap_or_else(|err| {
-                    println!("set log filter failed: {err}");
-                    exit(1);
-                });
+            commands::set_log_filter::execute(subcommand_matches, &ledger_path);
             return;
         }
         ("wait-for-restart-window", Some(subcommand_matches)) => {
