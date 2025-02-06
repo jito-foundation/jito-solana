@@ -1,3 +1,5 @@
+use log::debug;
+use std::str::FromStr;
 use {
     crate::{send_until_blockhash_expires, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
@@ -65,9 +67,19 @@ pub async fn get_claim_transactions_for_valid_unclaimed(
     micro_lamports: u64,
     payer_pubkey: Pubkey,
 ) -> Result<Vec<Transaction>, ClaimMevError> {
+    let our_upload_authority = Pubkey::from_str("GZctHpWXmsZC1YHACTGGcHhYxjdRqQvTpYkb9LMvxDib")
+        .expect("parse our upload authority");
+    debug!("our upload authority: {:?}", our_upload_authority);
     let tree_nodes = merkle_trees
         .generated_merkle_trees
         .iter()
+        .filter(|tree| {
+            debug!(
+                "tree upload authority: {:?}",
+                tree.merkle_root_upload_authority
+            );
+            tree.merkle_root_upload_authority == our_upload_authority
+        })
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
 
@@ -141,6 +153,7 @@ pub async fn get_claim_transactions_for_valid_unclaimed(
 pub async fn claim_mev_tips(
     merkle_trees: &GeneratedMerkleTreeCollection,
     rpc_url: String,
+    rpc_sender_url: String,
     tip_distribution_program_id: Pubkey,
     keypair: Arc<Keypair>,
     max_loop_duration: Duration,
@@ -148,9 +161,10 @@ pub async fn claim_mev_tips(
 ) -> Result<(), ClaimMevError> {
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         rpc_url,
-        Duration::from_secs(300),
+        Duration::from_secs(3600),
         CommitmentConfig::confirmed(),
     );
+    let rpc_sender_client = RpcClient::new(rpc_sender_url);
 
     let start = Instant::now();
     while start.elapsed() <= max_loop_duration {
@@ -173,7 +187,7 @@ pub async fn claim_mev_tips(
         }
 
         all_claim_transactions.shuffle(&mut thread_rng());
-        let transactions: Vec<_> = all_claim_transactions.into_iter().take(10_000).collect();
+        let transactions: Vec<_> = all_claim_transactions.into_iter().take(300).collect();
 
         // only check balance for the ones we need to currently send since reclaim rent running in parallel
         if let Some((start_balance, desired_balance, sol_to_deposit)) =
@@ -188,7 +202,14 @@ pub async fn claim_mev_tips(
         }
 
         let blockhash = rpc_client.get_latest_blockhash().await?;
-        let _ = send_until_blockhash_expires(&rpc_client, transactions, blockhash, &keypair).await;
+        let _ = send_until_blockhash_expires(
+            &rpc_client,
+            &rpc_sender_client,
+            transactions,
+            blockhash,
+            &keypair,
+        )
+        .await;
     }
 
     let transactions = get_claim_transactions_for_valid_unclaimed(
@@ -350,8 +371,13 @@ fn build_mev_claim_transactions(
     let transactions: Vec<Transaction> = instructions
         .into_iter()
         .map(|claim_ix| {
+            // helps get txs into block easier since default is 400k CUs
+            let compute_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(60_000);
             let priority_fee_ix = ComputeBudgetInstruction::set_compute_unit_price(micro_lamports);
-            Transaction::new_with_payer(&[priority_fee_ix, claim_ix], Some(&payer_pubkey))
+            Transaction::new_with_payer(
+                &[compute_limit_ix, priority_fee_ix, claim_ix],
+                Some(&payer_pubkey),
+            )
         })
         .collect();
 
