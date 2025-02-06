@@ -1,3 +1,4 @@
+use log::debug;
 use std::str::FromStr;
 use {
     crate::{send_until_blockhash_expires, GeneratedMerkleTreeCollection},
@@ -66,14 +67,17 @@ pub async fn get_claim_transactions_for_valid_unclaimed(
     micro_lamports: u64,
     payer_pubkey: Pubkey,
 ) -> Result<Vec<Transaction>, ClaimMevError> {
-    let our_upload_authority = Pubkey::from_str("8F4jGUmxF36vQ6yabnsxX6AQVXdKBhs8kGSUuRKSg8Xt")
+    let our_upload_authority = Pubkey::from_str("GZctHpWXmsZC1YHACTGGcHhYxjdRqQvTpYkb9LMvxDib")
         .expect("parse our upload authority");
-    info!("our upload authority: {:?}", our_upload_authority);
+    debug!("our upload authority: {:?}", our_upload_authority);
     let tree_nodes = merkle_trees
         .generated_merkle_trees
         .iter()
         .filter(|tree| {
-            info!("tree upload authority: {:?}", tree.merkle_root);
+            debug!(
+                "tree upload authority: {:?}",
+                tree.merkle_root_upload_authority
+            );
             tree.merkle_root_upload_authority == our_upload_authority
         })
         .flat_map(|tree| &tree.tree_nodes)
