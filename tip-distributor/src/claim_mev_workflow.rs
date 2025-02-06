@@ -66,16 +66,15 @@ pub async fn get_claim_transactions_for_valid_unclaimed(
     micro_lamports: u64,
     payer_pubkey: Pubkey,
 ) -> Result<Vec<Transaction>, ClaimMevError> {
-    let our_merkle_root =
-        solana_sdk::hash::Hash::from_str("8F4jGUmxF36vQ6yabnsxX6AQVXdKBhs8kGSUuRKSg8Xt")
-            .expect("parse our merkle root");
-    info!("our merkle root: {:?}", our_merkle_root);
+    let our_upload_authority = Pubkey::from_str("8F4jGUmxF36vQ6yabnsxX6AQVXdKBhs8kGSUuRKSg8Xt")
+        .expect("parse our upload authority");
+    info!("our upload authority: {:?}", our_upload_authority);
     let tree_nodes = merkle_trees
         .generated_merkle_trees
         .iter()
         .filter(|tree| {
-            info!("tree merkle root: {:?}", tree.merkle_root);
-            tree.merkle_root == our_merkle_root
+            info!("tree upload authority: {:?}", tree.merkle_root);
+            tree.merkle_root_upload_authority == our_upload_authority
         })
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
