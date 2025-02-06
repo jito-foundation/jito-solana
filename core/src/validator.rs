@@ -192,6 +192,7 @@ impl BlockVerificationMethod {
 pub enum BlockProductionMethod {
     #[default]
     CentralScheduler,
+    CentralSchedulerGreedy,
 }
 
 impl BlockProductionMethod {
