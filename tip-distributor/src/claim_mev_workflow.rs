@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use {
     crate::{send_until_blockhash_expires, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
@@ -68,6 +69,16 @@ pub async fn get_claim_transactions_for_valid_unclaimed(
     let tree_nodes = merkle_trees
         .generated_merkle_trees
         .iter()
+        .filter_map(|tree| {
+            if tree.merkle_root
+                == solana_sdk::hash::Hash::from_str("8F4jGUmxF36vQ6yabnsxX6AQVXdKBhs8kGSUuRKSg8Xt")
+                    .expect("parse upload authority")
+            {
+                Some(tree)
+            } else {
+                None
+            }
+        })
         .flat_map(|tree| &tree.tree_nodes)
         .collect_vec();
 
