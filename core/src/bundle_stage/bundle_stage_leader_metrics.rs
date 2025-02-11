@@ -214,6 +214,9 @@ impl BundleStageStatsMetricsTracker {
                             1
                         );
                     }
+                    DeserializedBundleError::FailedVerifyPrecompiles => {
+                        saturating_add_assign!(bundle_stage_metrics.failed_verify_precompiles, 1);
+                    }
                 },
             }
         }
@@ -345,6 +348,7 @@ pub struct BundleStageStats {
     sanitize_transaction_failed_marked_discard: u64,
     sanitize_transaction_failed_sig_verify_failed: u64,
     packet_filter_failure: u64,
+    failed_verify_precompiles: u64,
 
     locked_bundle_elapsed_us: u64,
 
@@ -450,6 +454,11 @@ impl BundleStageStats {
                 i64
             ),
             ("packet_filter_failure", self.packet_filter_failure, i64),
+            (
+                "failed_verify_precompiles",
+                self.failed_verify_precompiles,
+                i64
+            ),
             (
                 "locked_bundle_elapsed_us",
                 self.locked_bundle_elapsed_us,

@@ -1040,6 +1040,7 @@ mod tests {
                 &bank_start.working_bank,
                 &HashSet::default(),
                 &mut error_metrics,
+                false,
             )
             .unwrap();
 
@@ -1185,6 +1186,7 @@ mod tests {
                 &bank_start.working_bank,
                 &HashSet::default(),
                 &mut error_metrics,
+                false,
             )
             .unwrap();
 
