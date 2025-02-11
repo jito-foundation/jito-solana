@@ -1,21 +1,22 @@
 //! Information about stake and voter rewards based on stake state.
-//! Used by `solana-runtime`.
 
 use {
-    crate::points::{
+    self::points::{
         calculate_stake_points_and_credits, CalculatedStakePoints, InflationPointCalculationEvent,
         PointValue, SkippedReason,
     },
-    solana_account::{state_traits::StateMut, AccountSharedData, WritableAccount},
-    solana_clock::Epoch,
-    solana_instruction::error::InstructionError,
-    solana_stake_interface::{
-        error::StakeError,
-        state::{Stake, StakeStateV2},
+    solana_sdk::{
+        account::{state_traits::StateMut, AccountSharedData, WritableAccount},
+        clock::Epoch,
+        instruction::InstructionError,
+        stake::instruction::StakeError,
+        sysvar::stake_history::StakeHistory,
     },
-    solana_sysvar::stake_history::StakeHistory,
-    solana_vote_interface::state::VoteState,
+    solana_stake_program::stake_state::{Stake, StakeStateV2},
+    solana_vote_program::vote_state::VoteState,
 };
+
+pub mod points;
 
 #[derive(Debug, PartialEq, Eq)]
 struct CalculatedStakeRewards {
@@ -24,9 +25,8 @@ struct CalculatedStakeRewards {
     new_credits_observed: u64,
 }
 
-// utility function, used by runtime
+// utility function
 // returns a tuple of (stakers_reward,voters_reward)
-#[doc(hidden)]
 pub fn redeem_rewards(
     rewarded_epoch: Epoch,
     stake_state: StakeStateV2,
@@ -226,12 +226,21 @@ fn calculate_stake_rewards(
 #[cfg(test)]
 mod tests {
     use {
-        super::*,
-        crate::{points::null_tracer, stake_state::new_stake},
-        solana_native_token::sol_to_lamports,
-        solana_pubkey::Pubkey,
-        test_case::test_case,
+        self::points::null_tracer, super::*, solana_program::stake::state::Delegation,
+        solana_pubkey::Pubkey, solana_sdk::native_token::sol_to_lamports, test_case::test_case,
     };
+
+    fn new_stake(
+        stake: u64,
+        voter_pubkey: &Pubkey,
+        vote_state: &VoteState,
+        activation_epoch: Epoch,
+    ) -> Stake {
+        Stake {
+            delegation: Delegation::new(voter_pubkey, stake, activation_epoch),
+            credits_observed: vote_state.credits(),
+        }
+    }
 
     #[test]
     fn test_stake_state_redeem_rewards() {
