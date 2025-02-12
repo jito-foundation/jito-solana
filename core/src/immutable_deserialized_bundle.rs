@@ -575,6 +575,17 @@ mod tests {
             ),
             Err(DeserializedBundleError::FailedVerifyPrecompiles)
         );
+
+        // move precompile to SVM ignores the check
+        assert_eq!(
+            bundle.build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut transaction_errors,
+                true
+            ),
+            Ok(())
+        );
     }
 
     #[test]
@@ -616,6 +627,17 @@ mod tests {
                 false
             ),
             Err(DeserializedBundleError::FailedVerifyPrecompiles)
+        );
+
+        // move precompile to SVM ignores the check
+        assert_eq!(
+            bundle.build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut transaction_errors,
+                true
+            ),
+            Ok(())
         );
     }
 }
