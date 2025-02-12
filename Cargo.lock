@@ -7166,6 +7166,7 @@ dependencies = [
  "fs_extra",
  "futures 0.3.31",
  "histogram",
+ "hyper",
  "itertools 0.12.1",
  "jito-protos",
  "jito-tip-distribution",
@@ -7261,6 +7262,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "tower",
  "trees",
 ]
 
