@@ -59,6 +59,7 @@ solana_pubkey::declare_id!("MyProgram1111111111111111111111111111111111");
   * `solana-genesis`: the `--cluster-type` parameter now clones the feature set from the target cluster (#2587)
   * `unified-scheduler` as default option for `--block-verification-method` (#2653)
   * warn that `thread-local-multi-iterator` option for `--block-production-method` is deprecated (#3113)
+  * Add new variant to `--block-production-method` for `central-scheduler-greedy`. This is a simplified scheduler that has much better performance than the more strict `central-scheduler` variant.
 
 ## [2.0.0]
 * Breaking
