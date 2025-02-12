@@ -70,7 +70,7 @@ impl RelayerStageStats {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelayerConfig {
     /// Relayer URL
     pub relayer_url: String,
@@ -83,6 +83,22 @@ pub struct RelayerConfig {
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
+
+    /// Address of local interface to bind socket.  Set from cli arg in solana-validator.
+    /// Needed for e.g. connecting over double zero.
+    pub bind_address: IpAddr,
+}
+
+impl Default for RelayerConfig {
+    fn default() -> Self {
+        Self {
+            relayer_url: String::default(),
+            expected_heartbeat_interval: Duration::default(),
+            oldest_allowed_heartbeat: Duration::default(),
+            trust_packets: bool::default(),
+            bind_address: IpAddr::from(Ipv4Addr::UNSPECIFIED),
+        }
+    }
 }
 
 pub struct RelayerStage {
@@ -221,11 +237,21 @@ impl RelayerStage {
                 })?;
         }
 
+        // Create connector for relayer connection to respect cli bind-addr.
+        let local_ip: IpAddr = local_relayer_config.bind_address;
+        let mut http = hyper::client::connect::HttpConnector::new();
+        http.enforce_http(false);
+        http.set_local_address(Some(local_ip));
+
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+
+        let auth_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(http.clone()),
+        )
+        .await
+        .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+        .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -247,10 +273,14 @@ impl RelayerStage {
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
         );
-        let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::RelayerConnectionTimeout)?
-            .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
+
+        let relayer_channel = timeout(
+            *connection_timeout,
+            backend_endpoint.connect_with_connector(http),
+        )
+        .await
+        .map_err(|_| ProxyError::RelayerConnectionTimeout)?
+        .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(

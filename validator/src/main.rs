@@ -466,6 +466,8 @@ pub fn main() {
 
     let socket_addr_space = SocketAddrSpace::new(matches.is_present("allow_private_addr"));
     let ledger_path = PathBuf::from(matches.value_of("ledger_path").unwrap());
+    let bind_address = solana_net_utils::parse_host(matches.value_of("bind_address").unwrap())
+        .expect("invalid bind_address");
 
     let operation = match matches.subcommand() {
         ("", _) | ("run", _) => Operation::Run,
@@ -477,7 +479,7 @@ pub fn main() {
                 .block_on(async move {
                     admin_client
                         .await?
-                        .set_block_engine_config(block_engine_url, trust_packets)
+                        .set_block_engine_config(block_engine_url, trust_packets, bind_address)
                         .await
                 })
                 .unwrap_or_else(|err| {
@@ -503,6 +505,7 @@ pub fn main() {
                             trust_packets,
                             expected_heartbeat_interval_ms,
                             max_failed_heartbeats,
+                            bind_address,
                         )
                         .await
                 })
@@ -1274,8 +1277,6 @@ pub fn main() {
         "--gossip-validator",
     );
 
-    let bind_address = solana_net_utils::parse_host(matches.value_of("bind_address").unwrap())
-        .expect("invalid bind_address");
     let rpc_bind_address = if matches.is_present("rpc_bind_address") {
         solana_net_utils::parse_host(matches.value_of("rpc_bind_address").unwrap())
             .expect("invalid rpc_bind_address")
@@ -1627,6 +1628,7 @@ pub fn main() {
             "".to_string()
         },
         trust_packets: matches.is_present("trust_block_engine_packets"),
+        bind_address,
     };
 
     // Defaults are set in cli definition, safe to use unwrap() here
@@ -1653,6 +1655,7 @@ pub fn main() {
             max_failed_heartbeats * expected_heartbeat_interval_ms,
         ),
         trust_packets: matches.is_present("trust_relayer_packets"),
+        bind_address,
     };
 
     let mut validator_config = ValidatorConfig {

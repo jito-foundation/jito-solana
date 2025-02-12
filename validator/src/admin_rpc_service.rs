@@ -32,7 +32,7 @@ use {
         collections::{HashMap, HashSet},
         env, error,
         fmt::{self, Display},
-        net::SocketAddr,
+        net::{IpAddr, SocketAddr},
         path::{Path, PathBuf},
         str::FromStr,
         sync::{Arc, RwLock},
@@ -255,6 +255,7 @@ pub trait AdminRpc {
         meta: Self::Metadata,
         block_engine_url: String,
         trust_packets: bool,
+        bind_address: IpAddr,
     ) -> Result<()>;
 
     #[rpc(meta, name = "setRelayerConfig")]
@@ -265,6 +266,7 @@ pub trait AdminRpc {
         trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
+        bind_address: IpAddr,
     ) -> Result<()>;
 
     #[rpc(meta, name = "setShredReceiverAddress")]
@@ -484,11 +486,13 @@ impl AdminRpc for AdminRpcImpl {
         meta: Self::Metadata,
         block_engine_url: String,
         trust_packets: bool,
+        bind_address: IpAddr,
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
         let config = BlockEngineConfig {
             block_engine_url,
             trust_packets,
+            bind_address,
         };
         // Detailed log messages are printed inside validate function
         if BlockEngineStage::is_valid_block_engine_config(&config) {
@@ -544,6 +548,7 @@ impl AdminRpc for AdminRpcImpl {
         trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
+        bind_address: IpAddr,
     ) -> Result<()> {
         debug!("set_relayer_config request received");
         let expected_heartbeat_interval = Duration::from_millis(expected_heartbeat_interval_ms);
@@ -554,6 +559,7 @@ impl AdminRpc for AdminRpcImpl {
             expected_heartbeat_interval,
             oldest_allowed_heartbeat,
             trust_packets,
+            bind_address,
         };
         // Detailed log messages are printed inside validate function
         if RelayerStage::is_valid_relayer_config(&config) {
