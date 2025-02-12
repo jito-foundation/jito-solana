@@ -577,15 +577,9 @@ mod tests {
         );
 
         // move precompile to SVM ignores the check
-        assert_eq!(
-            bundle.build_sanitized_bundle(
-                &bank,
-                &HashSet::default(),
-                &mut transaction_errors,
-                true
-            ),
-            Ok(())
-        );
+        assert!(bundle
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut transaction_errors, true)
+            .is_ok());
     }
 
     #[test]
@@ -630,14 +624,8 @@ mod tests {
         );
 
         // move precompile to SVM ignores the check
-        assert_eq!(
-            bundle.build_sanitized_bundle(
-                &bank,
-                &HashSet::default(),
-                &mut transaction_errors,
-                true
-            ),
-            Ok(())
-        );
+        assert!(bundle
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut transaction_errors, true)
+            .is_ok());
     }
 }
