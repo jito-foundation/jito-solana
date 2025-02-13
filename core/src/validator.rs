@@ -499,7 +499,7 @@ pub struct ValidatorTpuConfig {
     pub vote_use_quic: bool,
     /// Controls the connection cache pool size
     pub tpu_connection_pool_size: usize,
-    /// Controls if to enable UDP for TPU tansactions.
+    /// Controls if to enable UDP for TPU transactions.
     pub tpu_enable_udp: bool,
     /// Controls the new maximum connections per IpAddr per minute
     pub tpu_max_connections_per_ipaddr_per_minute: u64,
