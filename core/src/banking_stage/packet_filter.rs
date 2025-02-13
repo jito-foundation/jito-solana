@@ -29,7 +29,7 @@ impl ImmutableDeserializedPacket {
     /// This is a simple sanity check so the leader can discard transactions
     /// which are statically known to exceed the compute budget, and will
     /// result in no useful state-change.
-    pub fn check_insufficent_compute_unit_limit(&self) -> Result<(), PacketFilterFailure> {
+    pub fn check_insufficient_compute_unit_limit(&self) -> Result<(), PacketFilterFailure> {
         let mut static_builtin_cost_sum: u64 = 0;
         for (program_id, _) in self.transaction().get_message().program_instructions_iter() {
             if let Some(ix_cost) = get_builtin_instruction_cost(program_id, &FEATURE_SET) {
