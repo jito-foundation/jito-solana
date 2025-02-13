@@ -46,7 +46,7 @@ pub async fn reclaim_rent(
 ) -> Result<(), ClaimMevError> {
     let rpc_client = RpcClient::new_with_timeout_and_commitment(
         rpc_url.clone(),
-        Duration::from_secs(2400),
+        Duration::from_secs(3600),
         CommitmentConfig::processed(),
     );
 
