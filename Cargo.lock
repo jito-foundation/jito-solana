@@ -10250,7 +10250,6 @@ name = "solana-tps-client"
 version = "2.2.0"
 dependencies = [
  "log",
- "serial_test",
  "solana-account",
  "solana-client",
  "solana-client-traits",
@@ -10269,7 +10268,6 @@ dependencies = [
  "solana-signature",
  "solana-signer",
  "solana-streamer",
- "solana-test-validator",
  "solana-tpu-client",
  "solana-transaction",
  "solana-transaction-error",
