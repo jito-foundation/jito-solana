@@ -187,6 +187,8 @@ pub struct ForkStats {
     pub is_locked_out: bool,
     pub voted_stakes: VotedStakes,
     pub duplicate_confirmed_hash: Option<Hash>,
+    pub is_supermajority_confirmed: bool,
+    pub is_mostly_confirmed: bool,
     pub computed: bool,
     pub lockout_intervals: LockoutIntervals,
     pub bank_hash: Option<Hash>,
@@ -395,6 +397,22 @@ impl ProgressMap {
     pub fn handle_new_root(&mut self, bank_forks: &BankForks) {
         self.progress_map
             .retain(|k, _| bank_forks.get(*k).is_some());
+    }
+
+    pub fn set_mostly_confirmed_slot(&mut self, slot: Slot) {
+        let slot_progress = self.get_mut(&slot).unwrap();
+        slot_progress.fork_stats.is_mostly_confirmed = true;
+    }
+
+    pub fn set_supermajority_confirmed_slot(&mut self, slot: Slot) {
+        let slot_progress = self.get_mut(&slot).unwrap();
+        slot_progress.fork_stats.is_supermajority_confirmed = true;
+    }
+
+    pub fn is_supermajority_confirmed(&self, slot: Slot) -> Option<bool> {
+        self.progress_map
+            .get(&slot)
+            .map(|s| s.fork_stats.is_supermajority_confirmed)
     }
 
     pub fn log_propagated_stats(&self, slot: Slot, bank_forks: &RwLock<BankForks>) {
