@@ -82,7 +82,7 @@ pub struct ShredCode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Shred {
+pub enum Shred {
     ShredCode(ShredCode),
     ShredData(ShredData),
 }
@@ -748,7 +748,7 @@ fn make_merkle_proof(
     })
 }
 
-pub(super) fn recover(
+pub fn recover(
     mut shreds: Vec<Shred>,
     reed_solomon_cache: &ReedSolomonCache,
 ) -> Result<impl Iterator<Item = Result<Shred, Error>>, Error> {
@@ -1429,6 +1429,8 @@ fn finish_erasure_batch(
 
 #[cfg(test)]
 mod test {
+    use borsh::BorshDeserialize;
+    use std::io::Read;
     use {
         super::*,
         crate::shred::{ShredFlags, ShredId, SignedData},
@@ -1605,6 +1607,74 @@ mod test {
                 num_coding_shreds,
                 &reed_solomon_cache,
             );
+        }
+    }
+
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, PartialEq, Debug)]
+    struct Packets {
+        pub packets: Vec<Vec<u8>>,
+    }
+    #[test]
+    fn test_merkle_shred_recovery() {
+        let packets = {
+            let mut file =
+                std::fs::File::open("/home/eric/dev/shredstream-proxy/udp_data-orig.bin").unwrap();
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer).unwrap();
+            Packets::try_from_slice(&buffer).unwrap()
+        };
+
+        let mut reconstructed_shreds =
+            HashMap::<Slot, HashMap<u32 /* fec_set_index */, Vec<Shred>>>::new();
+        packets
+            .packets
+            .into_iter()
+            .filter_map(|p| {
+                let reconstructed_shred = Shred::from_payload(p);
+                reconstructed_shred
+                    .inspect_err(|e| {
+                        warn!("Failed to reconstruct shred: {:?}", e);
+                    })
+                    .ok()
+            })
+            .for_each(|shred| {
+                let slot = match &shred {
+                    Shred::ShredCode(a) => a.common_header.slot,
+                    Shred::ShredData(a) => a.common_header.slot,
+                };
+                let slot_shreds = reconstructed_shreds
+                    .entry(slot)
+                    .or_insert_with(|| HashMap::new());
+                // println!("{} {}", shred.fec_set_index(), shred.index());
+                slot_shreds
+                    .entry(shred.fec_set_index())
+                    .or_insert_with(|| vec![])
+                    .push(shred.clone());
+            });
+
+        for (slot, mut shreds) in reconstructed_shreds
+            .iter_mut()
+            .sorted_by_key(|x| x.0)
+            .skip(2)
+        // skip slots that may not have captured enough data
+        {
+            for (_fec_set_index, mut new_shreds) in shreds.iter_mut() {
+                // new_shreds.sort_by_key(|s| (s.index(), s.is_code()));
+                new_shreds.sort_by_key(|s| match &s {
+                    Shred::ShredCode(a) => (true, a.common_header.index),
+                    Shred::ShredData(a) => (false, a.common_header.index),
+                });
+                new_shreds.dedup();
+                new_shreds[0] = new_shreds[1].clone();
+
+                let rs_cache = ReedSolomonCache::default();
+                let recovered = recover(new_shreds.clone(), &rs_cache);
+                if let Ok(a) = recovered {
+                    println!("recovered {}", a.len());
+                } else {
+                    println!("failed to recover");
+                }
+            }
         }
     }
 

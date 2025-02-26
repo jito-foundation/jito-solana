@@ -83,7 +83,7 @@ use {
 
 mod common;
 mod legacy;
-mod merkle;
+pub mod merkle;
 mod payload;
 pub mod shred_code;
 mod shred_data;
