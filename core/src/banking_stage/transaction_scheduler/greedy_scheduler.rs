@@ -89,7 +89,8 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
         let mut num_scanned: usize = 0;
         let mut num_scheduled: usize = 0;
         let mut num_sent: usize = 0;
-        let mut num_unschedulable: usize = 0;
+        let mut num_unschedulable_conflicts: usize = 0;
+        let mut num_unschedulable_threads: usize = 0;
 
         let mut batches = Batches::new(num_threads, self.config.target_transactions_per_batch);
         while num_scanned < self.config.max_scanned_transactions_per_scheduling_pass
@@ -136,9 +137,12 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     )
                 },
             ) {
-                Err(TransactionSchedulingError::UnschedulableConflicts)
-                | Err(TransactionSchedulingError::UnschedulableThread) => {
-                    num_unschedulable += 1;
+                Err(TransactionSchedulingError::UnschedulableConflicts) => {
+                    num_unschedulable_conflicts += 1;
+                    self.unschedulables.push(id);
+                }
+                Err(TransactionSchedulingError::UnschedulableThread) => {
+                    num_unschedulable_threads += 1;
                     self.unschedulables.push(id);
                 }
                 Ok(TransactionSchedulingInfo {
@@ -194,7 +198,8 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
 
         Ok(SchedulingSummary {
             num_scheduled,
-            num_unschedulable,
+            num_unschedulable_conflicts,
+            num_unschedulable_threads,
             num_filtered_out: 0,
             filter_time_us: 0,
         })
@@ -409,7 +414,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 2);
-        assert_eq!(scheduling_summary.num_unschedulable, 0);
+        assert_eq!(scheduling_summary.num_unschedulable_conflicts, 0);
         assert_eq!(collect_work(&work_receivers[0]).1, vec![vec![1, 0]]);
     }
 
@@ -431,7 +436,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 1);
-        assert_eq!(scheduling_summary.num_unschedulable, 0);
+        assert_eq!(scheduling_summary.num_unschedulable_conflicts, 0);
         assert_eq!(collect_work(&work_receivers[0]).1, vec![vec![1]]);
     }
 
@@ -453,7 +458,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 1);
-        assert_eq!(scheduling_summary.num_unschedulable, 0);
+        assert_eq!(scheduling_summary.num_unschedulable_conflicts, 0);
         assert_eq!(collect_work(&work_receivers[0]).1, vec![vec![1]]);
     }
 
@@ -475,7 +480,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 2);
-        assert_eq!(scheduling_summary.num_unschedulable, 0);
+        assert_eq!(scheduling_summary.num_unschedulable_conflicts, 0);
         assert_eq!(collect_work(&work_receivers[0]).1, vec![vec![1], vec![0]]);
     }
 
@@ -493,7 +498,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 2);
-        assert_eq!(scheduling_summary.num_unschedulable, 0);
+        assert_eq!(scheduling_summary.num_unschedulable_conflicts, 0);
         assert_eq!(collect_work(&work_receivers[0]).1, vec![vec![1], vec![0]]);
     }
 
@@ -508,7 +513,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 4);
-        assert_eq!(scheduling_summary.num_unschedulable, 0);
+        assert_eq!(scheduling_summary.num_unschedulable_conflicts, 0);
         assert_eq!(collect_work(&work_receivers[0]).1, [vec![3, 1]]);
         assert_eq!(collect_work(&work_receivers[1]).1, [vec![2, 0]]);
     }
@@ -544,7 +549,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 3);
-        assert_eq!(scheduling_summary.num_unschedulable, 1);
+        assert_eq!(scheduling_summary.num_unschedulable_conflicts, 1);
         assert_eq!(collect_work(&work_receivers[0]).1, [vec![3], vec![0]]);
         assert_eq!(collect_work(&work_receivers[1]).1, [vec![2]]);
     }
@@ -576,7 +581,7 @@ mod test {
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 3);
-        assert_eq!(scheduling_summary.num_unschedulable, 3);
+        assert_eq!(scheduling_summary.num_unschedulable_threads, 3);
         assert_eq!(collect_work(&work_receivers[0]).1, [vec![5], vec![4]]);
         assert_eq!(collect_work(&work_receivers[1]).1, [vec![0]]);
     }
