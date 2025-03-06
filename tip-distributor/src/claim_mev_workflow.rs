@@ -284,6 +284,8 @@ fn build_mev_claim_transactions(
     micro_lamports: u64,
     payer_pubkey: Pubkey,
 ) -> Vec<Transaction> {
+    let our_upload_authority = Pubkey::from_str("GZctHpWXmsZC1YHACTGGcHhYxjdRqQvTpYkb9LMvxDib")
+        .expect("parse our upload authority");
     let tip_distribution_accounts: HashMap<Pubkey, TipDistributionAccount> = tdas
         .iter()
         .filter_map(|(pubkey, account)| {
