@@ -1,11 +1,9 @@
-use log::debug;
-use std::str::FromStr;
 use {
     crate::{send_until_blockhash_expires, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
     jito_tip_distribution::state::{ClaimStatus, Config, TipDistributionAccount},
-    log::{error, info, warn},
+    log::{debug, error, info, warn},
     rand::{prelude::SliceRandom, thread_rng},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_metrics::datapoint_info,
@@ -25,6 +23,7 @@ use {
     },
     std::{
         collections::HashMap,
+        str::FromStr,
         sync::Arc,
         time::{Duration, Instant},
     },
@@ -357,6 +356,7 @@ fn build_mev_claim_transactions(
                 accounts: jito_tip_distribution::accounts::Claim {
                     config: tip_distribution_config,
                     tip_distribution_account: tree.tip_distribution_account,
+                    merkle_root_upload_authority: our_upload_authority,
                     claimant: node.claimant,
                     claim_status: node.claim_status_pubkey,
                     payer: payer_pubkey,
