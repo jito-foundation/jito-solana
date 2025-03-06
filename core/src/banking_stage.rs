@@ -1136,7 +1136,12 @@ mod tests {
             );
 
             // wait for banking_stage to eat the packets
+            const TIMEOUT: Duration = Duration::from_secs(10);
+            let start = Instant::now();
             while bank.get_balance(&alice.pubkey()) < 1 {
+                if start.elapsed() > TIMEOUT {
+                    panic!("banking stage took too long to process transactions");
+                }
                 sleep(Duration::from_millis(10));
             }
             exit.store(true, Ordering::Relaxed);
