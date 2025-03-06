@@ -1,12 +1,9 @@
-use log::debug;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use std::str::FromStr;
 use {
     crate::{send_until_blockhash_expires, GeneratedMerkleTreeCollection},
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
     itertools::Itertools,
     jito_tip_distribution::state::{ClaimStatus, Config, TipDistributionAccount},
-    log::{error, info, warn},
+    log::{debug, error, info, warn},
     solana_client::nonblocking::rpc_client::RpcClient,
     solana_metrics::datapoint_info,
     solana_program::{
@@ -17,6 +14,7 @@ use {
     solana_sdk::{
         account::Account,
         commitment_config::CommitmentConfig,
+        compute_budget::ComputeBudgetInstruction,
         instruction::Instruction,
         pubkey::Pubkey,
         signature::{Keypair, Signer},
@@ -24,6 +22,7 @@ use {
     },
     std::{
         collections::HashMap,
+        str::FromStr,
         sync::Arc,
         time::{Duration, Instant},
     },
@@ -293,6 +292,8 @@ fn build_mev_claim_transactions(
     _micro_lamports: u64,
     payer_pubkey: Pubkey,
 ) -> Vec<Transaction> {
+    let our_upload_authority = Pubkey::from_str("GZctHpWXmsZC1YHACTGGcHhYxjdRqQvTpYkb9LMvxDib")
+        .expect("parse our upload authority");
     let tip_distribution_accounts: HashMap<Pubkey, TipDistributionAccount> = tdas
         .iter()
         .filter_map(|(pubkey, account)| {
@@ -366,6 +367,7 @@ fn build_mev_claim_transactions(
                 accounts: jito_tip_distribution::accounts::Claim {
                     config: tip_distribution_config,
                     tip_distribution_account: tree.tip_distribution_account,
+                    merkle_root_upload_authority: our_upload_authority,
                     claimant: node.claimant,
                     claim_status: node.claim_status_pubkey,
                     payer: payer_pubkey,
