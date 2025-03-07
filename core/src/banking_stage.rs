@@ -1078,14 +1078,8 @@ mod tests {
                 Blockstore::open(ledger_path.path())
                     .expect("Expected to be able to open database ledger"),
             );
-            let poh_config = PohConfig {
-                // limit tick count to avoid clearing working_bank at PohRecord then
-                // PohRecorderError(MaxHeightReached) at BankingStage
-                target_tick_count: Some(bank.max_tick_height() - 1),
-                ..PohConfig::default()
-            };
             let (exit, poh_recorder, poh_service, entry_receiver) =
-                create_test_recorder(bank.clone(), blockstore, Some(poh_config), None);
+                create_test_recorder(bank.clone(), blockstore, None, None);
             let (_, cluster_info) = new_test_cluster_info(/*keypair:*/ None);
             let cluster_info = Arc::new(cluster_info);
             let (replay_vote_sender, _replay_vote_receiver) = unbounded();
@@ -1256,14 +1250,8 @@ mod tests {
                     Blockstore::open(ledger_path.path())
                         .expect("Expected to be able to open database ledger"),
                 );
-                let poh_config = PohConfig {
-                    // limit tick count to avoid clearing working_bank at
-                    // PohRecord then PohRecorderError(MaxHeightReached) at BankingStage
-                    target_tick_count: Some(bank.max_tick_height() - 1),
-                    ..PohConfig::default()
-                };
                 let (exit, poh_recorder, poh_service, entry_receiver) =
-                    create_test_recorder(bank.clone(), blockstore, Some(poh_config), None);
+                    create_test_recorder(bank.clone(), blockstore, None, None);
                 let (_, cluster_info) = new_test_cluster_info(/*keypair:*/ None);
                 let cluster_info = Arc::new(cluster_info);
                 let _banking_stage = BankingStage::new(
@@ -1401,7 +1389,7 @@ mod tests {
         );
 
         // For these tests there's only 1 slot, don't want to run out of ticks
-        config_info.genesis_config.ticks_per_slot *= 8;
+        config_info.genesis_config.ticks_per_slot *= 1024;
         config_info
     }
 
@@ -1452,14 +1440,8 @@ mod tests {
                 Blockstore::open(ledger_path.path())
                     .expect("Expected to be able to open database ledger"),
             );
-            let poh_config = PohConfig {
-                // limit tick count to avoid clearing working_bank at PohRecord then
-                // PohRecorderError(MaxHeightReached) at BankingStage
-                target_tick_count: Some(bank.max_tick_height() - 1),
-                ..PohConfig::default()
-            };
             let (exit, poh_recorder, poh_service, _entry_receiver) =
-                create_test_recorder(bank.clone(), blockstore, Some(poh_config), None);
+                create_test_recorder(bank.clone(), blockstore, None, None);
             let (_, cluster_info) = new_test_cluster_info(/*keypair:*/ None);
             let cluster_info = Arc::new(cluster_info);
             let (replay_vote_sender, _replay_vote_receiver) = unbounded();
