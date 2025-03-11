@@ -2748,10 +2748,10 @@ impl Bank {
         #[cfg(feature = "dev-context-only-utils")]
         let genesis_hash = genesis_hash.unwrap_or(genesis_config.hash());
 
-        self.blockhash_queue
-            .write()
-            .unwrap()
-            .genesis_hash(&genesis_hash, self.fee_rate_governor.lamports_per_signature);
+        self.blockhash_queue.write().unwrap().genesis_hash(
+            &genesis_hash,
+            genesis_config.fee_rate_governor.lamports_per_signature,
+        );
 
         self.hashes_per_tick = genesis_config.hashes_per_tick();
         self.ticks_per_slot = genesis_config.ticks_per_slot();
