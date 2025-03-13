@@ -60,11 +60,11 @@ pub struct Cli {
     pub identity: PathBuf,
 
     /// IP address to bind the vortexor ports
-    #[arg(long, value_parser = solana_net_utils::parse_host, default_value = "0.0.0.0", value_name = "HOST")]
+    #[arg(long, default_value = "0.0.0.0", value_name = "HOST")]
     pub bind_address: IpAddr,
 
     /// The destination validator address to which the vortexor will forward transactions.
-    #[arg(long, value_parser = solana_net_utils::parse_host_port, value_name = "HOST:PORT", action = ArgAction::Append)]
+    #[arg(long, value_name = "HOST:PORT", action = ArgAction::Append)]
     pub destination: Vec<SocketAddr>,
 
     /// Range to use for dynamically assigned ports
