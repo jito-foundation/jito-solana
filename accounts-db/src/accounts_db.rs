@@ -6233,9 +6233,9 @@ impl AccountsDb {
             });
             datapoint_info!(
                 "accounts_db-flush_accounts_cache_aggressively",
-                ("num_flushed", flush_stats.num_flushed.0, i64),
-                ("num_purged", flush_stats.num_purged.0, i64),
-                ("total_flush_size", flush_stats.total_size.0, i64),
+                ("num_flushed", flush_stats.num_accounts_flushed.0, i64),
+                ("num_purged", flush_stats.num_accounts_purged.0, i64),
+                ("total_flush_size", flush_stats.num_bytes_flushed.0, i64),
                 ("total_cache_size", self.accounts_cache.size(), i64),
                 ("total_frozen_slots", excess_slot_count, i64),
                 ("total_slots", self.accounts_cache.num_slots(), i64),
@@ -6256,7 +6256,7 @@ impl AccountsDb {
             ),
             ("flush_roots_elapsed", flush_roots_elapsed.as_us(), i64),
             ("account_bytes_saved", flush_stats.num_bytes_purged.0, i64),
-            ("num_accounts_saved", flush_stats.num_purged.0, i64),
+            ("num_accounts_saved", flush_stats.num_accounts_purged.0, i64),
             (
                 "store_accounts_total_us",
                 flush_stats.store_accounts_total_us.0,
@@ -6368,8 +6368,9 @@ impl AccountsDb {
                     .map(|should_flush_f| should_flush_f(key))
                     .unwrap_or(true);
                 if should_flush {
-                    flush_stats.total_size += aligned_stored_size(account.data().len()) as u64;
-                    flush_stats.num_flushed += 1;
+                    flush_stats.num_bytes_flushed +=
+                        aligned_stored_size(account.data().len()) as u64;
+                    flush_stats.num_accounts_flushed += 1;
                     Some((key, account))
                 } else {
                     // If we don't flush, we have to remove the entry from the
@@ -6377,7 +6378,7 @@ impl AccountsDb {
                     pubkey_to_slot_set.push((*key, slot));
                     flush_stats.num_bytes_purged +=
                         aligned_stored_size(account.data().len()) as u64;
-                    flush_stats.num_purged += 1;
+                    flush_stats.num_accounts_purged += 1;
                     None
                 }
             })
@@ -6392,8 +6393,11 @@ impl AccountsDb {
             // This ensures that all updates are written to an AppendVec, before any
             // updates to the index happen, so anybody that sees a real entry in the index,
             // will be able to find the account in storage
-            let flushed_store =
-                self.create_and_insert_store(slot, flush_stats.total_size.0, "flush_slot_cache");
+            let flushed_store = self.create_and_insert_store(
+                slot,
+                flush_stats.num_bytes_flushed.0,
+                "flush_slot_cache",
+            );
             let (store_accounts_timing_inner, store_accounts_total_inner_us) =
                 measure_us!(self.store_accounts_frozen((slot, &accounts[..]), &flushed_store,));
             flush_stats.store_accounts_timing = store_accounts_timing_inner;
