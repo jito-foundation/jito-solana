@@ -6180,8 +6180,6 @@ impl AccountsDb {
         // Flush only the roots <= requested_flush_root, so that snapshotting has all
         // the relevant roots in storage.
         let mut flush_roots_elapsed = Measure::start("flush_roots_elapsed");
-        let mut account_bytes_saved = 0;
-        let mut num_accounts_saved = 0;
 
         let _guard = self.active_stats.activate(ActiveStatItem::Flush);
 
@@ -6191,7 +6189,7 @@ impl AccountsDb {
         let (total_new_cleaned_roots, num_cleaned_roots_flushed, mut flush_stats) = self
             .flush_rooted_accounts_cache(
                 requested_flush_root,
-                Some((&mut account_bytes_saved, &mut num_accounts_saved)),
+                true, // should_clean
             );
         flush_roots_elapsed.stop();
 
@@ -6205,9 +6203,9 @@ impl AccountsDb {
                 // Start by flushing the roots
                 //
                 // Cannot do any cleaning on roots past `requested_flush_root` because future
-                // snapshots may need updates from those later slots, hence we pass `None`
+                // snapshots may need updates from those later slots, hence we pass `false`
                 // for `should_clean`.
-                self.flush_rooted_accounts_cache(None, None)
+                self.flush_rooted_accounts_cache(None, false)
             } else {
                 (0, 0, FlushStats::default())
             };
@@ -6257,8 +6255,8 @@ impl AccountsDb {
                 i64
             ),
             ("flush_roots_elapsed", flush_roots_elapsed.as_us(), i64),
-            ("account_bytes_saved", account_bytes_saved, i64),
-            ("num_accounts_saved", num_accounts_saved, i64),
+            ("account_bytes_saved", flush_stats.num_bytes_purged.0, i64),
+            ("num_accounts_saved", flush_stats.num_purged.0, i64),
             (
                 "store_accounts_total_us",
                 flush_stats.store_accounts_total_us.0,
@@ -6285,31 +6283,28 @@ impl AccountsDb {
     fn flush_rooted_accounts_cache(
         &self,
         requested_flush_root: Option<Slot>,
-        should_clean: Option<(&mut usize, &mut usize)>,
+        should_clean: bool,
     ) -> (usize, usize, FlushStats) {
-        let max_clean_root = should_clean.as_ref().and_then(|_| {
-            // If there is a long running scan going on, this could prevent any cleaning
-            // based on updates from slots > `max_clean_root`.
-            self.max_clean_root(requested_flush_root)
-        });
+        let max_clean_root = should_clean
+            .then(|| {
+                // If there is a long running scan going on, this could prevent any cleaning
+                // based on updates from slots > `max_clean_root`.
+                self.max_clean_root(requested_flush_root)
+            })
+            .flatten();
 
         let mut written_accounts = HashSet::new();
 
-        // If `should_clean` is None, then`should_flush_f` is also None, which will cause
+        // If `should_clean` is false, then`should_flush_f` will be None, which will cause
         // `flush_slot_cache` to flush all accounts to storage without cleaning any accounts.
-        let mut should_flush_f = should_clean.map(|(account_bytes_saved, num_accounts_saved)| {
-            move |&pubkey: &Pubkey, account: &AccountSharedData| {
-                // if not in hashset, then not flushed previously, so flush it
-                let should_flush = written_accounts.insert(pubkey);
-                if !should_flush {
-                    *account_bytes_saved += account.data().len();
-                    *num_accounts_saved += 1;
-                    // If a later root already wrote this account, no point
-                    // in flushing it
-                }
-                should_flush
-            }
-        });
+        let mut should_flush_f = should_clean
+            .then(|| {
+                Some(move |&pubkey: &Pubkey| {
+                    // if not in hashset, then not flushed previously, so flush it
+                    written_accounts.insert(pubkey)
+                })
+            })
+            .flatten();
 
         // Always flush up to `requested_flush_root`, which is necessary for things like snapshotting.
         let flushed_roots: BTreeSet<Slot> = self.accounts_cache.clear_roots(requested_flush_root);
@@ -6346,7 +6341,7 @@ impl AccountsDb {
         &self,
         slot: Slot,
         slot_cache: &SlotCache,
-        mut should_flush_f: Option<&mut impl FnMut(&Pubkey, &AccountSharedData) -> bool>,
+        mut should_flush_f: Option<&mut impl FnMut(&Pubkey) -> bool>,
         max_clean_root: Option<Slot>,
     ) -> FlushStats {
         let mut flush_stats = FlushStats::default();
@@ -6370,7 +6365,7 @@ impl AccountsDb {
                 let account = &iter_item.value().account;
                 let should_flush = should_flush_f
                     .as_mut()
-                    .map(|should_flush_f| should_flush_f(key, account))
+                    .map(|should_flush_f| should_flush_f(key))
                     .unwrap_or(true);
                 if should_flush {
                     flush_stats.total_size += aligned_stored_size(account.data().len()) as u64;
@@ -6380,6 +6375,8 @@ impl AccountsDb {
                     // If we don't flush, we have to remove the entry from the
                     // index, since it's equivalent to purging
                     pubkey_to_slot_set.push((*key, slot));
+                    flush_stats.num_bytes_purged +=
+                        aligned_stored_size(account.data().len()) as u64;
                     flush_stats.num_purged += 1;
                     None
                 }
@@ -6426,7 +6423,7 @@ impl AccountsDb {
 
     /// flush all accounts in this slot
     fn flush_slot_cache(&self, slot: Slot) -> Option<FlushStats> {
-        self.flush_slot_cache_with_clean(slot, None::<&mut fn(&_, &_) -> bool>, None)
+        self.flush_slot_cache_with_clean(slot, None::<&mut fn(&_) -> bool>, None)
     }
 
     /// `should_flush_f` is an optional closure that determines whether a given
@@ -6435,7 +6432,7 @@ impl AccountsDb {
     fn flush_slot_cache_with_clean(
         &self,
         slot: Slot,
-        should_flush_f: Option<&mut impl FnMut(&Pubkey, &AccountSharedData) -> bool>,
+        should_flush_f: Option<&mut impl FnMut(&Pubkey) -> bool>,
         max_clean_root: Option<Slot>,
     ) -> Option<FlushStats> {
         if self
