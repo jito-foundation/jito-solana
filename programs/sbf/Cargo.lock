@@ -5447,7 +5447,6 @@ dependencies = [
  "solana-blake3-hasher",
  "solana-bn254",
  "solana-clock",
- "solana-compute-budget",
  "solana-cpi",
  "solana-curve25519",
  "solana-feature-set",
@@ -5723,7 +5722,7 @@ name = "solana-compute-budget"
 version = "2.3.0"
 dependencies = [
  "solana-fee-structure",
- "solana-program-entrypoint",
+ "solana-program-runtime",
 ]
 
 [[package]]
@@ -6607,7 +6606,6 @@ dependencies = [
  "solana-account",
  "solana-bincode",
  "solana-bpf-loader-program",
- "solana-compute-budget",
  "solana-instruction",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
@@ -7046,7 +7044,6 @@ dependencies = [
  "serde",
  "solana-account",
  "solana-clock",
- "solana-compute-budget",
  "solana-epoch-rewards",
  "solana-epoch-schedule",
  "solana-feature-set",
@@ -8531,7 +8528,6 @@ dependencies = [
  "solana-account",
  "solana-bpf-loader-program",
  "solana-clock",
- "solana-compute-budget",
  "solana-feature-set",
  "solana-fee-structure",
  "solana-hash",

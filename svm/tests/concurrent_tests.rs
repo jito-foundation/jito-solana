@@ -11,8 +11,10 @@ use {
         sync::{Arc, RwLock},
         thread, Runner,
     },
-    solana_compute_budget::compute_budget_limits::ComputeBudgetLimits,
-    solana_program_runtime::loaded_programs::ProgramCacheEntryType,
+    solana_program_runtime::{
+        execution_budget::SVMTransactionExecutionAndFeeBudgetLimits,
+        loaded_programs::ProgramCacheEntryType,
+    },
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount, WritableAccount},
         bpf_loader_upgradeable,
@@ -243,7 +245,7 @@ fn svm_concurrent() {
                 Ok(CheckedTransactionDetails::new(
                     None,
                     20,
-                    Ok(ComputeBudgetLimits::default())
+                    Ok(SVMTransactionExecutionAndFeeBudgetLimits::default())
                 )) as TransactionCheckResult;
                 TRANSACTIONS_PER_THREAD
             ];

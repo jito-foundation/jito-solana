@@ -1,9 +1,9 @@
 use {
     super::{Bank, BankStatusCache},
     solana_accounts_db::blockhash_queue::BlockhashQueue,
-    solana_compute_budget::compute_budget_limits::ComputeBudgetLimits,
     solana_compute_budget_instruction::instructions_processor::process_compute_budget_instructions,
     solana_perf::perf_libs,
+    solana_program_runtime::execution_budget::SVMTransactionExecutionAndFeeBudgetLimits,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_sdk::{
         account::AccountSharedData,
@@ -97,10 +97,20 @@ impl Bank {
             .zip(lock_results)
             .map(|(tx, lock_res)| match lock_res {
                 Ok(()) => {
-                    let compute_budget_limits = process_compute_budget_instructions(
+                    let compute_budget_and_limits = process_compute_budget_instructions(
                         tx.borrow().program_instructions_iter(),
                         &self.feature_set,
-                    );
+                    )
+                    .map(|limit| {
+                        if let Some(compute_budget) = self.compute_budget {
+                            // This block of code is only necessary to retain legacy behavior of the code.
+                            // It should be removed along with the change to favor transaction's compute budget limits
+                            // over configured compute budget in Bank.
+                            compute_budget.get_compute_budget_and_limits(&limit)
+                        } else {
+                            limit.get_compute_budget_and_limits()
+                        }
+                    });
                     self.check_transaction_age(
                         tx.borrow(),
                         max_age,
@@ -108,7 +118,7 @@ impl Bank {
                         &hash_queue,
                         next_lamports_per_signature,
                         error_counters,
-                        compute_budget_limits,
+                        compute_budget_and_limits,
                     )
                 }
                 Err(e) => Err(e.clone()),
@@ -124,14 +134,14 @@ impl Bank {
         hash_queue: &BlockhashQueue,
         next_lamports_per_signature: u64,
         error_counters: &mut TransactionErrorMetrics,
-        compute_budget_limits: Result<ComputeBudgetLimits, TransactionError>,
+        compute_budget: Result<SVMTransactionExecutionAndFeeBudgetLimits, TransactionError>,
     ) -> TransactionCheckResult {
         let recent_blockhash = tx.recent_blockhash();
         if let Some(hash_info) = hash_queue.get_hash_info_if_valid(recent_blockhash, max_age) {
             Ok(CheckedTransactionDetails::new(
                 None,
                 hash_info.lamports_per_signature(),
-                compute_budget_limits,
+                compute_budget,
             ))
         } else if let Some((nonce, previous_lamports_per_signature)) = self
             .check_load_and_advance_message_nonce_account(
@@ -143,7 +153,7 @@ impl Bank {
             Ok(CheckedTransactionDetails::new(
                 Some(nonce),
                 previous_lamports_per_signature,
-                compute_budget_limits,
+                compute_budget,
             ))
         } else {
             error_counters.blockhash_not_found += 1;

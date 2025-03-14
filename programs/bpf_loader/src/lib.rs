@@ -9,7 +9,6 @@ use {
     solana_account::WritableAccount,
     solana_bincode::limited_deserialize,
     solana_clock::Slot,
-    solana_compute_budget::compute_budget::MAX_INSTRUCTION_STACK_DEPTH,
     solana_feature_set::{
         bpf_account_data_direct_mapping, disable_new_loader_v3_deployments,
         enable_bpf_loader_set_authority_checked_ix, enable_loader_v4,
@@ -23,6 +22,7 @@ use {
     solana_measure::measure::Measure,
     solana_program_entrypoint::{MAX_PERMITTED_DATA_INCREASE, SUCCESS},
     solana_program_runtime::{
+        execution_budget::MAX_INSTRUCTION_STACK_DEPTH,
         invoke_context::{BpfAllocator, InvokeContext, SerializedAccountMetadata, SyscallContext},
         loaded_programs::{
             LoadProgramMetrics, ProgramCacheEntry, ProgramCacheEntryOwner, ProgramCacheEntryType,
@@ -299,7 +299,7 @@ macro_rules! create_vm {
         let heap_size = invoke_context.get_compute_budget().heap_size;
         let heap_cost_result = invoke_context.consume_checked($crate::calculate_heap_cost(
             heap_size,
-            invoke_context.get_compute_budget().heap_cost,
+            invoke_context.get_execution_cost().heap_cost,
         ));
         let $vm = heap_cost_result.and_then(|_| {
             let (mut stack, mut heap) = $crate::MEMORY_POOL

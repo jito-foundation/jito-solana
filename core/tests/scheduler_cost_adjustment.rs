@@ -4,7 +4,7 @@ use {
         DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT, MAX_BUILTIN_ALLOCATION_COMPUTE_UNIT_LIMIT,
     },
     solana_cost_model::cost_model::CostModel,
-    solana_feature_set::{self as feature_set},
+    solana_feature_set as feature_set,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{

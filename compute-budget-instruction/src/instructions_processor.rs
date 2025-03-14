@@ -281,6 +281,14 @@ mod tests {
 
         test!(
             &[
+                ComputeBudgetInstruction::set_compute_unit_limit(2000u32),
+                ComputeBudgetInstruction::set_compute_unit_limit(42u32),
+            ],
+            Err(TransactionError::DuplicateInstruction(1))
+        );
+
+        test!(
+            &[
                 Instruction::new_with_bincode(Pubkey::new_unique(), &0_u8, vec![]),
                 ComputeBudgetInstruction::request_heap_frame(MIN_HEAP_FRAME_BYTES),
                 ComputeBudgetInstruction::request_heap_frame(MAX_HEAP_FRAME_BYTES),
