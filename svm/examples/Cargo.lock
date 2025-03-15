@@ -2814,7 +2814,7 @@ dependencies = [
 
 [[package]]
 name = "jito-protos"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "bytes",
  "prost",
@@ -5573,7 +5573,7 @@ dependencies = [
 
 [[package]]
 name = "solana-bundle"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "anchor-lang",
  "itertools 0.12.1",
@@ -5597,7 +5597,7 @@ dependencies = [
 
 [[package]]
 name = "solana-bundle-sdk"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "digest 0.10.7",
  "itertools 0.12.1",
@@ -7552,7 +7552,7 @@ dependencies = [
 
 [[package]]
 name = "solana-runtime-plugin"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "crossbeam-channel",
  "json5",
