@@ -25,9 +25,7 @@ use {
         create_program_runtime_environment_v1, create_program_runtime_environment_v2,
     },
     solana_clock::{Epoch, Slot},
-    solana_feature_set::{
-        enable_transaction_loading_failure_fees, remove_accounts_executable_flag_checks, FeatureSet,
-    },
+    solana_feature_set::{remove_accounts_executable_flag_checks, FeatureSet},
     solana_fee_structure::{FeeDetails, FeeStructure},
     solana_hash::Hash,
     solana_instruction::TRANSACTION_LEVEL_STACK_HEIGHT,
@@ -399,10 +397,6 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             account_keys_in_batch,
         );
 
-        let enable_transaction_loading_failure_fees = environment
-            .feature_set
-            .is_active(&enable_transaction_loading_failure_fees::id());
-
         let (mut validate_fees_us, mut load_us, mut execution_us): (u64, u64, u64) = (0, 0, 0);
 
         // Validate, execute, and collect results from each transaction in order.
@@ -441,15 +435,11 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             let (processing_result, single_execution_us) = measure_us!(match load_result {
                 TransactionLoadResult::NotLoaded(err) => Err(err),
                 TransactionLoadResult::FeesOnly(fees_only_tx) => {
-                    if enable_transaction_loading_failure_fees {
-                        // Update loaded accounts cache with nonce and fee-payer
-                        account_loader
-                            .update_accounts_for_failed_tx(tx, &fees_only_tx.rollback_accounts);
+                    // Update loaded accounts cache with nonce and fee-payer
+                    account_loader
+                        .update_accounts_for_failed_tx(tx, &fees_only_tx.rollback_accounts);
 
-                        Ok(ProcessedTransaction::FeesOnly(Box::new(fees_only_tx)))
-                    } else {
-                        Err(fees_only_tx.load_error)
-                    }
+                    Ok(ProcessedTransaction::FeesOnly(Box::new(fees_only_tx)))
                 }
                 TransactionLoadResult::Loaded(loaded_transaction) => {
                     let executed_tx = self.execute_loaded_transaction(

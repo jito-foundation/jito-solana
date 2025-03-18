@@ -3192,17 +3192,11 @@ fn test_interleaving_locks() {
         .is_ok());
 }
 
-#[test_case(false; "disable fees-only transactions")]
-#[test_case(true; "enable fees-only transactions")]
-fn test_load_and_execute_commit_transactions_fees_only(enable_fees_only_txs: bool) {
+#[test]
+fn test_load_and_execute_commit_transactions_fees_only() {
     let GenesisConfigInfo {
         mut genesis_config, ..
     } = genesis_utils::create_genesis_config(100 * LAMPORTS_PER_SOL);
-    if !enable_fees_only_txs {
-        genesis_config
-            .accounts
-            .remove(&solana_sdk::feature_set::enable_transaction_loading_failure_fees::id());
-    }
     genesis_config.rent = Rent::default();
     genesis_config.fee_rate_governor = FeeRateGovernor::new(5000, 0);
     let (bank, _bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
@@ -3264,29 +3258,22 @@ fn test_load_and_execute_commit_transactions_fees_only(enable_fees_only_txs: boo
         )
         .0;
 
-    if enable_fees_only_txs {
-        assert_eq!(
-            commit_results,
-            vec![Ok(CommittedTransaction {
-                status: Err(TransactionError::ProgramAccountNotFound),
-                log_messages: None,
-                inner_instructions: None,
-                return_data: None,
-                executed_units: 0,
-                fee_details: FeeDetails::new(5000, 0),
-                rent_debits: RentDebits::default(),
-                loaded_account_stats: TransactionLoadedAccountsStats {
-                    loaded_accounts_count: 2,
-                    loaded_accounts_data_size: nonce_size as u32,
-                },
-            })]
-        );
-    } else {
-        assert_eq!(
-            commit_results,
-            vec![Err(TransactionError::ProgramAccountNotFound)]
-        );
-    }
+    assert_eq!(
+        commit_results,
+        vec![Ok(CommittedTransaction {
+            status: Err(TransactionError::ProgramAccountNotFound),
+            log_messages: None,
+            inner_instructions: None,
+            return_data: None,
+            executed_units: 0,
+            fee_details: FeeDetails::new(5000, 0),
+            rent_debits: RentDebits::default(),
+            loaded_account_stats: TransactionLoadedAccountsStats {
+                loaded_accounts_count: 2,
+                loaded_accounts_data_size: nonce_size as u32,
+            },
+        })]
+    );
 }
 
 #[test]
