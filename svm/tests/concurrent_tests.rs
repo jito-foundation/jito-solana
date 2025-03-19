@@ -246,14 +246,8 @@ fn svm_concurrent() {
                 .map(|tx| {
                     Ok(CheckedTransactionDetails::new(
                         None,
-                        20,
                         Ok(SVMTransactionExecutionAndFeeBudgetLimits::with_fee(
-                            MockBankCallback::calculate_fee_details(
-                                tx,
-                                TransactionProcessingEnvironment::default()
-                                    .fee_lamports_per_signature,
-                                0,
-                            ),
+                            MockBankCallback::calculate_fee_details(tx, 0),
                         )),
                     )) as TransactionCheckResult
                 })
