@@ -6,7 +6,7 @@ pub use solana_program_runtime::execution_budget::{
     MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES, MIN_HEAP_FRAME_BYTES,
 };
 use {
-    solana_fee_structure::FeeBudgetLimits,
+    solana_fee_structure::{FeeBudgetLimits, FeeDetails},
     solana_program_runtime::execution_budget::{
         SVMTransactionExecutionAndFeeBudgetLimits, SVMTransactionExecutionBudget,
     },
@@ -38,21 +38,24 @@ impl Default for ComputeBudgetLimits {
 }
 
 impl ComputeBudgetLimits {
-    pub fn default_compute_budget_and_limits() -> SVMTransactionExecutionAndFeeBudgetLimits {
-        Self::get_compute_budget_and_limits(&ComputeBudgetLimits::default())
-    }
-
-    pub fn get_compute_budget_and_limits(&self) -> SVMTransactionExecutionAndFeeBudgetLimits {
-        let fee_budget = FeeBudgetLimits::from(self);
+    pub fn get_compute_budget_and_limits(
+        &self,
+        loaded_accounts_data_size_limit: NonZeroU32,
+        fee_details: FeeDetails,
+    ) -> SVMTransactionExecutionAndFeeBudgetLimits {
         SVMTransactionExecutionAndFeeBudgetLimits {
             budget: SVMTransactionExecutionBudget {
                 compute_unit_limit: u64::from(self.compute_unit_limit),
                 heap_size: self.updated_heap_bytes,
                 ..SVMTransactionExecutionBudget::default()
             },
-            loaded_accounts_data_size_limit: fee_budget.loaded_accounts_data_size_limit,
-            priority_fee: fee_budget.prioritization_fee,
+            loaded_accounts_data_size_limit,
+            fee_details,
         }
+    }
+
+    pub fn get_prioritization_fee(&self) -> u64 {
+        get_prioritization_fee(self.compute_unit_price, u64::from(self.compute_unit_limit))
     }
 }
 
