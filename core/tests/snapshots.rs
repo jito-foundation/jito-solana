@@ -74,7 +74,6 @@ impl SnapshotTestConfig {
     fn new(
         snapshot_version: SnapshotVersion,
         cluster_type: ClusterType,
-        accounts_hash_interval_slots: Slot,
         full_snapshot_archive_interval_slots: Slot,
         incremental_snapshot_archive_interval_slots: Slot,
     ) -> SnapshotTestConfig {
@@ -102,7 +101,6 @@ impl SnapshotTestConfig {
         bank0.set_startup_verification_complete();
         let bank_forks_arc = BankForks::new_rw_arc(bank0);
         let mut bank_forks = bank_forks_arc.write().unwrap();
-        bank_forks.accounts_hash_interval_slots = accounts_hash_interval_slots;
 
         let snapshot_config = SnapshotConfig {
             full_snapshot_archive_interval_slots,
@@ -192,7 +190,6 @@ fn run_bank_forks_snapshot_n<F>(
     let snapshot_test_config = SnapshotTestConfig::new(
         snapshot_version,
         cluster_type,
-        set_root_interval,
         set_root_interval,
         DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
     );
@@ -310,7 +307,6 @@ fn test_slots_to_snapshot(snapshot_version: SnapshotVersion, cluster_type: Clust
         let snapshot_test_config = SnapshotTestConfig::new(
             snapshot_version,
             cluster_type,
-            (*add_root_interval * num_set_roots * 2) as Slot,
             (*add_root_interval * num_set_roots * 2) as Slot,
             DISABLED_SNAPSHOT_ARCHIVE_INTERVAL,
         );
@@ -442,7 +438,6 @@ fn test_bank_forks_incremental_snapshot(
     let snapshot_test_config = SnapshotTestConfig::new(
         snapshot_version,
         cluster_type,
-        SET_ROOT_INTERVAL,
         FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
         INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
     );
@@ -679,7 +674,6 @@ fn test_snapshots_with_background_services(
     let snapshot_test_config = SnapshotTestConfig::new(
         snapshot_version,
         cluster_type,
-        BANK_SNAPSHOT_INTERVAL_SLOTS,
         FULL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
         INCREMENTAL_SNAPSHOT_ARCHIVE_INTERVAL_SLOTS,
     );
