@@ -187,8 +187,8 @@ impl BlockVerificationMethod {
 #[derive(Clone, EnumString, EnumVariantNames, Default, IntoStaticStr, Display)]
 #[strum(serialize_all = "kebab-case")]
 pub enum BlockProductionMethod {
-    #[default]
     CentralScheduler,
+    #[default]
     CentralSchedulerGreedy,
 }
 
