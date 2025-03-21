@@ -850,7 +850,7 @@ mod tests {
         .collect();
         assert_eq!(
             shreds.len(),
-            packets.iter().map(PacketBatch::len).sum::<usize>()
+            packets.iter().map(|batch| batch.len()).sum::<usize>()
         );
         assert!(count_packets_in_batches(&packets) > SIGN_SHRED_GPU_MIN);
         packets
