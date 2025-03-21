@@ -441,6 +441,48 @@ impl Shredder {
             Ok(data)
         }
     }
+
+    /// Combines all shreds to recreate the original buffer, without checking final shred for DATA_COMPLETE_SHRED flag
+    pub fn deshred_unchecked<I, T: AsRef<[u8]>>(shreds: I) -> Result<Vec<u8>, Error>
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let (data, _, data_complete) = shreds.into_iter().try_fold(
+            <(Vec<u8>, Option<u32>, bool)>::default(),
+            |(mut data, prev, data_complete), shred| {
+                // No trailing shreds if we have already observed
+                // DATA_COMPLETE_SHRED.
+                if data_complete {
+                    return Err(Error::InvalidDeshredSet);
+                }
+                let shred = shred.as_ref();
+                // Shreds' indices should be consecutive.
+                let index = Some(
+                    shred::layout::get_index(shred)
+                        .ok_or_else(|| Error::InvalidPayloadSize(shred.len()))?,
+                );
+                if let Some(prev) = prev {
+                    if prev.checked_add(1) != index {
+                        return Err(Error::from(TooFewDataShards));
+                    }
+                }
+                data.extend_from_slice(shred::layout::get_data(shred)?);
+                let flags = shred::layout::get_flags(shred)?;
+                let data_complete = flags.contains(ShredFlags::DATA_COMPLETE_SHRED);
+                Ok((data, index, data_complete))
+            },
+        )?;
+
+        if data.is_empty() {
+            // For backward compatibility. This is needed when the data shred
+            // payload is None, so that deserializing to Vec<Entry> results in
+            // an empty vector.
+            let data_buffer_size = ShredData::capacity(/*merkle_proof_size:*/ None).unwrap();
+            Ok(vec![0u8; data_buffer_size])
+        } else {
+            Ok(data)
+        }
+    }
 }
 
 impl ReedSolomonCache {

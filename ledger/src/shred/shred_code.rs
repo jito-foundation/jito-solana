@@ -16,7 +16,7 @@ pub const MAX_CODE_SHREDS_PER_SLOT: usize = MAX_DATA_SHREDS_PER_SLOT;
 
 const_assert_eq!(ShredCode::SIZE_OF_PAYLOAD, 1228);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ShredCode {
     Legacy(legacy::ShredCode),
     Merkle(merkle::ShredCode),
@@ -83,11 +83,11 @@ impl ShredCode {
         ))
     }
 
-    pub(super) fn num_data_shreds(&self) -> u16 {
+    pub fn num_data_shreds(&self) -> u16 {
         self.coding_header().num_data_shreds
     }
 
-    pub(super) fn num_coding_shreds(&self) -> u16 {
+    pub fn num_coding_shreds(&self) -> u16 {
         self.coding_header().num_coding_shreds
     }
 

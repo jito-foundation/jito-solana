@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crate::shred::ShredType;
 use {
     crate::{
         shred::{
@@ -12,8 +10,8 @@ use {
                 Shred as ShredTrait, ShredCode as ShredCodeTrait, ShredData as ShredDataTrait,
             },
             CodingShredHeader, DataShredHeader, Error, ProcessShredsStats, ShredCommonHeader,
-            ShredFlags, ShredVariant, DATA_SHREDS_PER_FEC_BLOCK, SIZE_OF_CODING_SHRED_HEADERS,
-            SIZE_OF_DATA_SHRED_HEADERS, SIZE_OF_SIGNATURE,
+            ShredFlags, ShredType, ShredVariant, DATA_SHREDS_PER_FEC_BLOCK,
+            SIZE_OF_CODING_SHRED_HEADERS, SIZE_OF_DATA_SHRED_HEADERS, SIZE_OF_SIGNATURE,
         },
         shredder::{self, ReedSolomonCache},
     },
@@ -42,7 +40,7 @@ use {
 const_assert_eq!(SIZE_OF_MERKLE_ROOT, 32);
 pub(crate) const SIZE_OF_MERKLE_ROOT: usize = std::mem::size_of::<Hash>();
 const_assert_eq!(SIZE_OF_MERKLE_PROOF_ENTRY, 20);
-const SIZE_OF_MERKLE_PROOF_ENTRY: usize = std::mem::size_of::<MerkleProofEntry>();
+pub const SIZE_OF_MERKLE_PROOF_ENTRY: usize = std::mem::size_of::<MerkleProofEntry>();
 const_assert_eq!(ShredData::SIZE_OF_PAYLOAD, 1203);
 
 // Defense against second preimage attack:
@@ -61,11 +59,11 @@ type MerkleProofEntry = [u8; 20];
 // The slice past signature till the end of the data buffer is erasure coded.
 // The slice past signature and before the merkle proof is hashed to generate
 // the Merkle tree. The root of the Merkle tree is signed.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ShredData {
-    common_header: ShredCommonHeader,
-    data_header: DataShredHeader,
-    payload: Payload,
+    pub common_header: ShredCommonHeader,
+    pub data_header: DataShredHeader,
+    pub payload: Payload,
 }
 
 // Layout: {common, coding} headers | erasure coded shard
@@ -74,15 +72,15 @@ pub struct ShredData {
 //     | [Retransmitter's signature if resigned]
 // The slice past signature and before the merkle proof is hashed to generate
 // the Merkle tree. The root of the Merkle tree is signed.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ShredCode {
-    common_header: ShredCommonHeader,
-    coding_header: CodingShredHeader,
-    payload: Payload,
+    pub common_header: ShredCommonHeader,
+    pub coding_header: CodingShredHeader,
+    pub payload: Payload,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Shred {
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum Shred {
     ShredCode(ShredCode),
     ShredData(ShredData),
 }
@@ -95,12 +93,12 @@ impl Shred {
     dispatch!(fn set_chained_merkle_root(&mut self, chained_merkle_root: &Hash) -> Result<(), Error>);
     dispatch!(fn set_signature(&mut self, signature: Signature));
     dispatch!(fn signed_data(&self) -> Result<Hash, Error>);
-    dispatch!(pub(super) fn common_header(&self) -> &ShredCommonHeader);
-    dispatch!(pub(super) fn payload(&self) -> &Payload);
-    dispatch!(pub(super) fn set_retransmitter_signature(&mut self, signature: &Signature) -> Result<(), Error>);
+    dispatch!(pub fn common_header(&self) -> &ShredCommonHeader);
+    dispatch!(pub fn payload(&self) -> &Payload);
+    dispatch!(pub fn set_retransmitter_signature(&mut self, signature: &Signature) -> Result<(), Error>);
 
     #[inline]
-    fn fec_set_index(&self) -> u32 {
+    pub fn fec_set_index(&self) -> u32 {
         self.common_header().fec_set_index
     }
 
@@ -136,7 +134,7 @@ impl Shred {
         &self.common_header().signature
     }
 
-    pub(super) fn from_payload<T: AsRef<[u8]>>(shred: T) -> Result<Self, Error>
+    pub fn from_payload<T: AsRef<[u8]>>(shred: T) -> Result<Self, Error>
     where
         Payload: From<T>,
     {
@@ -148,7 +146,6 @@ impl Shred {
     }
 }
 
-#[cfg(test)]
 impl Shred {
     dispatch!(fn erasure_shard(&self) -> Result<&[u8], Error>);
     dispatch!(fn proof_size(&self) -> Result<u8, Error>);
@@ -157,11 +154,11 @@ impl Shred {
     dispatch!(pub(super) fn retransmitter_signature(&self) -> Result<Signature, Error>);
     dispatch!(pub(super) fn retransmitter_signature_offset(&self) -> Result<usize, Error>);
 
-    fn index(&self) -> u32 {
+    pub fn index(&self) -> u32 {
         self.common_header().index
     }
 
-    fn shred_type(&self) -> ShredType {
+    pub fn shred_type(&self) -> ShredType {
         ShredType::from(self.common_header().shred_variant)
     }
 }
@@ -221,6 +218,16 @@ impl ShredData {
         let proof = get_merkle_proof(shred, proof_offset, proof_size).ok()?;
         let node = get_merkle_node(shred, SIZE_OF_SIGNATURE..proof_offset).ok()?;
         get_merkle_root(index, node, proof).ok()
+    }
+
+    pub fn last_in_slot(&self) -> bool {
+        let flags = self.data_header().flags;
+        flags.contains(ShredFlags::LAST_SHRED_IN_SLOT)
+    }
+
+    pub fn data_complete(&self) -> bool {
+        let flags = self.data_header().flags;
+        flags.contains(ShredFlags::DATA_COMPLETE_SHRED)
     }
 }
 
@@ -748,7 +755,7 @@ fn make_merkle_proof(
     })
 }
 
-pub(super) fn recover(
+pub fn recover(
     mut shreds: Vec<Shred>,
     reed_solomon_cache: &ReedSolomonCache,
 ) -> Result<impl Iterator<Item = Result<Shred, Error>>, Error> {
@@ -1056,7 +1063,7 @@ fn get_proof_size(num_shreds: usize) -> u8 {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn make_shreds_from_data(
+pub fn make_shreds_from_data(
     thread_pool: &ThreadPool,
     keypair: &Keypair,
     // The Merkle root of the previous erasure batch if chained.
@@ -1433,6 +1440,7 @@ mod test {
         super::*,
         crate::shred::{ShredFlags, ShredId, SignedData},
         assert_matches::assert_matches,
+        borsh::BorshDeserialize,
         itertools::Itertools,
         rand::{seq::SliceRandom, CryptoRng, Rng},
         rayon::ThreadPoolBuilder,
@@ -1441,7 +1449,7 @@ mod test {
             packet::PACKET_DATA_SIZE,
             signature::{Keypair, Signer},
         },
-        std::{cmp::Ordering, collections::HashMap, iter::repeat_with},
+        std::{cmp::Ordering, collections::HashMap, io::Read, iter::repeat_with},
         test_case::test_case,
     };
 
@@ -1605,6 +1613,75 @@ mod test {
                 num_coding_shreds,
                 &reed_solomon_cache,
             );
+        }
+    }
+
+    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, PartialEq, Debug)]
+    struct Packets {
+        pub packets: Vec<Vec<u8>>,
+    }
+    #[test]
+    fn test_merkle_shred_recovery() {
+        let packets = {
+            let mut file =
+                std::fs::File::open("/home/eric/dev/shredstream-proxy/bins/serialized_shreds.bin")
+                    .unwrap();
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer).unwrap();
+            Packets::try_from_slice(&buffer).unwrap()
+        };
+
+        let mut reconstructed_shreds =
+            HashMap::<Slot, HashMap<u32 /* fec_set_index */, Vec<Shred>>>::new();
+        packets
+            .packets
+            .into_iter()
+            .filter_map(|p| {
+                let reconstructed_shred = Shred::from_payload(p);
+                reconstructed_shred
+                    .inspect_err(|e| {
+                        warn!("Failed to reconstruct shred: {:?}", e);
+                    })
+                    .ok()
+            })
+            .for_each(|shred| {
+                let slot = match &shred {
+                    Shred::ShredCode(a) => a.common_header.slot,
+                    Shred::ShredData(a) => a.common_header.slot,
+                };
+                let slot_shreds = reconstructed_shreds
+                    .entry(slot)
+                    .or_insert_with(|| HashMap::new());
+                // println!("{} {}", shred.fec_set_index(), shred.index());
+                slot_shreds
+                    .entry(shred.fec_set_index())
+                    .or_insert_with(|| vec![])
+                    .push(shred.clone());
+            });
+
+        for (slot, shreds) in reconstructed_shreds
+            .iter_mut()
+            .sorted_by_key(|x| x.0)
+            .skip(2)
+        // skip slots that may not have captured enough data
+        {
+            for (_fec_set_index, new_shreds) in shreds.iter_mut() {
+                // new_shreds.sort_by_key(|s| (s.index(), s.is_code()));
+                new_shreds.sort_by_key(|s| match &s {
+                    Shred::ShredCode(a) => (true, a.common_header.index),
+                    Shred::ShredData(a) => (false, a.common_header.index),
+                });
+                new_shreds.dedup();
+                new_shreds[0] = new_shreds[1].clone();
+
+                let rs_cache = ReedSolomonCache::default();
+                let recovered = recover(new_shreds.clone(), &rs_cache);
+                if let Ok(a) = recovered {
+                    println!("recovered {} entries for slot {slot}", a.count());
+                } else {
+                    println!("failed to recover");
+                }
+            }
         }
     }
 
@@ -1862,7 +1939,7 @@ mod test {
         }
     }
 
-    fn run_make_shreds_from_data<R: Rng>(
+    pub fn run_make_shreds_from_data<R: Rng>(
         rng: &mut R,
         data_size: usize,
         chained: bool,

@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Payload {
     Shared(Arc<Vec<u8>>),
     Unique(Vec<u8>),

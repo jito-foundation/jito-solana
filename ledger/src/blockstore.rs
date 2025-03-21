@@ -45,11 +45,12 @@ use {
         clock::{Slot, UnixTimestamp, DEFAULT_TICKS_PER_SECOND},
         feature_set::FeatureSet,
         genesis_config::{GenesisConfig, DEFAULT_GENESIS_ARCHIVE, DEFAULT_GENESIS_FILE},
-        hash::Hash,
+        hash::{hash, Hash},
+        instruction::CompiledInstruction,
         pubkey::Pubkey,
         signature::{Keypair, Signature, Signer},
         timing::timestamp,
-        transaction::{SanitizedVersionedTransaction, VersionedTransaction},
+        transaction::{SanitizedVersionedTransaction, Transaction, VersionedTransaction},
     },
     solana_storage_proto::{StoredExtendedRewards, StoredTransactionStatusMeta},
     solana_transaction_status::{
@@ -86,6 +87,7 @@ use {
 pub mod blockstore_purge;
 pub mod column;
 pub mod error;
+use solana_entry::entry::next_entry_mut;
 #[cfg(test)]
 use static_assertions::const_assert_eq;
 pub use {
@@ -5371,6 +5373,26 @@ fn adjust_ulimit_nofile(enforce_ulimit_nofile: bool) -> Result<()> {
     Ok(())
 }
 
+// see https://github.com/jito-labs/jito-solana/blob/47de95cd391dea1009964de7615b11172ec5a46c/ledger/src/blockstore.rs#L5436
+// make test function public since `Entry` differs in our fork vs v2.2.1
+pub fn make_slot_entries_with_transactions(num_entries: u64) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = Vec::new();
+    for x in 0..num_entries {
+        let transaction = Transaction::new_with_compiled_instructions(
+            &[&Keypair::new()],
+            &[solana_pubkey::new_rand()],
+            Hash::default(),
+            vec![solana_pubkey::new_rand()],
+            vec![CompiledInstruction::new(1, &(), vec![0])],
+        );
+        entries.push(next_entry_mut(&mut Hash::default(), 0, vec![transaction]));
+        let mut tick = create_ticks(1, 0, hash(&serialize(&x).unwrap()));
+        entries.append(&mut tick);
+    }
+
+    entries
+}
+
 #[cfg(test)]
 pub mod tests {
     use {
@@ -5411,7 +5433,7 @@ pub mod tests {
     };
 
     // used for tests only
-    pub(crate) fn make_slot_entries_with_transactions(num_entries: u64) -> Vec<Entry> {
+    pub fn make_slot_entries_with_transactions(num_entries: u64) -> Vec<Entry> {
         let mut entries: Vec<Entry> = Vec::new();
         for x in 0..num_entries {
             let transaction = Transaction::new_with_compiled_instructions(

@@ -35,7 +35,7 @@ pub(super) const SIZE_OF_ERASURE_ENCODED_SLICE: usize =
 // of zero padding) is erasure coded.
 // All payload past signature, including the entirety of zero paddings, is
 // signed.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ShredData {
     common_header: ShredCommonHeader,
     data_header: DataShredHeader,
@@ -44,7 +44,7 @@ pub struct ShredData {
 
 // Layout: {common, coding} headers | erasure coded shard
 // All payload past signature is singed.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ShredCode {
     common_header: ShredCommonHeader,
     coding_header: CodingShredHeader,
