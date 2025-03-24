@@ -916,7 +916,7 @@ impl Validator {
             AbsRequestSender::new(snapshot_request_sender.clone());
         let snapshot_controller = Arc::new(SnapshotController::new(
             accounts_background_request_sender,
-            Some(config.snapshot_config.clone()),
+            config.snapshot_config.clone(),
             bank_forks.read().unwrap().root(),
         ));
         let snapshot_request_handler = SnapshotRequestHandler {
@@ -2082,7 +2082,7 @@ fn load_blockstore(
             genesis_config,
             &blockstore,
             config.account_paths.clone(),
-            Some(&config.snapshot_config),
+            &config.snapshot_config,
             &process_options,
             transaction_history_services.block_meta_sender.as_ref(),
             entry_notifier_service
