@@ -16,8 +16,8 @@ use {
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
     solana_runtime::{
         accounts_background_service::{
-            AbsRequestHandlers, AbsRequestSender, AccountsBackgroundService,
-            PrunedBanksRequestHandler, SendDroppedBankCallback, SnapshotRequestHandler,
+            AbsRequestHandlers, AccountsBackgroundService, PrunedBanksRequestHandler,
+            SendDroppedBankCallback, SnapshotRequestHandler,
         },
         bank::{Bank, BankTestConfig},
         bank_forks::BankForks,
@@ -198,9 +198,8 @@ fn run_bank_forks_snapshot_n<F>(
 
     let (accounts_package_sender, _accounts_package_receiver) = crossbeam_channel::unbounded();
     let (snapshot_request_sender, snapshot_request_receiver) = unbounded();
-    let abs_request_sender = AbsRequestSender::new(snapshot_request_sender.clone());
     let snapshot_controller = SnapshotController::new(
-        abs_request_sender,
+        snapshot_request_sender.clone(),
         snapshot_test_config.snapshot_config.clone(),
         bank_forks.read().unwrap().root(),
     );
@@ -230,7 +229,7 @@ fn run_bank_forks_snapshot_n<F>(
             bank_forks
                 .write()
                 .unwrap()
-                .set_root(bank.slot(), &snapshot_controller, None)
+                .set_root(bank.slot(), Some(&snapshot_controller), None)
                 .unwrap();
             snapshot_request_handler.handle_snapshot_requests(false, 0, &AtomicBool::new(false));
         }
@@ -319,9 +318,8 @@ fn test_slots_to_snapshot(snapshot_version: SnapshotVersion, cluster_type: Clust
         let bank_forks_r = bank_forks.read().unwrap();
         let mut current_bank = bank_forks_r[0].clone();
         drop(bank_forks_r);
-        let abs_request_sender = AbsRequestSender::new(snapshot_sender);
         let snapshot_controller = SnapshotController::new(
-            abs_request_sender,
+            snapshot_sender,
             snapshot_test_config.snapshot_config.clone(),
             bank_forks.read().unwrap().root(),
         );
@@ -338,7 +336,7 @@ fn test_slots_to_snapshot(snapshot_version: SnapshotVersion, cluster_type: Clust
             bank_forks
                 .write()
                 .unwrap()
-                .set_root(current_bank.slot(), &snapshot_controller, None)
+                .set_root(current_bank.slot(), Some(&snapshot_controller), None)
                 .unwrap();
 
             // Since the accounts background services are not running, EpochAccountsHash
@@ -471,9 +469,8 @@ fn test_bank_forks_incremental_snapshot(
 
     let (accounts_package_sender, _accounts_package_receiver) = crossbeam_channel::unbounded();
     let (snapshot_request_sender, snapshot_request_receiver) = unbounded();
-    let abs_request_sender = AbsRequestSender::new(snapshot_request_sender.clone());
     let snapshot_controller = SnapshotController::new(
-        abs_request_sender,
+        snapshot_request_sender.clone(),
         snapshot_test_config.snapshot_config.clone(),
         bank_forks.read().unwrap().root(),
     );
@@ -517,7 +514,7 @@ fn test_bank_forks_incremental_snapshot(
             bank_forks
                 .write()
                 .unwrap()
-                .set_root(bank.slot(), &snapshot_controller, None)
+                .set_root(bank.slot(), Some(&snapshot_controller), None)
                 .unwrap();
             snapshot_request_handler.handle_snapshot_requests(false, 0, &AtomicBool::new(false));
         }
@@ -719,9 +716,8 @@ fn test_snapshots_with_background_services(
         bank.set_callback(Some(Box::new(callback.clone())));
     }
 
-    let abs_request_sender = AbsRequestSender::new(snapshot_request_sender.clone());
     let snapshot_controller = SnapshotController::new(
-        abs_request_sender,
+        snapshot_request_sender.clone(),
         snapshot_test_config.snapshot_config.clone(),
         bank_forks.read().unwrap().root(),
     );
@@ -799,7 +795,7 @@ fn test_snapshots_with_background_services(
             bank_forks
                 .write()
                 .unwrap()
-                .set_root(slot, &snapshot_controller, None)
+                .set_root(slot, Some(&snapshot_controller), None)
                 .unwrap();
         }
 
