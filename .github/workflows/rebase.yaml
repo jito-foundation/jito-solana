@@ -32,11 +32,11 @@ jobs:
           - branch: master
             upstream_branch: master
             upstream_repo: https://github.com/anza-xyz/agave.git
-          - branch: v2.0
-            upstream_branch: v2.0
-            upstream_repo: https://github.com/anza-xyz/agave.git
           - branch: v2.1
             upstream_branch: v2.1
+            upstream_repo: https://github.com/anza-xyz/agave.git
+          - branch: v2.2
+            upstream_branch: v2.2
             upstream_repo: https://github.com/anza-xyz/agave.git
       fail-fast: false
     steps:
