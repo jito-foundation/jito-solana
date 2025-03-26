@@ -348,7 +348,11 @@ impl StreamerSendStats {
 }
 
 impl StakedNodes {
-    pub fn new(stakes: Arc<HashMap<Pubkey, u64>>, overrides: HashMap<Pubkey, u64>) -> Self {
+    /// Calculate the stake stats: return the new (total_stake, min_stake and max_stake) tuple
+    fn calculate_stake_stats(
+        stakes: &Arc<HashMap<Pubkey, u64>>,
+        overrides: &HashMap<Pubkey, u64>,
+    ) -> (u64, u64, u64) {
         let values = stakes
             .iter()
             .filter(|(pubkey, _)| !overrides.contains_key(pubkey))
@@ -357,6 +361,11 @@ impl StakedNodes {
             .filter(|&stake| stake > 0);
         let total_stake = values.clone().sum();
         let (min_stake, max_stake) = values.minmax().into_option().unwrap_or_default();
+        (total_stake, min_stake, max_stake)
+    }
+
+    pub fn new(stakes: Arc<HashMap<Pubkey, u64>>, overrides: HashMap<Pubkey, u64>) -> Self {
+        let (total_stake, min_stake, max_stake) = Self::calculate_stake_stats(&stakes, &overrides);
         Self {
             stakes,
             overrides,
@@ -387,6 +396,17 @@ impl StakedNodes {
     #[inline]
     pub(super) fn max_stake(&self) -> u64 {
         self.max_stake
+    }
+
+    // Update the stake map given a new stakes map
+    pub fn update_stake_map(&mut self, stakes: Arc<HashMap<Pubkey, u64>>) {
+        let (total_stake, min_stake, max_stake) =
+            Self::calculate_stake_stats(&stakes, &self.overrides);
+
+        self.total_stake = total_stake;
+        self.min_stake = min_stake;
+        self.max_stake = max_stake;
+        self.stakes = stakes;
     }
 }
 
