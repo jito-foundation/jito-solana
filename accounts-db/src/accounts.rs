@@ -18,21 +18,13 @@ use {
     solana_clock::{BankId, Slot},
     solana_message::v0::LoadedAddresses,
     solana_pubkey::Pubkey,
-    solana_pubkey::Pubkey,
-    solana_sdk::{
-        clock::{BankId, Slot},
-        message::v0::LoadedAddresses,
-        slot_hashes::SlotHashes,
-        transaction::{Result, SanitizedTransaction, TransactionError},
-        transaction_context::TransactionAccount,
-    },
     solana_slot_hashes::SlotHashes,
     solana_svm_transaction::{
         message_address_table_lookup::SVMMessageAddressTableLookup, svm_message::SVMMessage,
     },
     solana_transaction::sanitized::SanitizedTransaction,
     solana_transaction_context::TransactionAccount,
-    solana_transaction_error::TransactionResult as Result,
+    solana_transaction_error::{TransactionError, TransactionResult as Result},
     std::{
         cmp::Reverse,
         collections::{BinaryHeap, HashSet},
