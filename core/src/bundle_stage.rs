@@ -302,7 +302,7 @@ impl BundleStage {
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
 
         while !exit.load(Ordering::Relaxed) {
-            if !bundle_storage.is_empty()
+            if bundle_storage.unprocessed_bundles_len() > 0
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
                 let (_, process_buffered_packets_time_us) =
