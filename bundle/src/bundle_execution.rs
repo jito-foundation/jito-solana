@@ -375,13 +375,11 @@ pub fn load_and_execute_bundle<'a>(
                 TransactionProcessingConfig {
                     account_overrides: Some(account_overrides),
                     check_program_modification_slot: bank.check_program_modification_slot(),
-                    compute_budget: bank.compute_budget(),
                     log_messages_bytes_limit: *log_messages_bytes_limit,
                     limit_to_load_programs: true,
                     recording_config: ExecutionRecordingConfig::new_single_setting(
                         transaction_status_sender_enabled
                     ),
-                    transaction_account_lock_limit: Some(bank.get_transaction_account_lock_limit()),
                 },
             ));
         debug!(

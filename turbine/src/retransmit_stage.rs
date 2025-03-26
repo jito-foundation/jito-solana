@@ -361,7 +361,7 @@ fn retransmit_shred(
     socket: &UdpSocket,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     stats: &RetransmitStats,
-    shred_receiver_addr: &Option<SocketAddr>,
+    shred_receiver_addr: &Option<SocketAddr>, // TODO (LB): figure out retransmits
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -373,9 +373,6 @@ fn retransmit_shred(
     let mut compute_turbine_peers = Measure::start("turbine_start");
     let (root_distance, addrs) =
         get_retransmit_addrs(&key, root_bank, cache, addr_cache, socket_addr_space, stats)?;
-    if let Some(addr) = shred_receiver_addr {
-        addrs.push(*addr);
-    }
     compute_turbine_peers.stop();
     stats
         .compute_turbine_peers_total

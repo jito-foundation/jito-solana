@@ -765,10 +765,7 @@ impl TaskHandler for DefaultTaskHandler {
                     .transaction_recorder
                     .as_ref()
                     .unwrap()
-                    .record_transactions(
-                        bank.slot(),
-                        vec![vec![transaction.to_versioned_transaction()]],
-                    );
+                    .record_transactions(bank.slot(), vec![transaction.to_versioned_transaction()]);
                 match result {
                     Ok(()) => Ok(starting_transaction_index),
                     Err(_) => Err(TransactionError::CommitCancelled),

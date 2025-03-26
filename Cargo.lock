@@ -9847,6 +9847,7 @@ dependencies = [
  "solana-bundle",
  "solana-clock",
  "solana-rpc-client-types",
+ "solana-sdk",
  "solana-signer",
  "solana-svm",
  "solana-transaction-error",

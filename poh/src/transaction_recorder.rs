@@ -110,9 +110,11 @@ impl TransactionRecorder {
     ) -> Result<Option<usize>> {
         // create a new channel so that there is only 1 sender and when it goes out of scope, the receiver fails
         let (result_sender, result_receiver) = bounded(1);
-        let res =
-            self.record_sender
-                .send(Record::new(mixin, transactions, bank_slot, result_sender));
+        let res = self.record_sender.send(Record::new(
+            vec![(mixin, transactions)],
+            bank_slot,
+            result_sender,
+        ));
         if res.is_err() {
             // If the channel is dropped, then the validator is shutting down so return that we are hitting
             //  the max tick height to stop transaction processing and flush any transactions in the pipeline.

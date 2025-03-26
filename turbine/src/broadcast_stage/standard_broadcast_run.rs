@@ -1,5 +1,6 @@
 #![allow(clippy::rc_buffer)]
 
+use std::borrow::Cow;
 use {
     super::{
         broadcast_utils::{self, ReceiveResults},

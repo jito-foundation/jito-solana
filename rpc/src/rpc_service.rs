@@ -16,7 +16,7 @@ use {
         RequestMiddlewareAction, ServerBuilder,
     },
     regex::Regex,
-    solana_client::connection_cache::{ConnectionCache, Protocol},
+    solana_client::connection_cache::ConnectionCache,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
         bigtable_upload::ConfirmedBlockUploadConfig,
@@ -427,17 +427,9 @@ impl JsonRpcService {
 
         match config.client_option {
             ClientOption::ConnectionCache(connection_cache) => {
-                let my_tpu_address = config
-                    .cluster_info
-                    .my_contact_info()
-                    .tpu(connection_cache.protocol())
-                    .ok_or(format!(
-                        "Invalid {:?} socket address for TPU",
-                        connection_cache.protocol()
-                    ))?;
                 let client = ConnectionCacheClient::new(
                     connection_cache,
-                    my_tpu_address,
+                    config.cluster_info.clone(),
                     config.send_transaction_service_config.tpu_peers.clone(),
                     leader_info,
                     config.send_transaction_service_config.leader_forward_count,
@@ -469,17 +461,9 @@ impl JsonRpcService {
                 Ok(json_rpc_service)
             }
             ClientOption::TpuClientNext(identity_keypair) => {
-                let my_tpu_address = config
-                    .cluster_info
-                    .my_contact_info()
-                    .tpu(Protocol::QUIC)
-                    .ok_or(format!(
-                        "Invalid {:?} socket address for TPU",
-                        Protocol::QUIC
-                    ))?;
                 let client = TpuClientNextClient::new(
                     runtime.handle().clone(),
-                    my_tpu_address,
+                    config.cluster_info.clone(),
                     config.send_transaction_service_config.tpu_peers.clone(),
                     leader_info,
                     config.send_transaction_service_config.leader_forward_count,
@@ -546,21 +530,11 @@ impl JsonRpcService {
             config.rpc_niceness_adj,
         );
 
-        let tpu_address = cluster_info
-            .my_contact_info()
-            .tpu(connection_cache.protocol())
-            .ok_or_else(|| {
-                format!(
-                    "Invalid {:?} socket address for TPU",
-                    connection_cache.protocol()
-                )
-            })?;
-
         let leader_info =
             poh_recorder.map(|recorder| ClusterTpuInfo::new(cluster_info.clone(), recorder));
         let client = ConnectionCacheClient::new(
             connection_cache,
-            tpu_address,
+            cluster_info.clone(),
             send_transaction_service_config.tpu_peers.clone(),
             leader_info,
             send_transaction_service_config.leader_forward_count,
@@ -639,8 +613,6 @@ impl JsonRpcService {
         let largest_accounts_cache = Arc::new(RwLock::new(LargestAccountsCache::new(
             LARGEST_ACCOUNTS_CACHE_DURATION,
         )));
-
-        let runtime = service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj);
 
         let exit_bigtable_ledger_upload_service = Arc::new(AtomicBool::new(false));
 

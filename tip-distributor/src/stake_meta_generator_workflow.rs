@@ -124,7 +124,7 @@ fn create_bank_from_snapshot(
         &genesis_config,
         &blockstore,
         vec![PathBuf::from(ledger_path).join(Path::new("stake-meta.accounts"))],
-        Some(&snapshot_config),
+        &snapshot_config,
         &ProcessOptions::default(),
         None,
         None,
@@ -283,15 +283,15 @@ pub fn generate_stake_meta_collection(
                 None
             };
 
-            let vote_state = vote_account.vote_state();
+            let vote_state = vote_account.vote_state_view();
             delegations.sort();
             stake_metas.push(StakeMeta {
                 maybe_tip_distribution_meta,
-                validator_node_pubkey: vote_state.node_pubkey,
+                validator_node_pubkey: *vote_state.node_pubkey(),
                 validator_vote_account: vote_pubkey,
                 delegations,
                 total_delegated,
-                commission: vote_state.commission,
+                commission: vote_state.commission(),
             });
         } else {
             warn!(
