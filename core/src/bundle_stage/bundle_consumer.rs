@@ -1,4 +1,3 @@
-use solana_poh::transaction_recorder::RecordTransactionsSummary;
 use {
     crate::{
         banking_stage::{
@@ -6,11 +5,11 @@ use {
             leader_slot_metrics::{CommittedTransactionsCounts, ProcessTransactionsSummary},
             leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
             qos_service::QosService,
-            unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
             bundle_account_locker::{BundleAccountLocker, LockedBundle},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
+            bundle_storage::BundleStorage,
             committer::Committer,
         },
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
@@ -24,7 +23,10 @@ use {
     solana_cost_model::transaction_cost::TransactionCost,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
-    solana_poh::poh_recorder::{BankStart, TransactionRecorder},
+    solana_poh::{
+        poh_recorder::BankStart,
+        transaction_recorder::{RecordTransactionsSummary, TransactionRecorder},
+    },
     solana_runtime::bank::Bank,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
@@ -128,10 +130,10 @@ impl BundleConsumer {
     pub fn consume_buffered_bundles(
         &mut self,
         bank_start: &BankStart,
-        unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
+        bundle_storage: &mut BundleStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
-        let reached_end_of_slot = unprocessed_transaction_storage.process_bundles(
+        let reached_end_of_slot = bundle_storage.process_bundles(
             bank_start.working_bank.clone(),
             bundle_stage_leader_metrics,
             &self.blacklisted_accounts,
@@ -157,9 +159,7 @@ impl BundleConsumer {
         if reached_end_of_slot {
             bundle_stage_leader_metrics
                 .leader_slot_metrics_tracker()
-                .set_end_of_slot_unprocessed_buffer_len(
-                    unprocessed_transaction_storage.len() as u64
-                );
+                .set_end_of_slot_unprocessed_buffer_len(bundle_storage.len() as u64);
         }
     }
 
@@ -834,7 +834,7 @@ mod tests {
         let exit = Arc::new(AtomicBool::new(false));
         let poh_config = poh_config.unwrap_or_default();
 
-        let (mut poh_recorder, entry_receiver, record_receiver) = PohRecorder::new(
+        let (mut poh_recorder, entry_receiver) = PohRecorder::new(
             bank.tick_height(),
             bank.last_blockhash(),
             bank.clone(),

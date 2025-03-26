@@ -94,7 +94,6 @@ fn create_consumer(transaction_recorder: TransactionRecorder) -> Consumer {
         transaction_recorder,
         QosService::new(0),
         None,
-        HashSet::default(),
         BundleAccountLocker::default(),
     )
 }

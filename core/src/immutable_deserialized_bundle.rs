@@ -95,7 +95,7 @@ impl ImmutableDeserializedBundle {
 
         let mut immutable_packets = Vec::with_capacity(bundle.batch.len());
         for packet in bundle.batch.iter() {
-            let immutable_packet = ImmutableDeserializedPacket::new(packet.clone())?;
+            let immutable_packet = ImmutableDeserializedPacket::new(packet)?;
             let immutable_packet = packet_filter(immutable_packet)?;
             immutable_packets.push(immutable_packet);
         }

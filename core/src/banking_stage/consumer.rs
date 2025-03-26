@@ -1,7 +1,6 @@
 use {
     super::{
-        committer::{CommitTransactionDetails, Committer, PreBalanceInfo},
-        immutable_deserialized_packet::ImmutableDeserializedPacket,
+        committer::{CommitTransactionDetails, Committer},
         leader_slot_metrics::{
             CommittedTransactionsCounts, LeaderSlotMetricsTracker, ProcessTransactionsSummary,
         },
@@ -34,7 +33,6 @@ use {
     solana_sdk::{
         clock::{FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET, MAX_PROCESSING_AGE},
         fee::FeeBudgetLimits,
-        pubkey::Pubkey,
         saturating_add_assign,
         timing::timestamp,
         transaction::{self, SanitizedTransaction, TransactionError},
@@ -47,7 +45,6 @@ use {
     },
     solana_transaction_status::PreBalanceInfo,
     std::{
-        collections::HashSet,
         num::Saturating,
         sync::{atomic::Ordering, Arc},
         time::Instant,
@@ -98,7 +95,6 @@ pub struct Consumer {
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
-    blacklisted_accounts: HashSet<Pubkey>,
     bundle_account_locker: BundleAccountLocker,
 }
 
@@ -108,7 +104,6 @@ impl Consumer {
         transaction_recorder: TransactionRecorder,
         qos_service: QosService,
         log_messages_bytes_limit: Option<usize>,
-        blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
@@ -116,7 +111,6 @@ impl Consumer {
             transaction_recorder,
             qos_service,
             log_messages_bytes_limit,
-            blacklisted_accounts,
             bundle_account_locker,
         }
     }
@@ -157,7 +151,6 @@ impl Consumer {
                     reservation_cb,
                 )
             },
-            &self.blacklisted_accounts,
         );
 
         if reached_end_of_slot {
@@ -976,7 +969,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
         let process_transactions_summary =
@@ -1088,7 +1080,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
@@ -1288,7 +1279,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
@@ -1406,7 +1396,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
@@ -1490,7 +1479,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
@@ -1657,7 +1645,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
@@ -1867,7 +1854,6 @@ mod tests {
             recorder.clone(),
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
@@ -2001,7 +1987,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
@@ -2153,7 +2138,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 

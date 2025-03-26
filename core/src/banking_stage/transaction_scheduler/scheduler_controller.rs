@@ -1,6 +1,8 @@
 //! Control flow for BankingStage's transaction scheduler.
 //!
 
+use crate::banking_stage::transaction_scheduler::transaction_state::TransactionState;
+use solana_runtime_transaction::transaction_with_meta::TransactionWithMeta;
 use std::collections::HashSet;
 use {
     super::{
@@ -336,16 +338,17 @@ where
         )
     }
 
-    fn pre_lock_filter(
-        tx: &R::Transaction,
+    fn pre_lock_filter<Tx: TransactionWithMeta>(
+        tx: &TransactionState<Tx>,
         blacklisted_accounts: &HashSet<Pubkey>,
     ) -> PreLockFilterAction {
         if tx
+            .transaction()
             .account_keys()
             .iter()
             .any(|a| blacklisted_accounts.contains(a))
         {
-            PreLockFilterAction::Skip
+            PreLockFilterAction::Drop
         } else {
             PreLockFilterAction::AttemptToSchedule
         }

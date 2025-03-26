@@ -5,12 +5,12 @@ use {
         banking_stage::{
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
-            unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
             bundle_packet_receiver::BundleReceiver,
-            bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
+            bundle_stage_leader_metrics::BundleStageLeaderMetrics, bundle_storage::BundleStorage,
+            committer::Committer,
         },
         packet_bundle::PacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
@@ -40,6 +40,7 @@ mod bundle_consumer;
 mod bundle_packet_deserializer;
 mod bundle_packet_receiver;
 pub(crate) mod bundle_stage_leader_metrics;
+mod bundle_storage;
 mod committer;
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
@@ -255,7 +256,7 @@ impl BundleStage {
         );
         let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
 
-        let unprocessed_bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let unprocessed_bundle_storage = BundleStorage::default();
 
         let consumer = BundleConsumer::new(
             committer,
@@ -292,7 +293,7 @@ impl BundleStage {
         mut decision_maker: DecisionMaker,
         mut consumer: BundleConsumer,
         id: u32,
-        mut unprocessed_bundle_storage: UnprocessedTransactionStorage,
+        mut bundle_storage: BundleStorage,
         exit: Arc<AtomicBool>,
     ) {
         let mut last_metrics_update = Instant::now();
@@ -301,14 +302,14 @@ impl BundleStage {
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
 
         while !exit.load(Ordering::Relaxed) {
-            if !unprocessed_bundle_storage.is_empty()
+            if !bundle_storage.is_empty()
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
                 let (_, process_buffered_packets_time_us) =
                     measure_us!(Self::process_buffered_bundles(
                         &mut decision_maker,
                         &mut consumer,
-                        &mut unprocessed_bundle_storage,
+                        &mut bundle_storage,
                         &mut bundle_stage_leader_metrics,
                     ));
                 bundle_stage_leader_metrics
@@ -318,7 +319,7 @@ impl BundleStage {
             }
 
             match bundle_receiver.receive_and_buffer_bundles(
-                &mut unprocessed_bundle_storage,
+                &mut bundle_storage,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,
             ) {
@@ -326,7 +327,6 @@ impl BundleStage {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
 
-            let bundle_storage = unprocessed_bundle_storage.bundle_storage().unwrap();
             bundle_stage_metrics.increment_current_buffered_bundles_count(
                 bundle_storage.unprocessed_bundles_len() as u64,
             );
@@ -347,14 +347,14 @@ impl BundleStage {
     fn process_buffered_bundles(
         decision_maker: &mut DecisionMaker,
         consumer: &mut BundleConsumer,
-        unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
+        bundle_storage: &mut BundleStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
         let (decision, make_decision_time_us) =
             measure_us!(decision_maker.make_consume_or_forward_decision());
 
-        let (metrics_action, banking_stage_metrics_action) = bundle_stage_leader_metrics
-            .check_leader_slot_boundary(decision.bank_start(), Some(unprocessed_bundle_storage));
+        let (metrics_action, banking_stage_metrics_action) =
+            bundle_stage_leader_metrics.check_leader_slot_boundary(decision.bank_start());
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time_us);
@@ -373,7 +373,7 @@ impl BundleStage {
                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
                     .consume_buffered_bundles(
                         &bank_start,
-                        unprocessed_bundle_storage,
+                        bundle_storage,
                         bundle_stage_leader_metrics,
                     ));
                 bundle_stage_leader_metrics
@@ -384,7 +384,7 @@ impl BundleStage {
             // Bundles aren't forwarded because it breaks atomicity guarantees, so just drop them.
             BufferedPacketsDecision::Forward => {
                 let (_num_bundles_cleared, _num_cost_model_buffered_bundles) =
-                    unprocessed_bundle_storage.bundle_storage().unwrap().reset();
+                    bundle_storage.reset();
 
                 // TODO (LB): add metrics here for how many bundles were cleared
 

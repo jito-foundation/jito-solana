@@ -1,13 +1,11 @@
 use {
     super::BundleStageLoopMetrics,
     crate::{
-        banking_stage::{
-            immutable_deserialized_packet::ImmutableDeserializedPacket,
-            unprocessed_transaction_storage::UnprocessedTransactionStorage,
-        },
+        banking_stage::immutable_deserialized_packet::ImmutableDeserializedPacket,
         bundle_stage::{
             bundle_packet_deserializer::{BundlePacketDeserializer, ReceiveBundleResults},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
+            bundle_storage::BundleStorage,
         },
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
@@ -41,17 +39,17 @@ impl BundleReceiver {
     /// Receive incoming packets, push into unprocessed buffer with packet indexes
     pub fn receive_and_buffer_bundles(
         &mut self,
-        unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
+        bundle_storage: &mut BundleStorage,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), RecvTimeoutError> {
         let (result, recv_time_us) = measure_us!({
-            let recv_timeout = Self::get_receive_timeout(unprocessed_bundle_storage);
+            let recv_timeout = Self::get_receive_timeout(bundle_storage);
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
             self.bundle_packet_deserializer
                 .receive_bundles(
                     recv_timeout,
-                    unprocessed_bundle_storage.max_receive_size(),
+                    bundle_storage.max_receive_size(),
                     &|packet: ImmutableDeserializedPacket| {
                         // see packet_receiver.rs
                         packet.check_insufficent_compute_unit_limit()?;
@@ -63,7 +61,7 @@ impl BundleReceiver {
                 .map(|receive_bundle_results| {
                     self.buffer_bundles(
                         receive_bundle_results,
-                        unprocessed_bundle_storage,
+                        bundle_storage,
                         bundle_stage_metrics,
                         // tracer_packet_stats,
                         bundle_stage_leader_metrics,
@@ -82,11 +80,9 @@ impl BundleReceiver {
         result
     }
 
-    fn get_receive_timeout(
-        unprocessed_transaction_storage: &UnprocessedTransactionStorage,
-    ) -> Duration {
+    fn get_receive_timeout(bundle_storage: &BundleStorage) -> Duration {
         // Gossip thread will almost always not wait because the transaction storage will most likely not be empty
-        if !unprocessed_transaction_storage.is_empty() {
+        if !bundle_storage.is_empty() {
             // If there are buffered packets, run the equivalent of try_recv to try reading more
             // packets. This prevents starving BankingStage::consume_buffered_packets due to
             // buffered_packet_batches containing transactions that exceed the cost model for
@@ -104,7 +100,7 @@ impl BundleReceiver {
             deserialized_bundles,
             num_dropped_bundles,
         }: ReceiveBundleResults,
-        unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
+        bundle_storage: &mut BundleStorage,
         bundle_stage_stats: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) {
@@ -128,7 +124,7 @@ impl BundleReceiver {
         );
 
         Self::push_unprocessed(
-            unprocessed_transaction_storage,
+            bundle_storage,
             deserialized_bundles,
             bundle_stage_leader_metrics,
             bundle_stage_stats,
@@ -136,14 +132,15 @@ impl BundleReceiver {
     }
 
     fn push_unprocessed(
-        unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
+        bundle_storage: &mut BundleStorage,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         bundle_stage_stats: &mut BundleStageLoopMetrics,
     ) {
         if !deserialized_bundles.is_empty() {
+            // bundles get pushed onto the back of the unprocessed bundle queue
             let insert_bundles_summary =
-                unprocessed_transaction_storage.insert_bundles(deserialized_bundles);
+                bundle_storage.insert_unprocessed_bundles(deserialized_bundles, true);
 
             bundle_stage_stats.increment_newly_buffered_bundles_count(
                 insert_bundles_summary.num_bundles_inserted as u64,
@@ -155,12 +152,6 @@ impl BundleReceiver {
                 .leader_slot_metrics_tracker()
                 .increment_newly_buffered_packets_count(
                     insert_bundles_summary.num_packets_inserted as u64,
-                );
-
-            bundle_stage_leader_metrics
-                .leader_slot_metrics_tracker()
-                .accumulate_insert_packet_batches_summary(
-                    &insert_bundles_summary.insert_packets_summary,
                 );
         }
     }

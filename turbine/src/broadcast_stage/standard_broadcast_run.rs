@@ -1,6 +1,5 @@
 #![allow(clippy::rc_buffer)]
 
-use std::borrow::Cow;
 use {
     super::{
         broadcast_utils::{self, ReceiveResults},
@@ -13,7 +12,7 @@ use {
         shred::{shred_code, ProcessShredsStats, ReedSolomonCache, Shred, ShredType, Shredder},
     },
     solana_sdk::{hash::Hash, signature::Keypair, timing::AtomicInterval},
-    std::{net::SocketAddr, sync::RwLock, time::Duration},
+    std::{borrow::Cow, net::SocketAddr, sync::RwLock, time::Duration},
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 

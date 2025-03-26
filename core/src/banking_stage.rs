@@ -73,11 +73,11 @@ pub mod vote_storage;
 
 mod consume_worker;
 conditional_vis_mod!(decision_maker, feature = "dev-context-only-utils", pub);
-mod immutable_deserialized_packet;
+pub(crate) mod immutable_deserialized_packet;
 mod latest_unprocessed_votes;
 pub(crate) mod leader_slot_timing_metrics;
 conditional_vis_mod!(packet_deserializer, feature = "dev-context-only-utils", pub);
-mod packet_filter;
+pub(crate) mod packet_filter;
 mod packet_receiver;
 mod read_write_account_set;
 conditional_vis_mod!(scheduler_messages, feature = "dev-context-only-utils", pub);
@@ -463,7 +463,6 @@ impl BankingStage {
                 transaction_recorder.clone(),
                 log_messages_bytes_limit,
                 VoteStorage::new(latest_unprocessed_votes.clone(), vote_source),
-                blacklisted_accounts.clone(),
                 bundle_account_locker.clone(),
                 block_cost_limit_reservation_cb.clone(),
             ));
@@ -551,7 +550,6 @@ impl BankingStage {
                     transaction_recorder.clone(),
                     QosService::new(id),
                     log_messages_bytes_limit,
-                    blacklisted_accounts.clone(),
                     bundle_account_locker.clone(),
                 ),
                 finished_work_sender.clone(),
@@ -629,7 +627,6 @@ impl BankingStage {
         transaction_recorder: TransactionRecorder,
         log_messages_bytes_limit: Option<usize>,
         vote_storage: VoteStorage,
-        blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> JoinHandle<()> {
@@ -639,7 +636,6 @@ impl BankingStage {
             transaction_recorder,
             QosService::new(id),
             log_messages_bytes_limit,
-            blacklisted_accounts.clone(),
             bundle_account_locker.clone(),
         );
 

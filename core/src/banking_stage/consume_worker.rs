@@ -853,7 +853,6 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            HashSet::default(),
             BundleAccountLocker::default(),
         );
 
