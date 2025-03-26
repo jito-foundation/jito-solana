@@ -69,8 +69,8 @@ use {
     std::{
         collections::{HashMap, HashSet},
         net::{SocketAddr, UdpSocket},
-        thread::{self, JoinHandle},
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        thread::{self, JoinHandle},
         time::Duration,
     },
     tokio::sync::mpsc::Sender as AsyncSender,
@@ -266,19 +266,14 @@ impl Tpu {
         )
         .unwrap();
 
-<<<<<<< HEAD
         let (forward_stage_sender, forward_stage_receiver) = bounded(1024);
-        let sigverify_stage = {
-            let verifier = TransactionSigVerifier::new(
-                non_vote_sender,
-                enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
-            );
-=======
         let (packet_sender, packet_receiver) = unbounded();
 
         let sigverify_stage = {
-            let verifier = TransactionSigVerifier::new(non_vote_sender.clone());
->>>>>>> beb121704e (Jito Patch)
+            let verifier = TransactionSigVerifier::new(
+                non_vote_sender.clone(),
+                enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
+            );
             SigVerifyStage::new(packet_receiver, verifier, "solSigVerTpu", "tpu-verifier")
         };
 

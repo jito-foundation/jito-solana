@@ -1,3 +1,4 @@
+use solana_poh::transaction_recorder::RecordTransactionsSummary;
 use {
     crate::{
         banking_stage::{
@@ -23,7 +24,7 @@ use {
     solana_cost_model::transaction_cost::TransactionCost,
     solana_gossip::cluster_info::ClusterInfo,
     solana_measure::measure_us,
-    solana_poh::poh_recorder::{BankStart, RecordTransactionsSummary, TransactionRecorder},
+    solana_poh::poh_recorder::{BankStart, TransactionRecorder},
     solana_runtime::bank::Bank,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{

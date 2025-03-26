@@ -75,7 +75,7 @@ mod consume_worker;
 conditional_vis_mod!(decision_maker, feature = "dev-context-only-utils", pub);
 mod immutable_deserialized_packet;
 mod latest_unprocessed_votes;
-mod leader_slot_timing_metrics;
+pub(crate) mod leader_slot_timing_metrics;
 conditional_vis_mod!(packet_deserializer, feature = "dev-context-only-utils", pub);
 mod packet_filter;
 mod packet_receiver;

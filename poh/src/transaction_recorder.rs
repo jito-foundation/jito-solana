@@ -60,7 +60,7 @@ impl TransactionRecorder {
     pub fn record_transactions(
         &self,
         bank_slot: Slot,
-        transactions: Vec<VersionedTransaction>,
+        transactions: Vec<Vec<VersionedTransaction>>,
     ) -> RecordTransactionsSummary {
         let mut record_transactions_timings = RecordTransactionsTimings::default();
         let mut starting_transaction_index = None;

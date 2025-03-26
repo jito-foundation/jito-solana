@@ -50,6 +50,8 @@ pub(crate) trait Scheduler<Tx: TransactionWithMeta> {
 pub(crate) enum PreLockFilterAction {
     /// Attempt to schedule the transaction.
     AttemptToSchedule,
+    /// Drops the transaction.
+    Drop,
 }
 
 /// Metrics from scheduling transactions.

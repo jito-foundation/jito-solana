@@ -1,6 +1,7 @@
 //! Control flow for BankingStage's transaction scheduler.
 //!
 
+use std::collections::HashSet;
 use {
     super::{
         receive_and_buffer::{DisconnectedError, ReceiveAndBuffer},
@@ -335,10 +336,19 @@ where
         )
     }
 
-    fn pre_lock_filter(tx: &R::Transaction, blacklisted_accounts: &HashSet<Pubkey>) -> bool {
-        !tx.account_keys()
+    fn pre_lock_filter(
+        tx: &R::Transaction,
+        blacklisted_accounts: &HashSet<Pubkey>,
+    ) -> PreLockFilterAction {
+        if tx
+            .account_keys()
             .iter()
             .any(|a| blacklisted_accounts.contains(a))
+        {
+            PreLockFilterAction::Skip
+        } else {
+            PreLockFilterAction::AttemptToSchedule
+        }
     }
 }
 
