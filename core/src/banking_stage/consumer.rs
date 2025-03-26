@@ -11,7 +11,6 @@ use {
         BankingStageStats,
     },
     itertools::Itertools,
-    solana_feature_set as feature_set,
     solana_fee::FeeFeatures,
     solana_ledger::token_balances::collect_token_balances,
     solana_measure::{measure::Measure, measure_us},
@@ -24,7 +23,6 @@ use {
     solana_runtime::{
         bank::{Bank, LoadAndExecuteTransactionsOutput},
         transaction_batch::TransactionBatch,
-        verify_precompiles::verify_precompiles,
     },
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
@@ -401,21 +399,10 @@ impl Consumer {
         let pre_results = vec![Ok(()); txs.len()];
         let check_results =
             bank.check_transactions(txs, &pre_results, MAX_PROCESSING_AGE, &mut error_counters);
-        // If checks passed, verify pre-compiles and continue processing on success.
-        let move_precompile_verification_to_svm = bank
-            .feature_set
-            .is_active(&feature_set::move_precompile_verification_to_svm::id());
-        let check_results: Vec<_> = txs
-            .iter()
-            .zip(check_results)
-            .map(|(tx, result)| match result {
-                Ok(_) => {
-                    if !move_precompile_verification_to_svm {
-                        verify_precompiles(tx, &bank.feature_set)
-                    } else {
-                        Ok(())
-                    }
-                }
+        let check_results: Vec<_> = check_results
+            .into_iter()
+            .map(|result| match result {
+                Ok(_) => Ok(()),
                 Err(err) => Err(err),
             })
             .collect();
@@ -440,10 +427,6 @@ impl Consumer {
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
     ) -> ProcessTransactionBatchOutput {
-        let move_precompile_verification_to_svm = bank
-            .feature_set
-            .is_active(&feature_set::move_precompile_verification_to_svm::id());
-
         // Need to filter out transactions since they were sanitized earlier.
         // This means that the transaction may cross and epoch boundary (not allowed),
         //  or account lookup tables may have been closed.
@@ -466,11 +449,6 @@ impl Consumer {
                 // can be dropped.
                 let (_addresses, _deactivation_slot) =
                     bank.load_addresses_from_ref(tx.message_address_table_lookups())?;
-            }
-
-            // Verify pre-compiles.
-            if !move_precompile_verification_to_svm {
-                verify_precompiles(tx, &bank.feature_set)?;
             }
 
             Ok(())

@@ -31,7 +31,6 @@ use {
     solana_client::connection_cache::Protocol,
     solana_entry::entry::Entry,
     solana_faucet::faucet::request_airdrop_transaction,
-    solana_feature_set as feature_set,
     solana_gossip::cluster_info::ClusterInfo,
     solana_inline_spl::{
         token::{SPL_TOKEN_ACCOUNT_MINT_OFFSET, SPL_TOKEN_ACCOUNT_OWNER_OFFSET},
@@ -65,7 +64,6 @@ use {
         prioritization_fee_cache::PrioritizationFeeCache,
         snapshot_config::SnapshotConfig,
         snapshot_utils,
-        verify_precompiles::verify_precompiles,
     },
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
@@ -2414,21 +2412,10 @@ pub(crate) fn optimize_filters(filters: &mut [RpcFilterType]) {
     })
 }
 
-fn verify_transaction(
-    transaction: &SanitizedTransaction,
-    feature_set: &Arc<feature_set::FeatureSet>,
-) -> Result<()> {
+fn verify_transaction(transaction: &SanitizedTransaction) -> Result<()> {
     #[allow(clippy::question_mark)]
     if transaction.verify().is_err() {
         return Err(RpcCustomError::TransactionSignatureVerificationFailure.into());
-    }
-
-    let move_precompile_verification_to_svm =
-        feature_set.is_active(&feature_set::move_precompile_verification_to_svm::id());
-    if !move_precompile_verification_to_svm {
-        if let Err(e) = verify_precompiles(transaction, feature_set) {
-            return Err(RpcCustomError::TransactionPrecompileVerificationFailure(e).into());
-        }
     }
 
     Ok(())
@@ -3884,7 +3871,7 @@ pub mod rpc_full {
             }
 
             if !skip_preflight {
-                verify_transaction(&transaction, &preflight_bank.feature_set)?;
+                verify_transaction(&transaction)?;
 
                 if !meta.config.skip_preflight_health_check {
                     match meta.health.check() {
@@ -4001,7 +3988,7 @@ pub mod rpc_full {
             let transaction =
                 sanitize_transaction(unsanitized_tx, bank, bank.get_reserved_account_keys())?;
             if sig_verify {
-                verify_transaction(&transaction, &bank.feature_set)?;
+                verify_transaction(&transaction)?;
             }
 
             let TransactionSimulationResult {

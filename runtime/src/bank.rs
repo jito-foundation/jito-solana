@@ -56,7 +56,6 @@ use {
         stakes::{Stakes, StakesCache, StakesEnum},
         status_cache::{SlotDelta, StatusCache},
         transaction_batch::{OwnedOrBorrowed, TransactionBatch},
-        verify_precompiles::verify_precompiles,
     },
     accounts_lt_hash::{CacheValue as AccountsLtHashCacheValue, Stats as AccountsLtHashStats},
     agave_reserved_account_keys::ReservedAccountKeys,
@@ -5670,16 +5669,6 @@ impl Bank {
                 self.get_reserved_account_keys(),
             )
         }?;
-
-        let move_precompile_verification_to_svm = self
-            .feature_set
-            .is_active(&feature_set::move_precompile_verification_to_svm::id());
-        if !move_precompile_verification_to_svm && {
-            verification_mode == TransactionVerificationMode::HashAndVerifyPrecompiles
-                || verification_mode == TransactionVerificationMode::FullVerification
-        } {
-            verify_precompiles(&sanitized_tx, &self.feature_set)?;
-        }
 
         Ok(sanitized_tx)
     }
