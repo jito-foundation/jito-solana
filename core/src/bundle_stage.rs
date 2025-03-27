@@ -20,7 +20,7 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure_us,
-    solana_poh::poh_recorder::PohRecorder,
+    solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
     solana_runtime::{
         prioritization_fee_cache::PrioritizationFeeCache, vote_sender_types::ReplayVoteSender,
     },
@@ -198,6 +198,7 @@ impl BundleStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
+        transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
@@ -211,6 +212,7 @@ impl BundleStage {
         Self::start_bundle_thread(
             cluster_info,
             poh_recorder,
+            transaction_recorder,
             bundle_receiver,
             transaction_status_sender,
             replay_vote_sender,
@@ -232,6 +234,7 @@ impl BundleStage {
     fn start_bundle_thread(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
+        transaction_recorder: TransactionRecorder,
         bundle_receiver: Receiver<Vec<PacketBundle>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
@@ -260,7 +263,7 @@ impl BundleStage {
 
         let consumer = BundleConsumer::new(
             committer,
-            poh_recorder.read().unwrap().new_recorder(),
+            transaction_recorder,
             QosService::new(BUNDLE_STAGE_ID),
             log_message_bytes_limit,
             tip_manager,

@@ -721,7 +721,7 @@ mod tests {
                 bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
                 bundle_packet_deserializer::BundlePacketDeserializer,
                 bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
-                QosService, UnprocessedTransactionStorage,
+                BundleStorage, QosService,
             },
             packet_bundle::PacketBundle,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
@@ -742,6 +742,7 @@ mod tests {
         solana_poh::{
             poh_recorder::{PohRecorder, Record, WorkingBankEntry},
             poh_service::PohService,
+            transaction_recorder::TransactionRecorder,
         },
         solana_program_test::programs::spl_programs,
         solana_runtime::{
@@ -790,6 +791,7 @@ mod tests {
         bank: Arc<Bank>,
         exit: Arc<AtomicBool>,
         poh_recorder: Arc<RwLock<PohRecorder>>,
+        transaction_recorder: TransactionRecorder,
         poh_simulator: JoinHandle<()>,
         entry_receiver: Receiver<WorkingBankEntry>,
         bank_forks: Arc<RwLock<BankForks>>,
@@ -824,6 +826,7 @@ mod tests {
     ) -> (
         Arc<AtomicBool>,
         Arc<RwLock<PohRecorder>>,
+        TransactionRecorder,
         JoinHandle<()>,
         Receiver<WorkingBankEntry>,
     ) {
@@ -850,10 +853,19 @@ mod tests {
             false,
         );
 
+        let (record_sender, record_receiver) = unbounded();
+        let transaction_recorder = TransactionRecorder::new(record_sender, exit.clone());
+
         let poh_recorder = Arc::new(RwLock::new(poh_recorder));
         let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
-        (exit, poh_recorder, poh_simulator, entry_receiver)
+        (
+            exit,
+            poh_recorder,
+            transaction_recorder,
+            poh_simulator,
+            entry_receiver,
+        )
     }
 
     fn create_test_fixture(mint_sol: u64) -> TestFixture {
@@ -894,7 +906,7 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (exit, poh_recorder, poh_simulator, entry_receiver) =
+        let (exit, poh_recorder, transaction_recorder, poh_simulator, entry_receiver) =
             create_test_recorder(&bank, blockstore, Some(PohConfig::default()), None);
 
         let validator_pubkey = voting_keypair.pubkey();
@@ -910,6 +922,7 @@ mod tests {
             bank_forks,
             exit,
             poh_recorder,
+            transaction_recorder,
             poh_simulator,
             entry_receiver,
         }
@@ -977,11 +990,11 @@ mod tests {
             bank,
             exit,
             poh_recorder,
+            transaction_recorder,
             poh_simulator,
             entry_receiver,
             bank_forks: _bank_forks,
         } = create_test_fixture(1_000_000);
-        let recorder = poh_recorder.read().unwrap().new_recorder();
 
         let status = poh_recorder
             .read()
@@ -1011,7 +1024,7 @@ mod tests {
 
         let mut consumer = BundleConsumer::new(
             committer,
-            recorder,
+            transaction_recorder,
             QosService::new(1),
             None,
             tip_manager,
@@ -1023,7 +1036,7 @@ mod tests {
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
-        let mut bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
 
         let mut packet_bundles = make_random_overlapping_bundles(
@@ -1049,7 +1062,7 @@ mod tests {
             )
             .unwrap();
 
-        let summary = bundle_storage.insert_bundles(vec![deserialized_bundle]);
+        let summary = bundle_storage.insert_unprocessed_bundles(vec![deserialized_bundle]);
         assert_eq!(
             summary.num_packets_inserted,
             sanitized_bundle.transactions.len()
@@ -1122,11 +1135,11 @@ mod tests {
             bank,
             exit,
             poh_recorder,
+            transaction_recorder,
             poh_simulator,
             entry_receiver,
             bank_forks: _bank_forks,
         } = create_test_fixture(1_000_000);
-        let recorder = poh_recorder.read().unwrap().new_recorder();
 
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let committer = Committer::new(
@@ -1150,7 +1163,7 @@ mod tests {
 
         let mut consumer = BundleConsumer::new(
             committer,
-            recorder,
+            transaction_recorder,
             QosService::new(1),
             None,
             tip_manager.clone(),
@@ -1162,7 +1175,7 @@ mod tests {
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
-        let mut bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
         // MAIN LOGIC
 
@@ -1195,7 +1208,7 @@ mod tests {
             )
             .unwrap();
 
-        let summary = bundle_storage.insert_bundles(vec![deserialized_bundle]);
+        let summary = bundle_storage.insert_unprocessed_bundles(vec![deserialized_bundle]);
         assert_eq!(summary.num_bundles_inserted, 1);
         assert_eq!(summary.num_packets_inserted, 1);
         assert_eq!(summary.num_bundles_dropped, 0);
@@ -1291,11 +1304,11 @@ mod tests {
             bank,
             exit,
             poh_recorder,
+            transaction_recorder,
             poh_simulator,
             entry_receiver,
             bank_forks: _bank_forks,
         } = create_test_fixture(1_000_000);
-        let recorder = poh_recorder.read().unwrap().new_recorder();
 
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let committer = Committer::new(
@@ -1327,7 +1340,7 @@ mod tests {
                 &cluster_info,
                 &block_builder_info,
                 &committer,
-                &recorder,
+                &transaction_recorder,
                 &QosService::new(1),
                 &None,
                 Duration::from_secs(10),

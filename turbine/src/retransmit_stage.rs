@@ -361,7 +361,7 @@ fn retransmit_shred(
     socket: &UdpSocket,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     stats: &RetransmitStats,
-    shred_receiver_addr: &Option<SocketAddr>, // TODO (LB): figure out retransmits
+    _shred_receiver_addr: &Option<SocketAddr>, // TODO (LB): figure out retransmits
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()

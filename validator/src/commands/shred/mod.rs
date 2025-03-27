@@ -1,7 +1,7 @@
 use {
-    crate::{admin_rpc_service, cli::DefaultArgs},
+    crate::{admin_rpc_service, cli::DefaultArgs, commands::Result},
     clap::{value_t_or_exit, App, Arg, ArgMatches, SubCommand},
-    std::{path::Path, process::exit},
+    std::path::Path,
 };
 
 pub fn shred_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
@@ -30,29 +30,28 @@ pub fn shred_retransmit_receiver_command(_default_args: &DefaultArgs) -> App<'_,
         )
 }
 
-pub fn set_shred_receiver_execute(subcommand_matches: &ArgMatches, ledger_path: &Path) {
+pub fn set_shred_receiver_execute(
+    subcommand_matches: &ArgMatches,
+    ledger_path: &Path,
+) -> Result<()> {
     let addr = value_t_or_exit!(subcommand_matches, "shred_receiver_address", String);
     let admin_client = admin_rpc_service::connect(ledger_path);
     admin_rpc_service::runtime()
-        .block_on(async move { admin_client.await?.set_shred_receiver_address(addr).await })
-        .unwrap_or_else(|err| {
-            println!("set shred receiver address failed: {}", err);
-            exit(1);
-        });
+        .block_on(async move { admin_client.await?.set_shred_receiver_address(addr).await })?;
+    Ok(())
 }
 
-pub fn set_shred_retransmit_receiver_execute(subcommand_matches: &ArgMatches, ledger_path: &Path) {
+pub fn set_shred_retransmit_receiver_execute(
+    subcommand_matches: &ArgMatches,
+    ledger_path: &Path,
+) -> Result<()> {
     let addr = value_t_or_exit!(subcommand_matches, "shred_receiver_address", String);
     let admin_client = admin_rpc_service::connect(ledger_path);
-    admin_rpc_service::runtime()
-        .block_on(async move {
-            admin_client
-                .await?
-                .set_shred_retransmit_receiver_address(addr)
-                .await
-        })
-        .unwrap_or_else(|err| {
-            println!("set shred receiver address failed: {}", err);
-            exit(1);
-        });
+    admin_rpc_service::runtime().block_on(async move {
+        admin_client
+            .await?
+            .set_shred_retransmit_receiver_address(addr)
+            .await
+    })?;
+    Ok(())
 }

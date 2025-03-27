@@ -1,8 +1,8 @@
 use {
-    crate::{admin_rpc_service, cli::DefaultArgs},
+    crate::{admin_rpc_service, cli::DefaultArgs, commands::Result},
     clap::{value_t_or_exit, App, Arg, ArgMatches, SubCommand},
     solana_clap_utils::input_parsers::value_of,
-    std::{path::Path, process::exit},
+    std::path::Path,
 };
 
 pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
@@ -39,7 +39,7 @@ pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
         )
 }
 
-pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) {
+pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> Result<()> {
     let relayer_url = value_t_or_exit!(subcommand_matches, "relayer_url", String);
     let trust_packets = subcommand_matches.is_present("trust_relayer_packets");
     let expected_heartbeat_interval_ms: u64 =
@@ -47,20 +47,16 @@ pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) {
     let max_failed_heartbeats: u64 =
         value_of(subcommand_matches, "relayer_max_failed_heartbeats").unwrap();
     let admin_client = admin_rpc_service::connect(ledger_path);
-    admin_rpc_service::runtime()
-        .block_on(async move {
-            admin_client
-                .await?
-                .set_relayer_config(
-                    relayer_url,
-                    trust_packets,
-                    expected_heartbeat_interval_ms,
-                    max_failed_heartbeats,
-                )
-                .await
-        })
-        .unwrap_or_else(|err| {
-            println!("set relayer config failed: {}", err);
-            exit(1);
-        });
+    admin_rpc_service::runtime().block_on(async move {
+        admin_client
+            .await?
+            .set_relayer_config(
+                relayer_url,
+                trust_packets,
+                expected_heartbeat_interval_ms,
+                max_failed_heartbeats,
+            )
+            .await
+    })?;
+    Ok(())
 }

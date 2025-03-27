@@ -1,7 +1,7 @@
 use {
-    crate::{admin_rpc_service, cli::DefaultArgs},
+    crate::{admin_rpc_service, cli::DefaultArgs, commands::Result},
     clap::{value_t_or_exit, App, Arg, ArgMatches, SubCommand},
-    std::{path::Path, process::exit},
+    std::path::Path,
 };
 
 pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
@@ -22,19 +22,15 @@ pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
         )
 }
 
-pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) {
+pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> Result<()> {
     let block_engine_url = value_t_or_exit!(subcommand_matches, "block_engine_url", String);
     let trust_packets = subcommand_matches.is_present("trust_block_engine_packets");
     let admin_client = admin_rpc_service::connect(ledger_path);
-    admin_rpc_service::runtime()
-        .block_on(async move {
-            admin_client
-                .await?
-                .set_block_engine_config(block_engine_url, trust_packets)
-                .await
-        })
-        .unwrap_or_else(|err| {
-            println!("set block engine config failed: {}", err);
-            exit(1);
-        });
+    admin_rpc_service::runtime().block_on(async move {
+        admin_client
+            .await?
+            .set_block_engine_config(block_engine_url, trust_packets)
+            .await
+    })?;
+    Ok(())
 }

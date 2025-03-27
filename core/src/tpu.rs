@@ -360,7 +360,7 @@ impl Tpu {
             transaction_struct,
             cluster_info,
             poh_recorder,
-            transaction_recorder,
+            transaction_recorder.clone(),
             non_vote_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
@@ -391,6 +391,7 @@ impl Tpu {
         let bundle_stage = BundleStage::new(
             cluster_info,
             poh_recorder,
+            transaction_recorder,
             bundle_receiver,
             transaction_status_sender,
             replay_vote_sender,

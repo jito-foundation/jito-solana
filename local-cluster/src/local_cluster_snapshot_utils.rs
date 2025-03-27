@@ -69,8 +69,10 @@ impl LocalCluster {
         next_snapshot_type: NextSnapshotType,
         max_wait_duration: Option<Duration>,
     ) -> NextSnapshotResult {
-        let full_snapshot_slot =
-            snapshot_utils::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir);
+        let full_snapshot_slot = snapshot_utils::get_highest_full_snapshot_archive_slot(
+            &full_snapshot_archives_dir,
+            None,
+        );
         let last_slot = match next_snapshot_type {
             NextSnapshotType::FullSnapshot => full_snapshot_slot,
             NextSnapshotType::IncrementalAndFullSnapshot => {
@@ -78,6 +80,7 @@ impl LocalCluster {
                     snapshot_utils::get_highest_incremental_snapshot_archive_slot(
                         incremental_snapshot_archives_dir.as_ref().unwrap(),
                         full_snapshot_slot,
+                        None,
                     )
                 })
             }

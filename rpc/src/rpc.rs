@@ -476,7 +476,6 @@ impl JsonRpcRequestProcessor {
         // QUIC is the default TPU protocol and is used by ConnectionCache
         // by default (see `DEFAULT_CONNECTION_CACHE_USE_QUIC`).
         // Therefore, explicitly specifying QUIC here does not change the test behavior.
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let (transaction_sender, transaction_receiver) = unbounded();
 
         let config = JsonRpcConfig::default();
@@ -487,7 +486,12 @@ impl JsonRpcRequestProcessor {
             ..
         } = config;
         let runtime = service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj);
-        let client = Client::create_client(Some(runtime.handle().clone()), my_tpu_address, None, 1);
+        let client = Client::create_client(
+            Some(runtime.handle().clone()),
+            cluster_info.clone(),
+            None,
+            1,
+        );
 
         SendTransactionService::new_with_client(
             &bank_forks,
@@ -7137,7 +7141,6 @@ pub mod tests {
             );
             ClusterInfo::new(contact_info, keypair, SocketAddrSpace::Unspecified)
         });
-        let my_tpu_address = cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap();
         let config = JsonRpcConfig::default();
         let JsonRpcConfig {
             rpc_threads,

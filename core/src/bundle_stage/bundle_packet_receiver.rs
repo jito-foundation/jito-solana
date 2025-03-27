@@ -140,7 +140,7 @@ impl BundleReceiver {
         if !deserialized_bundles.is_empty() {
             // bundles get pushed onto the back of the unprocessed bundle queue
             let insert_bundles_summary =
-                bundle_storage.insert_unprocessed_bundles(deserialized_bundles, true);
+                bundle_storage.insert_unprocessed_bundles(deserialized_bundles);
 
             bundle_stage_stats.increment_newly_buffered_bundles_count(
                 insert_bundles_summary.num_bundles_inserted as u64,
@@ -163,7 +163,6 @@ impl BundleReceiver {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::unprocessed_transaction_storage::BundleStorage,
         crossbeam_channel::unbounded,
         rand::{thread_rng, RngCore},
         solana_bundle::{
@@ -249,7 +248,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -260,13 +259,12 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 10);
         assert_eq!(bundle_storage.unprocessed_packets_len(), 20);
         assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 0);
@@ -300,7 +298,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -318,13 +316,12 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
         // 1005 bundles were sent, but the capacity is 1000
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 1000);
         assert_eq!(bundle_storage.unprocessed_packets_len(), 2000);
@@ -359,7 +356,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -371,15 +368,13 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
         let poh_max_height_reached_index = 3;
-
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
 
         // make sure poh end of slot reached + the correct bundles are buffered for the next time.
         // bundles at index 3 + 4 are rebuffered
@@ -426,7 +421,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -438,15 +433,13 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
         let bank_processing_done_index = 3;
-
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
 
         // bundles at index 3 + 4 are rebuffered
         assert!(bundle_storage.process_bundles(
@@ -491,7 +484,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -503,13 +496,11 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
-
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
 
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
@@ -539,7 +530,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -551,13 +542,11 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
-
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
 
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
@@ -585,7 +574,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -597,13 +586,11 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
-
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
 
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
@@ -627,7 +614,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -639,13 +626,11 @@ mod tests {
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
-
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
 
         // buffered bundles are moved to cost model side deque
         assert!(!bundle_storage.process_bundles(
@@ -704,7 +689,7 @@ mod tests {
         } = create_genesis_config(10_000);
         let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
 
-        let mut unprocessed_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_storage = BundleStorage::default();
 
         let (sender, receiver) = unbounded();
         let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
@@ -723,13 +708,12 @@ mod tests {
 
         // receive and buffer bundles to the cost model reserve to test the capacity/dropped bundles there
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
         // buffered bundles are moved to cost model side deque
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
@@ -752,13 +736,12 @@ mod tests {
         sender.send(bundles1.clone()).unwrap();
         // should get 500 more bundles, cost model buffered length should be 1000
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
         // buffered bundles are moved to cost model side deque
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
@@ -778,13 +761,12 @@ mod tests {
 
         // this set will get dropped from cost model buffered bundles
         let result = bundle_receiver.receive_and_buffer_bundles(
-            &mut unprocessed_storage,
+            &mut bundle_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
-        let bundle_storage = unprocessed_storage.bundle_storage().unwrap();
         // buffered bundles are moved to cost model side deque, but its at capacity so stays the same size
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),

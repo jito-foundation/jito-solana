@@ -803,7 +803,7 @@ mod tests {
         },
         solana_perf::packet::to_packet_batches,
         solana_poh::{
-            poh_recorder::{create_test_recorder, PohRecorderError, Record},
+            poh_recorder::{create_test_recorder, PohRecorderError, Record, WorkingBankEntry},
             poh_service::PohService,
             transaction_recorder::RecordTransactionsSummary,
         },
@@ -1489,7 +1489,7 @@ mod tests {
                     Blockstore::open(ledger_path.path())
                         .expect("Expected to be able to open database ledger"),
                 );
-                let (exit, poh_recorder, poh_service, entry_receiver) =
+                let (exit, poh_recorder, transaction_recorder, poh_service, entry_receiver) =
                     create_test_recorder(bank.clone(), blockstore, None, None);
                 let (_, cluster_info) = new_test_cluster_info(/*keypair:*/ None);
                 let cluster_info = Arc::new(cluster_info);
@@ -1502,16 +1502,15 @@ mod tests {
                     TransactionStructure::default(),
                     &cluster_info,
                     &poh_recorder,
+                    transaction_recorder,
                     non_vote_receiver,
                     tpu_vote_receiver,
                     gossip_vote_receiver,
                     None,
                     replay_vote_sender,
                     None,
-                    Arc::new(ConnectionCache::new("connection_cache_test")),
                     bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
                     &Arc::new(PrioritizationFeeCache::new(0u64)),
-                    false,
                     HashSet::from_iter([blacklisted_keypair.pubkey()]),
                     BundleAccountLocker::default(),
                     |_| 0,
