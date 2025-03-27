@@ -11288,6 +11288,8 @@ name = "solana-zk-elgamal-proof-program"
 version = "2.3.0"
 dependencies = [
  "bytemuck",
+ "criterion",
+ "curve25519-dalek 4.1.3",
  "num-derive",
  "num-traits",
  "solana-instruction",
