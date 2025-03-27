@@ -72,7 +72,7 @@ pub mod unprocessed_packet_batches;
 pub mod vote_storage;
 
 mod consume_worker;
-conditional_vis_mod!(decision_maker, feature = "dev-context-only-utils", pub);
+pub mod decision_maker;
 pub(crate) mod immutable_deserialized_packet;
 mod latest_unprocessed_votes;
 pub(crate) mod leader_slot_timing_metrics;
