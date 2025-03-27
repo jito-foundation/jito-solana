@@ -19,7 +19,6 @@ use {
         poh_recorder::{create_test_recorder, WorkingBankEntry},
         poh_service::PohService,
         transaction_recorder::TransactionRecorder,
-        WorkingBankEntry,
     },
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
@@ -31,12 +30,9 @@ use {
         system_program, system_transaction,
         transaction::SanitizedTransaction,
     },
-    std::{
-        collections::HashSet,
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
-        },
+    std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
     },
     tempfile::TempDir,
     test::Bencher,

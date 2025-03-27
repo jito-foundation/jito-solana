@@ -178,6 +178,7 @@ impl Consumer {
             .fetch_add(consumed_buffered_packets_count, Ordering::Relaxed);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn do_process_packets(
         &self,
         bank_start: &BankStart,

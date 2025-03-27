@@ -18,7 +18,6 @@ use {
     log::*,
     rand::{thread_rng, Rng},
     rayon::prelude::*,
-    solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::BankingStage, banking_trace::BankingTracer,
         bundle_stage::bundle_account_locker::BundleAccountLocker,
