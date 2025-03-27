@@ -11289,6 +11289,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-zk-elgamal-proof-program-tests"
+version = "2.3.0"
+dependencies = [
+ "bytemuck",
+ "solana-account",
+ "solana-compute-budget",
+ "solana-compute-budget-interface",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-program-test",
+ "solana-pubkey",
+ "solana-signer",
+ "solana-system-interface",
+ "solana-transaction",
+ "solana-transaction-error",
+ "solana-zk-sdk",
+]
+
+[[package]]
 name = "solana-zk-keygen"
 version = "2.3.0"
 dependencies = [
@@ -11358,26 +11377,6 @@ dependencies = [
  "solana-log-collector",
  "solana-program-runtime",
  "solana-sdk-ids",
- "solana-zk-token-sdk",
-]
-
-[[package]]
-name = "solana-zk-token-proof-program-tests"
-version = "2.3.0"
-dependencies = [
- "bytemuck",
- "curve25519-dalek 4.1.3",
- "solana-account",
- "solana-compute-budget",
- "solana-compute-budget-interface",
- "solana-instruction",
- "solana-keypair",
- "solana-program-test",
- "solana-pubkey",
- "solana-signer",
- "solana-system-interface",
- "solana-transaction",
- "solana-transaction-error",
  "solana-zk-token-sdk",
 ]
 

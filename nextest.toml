@@ -10,7 +10,7 @@ retries = { backoff = "fixed", count = 3, delay = "1s" }
 path = "junit.xml"
 
 [[profile.ci.overrides]]
-filter = "package(solana-zk-token-proof-program-tests) & test(/^test_batched_range_proof_u256$/)"
+filter = "package(solana-zk-elgamal-proof-program-tests) & test(/^test_batched_range_proof_u256$/)"
 threads-required = "num-cpus"
 
 [[profile.ci.overrides]]

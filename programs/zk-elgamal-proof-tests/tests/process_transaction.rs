@@ -1,6 +1,5 @@
 use {
     bytemuck::{bytes_of, Pod},
-    curve25519_dalek::scalar::Scalar,
     solana_account::Account,
     solana_instruction::error::InstructionError,
     solana_keypair::Keypair,
@@ -10,35 +9,28 @@ use {
     solana_system_interface::instruction as system_instruction,
     solana_transaction::Transaction,
     solana_transaction_error::TransactionError,
-    solana_zk_token_sdk::{
+    solana_zk_sdk::{
         encryption::{
             elgamal::{ElGamalKeypair, ElGamalSecretKey},
             grouped_elgamal::GroupedElGamal,
             pedersen::{Pedersen, PedersenOpening},
         },
-        instruction::*,
-        zk_token_proof_instruction::*,
-        zk_token_proof_program,
-        zk_token_proof_state::ProofContextState,
+        zk_elgamal_proof_program::{self, instruction::*, proof_data::*, state::ProofContextState},
     },
     std::mem::size_of,
 };
 
-const VERIFY_INSTRUCTION_TYPES: [ProofInstruction; 16] = [
-    ProofInstruction::VerifyZeroBalance,
-    ProofInstruction::VerifyWithdraw,
+const VERIFY_INSTRUCTION_TYPES: [ProofInstruction; 12] = [
+    ProofInstruction::VerifyZeroCiphertext,
     ProofInstruction::VerifyCiphertextCiphertextEquality,
-    ProofInstruction::VerifyTransfer,
-    ProofInstruction::VerifyTransferWithFee,
     ProofInstruction::VerifyPubkeyValidity,
-    ProofInstruction::VerifyRangeProofU64,
     ProofInstruction::VerifyBatchedRangeProofU64,
     ProofInstruction::VerifyBatchedRangeProofU128,
     ProofInstruction::VerifyBatchedRangeProofU256,
     ProofInstruction::VerifyCiphertextCommitmentEquality,
     ProofInstruction::VerifyGroupedCiphertext2HandlesValidity,
     ProofInstruction::VerifyBatchedGroupedCiphertext2HandlesValidity,
-    ProofInstruction::VerifyFeeSigma,
+    ProofInstruction::VerifyPercentageWithCap,
     ProofInstruction::VerifyGroupedCiphertext3HandlesValidity,
     ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity,
 ];
@@ -48,40 +40,42 @@ async fn test_zero_balance() {
     let elgamal_keypair = ElGamalKeypair::new_rand();
 
     let zero_ciphertext = elgamal_keypair.pubkey().encrypt(0_u64);
-    let success_proof_data = ZeroBalanceProofData::new(&elgamal_keypair, &zero_ciphertext).unwrap();
+    let success_proof_data =
+        ZeroCiphertextProofData::new(&elgamal_keypair, &zero_ciphertext).unwrap();
 
     let incorrect_pubkey = elgamal_keypair.pubkey();
     let incorrect_secret = ElGamalSecretKey::new_rand();
     let incorrect_keypair = ElGamalKeypair::new_for_tests(*incorrect_pubkey, incorrect_secret);
 
-    let fail_proof_data = ZeroBalanceProofData::new(&incorrect_keypair, &zero_ciphertext).unwrap();
+    let fail_proof_data =
+        ZeroCiphertextProofData::new(&incorrect_keypair, &zero_ciphertext).unwrap();
 
     test_verify_proof_without_context(
-        ProofInstruction::VerifyZeroBalance,
+        ProofInstruction::VerifyZeroCiphertext,
         &success_proof_data,
         &fail_proof_data,
     )
     .await;
 
     test_verify_proof_from_account_with_context(
-        ProofInstruction::VerifyZeroBalance,
-        size_of::<ProofContextState<ZeroBalanceProofContext>>(),
+        ProofInstruction::VerifyZeroCiphertext,
+        size_of::<ProofContextState<ZeroCiphertextProofContext>>(),
         &success_proof_data,
         &fail_proof_data,
     )
     .await;
 
     test_verify_proof_with_context(
-        ProofInstruction::VerifyZeroBalance,
-        size_of::<ProofContextState<ZeroBalanceProofContext>>(),
+        ProofInstruction::VerifyZeroCiphertext,
+        size_of::<ProofContextState<ZeroCiphertextProofContext>>(),
         &success_proof_data,
         &fail_proof_data,
     )
     .await;
 
     test_close_context_state(
-        ProofInstruction::VerifyZeroBalance,
-        size_of::<ProofContextState<ZeroBalanceProofContext>>(),
+        ProofInstruction::VerifyZeroCiphertext,
+        size_of::<ProofContextState<ZeroCiphertextProofContext>>(),
         &success_proof_data,
     )
     .await;
@@ -155,219 +149,16 @@ async fn test_ciphertext_ciphertext_equality() {
 }
 
 #[tokio::test]
-async fn test_transfer() {
-    let source_keypair = ElGamalKeypair::new_rand();
-
-    let destination_keypair = ElGamalKeypair::new_rand();
-    let destination_pubkey = destination_keypair.pubkey();
-
-    let auditor_keypair = ElGamalKeypair::new_rand();
-    let auditor_pubkey = auditor_keypair.pubkey();
-
-    let spendable_balance: u64 = 0;
-    let spendable_ciphertext = source_keypair.pubkey().encrypt(spendable_balance);
-
-    let transfer_amount: u64 = 0;
-
-    let success_proof_data = TransferData::new(
-        transfer_amount,
-        (spendable_balance, &spendable_ciphertext),
-        &source_keypair,
-        (destination_pubkey, auditor_pubkey),
-    )
-    .unwrap();
-
-    let incorrect_pubkey = source_keypair.pubkey();
-    let incorrect_secret = ElGamalSecretKey::new_rand();
-    let incorrect_keypair = ElGamalKeypair::new_for_tests(*incorrect_pubkey, incorrect_secret);
-
-    let fail_proof_data = TransferData::new(
-        transfer_amount,
-        (spendable_balance, &spendable_ciphertext),
-        &incorrect_keypair,
-        (destination_pubkey, auditor_pubkey),
-    )
-    .unwrap();
-
-    test_verify_proof_without_context(
-        ProofInstruction::VerifyTransfer,
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_with_context(
-        ProofInstruction::VerifyTransfer,
-        size_of::<ProofContextState<TransferProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_from_account_with_context(
-        ProofInstruction::VerifyTransfer,
-        size_of::<ProofContextState<TransferProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_close_context_state(
-        ProofInstruction::VerifyTransfer,
-        size_of::<ProofContextState<TransferProofContext>>(),
-        &success_proof_data,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn test_transfer_with_fee() {
-    let source_keypair = ElGamalKeypair::new_rand();
-
-    let destination_keypair = ElGamalKeypair::new_rand();
-    let destination_pubkey = destination_keypair.pubkey();
-
-    let auditor_keypair = ElGamalKeypair::new_rand();
-    let auditor_pubkey = auditor_keypair.pubkey();
-
-    let withdraw_withheld_authority_keypair = ElGamalKeypair::new_rand();
-    let withdraw_withheld_authority_pubkey = withdraw_withheld_authority_keypair.pubkey();
-
-    let spendable_balance: u64 = 120;
-    let spendable_ciphertext = source_keypair.pubkey().encrypt(spendable_balance);
-
-    let transfer_amount: u64 = 0;
-
-    let fee_parameters = FeeParameters {
-        fee_rate_basis_points: 400,
-        maximum_fee: 3,
-    };
-
-    let success_proof_data = TransferWithFeeData::new(
-        transfer_amount,
-        (spendable_balance, &spendable_ciphertext),
-        &source_keypair,
-        (destination_pubkey, auditor_pubkey),
-        fee_parameters,
-        withdraw_withheld_authority_pubkey,
-    )
-    .unwrap();
-
-    let incorrect_pubkey = source_keypair.pubkey();
-    let incorrect_secret = ElGamalSecretKey::new_rand();
-    let incorrect_keypair = ElGamalKeypair::new_for_tests(*incorrect_pubkey, incorrect_secret);
-
-    let fail_proof_data = TransferWithFeeData::new(
-        transfer_amount,
-        (spendable_balance, &spendable_ciphertext),
-        &incorrect_keypair,
-        (destination_pubkey, auditor_pubkey),
-        fee_parameters,
-        withdraw_withheld_authority_pubkey,
-    )
-    .unwrap();
-
-    test_verify_proof_without_context(
-        ProofInstruction::VerifyTransferWithFee,
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_with_context(
-        ProofInstruction::VerifyTransferWithFee,
-        size_of::<ProofContextState<TransferWithFeeProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_from_account_with_context(
-        ProofInstruction::VerifyTransferWithFee,
-        size_of::<ProofContextState<TransferWithFeeProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_close_context_state(
-        ProofInstruction::VerifyTransferWithFee,
-        size_of::<ProofContextState<TransferWithFeeProofContext>>(),
-        &success_proof_data,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn test_withdraw() {
-    let elgamal_keypair = ElGamalKeypair::new_rand();
-
-    let current_balance: u64 = 77;
-    let current_ciphertext = elgamal_keypair.pubkey().encrypt(current_balance);
-    let withdraw_amount: u64 = 55;
-
-    let success_proof_data = WithdrawData::new(
-        withdraw_amount,
-        &elgamal_keypair,
-        current_balance,
-        &current_ciphertext,
-    )
-    .unwrap();
-
-    let incorrect_pubkey = elgamal_keypair.pubkey();
-    let incorrect_secret = ElGamalSecretKey::new_rand();
-    let incorrect_keypair = ElGamalKeypair::new_for_tests(*incorrect_pubkey, incorrect_secret);
-
-    let fail_proof_data = WithdrawData::new(
-        withdraw_amount,
-        &incorrect_keypair,
-        current_balance,
-        &current_ciphertext,
-    )
-    .unwrap();
-
-    test_verify_proof_without_context(
-        ProofInstruction::VerifyWithdraw,
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_with_context(
-        ProofInstruction::VerifyWithdraw,
-        size_of::<ProofContextState<WithdrawProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_from_account_with_context(
-        ProofInstruction::VerifyWithdraw,
-        size_of::<ProofContextState<WithdrawProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_close_context_state(
-        ProofInstruction::VerifyWithdraw,
-        size_of::<ProofContextState<WithdrawProofContext>>(),
-        &success_proof_data,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn test_pubkey_validity() {
     let elgamal_keypair = ElGamalKeypair::new_rand();
 
-    let success_proof_data = PubkeyValidityData::new(&elgamal_keypair).unwrap();
+    let success_proof_data = PubkeyValidityProofData::new(&elgamal_keypair).unwrap();
 
     let incorrect_pubkey = elgamal_keypair.pubkey();
     let incorrect_secret = ElGamalSecretKey::new_rand();
     let incorrect_keypair = ElGamalKeypair::new_for_tests(*incorrect_pubkey, incorrect_secret);
 
-    let fail_proof_data = PubkeyValidityData::new(&incorrect_keypair).unwrap();
+    let fail_proof_data = PubkeyValidityProofData::new(&incorrect_keypair).unwrap();
 
     test_verify_proof_without_context(
         ProofInstruction::VerifyPubkeyValidity,
@@ -395,47 +186,6 @@ async fn test_pubkey_validity() {
     test_close_context_state(
         ProofInstruction::VerifyPubkeyValidity,
         size_of::<ProofContextState<PubkeyValidityProofContext>>(),
-        &success_proof_data,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn test_range_proof_u64() {
-    let amount = 123_u64;
-    let (commitment, opening) = Pedersen::new(amount);
-
-    let success_proof_data = RangeProofU64Data::new(&commitment, amount, &opening).unwrap();
-
-    let incorrect_amount = 124_u64;
-    let fail_proof_data = RangeProofU64Data::new(&commitment, incorrect_amount, &opening).unwrap();
-
-    test_verify_proof_without_context(
-        ProofInstruction::VerifyRangeProofU64,
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_with_context(
-        ProofInstruction::VerifyRangeProofU64,
-        size_of::<ProofContextState<RangeProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_from_account_with_context(
-        ProofInstruction::VerifyRangeProofU64,
-        size_of::<ProofContextState<RangeProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_close_context_state(
-        ProofInstruction::VerifyRangeProofU64,
-        size_of::<ProofContextState<RangeProofContext>>(),
         &success_proof_data,
     )
     .await;
@@ -811,83 +561,6 @@ async fn test_batched_grouped_ciphertext_2_handles_validity() {
     .await;
 }
 
-#[allow(clippy::op_ref)]
-#[tokio::test]
-async fn test_fee_sigma() {
-    let transfer_amount: u64 = 1;
-    let max_fee: u64 = 3;
-
-    let fee_rate: u16 = 400;
-    let fee_amount: u64 = 1;
-    let delta_fee: u64 = 9600;
-
-    let (transfer_commitment, transfer_opening) = Pedersen::new(transfer_amount);
-    let (fee_commitment, fee_opening) = Pedersen::new(fee_amount);
-
-    let scalar_rate = Scalar::from(fee_rate);
-    let delta_commitment =
-        &fee_commitment * Scalar::from(10_000_u64) - &transfer_commitment * &scalar_rate;
-    let delta_opening = &fee_opening * &Scalar::from(10_000_u64) - &transfer_opening * &scalar_rate;
-
-    let (claimed_commitment, claimed_opening) = Pedersen::new(delta_fee);
-
-    let success_proof_data = FeeSigmaProofData::new(
-        &fee_commitment,
-        &delta_commitment,
-        &claimed_commitment,
-        &fee_opening,
-        &delta_opening,
-        &claimed_opening,
-        fee_amount,
-        delta_fee,
-        max_fee,
-    )
-    .unwrap();
-
-    let fail_proof_data = FeeSigmaProofData::new(
-        &fee_commitment,
-        &delta_commitment,
-        &claimed_commitment,
-        &fee_opening,
-        &delta_opening,
-        &claimed_opening,
-        fee_amount,
-        0,
-        max_fee,
-    )
-    .unwrap();
-
-    test_verify_proof_without_context(
-        ProofInstruction::VerifyFeeSigma,
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_with_context(
-        ProofInstruction::VerifyFeeSigma,
-        size_of::<ProofContextState<FeeSigmaProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_verify_proof_from_account_with_context(
-        ProofInstruction::VerifyFeeSigma,
-        size_of::<ProofContextState<FeeSigmaProofContext>>(),
-        &success_proof_data,
-        &fail_proof_data,
-    )
-    .await;
-
-    test_close_context_state(
-        ProofInstruction::VerifyFeeSigma,
-        size_of::<ProofContextState<FeeSigmaProofContext>>(),
-        &success_proof_data,
-    )
-    .await;
-}
-
 #[tokio::test]
 async fn test_grouped_ciphertext_3_handles_validity() {
     let source_keypair = ElGamalKeypair::new_rand();
@@ -1182,7 +855,7 @@ async fn test_verify_proof_with_context<T, U>(
             &context_state_account.pubkey(),
             rent.minimum_balance(space),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), fail_proof_data),
     ];
@@ -1209,7 +882,7 @@ async fn test_verify_proof_with_context<T, U>(
             &context_state_account.pubkey(),
             rent.minimum_balance(space),
             (space.checked_sub(1).unwrap()) as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
     ];
@@ -1236,7 +909,7 @@ async fn test_verify_proof_with_context<T, U>(
             &context_state_account.pubkey(),
             rent.minimum_balance(space).checked_sub(1).unwrap(),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
     ];
@@ -1268,7 +941,7 @@ async fn test_verify_proof_with_context<T, U>(
                 &context_state_account.pubkey(),
                 rent.minimum_balance(space),
                 space as u64,
-                &zk_token_proof_program::id(),
+                &zk_elgamal_proof_program::id(),
             ),
             wrong_instruction_type
                 .encode_verify_proof(Some(context_state_info), success_proof_data),
@@ -1297,7 +970,7 @@ async fn test_verify_proof_with_context<T, U>(
             &context_state_account.pubkey(),
             rent.minimum_balance(space),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
     ];
@@ -1341,7 +1014,7 @@ async fn test_verify_proof_with_context<T, U>(
             &context_state_account_and_authority.pubkey(),
             rent.minimum_balance(space),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
     ];
@@ -1407,7 +1080,7 @@ async fn test_verify_proof_from_account_with_context<T, U>(
             &context_state_account.pubkey(),
             rent.minimum_balance(space),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof_from_account(
             Some(context_state_info),
@@ -1438,7 +1111,7 @@ async fn test_verify_proof_from_account_with_context<T, U>(
             &context_state_account.pubkey(),
             rent.minimum_balance(space),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof_from_account(
             Some(context_state_info),
@@ -1489,7 +1162,7 @@ async fn test_verify_proof_from_account_with_context<T, U>(
             &context_state_account_and_authority.pubkey(),
             rent.minimum_balance(space),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof_from_account(
             Some(context_state_info),
@@ -1540,7 +1213,7 @@ async fn test_close_context_state<T, U>(
             &context_state_account.pubkey(),
             rent.minimum_balance(space),
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
     ];
@@ -1600,7 +1273,7 @@ async fn test_close_context_state<T, U>(
             &context_state_account.pubkey(),
             0_u64, // do not deposit rent
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
         close_context_state(
@@ -1626,7 +1299,7 @@ async fn test_close_context_state<T, U>(
             &context_state_account.pubkey(),
             0_u64,
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
         close_context_state(
@@ -1652,7 +1325,7 @@ async fn test_close_context_state<T, U>(
             &context_state_account.pubkey(),
             0_u64,
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
         close_context_state(
@@ -1692,7 +1365,7 @@ async fn test_close_context_state<T, U>(
             &context_state_account_and_authority.pubkey(),
             0_u64,
             space as u64,
-            &zk_token_proof_program::id(),
+            &zk_elgamal_proof_program::id(),
         ),
         instruction_type.encode_verify_proof(Some(context_state_info), success_proof_data),
         close_context_state(context_state_info, &context_state_account.pubkey()),

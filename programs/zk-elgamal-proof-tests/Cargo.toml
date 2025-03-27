@@ -1,5 +1,5 @@
 [package]
-name = "solana-zk-token-proof-program-tests"
+name = "solana-zk-elgamal-proof-program-tests"
 publish = false
 version = { workspace = true }
 authors = { workspace = true }
@@ -9,7 +9,6 @@ edition = { workspace = true }
 
 [dev-dependencies]
 bytemuck = { workspace = true }
-curve25519-dalek = { workspace = true }
 solana-account = { workspace = true }
 solana-compute-budget = { workspace = true }
 solana-compute-budget-interface = { workspace = true }
@@ -21,4 +20,4 @@ solana-signer = { workspace = true }
 solana-system-interface = { workspace = true }
 solana-transaction = { workspace = true }
 solana-transaction-error = { workspace = true }
-solana-zk-token-sdk = { workspace = true }
+solana-zk-sdk = { workspace = true }
