@@ -797,7 +797,7 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
     }
 
-    pub(crate) fn simulate_poh(
+    pub fn simulate_poh(
         record_receiver: Receiver<Record>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
     ) -> JoinHandle<()> {
@@ -818,18 +818,20 @@ mod tests {
         tick_producer.unwrap()
     }
 
-    pub fn create_test_recorder(
+    struct TestRecorder {
+        exit: Arc<AtomicBool>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
+        transaction_recorder: TransactionRecorder,
+        poh_simulator: JoinHandle<()>,
+        entry_receiver: Receiver<WorkingBankEntry>,
+    }
+
+    fn create_test_recorder(
         bank: &Arc<Bank>,
         blockstore: Arc<Blockstore>,
         poh_config: Option<PohConfig>,
         leader_schedule_cache: Option<Arc<LeaderScheduleCache>>,
-    ) -> (
-        Arc<AtomicBool>,
-        Arc<RwLock<PohRecorder>>,
-        TransactionRecorder,
-        JoinHandle<()>,
-        Receiver<WorkingBankEntry>,
-    ) {
+    ) -> TestRecorder {
         let leader_schedule_cache = match leader_schedule_cache {
             Some(provided_cache) => provided_cache,
             None => Arc::new(LeaderScheduleCache::new_from_bank(bank)),
@@ -859,13 +861,13 @@ mod tests {
         let poh_recorder = Arc::new(RwLock::new(poh_recorder));
         let poh_simulator = simulate_poh(record_receiver, &poh_recorder);
 
-        (
+        TestRecorder {
             exit,
             poh_recorder,
             transaction_recorder,
             poh_simulator,
             entry_receiver,
-        )
+        }
     }
 
     fn create_test_fixture(mint_sol: u64) -> TestFixture {
@@ -906,8 +908,13 @@ mod tests {
                 .expect("Expected to be able to open database ledger"),
         );
 
-        let (exit, poh_recorder, transaction_recorder, poh_simulator, entry_receiver) =
-            create_test_recorder(&bank, blockstore, Some(PohConfig::default()), None);
+        let TestRecorder {
+            exit,
+            poh_recorder,
+            transaction_recorder,
+            poh_simulator,
+            entry_receiver,
+        } = create_test_recorder(&bank, blockstore, Some(PohConfig::default()), None);
 
         let validator_pubkey = voting_keypair.pubkey();
         TestFixture {
