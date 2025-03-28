@@ -230,9 +230,9 @@ mod tests {
             get_nonce_blockhash, get_nonce_data_from_account, new_sanitized_message,
             setup_nonce_with_bank,
         },
+        agave_feature_set::FeatureSet,
         solana_sdk::{
-            feature_set::FeatureSet, hash::Hash, message::Message, signature::Keypair,
-            signer::Signer, system_instruction,
+            hash::Hash, message::Message, signature::Keypair, signer::Signer, system_instruction,
         },
     };
 

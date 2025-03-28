@@ -10,6 +10,7 @@ license = { workspace = true }
 edition = { workspace = true }
 
 [dependencies]
+agave-feature-set = { workspace = true }
 assert_matches = { workspace = true }
 bincode = { workspace = true }
 bv = { workspace = true, features = ["serde"] }
@@ -34,7 +35,6 @@ solana-clap-utils = { workspace = true }
 solana-client = { workspace = true }
 solana-connection-cache = { workspace = true }
 solana-entry = { workspace = true }
-solana-feature-set = { workspace = true }
 solana-frozen-abi = { workspace = true, optional = true, features = [
     "frozen-abi",
 ] }

@@ -18,6 +18,7 @@ use {
         stakes::InvalidCacheEntryReason,
         status_cache::MAX_CACHE_ENTRIES,
     },
+    agave_feature_set::{self as feature_set, FeatureSet},
     agave_transaction_view::static_account_keys_frame::MAX_STATIC_ACCOUNTS_PER_PACKET,
     assert_matches::assert_matches,
     crossbeam_channel::{bounded, unbounded},
@@ -40,7 +41,6 @@ use {
         compute_budget_limits::{self, ComputeBudgetLimits, MAX_COMPUTE_UNIT_LIMIT},
     },
     solana_cost_model::block_cost_limits::{MAX_BLOCK_UNITS, MAX_BLOCK_UNITS_SIMD_0207},
-    solana_feature_set::{self as feature_set, FeatureSet},
     solana_inline_spl::token,
     solana_logger,
     solana_program_runtime::{
@@ -1652,12 +1652,12 @@ impl Bank {
 fn test_rent_eager_collect_rent_in_partition(should_collect_rent: bool) {
     solana_logger::setup();
     let (mut genesis_config, _mint_keypair) = create_genesis_config(1_000_000);
-    for feature_id in FeatureSet::default().inactive {
-        if feature_id != solana_feature_set::skip_rent_rewrites::id()
+    for feature_id in FeatureSet::default().inactive() {
+        if feature_id != &agave_feature_set::skip_rent_rewrites::id()
             && (!should_collect_rent
-                || feature_id != solana_feature_set::disable_rent_fees_collection::id())
+                || feature_id != &agave_feature_set::disable_rent_fees_collection::id())
         {
-            activate_feature(&mut genesis_config, feature_id);
+            activate_feature(&mut genesis_config, *feature_id);
         }
     }
 
@@ -4088,8 +4088,8 @@ fn test_bank_update_sysvar_account() {
         let mut expected_next_slot = expected_previous_slot + 1;
 
         // First, initialize the clock sysvar
-        for feature_id in FeatureSet::default().inactive {
-            activate_feature(&mut genesis_config, feature_id);
+        for feature_id in FeatureSet::default().inactive() {
+            activate_feature(&mut genesis_config, *feature_id);
         }
         let bank1 = Arc::new(Bank::new_for_tests(&genesis_config));
         if pass == 0 {
@@ -6586,7 +6586,7 @@ fn test_bank_hash_consistency() {
     genesis_config.rent.burn_percent = 100;
     activate_feature(
         &mut genesis_config,
-        solana_feature_set::set_exempt_rent_epoch_max::id(),
+        agave_feature_set::set_exempt_rent_epoch_max::id(),
     );
 
     let mut bank = Arc::new(Bank::new_for_tests(&genesis_config));
@@ -7253,7 +7253,7 @@ fn test_bpf_loader_upgradeable_deploy_with_max_len() {
     let (genesis_config, mint_keypair) = create_genesis_config_no_tx_fee(1_000_000_000);
     let mut bank = Bank::new_for_tests(&genesis_config);
     bank.feature_set = Arc::new(FeatureSet::all_enabled());
-    bank.deactivate_feature(&solana_feature_set::disable_new_loader_v3_deployments::id());
+    bank.deactivate_feature(&agave_feature_set::disable_new_loader_v3_deployments::id());
     let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
     let mut bank_client = BankClient::new_shared(bank.clone());
 
@@ -8056,7 +8056,7 @@ fn test_compute_active_feature_set() {
         .parse::<Pubkey>()
         .unwrap();
     let mut feature_set = FeatureSet::default();
-    feature_set.inactive.insert(test_feature);
+    feature_set.inactive_mut().insert(test_feature);
     bank.feature_set = Arc::new(feature_set.clone());
 
     let (feature_set, new_activations) = bank.compute_active_feature_set(true);
@@ -11872,7 +11872,7 @@ fn test_accounts_data_size_and_rent_collection(should_collect_rent: bool) {
     if should_collect_rent {
         genesis_config
             .accounts
-            .remove(&solana_feature_set::disable_rent_fees_collection::id());
+            .remove(&agave_feature_set::disable_rent_fees_collection::id());
     }
 
     let bank = Arc::new(Bank::new_for_tests(&genesis_config));
@@ -13289,7 +13289,7 @@ fn test_deploy_last_epoch_slot() {
     let (mut genesis_config, mint_keypair) = create_genesis_config(1_000_000 * LAMPORTS_PER_SOL);
     activate_feature(
         &mut genesis_config,
-        solana_feature_set::enable_loader_v4::id(),
+        agave_feature_set::enable_loader_v4::id(),
     );
     genesis_config
         .accounts
@@ -13393,7 +13393,7 @@ fn test_loader_v3_to_v4_migration() {
     let (mut genesis_config, mint_keypair) = create_genesis_config(1_000_000 * LAMPORTS_PER_SOL);
     activate_feature(
         &mut genesis_config,
-        solana_feature_set::enable_loader_v4::id(),
+        agave_feature_set::enable_loader_v4::id(),
     );
     let mut bank = Bank::new_for_tests(&genesis_config);
     bank.activate_feature(&feature_set::remove_accounts_executable_flag_checks::id());

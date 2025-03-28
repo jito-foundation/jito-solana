@@ -2,12 +2,12 @@
 #[allow(deprecated)]
 use solana_sdk::sysvar::recent_blockhashes::{Entry as BlockhashesEntry, RecentBlockhashes};
 use {
+    agave_feature_set::FeatureSet,
     solana_bpf_loader_program::syscalls::{
         SyscallAbort, SyscallGetClockSysvar, SyscallGetRentSysvar, SyscallInvokeSignedRust,
         SyscallLog, SyscallMemcpy, SyscallMemset, SyscallSetReturnData,
     },
     solana_compute_budget::compute_budget::ComputeBudget,
-    solana_feature_set::FeatureSet,
     solana_fee_structure::FeeDetails,
     solana_program_runtime::{
         invoke_context::InvokeContext,

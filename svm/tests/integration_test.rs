@@ -7,12 +7,12 @@ use {
         register_builtins, MockBankCallback, MockForkGraph, EXECUTION_EPOCH, EXECUTION_SLOT,
         WALLCLOCK_TIME,
     },
+    agave_feature_set::{self as feature_set, FeatureSet},
     solana_sdk::{
         account::{AccountSharedData, ReadableAccount, WritableAccount},
         clock::Slot,
         compute_budget::ComputeBudgetInstruction,
         entrypoint::MAX_PERMITTED_DATA_INCREASE,
-        feature_set::{self, FeatureSet},
         hash::Hash,
         instruction::{AccountMeta, Instruction},
         native_loader,

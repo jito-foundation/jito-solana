@@ -2,6 +2,7 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use {
+    agave_feature_set::FEATURE_NAMES,
     base64::{prelude::BASE64_STANDARD, Engine},
     clap::{crate_description, crate_name, value_t, value_t_or_exit, App, Arg, ArgMatches},
     itertools::Itertools,
@@ -30,7 +31,6 @@ use {
         commitment_config::CommitmentConfig,
         epoch_schedule::EpochSchedule,
         feature,
-        feature_set::FEATURE_NAMES,
         fee_calculator::FeeRateGovernor,
         genesis_config::{ClusterType, GenesisConfig},
         inflation::Inflation,

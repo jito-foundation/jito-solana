@@ -317,7 +317,7 @@ fn check_block_cost_limits_if_enabled(
 ) -> Result<()> {
     let (check_block_cost_limits_result, check_block_cost_limits_us) = measure_us!(if bank
         .feature_set
-        .is_active(&solana_feature_set::apply_cost_tracker_during_replay::id())
+        .is_active(&agave_feature_set::apply_cost_tracker_during_replay::id())
     {
         check_block_cost_limits(bank, processing_results, batch.sanitized_transactions())
     } else {

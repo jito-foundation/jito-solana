@@ -1,8 +1,8 @@
 use {
     super::*,
     crate::serialization::account_data_region_memory_state,
+    agave_feature_set::enable_bpf_loader_set_authority_checked_ix,
     scopeguard::defer,
-    solana_feature_set::{self as feature_set, enable_bpf_loader_set_authority_checked_ix},
     solana_loader_v3_interface::instruction as bpf_loader_upgradeable,
     solana_measure::measure::Measure,
     solana_program_runtime::invoke_context::SerializedAccountMetadata,
@@ -1615,10 +1615,10 @@ mod tests {
     use {
         super::*,
         crate::mock_create_vm,
+        agave_feature_set::bpf_account_data_direct_mapping,
         assert_matches::assert_matches,
         solana_account::{Account, AccountSharedData, ReadableAccount},
         solana_clock::Epoch,
-        solana_feature_set::bpf_account_data_direct_mapping,
         solana_instruction::Instruction,
         solana_program_runtime::{
             invoke_context::SerializedAccountMetadata, with_mock_invoke_context,

@@ -58,6 +58,7 @@ use {
         verify_precompiles::verify_precompiles,
     },
     accounts_lt_hash::{CacheValue as AccountsLtHashCacheValue, Stats as AccountsLtHashStats},
+    agave_feature_set::{self as feature_set, reward_full_priority_fee, FeatureSet},
     agave_precompiles::get_precompiles,
     agave_reserved_account_keys::ReservedAccountKeys,
     ahash::AHashSet,
@@ -96,7 +97,6 @@ use {
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_compute_budget_instruction::instructions_processor::process_compute_budget_instructions,
     solana_cost_model::{block_cost_limits::simd_0207_block_limits, cost_tracker::CostTracker},
-    solana_feature_set::{self as feature_set, reward_full_priority_fee, FeatureSet},
     solana_fee::FeeFeatures,
     solana_lattice_hash::lt_hash::LtHash,
     solana_measure::{meas_dur, measure::Measure, measure_time, measure_us},
@@ -6381,15 +6381,15 @@ impl Bank {
 
     pub fn deactivate_feature(&mut self, id: &Pubkey) {
         let mut feature_set = Arc::make_mut(&mut self.feature_set).clone();
-        feature_set.active.remove(id);
-        feature_set.inactive.insert(*id);
+        feature_set.active_mut().remove(id);
+        feature_set.inactive_mut().insert(*id);
         self.feature_set = Arc::new(feature_set);
     }
 
     pub fn activate_feature(&mut self, id: &Pubkey) {
         let mut feature_set = Arc::make_mut(&mut self.feature_set).clone();
-        feature_set.inactive.remove(id);
-        feature_set.active.insert(*id, 0);
+        feature_set.inactive_mut().remove(id);
+        feature_set.active_mut().insert(*id, 0);
         self.feature_set = Arc::new(feature_set);
     }
 
@@ -6575,12 +6575,12 @@ impl Bank {
     /// Compute the active feature set based on the current bank state,
     /// and return it together with the set of newly activated features.
     fn compute_active_feature_set(&self, include_pending: bool) -> (FeatureSet, AHashSet<Pubkey>) {
-        let mut active = self.feature_set.active.clone();
+        let mut active = self.feature_set.active().clone();
         let mut inactive = AHashSet::new();
         let mut pending = AHashSet::new();
         let slot = self.slot();
 
-        for feature_id in &self.feature_set.inactive {
+        for feature_id in self.feature_set.inactive() {
             let mut activated = None;
             if let Some(account) = self.get_account_with_fixed_root(feature_id) {
                 if let Some(feature) = feature::from_account(&account) {
@@ -6605,7 +6605,7 @@ impl Bank {
             }
         }
 
-        (FeatureSet { active, inactive }, pending)
+        (FeatureSet::new(active, inactive), pending)
     }
 
     fn apply_builtin_program_feature_transitions(

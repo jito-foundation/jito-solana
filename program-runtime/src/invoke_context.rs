@@ -7,15 +7,15 @@ use {
         stable_log,
         sysvar_cache::SysvarCache,
     },
+    agave_feature_set::{
+        lift_cpi_caller_restriction, move_precompile_verification_to_svm,
+        remove_accounts_executable_flag_checks, FeatureSet,
+    },
     agave_precompiles::Precompile,
     solana_account::{create_account_shared_data_for_test, AccountSharedData},
     solana_clock::Slot,
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_epoch_schedule::EpochSchedule,
-    solana_feature_set::{
-        lift_cpi_caller_restriction, move_precompile_verification_to_svm,
-        remove_accounts_executable_flag_checks, FeatureSet,
-    },
     solana_hash::Hash,
     solana_instruction::{error::InstructionError, AccountMeta},
     solana_log_collector::{ic_msg, LogCollector},
@@ -716,8 +716,8 @@ macro_rules! with_mock_invoke_context {
         $transaction_accounts:expr $(,)?
     ) => {
         use {
+            agave_feature_set::FeatureSet,
             solana_compute_budget::compute_budget::ComputeBudget,
-            solana_feature_set::FeatureSet,
             solana_log_collector::LogCollector,
             solana_type_overrides::sync::Arc,
             $crate::{
