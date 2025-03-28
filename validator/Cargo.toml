@@ -69,7 +69,7 @@ solana-vote-program = { workspace = true }
 symlink = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["tls", "tls-roots", "tls-webpki-roots"] }
+tonic = { workspace = true, features = ["tls", "tls-roots"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
