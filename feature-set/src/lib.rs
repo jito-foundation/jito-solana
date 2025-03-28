@@ -973,7 +973,7 @@ pub mod disable_account_loader_special_case {
 }
 
 pub mod enable_secp256r1_precompile {
-    solana_pubkey::declare_id!("sryYyFwxzJop1Bh9XpyiVWjZP4nfHExiqNp3Dh71W9i");
+    solana_pubkey::declare_id!("srremy31J5Y25FrAApwVb9kZcfXbusYMMsvTK9aWv5q");
 }
 
 pub mod accounts_lt_hash {
