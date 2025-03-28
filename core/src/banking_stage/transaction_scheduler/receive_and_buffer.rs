@@ -213,16 +213,10 @@ impl SanitizedTransactionReceiveAndBuffer {
                     .is_ok()
                 })
                 .filter(|(tx, _deactivation_slot)| {
-                    if tx
-                        .message()
+                    !tx.message()
                         .account_keys()
                         .iter()
                         .any(|account| self.blacklisted_accounts.contains(account))
-                    {
-                        false
-                    } else {
-                        true
-                    }
                 })
                 .filter_map(|(tx, deactivation_slot)| {
                     tx.compute_budget_instruction_details()
