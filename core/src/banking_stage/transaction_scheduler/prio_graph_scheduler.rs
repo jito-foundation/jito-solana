@@ -370,9 +370,6 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
     match pre_lock_filter(transaction_state) {
         PreLockFilterAction::AttemptToSchedule => {}
-        PreLockFilterAction::Drop => {
-            // TODO (LB): drop it
-        }
     }
 
     // Check if this transaction conflicts with any blocked transactions
