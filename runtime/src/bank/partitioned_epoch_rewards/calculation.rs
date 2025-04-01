@@ -97,7 +97,6 @@ impl Bank {
         let PartitionedRewardsCalculation {
             vote_account_rewards,
             stake_rewards_by_partition,
-            old_vote_balance_and_staked,
             validator_rate,
             foundation_rate,
             prev_epoch_duration_in_years,
@@ -109,6 +108,7 @@ impl Bank {
             thread_pool,
             metrics,
         );
+        let total_vote_rewards = vote_account_rewards.total_vote_rewards_lamports;
         let vote_rewards = self.store_vote_accounts_partitioned(vote_account_rewards, metrics);
 
         // update reward history of JUST vote_rewards, stake_rewards is vec![] here
@@ -119,20 +119,11 @@ impl Bank {
             total_stake_rewards_lamports,
         } = stake_rewards_by_partition;
 
-        // the remaining code mirrors `update_rewards_with_thread_pool()`
-
-        let new_vote_balance_and_staked = self.stakes_cache.stakes().vote_balance_and_staked();
-
-        // This is for vote rewards only.
-        let validator_rewards_paid = new_vote_balance_and_staked - old_vote_balance_and_staked;
-        self.assert_validator_rewards_paid(validator_rewards_paid);
-
         // verify that we didn't pay any more than we expected to
-        assert!(point_value.rewards >= validator_rewards_paid + total_stake_rewards_lamports);
-
+        assert!(point_value.rewards >= total_vote_rewards + total_stake_rewards_lamports);
         info!(
             "distributed vote rewards: {} out of {}, remaining {}",
-            validator_rewards_paid, point_value.rewards, total_stake_rewards_lamports
+            total_vote_rewards, point_value.rewards, total_stake_rewards_lamports
         );
 
         let (num_stake_accounts, num_vote_accounts) = {
@@ -142,8 +133,7 @@ impl Bank {
                 stakes.vote_accounts().len(),
             )
         };
-        self.capitalization
-            .fetch_add(validator_rewards_paid, Relaxed);
+        self.capitalization.fetch_add(total_vote_rewards, Relaxed);
 
         let active_stake = if let Some(stake_history_entry) =
             self.stakes_cache.stakes().history().get(prev_epoch)
@@ -160,7 +150,7 @@ impl Bank {
             ("validator_rate", validator_rate, f64),
             ("foundation_rate", foundation_rate, f64),
             ("epoch_duration_in_years", prev_epoch_duration_in_years, f64),
-            ("validator_rewards", validator_rewards_paid, i64),
+            ("validator_rewards", total_vote_rewards, i64),
             ("active_stake", active_stake, i64),
             ("pre_capitalization", capitalization, i64),
             ("post_capitalization", self.capitalization(), i64),
@@ -169,7 +159,7 @@ impl Bank {
         );
 
         CalculateRewardsAndDistributeVoteRewardsResult {
-            distributed_rewards: validator_rewards_paid,
+            distributed_rewards: total_vote_rewards,
             point_value,
             stake_rewards_by_partition,
         }
@@ -217,8 +207,6 @@ impl Bank {
             foundation_rate,
         } = self.calculate_previous_epoch_inflation_rewards(capitalization, prev_epoch);
 
-        let old_vote_balance_and_staked = self.stakes_cache.stakes().vote_balance_and_staked();
-
         let CalculateValidatorRewardsResult {
             vote_rewards_accounts: vote_account_rewards,
             stake_reward_calculation: mut stake_rewards,
@@ -251,7 +239,6 @@ impl Bank {
                 stake_rewards_by_partition,
                 total_stake_rewards_lamports: stake_rewards.total_stake_rewards_lamports,
             },
-            old_vote_balance_and_staked,
             validator_rate,
             foundation_rate,
             prev_epoch_duration_in_years,
@@ -621,14 +608,23 @@ mod tests {
                 vote_rewards_account
                     .accounts_to_store
                     .push(e.as_ref().map(|p| p.1.vote_account.clone()));
+                vote_rewards_account.total_vote_rewards_lamports += p.1.vote_rewards;
             }
         });
 
         let metrics = RewardsMetrics::default();
 
+        let total_vote_rewards = vote_rewards_account.total_vote_rewards_lamports;
         let stored_vote_accounts =
             bank.store_vote_accounts_partitioned(vote_rewards_account, &metrics);
         assert_eq!(expected_vote_rewards_num, stored_vote_accounts.len());
+        assert_eq!(
+            vote_rewards
+                .iter()
+                .map(|e| e.as_ref().unwrap().1.vote_rewards)
+                .sum::<u64>(),
+            total_vote_rewards
+        );
 
         // load accounts to make sure they were stored correctly
         vote_rewards.iter().for_each(|e| {
@@ -648,9 +644,11 @@ mod tests {
         let expected = 0;
         let vote_rewards = VoteRewardsAccounts::default();
         let metrics = RewardsMetrics::default();
+        let total_vote_rewards = vote_rewards.total_vote_rewards_lamports;
 
         let stored_vote_accounts = bank.store_vote_accounts_partitioned(vote_rewards, &metrics);
         assert_eq!(expected, stored_vote_accounts.len());
+        assert_eq!(0, total_vote_rewards);
     }
 
     #[test]
