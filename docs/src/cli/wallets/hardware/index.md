@@ -38,7 +38,7 @@ usb://<MANUFACTURER>[/<WALLET_ID>][?key=<DERIVATION_PATH>]
 
 `WALLET_ID` is a globally unique key used to disambiguate multiple devices.
 
-`DERVIATION_PATH` is used to navigate to Solana keys within your hardware wallet.
+`DERIVATION_PATH` is used to navigate to Solana keys within your hardware wallet.
 The path has the form `<ACCOUNT>[/<CHANGE>]`, where each `ACCOUNT` and `CHANGE`
 are nonnegative integers.
 
