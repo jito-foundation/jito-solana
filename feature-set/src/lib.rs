@@ -1012,6 +1012,10 @@ pub mod disable_partitioned_rent_collection {
     solana_pubkey::declare_id!("2B2SBNbUcr438LtGXNcJNBP2GBSxjx81F945SdSkUSfC");
 }
 
+pub mod raise_block_limits_to_60m {
+    solana_pubkey::declare_id!("6oMCUgfY6BzZ6jwB681J6ju5Bh6CjVXbd7NeWYqiXBSu");
+}
+
 pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::new(|| {
     [
         (secp256k1_program_enabled::id(), "secp256k1 program"),
@@ -1240,6 +1244,7 @@ pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::n
         (fix_alt_bn128_multiplication_input_length::id(), "fix alt_bn128 multiplication input length SIMD-0222 #3686"),
         (drop_unchained_merkle_shreds::id(), "drops unchained Merkle shreds #2149"),
         (disable_partitioned_rent_collection::id(), "SIMD-0175: Disable partitioned rent collection"),
+        (raise_block_limits_to_60m::id(), "Raise block limit to 60M SIMD-0256"),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
     .iter()
