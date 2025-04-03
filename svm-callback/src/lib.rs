@@ -1,7 +1,20 @@
 use {solana_account::AccountSharedData, solana_pubkey::Pubkey};
 
+/// Callback for obtaining the cluster's current epoch stake.
+pub trait EpochStakeCallback {
+    /// Returns the total current epoch stake for the network.
+    fn get_epoch_stake(&self) -> u64 {
+        0
+    }
+
+    /// Returns the current epoch stake for the given vote account.
+    fn get_epoch_stake_for_vote_account(&self, _vote_address: &Pubkey) -> u64 {
+        0
+    }
+}
+
 /// Runtime callbacks for transaction processing.
-pub trait TransactionProcessingCallback {
+pub trait TransactionProcessingCallback: EpochStakeCallback {
     fn account_matches_owners(&self, account: &Pubkey, owners: &[Pubkey]) -> Option<usize>;
 
     fn get_account_shared_data(&self, pubkey: &Pubkey) -> Option<AccountSharedData>;
@@ -11,8 +24,12 @@ pub trait TransactionProcessingCallback {
     fn inspect_account(&self, _address: &Pubkey, _account_state: AccountState, _is_writable: bool) {
     }
 
-    fn get_current_epoch_vote_account_stake(&self, _vote_address: &Pubkey) -> u64 {
-        0
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use `get_epoch_stake_for_vote_account` on the `EpochStakeCallback` trait instead"
+    )]
+    fn get_current_epoch_vote_account_stake(&self, vote_address: &Pubkey) -> u64 {
+        Self::get_epoch_stake_for_vote_account(self, vote_address)
     }
 }
 
