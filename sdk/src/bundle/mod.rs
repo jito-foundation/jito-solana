@@ -9,6 +9,7 @@ pub struct VersionedBundle {
     pub transactions: Vec<VersionedTransaction>,
 }
 
+/// Note: transactions must contain at least 1 signer
 pub fn derive_bundle_id(transactions: &[VersionedTransaction]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(transactions.iter().map(|tx| tx.signatures[0]).join(","));

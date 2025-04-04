@@ -4392,9 +4392,19 @@ pub mod rpc_full {
             let mut decoded_transactions = rpc_bundle_request
                 .encoded_transactions
                 .into_iter()
-                .map(|encoded_tx| {
-                    decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)
-                        .map(|de| de.1)
+                .enumerate()
+                .map(|(idx, encoded_tx)| {
+                    let (_wire_output, versioned_txn) = decode_and_deserialize::<
+                        VersionedTransaction,
+                    >(
+                        encoded_tx, binary_encoding
+                    )?;
+                    if versioned_txn.signatures.is_empty() {
+                        return Err(Error::invalid_params(format!(
+                            "transaction {idx} missing required signature"
+                        )));
+                    }
+                    Ok(versioned_txn)
                 })
                 .collect::<Result<Vec<VersionedTransaction>>>()?;
 
