@@ -3,12 +3,13 @@ pub mod fee_records;
 pub mod leader_stats;
 
 use anyhow::Result;
-use fee_records::FeeRecords;
+use fee_records::{FeeRecordState, FeeRecords};
 use log::info;
 use solana_clock::DEFAULT_MS_PER_SLOT;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::signature::{Keypair, Signer};
 use std::cmp::min;
 use std::time::Duration;
@@ -16,15 +17,24 @@ use tokio::time::sleep;
 
 use crate::leader_stats::LeaderStats;
 
-async fn startup(
+async fn sleep_ms(ms: u64) {
+    sleep(Duration::from_millis(ms)).await;
+}
+
+async fn handle_epoch(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
     validator_address: &Pubkey,
-) -> Result<()> {
+    running_epoch: u64,
+) -> Result<(u64, u64)> {
     // Startup
     let epoch = rpc_client
         .get_epoch_info_with_commitment(CommitmentConfig::finalized())
         .await?;
+
+    if running_epoch == epoch.epoch {
+        return Ok((running_epoch, epoch.absolute_slot));
+    }
 
     let leader_schedule = rpc_client
         .get_leader_schedule_with_commitment(
@@ -55,25 +65,100 @@ async fn startup(
         }
     }
 
+    Ok((epoch.epoch, epoch.absolute_slot))
+}
+
+async fn handle_unprocessed_blocks(
+    rpc_client: &RpcClient,
+    fee_records: &FeeRecords,
+    validator_address: &Pubkey,
+    running_slot: u64,
+) -> Result<()> {
+    let records = fee_records.get_records_by_state(FeeRecordState::Unprocessed)?;
+
+    for record in records {
+        // Try to fetch block and update
+        if record.slot < running_slot {}
+    }
+
+    Ok(())
+}
+
+async fn handle_pending_blocks(
+    rpc_client: &RpcClient,
+    fee_records: &FeeRecords,
+    validator_address: &Pubkey,
+    running_epoch: u64,
+    chunk_size: usize,
+) -> Result<()> {
+    let records = fee_records.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
+
+    for record_chunk in records.chunks(chunk_size) {
+        // Try to send transactions
+        // let ixs = vec![];
+        for record in record_chunk {
+            // ixs.push
+        }
+
+        // Send transactions
+        // let result = rpc_client.send_transaction - skip preflight
+    }
+
     Ok(())
 }
 
 /// Main function for sharing priority fees
 pub async fn share_priority_fees_loop(
-    rpc_client: &RpcClient,
+    rpc_url: &String,
     payer_keypair: &Keypair,
     validator_address: &Pubkey,
     commission_bps: u64,
     minimum_balance: u64,
     priority_fee_distribution_program: Pubkey,
     fee_record_db_path: String,
+    chunk_size: usize,
 ) -> Result<()> {
+    let rpc_client = RpcClient::new(rpc_url.clone());
     let fee_records = FeeRecords::new(fee_record_db_path.clone())?;
 
-    // Startup
-    // startup(rpc_client, &fee_records, validator_address).await?;
+    let mut running_epoch = 0;
+    let mut running_slot = 0;
 
-    loop {}
+    loop {
+        // 1. Handle Epoch
+        let result =
+            handle_epoch(&rpc_client, &fee_records, validator_address, running_epoch).await;
+        match result {
+            Ok((epoch, slot)) => {
+                running_epoch = epoch;
+                running_slot = slot;
+            }
+            Err(err) => eprintln!("Error handling epoch: {}", err),
+        }
+
+        // 2. Handle unprocessed blocks
+        let result =
+            handle_unprocessed_blocks(&rpc_client, &fee_records, validator_address, running_slot)
+                .await;
+        if let Err(err) = result {
+            eprintln!("Error handling unprocessed records: {}", err);
+        }
+
+        // 3. Handle pending blocks
+        let result = handle_pending_blocks(
+            &rpc_client,
+            &fee_records,
+            validator_address,
+            running_epoch,
+            chunk_size,
+        )
+        .await;
+        if let Err(err) = result {
+            eprintln!("Error handling pending blocks: {}", err);
+        }
+
+        sleep_ms(1000).await;
+    }
 }
 
 // /// Main function for sharing priority fees
