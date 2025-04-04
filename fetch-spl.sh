@@ -35,17 +35,16 @@ fetch_program() {
       set -x
       curl -L --retry 5 --retry-delay 2 --retry-connrefused \
         -o "$so" \
-        "https://github.com/solana-labs/solana-program-library/releases/download/$name-v$version/$so_name"
+        "https://github.com/solana-program/$name/releases/download/program@v$version/$so_name"
     )
 
     mkdir -p ~/.cache/solana-spl
     cp "$so" ~/.cache/solana-spl/"$so"
   fi
-
 }
 
 fetch_program token 3.5.0 TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA BPFLoader2111111111111111111111111111111111
-fetch_program token-2022 5.0.2 TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb BPFLoaderUpgradeab1e11111111111111111111111
+fetch_program token-2022 8.0.0 TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb BPFLoaderUpgradeab1e11111111111111111111111
 fetch_program memo  1.0.0 Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo BPFLoader1111111111111111111111111111111111
 fetch_program memo  3.0.0 MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr BPFLoader2111111111111111111111111111111111
 fetch_program associated-token-account 1.1.2 ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL BPFLoader2111111111111111111111111111111111
