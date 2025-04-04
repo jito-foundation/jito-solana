@@ -1,10 +1,64 @@
 use anyhow::Result;
 use bincode;
 use csv::Writer;
-use rocksdb::{IteratorMode, Options, WriteBatch, DB};
+use rocksdb::{Options, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
+use solana_clock::DEFAULT_SLOTS_PER_EPOCH;
+use std::fmt;
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+//------------------------------------------------------------------------------
+// FeeRecords Design Overview
+//------------------------------------------------------------------------------
+// This module implements a persistent storage system for tracking priority fee records
+// using RocksDB as the underlying key-value store. The design uses a sophisticated
+// multi-key indexing approach:
+//
+// 1. Record Storage:
+//    - Each fee record is stored under a "rec:{slot}" key
+//    - The value contains the full serialized FeeRecordEntry with all metadata
+//    - Records persist indefinitely for historical tracking and reporting
+//
+// 2. State Index Keys:
+//    - "su:{slot}" - Marks records in Unprocessed state (created but not yet processed)
+//    - "ss:{slot}" - Marks records in Skipped state (failed blocks or unavailable)
+//    - "sa:{slot}" - Marks records in AntedUp state (paid via ante-up mechanism)
+//    - "sp:{slot}" - Marks records in ProcessedAndPending state (processed but fees not sent)
+//    - "sc:{slot}" - Marks records in Complete state (fees successfully sent)
+//    - "**:{slot}" - Retrieves records regardless of state (wildcard)
+//
+// 3. Category Index Keys:
+//    - "cp:{slot}" - Marks records in PriorityFee category
+//    - "ca:{slot}" - Marks records in Ante category
+//    - When a record transitions states, old indexes are deleted and new ones created
+//
+// 4. Epoch-Based Query Support:
+//    - Keys include epoch information for efficient epoch-based queries
+//    - Enables reporting and analysis at both slot and epoch granularity
+//
+// This approach allows:
+//    - Efficient O(1) retrieval of specific records by slot
+//    - Fast enumeration of records in specific states without full DB scans
+//    - Category-based filtering for specialized reporting
+//    - Atomic state transitions with batch operations for consistency
+//    - Epoch-based querying for aggregated analysis
+//
+// Key Functions:
+//    - add_priority_fee_record(): Creates a new fee record in Unprocessed state
+//    - add_ante_record(): Adds a record in Ante category for balance recovery
+//    - process_record(): Updates a record with fee data and marks as ProcessedAndPending
+//    - skip_record(): Marks a record as Skipped (block unavailable)
+//    - complete_record(): Marks a record as Complete (fees sent)
+//    - get_record(): Retrieves a specific record by slot
+//    - get_records_by_state(): Gets records of a specific state
+//    - get_records_by_category(): Gets records of a specific category
+//    - get_total_pending_lamports(): Calculates total pending fees ready to send
+//    - export_to_csv(): Exports records filtered by state and epoch
+//    - compact(): Optimizes database storage and performance
+//
+//------------------------------------------------------------------------------
 
 /// Configuration options for RocksDB performance tuning
 #[derive(Debug, Clone)]
@@ -65,16 +119,246 @@ impl FeeRecords {
             opts.set_compaction_style(compaction);
         }
 
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(1));
+
         let db = DB::open(&opts, path)?;
         Ok(Self { db })
     }
 
+    /// Helper function to get current timestamp
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    fn prepare_add_record(&self, record: &FeeRecordEntry, batch: &mut WriteBatch) -> Result<()> {
+        let encoded = bincode::serialize(record)?;
+        let record_key = FeeRecordKey::record(record.slot);
+        let state_key = FeeRecordKey::state(record.state, record.slot);
+        let category_key = FeeRecordKey::category(record.category, record.slot);
+        let any_key = FeeRecordKey::any(record.slot);
+
+        // Use a WriteBatch for atomicity
+        batch.put(&record_key, &encoded);
+        batch.put(&state_key, &[]); // Empty value since the key itself is the index
+        batch.put(&category_key, &[]); // Empty value since the key itself is the index
+        batch.put(&any_key, &[]); // Add to "any" index for querying all records regardless of state
+
+        Ok(())
+    }
+
+    fn prepare_transition_state(
+        &self,
+        record: &FeeRecordEntry,
+        old_state: FeeRecordState,
+        new_state: FeeRecordState,
+        batch: &mut WriteBatch,
+    ) -> Result<()> {
+        let mut record = record.clone();
+        record.state = new_state;
+
+        let encoded = bincode::serialize(&record)?;
+        let record_key = FeeRecordKey::record(record.slot);
+        let old_state_key = FeeRecordKey::state(old_state, record.slot);
+        let new_state_key = FeeRecordKey::state(new_state, record.slot);
+
+        batch.put(&record_key, &encoded);
+        batch.delete(&old_state_key); // Delete old state
+        batch.put(&new_state_key, &[]); // Add in new state
+
+        Ok(())
+    }
+
+    /// Adds a new fee record in Unprocessed state
+    pub fn add_priority_fee_record(&self, slot: u64) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot);
+
+        // Check if record already exists
+        if self.db.get(&record_key)?.is_some() {
+            return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
+        }
+
+        let record = FeeRecordEntry {
+            timestamp: Self::current_timestamp(),
+            slot,
+            priority_fee_lamports: 0, // No fees yet since it's unprocessed
+            state: FeeRecordState::Unprocessed,
+            category: FeeRecordCategory::PriorityFee,
+            slot_landed: 0,
+            signature: String::new(),
+        };
+
+        let mut batch = WriteBatch::default();
+        self.prepare_add_record(&record, &mut batch)?;
+        self.db.write(batch)?;
+        Ok(())
+    }
+
+    /// Adds a new fee record in Ante state (special state for remaining balance payout)
+    pub fn add_ante_record(
+        &self,
+        slot: u64,
+        priority_fee_lamports: u64,
+        signature: &str,
+        slot_landed: u64,
+        cancel_all_outstanding_records: bool,
+    ) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot);
+
+        // Check if record already exists
+        if self.db.get(&record_key)?.is_some() {
+            return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
+        }
+
+        let record = FeeRecordEntry {
+            timestamp: Self::current_timestamp(),
+            slot,
+            priority_fee_lamports,
+            state: FeeRecordState::Complete,
+            category: FeeRecordCategory::Ante,
+            slot_landed,
+            signature: signature.to_string(),
+        };
+
+        let mut batch = WriteBatch::default();
+        self.prepare_add_record(&record, &mut batch)?;
+
+        if cancel_all_outstanding_records {
+            let unprocessed_records = self.get_records_by_state(FeeRecordState::Unprocessed)?;
+            let pending_records = self.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
+
+            for record in unprocessed_records {
+                self.prepare_transition_state(
+                    &record,
+                    FeeRecordState::Unprocessed,
+                    FeeRecordState::AntedUp,
+                    &mut batch,
+                )?;
+            }
+            for record in pending_records {
+                self.prepare_transition_state(
+                    &record,
+                    FeeRecordState::ProcessedAndPending,
+                    FeeRecordState::AntedUp,
+                    &mut batch,
+                )?;
+            }
+        }
+
+        self.db.write(batch)?;
+
+        Ok(())
+    }
+
+    /// Marks a record as skipped (block failed or not available)
+    pub fn skip_record(&self, slot: u64) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot);
+
+        // Get the existing record
+        match self.db.get(&record_key)? {
+            Some(data) => {
+                let mut record: FeeRecordEntry = bincode::deserialize(&data)?;
+
+                if record.state != FeeRecordState::Unprocessed {
+                    return Err(anyhow::anyhow!(
+                        "Record for slot {} is not in Unprocessed state",
+                        slot
+                    ));
+                }
+
+                // Update the record
+                record.state = FeeRecordState::Skipped;
+
+                let mut batch = WriteBatch::default();
+                self.prepare_transition_state(
+                    &record,
+                    FeeRecordState::Unprocessed,
+                    FeeRecordState::Skipped,
+                    &mut batch,
+                )?;
+                self.db.write(batch)?;
+                Ok(())
+            }
+            None => Err(anyhow::anyhow!("No record found for slot {}", slot)),
+        }
+    }
+
+    /// Marks a record as processed and adds the priority fee amount
+    pub fn process_record(&self, slot: u64, priority_fee_lamports: u64) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot);
+
+        // Get the existing record
+        match self.db.get(&record_key)? {
+            Some(data) => {
+                let mut record: FeeRecordEntry = bincode::deserialize(&data)?;
+
+                if record.state != FeeRecordState::Unprocessed {
+                    return Err(anyhow::anyhow!(
+                        "Record for slot {} is not in Unprocessed state",
+                        slot
+                    ));
+                }
+
+                // Update the record
+                record.state = FeeRecordState::ProcessedAndPending;
+                record.priority_fee_lamports = priority_fee_lamports;
+
+                let mut batch = WriteBatch::default();
+                self.prepare_transition_state(
+                    &record,
+                    FeeRecordState::Unprocessed,
+                    FeeRecordState::ProcessedAndPending,
+                    &mut batch,
+                )?;
+                self.db.write(batch)?;
+                Ok(())
+            }
+            None => Err(anyhow::anyhow!("No record found for slot {}", slot)),
+        }
+    }
+
+    /// Marks a record as complete with transaction details
+    pub fn complete_record(&self, slot: u64, signature: &str, slot_landed: u64) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot);
+
+        // Get the existing record
+        match self.db.get(&record_key)? {
+            Some(data) => {
+                let mut record: FeeRecordEntry = bincode::deserialize(&data)?;
+
+                if record.state != FeeRecordState::ProcessedAndPending {
+                    return Err(anyhow::anyhow!(
+                        "Record for slot {} is not in Processed state",
+                        slot
+                    ));
+                }
+
+                // Update the record
+                record.state = FeeRecordState::Complete;
+                record.signature = signature.to_string();
+                record.slot_landed = slot_landed;
+
+                let mut batch = WriteBatch::default();
+                self.prepare_transition_state(
+                    &record,
+                    FeeRecordState::ProcessedAndPending,
+                    FeeRecordState::Complete,
+                    &mut batch,
+                )?;
+                self.db.write(batch)?;
+                Ok(())
+            }
+            None => Err(anyhow::anyhow!("No record found for slot {}", slot)),
+        }
+    }
+
     /// Gets a specific fee record for the given slot
     pub fn get_record(&self, slot: u64) -> Result<Option<FeeRecordEntry>> {
-        let key = FeeRecordKey::new(FeeRecordKeyPrefix::Record, slot);
-        let key_bytes = key.to_bytes();
+        let key = FeeRecordKey::record(slot);
 
-        match self.db.get(key_bytes)? {
+        match self.db.get(&key)? {
             Some(data) => {
                 let record: FeeRecordEntry = bincode::deserialize(&data)?;
                 Ok(Some(record))
@@ -83,38 +367,40 @@ impl FeeRecords {
         }
     }
 
-    /// Gets all pending (unsent) fee records
-    pub fn get_pending_records(&self) -> Result<Vec<FeeRecordEntry>> {
-        let mut pending_records = Vec::new();
-        let prefix = FeeRecordKeyPrefix::Pending;
+    fn get_records(&self, prefix: Vec<u8>) -> Result<Vec<FeeRecordEntry>> {
+        let mut records = Vec::new();
 
-        let iter = self.db.prefix_iterator(prefix.as_bytes());
+        let iter = self.db.prefix_iterator(prefix.clone());
         for item in iter {
-            let (key, _) = item?;
-            let key_str = String::from_utf8_lossy(&key);
+            let (key_bytes, _) = item?;
+            let key = FeeRecordKey::from(&key_bytes[..]);
+            let record_key = FeeRecordKey::record(key.slot);
 
-            if let Some(key_obj) = FeeRecordKey::parse(&key_str) {
-                let slot = key_obj.slot();
-                let record_key = FeeRecordKey::new(FeeRecordKeyPrefix::Record, slot);
-
-                // Use get_pinned to avoid unnecessary allocation
-                if let Some(record_data) = self.db.get_pinned(record_key.to_string().as_bytes())? {
-                    let record: FeeRecordEntry = bincode::deserialize(&record_data)?;
-
-                    // Only add records that are not yet sent
-                    if !record.sent {
-                        pending_records.push(record);
-                    }
-                }
+            if let Some(record_data) = self.db.get_pinned(&record_key)? {
+                let record: FeeRecordEntry = bincode::deserialize(&record_data)?;
+                records.push(record);
             }
         }
 
-        Ok(pending_records)
+        Ok(records)
     }
 
-    /// Calculates the total pending lamports across all unsent records
+    pub fn get_records_by_state(&self, state: FeeRecordState) -> Result<Vec<FeeRecordEntry>> {
+        let key = FeeRecordKey::state(state, 0);
+        self.get_records(key.prefix)
+    }
+
+    pub fn get_records_by_category(
+        &self,
+        category: FeeRecordCategory,
+    ) -> Result<Vec<FeeRecordEntry>> {
+        let key = FeeRecordKey::category(category, 0);
+        self.get_records(key.prefix)
+    }
+
+    /// Calculates the total pending lamports across all pending (processed) records
     pub fn get_total_pending_lamports(&self) -> Result<u64> {
-        let pending_records = self.get_pending_records()?;
+        let pending_records = self.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
         let total = pending_records
             .iter()
             .map(|r| r.priority_fee_lamports)
@@ -122,138 +408,47 @@ impl FeeRecords {
         Ok(total)
     }
 
-    /// Adds a new fee record
-    pub fn add_record(&self, slot: u64, priority_fee_lamports: u64) -> Result<()> {
-        let key = FeeRecordKey::new(FeeRecordKeyPrefix::Record, slot);
-
-        // Check if record already exists
-        if self.db.get(key.to_bytes())?.is_some() {
-            return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
-        }
-
-        let record = FeeRecordEntry {
-            slot,
-            priority_fee_lamports,
-            sent: false,
-            slot_landed: 0, // Initialize to 0 (no landing slot yet)
-            signature: String::new(),
-        };
-
-        let encoded = bincode::serialize(&record)?;
-
-        // Create a batch operation to update both the main record and the pending index
-        let pending_key = FeeRecordKey::new(FeeRecordKeyPrefix::Pending, slot);
-
-        // Use a WriteBatch for atomicity
-        let mut batch = WriteBatch::default();
-        batch.put(key.to_string().as_bytes(), &encoded);
-        batch.put(pending_key.to_string().as_bytes(), &[]); // Empty value since the key itself is the index
-
-        self.db.write(batch)?;
-
-        Ok(())
-    }
-
-    /// Marks a fee record as sent and updates its signature and landed slot
-    pub fn finish_record(&self, slot: u64, signature: &str, slot_landed: u64) -> Result<()> {
-        let key = FeeRecordKey::new(FeeRecordKeyPrefix::Record, slot);
-
-        // Get the existing record
-        match self.db.get(key.to_string().as_bytes())? {
-            Some(data) => {
-                let mut record: FeeRecordEntry = bincode::deserialize(&data)?;
-
-                // Update the record
-                record.sent = true;
-                record.signature = signature.to_string();
-                record.slot_landed = slot_landed;
-
-                // Write the updated record and remove from pending index
-                let encoded = bincode::serialize(&record)?;
-                let pending_key = FeeRecordKey::new(FeeRecordKeyPrefix::Pending, slot);
-
-                let mut batch = WriteBatch::default();
-                batch.put(key.to_string().as_bytes(), encoded);
-                batch.delete(pending_key.to_string().as_bytes()); // Remove from pending index
-
-                self.db.write(batch)?;
-
-                Ok(())
-            }
-            None => Err(anyhow::anyhow!("No entry found for slot {}", slot)),
-        }
-    }
-
     /// Exports fee records to a CSV file, optionally filtering by slot range
     /// If start_slot is None, starts from slot 0
     /// If end_slot is None, continues to u64::MAX
-    pub fn export_to_csv<P: AsRef<Path>>(
-        &self,
-        csv_path: P,
-        start_slot: Option<u64>,
-        end_slot: Option<u64>,
-    ) -> Result<()> {
-        let start_slot = start_slot.unwrap_or(0);
-        let end_slot = end_slot.unwrap_or(u64::MAX);
+    pub fn export_to_csv<P: AsRef<Path>>(&self, csv_path: P, state: FeeRecordState) -> Result<()> {
+        // Get records in the specified range
+        let records = self.get_records_by_state(state)?;
 
         let mut writer = Writer::from_path(csv_path)?;
 
         // Write header
         writer.write_record(&[
+            "timestamp",
             "slot",
+            "state",
+            "category",
             "priority_fee_lamports",
-            "sent",
-            "signature",
             "slot_landed",
+            "signature",
             "link",
         ])?;
 
-        // Determine start key
-        let start_key = FeeRecordKey::new(FeeRecordKeyPrefix::Record, start_slot).to_string();
+        // Write records to CSV
+        for record in records {
+            // Calculate link only for completed records that have a signature
+            let link = if !record.signature.is_empty() {
+                format!("https://explorer.solana.com/tx/{}", record.signature)
+            } else {
+                String::new()
+            };
 
-        // Iterate over records within range
-        let iter = self.db.iterator(IteratorMode::From(
-            start_key.as_bytes(),
-            rocksdb::Direction::Forward,
-        ));
-        for item in iter {
-            let (key, value) = item?;
-            let key_str = String::from_utf8_lossy(&key);
-
-            // Check if still within prefix
-            if !key_str.starts_with(&prefix) {
-                break;
-            }
-
-            // Parse the key to extract the slot
-            if let Some(key_obj) = FeeRecordKey::parse(&key_str) {
-                let slot = key_obj.slot();
-
-                // Check if we've reached end_slot
-                if slot > end_slot {
-                    break;
-                }
-
-                // Process record
-                let record: FeeRecordEntry = bincode::deserialize(&value)?;
-
-                // Calculate link only for records that have a signature
-                let link = if !record.signature.is_empty() {
-                    format!("https://explorer.solana.com/tx/{}", record.signature)
-                } else {
-                    String::new()
-                };
-
-                // Write the record fields plus the computed link
-                writer.write_record(&[
-                    record.slot.to_string(),
-                    record.priority_fee_lamports.to_string(),
-                    record.sent.to_string(),
-                    record.signature.clone(),
-                    record.slot_landed.to_string(),
-                    link,
-                ])?;
-            }
+            // Write the record fields plus the computed link
+            writer.write_record(&[
+                record.timestamp.to_string(),
+                record.slot.to_string(),
+                format!("{:?}", record.state),
+                format!("{:?}", record.category),
+                record.priority_fee_lamports.to_string(),
+                record.slot_landed.to_string(),
+                record.signature.clone(),
+                link,
+            ])?;
         }
 
         writer.flush()?;
@@ -268,139 +463,174 @@ impl FeeRecords {
     }
 }
 
+/// State of a fee record in its lifecycle
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum FeeRecordCategory {
+    /// Only slot has been filled, waiting to be processed
+    PriorityFee,
+
+    /// Block failed to be created or is no longer in ledger
+    Ante,
+
+    /// Any state
+    Any,
+}
+
+/// State of a fee record in its lifecycle
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum FeeRecordState {
+    /// Only slot has been filled, waiting to be processed
+    Unprocessed,
+
+    /// Block failed to be created or is no longer in ledger
+    Skipped,
+
+    /// Have been paid by ante-up
+    AntedUp,
+
+    /// Priority fee has been recorded, waiting to be sent
+    ProcessedAndPending,
+
+    /// Fees have been sent
+    Complete,
+
+    /// Any state
+    Any,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeeRecordEntry {
-    pub slot: u64,
-    pub priority_fee_lamports: u64,
-    pub sent: bool,
-    pub slot_landed: u64,
-    pub signature: String,
+    pub timestamp: u64,              // Unix timestamp when the record was created
+    pub slot: u64,                   // Slot of acquired priority fees
+    pub priority_fee_lamports: u64,  // Amount of priority fees acquired
+    pub state: FeeRecordState,       // Current state of the record
+    pub category: FeeRecordCategory, // Fee Record Catagory
+    pub slot_landed: u64,            // Slot the % fee transfer to the router PDA landed
+    pub signature: String,           // Signature of the transaction
 }
 
-impl std::fmt::Display for FeeRecordEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Slot: {}, Fee: {} lamports, Sent: {}",
-            self.slot, self.priority_fee_lamports, self.sent
-        )?;
-
-        if !self.signature.is_empty() {
-            write!(
-                f,
-                ", Signature: {}, Link: https://explorer.solana.com/tx/{}",
-                self.signature, self.signature
-            )?;
-        }
-
-        if self.slot_landed > 0 {
-            write!(f, ", Landed at slot: {}", self.slot_landed)?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Key prefix types for database organization
-#[derive(Debug, Clone, Copy)]
-pub enum FeeRecordKeyPrefix {
-    /// Main record storage - "completed"
-    Record,
-    /// Pending records index - "pending"
-    Pending,
-}
-
-impl FeeRecordKeyPrefix {
-    /// Get the string representation of the prefix
-    fn as_str(&self) -> &'static str {
-        match self {
-            FeeRecordKeyPrefix::Record => "record:",
-            FeeRecordKeyPrefix::Pending => "pending:",
-        }
-    }
-
-    /// Get the byte representation of the prefix
-    fn as_bytes(&self) -> &'static [u8] {
-        self.as_str().as_bytes()
-    }
-
-    /// Attempt to convert a string to a FeeRecordKeyPrefix
-    fn from_str(s: &str) -> Option<Self> {
-        let cleaned = s.replace(":", "");
-        match cleaned.as_str() {
-            "record" => Some(FeeRecordKeyPrefix::Record),
-            "pending" => Some(FeeRecordKeyPrefix::Pending),
-            _ => None,
-        }
-    }
-}
-
-/// Struct to encapsulate key generation and parsing
-#[derive(Debug, Clone)]
+/// Key management for fee records database
 pub struct FeeRecordKey {
-    prefix: FeeRecordKeyPrefix,
-    slot: u64,
+    pub prefix: Vec<u8>,
+    pub epoch_prefix: Vec<u8>,
+    pub epoch: u64,
+    pub slot: u64,
+    pub key: Vec<u8>,
 }
 
 impl FeeRecordKey {
-    /// Create a new key with the specified prefix and slot
-    pub fn new(prefix: FeeRecordKeyPrefix, slot: u64) -> Self {
-        Self { prefix, slot }
+    // Constants for prefixes
+    pub const RECORD_PREFIX: &[u8; 1] = b"0"; // Full record with data
+
+    // State
+    pub const STATE_UNPROCESSED_PREFIX: &[u8; 1] = b"1"; // Records waiting to be processed
+    pub const STATE_PROCESSED_AND_PENDING_PREFIX: &[u8; 1] = b"2"; // Records with fees ready to send
+    pub const STATE_SKIPPED_PREFIX: &[u8; 1] = b"3"; // Records for blocks that were skipped
+    pub const STATE_ANTED_UP_PREFIX: &[u8; 1] = b"4"; // Records with completed fee transfers
+    pub const STATE_COMPLETE_PREFIX: &[u8; 1] = b"5"; // Records with completed fee transfers
+
+    // Category
+    pub const CATEGORY_PRIORITY_FEE_PREFIX: &[u8; 1] = b"6"; // Records categorized by type
+    pub const CATEGORY_ANTE_PREFIX: &[u8; 1] = b"7"; // Records categorized by type
+
+    // Wildcard
+    pub const ANY_PREFIX: &[u8; 1] = b"8"; // Used to query records regardless of state
+
+    pub fn slot_to_epoch(slot: u64) -> u64 {
+        slot / DEFAULT_SLOTS_PER_EPOCH
     }
 
-    /// Create a key for a completed record
+    pub fn epoch_to_slot(epoch: u64) -> u64 {
+        epoch * DEFAULT_SLOTS_PER_EPOCH
+    }
+
+    fn new(prefix: &[u8], slot: u64) -> Self {
+        let mut key = Vec::new();
+        let epoch = Self::slot_to_epoch(slot);
+
+        key.extend_from_slice(prefix);
+        key.extend_from_slice(&epoch.to_be_bytes());
+        let epoch_prefix = key.clone();
+
+        key.extend_from_slice(&slot.to_be_bytes());
+
+        Self {
+            prefix: prefix.to_vec(),
+            epoch_prefix: epoch_prefix.to_vec(),
+            epoch,
+            slot,
+            key,
+        }
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        let prefix = &bytes[..1];
+        let _epoch = u64::from_be_bytes(bytes[1..9].try_into().unwrap());
+        let slot = u64::from_be_bytes(bytes[9..17].try_into().unwrap());
+        Self::new(prefix, slot)
+    }
+
     pub fn record(slot: u64) -> Self {
-        Self::new(FeeRecordKeyPrefix::Record, slot)
+        Self::new(Self::RECORD_PREFIX, slot)
     }
 
-    /// Create a key for a pending record
-    pub fn pending(slot: u64) -> Self {
-        Self::new(FeeRecordKeyPrefix::Pending, slot)
+    pub fn any(slot: u64) -> Self {
+        Self::new(Self::ANY_PREFIX, slot)
     }
 
-    /// Convert the key to a string for database storage
-    pub fn to_string(&self) -> String {
-        format!("{}{}", self.prefix.as_str(), self.slot)
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let string = self.to_string();
-        string.as_bytes().to_vec()
-    }
-
-    /// Get just the prefix part for range scans
-    pub fn prefix_string(&self) -> String {
-        self.prefix.as_str().to_string()
-    }
-
-    pub fn prefix_bytes(&self) -> Vec<u8> {
-        let string = self.prefix_string();
-        string.as_bytes().to_vec()
-    }
-
-    /// Parse a key string into a FeeRecordKey, returning None if invalid
-    pub fn parse(key_str: &str) -> Option<Self> {
-        let parts: Vec<&str> = key_str.split(':').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-
-        let prefix = FeeRecordKeyPrefix::from_str(parts[0])?;
-
-        if let Ok(slot) = parts[1].parse::<u64>() {
-            Some(Self { prefix, slot })
-        } else {
-            None
+    pub fn state(state: FeeRecordState, slot: u64) -> Self {
+        match state {
+            FeeRecordState::Unprocessed => Self::new(Self::STATE_UNPROCESSED_PREFIX, slot),
+            FeeRecordState::ProcessedAndPending => {
+                Self::new(Self::STATE_PROCESSED_AND_PENDING_PREFIX, slot)
+            }
+            FeeRecordState::Skipped => Self::new(Self::STATE_SKIPPED_PREFIX, slot),
+            FeeRecordState::AntedUp => Self::new(Self::STATE_ANTED_UP_PREFIX, slot),
+            FeeRecordState::Complete => Self::new(Self::STATE_COMPLETE_PREFIX, slot),
+            FeeRecordState::Any => Self::new(Self::ANY_PREFIX, slot),
         }
     }
 
-    /// Get the slot from the key
-    pub fn slot(&self) -> u64 {
-        self.slot
+    pub fn category(category: FeeRecordCategory, slot: u64) -> Self {
+        match category {
+            FeeRecordCategory::PriorityFee => Self::new(Self::CATEGORY_PRIORITY_FEE_PREFIX, slot),
+            FeeRecordCategory::Ante => Self::new(Self::CATEGORY_ANTE_PREFIX, slot),
+            FeeRecordCategory::Any => Self::new(Self::ANY_PREFIX, slot),
+        }
     }
+}
 
-    /// Get the prefix from the key
-    pub fn prefix(&self) -> FeeRecordKeyPrefix {
-        self.prefix
+// Implement conversion from &[u8] to FeeRecordKey for convenience
+impl From<&[u8]> for FeeRecordKey {
+    fn from(bytes: &[u8]) -> Self {
+        Self::from_bytes(bytes.to_vec())
+    }
+}
+
+// Implement conversion from Vec<u8> to FeeRecordKey
+impl From<Vec<u8>> for FeeRecordKey {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::from_bytes(bytes)
+    }
+}
+
+// Implement AsRef<[u8]> so FeeRecordKey can be used directly with RocksDB APIs
+impl AsRef<[u8]> for FeeRecordKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.key
+    }
+}
+
+impl fmt::Display for FeeRecordKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let prefix = String::from_utf8_lossy(&self.prefix);
+        write!(f, "{}{:08}-{:08}", prefix, self.epoch, self.slot)
+    }
+}
+
+// Optionally, implement Debug to use the same formatting
+impl fmt::Debug for FeeRecordKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self)
     }
 }
