@@ -1,27 +1,21 @@
-use clap::Parser;
 use log::info;
-use solana_clock::{Epoch, Slot, DEFAULT_MS_PER_SLOT};
+use solana_clock::Epoch;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::reward_type::RewardType;
-use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
-use std::cmp::min;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::time::Duration;
-use tokio::time::{interval, sleep, Interval};
 
-enum BlockStats {
+pub enum BlockStats {
     Unprocessed,
     Skipped,
     Processed { priority_fee_lamports: u64 },
 }
 
-struct LeaderStats {
-    leader: Pubkey,
-    epoch: Epoch,
-    block_stats: BTreeMap<u64, BlockStats>,
+pub struct LeaderStats {
+    pub leader: Pubkey,
+    pub epoch: Epoch,
+    pub block_stats: BTreeMap<u64, BlockStats>,
 }
 
 impl LeaderStats {
@@ -68,7 +62,7 @@ impl LeaderStats {
     }
 
     /// Returns the total fees earned from block rewards this epoch
-    fn total_fees_this_epoch(&self) -> u64 {
+    pub fn total_fees_this_epoch(&self) -> u64 {
         self.block_stats
             .iter()
             .filter_map(|(_, block_stats)| match block_stats {
@@ -79,10 +73,8 @@ impl LeaderStats {
             })
             .sum()
     }
-}
 
-impl LeaderStats {
-    async fn populate(leader: Pubkey, rpc_client: &RpcClient) -> Result<Self, anyhow::Error> {
+    pub async fn populate(leader: Pubkey, rpc_client: &RpcClient) -> Result<Self, anyhow::Error> {
         let epoch = rpc_client
             .get_epoch_info_with_commitment(CommitmentConfig::finalized())
             .await?;

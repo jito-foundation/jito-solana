@@ -55,11 +55,12 @@ async fn main() -> Result<(), anyhow::Error> {
     let keypair = read_keypair_file(&args.keypair).unwrap(); // todo map error
     let rpc = RpcClient::new(args.url);
 
-    share_priority_fees_loop(
-        &keypair,
-        &rpc,
-        Duration::from_secs(args.period_seconds),
-        args.commission_bps,
-    )
-    .await
+    // share_priority_fees_loop(
+    //     &keypair,
+    //     &rpc,
+    //     Duration::from_secs(args.period_seconds),
+    //     args.commission_bps,
+    // )
+    // .await
+    Ok(())
 }
