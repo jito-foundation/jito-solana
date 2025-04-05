@@ -18,6 +18,6 @@ pub fn derive_bundle_id(transactions: &[VersionedTransaction]) -> Result<String,
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut hasher = Sha256::new();
-    hasher.update(signatures.join(","));
+    hasher.update(signatures.iter().join(","));
     Ok(format!("{:x}", hasher.finalize()))
 }
