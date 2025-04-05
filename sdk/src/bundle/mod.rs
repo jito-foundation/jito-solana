@@ -9,8 +9,15 @@ pub struct VersionedBundle {
     pub transactions: Vec<VersionedTransaction>,
 }
 
-pub fn derive_bundle_id(transactions: &[VersionedTransaction]) -> String {
+/// Derives a bundle id from signatures, returning error if signature is missing
+pub fn derive_bundle_id(transactions: &[VersionedTransaction]) -> Result<String, usize> {
+    let signatures = transactions
+        .iter()
+        .enumerate()
+        .map(|(idx, tx)| tx.signatures.get(0).ok_or(idx))
+        .collect::<Result<Vec<_>, _>>()?;
+
     let mut hasher = Sha256::new();
-    hasher.update(transactions.iter().map(|tx| tx.signatures[0]).join(","));
-    format!("{:x}", hasher.finalize())
+    hasher.update(signatures.join(","));
+    Ok(format!("{:x}", hasher.finalize()))
 }

@@ -4409,21 +4409,30 @@ pub mod rpc_full {
                 });
             }
 
-            let bundle_id = derive_bundle_id(&decoded_transactions);
             let runtime_txs = decoded_transactions
                 .into_iter()
                 .map(|tx| sanitize_transaction(tx, bank.as_ref(), bank.get_reserved_account_keys()))
                 .collect::<Result<Vec<SanitizedTransaction>>>()?;
-            let sanitized_bundle = SanitizedBundle {
-                transactions: runtime_txs,
-                bundle_id,
-            };
-
             if !config.skip_sig_verify {
-                for tx in &sanitized_bundle.transactions {
+                for tx in &runtime_txs {
                     verify_transaction(tx, &bank.feature_set)?;
                 }
             }
+
+            // if one can't derive bundle id and we're not skipping signature verification then it's an error
+            let bundle_id = derive_bundle_id(&decoded_transactions);
+            if let Err(missing_signature_index) = bundle_id {
+                if !config.skip_sig_verify {
+                    return Err(Error::invalid_params(format!(
+                        "Transaction index {} missing signature",
+                        missing_signature_index
+                    )));
+                }
+            }
+            let sanitized_bundle = SanitizedBundle {
+                transactions: runtime_txs,
+                bundle_id: bundle_id.unwrap_or_default(),
+            };
 
             let pre_execution_accounts =
                 account_configs_to_accounts(&config.pre_execution_accounts_configs)?;
