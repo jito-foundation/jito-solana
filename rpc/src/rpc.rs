@@ -4424,16 +4424,16 @@ pub mod rpc_full {
                 .into_iter()
                 .map(|tx| sanitize_transaction(tx, bank.as_ref(), bank.get_reserved_account_keys()))
                 .collect::<Result<Vec<SanitizedTransaction>>>()?;
-            if !config.skip_sig_verify {
-                for tx in &runtime_txs {
-                    verify_transaction(tx, &bank.feature_set)?;
-                }
-            }
-
             let sanitized_bundle = SanitizedBundle {
                 transactions: runtime_txs,
                 bundle_id: bundle_id.unwrap_or("unknown".to_string()),
             };
+
+            if !config.skip_sig_verify {
+                for tx in &sanitized_bundle.transactions {
+                    verify_transaction(tx, &bank.feature_set)?;
+                }
+            }
 
             let pre_execution_accounts =
                 account_configs_to_accounts(&config.pre_execution_accounts_configs)?;
