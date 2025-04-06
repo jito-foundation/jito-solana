@@ -14,7 +14,7 @@ pub fn derive_bundle_id(transactions: &[VersionedTransaction]) -> Result<String,
     let signatures = transactions
         .iter()
         .enumerate()
-        .map(|(idx, tx)| tx.signatures.get(0).ok_or(idx))
+        .map(|(idx, tx)| tx.signatures.first().ok_or(idx))
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut hasher = Sha256::new();
