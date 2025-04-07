@@ -3,7 +3,6 @@ use bincode;
 use csv::Writer;
 use rocksdb::{Options, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
-use solana_clock::DEFAULT_SLOTS_PER_EPOCH;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -17,29 +16,31 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // multi-key indexing approach:
 //
 // 1. Record Storage:
-//    - Each fee record is stored under a "rec:{slot}" key
+//    - Each fee record is stored under a "0:{epoch}:{slot}" key
 //    - The value contains the full serialized FeeRecordEntry with all metadata
 //    - Records persist indefinitely for historical tracking and reporting
 //
 // 2. State Index Keys:
-//    - "su:{slot}" - Marks records in Unprocessed state (created but not yet processed)
-//    - "ss:{slot}" - Marks records in Skipped state (failed blocks or unavailable)
-//    - "sa:{slot}" - Marks records in AntedUp state (paid via ante-up mechanism)
-//    - "sp:{slot}" - Marks records in ProcessedAndPending state (processed but fees not sent)
-//    - "sc:{slot}" - Marks records in Complete state (fees successfully sent)
-//    - "**:{slot}" - Retrieves records regardless of state (wildcard)
+//    - "1:{epoch}:{slot}" - Marks records in Unprocessed state (created but not yet processed)
+//    - "3:{epoch}:{slot}" - Marks records in Skipped state (failed blocks or unavailable)
+//    - "4:{epoch}:{slot}" - Marks records in AntedUp state (paid via ante-up mechanism)
+//    - "2:{epoch}:{slot}" - Marks records in ProcessedAndPending state (processed but fees not sent)
+//    - "5:{epoch}:{slot}" - Marks records in Complete state (fees successfully sent)
+//    - "8:{epoch}:{slot}" - Retrieves records regardless of state (wildcard)
 //
 // 3. Category Index Keys:
-//    - "cp:{slot}" - Marks records in PriorityFee category
-//    - "ca:{slot}" - Marks records in Ante category
+//    - "6:{epoch}:{slot}" - Marks records in PriorityFee category
+//    - "7:{epoch}:{slot}" - Marks records in Ante category
 //    - When a record transitions states, old indexes are deleted and new ones created
 //
 // 4. Epoch-Based Query Support:
-//    - Keys include epoch information for efficient epoch-based queries
-//    - Enables reporting and analysis at both slot and epoch granularity
+//    - Keys include epoch information as a primary component of the key structure
+//    - The format used is "{prefix}{epoch}{slot}" where epoch and slot are encoded as big-endian bytes
+//    - This enables efficient prefix-based queries at both the epoch and slot level
+//    - Prefix extraction is configured on the first byte to support key type filtering
 //
 // This approach allows:
-//    - Efficient O(1) retrieval of specific records by slot
+//    - Efficient O(1) retrieval of specific records by slot and epoch
 //    - Fast enumeration of records in specific states without full DB scans
 //    - Category-based filtering for specialized reporting
 //    - Atomic state transitions with batch operations for consistency
@@ -51,7 +52,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 //    - process_record(): Updates a record with fee data and marks as ProcessedAndPending
 //    - skip_record(): Marks a record as Skipped (block unavailable)
 //    - complete_record(): Marks a record as Complete (fees sent)
-//    - get_record(): Retrieves a specific record by slot
+//    - get_record(): Retrieves a specific record by slot and epoch
 //    - get_records_by_state(): Gets records of a specific state
 //    - get_records_by_category(): Gets records of a specific category
 //    - get_total_pending_lamports(): Calculates total pending fees ready to send
@@ -119,6 +120,10 @@ impl FeeRecords {
             opts.set_compaction_style(compaction);
         }
 
+        // NOTE: This line is really important, without it - RocksDB will match several
+        // records to the same prefix for some reason.
+        //
+        // For fututre features that will filter by epoch - this will have to be modified
         opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(1));
 
         let db = DB::open(&opts, path)?;
@@ -135,10 +140,10 @@ impl FeeRecords {
 
     fn prepare_add_record(&self, record: &FeeRecordEntry, batch: &mut WriteBatch) -> Result<()> {
         let encoded = bincode::serialize(record)?;
-        let record_key = FeeRecordKey::record(record.slot);
-        let state_key = FeeRecordKey::state(record.state, record.slot);
-        let category_key = FeeRecordKey::category(record.category, record.slot);
-        let any_key = FeeRecordKey::any(record.slot);
+        let record_key = FeeRecordKey::record(record.slot, record.epoch);
+        let state_key = FeeRecordKey::state(record.state, record.slot, record.epoch);
+        let category_key = FeeRecordKey::category(record.category, record.slot, record.epoch);
+        let any_key = FeeRecordKey::any(record.slot, record.epoch);
 
         // Use a WriteBatch for atomicity
         batch.put(&record_key, &encoded);
@@ -160,9 +165,9 @@ impl FeeRecords {
         record.state = new_state;
 
         let encoded = bincode::serialize(&record)?;
-        let record_key = FeeRecordKey::record(record.slot);
-        let old_state_key = FeeRecordKey::state(old_state, record.slot);
-        let new_state_key = FeeRecordKey::state(new_state, record.slot);
+        let record_key = FeeRecordKey::record(record.slot, record.epoch);
+        let old_state_key = FeeRecordKey::state(old_state, record.slot, record.epoch);
+        let new_state_key = FeeRecordKey::state(new_state, record.slot, record.epoch);
 
         batch.put(&record_key, &encoded);
         batch.delete(&old_state_key); // Delete old state
@@ -172,17 +177,16 @@ impl FeeRecords {
     }
 
     /// Adds a new fee record in Unprocessed state
-    pub fn add_priority_fee_record(&self, slot: u64) -> Result<()> {
-        let record_key = FeeRecordKey::record(slot);
-
+    pub fn add_priority_fee_record(&self, slot: u64, epoch: u64) -> Result<()> {
         // Check if record already exists
-        if self.db.get(&record_key)?.is_some() {
+        if self.does_record_exsist(slot, epoch) {
             return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
         }
 
         let record = FeeRecordEntry {
             timestamp: Self::current_timestamp(),
             slot,
+            epoch,
             priority_fee_lamports: 0, // No fees yet since it's unprocessed
             state: FeeRecordState::Unprocessed,
             category: FeeRecordCategory::PriorityFee,
@@ -200,21 +204,21 @@ impl FeeRecords {
     pub fn add_ante_record(
         &self,
         slot: u64,
+        epoch: u64,
         priority_fee_lamports: u64,
         signature: &str,
         slot_landed: u64,
         cancel_all_outstanding_records: bool,
     ) -> Result<()> {
-        let record_key = FeeRecordKey::record(slot);
-
         // Check if record already exists
-        if self.db.get(&record_key)?.is_some() {
+        if self.does_record_exsist(slot, epoch) {
             return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
         }
 
         let record = FeeRecordEntry {
             timestamp: Self::current_timestamp(),
             slot,
+            epoch,
             priority_fee_lamports,
             state: FeeRecordState::Complete,
             category: FeeRecordCategory::Ante,
@@ -252,9 +256,35 @@ impl FeeRecords {
         Ok(())
     }
 
+    /// Adds info record
+    pub fn add_info_record(&self, slot: u64, epoch: u64, priority_fee_lamports: u64) -> Result<()> {
+        // Check if record already exists
+        if self.does_record_exsist(slot, epoch) {
+            return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
+        }
+
+        let record = FeeRecordEntry {
+            timestamp: Self::current_timestamp(),
+            slot,
+            epoch,
+            priority_fee_lamports,
+            state: FeeRecordState::Complete,
+            category: FeeRecordCategory::Info,
+            slot_landed: 0,
+            signature: String::new(),
+        };
+
+        let mut batch = WriteBatch::default();
+        self.prepare_add_record(&record, &mut batch)?;
+
+        self.db.write(batch)?;
+
+        Ok(())
+    }
+
     /// Marks a record as skipped (block failed or not available)
-    pub fn skip_record(&self, slot: u64) -> Result<()> {
-        let record_key = FeeRecordKey::record(slot);
+    pub fn skip_record(&self, slot: u64, epoch: u64) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot, epoch);
 
         // Get the existing record
         match self.db.get(&record_key)? {
@@ -286,8 +316,8 @@ impl FeeRecords {
     }
 
     /// Marks a record as processed and adds the priority fee amount
-    pub fn process_record(&self, slot: u64, priority_fee_lamports: u64) -> Result<()> {
-        let record_key = FeeRecordKey::record(slot);
+    pub fn process_record(&self, slot: u64, epoch: u64, priority_fee_lamports: u64) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot, epoch);
 
         // Get the existing record
         match self.db.get(&record_key)? {
@@ -320,8 +350,14 @@ impl FeeRecords {
     }
 
     /// Marks a record as complete with transaction details
-    pub fn complete_record(&self, slot: u64, signature: &str, slot_landed: u64) -> Result<()> {
-        let record_key = FeeRecordKey::record(slot);
+    pub fn complete_record(
+        &self,
+        slot: u64,
+        epoch: u64,
+        signature: &str,
+        slot_landed: u64,
+    ) -> Result<()> {
+        let record_key = FeeRecordKey::record(slot, epoch);
 
         // Get the existing record
         match self.db.get(&record_key)? {
@@ -354,9 +390,14 @@ impl FeeRecords {
         }
     }
 
+    pub fn does_record_exsist(&self, slot: u64, epoch: u64) -> bool {
+        let key = FeeRecordKey::record(slot, epoch);
+        self.db.key_may_exist(key)
+    }
+
     /// Gets a specific fee record for the given slot
-    pub fn get_record(&self, slot: u64) -> Result<Option<FeeRecordEntry>> {
-        let key = FeeRecordKey::record(slot);
+    pub fn get_record(&self, slot: u64, epoch: u64) -> Result<Option<FeeRecordEntry>> {
+        let key = FeeRecordKey::record(slot, epoch);
 
         match self.db.get(&key)? {
             Some(data) => {
@@ -374,7 +415,7 @@ impl FeeRecords {
         for item in iter {
             let (key_bytes, _) = item?;
             let key = FeeRecordKey::from(&key_bytes[..]);
-            let record_key = FeeRecordKey::record(key.slot);
+            let record_key = FeeRecordKey::record(key.slot, key.epoch);
 
             if let Some(record_data) = self.db.get_pinned(&record_key)? {
                 let record: FeeRecordEntry = bincode::deserialize(&record_data)?;
@@ -386,7 +427,7 @@ impl FeeRecords {
     }
 
     pub fn get_records_by_state(&self, state: FeeRecordState) -> Result<Vec<FeeRecordEntry>> {
-        let key = FeeRecordKey::state(state, 0);
+        let key = FeeRecordKey::state(state, 0, 0);
         self.get_records(key.prefix)
     }
 
@@ -394,7 +435,7 @@ impl FeeRecords {
         &self,
         category: FeeRecordCategory,
     ) -> Result<Vec<FeeRecordEntry>> {
-        let key = FeeRecordKey::category(category, 0);
+        let key = FeeRecordKey::category(category, 0, 0);
         self.get_records(key.prefix)
     }
 
@@ -472,6 +513,9 @@ pub enum FeeRecordCategory {
     /// Block failed to be created or is no longer in ledger
     Ante,
 
+    /// Other fees for record keeping
+    Info,
+
     /// Any state
     Any,
 }
@@ -501,7 +545,8 @@ pub enum FeeRecordState {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeeRecordEntry {
     pub timestamp: u64,              // Unix timestamp when the record was created
-    pub slot: u64,                   // Slot of acquired priority fees
+    pub slot: u64,                   // Leader slot
+    pub epoch: u64,                  // Epoch of the leader slot
     pub priority_fee_lamports: u64,  // Amount of priority fees acquired
     pub state: FeeRecordState,       // Current state of the record
     pub category: FeeRecordCategory, // Fee Record Catagory
@@ -530,23 +575,15 @@ impl FeeRecordKey {
     pub const STATE_COMPLETE_PREFIX: &[u8; 1] = b"5"; // Records with completed fee transfers
 
     // Category
-    pub const CATEGORY_PRIORITY_FEE_PREFIX: &[u8; 1] = b"6"; // Records categorized by type
-    pub const CATEGORY_ANTE_PREFIX: &[u8; 1] = b"7"; // Records categorized by type
+    pub const CATEGORY_PRIORITY_FEE_PREFIX: &[u8; 1] = b"a"; // Records categorized by type
+    pub const CATEGORY_ANTE_PREFIX: &[u8; 1] = b"b"; // Records categorized by type
+    pub const CATEGORY_INFO_PREFIX: &[u8; 1] = b"c"; // Records categorized by type
 
     // Wildcard
-    pub const ANY_PREFIX: &[u8; 1] = b"8"; // Used to query records regardless of state
+    pub const ANY_PREFIX: &[u8; 1] = b"A"; // Used to query records regardless of state
 
-    pub fn slot_to_epoch(slot: u64) -> u64 {
-        slot / DEFAULT_SLOTS_PER_EPOCH
-    }
-
-    pub fn epoch_to_slot(epoch: u64) -> u64 {
-        epoch * DEFAULT_SLOTS_PER_EPOCH
-    }
-
-    fn new(prefix: &[u8], slot: u64) -> Self {
+    fn new(prefix: &[u8], slot: u64, epoch: u64) -> Self {
         let mut key = Vec::new();
-        let epoch = Self::slot_to_epoch(slot);
 
         key.extend_from_slice(prefix);
         key.extend_from_slice(&epoch.to_be_bytes());
@@ -565,37 +602,40 @@ impl FeeRecordKey {
 
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         let prefix = &bytes[..1];
-        let _epoch = u64::from_be_bytes(bytes[1..9].try_into().unwrap());
+        let epoch = u64::from_be_bytes(bytes[1..9].try_into().unwrap());
         let slot = u64::from_be_bytes(bytes[9..17].try_into().unwrap());
-        Self::new(prefix, slot)
+        Self::new(prefix, slot, epoch)
     }
 
-    pub fn record(slot: u64) -> Self {
-        Self::new(Self::RECORD_PREFIX, slot)
+    pub fn record(slot: u64, epoch: u64) -> Self {
+        Self::new(Self::RECORD_PREFIX, slot, epoch)
     }
 
-    pub fn any(slot: u64) -> Self {
-        Self::new(Self::ANY_PREFIX, slot)
+    pub fn any(slot: u64, epoch: u64) -> Self {
+        Self::new(Self::ANY_PREFIX, slot, epoch)
     }
 
-    pub fn state(state: FeeRecordState, slot: u64) -> Self {
+    pub fn state(state: FeeRecordState, slot: u64, epoch: u64) -> Self {
         match state {
-            FeeRecordState::Unprocessed => Self::new(Self::STATE_UNPROCESSED_PREFIX, slot),
+            FeeRecordState::Unprocessed => Self::new(Self::STATE_UNPROCESSED_PREFIX, slot, epoch),
             FeeRecordState::ProcessedAndPending => {
-                Self::new(Self::STATE_PROCESSED_AND_PENDING_PREFIX, slot)
+                Self::new(Self::STATE_PROCESSED_AND_PENDING_PREFIX, slot, epoch)
             }
-            FeeRecordState::Skipped => Self::new(Self::STATE_SKIPPED_PREFIX, slot),
-            FeeRecordState::AntedUp => Self::new(Self::STATE_ANTED_UP_PREFIX, slot),
-            FeeRecordState::Complete => Self::new(Self::STATE_COMPLETE_PREFIX, slot),
-            FeeRecordState::Any => Self::new(Self::ANY_PREFIX, slot),
+            FeeRecordState::Skipped => Self::new(Self::STATE_SKIPPED_PREFIX, slot, epoch),
+            FeeRecordState::AntedUp => Self::new(Self::STATE_ANTED_UP_PREFIX, slot, epoch),
+            FeeRecordState::Complete => Self::new(Self::STATE_COMPLETE_PREFIX, slot, epoch),
+            FeeRecordState::Any => Self::new(Self::ANY_PREFIX, slot, epoch),
         }
     }
 
-    pub fn category(category: FeeRecordCategory, slot: u64) -> Self {
+    pub fn category(category: FeeRecordCategory, slot: u64, epoch: u64) -> Self {
         match category {
-            FeeRecordCategory::PriorityFee => Self::new(Self::CATEGORY_PRIORITY_FEE_PREFIX, slot),
-            FeeRecordCategory::Ante => Self::new(Self::CATEGORY_ANTE_PREFIX, slot),
-            FeeRecordCategory::Any => Self::new(Self::ANY_PREFIX, slot),
+            FeeRecordCategory::PriorityFee => {
+                Self::new(Self::CATEGORY_PRIORITY_FEE_PREFIX, slot, epoch)
+            }
+            FeeRecordCategory::Ante => Self::new(Self::CATEGORY_ANTE_PREFIX, slot, epoch),
+            FeeRecordCategory::Info => Self::new(Self::CATEGORY_INFO_PREFIX, slot, epoch),
+            FeeRecordCategory::Any => Self::new(Self::ANY_PREFIX, slot, epoch),
         }
     }
 }

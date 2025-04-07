@@ -3,7 +3,8 @@ use log::info;
 use priority_fee_sharing::fee_records::{
     FeeRecordCategory, FeeRecordEntry, FeeRecordState, FeeRecords,
 };
-use solana_clock::{Epoch, Slot, DEFAULT_MS_PER_SLOT};
+use priority_fee_sharing::share_priority_fees_loop;
+use solana_clock::{Epoch, Slot, DEFAULT_MS_PER_SLOT, DEFAULT_SLOTS_PER_EPOCH};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -189,16 +190,20 @@ async fn main() -> Result<(), anyhow::Error> {
             );
             println!("Using validator address: {}", validator_address);
 
-            // Implementation of fee sharing loop goes here
-            // share_priority_fees_loop(
-            //     &keypair,
-            //     validator_address,
-            //     &rpc,
-            //     Duration::from_secs(*period_seconds),
-            //     *commission_bps,
-            //     &fee_records,
-            //     *minimum_balance,
-            // ).await?;
+            let db_directory = "/tmp/pfs-test/";
+
+            share_priority_fees_loop(
+                &args.rpc_url,                          // RPC URL
+                &keypair,                               // Payer keypair
+                validator_address, // Validator address (needs to be a reference)
+                *commission_bps,   // Commission BPS
+                *minimum_balance,  // Minimum balance
+                args.priority_fee_distribution_program, // Priority Fee Distribution Address
+                db_directory.to_string(), // Database directory (as String, not reference)
+                1,                 // Chunk size (as usize)
+                1,                 // Call limit (as usize)
+            )
+            .await?
         }
 
         Commands::ExportCsv { output_path, state } => {
@@ -213,15 +218,18 @@ async fn main() -> Result<(), anyhow::Error> {
             println!("Export completed successfully");
         }
 
-        Commands::GetRecord { slot } => match fee_records.get_record(*slot)? {
-            Some(record) => {
-                println!("Record for slot {}:", slot);
-                println!("{}", format_record(&record));
+        Commands::GetRecord { slot } => {
+            let epoch = slot / DEFAULT_SLOTS_PER_EPOCH;
+            match fee_records.get_record(*slot, epoch)? {
+                Some(record) => {
+                    println!("Record for slot {}:", slot);
+                    println!("{}", format_record(&record));
+                }
+                None => {
+                    println!("No record found for slot {}", slot);
+                }
             }
-            None => {
-                println!("No record found for slot {}", slot);
-            }
-        },
+        }
 
         Commands::GetRecordsByState { state } => {
             let state_enum = parse_state(state)?;
