@@ -1,25 +1,13 @@
 use clap::{Parser, Subcommand};
-use log::info;
 use priority_fee_sharing::fee_records::{
     FeeRecordCategory, FeeRecordEntry, FeeRecordState, FeeRecords,
 };
 use priority_fee_sharing::share_priority_fees_loop;
-use solana_clock::{Epoch, Slot, DEFAULT_MS_PER_SLOT, DEFAULT_SLOTS_PER_EPOCH};
+use solana_clock::DEFAULT_SLOTS_PER_EPOCH;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::reward_type::RewardType;
-use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
-use std::cmp::min;
-use std::collections::BTreeMap;
+use solana_sdk::signature::read_keypair_file;
 use std::path::PathBuf;
-use std::time::Duration;
-use tokio::time::{interval, sleep, Interval};
-
-//TODO
-// Add in File IO for tracking TXs as well as recovery
-// Add in recovery look that looks at validator history
-// Make it so it can be run as a CLI or a subroutine of the validator
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -27,10 +15,6 @@ struct Args {
     /// RPC URL to use
     #[arg(long)]
     rpc_url: String,
-
-    /// Priority fee distribution program
-    #[arg(long)]
-    priority_fee_distribution_program: Pubkey,
 
     /// Fee Records DB Path
     #[arg(long)]
@@ -53,6 +37,10 @@ enum Commands {
         #[arg(long)]
         validator_address: Pubkey,
 
+        /// Priority fee distribution program
+        #[arg(long)]
+        priority_fee_distribution_program: Pubkey,
+
         /// How frequently to check for new priority fees and distribute them
         #[arg(long)]
         period_seconds: u64,
@@ -67,6 +55,14 @@ enum Commands {
         /// value for safety reasons.
         #[arg(long, default_value_t = 10_000)]
         commission_bps: u64,
+
+        /// Chunk size for processing priority fees
+        #[arg(long, default_value_t = 1)]
+        chunk_size: usize,
+
+        /// Priority fee distribution program
+        #[arg(long, default_value_t = 1)]
+        call_limit: usize,
     },
 
     /// Export records to CSV
@@ -168,18 +164,21 @@ fn format_record(record: &FeeRecordEntry) -> String {
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let args: Args = Args::parse();
-    let rpc = RpcClient::new(args.rpc_url.clone());
 
     // Initialize fee records database
+    let rpc_client = RpcClient::new(args.rpc_url.clone());
     let fee_records = FeeRecords::new(&args.fee_records_db_path)?;
 
     match &args.command {
         Commands::Run {
             payer_keypair,
             validator_address,
+            priority_fee_distribution_program,
             period_seconds,
             minimum_balance,
             commission_bps,
+            chunk_size,
+            call_limit,
         } => {
             let keypair = read_keypair_file(payer_keypair)
                 .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
@@ -190,18 +189,16 @@ async fn main() -> Result<(), anyhow::Error> {
             );
             println!("Using validator address: {}", validator_address);
 
-            let db_directory = "/tmp/pfs-test/";
-
             share_priority_fees_loop(
-                &args.rpc_url,                          // RPC URL
-                &keypair,                               // Payer keypair
-                validator_address, // Validator address (needs to be a reference)
-                *commission_bps,   // Commission BPS
-                *minimum_balance,  // Minimum balance
-                args.priority_fee_distribution_program, // Priority Fee Distribution Address
-                db_directory.to_string(), // Database directory (as String, not reference)
-                1,                 // Chunk size (as usize)
-                1,                 // Call limit (as usize)
+                &rpc_client,                        // RPC Client
+                &fee_records,                       // Fee Records
+                &keypair,                           // Payer keypair
+                validator_address,                  // Validator address (needs to be a reference)
+                *priority_fee_distribution_program, // Priority Fee Distribution Address
+                *commission_bps,                    // Commission BPS
+                *minimum_balance,                   // Minimum balance
+                *chunk_size,                        // Chunk size (as usize)
+                *call_limit,                        // Call limit (as usize)
             )
             .await?
         }
