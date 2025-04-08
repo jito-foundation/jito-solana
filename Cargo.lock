@@ -161,7 +161,7 @@ dependencies = [
  "nix",
  "reqwest",
  "scopeguard",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_derive",
  "serde_yaml 0.8.26",
@@ -1557,7 +1557,7 @@ checksum = "eee4243f1f26fc7a42710e7439c149e2b10b05472f88090acce52632f231a73a"
 dependencies = [
  "camino",
  "cargo-platform",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5710,7 +5710,7 @@ version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
- "semver 1.0.25",
+ "semver 1.0.26",
 ]
 
 [[package]]
@@ -5972,9 +5972,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.25"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f79dfe2d285b0488816f30e700a7438c5a73d816b5b7d3ac72fbc48b0d185e03"
+checksum = "56e6fa9c48d24d85fb3de5ad847117517440f6beceb7798af16b4a87d616b8d0"
 dependencies = [
  "serde",
 ]
@@ -7057,7 +7057,7 @@ dependencies = [
  "predicates",
  "regex",
  "reqwest",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serial_test",
  "solana-file-download",
  "solana-keypair",
@@ -7158,7 +7158,7 @@ dependencies = [
  "num-traits",
  "pretty-hex",
  "reqwest",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_derive",
  "serde_json",
@@ -7261,7 +7261,7 @@ dependencies = [
  "humantime",
  "indicatif",
  "pretty-hex",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_json",
  "solana-account",
@@ -9263,7 +9263,7 @@ dependencies = [
  "futures-util",
  "log",
  "reqwest",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_derive",
  "serde_json",
@@ -9344,7 +9344,7 @@ dependencies = [
  "num-traits",
  "parking_lot 0.12.3",
  "qstring",
- "semver 1.0.25",
+ "semver 1.0.26",
  "solana-derivation-path",
  "solana-offchain-message",
  "solana-pubkey",
@@ -9508,7 +9508,7 @@ dependencies = [
  "log",
  "reqwest",
  "reqwest-middleware",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_derive",
  "serde_json",
@@ -9549,7 +9549,7 @@ dependencies = [
  "jsonrpc-core",
  "reqwest",
  "reqwest-middleware",
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_derive",
  "serde_json",
@@ -11105,7 +11105,7 @@ checksum = "1d61992deaa06427057f910ca9a591f386e7b3a34465a3cae8be98e55b26ba8f"
 name = "solana-version"
 version = "2.2.0"
 dependencies = [
- "semver 1.0.25",
+ "semver 1.0.26",
  "serde",
  "serde_derive",
  "solana-feature-set",
