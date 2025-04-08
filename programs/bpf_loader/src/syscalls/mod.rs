@@ -12,6 +12,7 @@ pub use self::{
 };
 #[allow(deprecated)]
 use {
+    crate::syscalls::mem_ops::is_nonoverlapping,
     agave_feature_set::{
         self as feature_set, abort_on_invalid_curve, blake3_syscall_enabled,
         bpf_account_data_direct_mapping, curve25519_syscall_enabled,
@@ -41,7 +42,6 @@ use {
     solana_log_collector::{ic_logger_msg, ic_msg},
     solana_poseidon as poseidon,
     solana_program_entrypoint::{BPF_ALIGN_OF_U128, MAX_PERMITTED_DATA_INCREASE, SUCCESS},
-    solana_program_memory::is_nonoverlapping,
     solana_program_runtime::{invoke_context::InvokeContext, stable_log},
     solana_pubkey::{Pubkey, PubkeyError, MAX_SEEDS, MAX_SEED_LEN, PUBKEY_BYTES},
     solana_sbpf::{
