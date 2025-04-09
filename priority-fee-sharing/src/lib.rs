@@ -100,14 +100,17 @@ async fn handle_unprocessed_blocks(
 
     delay_past_leader_slot(rpc_client, fee_records).await?;
 
+    let total_records = records.len();
     let filtered_records: Vec<FeeRecordEntry> = records
         .into_iter()
         .filter(|record| record.slot <= running_slot)
         .collect();
+    let total_filtered_records = filtered_records.len();
 
     info!(
-        "Processing unprocessed blocks: {} remaining",
-        filtered_records.len()
+        "Processing unprocessed blocks: {} remaining {} left",
+        total_filtered_records,
+        total_records - total_filtered_records
     );
     for record in filtered_records.iter().take(call_limit) {
         // Try to fetch block and update
