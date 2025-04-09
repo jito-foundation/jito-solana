@@ -276,7 +276,7 @@ dependencies = [
  "anyhow",
  "axum 0.7.9",
  "cfg-if 1.0.0",
- "env_logger",
+ "env_logger 0.9.3",
  "hyper 0.14.32",
  "log",
  "num_cpus",
@@ -2549,6 +2549,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_logger"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd405aab171cb85d6735e5c8d9db038c17d3ca007a4d2c25f337935c3d90580"
+dependencies = [
+ "humantime",
+ "is-terminal",
+ "log",
+ "regex",
+ "termcolor",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3754,6 +3767,7 @@ dependencies = [
  "clap 4.5.31",
  "csv",
  "enum-iterator",
+ "env_logger 0.10.2",
  "itertools 0.12.1",
  "log",
  "rocksdb",
@@ -8696,7 +8710,7 @@ version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84cfc2f547fee3ee1bd91b0d3afcb04d9d8a6ed5a14d64274cfdc68c340020f6"
 dependencies = [
- "env_logger",
+ "env_logger 0.9.3",
  "lazy_static",
  "log",
 ]
@@ -8763,7 +8777,7 @@ name = "solana-metrics"
 version = "2.2.0"
 dependencies = [
  "crossbeam-channel",
- "env_logger",
+ "env_logger 0.9.3",
  "gethostname",
  "lazy_static",
  "log",
@@ -10669,7 +10683,7 @@ dependencies = [
  "anchor-lang",
  "clap 4.5.31",
  "crossbeam-channel",
- "env_logger",
+ "env_logger 0.9.3",
  "futures 0.3.31",
  "gethostname",
  "im",

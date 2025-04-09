@@ -1,6 +1,5 @@
 pub mod error;
 pub mod fee_records;
-pub mod leader_stats;
 
 use anyhow::Result;
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
@@ -9,6 +8,7 @@ use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::lamports_to_sol;
 use solana_sdk::reward_type::RewardType;
@@ -50,6 +50,7 @@ async fn handle_epoch_and_leader_slot(
     let epoch_info = rpc_client
         .get_epoch_info_with_commitment(CommitmentConfig::finalized())
         .await?;
+    let epoch_start_slot = epoch_info.absolute_slot - epoch_info.slot_index;
 
     if running_epoch == epoch_info.epoch {
         return Ok((running_epoch, epoch_info.absolute_slot));
@@ -75,9 +76,11 @@ async fn handle_epoch_and_leader_slot(
             ))?;
 
     for slot in validator_slots {
-        let result = fee_records.add_priority_fee_record(*slot as u64, epoch_info.epoch);
+        let slot = *slot as u64 + epoch_start_slot;
+        info!("Processing slot {} {}", slot, epoch_info.absolute_slot);
+        let result = fee_records.add_priority_fee_record(slot, epoch_info.epoch);
         if let Err(err) = result {
-            eprintln!(
+            error!(
                 "Error adding priority fee record for slot {}: {}",
                 slot, err
             );
@@ -97,7 +100,16 @@ async fn handle_unprocessed_blocks(
 
     delay_past_leader_slot(rpc_client, fee_records).await?;
 
-    for record in records.iter().take(call_limit) {
+    let filtered_records: Vec<FeeRecordEntry> = records
+        .into_iter()
+        .filter(|record| record.slot <= running_slot)
+        .collect();
+
+    info!(
+        "Processing unprocessed blocks: {} remaining",
+        filtered_records.len()
+    );
+    for record in filtered_records.iter().take(call_limit) {
         // Try to fetch block and update
         if record.slot <= running_slot {
             let block_result = rpc_client.get_block(record.slot).await;
@@ -121,7 +133,7 @@ async fn handle_unprocessed_blocks(
                         priority_fee_lamports as u64,
                     );
                     if let Err(err) = result {
-                        eprintln!(
+                        error!(
                             "Error processing priority fee record for slot {}: {}",
                             record.slot, err
                         );
@@ -131,7 +143,7 @@ async fn handle_unprocessed_blocks(
                     error!("Could not get block, {}", e);
                     let result = fee_records.skip_record(record.slot, record.epoch);
                     if let Err(err) = result {
-                        eprintln!(
+                        error!(
                             "Error skipping priority fee record for slot {}: {}",
                             record.slot, err
                         );
@@ -201,7 +213,7 @@ async fn handle_pending_blocks(
                     let result =
                         fee_records.complete_record(record.slot, record.epoch, &sig.to_string(), 0);
                     if let Err(err) = result {
-                        eprintln!(
+                        error!(
                             "Error processing priority fee record for slot {}: {}",
                             record.slot, err
                         );
@@ -244,14 +256,14 @@ pub async fn share_priority_fees_loop(
                 running_epoch = epoch;
                 running_slot = slot;
             }
-            Err(err) => eprintln!("Error handling epoch and leader slots: {}", err),
+            Err(err) => error!("Error handling epoch and leader slots: {}", err),
         }
 
         // 2. Handle unprocessed blocks
         let result =
             handle_unprocessed_blocks(&rpc_client, &fee_records, running_slot, call_limit).await;
         if let Err(err) = result {
-            eprintln!("Error handling unprocessed records: {}", err);
+            error!("Error handling unprocessed records: {}", err);
         }
 
         // 3. Handle pending blocks
@@ -265,9 +277,73 @@ pub async fn share_priority_fees_loop(
         )
         .await;
         if let Err(err) = result {
-            eprintln!("Error handling pending blocks: {}", err);
+            error!("Error handling pending blocks: {}", err);
         }
 
         sleep_ms(LEADER_SLOT_MS).await;
+    }
+}
+
+pub async fn spam_priority_fees_loop(
+    rpc_client: &RpcClient,
+    payer_keypair: &Keypair,
+) -> Result<(), anyhow::Error> {
+    // Infinite loop to keep sending transactions
+    loop {
+        match rpc_client.get_balance(&payer_keypair.pubkey()).await {
+            Ok(balance) => {
+                info!("Balance: {}", lamports_to_sol(balance));
+            }
+            Err(err) => {
+                error!("Error getting balance: {}", err);
+                sleep_ms(1000).await;
+                continue;
+            }
+        }
+
+        // Get latest blockhash
+        match rpc_client.get_latest_blockhash().await {
+            Ok(blockhash) => {
+                // Create and send transactions in batches
+
+                // Add compute budget instruction to set priority fee
+                let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_price(1);
+
+                // Create transaction with both instructions
+                let tx = Transaction::new_signed_with_payer(
+                    &[compute_budget_ix],
+                    Some(&payer_keypair.pubkey()),
+                    &[payer_keypair],
+                    blockhash,
+                );
+
+                // Send transaction
+                match rpc_client
+                    .send_transaction_with_config(
+                        &tx,
+                        RpcSendTransactionConfig {
+                            skip_preflight: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    Ok(signature) => {
+                        info!("Sent tx {}", signature);
+                    }
+                    Err(err) => {
+                        error!("Failed to send tx {:?}", err);
+                    }
+                }
+
+                // Small delay between transactions to avoid rate limiting
+                sleep_ms(50).await;
+            }
+            Err(err) => {
+                error!("Failed to get latest blockhash: {:?}", err);
+            }
+        }
+
+        sleep_ms(1000).await;
     }
 }

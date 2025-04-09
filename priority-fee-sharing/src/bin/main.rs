@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
+use log::info;
 use priority_fee_sharing::fee_records::{
     FeeRecordCategory, FeeRecordEntry, FeeRecordState, FeeRecords,
 };
-use priority_fee_sharing::share_priority_fees_loop;
+use priority_fee_sharing::{share_priority_fees_loop, spam_priority_fees_loop};
 use solana_clock::DEFAULT_SLOTS_PER_EPOCH;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -41,10 +42,6 @@ enum Commands {
         #[arg(long)]
         priority_fee_distribution_program: Pubkey,
 
-        /// How frequently to check for new priority fees and distribute them
-        #[arg(long)]
-        period_seconds: u64,
-
         /// The minimum balance that should be left in the keypair to ensure it has
         /// enough to cover voting costs
         #[arg(long)]
@@ -63,6 +60,13 @@ enum Commands {
         /// Priority fee distribution program
         #[arg(long, default_value_t = 1)]
         call_limit: usize,
+    },
+
+    /// Spam priority fees for testing
+    SpamFees {
+        /// Path to payer keypair
+        #[arg(long)]
+        payer_keypair: PathBuf,
     },
 
     /// Export records to CSV
@@ -165,6 +169,9 @@ fn format_record(record: &FeeRecordEntry) -> String {
 async fn main() -> Result<(), anyhow::Error> {
     let args: Args = Args::parse();
 
+    // Initialize logger with default INFO level
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     // Initialize fee records database
     let rpc_client = RpcClient::new(args.rpc_url.clone());
     let fee_records = FeeRecords::new(&args.fee_records_db_path)?;
@@ -174,7 +181,6 @@ async fn main() -> Result<(), anyhow::Error> {
             payer_keypair,
             validator_address,
             priority_fee_distribution_program,
-            period_seconds,
             minimum_balance,
             commission_bps,
             chunk_size,
@@ -183,11 +189,8 @@ async fn main() -> Result<(), anyhow::Error> {
             let keypair = read_keypair_file(payer_keypair)
                 .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
 
-            println!(
-                "Running fee sharing service with period {} seconds",
-                period_seconds
-            );
-            println!("Using validator address: {}", validator_address);
+            info!("Running Transfer Loop");
+            info!("Using validator address: {}", validator_address);
 
             share_priority_fees_loop(
                 &rpc_client,                        // RPC Client
@@ -203,27 +206,35 @@ async fn main() -> Result<(), anyhow::Error> {
             .await?
         }
 
+        Commands::SpamFees { payer_keypair } => {
+            let keypair = read_keypair_file(payer_keypair)
+                .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
+
+            info!("Running fee spamming service");
+            spam_priority_fees_loop(&rpc_client, &keypair).await?;
+        }
+
         Commands::ExportCsv { output_path, state } => {
             let state_enum = parse_state(state)?;
-            println!(
+            info!(
                 "Exporting records with state {:?} to CSV: {}",
                 state_enum,
                 output_path.display()
             );
 
             fee_records.export_to_csv(output_path, state_enum)?;
-            println!("Export completed successfully");
+            info!("Export completed successfully");
         }
 
         Commands::GetRecord { slot } => {
             let epoch = slot / DEFAULT_SLOTS_PER_EPOCH;
             match fee_records.get_record(*slot, epoch)? {
                 Some(record) => {
-                    println!("Record for slot {}:", slot);
-                    println!("{}", format_record(&record));
+                    info!("Record for slot {}:", slot);
+                    info!("{}", format_record(&record));
                 }
                 None => {
-                    println!("No record found for slot {}", slot);
+                    info!("No record found for slot {}", slot);
                 }
             }
         }
@@ -232,14 +243,14 @@ async fn main() -> Result<(), anyhow::Error> {
             let state_enum = parse_state(state)?;
             let records = fee_records.get_records_by_state(state_enum)?;
 
-            println!(
+            info!(
                 "Found {} records with state {:?}:",
                 records.len(),
                 state_enum
             );
 
             for record in records {
-                println!("{}", format_record(&record));
+                info!("{}", format_record(&record));
             }
         }
 
@@ -247,21 +258,21 @@ async fn main() -> Result<(), anyhow::Error> {
             let category_enum = parse_category(category)?;
             let records = fee_records.get_records_by_category(category_enum)?;
 
-            println!(
+            info!(
                 "Found {} records with category {:?}:",
                 records.len(),
                 category_enum
             );
 
             for record in records {
-                println!("{}", format_record(&record));
+                info!("{}", format_record(&record));
             }
         }
 
         Commands::GetPendingLamports => {
             let total = fee_records.get_total_pending_lamports()?;
-            println!("Total pending lamports: {}", total);
-            println!("SOL equivalent: {:.9}", total as f64 / 1_000_000_000.0);
+            info!("Total pending lamports: {}", total);
+            info!("SOL equivalent: {:.9}", total as f64 / 1_000_000_000.0);
         }
 
         Commands::AddAnteRecord {
@@ -272,21 +283,21 @@ async fn main() -> Result<(), anyhow::Error> {
         } => {
             //TODO actually transfer lamports
 
-            // println!("Adding ante record for slot {}", slot);
+            // info!("Adding ante record for slot {}", slot);
             // fee_records.add_ante_record(*slot, *fee_lamports, signature, *slot_landed)?;
-            // println!("Ante record added successfully");
+            // info!("Ante record added successfully");
 
             // // Display the record we just added
             // if let Some(record) = fee_records.get_record(*slot)? {
-            //     println!("Record details:");
-            //     println!("{}", format_record(&record));
+            //     info!("Record details:");
+            //     info!("{}", format_record(&record));
             // }
         }
 
         Commands::CompactDb => {
-            println!("Compacting database...");
+            info!("Compacting database...");
             fee_records.compact()?;
-            println!("Database compaction completed");
+            info!("Database compaction completed");
         }
     }
 
