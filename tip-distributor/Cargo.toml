@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 anchor-lang = { workspace = true }
-clap = { version = "4.1.11", features = ["derive", "env"] }
+clap = { version = "4.5.31", features = ["derive", "env"] }
 crossbeam-channel = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }
