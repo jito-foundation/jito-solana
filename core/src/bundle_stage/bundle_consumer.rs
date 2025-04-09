@@ -956,7 +956,7 @@ mod tests {
                         ))
                     })
                     .collect();
-                let bundle_id = derive_bundle_id(&transfers);
+                let bundle_id = derive_bundle_id(&transfers).unwrap();
 
                 PacketBundle {
                     batch: PacketBatch::new(
