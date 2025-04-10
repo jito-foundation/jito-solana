@@ -93,8 +93,8 @@ fn get_server_urls(validator: &ClusterValidatorInfo) -> (Url, Url) {
     (rpc_url, ws_url)
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn test_stake_update() {
+#[test]
+fn test_stake_update() {
     solana_logger::setup();
 
     // Create a local cluster with 3 validators
