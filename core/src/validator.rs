@@ -2523,8 +2523,8 @@ fn initialize_rpc_transaction_history_services(
 
 #[derive(Error, Debug)]
 pub enum ValidatorError {
-    #[error("Bad expected bank hash")]
-    BadExpectedBankHash,
+    #[error("bank hash mismatch: actual={0}, expected={1}")]
+    BankHashMismatch(Hash, Hash),
 
     #[error("blockstore error: {0}")]
     Blockstore(#[source] BlockstoreError),
@@ -2532,8 +2532,11 @@ pub enum ValidatorError {
     #[error("genesis hash mismatch: actual={0}, expected={1}")]
     GenesisHashMismatch(Hash, Hash),
 
-    #[error("Ledger does not have enough data to wait for supermajority")]
-    NotEnoughLedgerData,
+    #[error(
+        "ledger does not have enough data to wait for supermajority: \
+        current slot={0}, needed slot={1}"
+    )]
+    NotEnoughLedgerData(Slot, Slot),
 
     #[error("failed to open genesis: {0}")]
     OpenGenesisConfig(#[source] OpenGenesisConfigError),
@@ -2583,25 +2586,20 @@ fn wait_for_supermajority(
             match wait_for_supermajority_slot.cmp(&bank.slot()) {
                 std::cmp::Ordering::Less => return Ok(false),
                 std::cmp::Ordering::Greater => {
-                    error!(
-                        "Ledger does not have enough data to wait for supermajority, please \
-                         enable snapshot fetch. Has {} needs {}",
+                    return Err(ValidatorError::NotEnoughLedgerData(
                         bank.slot(),
-                        wait_for_supermajority_slot
-                    );
-                    return Err(ValidatorError::NotEnoughLedgerData);
+                        wait_for_supermajority_slot,
+                    ));
                 }
                 _ => {}
             }
 
             if let Some(expected_bank_hash) = config.expected_bank_hash {
                 if bank.hash() != expected_bank_hash {
-                    error!(
-                        "Bank hash({}) does not match expected value: {}",
+                    return Err(ValidatorError::BankHashMismatch(
                         bank.hash(),
-                        expected_bank_hash
-                    );
-                    return Err(ValidatorError::BadExpectedBankHash);
+                        expected_bank_hash,
+                    ));
                 }
             }
 
@@ -3097,7 +3095,7 @@ mod tests {
 
         // bank=0, wait=1, should fail
         config.wait_for_supermajority = Some(1);
-        matches!(
+        assert!(matches!(
             wait_for_supermajority(
                 &config,
                 None,
@@ -3106,8 +3104,8 @@ mod tests {
                 rpc_override_health_check.clone(),
                 &start_progress,
             ),
-            Err(ValidatorError::NotEnoughLedgerData),
-        );
+            Err(ValidatorError::NotEnoughLedgerData(_, _)),
+        ));
 
         // bank=1, wait=0, should pass, bank is past the wait slot
         let bank_forks = BankForks::new_rw_arc(Bank::new_from_parent(
@@ -3129,7 +3127,7 @@ mod tests {
         // bank=1, wait=1, equal, but bad hash provided
         config.wait_for_supermajority = Some(1);
         config.expected_bank_hash = Some(hash(&[1]));
-        matches!(
+        assert!(matches!(
             wait_for_supermajority(
                 &config,
                 None,
@@ -3138,8 +3136,8 @@ mod tests {
                 rpc_override_health_check,
                 &start_progress,
             ),
-            Err(ValidatorError::BadExpectedBankHash),
-        );
+            Err(ValidatorError::BankHashMismatch(_, _)),
+        ));
     }
 
     #[test]
