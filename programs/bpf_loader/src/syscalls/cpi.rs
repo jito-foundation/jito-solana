@@ -2213,7 +2213,8 @@ mod tests {
                 .transaction_context
                 .get_account_at_index(1)
                 .unwrap()
-                .borrow_mut();
+                .try_borrow_mut()
+                .unwrap();
             account.set_data(b"baz".to_vec());
         }
 

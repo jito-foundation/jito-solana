@@ -1,7 +1,5 @@
 use {
     agave_precompiles::get_precompile,
-    solana_account::WritableAccount,
-    solana_instructions_sysvar as instructions,
     solana_measure::measure_us,
     solana_program_runtime::invoke_context::InvokeContext,
     solana_svm_transaction::svm_message::SVMMessage,
@@ -23,28 +21,11 @@ pub(crate) fn process_message(
     accumulated_consumed_units: &mut u64,
 ) -> Result<(), TransactionError> {
     debug_assert_eq!(program_indices.len(), message.num_instructions());
-    for (instruction_index, ((program_id, instruction), program_indices)) in message
+    for (top_level_instruction_index, ((program_id, instruction), program_indices)) in message
         .program_instructions_iter()
         .zip(program_indices.iter())
         .enumerate()
     {
-        // Fixup the special instructions key if present
-        // before the account pre-values are taken care of
-        if let Some(account_index) = invoke_context
-            .transaction_context
-            .find_index_of_account(&instructions::id())
-        {
-            let mut mut_account_ref = invoke_context
-                .transaction_context
-                .get_account_at_index(account_index)
-                .map_err(|_| TransactionError::InvalidAccountIndex)?
-                .borrow_mut();
-            instructions::store_current_index(
-                mut_account_ref.data_as_mut_slice(),
-                instruction_index as u16,
-            );
-        }
-
         let mut instruction_accounts = Vec::with_capacity(instruction.accounts.len());
         for (instruction_account_index, index_in_transaction) in
             instruction.accounts.iter().enumerate()
@@ -107,7 +88,9 @@ pub(crate) fn process_message(
             .process_instructions
             .total_us += process_instruction_us;
 
-        result.map_err(|err| TransactionError::InstructionError(instruction_index as u8, err))?;
+        result.map_err(|err| {
+            TransactionError::InstructionError(top_level_instruction_index as u8, err)
+        })?;
     }
     Ok(())
 }
@@ -123,7 +106,7 @@ mod tests {
             nid::Nid,
         },
         rand0_7::thread_rng,
-        solana_account::{AccountSharedData, ReadableAccount},
+        solana_account::{AccountSharedData, ReadableAccount, WritableAccount},
         solana_compute_budget::compute_budget::ComputeBudget,
         solana_ed25519_program::new_ed25519_instruction,
         solana_hash::Hash,
@@ -264,17 +247,17 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(
             transaction_context
-                .get_account_at_index(0)
+                .accounts()
+                .try_borrow(0)
                 .unwrap()
-                .borrow()
                 .lamports(),
             100
         );
         assert_eq!(
             transaction_context
-                .get_account_at_index(1)
+                .accounts()
+                .try_borrow(1)
                 .unwrap()
-                .borrow()
                 .lamports(),
             0
         );
@@ -572,26 +555,22 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(
             transaction_context
-                .get_account_at_index(0)
+                .accounts()
+                .try_borrow(0)
                 .unwrap()
-                .borrow()
                 .lamports(),
             80
         );
         assert_eq!(
             transaction_context
-                .get_account_at_index(1)
+                .accounts()
+                .try_borrow(1)
                 .unwrap()
-                .borrow()
                 .lamports(),
             20
         );
         assert_eq!(
-            transaction_context
-                .get_account_at_index(0)
-                .unwrap()
-                .borrow()
-                .data(),
+            transaction_context.accounts().try_borrow(0).unwrap().data(),
             &vec![42]
         );
     }
