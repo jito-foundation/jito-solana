@@ -408,12 +408,23 @@ pub fn load_and_execute_bundle<'a>(
                 failing_tx.signature(),
                 exec_result
             );
+            let pre_tx_execution_accounts_len = pre_tx_execution_accounts.len();
+            let failing_tx_signature = *failing_tx.signature();
+            let exec_result = exec_result.clone();
+            bundle_transaction_results.push(BundleTransactionsOutput {
+                transactions: chunk,
+                load_and_execute_transactions_output,
+                pre_balance_info,
+                post_balance_info: (TransactionBalances::default(), TransactionTokenBalances::default()),
+                pre_tx_execution_accounts,
+                post_tx_execution_accounts: vec![None; pre_tx_execution_accounts_len ],
+            });
             return LoadAndExecuteBundleOutput {
                 bundle_transaction_results,
                 metrics,
                 result: Err(LoadAndExecuteBundleError::TransactionError {
-                    signature: *failing_tx.signature(),
-                    execution_result: Box::new(exec_result.clone()),
+                    signature: failing_tx_signature,
+                    execution_result: Box::new(exec_result),
                 }),
             };
         }
