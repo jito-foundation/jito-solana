@@ -2846,31 +2846,30 @@ impl Node {
             .unwrap();
 
         trace!("new ContactInfo: {:?}", info);
+        let sockets = Sockets {
+            gossip,
+            tvu: tvu_sockets,
+            tvu_quic,
+            tpu: tpu_sockets,
+            tpu_forwards: tpu_forwards_sockets,
+            tpu_vote: tpu_vote_sockets,
+            broadcast,
+            repair,
+            repair_quic,
+            retransmit_sockets,
+            serve_repair,
+            serve_repair_quic,
+            ip_echo: Some(ip_echo),
+            ancestor_hashes_requests,
+            ancestor_hashes_requests_quic,
+            tpu_quic,
+            tpu_forwards_quic,
+            tpu_vote_quic,
+            tpu_vote_forwards_client,
+        };
 
-        Node {
-            info,
-            sockets: Sockets {
-                gossip,
-                tvu: tvu_sockets,
-                tvu_quic,
-                tpu: tpu_sockets,
-                tpu_forwards: tpu_forwards_sockets,
-                tpu_vote: tpu_vote_sockets,
-                broadcast,
-                repair,
-                repair_quic,
-                retransmit_sockets,
-                serve_repair,
-                serve_repair_quic,
-                ip_echo: Some(ip_echo),
-                ancestor_hashes_requests,
-                ancestor_hashes_requests_quic,
-                tpu_quic,
-                tpu_forwards_quic,
-                tpu_vote_quic,
-                tpu_vote_forwards_client,
-            },
-        }
+        info!("Bound all network sockets as follows: {:#?}", &sockets);
+        Node { info, sockets }
     }
 }
 
