@@ -2382,8 +2382,12 @@ pub struct Sockets {
     pub tpu_forwards_quic: Vec<UdpSocket>,
     pub tpu_vote_quic: Vec<UdpSocket>,
 
-    /// Client-side socket for ForwardingStage.
+    /// Client-side socket for ForwardingStage
     pub tpu_vote_forwards_client: UdpSocket,
+    /// Connection cache endpoint for Forwarding
+    pub quic_forwards_client: UdpSocket,
+    /// Connection cache endpoint for QUIC-based Vote
+    pub quic_vote_client: UdpSocket,
 }
 
 pub struct NodeConfig {
@@ -2470,6 +2474,8 @@ impl Node {
         let ancestor_hashes_requests_quic = bind_to_unspecified().unwrap();
 
         let tpu_vote_forwards_client = bind_to_localhost().unwrap();
+        let quic_forwards_client = bind_to_localhost().unwrap();
+        let quic_vote_client = bind_to_localhost().unwrap();
 
         let mut info = ContactInfo::new(
             *pubkey,
@@ -2548,6 +2554,8 @@ impl Node {
                 tpu_forwards_quic,
                 tpu_vote_quic,
                 tpu_vote_forwards_client,
+                quic_forwards_client,
+                quic_vote_client,
             },
         }
     }
@@ -2653,6 +2661,8 @@ impl Node {
 
         // These are client sockets, so the port is set to be 0 because it must be ephimeral.
         let tpu_vote_forwards_client = bind_to_with_config(bind_ip_addr, 0, socket_config).unwrap();
+        let quic_forwards_client = bind_to_with_config(bind_ip_addr, 0, socket_config).unwrap();
+        let quic_vote_client = bind_to_with_config(bind_ip_addr, 0, socket_config).unwrap();
 
         let addr = gossip_addr.ip();
         let mut info = ContactInfo::new(
@@ -2716,6 +2726,8 @@ impl Node {
                 tpu_forwards_quic,
                 tpu_vote_quic,
                 tpu_vote_forwards_client,
+                quic_vote_client,
+                quic_forwards_client,
             },
         }
     }
@@ -2821,6 +2833,8 @@ impl Node {
 
         // These are client sockets, so the port is set to be 0 because it must be ephimeral.
         let tpu_vote_forwards_client = bind_to_with_config(bind_ip_addr, 0, socket_config).unwrap();
+        let quic_forwards_client = bind_to_with_config(bind_ip_addr, 0, socket_config).unwrap();
+        let quic_vote_client = bind_to_with_config(bind_ip_addr, 0, socket_config).unwrap();
 
         let mut info = ContactInfo::new(
             *pubkey,
@@ -2866,8 +2880,9 @@ impl Node {
             tpu_forwards_quic,
             tpu_vote_quic,
             tpu_vote_forwards_client,
+            quic_vote_client,
+            quic_forwards_client,
         };
-
         info!("Bound all network sockets as follows: {:#?}", &sockets);
         Node { info, sockets }
     }
