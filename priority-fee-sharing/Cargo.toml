@@ -12,7 +12,7 @@ edition = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
-clap = { version = "4.5.31", features = ["derive"] }
+clap = { version = "4.5.31", features = ["derive", "env"] }
 enum-iterator = { workspace = true }
 itertools = { workspace = true }
 log = { workspace = true }

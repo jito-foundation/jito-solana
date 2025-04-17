@@ -6,21 +6,12 @@ use priority_fee_sharing::fee_records::{
 use priority_fee_sharing::{share_priority_fees_loop, spam_priority_fees_loop};
 use solana_clock::DEFAULT_SLOTS_PER_EPOCH;
 use solana_pubkey::Pubkey;
-use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::signature::read_keypair_file;
+use solana_sdk::native_token::sol_to_lamports;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// RPC URL to use
-    #[arg(long)]
-    rpc_url: String,
-
-    /// Fee Records DB Path
-    #[arg(long)]
-    fee_records_db_path: PathBuf,
-
     /// The command to execute
     #[command(subcommand)]
     command: Commands,
@@ -30,101 +21,144 @@ struct Args {
 enum Commands {
     /// Run the fee sharing service
     Run {
+        /// RPC URL to use
+        #[arg(long, env)]
+        rpc_url: String,
+
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+
         /// Path to payer keypair
-        #[arg(long)]
-        payer_keypair: PathBuf,
+        #[arg(long, env)]
+        payer_keypair_path: PathBuf,
 
         /// Validator vote account address
-        #[arg(long)]
+        #[arg(long, env)]
         validator_address: Pubkey,
 
         /// Priority fee distribution program
-        #[arg(long)]
+        #[arg(long, env)]
         priority_fee_distribution_program: Pubkey,
 
         /// The minimum balance that should be left in the keypair to ensure it has
         /// enough to cover voting costs
-        #[arg(long)]
-        minimum_balance: u64,
+        #[arg(long, env)]
+        minimum_balance_sol: f64,
 
         /// The commission rate for validators in bips. A 100% commission (10_000 bips)
-        /// would mean the validator takes all the fees for themselves. That's the default
-        /// value for safety reasons.
-        #[arg(long, default_value_t = 10_000)]
+        /// would mean the validator takes all the fees for themselves. Default is 50%
+        #[arg(long, env, default_value_t = 5_000)]
         commission_bps: u64,
 
-        /// Chunk size for processing priority fees
-        #[arg(long, default_value_t = 1)]
+        /// How many share IXs to bundle into a single transaction
+        #[arg(long, env, default_value_t = 1)]
         chunk_size: usize,
 
-        /// Priority fee distribution program
-        #[arg(long, default_value_t = 1)]
+        /// How many share TXs to send before timeout
+        #[arg(long, env, default_value_t = 1)]
         call_limit: usize,
+
+        /// Priority fee distribution program
+        #[arg(long, env, default_value_t = 1000)]
+        go_live_epoch: u64,
     },
 
     /// Spam priority fees for testing
     SpamFees {
+        /// RPC URL to use
+        #[arg(long, env)]
+        rpc_url: String,
+
         /// Path to payer keypair
-        #[arg(long)]
-        payer_keypair: PathBuf,
+        #[arg(long, env)]
+        payer_keypair_path: PathBuf,
     },
 
     /// Export records to CSV
     ExportCsv {
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+
         /// Path to the output CSV file
-        #[arg(long)]
+        #[arg(long, env)]
         output_path: PathBuf,
 
         /// State of records to export (unprocessed, processed, skipped, antedup, complete, any)
-        #[arg(long, default_value = "any")]
+        #[arg(long, env, default_value = "any")]
         state: String,
     },
 
     /// Get a specific record by slot
     GetRecord {
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+
         /// Slot number to retrieve
-        #[arg(long)]
+        #[arg(long, env)]
         slot: u64,
     },
 
     /// Get records by state
     GetRecordsByState {
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+
         /// State to filter by (unprocessed, processed, skipped, antedup, complete, any)
-        #[arg(long)]
+        #[arg(long, env)]
         state: String,
     },
 
     /// Get records by category
     GetRecordsByCategory {
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+
         /// Category to filter by (priority-fee, ante, any)
-        #[arg(long)]
+        #[arg(long, env)]
         category: String,
     },
 
     /// Get total pending lamports
-    GetPendingLamports,
+    GetPendingLamports {
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+    },
 
     /// Add a new ante record (for recovery purposes)
     AddAnteRecord {
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+
         /// Slot number
-        #[arg(long)]
+        #[arg(long, env)]
         slot: u64,
 
         /// Fee amount in lamports
-        #[arg(long)]
+        #[arg(long, env)]
         fee_lamports: u64,
 
         /// Transaction signature
-        #[arg(long)]
+        #[arg(long, env)]
         signature: String,
 
         /// Slot the transaction landed
-        #[arg(long)]
+        #[arg(long, env)]
         slot_landed: u64,
     },
 
     /// Compact the database for performance
-    CompactDb,
+    CompactDb {
+        /// Fee Records DB Path
+        #[arg(long, env)]
+        fee_records_db_path: PathBuf,
+    },
 }
 
 /// Parse state string to FeeRecordState enum
@@ -172,49 +206,52 @@ async fn main() -> Result<(), anyhow::Error> {
     // Initialize logger with default INFO level
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Initialize fee records database
-    let rpc_client = RpcClient::new(args.rpc_url.clone());
-    let fee_records = FeeRecords::new(&args.fee_records_db_path)?;
-
     match &args.command {
         Commands::Run {
-            payer_keypair,
+            rpc_url,
+            fee_records_db_path,
+            payer_keypair_path,
             validator_address,
             priority_fee_distribution_program,
-            minimum_balance,
+            minimum_balance_sol,
             commission_bps,
             chunk_size,
             call_limit,
+            go_live_epoch,
         } => {
-            let keypair = read_keypair_file(payer_keypair)
-                .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
-
             info!("Running Transfer Loop");
             info!("Using validator address: {}", validator_address);
 
+            let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;
+
             share_priority_fees_loop(
-                &rpc_client,                        // RPC Client
-                &fee_records,                       // Fee Records
-                &keypair,                           // Payer keypair
-                validator_address,                  // Validator address (needs to be a reference)
+                rpc_url.clone(),                    // RPC Client
+                fee_records_db_path.clone(),        // Fee Records
+                payer_keypair_path.clone(),         // Payer keypair
+                *validator_address,                 // Validator address (needs to be a reference)
                 *priority_fee_distribution_program, // Priority Fee Distribution Address
                 *commission_bps,                    // Commission BPS
-                *minimum_balance,                   // Minimum balance
+                minimum_balance_lamports,           // Minimum balance
                 *chunk_size,                        // Chunk size (as usize)
                 *call_limit,                        // Call limit (as usize)
+                *go_live_epoch,
             )
             .await?
         }
 
-        Commands::SpamFees { payer_keypair } => {
-            let keypair = read_keypair_file(payer_keypair)
-                .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
-
+        Commands::SpamFees {
+            rpc_url,
+            payer_keypair_path,
+        } => {
             info!("Running fee spamming service");
-            spam_priority_fees_loop(&rpc_client, &keypair).await?;
+            spam_priority_fees_loop(rpc_url.clone(), payer_keypair_path.clone()).await?;
         }
 
-        Commands::ExportCsv { output_path, state } => {
+        Commands::ExportCsv {
+            fee_records_db_path,
+            output_path,
+            state,
+        } => {
             let state_enum = parse_state(state)?;
             info!(
                 "Exporting records with state {:?} to CSV: {}",
@@ -222,12 +259,20 @@ async fn main() -> Result<(), anyhow::Error> {
                 output_path.display()
             );
 
+            let fee_records = FeeRecords::new(fee_records_db_path)?;
+
             fee_records.export_to_csv(output_path, state_enum)?;
             info!("Export completed successfully");
         }
 
-        Commands::GetRecord { slot } => {
+        Commands::GetRecord {
+            fee_records_db_path,
+            slot,
+        } => {
             let epoch = slot / DEFAULT_SLOTS_PER_EPOCH;
+
+            let fee_records = FeeRecords::new(fee_records_db_path)?;
+
             match fee_records.get_record(*slot, epoch)? {
                 Some(record) => {
                     info!("Record for slot {}:", slot);
@@ -239,8 +284,12 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
-        Commands::GetRecordsByState { state } => {
+        Commands::GetRecordsByState {
+            fee_records_db_path,
+            state,
+        } => {
             let state_enum = parse_state(state)?;
+            let fee_records = FeeRecords::new(fee_records_db_path)?;
             let records = fee_records.get_records_by_state(state_enum)?;
 
             info!(
@@ -254,8 +303,12 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
-        Commands::GetRecordsByCategory { category } => {
+        Commands::GetRecordsByCategory {
+            fee_records_db_path,
+            category,
+        } => {
             let category_enum = parse_category(category)?;
+            let fee_records = FeeRecords::new(fee_records_db_path)?;
             let records = fee_records.get_records_by_category(category_enum)?;
 
             info!(
@@ -269,18 +322,23 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
-        Commands::GetPendingLamports => {
+        Commands::GetPendingLamports {
+            fee_records_db_path,
+        } => {
+            let fee_records = FeeRecords::new(fee_records_db_path)?;
             let total = fee_records.get_total_pending_lamports()?;
             info!("Total pending lamports: {}", total);
             info!("SOL equivalent: {:.9}", total as f64 / 1_000_000_000.0);
         }
 
         Commands::AddAnteRecord {
+            fee_records_db_path,
             slot,
             fee_lamports,
             signature,
             slot_landed,
         } => {
+            todo!("Implement the logic to transfer lamports");
             //TODO actually transfer lamports
 
             // info!("Adding ante record for slot {}", slot);
@@ -294,7 +352,11 @@ async fn main() -> Result<(), anyhow::Error> {
             // }
         }
 
-        Commands::CompactDb => {
+        Commands::CompactDb {
+            fee_records_db_path,
+        } => {
+            let fee_records = FeeRecords::new(fee_records_db_path)?;
+
             info!("Compacting database...");
             fee_records.compact()?;
             info!("Database compaction completed");

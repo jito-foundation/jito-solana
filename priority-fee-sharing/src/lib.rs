@@ -1,7 +1,8 @@
 pub mod error;
 pub mod fee_records;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use core::todo;
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
 use log::{error, info};
 use solana_client::rpc_config::RpcSendTransactionConfig;
@@ -12,15 +13,85 @@ use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::lamports_to_sol;
 use solana_sdk::reward_type::RewardType;
+use solana_sdk::signature::read_keypair_file;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use spl_memo::build_memo;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
 
+// ------------------------- GLOBAL CONSTANTS -----------------------------
 // 1s/block, 4 leader blocks in a row
 const LEADER_SLOT_MS: u64 = 1000 * 4;
+const MAX_BPS: u64 = 10_000;
+
+// ------------------------- HELPER FUNCTIONS -----------------------------
+fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u64> {
+    let priority_fee_lamports_bps = priority_fee_lamports
+        .checked_mul(MAX_BPS)
+        .ok_or_else(|| anyhow!("Overflow when calculating priority fee in basis points"))?;
+
+    let amount_to_share_lamports_bps = priority_fee_lamports_bps
+        .checked_mul(commission_bps)
+        .ok_or_else(|| anyhow!("Overflow when calculating commission amount in basis points"))?;
+
+    let amount_to_share_lamports = amount_to_share_lamports_bps
+        .checked_div(MAX_BPS)
+        .ok_or_else(|| anyhow!("Division by zero when calculating final share amount"))?;
+
+    Ok(amount_to_share_lamports)
+}
+
+fn create_placeholder_memo_ix(
+    validator_address: &Pubkey,
+    amount_to_share_lamports: u64,
+    record_epoch: u64,
+) -> Instruction {
+    let memo_text = format!(
+        "Transfer {} lamports from {} for epoch {}",
+        lamports_to_sol(amount_to_share_lamports),
+        validator_address,
+        record_epoch
+    );
+    build_memo(memo_text.as_bytes(), &[])
+}
+
+fn create_transfer_ix() -> Instruction {
+    todo!("Need to flesh this out");
+}
+
+fn create_share_ix(
+    payer_keypair: &Keypair,
+    validator_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    amount_to_share_lamports: u64,
+    record_epoch: u64,
+    go_live_epoch: u64,
+    running_epoch: u64,
+) -> Instruction {
+    if go_live_epoch > running_epoch {
+        create_placeholder_memo_ix(validator_address, amount_to_share_lamports, record_epoch)
+    } else {
+        create_transfer_ix()
+    }
+}
+
+fn check_commission_percentage(commission_bps: u64) -> Result<()> {
+    if commission_bps > MAX_BPS {
+        error!(
+            "Commission percentage must be less than or equal to {}",
+            MAX_BPS
+        );
+        return Err(anyhow!(
+            "Invalid commission percentage: {} cannot be larger than {}",
+            commission_bps,
+            MAX_BPS
+        ));
+    }
+    Ok(())
+}
 
 async fn sleep_ms(ms: u64) {
     sleep(Duration::from_millis(ms)).await;
@@ -41,6 +112,7 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
     Ok(())
 }
 
+// ------------------------- BLOCK FUNCTIONS -----------------------------
 async fn handle_epoch_and_leader_slot(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
@@ -62,18 +134,14 @@ async fn handle_epoch_and_leader_slot(
             CommitmentConfig::finalized(),
         )
         .await?
-        .ok_or(anyhow::anyhow!(
+        .ok_or(anyhow!(
             "Leader schedule for slot {} not available",
             epoch_info.absolute_slot
         ))?;
 
-    let validator_slots =
-        leader_schedule
-            .get(&validator_address.to_string())
-            .ok_or(anyhow::anyhow!(
-                "No leader slots found for {}",
-                validator_address
-            ))?;
+    let validator_slots = leader_schedule
+        .get(&validator_address.to_string())
+        .ok_or(anyhow!("No leader slots found for {}", validator_address))?;
 
     for slot in validator_slots {
         let slot = *slot as u64 + epoch_start_slot;
@@ -164,13 +232,19 @@ async fn handle_pending_blocks(
     fee_records: &FeeRecords,
     payer_keypair: &Keypair,
     validator_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    commission_bps: u64,
+    minimum_balance_lamports: u64,
     chunk_size: usize,
     call_limit: usize,
+    go_live_epoch: u64,
+    running_epoch: u64,
 ) -> Result<()> {
     let records = fee_records.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
 
     delay_past_leader_slot(rpc_client, fee_records).await?;
 
+    let mut balance_after_transfer = rpc_client.get_balance(&payer_keypair.pubkey()).await?;
     let blockhash = rpc_client.get_latest_blockhash().await?;
 
     for record_chunk in records.chunks(chunk_size).take(call_limit) {
@@ -179,15 +253,33 @@ async fn handle_pending_blocks(
         let mut records: Vec<FeeRecordEntry> = vec![];
 
         for record in record_chunk {
-            let memo_text = format!(
-                "Transfer {} lamports from {} for epoch {}",
-                lamports_to_sol(record.priority_fee_lamports),
+            let priority_fee_lamports: u64 = record.priority_fee_lamports;
+            let record_epoch = record.epoch;
+
+            let amount_to_share_lamports = calculate_share(priority_fee_lamports, commission_bps)?;
+
+            let share_ix = create_share_ix(
+                payer_keypair,
                 validator_address,
-                record.epoch
+                priority_fee_distribution_program,
+                amount_to_share_lamports,
+                record_epoch,
+                go_live_epoch,
+                running_epoch,
             );
-            let memo_ix = build_memo(memo_text.as_bytes(), &[]); // No signer for the memo
-            ixs.push(memo_ix);
+            ixs.push(share_ix);
             records.push(record.clone());
+
+            balance_after_transfer =
+                balance_after_transfer.saturating_sub(amount_to_share_lamports);
+        }
+
+        if balance_after_transfer < minimum_balance_lamports {
+            return Err(anyhow!(
+                "Minimum balance reached {}/{}",
+                balance_after_transfer,
+                minimum_balance_lamports
+            ));
         }
 
         // Create TX
@@ -230,18 +322,27 @@ async fn handle_pending_blocks(
     Ok(())
 }
 
-/// Main function for sharing priority fees
+// ------------------------- MAIN FUNCTIONS -----------------------------
 pub async fn share_priority_fees_loop(
-    rpc_client: &RpcClient,
-    fee_records: &FeeRecords,
-    payer_keypair: &Keypair,
-    validator_address: &Pubkey,
+    rpc_url: String,
+    fee_records_db_path: PathBuf,
+    payer_keypair_path: PathBuf,
+    validator_address: Pubkey,
     priority_fee_distribution_program: Pubkey,
     commission_bps: u64,
-    minimum_balance: u64,
+    minimum_balance_lamports: u64,
     chunk_size: usize,
     call_limit: usize,
+    go_live_epoch: u64,
 ) -> Result<()> {
+    check_commission_percentage(commission_bps)?;
+
+    let payer_keypair = read_keypair_file(payer_keypair_path)
+        .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
+
+    let rpc_client = RpcClient::new(rpc_url);
+    let fee_records = FeeRecords::new(fee_records_db_path)?;
+
     let mut running_epoch = 0;
     let mut running_slot = 0;
 
@@ -250,7 +351,7 @@ pub async fn share_priority_fees_loop(
         let result = handle_epoch_and_leader_slot(
             &rpc_client,
             &fee_records,
-            validator_address,
+            &validator_address,
             running_epoch,
         )
         .await;
@@ -273,10 +374,15 @@ pub async fn share_priority_fees_loop(
         let result = handle_pending_blocks(
             &rpc_client,
             &fee_records,
-            payer_keypair,
-            validator_address,
+            &payer_keypair,
+            &validator_address,
+            &priority_fee_distribution_program,
+            commission_bps,
+            minimum_balance_lamports,
             chunk_size,
             call_limit,
+            go_live_epoch,
+            running_epoch,
         )
         .await;
         if let Err(err) = result {
@@ -288,12 +394,18 @@ pub async fn share_priority_fees_loop(
 }
 
 pub async fn spam_priority_fees_loop(
-    rpc_client: &RpcClient,
-    payer_keypair: &Keypair,
+    rpc_url: String,
+    payer_keypair_path: PathBuf,
 ) -> Result<(), anyhow::Error> {
+    let payer_keypair = read_keypair_file(payer_keypair_path)
+        .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
+    let payer_pubkey = payer_keypair.pubkey().clone();
+
+    let rpc_client = RpcClient::new(rpc_url);
+
     // Infinite loop to keep sending transactions
     loop {
-        match rpc_client.get_balance(&payer_keypair.pubkey()).await {
+        match rpc_client.get_balance(&payer_pubkey).await {
             Ok(balance) => {
                 info!("Balance: {}", lamports_to_sol(balance));
             }
@@ -315,8 +427,8 @@ pub async fn spam_priority_fees_loop(
                 // Create transaction with both instructions
                 let tx = Transaction::new_signed_with_payer(
                     &[compute_budget_ix],
-                    Some(&payer_keypair.pubkey()),
-                    &[payer_keypair],
+                    Some(&payer_pubkey),
+                    &[payer_keypair.insecure_clone()],
                     blockhash,
                 );
 
