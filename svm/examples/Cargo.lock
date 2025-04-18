@@ -80,6 +80,7 @@ dependencies = [
  "solana-hash",
  "solana-pubkey",
  "solana-sha256-hasher",
+ "solana-svm-feature-set",
 ]
 
 [[package]]
@@ -5330,7 +5331,6 @@ dependencies = [
 name = "solana-bpf-loader-program"
 version = "2.3.0"
 dependencies = [
- "agave-feature-set",
  "bincode",
  "libsecp256k1",
  "num-traits",
@@ -5362,6 +5362,7 @@ dependencies = [
  "solana-secp256k1-recover",
  "solana-sha256-hasher",
  "solana-stable-layout",
+ "solana-svm-feature-set",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
@@ -6885,7 +6886,6 @@ dependencies = [
 name = "solana-program-runtime"
 version = "2.3.0"
 dependencies = [
- "agave-feature-set",
  "base64 0.22.1",
  "bincode",
  "enum-iterator",
@@ -6913,6 +6913,7 @@ dependencies = [
  "solana-slot-hashes",
  "solana-stable-layout",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
@@ -7894,7 +7895,6 @@ dependencies = [
 name = "solana-svm"
 version = "2.3.0"
 dependencies = [
- "agave-feature-set",
  "ahash 0.8.11",
  "itertools 0.12.1",
  "log",
@@ -7922,6 +7922,7 @@ dependencies = [
  "solana-rent-debits",
  "solana-sdk-ids",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-svm-rent-collector",
  "solana-svm-transaction",
  "solana-timings",
@@ -7954,12 +7955,17 @@ dependencies = [
  "solana-sdk",
  "solana-svm",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-system-program",
  "solana-test-validator",
  "spl-associated-token-account",
  "spl-token 8.0.0",
  "termcolor",
 ]
+
+[[package]]
+name = "solana-svm-feature-set"
+version = "2.3.0"
 
 [[package]]
 name = "solana-svm-rent-collector"

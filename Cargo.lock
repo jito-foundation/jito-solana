@@ -142,6 +142,7 @@ dependencies = [
  "solana-hash",
  "solana-pubkey",
  "solana-sha256-hasher",
+ "solana-svm-feature-set",
 ]
 
 [[package]]
@@ -250,6 +251,7 @@ dependencies = [
  "solana-storage-bigtable",
  "solana-streamer",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-transaction-context 2.3.0",
  "solana-transaction-status",
  "solana-type-overrides",
@@ -6855,7 +6857,6 @@ dependencies = [
 name = "solana-bpf-loader-program"
 version = "2.3.0"
 dependencies = [
- "agave-feature-set",
  "assert_matches",
  "bincode",
  "criterion",
@@ -6899,6 +6900,7 @@ dependencies = [
  "solana-slot-hashes",
  "solana-stable-layout",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
@@ -9099,7 +9101,6 @@ dependencies = [
 name = "solana-program-runtime"
 version = "2.3.0"
 dependencies = [
- "agave-feature-set",
  "assert_matches",
  "base64 0.22.1",
  "bincode",
@@ -9132,6 +9133,7 @@ dependencies = [
  "solana-slot-hashes",
  "solana-stable-layout",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
@@ -10146,6 +10148,7 @@ dependencies = [
  "solana-sdk-ids",
  "solana-stake-interface",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-transaction-context 2.3.0",
@@ -10349,6 +10352,7 @@ dependencies = [
  "solana-svm",
  "solana-svm-callback",
  "solana-svm-conformance",
+ "solana-svm-feature-set",
  "solana-svm-rent-collector",
  "solana-svm-transaction",
  "solana-system-program",
@@ -10380,6 +10384,10 @@ dependencies = [
  "prost-build",
  "prost-types",
 ]
+
+[[package]]
+name = "solana-svm-feature-set"
+version = "2.3.0"
 
 [[package]]
 name = "solana-svm-rent-collector"
@@ -10455,6 +10463,7 @@ dependencies = [
  "solana-sdk-ids",
  "solana-sha256-hasher",
  "solana-svm-callback",
+ "solana-svm-feature-set",
  "solana-system-interface",
  "solana-sysvar",
  "solana-transaction-context 2.3.0",
