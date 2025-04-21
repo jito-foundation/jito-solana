@@ -286,7 +286,7 @@ Environment=CHUNK_SIZE=$CHUNK_SIZE
 Environment=CALL_LIMIT=$CALL_LIMIT
 Environment=GO_LIVE_EPOCH=$GO_LIVE_EPOCH
 
-ExecStart=/usr/local/bin/priority-fee-sharing run
+ExecStart=priority-fee-sharing run
 Restart=on-failure
 RestartSec=5s
 
