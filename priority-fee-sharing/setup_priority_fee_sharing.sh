@@ -131,35 +131,77 @@ ask_float() {
 
 # Function to get Solana config values
 get_solana_config() {
-    # Check if solana command exists
-    if command -v solana &> /dev/null; then
-        echo "Getting Solana configuration..."
+    # Try to use solana directly (whether it's a command or alias)
+    echo "Trying to use solana command or alias..."
 
-        # Get solana config
-        CONFIG_OUTPUT=$(solana config get 2>/dev/null)
+    # We need to source the profile to get aliases
+    if [ -f ~/.bashrc ]; then
+        # Source the bashrc if it exists
+        source ~/.bashrc 2>/dev/null
+    fi
+    if [ -f ~/.bash_profile ]; then
+        # Source bash_profile if it exists
+        source ~/.bash_profile 2>/dev/null
+    fi
+    if [ -f ~/.profile ]; then
+        # Source profile if it exists
+        source ~/.profile 2>/dev/null
+    fi
 
-        # Extract RPC URL and Keypair Path using grep and cut
-        if [ -n "$CONFIG_OUTPUT" ]; then
-            # Extract RPC URL
-            RPC_URL_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "RPC URL:" | sed 's/RPC URL: //')
+    # Try to run solana command (which should work if it's an alias or command)
+    CONFIG_OUTPUT=$(solana config get 2>/dev/null)
 
-            # Extract Keypair Path
-            KEYPAIR_PATH_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "Keypair Path:" | sed 's/Keypair Path: //')
+    if [ $? -eq 0 ] && [ -n "$CONFIG_OUTPUT" ]; then
+        echo "Successfully accessed solana configuration."
 
-            echo "Found Solana configuration:"
-            [ -n "$RPC_URL_DEFAULT" ] && echo "- RPC URL: $RPC_URL_DEFAULT"
-            [ -n "$KEYPAIR_PATH_DEFAULT" ] && echo "- Keypair Path: $KEYPAIR_PATH_DEFAULT"
+        # Extract RPC URL
+        RPC_URL_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "RPC URL:" | sed 's/RPC URL: //')
 
-            # Try to get validator address
-            if [ -n "$KEYPAIR_PATH_DEFAULT" ]; then
-                VALIDATOR_ADDRESS_DEFAULT=$(solana address 2>/dev/null)
-                [ -n "$VALIDATOR_ADDRESS_DEFAULT" ] && echo "- Validator Address: $VALIDATOR_ADDRESS_DEFAULT"
-            fi
-        else
-            echo "Could not get Solana configuration."
-        fi
+        # Extract Keypair Path
+        KEYPAIR_PATH_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "Keypair Path:" | sed 's/Keypair Path: //')
+
+        echo "Found Solana configuration:"
+        [ -n "$RPC_URL_DEFAULT" ] && echo "- RPC URL: $RPC_URL_DEFAULT"
+        [ -n "$KEYPAIR_PATH_DEFAULT" ] && echo "- Keypair Path: $KEYPAIR_PATH_DEFAULT"
+
+        # Try to get validator address
+        VALIDATOR_ADDRESS_DEFAULT=$(solana address 2>/dev/null)
+        [ -n "$VALIDATOR_ADDRESS_DEFAULT" ] && echo "- Validator Address: $VALIDATOR_ADDRESS_DEFAULT"
     else
-        echo "Solana CLI not found. Using default values."
+        echo "Could not access solana configuration. Using default values."
+
+        # Check common locations for Jito-Solana
+        JITO_PATHS=(
+            "~/jito-solana/docker-output/solana"
+            "/home/$(whoami)/jito-solana/docker-output/solana"
+            "/opt/jito-solana/docker-output/solana"
+        )
+
+        for path in "${JITO_PATHS[@]}"; do
+            eval expanded_path="$path"
+            if [ -f "$expanded_path" ]; then
+                echo "Found Jito Solana at: $expanded_path"
+                CONFIG_OUTPUT=$("$expanded_path" config get 2>/dev/null)
+
+                if [ -n "$CONFIG_OUTPUT" ]; then
+                    # Extract RPC URL
+                    RPC_URL_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "RPC URL:" | sed 's/RPC URL: //')
+
+                    # Extract Keypair Path
+                    KEYPAIR_PATH_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "Keypair Path:" | sed 's/Keypair Path: //')
+
+                    echo "Found Solana configuration:"
+                    [ -n "$RPC_URL_DEFAULT" ] && echo "- RPC URL: $RPC_URL_DEFAULT"
+                    [ -n "$KEYPAIR_PATH_DEFAULT" ] && echo "- Keypair Path: $KEYPAIR_PATH_DEFAULT"
+
+                    # Try to get validator address
+                    VALIDATOR_ADDRESS_DEFAULT=$("$expanded_path" address 2>/dev/null)
+                    [ -n "$VALIDATOR_ADDRESS_DEFAULT" ] && echo "- Validator Address: $VALIDATOR_ADDRESS_DEFAULT"
+
+                    break
+                fi
+            fi
+        done
     fi
 }
 
