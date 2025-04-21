@@ -129,6 +129,40 @@ ask_float() {
     done
 }
 
+# Function to get Solana config values
+get_solana_config() {
+    # Check if solana command exists
+    if command -v solana &> /dev/null; then
+        echo "Getting Solana configuration..."
+
+        # Get solana config
+        CONFIG_OUTPUT=$(solana config get 2>/dev/null)
+
+        # Extract RPC URL and Keypair Path using grep and cut
+        if [ -n "$CONFIG_OUTPUT" ]; then
+            # Extract RPC URL
+            RPC_URL_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "RPC URL:" | sed 's/RPC URL: //')
+
+            # Extract Keypair Path
+            KEYPAIR_PATH_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "Keypair Path:" | sed 's/Keypair Path: //')
+
+            echo "Found Solana configuration:"
+            [ -n "$RPC_URL_DEFAULT" ] && echo "- RPC URL: $RPC_URL_DEFAULT"
+            [ -n "$KEYPAIR_PATH_DEFAULT" ] && echo "- Keypair Path: $KEYPAIR_PATH_DEFAULT"
+
+            # Try to get validator address
+            if [ -n "$KEYPAIR_PATH_DEFAULT" ]; then
+                VALIDATOR_ADDRESS_DEFAULT=$(solana address 2>/dev/null)
+                [ -n "$VALIDATOR_ADDRESS_DEFAULT" ] && echo "- Validator Address: $VALIDATOR_ADDRESS_DEFAULT"
+            fi
+        else
+            echo "Could not get Solana configuration."
+        fi
+    else
+        echo "Solana CLI not found. Using default values."
+    fi
+}
+
 #################################################
 # MAIN SCRIPT
 #################################################
@@ -138,13 +172,23 @@ echo "=================================="
 
 # Check if running as root or with sudo
 if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root or with sudo"
+   echo -e "\033[31m\033[1mThis script must be run as root or with sudo\033[0m"
    exit 1
 fi
+
+# Initialize default values
+RPC_URL_DEFAULT="http://localhost:8899"
+KEYPAIR_PATH_DEFAULT=""
+VALIDATOR_ADDRESS_DEFAULT=""
+MINIMUM_BALANCE_SOL_DEFAULT="100.0"
+
+# Get Solana config values
+get_solana_config
 
 # Get installation path parameter
 SERVICE_FILE="/etc/systemd/system/priority-fee-share.service"
 
+echo
 echo "This script will set up the Priority Fee Sharing Service."
 echo "You will need to provide the following information:"
 echo "- RPC URL"
@@ -154,16 +198,16 @@ echo "- Minimum balance of SOL that the service will maintain"
 echo
 
 # Get RPC URL with comment
-RPC_URL=$(ask_string "Enter your RPC URL" "http://localhost:8899")
-# Check if RPC URL is using port 8899 ( Local )
+RPC_URL=$(ask_string "Enter your RPC URL" "${RPC_URL_DEFAULT}")
+# Check if RPC URL is using port 8899 (Local)
 if [[ "$RPC_URL" == *":8899" ]]; then
     echo -e "\033[31m\033[1mIf you are using your local RPC, you have to run your validator with \`--enable-rpc-transaction-history\` enabled.\033[0m"
 fi
 
-# Get other required parameters
-PRIORITY_FEE_KEYPAIR_PATH=$(ask_string "Enter the path to your payer keypair file" "")
-VALIDATOR_ADDRESS=$(ask_string "Enter your validator vote account address" "")
-MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "")
+# Get other required parameters with detected defaults
+PRIORITY_FEE_KEYPAIR_PATH=$(ask_string "Enter the path to your payer keypair file" "${KEYPAIR_PATH_DEFAULT}")
+VALIDATOR_ADDRESS=$(ask_string "Enter your validator vote account address" "${VALIDATOR_ADDRESS_DEFAULT}")
+MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "${MINIMUM_BALANCE_SOL_DEFAULT}")
 
 # Set default values for optional parameters
 FEE_RECORDS_DB_PATH="/var/lib/solana/fee_records"
@@ -208,6 +252,69 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
+# Check if cargo is in PATH
+if command -v cargo &> /dev/null; then
+    echo "✅ Cargo is already installed!"
+    cargo --version
+else
+    echo "❌ Cargo is not installed. Installing now..."
+
+    # Check for curl
+    if ! command -v curl &> /dev/null; then
+        echo "Installing curl first..."
+        sudo apt-get update && sudo apt-get install -y curl
+    fi
+
+    # Install Rust and Cargo using rustup
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+    # Source the environment to make cargo available in current shell
+    source "$HOME/.cargo/env"
+
+    # Verify installation
+    if command -v cargo &> /dev/null; then
+        echo "✅ Cargo installation successful!"
+        cargo --version
+    else
+        echo "❌ Something went wrong with the Cargo installation."
+        echo "Please try installing manually with:"
+        echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        echo "Then run: source \$HOME/.cargo/env"
+        exit 1
+    fi
+fi
+
+# Check if we're in the correct directory
+if [ ! -f "Cargo.toml" ]; then
+    echo "⚠️ Cannot find Cargo.toml in the current directory."
+    echo "Please make sure you are in the priority-fee-sharing directory."
+
+    if ask_yes_no "Try to find and navigate to the priority-fee-sharing directory?" "Y"; then
+        # Try to find the priority-fee-sharing directory
+        if [ -d "../priority-fee-sharing" ]; then
+            cd "../priority-fee-sharing"
+            echo "✅ Changed to ../priority-fee-sharing directory"
+        elif [ -d "priority-fee-sharing" ]; then
+            cd "priority-fee-sharing"
+            echo "✅ Changed to priority-fee-sharing directory"
+        else
+            echo "❌ Could not find the priority-fee-sharing directory."
+            echo "Please navigate to the priority-fee-sharing directory and run this script again."
+            exit 1
+        fi
+    else
+        echo "Please navigate to the priority-fee-sharing directory and run this script again."
+        exit 1
+    fi
+fi
+
+# Updating repo submodules if git exists
+if command -v git &> /dev/null; then
+    echo "Updating git submodules..."
+    git submodule update --init --recursive
+else
+    echo "Git not found, skipping submodule update."
+fi
 
 # Install the CLI
 echo "Installing CLI..."
@@ -223,7 +330,6 @@ echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
 
 echo
 echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
-
 
 # Reload systemd
 systemctl daemon-reload
