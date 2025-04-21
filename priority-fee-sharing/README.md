@@ -28,6 +28,27 @@ The following environment variables are used in the service file:
 | `CALL_LIMIT` | Maximum number of calls | `1` |
 | `GO_LIVE_EPOCH` | Epoch number when the service should go live | `1000` |
 
+## Prerequisites
+
+Clone the repository:
+
+```bash
+git clone --recursive https://github.com/jito-foundation/jito-solana.git
+git checkout ck/distro-script
+```
+
+Move to the `priority-fee-sharing` directory:
+
+```bash
+cd jito-solana/priority-fee-sharing
+```
+
+Install the CLI
+
+```bash
+cargo install --path .
+```
+
 ## Easy Setup
 
 The easiest way to set up the Priority Fee Sharing service is to use the automated setup script:

@@ -38,7 +38,7 @@ Environment=CALL_LIMIT=1
 # Epoch where the service will actually start sending priority fees
 Environment=GO_LIVE_EPOCH=1000
 
-ExecStart=/usr/local/bin/priority-fee-sharing run
+ExecStart=priority-fee-sharing run
 Restart=on-failure
 RestartSec=5s
 
