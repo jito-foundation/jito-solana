@@ -58,7 +58,23 @@ fn create_placeholder_memo_ix(
     build_memo(memo_text.as_bytes(), &[])
 }
 
-fn create_transfer_ix() -> Instruction {
+fn create_transfer_ix(
+    payer_keypair: &Keypair,
+    validator_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    amount_to_share_lamports: u64,
+    record_epoch: u64,
+    go_live_epoch: u64,
+    running_epoch: u64,
+) -> Instruction {
+    info!("{}", payer_keypair.pubkey());
+    info!("{}", validator_address);
+    info!("{}", priority_fee_distribution_program);
+    info!("{}", amount_to_share_lamports);
+    info!("{}", record_epoch);
+    info!("{}", go_live_epoch);
+    info!("{}", running_epoch);
+
     todo!("Need to flesh this out");
 }
 
@@ -74,7 +90,15 @@ fn create_share_ix(
     if go_live_epoch > running_epoch {
         create_placeholder_memo_ix(validator_address, amount_to_share_lamports, record_epoch)
     } else {
-        create_transfer_ix()
+        create_transfer_ix(
+            payer_keypair,
+            validator_address,
+            priority_fee_distribution_program,
+            amount_to_share_lamports,
+            record_epoch,
+            go_live_epoch,
+            running_epoch,
+        )
     }
 }
 

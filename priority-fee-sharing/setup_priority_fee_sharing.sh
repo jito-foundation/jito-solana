@@ -148,17 +148,16 @@ SERVICE_FILE="/etc/systemd/system/priority-fee-share.service"
 echo "This script will set up the Priority Fee Sharing Service."
 echo "You will need to provide the following information:"
 echo "- RPC URL"
-echo "- Fee records database path"
 echo "- Payer keypair path"
 echo "- Validator vote account address"
-echo "- Minimum balance in SOL to maintain"
+echo "- Minimum balance of SOL that the service will maintain"
 echo
 
 # Get RPC URL with comment
 RPC_URL=$(ask_string "Enter your RPC URL" "http://localhost:8899")
-# Check if RPC URL is using port 8899 (likely local)
+# Check if RPC URL is using port 8899 ( Local )
 if [[ "$RPC_URL" == *":8899" ]]; then
-    echo -e "\033[1mIf you are using your local RPC, you have to run your validator with \`--enable-rpc-transaction-history\` enabled.\033[0m"
+    echo -e "\033[31m\033[1mIf you are using your local RPC, you have to run your validator with \`--enable-rpc-transaction-history\` enabled.\033[0m"
 fi
 
 # Get other required parameters
@@ -209,17 +208,25 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-# Create the fee records directory if it doesn't exist
-mkdir -p "$FEE_RECORDS_DB_PATH"
 
 # Install the CLI
+echo "Installing CLI..."
 cargo install --path .
+
+echo
+echo -e "Installed CLI, run: \033[34mpriority-fee-sharing --help\033[0m"
+
+# Create the fee records directory if it doesn't exist
+mkdir -p "$FEE_RECORDS_DB_PATH"
+echo
+echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
+
+echo
+echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
+
 
 # Reload systemd
 systemctl daemon-reload
-
-echo
-echo "Service file created at $SERVICE_FILE"
 
 # Extract service name from service file path
 SERVICE_NAME=$(basename "$SERVICE_FILE")
@@ -240,8 +247,8 @@ fi
 
 echo
 echo "Setup complete! You can manage the service with these commands:"
-echo "  systemctl start $SERVICE_NAME    # Start the service"
-echo "  systemctl stop $SERVICE_NAME     # Stop the service"
-echo "  systemctl restart $SERVICE_NAME  # Restart the service"
-echo "  systemctl status $SERVICE_NAME   # Check service status"
-echo "  journalctl -u $SERVICE_NAME      # View service logs"
+echo -e "  \033[32msystemctl start $SERVICE_NAME\033[0m    # Start the service"
+echo -e "  \033[32msystemctl stop $SERVICE_NAME\033[0m     # Stop the service"
+echo -e "  \033[32msystemctl restart $SERVICE_NAME\033[0m  # Restart the service"
+echo -e "  \033[32msystemctl status $SERVICE_NAME\033[0m   # Check service status"
+echo -e "  \033[32mjournalctl -u $SERVICE_NAME\033[0m      # View service logs"

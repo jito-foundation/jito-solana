@@ -6,7 +6,7 @@ use priority_fee_sharing::fee_records::{
 use priority_fee_sharing::{share_priority_fees_loop, spam_priority_fees_loop};
 use solana_clock::DEFAULT_SLOTS_PER_EPOCH;
 use solana_pubkey::Pubkey;
-use solana_sdk::native_token::sol_to_lamports;
+use solana_sdk::native_token::{lamports_to_sol, sol_to_lamports};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -327,8 +327,11 @@ async fn main() -> Result<(), anyhow::Error> {
         } => {
             let fee_records = FeeRecords::new(fee_records_db_path)?;
             let total = fee_records.get_total_pending_lamports()?;
-            info!("Total pending lamports: {}", total);
-            info!("SOL equivalent: {:.9}", total as f64 / 1_000_000_000.0);
+            info!(
+                "Total pending lamports: {} ({:.3})",
+                total,
+                lamports_to_sol(total)
+            );
         }
 
         Commands::AddAnteRecord {
@@ -338,6 +341,12 @@ async fn main() -> Result<(), anyhow::Error> {
             signature,
             slot_landed,
         } => {
+            info!("{:?}", fee_records_db_path);
+            info!("Slot: {}", slot);
+            info!("Fee lamports: {}", fee_lamports);
+            info!("Signature: {}", signature);
+            info!("Slot landed: {}", slot_landed);
+
             todo!("Implement the logic to transfer lamports");
             //TODO actually transfer lamports
 
