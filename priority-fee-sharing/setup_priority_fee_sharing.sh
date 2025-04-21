@@ -400,3 +400,6 @@ echo -e "  \033[32msystemctl stop $SERVICE_NAME\033[0m     # Stop the service"
 echo -e "  \033[32msystemctl restart $SERVICE_NAME\033[0m  # Restart the service"
 echo -e "  \033[32msystemctl status $SERVICE_NAME\033[0m   # Check service status"
 echo -e "  \033[32mjournalctl -u $SERVICE_NAME\033[0m      # View service logs"
+
+
+priority-fee-sharing --help
