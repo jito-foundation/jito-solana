@@ -1,0 +1,46 @@
+[Unit]
+Description=Priority Fee Sharing Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+
+# --------------- REQUIRED --------------------
+# RPC URL - This RPC needs to be able to call `get_block`. If using a local RPC, ensure it is running with `--enable-rpc-transaction-history`
+Environment=RPC_URL=YOUR_RPC_URL_HERE
+
+# The keypair where your priority fees accumulate - this is where the priority fees will be sent from
+Environment=PRIORITY_FEE_KEYPAIR_PATH=YOUR_PRIORITY_FEE_KEYPAIR_PATH_HERE
+
+# Your validator address
+Environment=VALIDATOR_ADDRESS=YOUR_VALIDATOR_ADDRESS_HERE
+
+# Minimum balance in your priority fee keypair, no fees will be sent if below this amount
+Environment=MINIMUM_BALANCE_SOL=YOUR_MINIMUM_BALANCE_SOL_HERE
+
+# --------------- OPTIONAL --------------------
+# Rocks DB that holds all priority fee records - this will be created by the script and can go anywhere
+Environment=FEE_RECORDS_DB_PATH=/var/lib/solana/fee_records
+
+# The Priority Fee Distribution Program
+Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA
+
+# How much priority fees to distribute in bps ( 5000 = 50% )
+Environment=COMMISSION_BPS=5000
+
+# How many transfers to send in one transaction
+Environment=CHUNK_SIZE=1
+
+# How many transactions to call per loop
+Environment=CALL_LIMIT=1
+
+# Epoch where the service will actually start sending priority fees
+Environment=GO_LIVE_EPOCH=1000
+
+ExecStart=/usr/local/bin/priority-fee-sharing run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -326,7 +326,7 @@ async fn handle_pending_blocks(
 pub async fn share_priority_fees_loop(
     rpc_url: String,
     fee_records_db_path: PathBuf,
-    payer_keypair_path: PathBuf,
+    priority_fee_keypair_path: PathBuf,
     validator_address: Pubkey,
     priority_fee_distribution_program: Pubkey,
     commission_bps: u64,
@@ -337,7 +337,7 @@ pub async fn share_priority_fees_loop(
 ) -> Result<()> {
     check_commission_percentage(commission_bps)?;
 
-    let payer_keypair = read_keypair_file(payer_keypair_path)
+    let payer_keypair = read_keypair_file(priority_fee_keypair_path)
         .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
 
     let rpc_client = RpcClient::new(rpc_url);
@@ -395,9 +395,9 @@ pub async fn share_priority_fees_loop(
 
 pub async fn spam_priority_fees_loop(
     rpc_url: String,
-    payer_keypair_path: PathBuf,
+    priority_fee_keypair_path: PathBuf,
 ) -> Result<(), anyhow::Error> {
-    let payer_keypair = read_keypair_file(payer_keypair_path)
+    let payer_keypair = read_keypair_file(priority_fee_keypair_path)
         .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
     let payer_pubkey = payer_keypair.pubkey().clone();
 

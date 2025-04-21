@@ -26,12 +26,12 @@ enum Commands {
         rpc_url: String,
 
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
 
         /// Path to payer keypair
         #[arg(long, env)]
-        payer_keypair_path: PathBuf,
+        priority_fee_keypair_path: PathBuf,
 
         /// Validator vote account address
         #[arg(long, env)]
@@ -65,20 +65,20 @@ enum Commands {
     },
 
     /// Spam priority fees for testing
-    SpamFees {
+    TestSpamFees {
         /// RPC URL to use
         #[arg(long, env)]
         rpc_url: String,
 
         /// Path to payer keypair
         #[arg(long, env)]
-        payer_keypair_path: PathBuf,
+        priority_fee_keypair_path: PathBuf,
     },
 
     /// Export records to CSV
     ExportCsv {
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
 
         /// Path to the output CSV file
@@ -93,7 +93,7 @@ enum Commands {
     /// Get a specific record by slot
     GetRecord {
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
 
         /// Slot number to retrieve
@@ -104,7 +104,7 @@ enum Commands {
     /// Get records by state
     GetRecordsByState {
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
 
         /// State to filter by (unprocessed, processed, skipped, antedup, complete, any)
@@ -115,7 +115,7 @@ enum Commands {
     /// Get records by category
     GetRecordsByCategory {
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
 
         /// Category to filter by (priority-fee, ante, any)
@@ -126,14 +126,14 @@ enum Commands {
     /// Get total pending lamports
     GetPendingLamports {
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
     },
 
     /// Add a new ante record (for recovery purposes)
     AddAnteRecord {
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
 
         /// Slot number
@@ -156,7 +156,7 @@ enum Commands {
     /// Compact the database for performance
     CompactDb {
         /// Fee Records DB Path
-        #[arg(long, env)]
+        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
         fee_records_db_path: PathBuf,
     },
 }
@@ -210,7 +210,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Commands::Run {
             rpc_url,
             fee_records_db_path,
-            payer_keypair_path,
+            priority_fee_keypair_path,
             validator_address,
             priority_fee_distribution_program,
             minimum_balance_sol,
@@ -227,7 +227,7 @@ async fn main() -> Result<(), anyhow::Error> {
             share_priority_fees_loop(
                 rpc_url.clone(),                    // RPC Client
                 fee_records_db_path.clone(),        // Fee Records
-                payer_keypair_path.clone(),         // Payer keypair
+                priority_fee_keypair_path.clone(),  // Payer keypair
                 *validator_address,                 // Validator address (needs to be a reference)
                 *priority_fee_distribution_program, // Priority Fee Distribution Address
                 *commission_bps,                    // Commission BPS
@@ -239,12 +239,12 @@ async fn main() -> Result<(), anyhow::Error> {
             .await?
         }
 
-        Commands::SpamFees {
+        Commands::TestSpamFees {
             rpc_url,
-            payer_keypair_path,
+            priority_fee_keypair_path,
         } => {
             info!("Running fee spamming service");
-            spam_priority_fees_loop(rpc_url.clone(), payer_keypair_path.clone()).await?;
+            spam_priority_fees_loop(rpc_url.clone(), priority_fee_keypair_path.clone()).await?;
         }
 
         Commands::ExportCsv {

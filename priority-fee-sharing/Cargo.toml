@@ -29,8 +29,8 @@ solana-rpc-client = { workspace = true }
 solana-client = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+rocksdb = "0.22.0"
 csv = "1.3.1"
-rocksdb = "=0.22.0"
 spl-memo = "6.0.0"
 env_logger = "0.10.0"
 
@@ -46,3 +46,7 @@ name = "priority_fee_sharing"
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "priority-fee-sharing"
+path = "src/bin/main.rs"
