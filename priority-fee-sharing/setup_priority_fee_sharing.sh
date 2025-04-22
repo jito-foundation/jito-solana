@@ -337,12 +337,13 @@ echo
 echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
 
 CLI_PATH=$(which priority-fee-sharing)
+echo "CLI_PATH: $CLI_PATH"
 
 # Create the service file directory if it doesn't exist
 sudo mkdir -p "$(dirname "$SERVICE_FILE")"
 
 # Create the service file
-sudo cat > priority-fee-share.service << EOF
+sudo cat > .priority-fee-share.service << EOF
 [Unit]
 Description=Priority Fee Sharing Service
 After=network.target
