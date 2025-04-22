@@ -337,10 +337,10 @@ echo
 echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
 
 # Create the service file directory if it doesn't exist
-mkdir -p "$(dirname "$SERVICE_FILE")"
+sudo mkdir -p "$(dirname "$SERVICE_FILE")"
 
 # Create the service file
-cat > "$SERVICE_FILE" << EOF
+sudo cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Priority Fee Sharing Service
 After=network.target
