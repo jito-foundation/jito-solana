@@ -162,7 +162,7 @@ async fn handle_unprocessed_blocks(
     let total_filtered_records = filtered_records.len();
 
     info!(
-        "Processing unprocessed blocks: {} remaining {} left",
+        "Processing unprocessed blocks: {} remaining to process {} left in epoch",
         total_filtered_records,
         total_records - total_filtered_records
     );
