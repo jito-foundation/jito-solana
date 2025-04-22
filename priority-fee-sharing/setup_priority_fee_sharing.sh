@@ -213,15 +213,15 @@ echo "Priority Fee Sharing Service Setup"
 echo "=================================="
 
 # Check if running as root or with sudo
-if [[ $EUID -ne 0 ]]; then
-   echo -e "\033[31m\033[1mThis script must be run as root or with sudo\033[0m"
-   exit 1
-fi
+# if [[ $EUID -ne 0 ]]; then
+#    echo -e "\033[31m\033[1mThis script must be run as root or with sudo\033[0m"
+#    exit 1
+# fi
 
 # Initialize default values
 RPC_URL_DEFAULT="http://localhost:8899"
-KEYPAIR_PATH_DEFAULT=""
-VALIDATOR_ADDRESS_DEFAULT=""
+KEYPAIR_PATH_DEFAULT="/etc/solana/identity.json"
+VALIDATOR_ADDRESS_DEFAULT="2Nnw9RZvT2qeKq74rkw8hWDJZUDSKxiBarmQMFxHzzCt"
 MINIMUM_BALANCE_SOL_DEFAULT="100.0"
 
 # Get Solana config values
