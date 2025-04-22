@@ -374,7 +374,7 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-sudo cp priority-fee-share.service "$SERVICE_FILE"
+sudo cp .priority-fee-share.service "$SERVICE_FILE"
 
 echo
 echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
