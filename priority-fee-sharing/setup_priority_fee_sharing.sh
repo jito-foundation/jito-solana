@@ -374,32 +374,29 @@ echo
 echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
 
 # Reload systemd
-systemctl daemon-reload
+sudo systemctl daemon-reload
 
 # Extract service name from service file path
 SERVICE_NAME=$(basename "$SERVICE_FILE")
 
 # Enable the service to start on boot
-systemctl enable "$SERVICE_NAME"
+sudo systemctl enable "$SERVICE_NAME"
 echo "Service enabled to start on boot"
 
 if ask_yes_no "Start the service now?" "Y"; then
-    systemctl start "$SERVICE_NAME"
+    sudo systemctl start "$SERVICE_NAME"
     echo "Service started"
 
     # Check service status
     echo
     echo "Service status:"
-    systemctl status "$SERVICE_NAME" --no-pager
+    sudo systemctl status "$SERVICE_NAME" --no-pager
 fi
 
 echo
 echo "Setup complete! You can manage the service with these commands:"
-echo -e "  \033[32msystemctl start $SERVICE_NAME\033[0m    # Start the service"
-echo -e "  \033[32msystemctl stop $SERVICE_NAME\033[0m     # Stop the service"
-echo -e "  \033[32msystemctl restart $SERVICE_NAME\033[0m  # Restart the service"
-echo -e "  \033[32msystemctl status $SERVICE_NAME\033[0m   # Check service status"
+echo -e "  \033[32msudo systemctl start $SERVICE_NAME\033[0m    # Start the service"
+echo -e "  \033[32msudo systemctl stop $SERVICE_NAME\033[0m     # Stop the service"
+echo -e "  \033[32msudo systemctl restart $SERVICE_NAME\033[0m  # Restart the service"
+echo -e "  \033[32msudo systemctl status $SERVICE_NAME\033[0m   # Check service status"
 echo -e "  \033[32mjournalctl -u $SERVICE_NAME\033[0m      # View service logs"
-
-which priority-fee-sharing
-priority-fee-sharing --help
