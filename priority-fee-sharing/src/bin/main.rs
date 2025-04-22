@@ -58,10 +58,6 @@ enum Commands {
         /// How many share TXs to send before timeout
         #[arg(long, env, default_value_t = 1)]
         call_limit: usize,
-
-        /// Priority fee distribution program
-        #[arg(long, env, default_value_t = 1000)]
-        go_live_epoch: u64,
     },
 
     /// Spam priority fees for testing
@@ -217,7 +213,6 @@ async fn main() -> Result<(), anyhow::Error> {
             commission_bps,
             chunk_size,
             call_limit,
-            go_live_epoch,
         } => {
             info!("Running Transfer Loop");
             info!("Using validator address: {}", validator_address);
@@ -234,7 +229,6 @@ async fn main() -> Result<(), anyhow::Error> {
                 minimum_balance_lamports,           // Minimum balance
                 *chunk_size,                        // Chunk size (as usize)
                 *call_limit,                        // Call limit (as usize)
-                *go_live_epoch,
             )
             .await?
         }

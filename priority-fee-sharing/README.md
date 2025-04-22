@@ -37,6 +37,12 @@ git clone --recursive https://github.com/jito-foundation/jito-solana.git
 git checkout ck/distro-script
 ```
 
+*NOTE:* We need to have all submodules initialized and updated - if you've already cloned the repo, please run:
+
+```bash
+git submodule update --init --recursive
+```
+
 Move to the `priority-fee-sharing` directory:
 
 ```bash
@@ -48,6 +54,13 @@ Install the CLI
 ```bash
 cargo install --path .
 ```
+
+Ensure that `priority-fee-sharing` is running
+
+```bash
+priority-fee-sharing --help
+```
+
 
 ## Easy Setup
 
@@ -70,6 +83,17 @@ The setup script will:
 If you prefer a manual setup, follow these steps:
 
 ### 1. Install the Jito Priority Fee Sharing Binary
+
+Clone the repo
+
+```bash
+git clone --recursive https://github.com/jito-foundation/jito-solana.git
+cd jito-solana/priority-fee-sharing
+git checkout ck/distro-script
+```
+
+Install the binary
+
 ```bash
 cargo install --path .
 ```
@@ -88,7 +112,9 @@ Fill out the required parameters in the `.service` file:
 sudo vim /etc/systemd/system/priority-fee-share.service
 ```
 
-*NOTE* If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
+*NOTE:* Make sure to fill out all of the `REQUIRED` and `PATH REQUIRED` parameters
+
+*NOTE:* If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
 
 ### 3. Create Fee Records Directory
 
@@ -106,8 +132,16 @@ sudo systemctl start priority-fee-share.service
 
 ### 5. Check Service Status
 
+Status
+
 ```bash
 sudo systemctl status priority-fee-share.service
+```
+
+Logs
+
+```bash
+sudo journalctl -u priority-fee-share.service -f
 ```
 
 ## Managing the Service
@@ -128,7 +162,7 @@ sudo systemctl restart priority-fee-share.service
 sudo systemctl status priority-fee-share.service
 
 # View service logs
-sudo journalctl -u priority-fee-share.service
+sudo journalctl -u priority-fee-share.service -f
 ```
 
 ## Troubleshooting
@@ -164,7 +198,9 @@ If you encounter issues with the Priority Fee Sharing service:
 To install the CLI, run the following command:
 
 ```bash
-cargo install --path .
+git clone --recursive https://github.com/jito-foundation/jito-solana.git
+cd jito-solana/priority-fee-sharing
+git checkout ck/distro-script
 ```
 
 ## Usage

@@ -2,9 +2,8 @@ pub mod error;
 pub mod fee_records;
 
 use anyhow::{anyhow, Result};
-use core::todo;
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
-use log::{error, info};
+use log::{error, info, warn};
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -44,64 +43,6 @@ fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u6
     Ok(amount_to_share_lamports)
 }
 
-fn create_placeholder_memo_ix(
-    validator_address: &Pubkey,
-    amount_to_share_lamports: u64,
-    record_epoch: u64,
-) -> Instruction {
-    let memo_text = format!(
-        "Transfer {} lamports from {} for epoch {}",
-        lamports_to_sol(amount_to_share_lamports),
-        validator_address,
-        record_epoch
-    );
-    build_memo(memo_text.as_bytes(), &[])
-}
-
-fn create_transfer_ix(
-    payer_keypair: &Keypair,
-    validator_address: &Pubkey,
-    priority_fee_distribution_program: &Pubkey,
-    amount_to_share_lamports: u64,
-    record_epoch: u64,
-    go_live_epoch: u64,
-    running_epoch: u64,
-) -> Instruction {
-    info!("{}", payer_keypair.pubkey());
-    info!("{}", validator_address);
-    info!("{}", priority_fee_distribution_program);
-    info!("{}", amount_to_share_lamports);
-    info!("{}", record_epoch);
-    info!("{}", go_live_epoch);
-    info!("{}", running_epoch);
-
-    todo!("Need to flesh this out");
-}
-
-fn create_share_ix(
-    payer_keypair: &Keypair,
-    validator_address: &Pubkey,
-    priority_fee_distribution_program: &Pubkey,
-    amount_to_share_lamports: u64,
-    record_epoch: u64,
-    go_live_epoch: u64,
-    running_epoch: u64,
-) -> Instruction {
-    if go_live_epoch > running_epoch {
-        create_placeholder_memo_ix(validator_address, amount_to_share_lamports, record_epoch)
-    } else {
-        create_transfer_ix(
-            payer_keypair,
-            validator_address,
-            priority_fee_distribution_program,
-            amount_to_share_lamports,
-            record_epoch,
-            go_live_epoch,
-            running_epoch,
-        )
-    }
-}
-
 fn check_commission_percentage(commission_bps: u64) -> Result<()> {
     if commission_bps > MAX_BPS {
         error!(
@@ -134,6 +75,27 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
     }
 
     Ok(())
+}
+
+fn create_share_ix(
+    payer_keypair: &Keypair,
+    validator_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    amount_to_share_lamports: u64,
+    record_epoch: u64,
+    running_epoch: u64,
+) -> Instruction {
+    let memo_text = format!(
+        "Transfer {} lamports from {} for epoch {}",
+        lamports_to_sol(amount_to_share_lamports),
+        validator_address,
+        record_epoch
+    );
+
+    //TODO replace with transfer ix
+
+    warn!("TODO - switch to transfer IX");
+    build_memo(memo_text.as_bytes(), &[])
 }
 
 // ------------------------- BLOCK FUNCTIONS -----------------------------
@@ -261,7 +223,6 @@ async fn handle_pending_blocks(
     minimum_balance_lamports: u64,
     chunk_size: usize,
     call_limit: usize,
-    go_live_epoch: u64,
     running_epoch: u64,
 ) -> Result<()> {
     let records = fee_records.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
@@ -288,7 +249,6 @@ async fn handle_pending_blocks(
                 priority_fee_distribution_program,
                 amount_to_share_lamports,
                 record_epoch,
-                go_live_epoch,
                 running_epoch,
             );
             ixs.push(share_ix);
@@ -357,7 +317,6 @@ pub async fn share_priority_fees_loop(
     minimum_balance_lamports: u64,
     chunk_size: usize,
     call_limit: usize,
-    go_live_epoch: u64,
 ) -> Result<()> {
     check_commission_percentage(commission_bps)?;
 
@@ -405,7 +364,6 @@ pub async fn share_priority_fees_loop(
             minimum_balance_lamports,
             chunk_size,
             call_limit,
-            go_live_epoch,
             running_epoch,
         )
         .await;

@@ -35,10 +35,10 @@ Environment=CHUNK_SIZE=1
 # How many transactions to call per loop
 Environment=CALL_LIMIT=1
 
-# Epoch where the service will actually start sending priority fees
-Environment=GO_LIVE_EPOCH=1000
+# --------------- PATH REQUIRED --------------------
+# Replace this with the actual path to the binary - call `which priority-fee-sharing` to get the path
+ExecStart=$(which priority-fee-share) run
 
-ExecStart=priority-fee-sharing run
 Restart=on-failure
 RestartSec=5s
 

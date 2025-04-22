@@ -4,7 +4,7 @@
 # ALL VARIABLES
 #################################################
 # Default values
-RPC_URL_DEFAULT="http://localhost:8899"
+RPC_URL_DEFAULT=""
 KEYPAIR_PATH_DEFAULT=""
 VALIDATOR_ADDRESS_DEFAULT=""
 MINIMUM_BALANCE_SOL_DEFAULT="100.0"
@@ -276,37 +276,7 @@ install_cargo() {
 # INSTALL CLI
 #################################################
 install_cli() {
-    # Check if we're in the correct directory
-    if [ ! -f "Cargo.toml" ]; then
-        echo "⚠️ Cannot find Cargo.toml in the current directory."
-        echo "Please make sure you are in the priority-fee-sharing directory."
-
-        if ask_yes_no "Try to find and navigate to the priority-fee-sharing directory?" "Y"; then
-            # Try to find the priority-fee-sharing directory
-            if [ -d "../priority-fee-sharing" ]; then
-                cd "../priority-fee-sharing"
-                echo "✅ Changed to ../priority-fee-sharing directory"
-            elif [ -d "priority-fee-sharing" ]; then
-                cd "priority-fee-sharing"
-                echo "✅ Changed to priority-fee-sharing directory"
-            else
-                echo "❌ Could not find the priority-fee-sharing directory."
-                echo "Please navigate to the priority-fee-sharing directory and run this script again."
-                return 1
-            fi
-        else
-            echo "Please navigate to the priority-fee-sharing directory and run this script again."
-            return 1
-        fi
-    fi
-
-    # Updating repo submodules if git exists
-    if command -v git &> /dev/null; then
-        echo "Updating git submodules..."
-        git submodule update --init --recursive
-    else
-        echo "Git not found, skipping submodule update."
-    fi
+    git submodule update --init --recursive
 
     # Install the CLI
     echo "Installing CLI..."
@@ -335,38 +305,35 @@ setup_service_file() {
     # Create the service file directory if it doesn't exist
     sudo mkdir -p "$(dirname "$SERVICE_FILE")"
 
-    # Create the service file
-    sudo cat > .priority-fee-share.service << EOF
-[Unit]
-Description=Priority Fee Sharing Service
-After=network.target
+    cp "priority-fee-share.service" ".priority-fee-share.service"
 
-[Service]
-Type=simple
-User=root
+    # Now modify the service file with the correct values
+    # Replace RPC_URL
+    sed -i "s|RPC_URL=.*|RPC_URL=$RPC_URL|g" .priority-fee-share.service
 
-# Required parameters
-Environment=RPC_URL=$RPC_URL
-Environment=FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH
-Environment=PRIORITY_FEE_KEYPAIR_PATH=$PRIORITY_FEE_KEYPAIR_PATH
-Environment=VALIDATOR_ADDRESS=$VALIDATOR_ADDRESS
-Environment=MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL
+    # Replace FEE_RECORDS_DB_PATH
+    sed -i "s|FEE_RECORDS_DB_PATH=.*|FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH|g" .priority-fee-share.service
 
-# Optional parameters with defaults
-Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM
-Environment=COMMISSION_BPS=$COMMISSION_BPS
-Environment=CHUNK_SIZE=$CHUNK_SIZE
-Environment=CALL_LIMIT=$CALL_LIMIT
-Environment=GO_LIVE_EPOCH=$GO_LIVE_EPOCH
+    # Replace PRIORITY_FEE_KEYPAIR_PATH
+    sed -i "s|PRIORITY_FEE_KEYPAIR_PATH=.*|PRIORITY_FEE_KEYPAIR_PATH=$PRIORITY_FEE_KEYPAIR_PATH|g" .priority-fee-share.service
 
-ExecStart=$CLI_PATH run
-Restart=on-failure
-RestartSec=5s
+    # Replace VALIDATOR_ADDRESS
+    sed -i "s|VALIDATOR_ADDRESS=.*|VALIDATOR_ADDRESS=$VALIDATOR_ADDRESS|g" .priority-fee-share.service
 
-[Install]
-WantedBy=multi-user.target
-EOF
+    # Replace MINIMUM_BALANCE_SOL
+    sed -i "s|MINIMUM_BALANCE_SOL=.*|MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL|g" .priority-fee-share.service
 
+    # Replace optional parameters if they differ from defaults
+    sed -i "s|PRIORITY_FEE_DISTRIBUTION_PROGRAM=.*|PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM|g" .priority-fee-share.service
+    sed -i "s|COMMISSION_BPS=.*|COMMISSION_BPS=$COMMISSION_BPS|g" .priority-fee-share.service
+    sed -i "s|CHUNK_SIZE=.*|CHUNK_SIZE=$CHUNK_SIZE|g" .priority-fee-share.service
+    sed -i "s|CALL_LIMIT=.*|CALL_LIMIT=$CALL_LIMIT|g" .priority-fee-share.service
+    sed -i "s|GO_LIVE_EPOCH=.*|GO_LIVE_EPOCH=$GO_LIVE_EPOCH|g" .priority-fee-share.service
+
+    # Replace the ExecStart path with the actual CLI path
+    sed -i "s|ExecStart=.*|ExecStart=$CLI_PATH run|g" .priority-fee-share.service
+
+    # Copy the modified service file to the system directory
     sudo cp .priority-fee-share.service "$SERVICE_FILE"
 
     echo
@@ -383,6 +350,7 @@ EOF
     echo "Service enabled to start on boot"
 
     if ask_yes_no "Start the service now?" "Y"; then
+        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null
         sudo systemctl start "$SERVICE_NAME"
         echo "Service started"
 
