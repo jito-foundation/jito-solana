@@ -1,6 +1,34 @@
 #!/bin/bash
 
 #################################################
+# ALL VARIABLES
+#################################################
+# Default values
+RPC_URL_DEFAULT="http://localhost:8899"
+KEYPAIR_PATH_DEFAULT=""
+VALIDATOR_ADDRESS_DEFAULT=""
+MINIMUM_BALANCE_SOL_DEFAULT="100.0"
+
+# Required parameters ( Will be filled out in script )
+RPC_URL=""
+PRIORITY_FEE_KEYPAIR_PATH=""
+VALIDATOR_ADDRESS=""
+MINIMUM_BALANCE_SOL=""
+
+# Optional parameters with defaults
+FEE_RECORDS_DB_PATH="/var/lib/solana/fee_records"
+PRIORITY_FEE_DISTRIBUTION_PROGRAM="BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA"
+COMMISSION_BPS="5000"
+CHUNK_SIZE="1"
+CALL_LIMIT="1"
+GO_LIVE_EPOCH="1000"
+
+# Service configuration
+SERVICE_FILE="/etc/systemd/system/priority-fee-share.service"
+CLI_PATH=""
+SERVICE_NAME=""
+
+#################################################
 # HELPER FUNCTIONS
 #################################################
 
@@ -206,144 +234,109 @@ get_solana_config() {
 }
 
 #################################################
-# MAIN SCRIPT
+# INSTALL CARGO
 #################################################
-
-echo "Priority Fee Sharing Service Setup"
-echo "=================================="
-
-# Check if running as root or with sudo
-# if [[ $EUID -ne 0 ]]; then
-#    echo -e "\033[31m\033[1mThis script must be run as root or with sudo\033[0m"
-#    exit 1
-# fi
-
-# Initialize default values
-RPC_URL_DEFAULT="http://localhost:8899"
-KEYPAIR_PATH_DEFAULT="/etc/solana/identity.json"
-VALIDATOR_ADDRESS_DEFAULT="2Nnw9RZvT2qeKq74rkw8hWDJZUDSKxiBarmQMFxHzzCt"
-MINIMUM_BALANCE_SOL_DEFAULT="100.0"
-
-# Get Solana config values
-get_solana_config
-
-# Get installation path parameter
-SERVICE_FILE="/etc/systemd/system/priority-fee-share.service"
-
-echo
-echo "This script will set up the Priority Fee Sharing Service."
-echo "You will need to provide the following information:"
-echo "- RPC URL"
-echo "- Payer keypair path"
-echo "- Validator vote account address"
-echo "- Minimum balance of SOL that the service will maintain"
-echo
-
-# Get RPC URL with comment
-RPC_URL=$(ask_string "Enter your RPC URL" "${RPC_URL_DEFAULT}")
-# Check if RPC URL is using port 8899 (Local)
-if [[ "$RPC_URL" == *":8899" ]]; then
-    echo -e "\033[31m\033[1mIf you are using your local RPC, you have to run your validator with \`--enable-rpc-transaction-history\` enabled.\033[0m"
-fi
-
-# Get other required parameters with detected defaults
-PRIORITY_FEE_KEYPAIR_PATH=$(ask_string "Enter the path to your payer keypair file" "${KEYPAIR_PATH_DEFAULT}")
-VALIDATOR_ADDRESS=$(ask_string "Enter your validator vote account address" "${VALIDATOR_ADDRESS_DEFAULT}")
-MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "${MINIMUM_BALANCE_SOL_DEFAULT}")
-
-# Set default values for optional parameters
-FEE_RECORDS_DB_PATH="/var/lib/solana/fee_records"
-PRIORITY_FEE_DISTRIBUTION_PROGRAM="BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA"
-COMMISSION_BPS="5000"
-CHUNK_SIZE="1"
-CALL_LIMIT="1"
-GO_LIVE_EPOCH="1000"
-
-# Check if cargo is in PATH
-if command -v cargo &> /dev/null; then
-    echo "✅ Cargo is already installed!"
-    cargo --version
-else
-    echo "❌ Cargo is not installed. Installing now..."
-
-    # Check for curl
-    if ! command -v curl &> /dev/null; then
-        echo "Installing curl first..."
-        sudo apt-get update && sudo apt-get install -y curl
-    fi
-
-    # Install Rust and Cargo using rustup
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-
-    # Source the environment to make cargo available in current shell
-    source "$HOME/.cargo/env"
-
-    # Verify installation
+install_cargo() {
+    # Check if cargo is in PATH
     if command -v cargo &> /dev/null; then
-        echo "✅ Cargo installation successful!"
+        echo "✅ Cargo is already installed!"
         cargo --version
+        return 0
     else
-        echo "❌ Something went wrong with the Cargo installation."
-        echo "Please try installing manually with:"
-        echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        echo "Then run: source \$HOME/.cargo/env"
-        exit 1
-    fi
-fi
+        echo "❌ Cargo is not installed. Installing now..."
 
-# Check if we're in the correct directory
-if [ ! -f "Cargo.toml" ]; then
-    echo "⚠️ Cannot find Cargo.toml in the current directory."
-    echo "Please make sure you are in the priority-fee-sharing directory."
-
-    if ask_yes_no "Try to find and navigate to the priority-fee-sharing directory?" "Y"; then
-        # Try to find the priority-fee-sharing directory
-        if [ -d "../priority-fee-sharing" ]; then
-            cd "../priority-fee-sharing"
-            echo "✅ Changed to ../priority-fee-sharing directory"
-        elif [ -d "priority-fee-sharing" ]; then
-            cd "priority-fee-sharing"
-            echo "✅ Changed to priority-fee-sharing directory"
-        else
-            echo "❌ Could not find the priority-fee-sharing directory."
-            echo "Please navigate to the priority-fee-sharing directory and run this script again."
-            exit 1
+        # Check for curl
+        if ! command -v curl &> /dev/null; then
+            echo "Installing curl first..."
+            sudo apt-get update && sudo apt-get install -y curl
         fi
-    else
-        echo "Please navigate to the priority-fee-sharing directory and run this script again."
-        exit 1
+
+        # Install Rust and Cargo using rustup
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+        # Source the environment to make cargo available in current shell
+        source "$HOME/.cargo/env"
+
+        # Verify installation
+        if command -v cargo &> /dev/null; then
+            echo "✅ Cargo installation successful!"
+            cargo --version
+            return 0
+        else
+            echo "❌ Something went wrong with the Cargo installation."
+            echo "Please try installing manually with:"
+            echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+            echo "Then run: source \$HOME/.cargo/env"
+            return 1
+        fi
     fi
-fi
+}
 
-# Updating repo submodules if git exists
-if command -v git &> /dev/null; then
-    echo "Updating git submodules..."
-    git submodule update --init --recursive
-else
-    echo "Git not found, skipping submodule update."
-fi
+#################################################
+# INSTALL CLI
+#################################################
+install_cli() {
+    # Check if we're in the correct directory
+    if [ ! -f "Cargo.toml" ]; then
+        echo "⚠️ Cannot find Cargo.toml in the current directory."
+        echo "Please make sure you are in the priority-fee-sharing directory."
 
-# Install the CLI
-echo "Installing CLI..."
-cargo install --path .
+        if ask_yes_no "Try to find and navigate to the priority-fee-sharing directory?" "Y"; then
+            # Try to find the priority-fee-sharing directory
+            if [ -d "../priority-fee-sharing" ]; then
+                cd "../priority-fee-sharing"
+                echo "✅ Changed to ../priority-fee-sharing directory"
+            elif [ -d "priority-fee-sharing" ]; then
+                cd "priority-fee-sharing"
+                echo "✅ Changed to priority-fee-sharing directory"
+            else
+                echo "❌ Could not find the priority-fee-sharing directory."
+                echo "Please navigate to the priority-fee-sharing directory and run this script again."
+                return 1
+            fi
+        else
+            echo "Please navigate to the priority-fee-sharing directory and run this script again."
+            return 1
+        fi
+    fi
 
-echo
-echo -e "Installed CLI, run: \033[34mpriority-fee-sharing --help\033[0m"
+    # Updating repo submodules if git exists
+    if command -v git &> /dev/null; then
+        echo "Updating git submodules..."
+        git submodule update --init --recursive
+    else
+        echo "Git not found, skipping submodule update."
+    fi
 
-# Create the fee records directory if it doesn't exist
-sudo mkdir -p "$FEE_RECORDS_DB_PATH"
-sudo chmod 777 "$FEE_RECORDS_DB_PATH"
-echo
-echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
+    # Install the CLI
+    echo "Installing CLI..."
+    cargo install --path .
 
-CLI_PATH=$(which priority-fee-sharing)
-echo "CLI_PATH: $CLI_PATH"
+    echo
+    echo -e "Installed CLI, run: \033[34mpriority-fee-sharing --help\033[0m"
 
-# Create the service file directory if it doesn't exist
-sudo mkdir -p "$(dirname "$SERVICE_FILE")"
+    # Set CLI path
+    CLI_PATH=$(which priority-fee-sharing)
+    echo "CLI_PATH: $CLI_PATH"
 
-# Create the service file
-sudo cat > .priority-fee-share.service << EOF
+    return 0
+}
+
+#################################################
+# SETUP SERVICE FILE
+#################################################
+setup_service_file() {
+    # Create the fee records directory if it doesn't exist
+    sudo mkdir -p "$FEE_RECORDS_DB_PATH"
+    sudo chmod 777 "$FEE_RECORDS_DB_PATH"
+    echo
+    echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
+
+    # Create the service file directory if it doesn't exist
+    sudo mkdir -p "$(dirname "$SERVICE_FILE")"
+
+    # Create the service file
+    sudo cat > .priority-fee-share.service << EOF
 [Unit]
 Description=Priority Fee Sharing Service
 After=network.target
@@ -374,35 +367,92 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-sudo cp .priority-fee-share.service "$SERVICE_FILE"
+    sudo cp .priority-fee-share.service "$SERVICE_FILE"
 
-echo
-echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
-
-# Reload systemd
-sudo systemctl daemon-reload
-
-# Extract service name from service file path
-SERVICE_NAME=$(basename "$SERVICE_FILE")
-
-# Enable the service to start on boot
-sudo systemctl enable "$SERVICE_NAME"
-echo "Service enabled to start on boot"
-
-if ask_yes_no "Start the service now?" "Y"; then
-    sudo systemctl start "$SERVICE_NAME"
-    echo "Service started"
-
-    # Check service status
     echo
-    echo "Service status:"
-    sudo systemctl status "$SERVICE_NAME" --no-pager
-fi
+    echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
 
-echo
-echo "Setup complete! You can manage the service with these commands:"
-echo -e "  \033[32msudo systemctl start $SERVICE_NAME\033[0m    # Start the service"
-echo -e "  \033[32msudo systemctl stop $SERVICE_NAME\033[0m     # Stop the service"
-echo -e "  \033[32msudo systemctl restart $SERVICE_NAME\033[0m  # Restart the service"
-echo -e "  \033[32msudo systemctl status $SERVICE_NAME\033[0m   # Check service status"
-echo -e "  \033[32msudo journalctl -u $SERVICE_NAME -f\033[0m   # View service logs"
+    # Reload systemd
+    sudo systemctl daemon-reload
+
+    # Extract service name from service file path
+    SERVICE_NAME=$(basename "$SERVICE_FILE")
+
+    # Enable the service to start on boot
+    sudo systemctl enable "$SERVICE_NAME"
+    echo "Service enabled to start on boot"
+
+    if ask_yes_no "Start the service now?" "Y"; then
+        sudo systemctl start "$SERVICE_NAME"
+        echo "Service started"
+
+        # Check service status
+        echo
+        echo "Service status:"
+        sudo systemctl status "$SERVICE_NAME" --no-pager
+    fi
+
+    return 0
+}
+
+collect_parameters() {
+    echo
+    echo "This script will set up the Priority Fee Sharing Service."
+    echo "You will need to provide the following information:"
+    echo "- RPC URL"
+    echo "- Payer keypair path"
+    echo "- Validator vote account address"
+    echo "- Minimum balance of SOL that the service will maintain"
+    echo
+
+    # Get RPC URL with comment
+    RPC_URL=$(ask_string "Enter your RPC URL" "${RPC_URL_DEFAULT}")
+    # Check if RPC URL is using port 8899 (Local)
+    if [[ "$RPC_URL" == *":8899" ]]; then
+        echo -e "\033[31m\033[1mIf you are using your local RPC, you have to run your validator with \`--enable-rpc-transaction-history\` enabled.\033[0m"
+    fi
+
+    # Get other required parameters with detected defaults
+    PRIORITY_FEE_KEYPAIR_PATH=$(ask_string "Enter the path to your payer keypair file" "${KEYPAIR_PATH_DEFAULT}")
+    VALIDATOR_ADDRESS=$(ask_string "Enter your validator vote account address" "${VALIDATOR_ADDRESS_DEFAULT}")
+    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "${MINIMUM_BALANCE_SOL_DEFAULT}")
+}
+
+display_instructions() {
+    echo
+    echo "Setup complete! You can manage the service with these commands:"
+    echo -e "  \033[32msudo systemctl start $SERVICE_NAME\033[0m    # Start the service"
+    echo -e "  \033[32msudo systemctl stop $SERVICE_NAME\033[0m     # Stop the service"
+    echo -e "  \033[32msudo systemctl restart $SERVICE_NAME\033[0m  # Restart the service"
+    echo -e "  \033[32msudo systemctl status $SERVICE_NAME\033[0m   # Check service status"
+    echo -e "  \033[32msudo journalctl -u $SERVICE_NAME -f\033[0m   # View service logs"
+}
+
+#################################################
+# MAIN SCRIPT
+#################################################
+main() {
+    echo "Priority Fee Sharing Service Setup"
+    echo "=================================="
+
+    # Get Solana config values
+    get_solana_config
+
+    # Collect parameters from user
+    collect_parameters
+
+    # Install Cargo
+    install_cargo || exit 1
+
+    # Install CLI
+    install_cli || exit 1
+
+    # Setup service file
+    setup_service_file || exit 1
+
+    # Display instructions
+    display_instructions
+}
+
+# Call the main function
+main
