@@ -366,7 +366,8 @@ echo
 echo -e "Installed CLI, run: \033[34mpriority-fee-sharing --help\033[0m"
 
 # Create the fee records directory if it doesn't exist
-mkdir -p "$FEE_RECORDS_DB_PATH"
+sudo mkdir -p "$FEE_RECORDS_DB_PATH"
+sudo chmod 777 "$FEE_RECORDS_DB_PATH"
 echo
 echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
 
