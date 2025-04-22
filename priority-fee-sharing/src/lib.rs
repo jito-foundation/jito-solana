@@ -78,13 +78,16 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
 }
 
 fn create_share_ix(
-    payer_keypair: &Keypair,
+    _payer_keypair: &Keypair,
     validator_address: &Pubkey,
-    priority_fee_distribution_program: &Pubkey,
+    _priority_fee_distribution_program: &Pubkey,
     amount_to_share_lamports: u64,
     record_epoch: u64,
-    running_epoch: u64,
+    _running_epoch: u64,
 ) -> Instruction {
+    //TODO replace with transfer ix
+    warn!("TODO - switch to transfer IX");
+
     let memo_text = format!(
         "Transfer {} lamports from {} for epoch {}",
         lamports_to_sol(amount_to_share_lamports),
@@ -92,9 +95,6 @@ fn create_share_ix(
         record_epoch
     );
 
-    //TODO replace with transfer ix
-
-    warn!("TODO - switch to transfer IX");
     build_memo(memo_text.as_bytes(), &[])
 }
 
