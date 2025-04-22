@@ -3,12 +3,14 @@ use {
     super::*,
     crate::{
         account_info::StoredSize,
-        account_storage::meta::{AccountMeta, StoredMeta},
         accounts_file::AccountsFileProvider,
         accounts_hash::MERKLE_FANOUT,
         accounts_index::{tests::*, AccountIndex, AccountSecondaryIndexesIncludeExclude},
         ancient_append_vecs,
-        append_vec::{aligned_stored_size, test_utils::TempFile, AppendVec, StoredAccountMeta},
+        append_vec::{
+            aligned_stored_size, test_utils::TempFile, AccountMeta, AppendVec, StoredAccountMeta,
+            StoredMeta,
+        },
         storable_accounts::AccountForStorage,
     },
     assert_matches::assert_matches,
