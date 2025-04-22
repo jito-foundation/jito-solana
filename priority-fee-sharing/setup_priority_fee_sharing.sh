@@ -405,4 +405,4 @@ echo -e "  \033[32msudo systemctl start $SERVICE_NAME\033[0m    # Start the serv
 echo -e "  \033[32msudo systemctl stop $SERVICE_NAME\033[0m     # Stop the service"
 echo -e "  \033[32msudo systemctl restart $SERVICE_NAME\033[0m  # Restart the service"
 echo -e "  \033[32msudo systemctl status $SERVICE_NAME\033[0m   # Check service status"
-echo -e "  \033[32mjournalctl -u $SERVICE_NAME\033[0m      # View service logs"
+echo -e "  \033[32msudo journalctl -u -f $SERVICE_NAME\033[0m      # View service logs"
