@@ -22,7 +22,6 @@ use {
     solana_gossip::{
         cluster_info::{ClusterInfo, Node},
         contact_info::Protocol,
-        gossip_service::discover_cluster,
         socketaddr,
     },
     solana_ledger::{
@@ -1048,11 +1047,6 @@ impl TestValidator {
             ValidatorTpuConfig::new_for_tests(config.tpu_enable_udp),
             config.admin_rpc_service_post_init.clone(),
         )?);
-
-        // Needed to avoid panics in `solana-responder-gossip` in tests that create a number of
-        // test validators concurrently...
-        discover_cluster(&gossip, 1, socket_addr_space)
-            .map_err(|err| format!("TestValidator startup failed: {err:?}"))?;
 
         let test_validator = TestValidator {
             ledger_path,
