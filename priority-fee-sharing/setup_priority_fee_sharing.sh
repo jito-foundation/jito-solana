@@ -340,7 +340,7 @@ echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
 sudo mkdir -p "$(dirname "$SERVICE_FILE")"
 
 # Create the service file
-sudo cat > "$SERVICE_FILE" << EOF
+sudo cat > priority-fee-share.service << EOF
 [Unit]
 Description=Priority Fee Sharing Service
 After=network.target
@@ -370,6 +370,8 @@ RestartSec=5s
 [Install]
 WantedBy=multi-user.target
 EOF
+
+sudo cp priority-fee-share.service "$SERVICE_FILE"
 
 echo
 echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
