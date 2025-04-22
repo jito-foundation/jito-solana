@@ -259,41 +259,6 @@ CHUNK_SIZE="1"
 CALL_LIMIT="1"
 GO_LIVE_EPOCH="1000"
 
-# Create the service file directory if it doesn't exist
-mkdir -p "$(dirname "$SERVICE_FILE")"
-
-# Create the service file
-cat > "$SERVICE_FILE" << EOF
-[Unit]
-Description=Priority Fee Sharing Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-
-# Required parameters
-Environment=RPC_URL=$RPC_URL
-Environment=FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH
-Environment=PRIORITY_FEE_KEYPAIR_PATH=$PRIORITY_FEE_KEYPAIR_PATH
-Environment=VALIDATOR_ADDRESS=$VALIDATOR_ADDRESS
-Environment=MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL
-
-# Optional parameters with defaults
-Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM
-Environment=COMMISSION_BPS=$COMMISSION_BPS
-Environment=CHUNK_SIZE=$CHUNK_SIZE
-Environment=CALL_LIMIT=$CALL_LIMIT
-Environment=GO_LIVE_EPOCH=$GO_LIVE_EPOCH
-
-ExecStart=priority-fee-sharing run
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 # Check if cargo is in PATH
 if command -v cargo &> /dev/null; then
     echo "✅ Cargo is already installed!"
@@ -370,6 +335,41 @@ sudo mkdir -p "$FEE_RECORDS_DB_PATH"
 sudo chmod 777 "$FEE_RECORDS_DB_PATH"
 echo
 echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
+
+# Create the service file directory if it doesn't exist
+mkdir -p "$(dirname "$SERVICE_FILE")"
+
+# Create the service file
+cat > "$SERVICE_FILE" << EOF
+[Unit]
+Description=Priority Fee Sharing Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+
+# Required parameters
+Environment=RPC_URL=$RPC_URL
+Environment=FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH
+Environment=PRIORITY_FEE_KEYPAIR_PATH=$PRIORITY_FEE_KEYPAIR_PATH
+Environment=VALIDATOR_ADDRESS=$VALIDATOR_ADDRESS
+Environment=MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL
+
+# Optional parameters with defaults
+Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM
+Environment=COMMISSION_BPS=$COMMISSION_BPS
+Environment=CHUNK_SIZE=$CHUNK_SIZE
+Environment=CALL_LIMIT=$CALL_LIMIT
+Environment=GO_LIVE_EPOCH=$GO_LIVE_EPOCH
+
+ExecStart=priority-fee-sharing run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 echo
 echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
