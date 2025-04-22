@@ -366,7 +366,7 @@ Environment=CHUNK_SIZE=$CHUNK_SIZE
 Environment=CALL_LIMIT=$CALL_LIMIT
 Environment=GO_LIVE_EPOCH=$GO_LIVE_EPOCH
 
-ExecStart=$CLI_PATHrun
+ExecStart=$CLI_PATH run
 Restart=on-failure
 RestartSec=5s
 
