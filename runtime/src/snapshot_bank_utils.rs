@@ -2196,8 +2196,9 @@ mod tests {
     ///     - remove Account2's reference back to slot 2 by transferring from the mint to Account2
     ///     - take a full snap shot
     ///     - verify that recovery from full snapshot does not bring account1 back to life
-    #[test]
-    fn test_snapshots_handle_zero_lamport_accounts() {
+    #[test_case(StorageAccess::Mmap)]
+    #[test_case(StorageAccess::File)]
+    fn test_snapshots_handle_zero_lamport_accounts(storage_access: StorageAccess) {
         let collector = Pubkey::new_unique();
         let key1 = Keypair::new();
         let key2 = Keypair::new();
@@ -2210,7 +2211,16 @@ mod tests {
         let (genesis_config, mint_keypair) = create_genesis_config(sol_to_lamports(1_000_000.));
 
         let lamports_to_transfer = sol_to_lamports(123_456.);
-        let (bank0, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+        let bank_test_config = BankTestConfig {
+            accounts_db_config: AccountsDbConfig {
+                storage_access,
+                ..AccountsDbConfig::default()
+            },
+        };
+
+        let bank0 = Bank::new_with_config_for_tests(&genesis_config, bank_test_config);
+
+        let (bank0, bank_forks) = Bank::wrap_with_bank_forks_for_tests(bank0);
 
         bank0
             .transfer(lamports_to_transfer, &mint_keypair, &key2.pubkey())
