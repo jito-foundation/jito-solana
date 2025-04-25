@@ -3,12 +3,13 @@ pub mod fee_records;
 
 use anyhow::{anyhow, Result};
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
-use log::{error, info, warn};
+use log::{error, info};
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::instruction::AccountMeta;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::lamports_to_sol;
 use solana_sdk::reward_type::RewardType;
@@ -16,7 +17,6 @@ use solana_sdk::signature::read_keypair_file;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
-use spl_memo::build_memo;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -78,24 +78,48 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
 }
 
 fn create_share_ix(
-    _payer_keypair: &Keypair,
+    payer_keypair: &Keypair,
     validator_address: &Pubkey,
-    _priority_fee_distribution_program: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
     amount_to_share_lamports: u64,
-    record_epoch: u64,
-    _running_epoch: u64,
+    running_epoch: u64,
 ) -> Instruction {
-    //TODO replace with transfer ix
-    warn!("TODO - switch to transfer IX");
+    // Define the instruction discriminator for transfer_priority_fee_tips
+    let discriminator: [u8; 8] = [195, 208, 218, 42, 198, 181, 69, 74];
 
-    let memo_text = format!(
-        "Transfer {} lamports from {} for epoch {}",
-        lamports_to_sol(amount_to_share_lamports),
-        validator_address,
-        record_epoch
+    // Get the priority fee distribution account PDA
+    // This is a PDA derived from the validator vote account and epoch
+    // The actual derivation might be different in the real implementation
+    let (priority_fee_distribution_account, _) = Pubkey::find_program_address(
+        &[
+            b"priority_fee_distribution",
+            validator_address.as_ref(),
+            &running_epoch.to_le_bytes(),
+        ],
+        priority_fee_distribution_program,
     );
 
-    build_memo(memo_text.as_bytes(), &[])
+    // Get the config account PDA
+    let (config, _) = Pubkey::find_program_address(&[b"config"], priority_fee_distribution_program);
+
+    // Create the instruction data: discriminator + lamports amount
+    let mut data = Vec::with_capacity(8 + 8);
+    data.extend_from_slice(&discriminator);
+    data.extend_from_slice(&amount_to_share_lamports.to_le_bytes());
+
+    // List of accounts required for the instruction
+    let accounts = vec![
+        AccountMeta::new_readonly(config, false),
+        AccountMeta::new(priority_fee_distribution_account, false),
+        AccountMeta::new(payer_keypair.pubkey(), true),
+        AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+    ];
+
+    Instruction {
+        program_id: *priority_fee_distribution_program,
+        accounts,
+        data,
+    }
 }
 
 // ------------------------- BLOCK FUNCTIONS -----------------------------
@@ -239,7 +263,6 @@ async fn handle_pending_blocks(
 
         for record in record_chunk {
             let priority_fee_lamports: u64 = record.priority_fee_lamports;
-            let record_epoch = record.epoch;
 
             let amount_to_share_lamports = calculate_share(priority_fee_lamports, commission_bps)?;
 
@@ -248,7 +271,6 @@ async fn handle_pending_blocks(
                 validator_address,
                 priority_fee_distribution_program,
                 amount_to_share_lamports,
-                record_epoch,
                 running_epoch,
             );
             ixs.push(share_ix);

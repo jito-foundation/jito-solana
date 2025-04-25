@@ -1,0 +1,881 @@
+{
+  "address": "5DdB5ZuSR97rqgVHtjb4t1uz1auFEa2xQ32aAxjsJLEC",
+  "metadata": {
+    "name": "jito_priority_fee_distribution",
+    "version": "0.1.5",
+    "spec": "0.1.0",
+    "description": "Priority fee distribution program, responsible for distributing funds to entitled parties."
+  },
+  "instructions": [
+    {
+      "name": "claim",
+      "docs": ["Claims tokens from the [PriorityFeeDistributionAccount]."],
+      "discriminator": [62, 198, 214, 193, 213, 159, 108, 210],
+      "accounts": [
+        {
+          "name": "config"
+        },
+        {
+          "name": "priority_fee_distribution_account",
+          "writable": true
+        },
+        {
+          "name": "merkle_root_upload_authority",
+          "signer": true
+        },
+        {
+          "name": "claim_status",
+          "docs": [
+            "Status of the claim. Used to prevent the same party from claiming multiple times."
+          ],
+          "writable": true
+        },
+        {
+          "name": "claimant",
+          "docs": ["Receiver of the funds."],
+          "writable": true
+        },
+        {
+          "name": "payer",
+          "docs": ["Who is paying for the claim."],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "_bump",
+          "type": "u8"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "proof",
+          "type": {
+            "vec": {
+              "array": ["u8", 32]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "close_claim_status",
+      "docs": [
+        "Anyone can invoke this only after the [PriorityFeeDistributionAccount] has expired.",
+        "This instruction will return any rent back to `claimant` and close the account"
+      ],
+      "discriminator": [163, 214, 191, 165, 245, 188, 17, 185],
+      "accounts": [
+        {
+          "name": "config"
+        },
+        {
+          "name": "claim_status",
+          "writable": true
+        },
+        {
+          "name": "claim_status_payer",
+          "docs": ["Receiver of the funds.", ""],
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_priority_fee_distribution_account",
+      "docs": [
+        "Anyone can invoke this only after the [PriorityFeeDistributionAccount] has expired.",
+        "This instruction will send any unclaimed funds to the designated `expired_funds_account`",
+        "before closing and returning the rent exempt funds to the validator."
+      ],
+      "discriminator": [127, 143, 71, 136, 78, 181, 210, 101],
+      "accounts": [
+        {
+          "name": "config"
+        },
+        {
+          "name": "expired_funds_account",
+          "writable": true
+        },
+        {
+          "name": "priority_fee_distribution_account",
+          "writable": true
+        },
+        {
+          "name": "validator_vote_account",
+          "writable": true
+        },
+        {
+          "name": "signer",
+          "docs": ["Anyone can crank this instruction."],
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "_epoch",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": ["Initialize a singleton instance of the [Config] account."],
+      "discriminator": [175, 175, 109, 31, 13, 152, 155, 237],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "initializer",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "expired_funds_account",
+          "type": "pubkey"
+        },
+        {
+          "name": "num_epochs_valid",
+          "type": "u64"
+        },
+        {
+          "name": "max_validator_commission_bps",
+          "type": "u16"
+        },
+        {
+          "name": "bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "initialize_merkle_root_upload_config",
+      "discriminator": [232, 87, 72, 14, 89, 40, 40, 27],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "merkle_root_upload_config",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "original_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "initialize_priority_fee_distribution_account",
+      "docs": [
+        "Initialize a new [PriorityFeeDistributionAccount] associated with the given validator vote key",
+        "and current epoch."
+      ],
+      "discriminator": [49, 128, 247, 162, 140, 2, 193, 87],
+      "accounts": [
+        {
+          "name": "config"
+        },
+        {
+          "name": "priority_fee_distribution_account",
+          "writable": true
+        },
+        {
+          "name": "validator_vote_account",
+          "docs": [
+            "The validator's vote account is used to check this transaction's signer is also the authorized withdrawer."
+          ]
+        },
+        {
+          "name": "signer",
+          "docs": [
+            "Must be equal to the supplied validator vote account's authorized withdrawer."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "merkle_root_upload_authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "validator_commission_bps",
+          "type": "u16"
+        },
+        {
+          "name": "bump",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "migrate_tda_merkle_root_upload_authority",
+      "discriminator": [13, 226, 163, 144, 56, 202, 214, 23],
+      "accounts": [
+        {
+          "name": "priority_fee_distribution_account",
+          "writable": true
+        },
+        {
+          "name": "merkle_root_upload_config"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "transfer_priority_fee_tips",
+      "discriminator": [195, 208, 218, 42, 198, 181, 69, 74],
+      "accounts": [
+        {
+          "name": "config"
+        },
+        {
+          "name": "priority_fee_distribution_account",
+          "writable": true
+        },
+        {
+          "name": "from",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "lamports",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "update_config",
+      "docs": [
+        "Update config fields. Only the [Config] authority can invoke this."
+      ],
+      "discriminator": [29, 158, 252, 191, 10, 83, 219, 99],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_config",
+          "type": {
+            "defined": {
+              "name": "Config"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_merkle_root_upload_config",
+      "discriminator": [128, 227, 159, 139, 176, 128, 118, 2],
+      "accounts": [
+        {
+          "name": "config"
+        },
+        {
+          "name": "merkle_root_upload_config",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "original_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "upload_merkle_root",
+      "docs": [
+        "Uploads a merkle root to the provided [PriorityFeeDistributionAccount]. This instruction may be",
+        "invoked many times as long as the account is at least one epoch old and not expired; and",
+        "no funds have already been claimed. Only the `merkle_root_upload_authority` has the",
+        "authority to invoke."
+      ],
+      "discriminator": [70, 3, 110, 29, 199, 190, 205, 176],
+      "accounts": [
+        {
+          "name": "config"
+        },
+        {
+          "name": "priority_fee_distribution_account",
+          "writable": true
+        },
+        {
+          "name": "merkle_root_upload_authority",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "root",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "max_total_claim",
+          "type": "u64"
+        },
+        {
+          "name": "max_num_nodes",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ClaimStatus",
+      "discriminator": [22, 183, 249, 157, 247, 95, 150, 96]
+    },
+    {
+      "name": "Config",
+      "discriminator": [155, 12, 170, 224, 30, 250, 204, 130]
+    },
+    {
+      "name": "MerkleRootUploadConfig",
+      "discriminator": [213, 125, 30, 192, 25, 121, 87, 33]
+    },
+    {
+      "name": "PriorityFeeDistributionAccount",
+      "discriminator": [163, 183, 254, 12, 121, 137, 235, 27]
+    }
+  ],
+  "events": [
+    {
+      "name": "ClaimStatusClosedEvent",
+      "discriminator": [188, 143, 237, 229, 192, 182, 164, 118]
+    },
+    {
+      "name": "ClaimedEvent",
+      "discriminator": [144, 172, 209, 86, 144, 87, 84, 115]
+    },
+    {
+      "name": "ConfigUpdatedEvent",
+      "discriminator": [245, 158, 129, 99, 60, 100, 214, 220]
+    },
+    {
+      "name": "MerkleRootUploadAuthorityUpdatedEvent",
+      "discriminator": [83, 157, 58, 165, 200, 171, 8, 106]
+    },
+    {
+      "name": "MerkleRootUploadedEvent",
+      "discriminator": [94, 233, 236, 49, 52, 224, 181, 167]
+    },
+    {
+      "name": "PriorityFeeDistributionAccountClosedEvent",
+      "discriminator": [68, 223, 157, 170, 253, 184, 95, 244]
+    },
+    {
+      "name": "PriorityFeeDistributionAccountInitializedEvent",
+      "discriminator": [99, 255, 192, 133, 37, 151, 232, 9]
+    },
+    {
+      "name": "ValidatorCommissionBpsUpdatedEvent",
+      "discriminator": [4, 34, 92, 25, 228, 88, 51, 206]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "AccountValidationFailure",
+      "msg": "Account failed validation."
+    },
+    {
+      "code": 6001,
+      "name": "ArithmeticError",
+      "msg": "Encountered an arithmetic under/overflow error."
+    },
+    {
+      "code": 6002,
+      "name": "ExceedsMaxClaim",
+      "msg": "The maximum number of funds to be claimed has been exceeded."
+    },
+    {
+      "code": 6003,
+      "name": "ExceedsMaxNumNodes",
+      "msg": "The maximum number of claims has been exceeded."
+    },
+    {
+      "code": 6004,
+      "name": "ExpiredPriorityFeeDistributionAccount",
+      "msg": "The given PriorityFeeDistributionAccount has expired."
+    },
+    {
+      "code": 6005,
+      "name": "FundsAlreadyClaimed",
+      "msg": "The funds for the given index and PriorityFeeDistributionAccount have already been claimed."
+    },
+    {
+      "code": 6006,
+      "name": "InvalidParameters",
+      "msg": "Supplied invalid parameters."
+    },
+    {
+      "code": 6007,
+      "name": "InvalidProof",
+      "msg": "The given proof is invalid."
+    },
+    {
+      "code": 6008,
+      "name": "InvalidVoteAccountData",
+      "msg": "Failed to deserialize the supplied vote account data."
+    },
+    {
+      "code": 6009,
+      "name": "MaxValidatorCommissionFeeBpsExceeded",
+      "msg": "Validator's commission basis points must be less than or equal to the Config account's max_validator_commission_bps."
+    },
+    {
+      "code": 6010,
+      "name": "PrematureClosePriorityFeeDistributionAccount",
+      "msg": "The given PriorityFeeDistributionAccount is not ready to be closed."
+    },
+    {
+      "code": 6011,
+      "name": "PrematureCloseClaimStatus",
+      "msg": "The given ClaimStatus account is not ready to be closed."
+    },
+    {
+      "code": 6012,
+      "name": "PrematureMerkleRootUpload",
+      "msg": "Must wait till at least one epoch after the tip distribution account was created to upload the merkle root."
+    },
+    {
+      "code": 6013,
+      "name": "RootNotUploaded",
+      "msg": "No merkle root has been uploaded to the given PriorityFeeDistributionAccount."
+    },
+    {
+      "code": 6014,
+      "name": "Unauthorized",
+      "msg": "Unauthorized signer."
+    },
+    {
+      "code": 6015,
+      "name": "InvalidTdaForMigration",
+      "msg": "TDA not valid for migration."
+    }
+  ],
+  "types": [
+    {
+      "name": "ClaimStatus",
+      "docs": [
+        "A PDA uniquely derived by the PriorityFeeDistributionAccount and claimant, which enforces an only-",
+        "once claim by each claimant.",
+        "@dev **this is very different than TipDistributor's ClaimStatus structure**"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "expires_at",
+            "docs": [
+              "The epoch (upto and including) that tip funds can be claimed.",
+              "Copied since TDA can be closed, need to track to avoid making multiple claims"
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClaimStatusClosedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "claim_status_payer",
+            "docs": ["Account where funds were transferred to."],
+            "type": "pubkey"
+          },
+          {
+            "name": "claim_status_account",
+            "docs": ["[ClaimStatus] account that was closed."],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClaimedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "priority_fee_distribution_account",
+            "docs": ["[PriorityFeeDistributionAccount] claimed from."],
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "docs": [
+              "User that paid for the claim, may or may not be the same as claimant."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "claimant",
+            "docs": ["Account that received the funds."],
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "docs": ["Amount of funds to distribute."],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": ["Account with authority over this PDA."],
+            "type": "pubkey"
+          },
+          {
+            "name": "expired_funds_account",
+            "docs": [
+              "We want to expire funds after some time so that validators can be refunded the rent.",
+              "Expired funds will get transferred to this account."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "num_epochs_valid",
+            "docs": [
+              "Specifies the number of epochs a merkle root is valid for before expiring."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_validator_commission_bps",
+            "docs": [
+              "The maximum commission a validator can set on their distribution account."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "go_live_epoch",
+            "docs": [
+              "The epoch where lamports are transferred to the priority fee distribution account."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "docs": ["The bump used to generate this account"],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigUpdatedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "docs": ["Who updated it."],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MerkleRoot",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "root",
+            "docs": ["The 256-bit merkle root."],
+            "type": {
+              "array": ["u8", 32]
+            }
+          },
+          {
+            "name": "max_total_claim",
+            "docs": [
+              "Maximum number of funds that can ever be claimed from this [MerkleRoot]."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_num_nodes",
+            "docs": [
+              "Maximum number of nodes that can ever be claimed from this [MerkleRoot]."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_funds_claimed",
+            "docs": ["Total funds that have been claimed."],
+            "type": "u64"
+          },
+          {
+            "name": "num_nodes_claimed",
+            "docs": ["Number of nodes that have been claimed."],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MerkleRootUploadAuthorityUpdatedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MerkleRootUploadConfig",
+      "docs": [
+        "Singleton account that allows overriding TDA's merkle upload authority"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "override_authority",
+            "docs": [
+              "The authority that overrides the PriorityFeeDistributionAccount merkle_root_upload_authority"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "original_upload_authority",
+            "docs": [
+              "The original merkle root upload authority that can be changed to the new overrided",
+              "authority. E.g. Jito Labs authority GZctHpWXmsZC1YHACTGGcHhYxjdRqQvTpYkb9LMvxDib"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "docs": ["The bump used to generate this account"],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MerkleRootUploadedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "merkle_root_upload_authority",
+            "docs": ["Who uploaded the root."],
+            "type": "pubkey"
+          },
+          {
+            "name": "priority_fee_distribution_account",
+            "docs": ["Where the root was uploaded to."],
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PriorityFeeDistributionAccount",
+      "docs": ["The account that validators send priority fees to"],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "validator_vote_account",
+            "docs": [
+              "The validator's vote account, also the recipient of remaining lamports after",
+              "upon closing this account."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "merkle_root_upload_authority",
+            "docs": [
+              "The only account authorized to upload a merkle-root for this account."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "merkle_root",
+            "docs": [
+              "The merkle root used to verify user claims from this account."
+            ],
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "MerkleRoot"
+                }
+              }
+            }
+          },
+          {
+            "name": "epoch_created_at",
+            "docs": ["Epoch for which this account was created."],
+            "type": "u64"
+          },
+          {
+            "name": "validator_commission_bps",
+            "docs": ["The commission basis points this validator charges."],
+            "type": "u16"
+          },
+          {
+            "name": "expires_at",
+            "docs": [
+              "The epoch (upto and including) that tip funds can be claimed."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_lamports_transferred",
+            "docs": ["The total lamports transferred to this account."],
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "docs": ["The bump used to generate this account"],
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PriorityFeeDistributionAccountClosedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "expired_funds_account",
+            "docs": ["Account where unclaimed funds were transferred to."],
+            "type": "pubkey"
+          },
+          {
+            "name": "priority_fee_distribution_account",
+            "docs": ["[PriorityFeeDistributionAccount] closed."],
+            "type": "pubkey"
+          },
+          {
+            "name": "expired_amount",
+            "docs": ["Unclaimed amount transferred."],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PriorityFeeDistributionAccountInitializedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "priority_fee_distribution_account",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ValidatorCommissionBpsUpdatedEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "priority_fee_distribution_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_commission_bps",
+            "type": "u16"
+          },
+          {
+            "name": "new_commission_bps",
+            "type": "u16"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -24,7 +24,7 @@ Environment=MINIMUM_BALANCE_SOL=YOUR_MINIMUM_BALANCE_SOL_HERE
 Environment=FEE_RECORDS_DB_PATH=/var/lib/solana/fee_records
 
 # The Priority Fee Distribution Program
-Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA
+Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=F2Zu7QZiTYUhPd7u9ukRVwxh7B71oA3NMJcHuCHc29P2
 
 # How much priority fees to distribute in bps ( 5000 = 50% )
 Environment=COMMISSION_BPS=5000
