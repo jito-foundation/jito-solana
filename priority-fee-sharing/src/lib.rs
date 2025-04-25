@@ -300,7 +300,7 @@ async fn handle_pending_blocks(
             .send_transaction_with_config(
                 &tx,
                 RpcSendTransactionConfig {
-                    skip_preflight: true,
+                    skip_preflight: false,
                     ..Default::default()
                 },
             )
@@ -441,7 +441,7 @@ pub async fn spam_priority_fees_loop(
                     .send_transaction_with_config(
                         &tx,
                         RpcSendTransactionConfig {
-                            skip_preflight: true,
+                            skip_preflight: false,
                             ..Default::default()
                         },
                     )
