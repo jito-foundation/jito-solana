@@ -3,6 +3,7 @@ pub mod fee_records;
 
 use anyhow::{anyhow, Result};
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
+use log::warn;
 use log::{error, info};
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
@@ -101,14 +102,16 @@ async fn check_if_initialize_priority_fee_distribution_account_exsists(
 
 fn create_initialize_priority_fee_distribution_account_ix(
     payer_keypair: &Keypair,
-    validator_address: &Pubkey,
+    validator_address: &Pubkey, // This should be the validator vote account
     priority_fee_distribution_program: &Pubkey,
     commission_bps: u16,
     running_epoch: u64,
 ) -> Instruction {
     // initialize_priority_fee_distribution_account
     let discriminator: [u8; 8] = [49, 128, 247, 162, 140, 2, 193, 87];
-    let merkle_root_update_authority =
+
+    // This should be set to the actual merkle root upload authority
+    let merkle_root_upload_authority =
         Pubkey::from_str_const("FJJycCDD55ZJ79nrYnhR8S89bbNdawUAoCzhUQZoApVk");
 
     let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
@@ -123,19 +126,21 @@ fn create_initialize_priority_fee_distribution_account_ix(
     // Get the config account PDA
     let (config, _) = Pubkey::find_program_address(&[b"config"], priority_fee_distribution_program);
 
-    // Create the instruction data: discriminator + lamports amount
+    // Create the instruction data: discriminator + args
     let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
     data.extend_from_slice(&discriminator);
-    data.extend_from_slice(&merkle_root_update_authority.to_bytes()); // Merkle Root Upload Authority
+    data.extend_from_slice(&merkle_root_upload_authority.to_bytes()); // Merkle Root Upload Authority
     data.extend_from_slice(&commission_bps.to_le_bytes()); // Commission
-    data.extend_from_slice(&bump.to_le_bytes()); // Bump
+    data.extend_from_slice(&[bump]); // Bump as a single byte
 
+    warn!("Should use Vote account here");
     // List of accounts required for the instruction
     let accounts = vec![
-        AccountMeta::new_readonly(config, false),
-        AccountMeta::new(priority_fee_distribution_account, false),
-        AccountMeta::new(payer_keypair.pubkey(), true),
-        AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+        AccountMeta::new_readonly(config, false), // config
+        AccountMeta::new(priority_fee_distribution_account, false), // priority_fee_distribution_account (writable)
+        AccountMeta::new_readonly(*validator_address, false),       // validator_vote_account
+        AccountMeta::new(payer_keypair.pubkey(), true),             // signer (writable, signer)
+        AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
     Instruction {
