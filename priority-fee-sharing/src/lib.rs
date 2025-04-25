@@ -133,13 +133,12 @@ fn create_initialize_priority_fee_distribution_account_ix(
     data.extend_from_slice(&commission_bps.to_le_bytes()); // Commission
     data.extend_from_slice(&[bump]); // Bump as a single byte
 
-    warn!("Should use Vote account here");
     // List of accounts required for the instruction
     let accounts = vec![
         AccountMeta::new_readonly(config, false), // config
-        AccountMeta::new(priority_fee_distribution_account, false), // priority_fee_distribution_account (writable)
-        AccountMeta::new_readonly(*validator_address, false),       // validator_vote_account
-        AccountMeta::new(payer_keypair.pubkey(), true),             // signer (writable, signer)
+        AccountMeta::new(priority_fee_distribution_account, true), // priority_fee_distribution_account (writable)
+        AccountMeta::new_readonly(*validator_address, false),      // validator_vote_account
+        AccountMeta::new(payer_keypair.pubkey(), true),            // signer (writable, signer)
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
@@ -157,13 +156,10 @@ fn create_share_ix(
     amount_to_share_lamports: u64,
     running_epoch: u64,
 ) -> Instruction {
-    //
     // Define the instruction discriminator for transfer_priority_fee_tips
     let discriminator: [u8; 8] = [195, 208, 218, 42, 198, 181, 69, 74];
 
     // Get the priority fee distribution account PDA
-    // This is a PDA derived from the validator vote account and epoch
-    // The actual derivation might be different in the real implementation
     let (priority_fee_distribution_account, _) = Pubkey::find_program_address(
         &[
             b"priority_fee_distribution",
@@ -183,10 +179,10 @@ fn create_share_ix(
 
     // List of accounts required for the instruction
     let accounts = vec![
-        AccountMeta::new_readonly(config, false),
-        AccountMeta::new(priority_fee_distribution_account, false),
-        AccountMeta::new(payer_keypair.pubkey(), true),
-        AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+        AccountMeta::new_readonly(config, false), // config
+        AccountMeta::new(priority_fee_distribution_account, true), // priority_fee_distribution_account (writable)
+        AccountMeta::new(payer_keypair.pubkey(), true),            // from (writable, signer)
+        AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
     Instruction {

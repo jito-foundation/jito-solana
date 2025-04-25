@@ -191,7 +191,7 @@ The following environment variables are used in the service file:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Program address for the fee distribution | `BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA` |
+| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Program address for the fee distribution | `F2Zu7QZiTYUhPd7u9ukRVwxh7B71oA3NMJcHuCHc29P2` |
 | `COMMISSION_BPS` | Commission in basis points (100 = 1%, 5000 = 50%, 10000 = 100%) | `5000` |
 | `CHUNK_SIZE` | Batch size for processing transactions | `1` |
 | `CALL_LIMIT` | Maximum number of calls | `1` |
