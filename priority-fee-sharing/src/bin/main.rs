@@ -3,7 +3,7 @@ use log::info;
 use priority_fee_sharing::fee_records::{
     FeeRecordCategory, FeeRecordEntry, FeeRecordState, FeeRecords,
 };
-use priority_fee_sharing::{share_priority_fees_loop, spam_priority_fees_loop};
+use priority_fee_sharing::share_priority_fees_loop;
 use solana_clock::DEFAULT_SLOTS_PER_EPOCH;
 use solana_pubkey::Pubkey;
 use solana_sdk::native_token::{lamports_to_sol, sol_to_lamports};
@@ -58,17 +58,6 @@ enum Commands {
         /// How many share TXs to send before timeout
         #[arg(long, env, default_value_t = 1)]
         call_limit: usize,
-    },
-
-    /// Spam priority fees for testing
-    TestSpamFees {
-        /// RPC URL to use
-        #[arg(long, env)]
-        rpc_url: String,
-
-        /// Path to payer keypair
-        #[arg(long, env)]
-        priority_fee_keypair_path: PathBuf,
     },
 
     /// Export records to CSV
@@ -231,14 +220,6 @@ async fn main() -> Result<(), anyhow::Error> {
                 *call_limit,                        // Call limit (as usize)
             )
             .await?
-        }
-
-        Commands::TestSpamFees {
-            rpc_url,
-            priority_fee_keypair_path,
-        } => {
-            info!("Running fee spamming service");
-            spam_priority_fees_loop(rpc_url.clone(), priority_fee_keypair_path.clone()).await?;
         }
 
         Commands::ExportCsv {

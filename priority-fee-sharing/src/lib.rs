@@ -77,6 +77,74 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
     Ok(())
 }
 
+async fn check_if_initialize_priority_fee_distribution_account_exsists(
+    rpc_client: &RpcClient,
+    validator_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    running_epoch: u64,
+) -> bool {
+    let (priority_fee_distribution_account, _) = Pubkey::find_program_address(
+        &[
+            b"priority_fee_distribution",
+            validator_address.as_ref(),
+            &running_epoch.to_le_bytes(),
+        ],
+        priority_fee_distribution_program,
+    );
+
+    let result = rpc_client
+        .get_account(&priority_fee_distribution_account)
+        .await;
+
+    result.is_ok()
+}
+
+fn create_initialize_priority_fee_distribution_account_ix(
+    payer_keypair: &Keypair,
+    validator_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    commission_bps: u16,
+    running_epoch: u64,
+) -> Instruction {
+    // initialize_priority_fee_distribution_account
+    let discriminator: [u8; 8] = [49, 128, 247, 162, 140, 2, 193, 87];
+    let merkle_root_update_authority =
+        Pubkey::from_str_const("FJJycCDD55ZJ79nrYnhR8S89bbNdawUAoCzhUQZoApVk");
+
+    let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
+        &[
+            b"priority_fee_distribution",
+            validator_address.as_ref(),
+            &running_epoch.to_le_bytes(),
+        ],
+        priority_fee_distribution_program,
+    );
+
+    // Get the config account PDA
+    let (config, _) = Pubkey::find_program_address(&[b"config"], priority_fee_distribution_program);
+
+    // Create the instruction data: discriminator + lamports amount
+    let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
+    data.extend_from_slice(&discriminator);
+    data.extend_from_slice(&merkle_root_update_authority.to_bytes()); // Merkle Root Upload Authority
+    data.extend_from_slice(&commission_bps.to_le_bytes()); // Commission
+    data.extend_from_slice(&bump.to_le_bytes()); // Bump
+
+    // List of accounts required for the instruction
+    let accounts = vec![
+        AccountMeta::new_readonly(config, false),
+        AccountMeta::new(priority_fee_distribution_account, false),
+        AccountMeta::new(payer_keypair.pubkey(), true),
+        AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
+    ];
+
+    Instruction {
+        program_id: *priority_fee_distribution_program,
+        accounts,
+        data,
+    }
+}
+
 fn create_share_ix(
     payer_keypair: &Keypair,
     validator_address: &Pubkey,
@@ -84,6 +152,7 @@ fn create_share_ix(
     amount_to_share_lamports: u64,
     running_epoch: u64,
 ) -> Instruction {
+    //
     // Define the instruction discriminator for transfer_priority_fee_tips
     let discriminator: [u8; 8] = [195, 208, 218, 42, 198, 181, 69, 74];
 
@@ -256,6 +325,44 @@ async fn handle_pending_blocks(
     let mut balance_after_transfer = rpc_client.get_balance(&payer_keypair.pubkey()).await?;
     let blockhash = rpc_client.get_latest_blockhash().await?;
 
+    if check_if_initialize_priority_fee_distribution_account_exsists(
+        rpc_client,
+        validator_address,
+        priority_fee_distribution_program,
+        running_epoch,
+    )
+    .await
+    {
+        let ix = create_initialize_priority_fee_distribution_account_ix(
+            payer_keypair,
+            validator_address,
+            priority_fee_distribution_program,
+            commission_bps as u16,
+            running_epoch,
+        );
+        let tx = Transaction::new_signed_with_payer(
+            &[ix],
+            Some(&payer_keypair.pubkey()),
+            &[payer_keypair],
+            blockhash,
+        );
+        let result = rpc_client
+            .send_transaction_with_config(
+                &tx,
+                RpcSendTransactionConfig {
+                    skip_preflight: false,
+                    ..Default::default()
+                },
+            )
+            .await;
+        match result {
+            Ok(sig) => {
+                info!("Create PDA Transaction sent: {}", sig);
+            }
+            Err(err) => error!("Failed to send transaction: {:?}", err),
+        }
+    }
+
     for record_chunk in records.chunks(chunk_size).take(call_limit) {
         // Try to send transactions
         let mut ixs: Vec<Instruction> = vec![];
@@ -394,75 +501,5 @@ pub async fn share_priority_fees_loop(
         }
 
         sleep_ms(LEADER_SLOT_MS).await;
-    }
-}
-
-pub async fn spam_priority_fees_loop(
-    rpc_url: String,
-    priority_fee_keypair_path: PathBuf,
-) -> Result<(), anyhow::Error> {
-    let payer_keypair = read_keypair_file(priority_fee_keypair_path)
-        .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
-    let payer_pubkey = payer_keypair.pubkey().clone();
-
-    let rpc_client = RpcClient::new(rpc_url);
-
-    // Infinite loop to keep sending transactions
-    loop {
-        match rpc_client.get_balance(&payer_pubkey).await {
-            Ok(balance) => {
-                info!("Balance: {}", lamports_to_sol(balance));
-            }
-            Err(err) => {
-                error!("Error getting balance: {}", err);
-                sleep_ms(1000).await;
-                continue;
-            }
-        }
-
-        // Get latest blockhash
-        match rpc_client.get_latest_blockhash().await {
-            Ok(blockhash) => {
-                // Create and send transactions in batches
-
-                // Add compute budget instruction to set priority fee
-                let compute_budget_ix = ComputeBudgetInstruction::set_compute_unit_price(1);
-
-                // Create transaction with both instructions
-                let tx = Transaction::new_signed_with_payer(
-                    &[compute_budget_ix],
-                    Some(&payer_pubkey),
-                    &[payer_keypair.insecure_clone()],
-                    blockhash,
-                );
-
-                // Send transaction
-                match rpc_client
-                    .send_transaction_with_config(
-                        &tx,
-                        RpcSendTransactionConfig {
-                            skip_preflight: false,
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                {
-                    Ok(signature) => {
-                        info!("Sent tx {}", signature);
-                    }
-                    Err(err) => {
-                        error!("Failed to send tx {:?}", err);
-                    }
-                }
-
-                // Small delay between transactions to avoid rate limiting
-                sleep_ms(50).await;
-            }
-            Err(err) => {
-                error!("Failed to get latest blockhash: {:?}", err);
-            }
-        }
-
-        sleep_ms(1000).await;
     }
 }
