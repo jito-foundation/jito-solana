@@ -26,6 +26,12 @@ Environment=FEE_RECORDS_DB_PATH=/var/lib/solana/fee_records
 # The Priority Fee Distribution Program
 Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU
 
+# Priority - merkle_root_upload_authority
+TODO 2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe
+
+# Validator Vote address
+TODO 13sfDC74Rqz6i2cMWjY5wqyRaNdpdpRd75pGLYPzqs44
+
 # How much priority fees to distribute in bps ( 5000 = 50% )
 Environment=COMMISSION_BPS=5000
 

@@ -3,6 +3,7 @@ use bincode;
 use csv::Writer;
 use rocksdb::{Options, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
+use solana_pubkey::Pubkey;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -177,7 +178,13 @@ impl FeeRecords {
     }
 
     /// Adds a new fee record in Unprocessed state
-    pub fn add_priority_fee_record(&self, slot: u64, epoch: u64) -> Result<()> {
+    pub fn add_priority_fee_record(
+        &self,
+        slot: u64,
+        epoch: u64,
+        vote_account: &Pubkey,
+        identity: &Pubkey,
+    ) -> Result<()> {
         // Check if record already exists
         if self.does_record_exsist(slot, epoch) {
             return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
@@ -192,6 +199,8 @@ impl FeeRecords {
             category: FeeRecordCategory::PriorityFee,
             slot_landed: 0,
             signature: String::new(),
+            vote_account: vote_account.to_string(),
+            identity: identity.to_string(),
         };
 
         let mut batch = WriteBatch::default();
@@ -209,6 +218,8 @@ impl FeeRecords {
         signature: &str,
         slot_landed: u64,
         cancel_all_outstanding_records: bool,
+        vote_account: &Pubkey,
+        identity: &Pubkey,
     ) -> Result<()> {
         // Check if record already exists
         if self.does_record_exsist(slot, epoch) {
@@ -224,6 +235,8 @@ impl FeeRecords {
             category: FeeRecordCategory::Ante,
             slot_landed,
             signature: signature.to_string(),
+            vote_account: vote_account.to_string(),
+            identity: identity.to_string(),
         };
 
         let mut batch = WriteBatch::default();
@@ -257,7 +270,14 @@ impl FeeRecords {
     }
 
     /// Adds info record
-    pub fn add_info_record(&self, slot: u64, epoch: u64, priority_fee_lamports: u64) -> Result<()> {
+    pub fn add_info_record(
+        &self,
+        slot: u64,
+        epoch: u64,
+        priority_fee_lamports: u64,
+        vote_account: &Pubkey,
+        identity: &Pubkey,
+    ) -> Result<()> {
         // Check if record already exists
         if self.does_record_exsist(slot, epoch) {
             return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
@@ -272,6 +292,8 @@ impl FeeRecords {
             category: FeeRecordCategory::Info,
             slot_landed: 0,
             signature: String::new(),
+            vote_account: vote_account.to_string(),
+            identity: identity.to_string(),
         };
 
         let mut batch = WriteBatch::default();
@@ -464,10 +486,13 @@ impl FeeRecords {
             "slot",
             "state",
             "category",
+            "epoch",
             "priority_fee_lamports",
             "slot_landed",
             "signature",
             "link",
+            "vote_account",
+            "identity",
         ])?;
 
         // Write records to CSV
@@ -485,10 +510,13 @@ impl FeeRecords {
                 record.slot.to_string(),
                 format!("{:?}", record.state),
                 format!("{:?}", record.category),
+                record.epoch.to_string(),
                 record.priority_fee_lamports.to_string(),
                 record.slot_landed.to_string(),
                 record.signature.clone(),
                 link,
+                record.vote_account,
+                record.identity,
             ])?;
         }
 
@@ -552,6 +580,8 @@ pub struct FeeRecordEntry {
     pub category: FeeRecordCategory, // Fee Record Catagory
     pub slot_landed: u64,            // Slot the % fee transfer to the router PDA landed
     pub signature: String,           // Signature of the transaction
+    pub vote_account: String,        // Vote account of the Validator
+    pub identity: String,            // Identity account of the Validator
 }
 
 /// Key management for fee records database

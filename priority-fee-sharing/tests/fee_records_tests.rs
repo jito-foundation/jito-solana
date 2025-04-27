@@ -2,8 +2,14 @@ use anyhow::Result;
 use priority_fee_sharing::fee_records::{
     FeeRecordCategory, FeeRecordKey, FeeRecordState, FeeRecords, FeeRecordsConfig,
 };
+use solana_pubkey::Pubkey;
+use solana_sdk::pubkey;
 use std::fs;
 use std::path::Path;
+
+// TEST KEYS
+const VOTE_ACCOUNT: Pubkey = pubkey!("BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA");
+const IDENTITY: Pubkey = pubkey!("BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA");
 
 // Helper function to create a clean test directory
 fn setup_test_dir(dir_name: &str) -> Result<String> {
@@ -51,7 +57,7 @@ fn test_add_get_record() -> Result<()> {
     // Add a record
     let test_slot = 12345;
     let test_epoch = 100;
-    fee_records.add_priority_fee_record(test_slot, test_epoch)?;
+    fee_records.add_priority_fee_record(test_slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
 
     // Get the record
     let record = fee_records.get_record(test_slot, test_epoch)?;
@@ -84,10 +90,11 @@ fn test_add_duplicate_record() -> Result<()> {
     // Add a record
     let test_slot = 12345;
     let test_epoch = 100;
-    fee_records.add_priority_fee_record(test_slot, test_epoch)?;
+    fee_records.add_priority_fee_record(test_slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
 
     // Try to add a duplicate record (should fail)
-    let result = fee_records.add_priority_fee_record(test_slot, test_epoch);
+    let result =
+        fee_records.add_priority_fee_record(test_slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY);
     assert!(result.is_err());
 
     // Clean up
@@ -103,9 +110,9 @@ fn test_process_record() -> Result<()> {
 
     // Add several records
     let test_epoch = 100;
-    fee_records.add_priority_fee_record(1001, test_epoch)?;
-    fee_records.add_priority_fee_record(1002, test_epoch)?;
-    fee_records.add_priority_fee_record(1003, test_epoch)?;
+    fee_records.add_priority_fee_record(1001, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
+    fee_records.add_priority_fee_record(1002, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
+    fee_records.add_priority_fee_record(1003, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
 
     // Get unprocessed records
     let unprocessed = fee_records.get_records_by_state(FeeRecordState::Unprocessed)?;
@@ -137,9 +144,9 @@ fn test_skip_record() -> Result<()> {
 
     // Add several records
     let test_epoch = 100;
-    fee_records.add_priority_fee_record(1001, test_epoch)?;
-    fee_records.add_priority_fee_record(1002, test_epoch)?;
-    fee_records.add_priority_fee_record(1003, test_epoch)?;
+    fee_records.add_priority_fee_record(1001, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
+    fee_records.add_priority_fee_record(1002, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
+    fee_records.add_priority_fee_record(1003, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
 
     // Skip one record
     fee_records.skip_record(1002, test_epoch)?;
@@ -174,8 +181,8 @@ fn test_complete_record() -> Result<()> {
 
     // Add two records
     let test_epoch = 100;
-    fee_records.add_priority_fee_record(1001, test_epoch)?;
-    fee_records.add_priority_fee_record(1002, test_epoch)?;
+    fee_records.add_priority_fee_record(1001, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
+    fee_records.add_priority_fee_record(1002, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
 
     // Process the records
     fee_records.process_record(1001, test_epoch, 100000)?;
@@ -230,6 +237,8 @@ fn test_add_ante_record() -> Result<()> {
         test_signature,
         test_landed_slot,
         true,
+        &VOTE_ACCOUNT,
+        &IDENTITY,
     )?;
 
     // Get the record
@@ -246,7 +255,8 @@ fn test_add_ante_record() -> Result<()> {
     assert_eq!(ante_records[0].slot, test_slot);
 
     // Try adding duplicate
-    let result = fee_records.add_priority_fee_record(test_slot, test_epoch);
+    let result =
+        fee_records.add_priority_fee_record(test_slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY);
     assert!(result.is_err());
 
     // Clean up
@@ -262,9 +272,9 @@ fn test_ante_up_transition() -> Result<()> {
 
     // Add several records in different states
     let test_epoch = 100;
-    fee_records.add_priority_fee_record(1001, test_epoch)?;
-    fee_records.add_priority_fee_record(1002, test_epoch)?;
-    fee_records.add_priority_fee_record(1003, test_epoch)?;
+    fee_records.add_priority_fee_record(1001, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
+    fee_records.add_priority_fee_record(1002, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
+    fee_records.add_priority_fee_record(1003, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
 
     // Process some records
     fee_records.process_record(1002, test_epoch, 200000)?;
@@ -294,7 +304,16 @@ fn test_ante_up_transition() -> Result<()> {
     );
 
     // Add ante record which should transition all unprocessed and pending records to AntedUp
-    fee_records.add_ante_record(2000, test_epoch, 500000, "ante_sig", 2100, true)?;
+    fee_records.add_ante_record(
+        2000,
+        test_epoch,
+        500000,
+        "ante_sig",
+        2100,
+        true,
+        &VOTE_ACCOUNT,
+        &IDENTITY,
+    )?;
 
     // Check that records have transitioned
     assert_eq!(
@@ -342,7 +361,7 @@ fn test_export_to_csv() -> Result<()> {
     let test_epoch = 100;
     for i in 0..5 {
         let slot = 1000 + i;
-        fee_records.add_priority_fee_record(slot, test_epoch)?;
+        fee_records.add_priority_fee_record(slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
     }
 
     // Process and complete some records
@@ -353,10 +372,19 @@ fn test_export_to_csv() -> Result<()> {
     fee_records.complete_record(1001, test_epoch, "sig_1001", 1101)?;
 
     // Add an ante record
-    fee_records.add_ante_record(2000, test_epoch, 600000, "sig_ante", 2100, true)?;
+    fee_records.add_ante_record(
+        2000,
+        test_epoch,
+        600000,
+        "sig_ante",
+        2100,
+        true,
+        &VOTE_ACCOUNT,
+        &IDENTITY,
+    )?;
 
     // Skip a record (but we need to add it first)
-    fee_records.add_priority_fee_record(3000, test_epoch)?;
+    fee_records.add_priority_fee_record(3000, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
     fee_records.skip_record(3000, test_epoch)?;
 
     // Export records by state
@@ -376,11 +404,14 @@ fn test_export_to_csv() -> Result<()> {
 
     // Basic content verification for completed records
     let csv_content = fs::read_to_string(&completed_csv)?;
+    println!("{:?}", csv_content);
     assert!(csv_content.contains("timestamp"));
     assert!(csv_content.contains("slot"));
     assert!(csv_content.contains("epoch"));
     assert!(csv_content.contains("state"));
     assert!(csv_content.contains("category"));
+    assert!(csv_content.contains("vote_account"));
+    assert!(csv_content.contains("identity"));
     assert!(csv_content.contains("priority_fee_lamports"));
     assert!(csv_content.contains("sig_1000"));
     assert!(csv_content.contains("sig_1001"));
@@ -468,7 +499,7 @@ fn test_performance() -> Result<()> {
     let start_add = Instant::now();
     for i in 0..total_records {
         let slot = 1000 + i as u64;
-        fee_records.add_priority_fee_record(slot, test_epoch)?;
+        fee_records.add_priority_fee_record(slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
     }
     let add_duration = start_add.elapsed();
     println!(
@@ -540,11 +571,20 @@ fn test_batch_operations() -> Result<()> {
     // Add many records at once
     let test_epoch = 100;
     for i in 1..=100 {
-        fee_records.add_priority_fee_record(i, test_epoch)?;
+        fee_records.add_priority_fee_record(i, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
     }
 
     // Test transition to ante-up state by adding an ante record
-    fee_records.add_ante_record(1000, test_epoch, 1000000, "ante_sig", 1100, true)?;
+    fee_records.add_ante_record(
+        1000,
+        test_epoch,
+        1000000,
+        "ante_sig",
+        1100,
+        true,
+        &VOTE_ACCOUNT,
+        &IDENTITY,
+    )?;
 
     // Verify all records transitioned to AntedUp
     let anted_up = fee_records.get_records_by_state(FeeRecordState::AntedUp)?;

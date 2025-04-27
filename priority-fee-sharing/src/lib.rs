@@ -8,15 +8,14 @@ use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::instruction::Instruction;
-use solana_sdk::native_token::lamports_to_sol;
 use solana_sdk::reward_type::RewardType;
 use solana_sdk::signature::read_keypair_file;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
+use solana_sdk::vote::state::VoteState;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -77,135 +76,113 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
     Ok(())
 }
 
+fn get_priority_fee_distribution_config_account(
+    priority_fee_distribution_program: &Pubkey,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], priority_fee_distribution_program)
+}
+
+fn get_priority_fee_distribution_account(
+    validator_vote_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    running_epoch: u64,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            b"PF_DISTRIBUTION_ACCOUNT",
+            validator_vote_address.as_ref(),
+            &running_epoch.to_le_bytes(),
+        ],
+        priority_fee_distribution_program,
+    )
+}
+
+async fn get_validator_identity(
+    rpc_client: &RpcClient,
+    validator_vote_address: &Pubkey,
+) -> Result<Pubkey> {
+    let account_result = rpc_client.get_account(validator_vote_address).await;
+
+    match account_result {
+        Ok(account) => {
+            let vote_state_result = VoteState::deserialize(&account.data);
+
+            match vote_state_result {
+                Ok(state) => {
+                    return Ok(state.node_pubkey);
+                }
+                Err(e) => {
+                    return Err(anyhow!("Could not parse Vote State: {:?}", e));
+                }
+            }
+        }
+        Err(e) => {
+            return Err(anyhow!("Could not get Validator Idenity: {:?}", e));
+        }
+    }
+}
+
 async fn check_if_initialize_priority_fee_distribution_account_exsists(
     rpc_client: &RpcClient,
     validator_vote_address: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch: u64,
 ) -> bool {
-    let (priority_fee_distribution_account, _) = Pubkey::find_program_address(
-        &[
-            b"PF_DISTRIBUTION_ACCOUNT",
-            validator_vote_address.as_ref(),
-            &running_epoch.to_le_bytes(),
-        ],
+    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account(
+        validator_vote_address,
         priority_fee_distribution_program,
+        running_epoch,
     );
 
     let result = rpc_client
         .get_account(&priority_fee_distribution_account)
         .await;
 
-    if result.is_err() {
-        return false;
-    }
-    let account = result.unwrap();
-
-    info!("Account: {:?}", account);
-    true
+    result.is_ok()
 }
 
 fn create_initialize_priority_fee_distribution_account_ix(
-    payer_keypair: &Keypair,
+    vote_authority_keypair: &Keypair,
     validator_vote_address: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
+    merkle_root_upload_authority: &Pubkey,
     commission_bps: u16,
     running_epoch: u64,
 ) -> Instruction {
-    // Instruction {
-    //     program_id,
-    //     data:
-    //         jito_priority_fee_distribution::instruction::InitializePriorityFeeDistributionAccount {
-    //             merkle_root_upload_authority: merkle_root_upload_auth,
-    //             validator_commission_bps: 0xBADD,
-    //             bump: 0x55,
-    //         }
-    //         .data(),
-    //     accounts:
-    //         jito_priority_fee_distribution::accounts::InitializePriorityFeeDistributionAccount {
-    //             config: config,
-    //             system_program: system_program,
-    //             priority_fee_distribution_account: priority_fee_distribution_account,
-    //             signer: signer,
-    //             validator_vote_account: validator_vote_account,
-    //         }
-    //         .to_account_metas(None),
-    // }
-
-    let mut data = Vec::with_capacity(256);
     // initialize_priority_fee_distribution_account
     let discriminator: [u8; 8] = [49, 128, 247, 162, 140, 2, 193, 87];
-    data.extend_from_slice(&discriminator);
 
-    // This should be set to the actual merkle root upload authority
-    let merkle_root_upload_authority =
-        Pubkey::from_str_const("2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe");
-    data.extend_from_slice(&merkle_root_upload_authority.to_bytes());
-
-    data.extend_from_slice(&commission_bps.to_le_bytes());
-    info!("{}", commission_bps);
-
-    let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
-        &[
-            b"PF_DISTRIBUTION_ACCOUNT",
-            validator_vote_address.as_ref(),
-            &running_epoch.to_le_bytes(),
-        ],
+    let (priority_fee_distribution_account, bump) = get_priority_fee_distribution_account(
+        validator_vote_address,
         priority_fee_distribution_program,
+        running_epoch,
     );
-    data.push(bump);
 
     // Get the config account PDA
     let (config, _) =
-        Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], priority_fee_distribution_program);
-    info!("Config {}", config);
+        get_priority_fee_distribution_config_account(&priority_fee_distribution_program);
 
-    // // Create the instruction data: discriminator + args
-    // let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
-    // data.extend_from_slice(&discriminator);
-    // data.extend_from_slice(&merkle_root_upload_authority.to_bytes()); // Merkle Root Upload Authority
-    // data.extend_from_slice(&commission_bps.to_le_bytes()); // Commission
-    // data.extend_from_slice(&[bump]); // Bump as a single byte
+    // Create the instruction data: discriminator + args
+    let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
+    data.extend_from_slice(&discriminator);
+    data.extend_from_slice(&merkle_root_upload_authority.to_bytes()); // Merkle Root Upload Authority
+    data.extend_from_slice(&commission_bps.to_le_bytes()); // Commission
+    data.extend_from_slice(&[bump]); // Bump as a single byte
 
     // List of accounts required for the instruction
     let accounts = vec![
         AccountMeta::new_readonly(config, false), // config
         AccountMeta::new(priority_fee_distribution_account, false), // priority_fee_distribution_account (writable)
         AccountMeta::new_readonly(*validator_vote_address, false),  // validator_vote_account
-        AccountMeta::new(payer_keypair.pubkey(), true),             // signer (writable, signer)
+        AccountMeta::new(vote_authority_keypair.pubkey(), true),    // signer (writable, signer)
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
-    // ACCOUNTS IN ORDER (exact order is important):
-    // Account 0: Config - 1111111ogCyDbaRMvkdsHB3qfdyFYaG1WtRUAfdh (is_signer: false, is_writable: false)
-    // Account 1: Priority Fee Distribution Account - 11111112cMQwSC9qirWGjZM6gLGwW69X22mqwLLGP (is_signer: false, is_writable: true)
-    // Account 2: Validator Vote Account - 11111113R2cuenjG5nFubqX9Wzuukdin2YfGQVzu5 (is_signer: false, is_writable: false)
-    // Account 3: Signer - 111111131h1vYVSYuKP6AhS86fbRdMw9XHiZAvAaj (is_signer: true, is_writable: true)
-    // Account 4: System Program - 11111112D1oxKts8YPdTJRG5FzxTNpMtWmq8hkVx3 (is_signer: false, is_writable: false)
-
-    let ix = Instruction {
+    Instruction {
         program_id: *priority_fee_distribution_program,
         accounts,
         data,
-    };
-
-    // Print the raw data bytes in various formats
-    let serialized_data = ix.clone().data;
-
-    // Print the raw bytes in decimal format
-    info!("DATA RAW BYTES (DECIMAL):");
-    let mut string = String::new();
-    string.push('[');
-    for (i, byte) in serialized_data.iter().enumerate() {
-        if i > 0 {
-            string.push_str(", ");
-        }
-        string.push_str(&byte.to_string());
     }
-    string.push(']');
-    info!("{}", string);
-
-    ix
 }
 
 fn create_share_ix(
@@ -219,13 +196,10 @@ fn create_share_ix(
     let discriminator: [u8; 8] = [195, 208, 218, 42, 198, 181, 69, 74];
 
     // Get the priority fee distribution account PDA
-    let (priority_fee_distribution_account, _) = Pubkey::find_program_address(
-        &[
-            b"PF_DISTRIBUTION_ACCOUNT",
-            validator_vote_address.as_ref(),
-            &running_epoch.to_le_bytes(),
-        ],
+    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account(
+        validator_vote_address,
         priority_fee_distribution_program,
+        running_epoch,
     );
 
     // Get the config account PDA
@@ -246,36 +220,19 @@ fn create_share_ix(
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
-    let ix = Instruction {
+    Instruction {
         program_id: *priority_fee_distribution_program,
         accounts,
         data,
-    };
-
-    // Print the raw data bytes in various formats
-    let serialized_data = ix.clone().data;
-
-    // Print the raw bytes in decimal format
-    info!("DATA RAW BYTES (DECIMAL):");
-    let mut string = String::new();
-    string.push('[');
-    for (i, byte) in serialized_data.iter().enumerate() {
-        if i > 0 {
-            string.push_str(", ");
-        }
-        string.push_str(&byte.to_string());
     }
-    string.push(']');
-    info!("{}", string);
-
-    ix
 }
 
 // ------------------------- BLOCK FUNCTIONS -----------------------------
 async fn handle_epoch_and_leader_slot(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
-    validator_address: &Pubkey,
+    validator_vote_account: &Pubkey,
+    validator_identity: &Pubkey,
     running_epoch: u64,
 ) -> Result<(u64, u64)> {
     let epoch_info = rpc_client
@@ -299,13 +256,21 @@ async fn handle_epoch_and_leader_slot(
         ))?;
 
     let validator_slots = leader_schedule
-        .get(&validator_address.to_string())
-        .ok_or(anyhow!("No leader slots found for {}", validator_address))?;
+        .get(&validator_vote_account.to_string())
+        .ok_or(anyhow!(
+            "No leader slots found for {}",
+            validator_vote_account
+        ))?;
 
     for slot in validator_slots {
         let slot = *slot as u64 + epoch_start_slot;
         info!("Processing slot {} {}", slot, epoch_info.absolute_slot);
-        let result = fee_records.add_priority_fee_record(slot, epoch_info.epoch);
+        let result = fee_records.add_priority_fee_record(
+            slot,
+            epoch_info.epoch,
+            validator_vote_account,
+            validator_identity,
+        );
         if let Err(err) = result {
             error!(
                 "Error adding priority fee record for slot {}: {}",
@@ -390,8 +355,10 @@ async fn handle_pending_blocks(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
     payer_keypair: &Keypair,
-    validator_address: &Pubkey,
+    vote_authority_keypair: &Keypair,
+    validator_vote_account: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
+    merkle_root_upload_authority: &Pubkey,
     commission_bps: u64,
     minimum_balance_lamports: u64,
     chunk_size: usize,
@@ -405,39 +372,35 @@ async fn handle_pending_blocks(
     let mut balance_after_transfer = rpc_client.get_balance(&payer_keypair.pubkey()).await?;
     let blockhash = rpc_client.get_latest_blockhash().await?;
 
-    let validator_vote_address =
-        Pubkey::from_str_const("13sfDC74Rqz6i2cMWjY5wqyRaNdpdpRd75pGLYPzqs44");
-
+    // Check or create Priority Fee Distribution Account
     if !check_if_initialize_priority_fee_distribution_account_exsists(
         rpc_client,
-        &validator_vote_address,
+        &validator_vote_account,
         priority_fee_distribution_program,
         running_epoch,
     )
     .await
     {
-        info!("Creating PDA...");
         let ix = create_initialize_priority_fee_distribution_account_ix(
-            payer_keypair,
-            &validator_vote_address,
+            vote_authority_keypair,
+            &validator_vote_account,
             priority_fee_distribution_program,
+            merkle_root_upload_authority,
             commission_bps as u16,
             running_epoch,
         );
         let tx = Transaction::new_signed_with_payer(
             &[ix.clone()],
             Some(&payer_keypair.pubkey()),
-            &[payer_keypair],
+            &[vote_authority_keypair, payer_keypair],
             blockhash,
         );
-
-        info!("{:?}\n\n{:?}", ix, tx);
 
         let result = rpc_client
             .send_transaction_with_config(
                 &tx,
                 RpcSendTransactionConfig {
-                    skip_preflight: false,
+                    skip_preflight: true,
                     ..Default::default()
                 },
             )
@@ -458,13 +421,21 @@ async fn handle_pending_blocks(
         let mut records: Vec<FeeRecordEntry> = vec![];
 
         for record in record_chunk {
+            if record.vote_account.ne(&validator_vote_account.to_string()) {
+                info!(
+                    "Record is not for the correct validator {} != {}",
+                    record.vote_account, validator_vote_account
+                );
+                continue;
+            }
+
             let priority_fee_lamports: u64 = record.priority_fee_lamports;
 
             let amount_to_share_lamports = calculate_share(priority_fee_lamports, commission_bps)?;
 
             let share_ix = create_share_ix(
                 payer_keypair,
-                &validator_vote_address,
+                &validator_vote_account,
                 priority_fee_distribution_program,
                 amount_to_share_lamports,
                 running_epoch,
@@ -485,7 +456,6 @@ async fn handle_pending_blocks(
         }
 
         // Create TX
-        info!("Creating TX...");
         let tx = Transaction::new_signed_with_payer(
             &ixs,
             Some(&payer_keypair.pubkey()),
@@ -497,7 +467,7 @@ async fn handle_pending_blocks(
             .send_transaction_with_config(
                 &tx,
                 RpcSendTransactionConfig {
-                    skip_preflight: false,
+                    skip_preflight: true,
                     ..Default::default()
                 },
             )
@@ -529,18 +499,23 @@ async fn handle_pending_blocks(
 pub async fn share_priority_fees_loop(
     rpc_url: String,
     fee_records_db_path: PathBuf,
-    priority_fee_keypair_path: PathBuf,
-    validator_address: Pubkey,
+    priority_fee_payer_keypair_path: PathBuf,
+    vote_authority_keypair_path: PathBuf,
+    validator_vote_account: Pubkey,
+    merkle_root_upload_authority: Pubkey,
     priority_fee_distribution_program: Pubkey,
-    commission_bps: u64,
     minimum_balance_lamports: u64,
+    commission_bps: u64,
     chunk_size: usize,
     call_limit: usize,
 ) -> Result<()> {
     check_commission_percentage(commission_bps)?;
 
-    let payer_keypair = read_keypair_file(priority_fee_keypair_path)
+    let payer_keypair = read_keypair_file(priority_fee_payer_keypair_path)
         .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
+
+    let vote_authority_keypair = read_keypair_file(vote_authority_keypair_path)
+        .unwrap_or_else(|err| panic!("Failed to read vote authority keypair file: {}", err));
 
     let rpc_client = RpcClient::new(rpc_url);
     let fee_records = FeeRecords::new(fee_records_db_path)?;
@@ -548,13 +523,16 @@ pub async fn share_priority_fees_loop(
     let mut running_epoch = 0;
     let mut running_slot = 0;
 
+    let validator_identity = get_validator_identity(&rpc_client, &validator_vote_account).await?;
+
     loop {
         // 1. Handle Epoch
         info!(" -------- 1. HANDLE EPOCH AND LEADER SLOT -----------");
         let result = handle_epoch_and_leader_slot(
             &rpc_client,
             &fee_records,
-            &validator_address,
+            &validator_vote_account,
+            &validator_identity,
             running_epoch,
         )
         .await;
@@ -580,8 +558,10 @@ pub async fn share_priority_fees_loop(
             &rpc_client,
             &fee_records,
             &payer_keypair,
-            &validator_address,
+            &vote_authority_keypair,
+            &validator_vote_account,
             &priority_fee_distribution_program,
+            &merkle_root_upload_authority,
             commission_bps,
             minimum_balance_lamports,
             chunk_size,
