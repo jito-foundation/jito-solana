@@ -3,7 +3,6 @@ pub mod fee_records;
 
 use anyhow::{anyhow, Result};
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
-use log::warn;
 use log::{error, info};
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
@@ -102,7 +101,7 @@ async fn check_if_initialize_priority_fee_distribution_account_exsists(
     }
     let account = result.unwrap();
 
-    warn!("Account: {:?}", account);
+    info!("Account: {:?}", account);
     true
 }
 
@@ -343,7 +342,7 @@ async fn handle_pending_blocks(
     )
     .await
     {
-        error!("Creating PDA...");
+        info!("Creating PDA...");
         let ix = create_initialize_priority_fee_distribution_account_ix(
             payer_keypair,
             &validator_vote_address,
@@ -358,7 +357,7 @@ async fn handle_pending_blocks(
             blockhash,
         );
 
-        error!("{:?}\n\n{:?}", ix, tx);
+        info!("{:?}\n\n{:?}", ix, tx);
 
         let result = rpc_client
             .send_transaction_with_config(
@@ -410,7 +409,7 @@ async fn handle_pending_blocks(
         }
 
         // Create TX
-        error!("Creating TX...");
+        info!("Creating TX...");
         let tx = Transaction::new_signed_with_payer(
             &ixs,
             Some(&payer_keypair.pubkey()),
@@ -475,6 +474,7 @@ pub async fn share_priority_fees_loop(
 
     loop {
         // 1. Handle Epoch
+        info!(" -------- 1. HANDLE EPOCH AND LEADER SLOT -----------");
         let result = handle_epoch_and_leader_slot(
             &rpc_client,
             &fee_records,
@@ -491,6 +491,7 @@ pub async fn share_priority_fees_loop(
         }
 
         // 2. Handle unprocessed blocks
+        info!(" -------- 2. HANDLE UNPROCESSED BLOCKS -----------");
         let result =
             handle_unprocessed_blocks(&rpc_client, &fee_records, running_slot, call_limit).await;
         if let Err(err) = result {
@@ -498,6 +499,7 @@ pub async fn share_priority_fees_loop(
         }
 
         // 3. Handle pending blocks
+        info!(" -------- 3. HANDLE PENDING BLOCKS -----------");
         let result = handle_pending_blocks(
             &rpc_client,
             &fee_records,
