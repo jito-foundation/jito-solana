@@ -121,7 +121,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
 
     let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
         &[
-            b"priority_fee_distribution",
+            b"PF_DISTRIBUTION_ACCOUNT",
             validator_vote_address.as_ref(),
             &running_epoch.to_le_bytes(),
         ],
