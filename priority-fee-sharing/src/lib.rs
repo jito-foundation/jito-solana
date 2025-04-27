@@ -337,6 +337,7 @@ async fn handle_pending_blocks(
     )
     .await
     {
+        warn!("Creating PDA...");
         let ix = create_initialize_priority_fee_distribution_account_ix(
             payer_keypair,
             &validator_vote_address,
