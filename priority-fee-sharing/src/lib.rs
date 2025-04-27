@@ -112,12 +112,17 @@ fn create_initialize_priority_fee_distribution_account_ix(
     commission_bps: u16,
     running_epoch: u64,
 ) -> Instruction {
+    let mut data = Vec::with_capacity(256);
     // initialize_priority_fee_distribution_account
     let discriminator: [u8; 8] = [49, 128, 247, 162, 140, 2, 193, 87];
+    data.extend_from_slice(&discriminator);
 
     // This should be set to the actual merkle root upload authority
     let merkle_root_upload_authority =
         Pubkey::from_str_const("FJJycCDD55ZJ79nrYnhR8S89bbNdawUAoCzhUQZoApVk");
+    data.extend_from_slice(&merkle_root_upload_authority.to_bytes());
+
+    data.extend_from_slice(&commission_bps.to_le_bytes());
 
     let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
         &[
@@ -127,18 +132,19 @@ fn create_initialize_priority_fee_distribution_account_ix(
         ],
         priority_fee_distribution_program,
     );
+    data.push(bump);
 
     // Get the config account PDA
     let (config, _) =
         Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], priority_fee_distribution_program);
     info!("Config {}", config);
 
-    // Create the instruction data: discriminator + args
-    let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
-    data.extend_from_slice(&discriminator);
-    data.extend_from_slice(&merkle_root_upload_authority.to_bytes()); // Merkle Root Upload Authority
-    data.extend_from_slice(&commission_bps.to_le_bytes()); // Commission
-    data.extend_from_slice(&[bump]); // Bump as a single byte
+    // // Create the instruction data: discriminator + args
+    // let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
+    // data.extend_from_slice(&discriminator);
+    // data.extend_from_slice(&merkle_root_upload_authority.to_bytes()); // Merkle Root Upload Authority
+    // data.extend_from_slice(&commission_bps.to_le_bytes()); // Commission
+    // data.extend_from_slice(&[bump]); // Bump as a single byte
 
     // List of accounts required for the instruction
     let accounts = vec![
