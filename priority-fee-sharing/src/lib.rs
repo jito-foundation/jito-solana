@@ -334,7 +334,7 @@ async fn handle_pending_blocks(
     let validator_vote_address =
         Pubkey::from_str_const("13sfDC74Rqz6i2cMWjY5wqyRaNdpdpRd75pGLYPzqs44");
 
-    if check_if_initialize_priority_fee_distribution_account_exsists(
+    if !check_if_initialize_priority_fee_distribution_account_exsists(
         rpc_client,
         &validator_vote_address,
         priority_fee_distribution_program,
