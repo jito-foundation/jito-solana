@@ -1,3 +1,26 @@
+# In Progress Notes
+
+The README is still a work in process
+
+NOTE:
+`cat /etc/systemd/system/solana-validator.service`
+- Show what required parameters are needed
+- Payer keypair ( Should be your vote account keypair )
+- Validator Identity ( Address of your validator identity )
+Reserve Balance?
+- Comission not Optional
+Take go live epoch out
+- Read current .service file on re-read
+- Vote -> Identity
+- Add sudo vim service file
+- How to edit
+- After installation, run source ~/.bashrc
+- NOTES to BOLD
+- Remove Compact DB and other CLI
+- Get TX to land
+- Systemd - log space
+- periodically comapct DB
+
 # Priority Fee Sharing
 
 This service enables validators to distribute priority fees to their delegators through Jito's priority fee distribution program.
@@ -28,26 +51,6 @@ cd jito-solana/priority-fee-sharing
 ## Easy Setup
 
 The easiest way to set up the Priority Fee Sharing service is to use the automated setup script:
-
-
-NOTE:
-`cat /etc/systemd/system/solana-validator.service`
-- Show what required parameters are needed
-- Payer keypair ( Should be your vote account keypair )
-- Validator Identity ( Address of your validator identity )
-Reserve Balance?
-- Comission not Optional
-Take go live epoch out
-- Read current .service file on re-read
-- Vote -> Identity
-- Add sudo vim service file
-- How to edit
-- After installation, run source ~/.bashrc
-- NOTES to BOLD
-- Remove Compact DB and other CLI
-- Get TX to land
-- Systemd - log space
-- periodically comapct DB
 
 ```bash
 sudo ./setup_priority_fee_sharing.sh
@@ -183,11 +186,13 @@ The following environment variables are used in the service file:
 |-----------|-------------|---------|
 | `RPC_URL` | URL of the Solana RPC endpoint. This RPC needs to be able to call `get_block`. If using a local RPC, ensure it is running with `--enable-rpc-transaction-history`| `http://localhost:8899` |
 | `FEE_RECORDS_DB_PATH` | Directory path for storing fee records Rocks DB | `/var/lib/solana/fee_records` |
-| `PRIORITY_FEE_KEYPAIR_PATH` | Path to keypair that will pay the   | None, must be provided |
-| `VALIDATOR_ADDRESS` | Your validator's vote account address | None, must be provided |
-| `MINIMUM_BALANCE_SOL` | Minimum balance to maintain in the payer account (in SOL) |  None, must be provided |
+| `PRIORITY_FEE_PAYER_KEYPAIR_PATH` | Path to keypair that will pay the priority fees | None, must be provided |
+| `VOTE_AUTHORITY_KEYPAIR_PATH` | Path to your vote authority keypair (needed to create the PriorityFeeDistribution Account) | None, must be provided |
+| `VALIDATOR_VOTE_ACCOUNT` | Your validator's vote account address | None, must be provided |
+| `MERKLE_ROOT_UPLOAD_AUTHORITY` | Authority for uploading the merkle root | None, must be provided |
+| `MINIMUM_BALANCE_SOL` | Minimum balance to maintain in the payer account (in SOL) | None, must be provided |
 
-### Optional Parameters ( with defaults )
+### Optional Parameters (with defaults)
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -195,7 +200,6 @@ The following environment variables are used in the service file:
 | `COMMISSION_BPS` | Commission in basis points (100 = 1%, 5000 = 50%, 10000 = 100%) | `5000` |
 | `CHUNK_SIZE` | Batch size for processing transactions | `1` |
 | `CALL_LIMIT` | Maximum number of calls | `1` |
-| `GO_LIVE_EPOCH` | Epoch number when the service should go live | `1000` |
 
 # CLI
 
@@ -234,13 +238,4 @@ priority-fee-share-cli export-csv \
   --fee-records-db-path /var/lib/solana/fee_records \
   --output-path ./output.csv \
   --state any
-```
-
-### Compact DB
-
-For performance reasons, it is recommended to compact the database periodically. To do so, run the following command:
-
-```bash
-priority-fee-share-cli compact-db \
-  --fee-records-db-path /var/lib/solana/fee_records
 ```
