@@ -139,10 +139,9 @@ fn create_initialize_priority_fee_distribution_account_ix(
 
     // This should be set to the actual merkle root upload authority
     let merkle_root_upload_authority =
-        Pubkey::from_str_const("BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA");
+        Pubkey::from_str_const("2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe");
     data.extend_from_slice(&merkle_root_upload_authority.to_bytes());
 
-    let commission_bps: u16 = 0xBADD;
     data.extend_from_slice(&commission_bps.to_le_bytes());
 
     let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
@@ -153,7 +152,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
         ],
         priority_fee_distribution_program,
     );
-    data.push(0x55);
+    data.push(bump);
 
     // Get the config account PDA
     let (config, _) =
@@ -175,6 +174,13 @@ fn create_initialize_priority_fee_distribution_account_ix(
         AccountMeta::new(payer_keypair.pubkey(), true),             // signer (writable, signer)
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
+
+    // ACCOUNTS IN ORDER (exact order is important):
+    // Account 0: Config - 1111111ogCyDbaRMvkdsHB3qfdyFYaG1WtRUAfdh (is_signer: false, is_writable: false)
+    // Account 1: Priority Fee Distribution Account - 11111112cMQwSC9qirWGjZM6gLGwW69X22mqwLLGP (is_signer: false, is_writable: true)
+    // Account 2: Validator Vote Account - 11111113R2cuenjG5nFubqX9Wzuukdin2YfGQVzu5 (is_signer: false, is_writable: false)
+    // Account 3: Signer - 111111131h1vYVSYuKP6AhS86fbRdMw9XHiZAvAaj (is_signer: true, is_writable: true)
+    // Account 4: System Program - 11111112D1oxKts8YPdTJRG5FzxTNpMtWmq8hkVx3 (is_signer: false, is_writable: false)
 
     let ix = Instruction {
         program_id: *priority_fee_distribution_program,
