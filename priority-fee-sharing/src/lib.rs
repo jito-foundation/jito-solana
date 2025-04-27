@@ -141,9 +141,9 @@ fn create_initialize_priority_fee_distribution_account_ix(
     // List of accounts required for the instruction
     let accounts = vec![
         AccountMeta::new_readonly(config, false), // config
-        AccountMeta::new(priority_fee_distribution_account, true), // priority_fee_distribution_account (writable)
-        AccountMeta::new_readonly(*validator_vote_address, false), // validator_vote_account
-        AccountMeta::new(payer_keypair.pubkey(), true),            // signer (writable, signer)
+        AccountMeta::new(priority_fee_distribution_account, false), // priority_fee_distribution_account (writable)
+        AccountMeta::new_readonly(*validator_vote_address, false),  // validator_vote_account
+        AccountMeta::new(payer_keypair.pubkey(), true),             // signer (writable, signer)
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
@@ -185,8 +185,8 @@ fn create_share_ix(
     // List of accounts required for the instruction
     let accounts = vec![
         AccountMeta::new_readonly(config, false), // config
-        AccountMeta::new(priority_fee_distribution_account, true), // priority_fee_distribution_account (writable)
-        AccountMeta::new(payer_keypair.pubkey(), true),            // from (writable, signer)
+        AccountMeta::new(priority_fee_distribution_account, false), // priority_fee_distribution_account (writable)
+        AccountMeta::new(payer_keypair.pubkey(), true),             // from (writable, signer)
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
