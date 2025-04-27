@@ -112,6 +112,26 @@ fn create_initialize_priority_fee_distribution_account_ix(
     commission_bps: u16,
     running_epoch: u64,
 ) -> Instruction {
+    // Instruction {
+    //     program_id,
+    //     data:
+    //         jito_priority_fee_distribution::instruction::InitializePriorityFeeDistributionAccount {
+    //             merkle_root_upload_authority: merkle_root_upload_auth,
+    //             validator_commission_bps: 0xBADD,
+    //             bump: 0x55,
+    //         }
+    //         .data(),
+    //     accounts:
+    //         jito_priority_fee_distribution::accounts::InitializePriorityFeeDistributionAccount {
+    //             config: config,
+    //             system_program: system_program,
+    //             priority_fee_distribution_account: priority_fee_distribution_account,
+    //             signer: signer,
+    //             validator_vote_account: validator_vote_account,
+    //         }
+    //         .to_account_metas(None),
+    // }
+
     let mut data = Vec::with_capacity(256);
     // initialize_priority_fee_distribution_account
     let discriminator: [u8; 8] = [49, 128, 247, 162, 140, 2, 193, 87];
@@ -200,11 +220,29 @@ fn create_share_ix(
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
-    Instruction {
+    let ix = Instruction {
         program_id: *priority_fee_distribution_program,
         accounts,
         data,
+    };
+
+    // Print the raw data bytes in various formats
+    let serialized_data = ix.clone().data;
+
+    // Print the raw bytes in decimal format
+    info!("DATA RAW BYTES (DECIMAL):");
+    let mut string = String::new();
+    string.push('[');
+    for (i, byte) in serialized_data.iter().enumerate() {
+        if i > 0 {
+            string.push_str(", ");
+        }
+        string.push_str(&byte.to_string());
     }
+    string.push(']');
+    info!("{}", string);
+
+    ix
 }
 
 // ------------------------- BLOCK FUNCTIONS -----------------------------
