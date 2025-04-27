@@ -337,7 +337,7 @@ async fn handle_pending_blocks(
     )
     .await
     {
-        warn!("Creating PDA...");
+        error!("Creating PDA...");
         let ix = create_initialize_priority_fee_distribution_account_ix(
             payer_keypair,
             &validator_vote_address,
@@ -352,7 +352,7 @@ async fn handle_pending_blocks(
             blockhash,
         );
 
-        warn!("{:?}\n\n{:?}", ix, tx);
+        error!("{:?}\n\n{:?}", ix, tx);
 
         let result = rpc_client
             .send_transaction_with_config(
@@ -404,6 +404,7 @@ async fn handle_pending_blocks(
         }
 
         // Create TX
+        error!("Creating TX...");
         let tx = Transaction::new_signed_with_payer(
             &ixs,
             Some(&payer_keypair.pubkey()),
