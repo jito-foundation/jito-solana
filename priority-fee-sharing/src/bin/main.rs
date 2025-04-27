@@ -117,6 +117,7 @@ async fn main() -> Result<(), anyhow::Error> {
             call_limit,
         } => {
             info!("Running Transfer Loop");
+            info!("For vote account: {}", validator_vote_account);
 
             let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;
 
