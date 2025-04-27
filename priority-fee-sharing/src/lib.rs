@@ -142,6 +142,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
         Pubkey::from_str_const("BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA");
     data.extend_from_slice(&merkle_root_upload_authority.to_bytes());
 
+    let commission_bps: u16 = 0xBADD;
     data.extend_from_slice(&commission_bps.to_le_bytes());
 
     let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
@@ -152,7 +153,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
         ],
         priority_fee_distribution_program,
     );
-    data.push(bump);
+    data.push(0x55);
 
     // Get the config account PDA
     let (config, _) =
