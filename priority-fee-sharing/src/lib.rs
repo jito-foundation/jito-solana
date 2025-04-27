@@ -143,6 +143,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
     data.extend_from_slice(&merkle_root_upload_authority.to_bytes());
 
     data.extend_from_slice(&commission_bps.to_le_bytes());
+    info!("{}", commission_bps);
 
     let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
         &[
