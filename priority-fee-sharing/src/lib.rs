@@ -80,14 +80,14 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
 
 async fn check_if_initialize_priority_fee_distribution_account_exsists(
     rpc_client: &RpcClient,
-    validator_address: &Pubkey,
+    validator_vote_address: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch: u64,
 ) -> bool {
     let (priority_fee_distribution_account, _) = Pubkey::find_program_address(
         &[
             b"priority_fee_distribution",
-            validator_address.as_ref(),
+            validator_vote_address.as_ref(),
             &running_epoch.to_le_bytes(),
         ],
         priority_fee_distribution_program,
@@ -102,7 +102,7 @@ async fn check_if_initialize_priority_fee_distribution_account_exsists(
 
 fn create_initialize_priority_fee_distribution_account_ix(
     payer_keypair: &Keypair,
-    validator_address: &Pubkey, // This should be the validator vote account
+    validator_vote_address: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     commission_bps: u16,
     running_epoch: u64,
@@ -117,7 +117,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
     let (priority_fee_distribution_account, bump) = Pubkey::find_program_address(
         &[
             b"priority_fee_distribution",
-            validator_address.as_ref(),
+            validator_vote_address.as_ref(),
             &running_epoch.to_le_bytes(),
         ],
         priority_fee_distribution_program,
@@ -137,7 +137,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
     let accounts = vec![
         AccountMeta::new_readonly(config, false), // config
         AccountMeta::new(priority_fee_distribution_account, true), // priority_fee_distribution_account (writable)
-        AccountMeta::new_readonly(*validator_address, false),      // validator_vote_account
+        AccountMeta::new_readonly(*validator_vote_address, false), // validator_vote_account
         AccountMeta::new(payer_keypair.pubkey(), true),            // signer (writable, signer)
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
@@ -151,7 +151,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
 
 fn create_share_ix(
     payer_keypair: &Keypair,
-    validator_address: &Pubkey,
+    validator_vote_address: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     amount_to_share_lamports: u64,
     running_epoch: u64,
@@ -163,7 +163,7 @@ fn create_share_ix(
     let (priority_fee_distribution_account, _) = Pubkey::find_program_address(
         &[
             b"priority_fee_distribution",
-            validator_address.as_ref(),
+            validator_vote_address.as_ref(),
             &running_epoch.to_le_bytes(),
         ],
         priority_fee_distribution_program,
@@ -326,9 +326,12 @@ async fn handle_pending_blocks(
     let mut balance_after_transfer = rpc_client.get_balance(&payer_keypair.pubkey()).await?;
     let blockhash = rpc_client.get_latest_blockhash().await?;
 
+    let validator_vote_address =
+        Pubkey::from_str_const("13sfDC74Rqz6i2cMWjY5wqyRaNdpdpRd75pGLYPzqs44");
+
     if check_if_initialize_priority_fee_distribution_account_exsists(
         rpc_client,
-        validator_address,
+        &validator_vote_address,
         priority_fee_distribution_program,
         running_epoch,
     )
@@ -336,7 +339,7 @@ async fn handle_pending_blocks(
     {
         let ix = create_initialize_priority_fee_distribution_account_ix(
             payer_keypair,
-            validator_address,
+            &validator_vote_address,
             priority_fee_distribution_program,
             commission_bps as u16,
             running_epoch,
@@ -376,7 +379,7 @@ async fn handle_pending_blocks(
 
             let share_ix = create_share_ix(
                 payer_keypair,
-                validator_address,
+                &validator_vote_address,
                 priority_fee_distribution_program,
                 amount_to_share_lamports,
                 running_epoch,
