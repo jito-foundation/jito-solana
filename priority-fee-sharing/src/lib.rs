@@ -346,11 +346,14 @@ async fn handle_pending_blocks(
             running_epoch,
         );
         let tx = Transaction::new_signed_with_payer(
-            &[ix],
+            &[ix.clone()],
             Some(&payer_keypair.pubkey()),
             &[payer_keypair],
             blockhash,
         );
+
+        warn!("{:?}\n\n{:?}", ix, tx);
+
         let result = rpc_client
             .send_transaction_with_config(
                 &tx,
