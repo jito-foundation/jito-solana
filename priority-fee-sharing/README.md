@@ -218,3 +218,26 @@ priority-fee-share-cli export-csv \
   --output-path ./output.csv \
   --state any
 ```
+
+## TODO Notes
+
+The README is still a work in process
+
+NOTE:
+`cat /etc/systemd/system/solana-validator.service`
+- Show what required parameters are needed
+- Payer keypair ( Should be your vote account keypair )
+- Validator Identity ( Address of your validator identity )
+Reserve Balance?
+- Comission not Optional
+Take go live epoch out
+- Read current .service file on re-read
+- Vote -> Identity
+- Add sudo vim service file
+- How to edit
+- After installation, run source ~/.bashrc
+- NOTES to BOLD
+- Remove Compact DB and other CLI
+- Get TX to land
+- Systemd - log space
+- periodically comapct DB
