@@ -97,7 +97,13 @@ async fn check_if_initialize_priority_fee_distribution_account_exsists(
         .get_account(&priority_fee_distribution_account)
         .await;
 
-    result.is_ok()
+    if result.is_err() {
+        return false;
+    }
+    let account = result.unwrap();
+
+    warn!("Account: {:?}", account);
+    true
 }
 
 fn create_initialize_priority_fee_distribution_account_ix(
