@@ -255,12 +255,10 @@ async fn handle_epoch_and_leader_slot(
             epoch_info.absolute_slot
         ))?;
 
+    // Leader Schedules are found by identity
     let validator_slots = leader_schedule
-        .get(&validator_vote_account.to_string())
-        .ok_or(anyhow!(
-            "No leader slots found for {}",
-            validator_vote_account
-        ))?;
+        .get(&validator_identity.to_string())
+        .ok_or(anyhow!("No leader slots found for {}", validator_identity))?;
 
     for slot in validator_slots {
         let slot = *slot as u64 + epoch_start_slot;
