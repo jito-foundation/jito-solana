@@ -27,14 +27,17 @@ const MAX_BPS: u64 = 10_000;
 
 // ------------------------- HELPER FUNCTIONS -----------------------------
 fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u64> {
-    let priority_fee_lamports_bps = priority_fee_lamports
-        .checked_mul(MAX_BPS)
-        .ok_or_else(|| anyhow!("Overflow when calculating priority fee in basis points"))?;
+    // Calculate the amount that goes to delegators (total minus commission)
+    let delegator_share_bps = MAX_BPS
+        .checked_sub(commission_bps)
+        .ok_or_else(|| anyhow!("Invalid commission value exceeds maximum"))?;
 
-    let amount_to_share_lamports_bps = priority_fee_lamports_bps
-        .checked_mul(commission_bps)
-        .ok_or_else(|| anyhow!("Overflow when calculating commission amount in basis points"))?;
+    // Calculate the amount to share with delegators
+    let amount_to_share_lamports_bps = priority_fee_lamports
+        .checked_mul(delegator_share_bps)
+        .ok_or_else(|| anyhow!("Overflow when calculating delegator share in basis points"))?;
 
+    // Convert from basis points back to lamports
     let amount_to_share_lamports = amount_to_share_lamports_bps
         .checked_div(MAX_BPS)
         .ok_or_else(|| anyhow!("Division by zero when calculating final share amount"))?;
