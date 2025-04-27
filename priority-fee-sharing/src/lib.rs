@@ -129,7 +129,9 @@ fn create_initialize_priority_fee_distribution_account_ix(
     );
 
     // Get the config account PDA
-    let (config, _) = Pubkey::find_program_address(&[b"config"], priority_fee_distribution_program);
+    let (config, _) =
+        Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], priority_fee_distribution_program);
+    info!("Config {}", config);
 
     // Create the instruction data: discriminator + args
     let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
@@ -175,7 +177,9 @@ fn create_share_ix(
     );
 
     // Get the config account PDA
-    let (config, _) = Pubkey::find_program_address(&[b"config"], priority_fee_distribution_program);
+    let (config, _) =
+        Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], priority_fee_distribution_program);
+    info!("Config {}", config);
 
     // Create the instruction data: discriminator + lamports amount
     let mut data = Vec::with_capacity(8 + 8);
