@@ -1,27 +1,6 @@
-# In Progress Notes
-
-The README is still a work in process
-
-NOTE:
-`cat /etc/systemd/system/solana-validator.service`
-- Show what required parameters are needed
-- Payer keypair ( Should be your vote account keypair )
-- Validator Identity ( Address of your validator identity )
-Reserve Balance?
-- Comission not Optional
-Take go live epoch out
-- Read current .service file on re-read
-- Vote -> Identity
-- Add sudo vim service file
-- How to edit
-- After installation, run source ~/.bashrc
-- NOTES to BOLD
-- Remove Compact DB and other CLI
-- Get TX to land
-- Systemd - log space
-- periodically comapct DB
-
 # Priority Fee Sharing
+
+**NOTE** Service file and README are not final
 
 This service enables validators to distribute priority fees to their delegators through Jito's priority fee distribution program.
 
