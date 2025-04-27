@@ -139,7 +139,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
 
     // This should be set to the actual merkle root upload authority
     let merkle_root_upload_authority =
-        Pubkey::from_str_const("FJJycCDD55ZJ79nrYnhR8S89bbNdawUAoCzhUQZoApVk");
+        Pubkey::from_str_const("BBBATax9kikSHQp8UTcyQL3tfU3BmQD9yid5qhC7QEAA");
     data.extend_from_slice(&merkle_root_upload_authority.to_bytes());
 
     data.extend_from_slice(&commission_bps.to_le_bytes());
@@ -175,11 +175,29 @@ fn create_initialize_priority_fee_distribution_account_ix(
         AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
     ];
 
-    Instruction {
+    let ix = Instruction {
         program_id: *priority_fee_distribution_program,
         accounts,
         data,
+    };
+
+    // Print the raw data bytes in various formats
+    let serialized_data = ix.clone().data;
+
+    // Print the raw bytes in decimal format
+    info!("DATA RAW BYTES (DECIMAL):");
+    let mut string = String::new();
+    string.push('[');
+    for (i, byte) in serialized_data.iter().enumerate() {
+        if i > 0 {
+            string.push_str(", ");
+        }
+        string.push_str(&byte.to_string());
     }
+    string.push(']');
+    info!("{}", string);
+
+    ix
 }
 
 fn create_share_ix(
