@@ -376,7 +376,9 @@ async fn handle_pending_blocks(
             Ok(sig) => {
                 info!("Create PDA Transaction sent: {}", sig);
             }
-            Err(err) => error!("Failed to send Create PDA transaction: {:?}", err),
+            Err(err) => {
+                return Err(anyhow!("Failed to send Create PDA transaction: {:?}", err,));
+            }
         }
     }
 
