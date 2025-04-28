@@ -5,16 +5,14 @@
 #################################################
 # Required parameters (Will be filled out in script)
 RPC_URL=""
+FEE_RECORDS_DB_PATH="/var/lib/solana/fee_records"
 PRIORITY_FEE_PAYER_KEYPAIR_PATH=""
 VOTE_AUTHORITY_KEYPAIR_PATH=""
 VALIDATOR_VOTE_ACCOUNT=""
-MINIMUM_BALANCE_SOL=""
-
-# Optional parameters with defaults
-FEE_RECORDS_DB_PATH="/var/lib/solana/fee_records"
 PRIORITY_FEE_DISTRIBUTION_PROGRAM="9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU"
 MERKLE_ROOT_UPLOAD_AUTHORITY="2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe"
 COMMISSION_BPS="5000"
+MINIMUM_BALANCE_SOL=""
 CHUNK_SIZE="1"
 CALL_LIMIT="1"
 
@@ -150,6 +148,92 @@ ask_float() {
             echo "Please enter a valid number."
         fi
     done
+}
+
+#################################################
+# READ EXISTING SERVICE FILE
+#################################################
+read_existing_service_file() {
+    local service_file="$1"
+
+    if [ -f "$service_file" ]; then
+        echo "Found existing service file. Loading current values..."
+
+        # Extract values from service file using grep and sed
+        local rpc_url=$(grep -E "^Environment=RPC_URL=" "$service_file" | sed -E 's/^Environment=RPC_URL=(.*)/\1/')
+        local fee_records_path=$(grep -E "^Environment=FEE_RECORDS_DB_PATH=" "$service_file" | sed -E 's/^Environment=FEE_RECORDS_DB_PATH=(.*)/\1/')
+        local payer_keypair=$(grep -E "^Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=" "$service_file" | sed -E 's/^Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=(.*)/\1/')
+        local vote_keypair=$(grep -E "^Environment=VOTE_AUTHORITY_KEYPAIR_PATH=" "$service_file" | sed -E 's/^Environment=VOTE_AUTHORITY_KEYPAIR_PATH=(.*)/\1/')
+        local vote_account=$(grep -E "^Environment=VALIDATOR_VOTE_ACCOUNT=" "$service_file" | sed -E 's/^Environment=VALIDATOR_VOTE_ACCOUNT=(.*)/\1/')
+        local min_balance=$(grep -E "^Environment=MINIMUM_BALANCE_SOL=" "$service_file" | sed -E 's/^Environment=MINIMUM_BALANCE_SOL=(.*)/\1/')
+        local distribution_program=$(grep -E "^Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=" "$service_file" | sed -E 's/^Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=(.*)/\1/')
+        local merkle_auth=$(grep -E "^Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=" "$service_file" | sed -E 's/^Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=(.*)/\1/')
+        local commission=$(grep -E "^Environment=COMMISSION_BPS=" "$service_file" | sed -E 's/^Environment=COMMISSION_BPS=(.*)/\1/')
+        local chunk_size=$(grep -E "^Environment=CHUNK_SIZE=" "$service_file" | sed -E 's/^Environment=CHUNK_SIZE=(.*)/\1/')
+        local call_limit=$(grep -E "^Environment=CALL_LIMIT=" "$service_file" | sed -E 's/^Environment=CALL_LIMIT=(.*)/\1/')
+
+        # Update variables if values are found
+        if [ -n "$rpc_url" ] && [ "$rpc_url" != "YOUR_RPC_URL_HERE" ]; then
+            RPC_URL="$rpc_url"
+            echo "- Found RPC URL: $RPC_URL"
+        fi
+
+        if [ -n "$fee_records_path" ] && [ "$fee_records_path" != "/var/lib/solana/fee_records" ]; then
+            FEE_RECORDS_DB_PATH="$fee_records_path"
+            echo "- Found fee records path: $FEE_RECORDS_DB_PATH"
+        fi
+
+        if [ -n "$payer_keypair" ] && [ "$payer_keypair" != "YOUR_PRIORITY_FEE_PAYER_KEYPAIR_PATH" ]; then
+            PRIORITY_FEE_PAYER_KEYPAIR_PATH="$payer_keypair"
+            echo "- Found payer keypair path: $PRIORITY_FEE_PAYER_KEYPAIR_PATH"
+        fi
+
+        if [ -n "$vote_keypair" ] && [ "$vote_keypair" != "YOUR_VOTE_AUTHORITY_KEYPAIR_PATH" ]; then
+            VOTE_AUTHORITY_KEYPAIR_PATH="$vote_keypair"
+            echo "- Found vote authority keypair path: $VOTE_AUTHORITY_KEYPAIR_PATH"
+        fi
+
+        if [ -n "$vote_account" ] && [ "$vote_account" != "YOUR_VALIDATOR_VOTE_ACCOUNT_HERE" ]; then
+            VALIDATOR_VOTE_ACCOUNT="$vote_account"
+            echo "- Found validator vote account: $VALIDATOR_VOTE_ACCOUNT"
+        fi
+
+        if [ -n "$min_balance" ] && [ "$min_balance" != "YOUR_MINIMUM_BALANCE_SOL_HERE" ]; then
+            MINIMUM_BALANCE_SOL="$min_balance"
+            echo "- Found minimum balance: $MINIMUM_BALANCE_SOL"
+        fi
+
+        if [ -n "$distribution_program" ]; then
+            PRIORITY_FEE_DISTRIBUTION_PROGRAM="$distribution_program"
+            echo "- Found distribution program: $PRIORITY_FEE_DISTRIBUTION_PROGRAM"
+        fi
+
+        if [ -n "$merkle_auth" ]; then
+            MERKLE_ROOT_UPLOAD_AUTHORITY="$merkle_auth"
+            echo "- Found merkle root authority: $MERKLE_ROOT_UPLOAD_AUTHORITY"
+        fi
+
+        if [ -n "$commission" ]; then
+            COMMISSION_BPS="$commission"
+            echo "- Found commission: $COMMISSION_BPS"
+        fi
+
+        if [ -n "$chunk_size" ]; then
+            CHUNK_SIZE="$chunk_size"
+            echo "- Found chunk size: $CHUNK_SIZE"
+        fi
+
+        if [ -n "$call_limit" ]; then
+            CALL_LIMIT="$call_limit"
+            echo "- Found call limit: $CALL_LIMIT"
+        fi
+
+        echo "Successfully loaded existing configuration."
+        echo
+    else
+        echo "No existing service file found at $service_file. Using default values."
+        echo
+    fi
 }
 
 #################################################
@@ -294,13 +378,22 @@ collect_parameters() {
     echo "This script will set up the Priority Fee Sharing Service"
     echo "to distribute priority fees to your validator's delegators."
     echo
+
+    # Check for existing service file and load values if found
+    read_existing_service_file "$SERVICE_FILE"
+
     echo "You will need to provide the following REQUIRED information:"
     echo
     echo "  - RPC URL (must support get_block)"
+    echo "  - Fee Records DB Path"
     echo "  - Priority fee payer keypair path"
     echo "  - Vote authority keypair path"
     echo "  - Validator vote account address"
+    echo "  - Priority fee distribution program address"
+    echo "  - Merkle root upload authority"
+    echo "  - Commission in basis points"
     echo "  - Minimum balance of SOL to maintain"
+    echo "  - Chunk size and call limit (performance parameters)"
     echo
     echo "========================================================="
     echo "                REQUIRED PARAMETERS                      "
@@ -311,7 +404,7 @@ collect_parameters() {
     echo "The RPC URL must be able to call get_block."
     echo "If using a local RPC, ensure it runs with --enable-rpc-transaction-history."
     echo
-    RPC_URL=$(ask_string "Enter your RPC URL" "")
+    RPC_URL=$(ask_string "Enter your RPC URL" "$RPC_URL")
     echo
 
     # Check if RPC URL is using port 8899 (Local)
@@ -321,42 +414,31 @@ collect_parameters() {
         echo
     fi
 
+    # Fee Records DB Path
+    echo "The directory path for storing fee records database."
+    echo "This directory will be created if it doesn't exist."
+    echo
+    FEE_RECORDS_DB_PATH=$(ask_string "Enter the path for storing fee records" "$FEE_RECORDS_DB_PATH")
+    echo
+
     # Priority Fee Payer Keypair
     echo "The priority fee payer keypair is the account that will pay for priority fees."
     echo "This should be an account with sufficient funds to cover commission payments."
     echo
-    PRIORITY_FEE_PAYER_KEYPAIR_PATH=$(ask_string "Enter the path to your priority fee payer keypair file" "")
+    PRIORITY_FEE_PAYER_KEYPAIR_PATH=$(ask_string "Enter the path to your priority fee payer keypair file" "$PRIORITY_FEE_PAYER_KEYPAIR_PATH")
     echo
 
     # Vote Authority Keypair
     echo "The vote authority keypair is needed to create the PriorityFeeDistribution Account."
     echo "This can be found by running 'solana vote-account YOUR_VOTE_ACCOUNT'."
     echo
-    VOTE_AUTHORITY_KEYPAIR_PATH=$(ask_string "Enter the path to your vote authority keypair file" "")
+    VOTE_AUTHORITY_KEYPAIR_PATH=$(ask_string "Enter the path to your vote authority keypair file" "$VOTE_AUTHORITY_KEYPAIR_PATH")
     echo
 
     # Validator Vote Account
     echo "Your validator's vote account address is required to identify your validator."
     echo
-    VALIDATOR_VOTE_ACCOUNT=$(ask_string "Enter your validator vote account address" "")
-    echo
-
-    # Minimum Balance
-    echo "The minimum balance (in SOL) that should be maintained in the payer account."
-    echo "The service will stop sending fees if the balance drops below this amount."
-    echo
-    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "100.0")
-    echo
-
-    echo "========================================================="
-    echo "                OPTIONAL PARAMETERS                      "
-    echo "========================================================="
-    echo
-
-    # Fee Records DB Path
-    echo "The directory path for storing fee records database."
-    echo
-    FEE_RECORDS_DB_PATH=$(ask_string "Enter the path for storing fee records" "$FEE_RECORDS_DB_PATH")
+    VALIDATOR_VOTE_ACCOUNT=$(ask_string "Enter your validator vote account address" "$VALIDATOR_VOTE_ACCOUNT")
     echo
 
     # Priority Fee Distribution Program
@@ -378,8 +460,17 @@ collect_parameters() {
     COMMISSION_BPS=$(ask_integer "Enter commission in basis points" "$COMMISSION_BPS")
     echo
 
+    # Minimum Balance
+    echo "The minimum balance (in SOL) that should be maintained in the payer account."
+    echo "The service will stop sending fees if the balance drops below this amount."
+    echo
+    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "$MINIMUM_BALANCE_SOL")
+    echo
+
     # Performance Parameters
-    echo "The following parameters affect performance and can usually use the defaults."
+    echo "The following parameters affect performance:"
+    echo "- Chunk size: Number of transactions to batch together"
+    echo "- Call limit: Maximum number of transactions to process per loop"
     echo
     CHUNK_SIZE=$(ask_integer "Enter chunk size for batching transactions" "$CHUNK_SIZE")
     echo
@@ -412,7 +503,6 @@ display_instructions() {
 # MAIN SCRIPT
 #################################################
 main() {
-
     # Collect parameters from user
     collect_parameters
 
