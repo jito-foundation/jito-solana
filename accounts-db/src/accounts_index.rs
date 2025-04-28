@@ -297,8 +297,6 @@ pub struct AccountsIndex<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> {
     pub active_scans: AtomicUsize,
     /// # of slots between latest max and latest scan
     pub max_distance_to_min_scan_slot: AtomicU64,
-    // # of unref when the account's ref_count is zero
-    pub unref_zero_count: AtomicU64,
 
     /// populated at generate_index time - accounts that could possibly be rent paying
     pub rent_paying_accounts_by_partition: OnceLock<RentPayingAccountsByPartition>,
@@ -334,7 +332,6 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
             roots_removed: AtomicUsize::default(),
             active_scans: AtomicUsize::default(),
             max_distance_to_min_scan_slot: AtomicU64::default(),
-            unref_zero_count: AtomicU64::default(),
             rent_paying_accounts_by_partition: OnceLock::default(),
         }
     }
@@ -1139,10 +1136,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
                         };
                         cache = match result {
                             AccountsIndexScanResult::Unref => {
-                                if locked_entry.unref() == 0 {
-                                    info!("scan: refcount of item already at 0: {pubkey}");
-                                    self.unref_zero_count.fetch_add(1, Ordering::Relaxed);
-                                }
+                                locked_entry.unref();
                                 true
                             }
                             AccountsIndexScanResult::UnrefAssert0 => {
@@ -3648,26 +3642,32 @@ pub mod tests {
 
         index.upsert_simple_test(&key, slot1, value);
 
-        let map = index.get_bin(&key);
-        for expected in [false, true] {
-            assert!(map.get_internal_inner(&key, |entry| {
-                // check refcount BEFORE the unref
-                assert_eq!(u64::from(!expected), entry.unwrap().ref_count());
-                // first time, ref count was at 1, we can unref once. Unref should return 1.
-                // second time, ref count was at 0, it is an error to unref. Unref should return 0
-                assert_eq!(u64::from(!expected), entry.unwrap().unref());
-                // check refcount AFTER the unref
-                assert_eq!(
-                    if expected {
-                        (0 as RefCount).wrapping_sub(1)
-                    } else {
-                        0
-                    },
-                    entry.unwrap().ref_count()
-                );
-                (false, true)
-            }));
-        }
+        let entry = index.get_cloned(&key).unwrap();
+        // check refcount BEFORE the unref
+        assert_eq!(entry.ref_count(), 1);
+        // first time, ref count was at 1, we can unref once. Unref should return 1.
+        assert_eq!(entry.unref(), 1);
+        // check refcount AFTER the unref
+        assert_eq!(entry.ref_count(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "decremented ref count when already zero")]
+    fn test_illegal_unref() {
+        let value = true;
+        let key = solana_pubkey::new_rand();
+        let index = AccountsIndex::<bool, bool>::default_for_tests();
+        let slot1 = 1;
+
+        index.upsert_simple_test(&key, slot1, value);
+
+        let entry = index.get_cloned(&key).unwrap();
+        // make ref count be zero
+        assert_eq!(entry.unref(), 1);
+        assert_eq!(entry.ref_count(), 0);
+
+        // unref when already at zero should panic
+        entry.unref();
     }
 
     #[test]
