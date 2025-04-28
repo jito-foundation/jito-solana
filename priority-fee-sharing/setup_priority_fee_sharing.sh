@@ -287,44 +287,125 @@ setup_service_file() {
 
 collect_parameters() {
     echo
-    echo "This script will set up the Priority Fee Sharing Service."
-    echo "You will need to provide the following information:"
-    echo "- RPC URL"
-    echo "- Priority fee payer keypair path"
-    echo "- Vote authority keypair path"
-    echo "- Validator vote account address"
-    echo "- Minimum balance of SOL that the service will maintain"
+    echo "========================================================="
+    echo "           Priority Fee Sharing Service Setup            "
+    echo "========================================================="
+    echo
+    echo "This script will set up the Priority Fee Sharing Service"
+    echo "to distribute priority fees to your validator's delegators."
+    echo
+    echo "You will need to provide the following REQUIRED information:"
+    echo
+    echo "  - RPC URL (must support get_block)"
+    echo "  - Priority fee payer keypair path"
+    echo "  - Vote authority keypair path"
+    echo "  - Validator vote account address"
+    echo "  - Minimum balance of SOL to maintain"
+    echo
+    echo "========================================================="
+    echo "                REQUIRED PARAMETERS                      "
+    echo "========================================================="
     echo
 
-    # Get required parameters with empty defaults
+    # RPC URL
+    echo "The RPC URL must be able to call get_block."
+    echo "If using a local RPC, ensure it runs with --enable-rpc-transaction-history."
+    echo
     RPC_URL=$(ask_string "Enter your RPC URL" "")
+    echo
+
     # Check if RPC URL is using port 8899 (Local)
     if [[ "$RPC_URL" == *":8899" ]]; then
-        echo -e "\033[31m\033[1mIf you are using your local RPC, you have to run your validator with \`--enable-rpc-transaction-history\` enabled.\033[0m"
+        echo -e "\033[31m\033[1mWARNING: You are using a local RPC. Make sure your validator is running with"
+        echo -e "\`--enable-rpc-transaction-history\` enabled.\033[0m"
+        echo
     fi
 
+    # Priority Fee Payer Keypair
+    echo "The priority fee payer keypair is the account that will pay for priority fees."
+    echo "This should be an account with sufficient funds to cover commission payments."
+    echo
     PRIORITY_FEE_PAYER_KEYPAIR_PATH=$(ask_string "Enter the path to your priority fee payer keypair file" "")
-    VOTE_AUTHORITY_KEYPAIR_PATH=$(ask_string "Enter the path to your vote authority keypair file" "")
-    VALIDATOR_VOTE_ACCOUNT=$(ask_string "Enter your validator vote account address" "")
-    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "100.0")
+    echo
 
-    # Get optional parameters with defaults from service file
+    # Vote Authority Keypair
+    echo "The vote authority keypair is needed to create the PriorityFeeDistribution Account."
+    echo "This can be found by running 'solana vote-account YOUR_VOTE_ACCOUNT'."
+    echo
+    VOTE_AUTHORITY_KEYPAIR_PATH=$(ask_string "Enter the path to your vote authority keypair file" "")
+    echo
+
+    # Validator Vote Account
+    echo "Your validator's vote account address is required to identify your validator."
+    echo
+    VALIDATOR_VOTE_ACCOUNT=$(ask_string "Enter your validator vote account address" "")
+    echo
+
+    # Minimum Balance
+    echo "The minimum balance (in SOL) that should be maintained in the payer account."
+    echo "The service will stop sending fees if the balance drops below this amount."
+    echo
+    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "100.0")
+    echo
+
+    echo "========================================================="
+    echo "                OPTIONAL PARAMETERS                      "
+    echo "========================================================="
+    echo
+
+    # Fee Records DB Path
+    echo "The directory path for storing fee records database."
+    echo
     FEE_RECORDS_DB_PATH=$(ask_string "Enter the path for storing fee records" "$FEE_RECORDS_DB_PATH")
+    echo
+
+    # Priority Fee Distribution Program
+    echo "The program address for the fee distribution. This should rarely change."
+    echo
     PRIORITY_FEE_DISTRIBUTION_PROGRAM=$(ask_string "Enter the priority fee distribution program address" "$PRIORITY_FEE_DISTRIBUTION_PROGRAM")
+    echo
+
+    # Merkle Root Upload Authority
+    echo "The authority for uploading the merkle root."
+    echo
     MERKLE_ROOT_UPLOAD_AUTHORITY=$(ask_string "Enter the merkle root upload authority" "$MERKLE_ROOT_UPLOAD_AUTHORITY")
-    COMMISSION_BPS=$(ask_integer "Enter commission in basis points (50% = 5000)" "$COMMISSION_BPS")
+    echo
+
+    # Commission BPS
+    echo "Commission in basis points (100 = 1%, 5000 = 50%, 10000 = 100%)."
+    echo "This determines how much of the priority fees you keep vs. share with delegators."
+    echo
+    COMMISSION_BPS=$(ask_integer "Enter commission in basis points" "$COMMISSION_BPS")
+    echo
+
+    # Performance Parameters
+    echo "The following parameters affect performance and can usually use the defaults."
+    echo
     CHUNK_SIZE=$(ask_integer "Enter chunk size for batching transactions" "$CHUNK_SIZE")
+    echo
     CALL_LIMIT=$(ask_integer "Enter call limit for transactions per loop" "$CALL_LIMIT")
+    echo
 }
 
 display_instructions() {
     echo
-    echo "Setup complete! You can manage the service with these commands:"
+    echo "========================================================="
+    echo "                   SETUP COMPLETE                        "
+    echo "========================================================="
+    echo
+    echo "The Priority Fee Sharing Service has been successfully set up!"
+    echo
+    echo "You can manage the service with these commands:"
+    echo
     echo -e "  \033[32msudo systemctl start $SERVICE_NAME\033[0m    # Start the service"
     echo -e "  \033[32msudo systemctl stop $SERVICE_NAME\033[0m     # Stop the service"
     echo -e "  \033[32msudo systemctl restart $SERVICE_NAME\033[0m  # Restart the service"
     echo -e "  \033[32msudo systemctl status $SERVICE_NAME\033[0m   # Check service status"
     echo -e "  \033[32msudo journalctl -u $SERVICE_NAME -f\033[0m   # View service logs"
+    echo
+    echo "For more information, please refer to the README.md file."
+    echo
+    echo "========================================================="
 }
 
 #################################################
@@ -333,18 +414,32 @@ display_instructions() {
 main() {
     echo "Priority Fee Sharing Service Setup"
     echo "=================================="
+    echo
 
     # Collect parameters from user
     collect_parameters
 
+    echo "========================================================="
+    echo "              INSTALLING DEPENDENCIES                    "
+    echo "========================================================="
+    echo
+
     # Install Cargo
     install_cargo || exit 1
+    echo
 
     # Install CLI
     install_cli || exit 1
+    echo
+
+    echo "========================================================="
+    echo "              SETTING UP SERVICE                         "
+    echo "========================================================="
+    echo
 
     # Setup service file
     setup_service_file || exit 1
+    echo
 
     # Display instructions
     display_instructions
