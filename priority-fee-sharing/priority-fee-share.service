@@ -34,7 +34,7 @@ Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtm
 # The merkle root upload authority
 Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe
 
-# --------------- TWEAKS --------------------
+# --------------- PERFORMANCE --------------------
 # Rocks DB that holds all priority fee records - this will be created by the script and can go anywhere
 Environment=FEE_RECORDS_DB_PATH=/var/lib/solana/fee_records
 
