@@ -412,9 +412,6 @@ display_instructions() {
 # MAIN SCRIPT
 #################################################
 main() {
-    echo "Priority Fee Sharing Service Setup"
-    echo "=================================="
-    echo
 
     # Collect parameters from user
     collect_parameters
