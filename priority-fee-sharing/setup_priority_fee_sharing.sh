@@ -3,25 +3,20 @@
 #################################################
 # ALL VARIABLES
 #################################################
-# Default values
-RPC_URL_DEFAULT=""
-KEYPAIR_PATH_DEFAULT=""
-VALIDATOR_ADDRESS_DEFAULT=""
-MINIMUM_BALANCE_SOL_DEFAULT="100.0"
-
-# Required parameters ( Will be filled out in script )
+# Required parameters (Will be filled out in script)
 RPC_URL=""
-PRIORITY_FEE_KEYPAIR_PATH=""
-VALIDATOR_ADDRESS=""
+PRIORITY_FEE_PAYER_KEYPAIR_PATH=""
+VOTE_AUTHORITY_KEYPAIR_PATH=""
+VALIDATOR_VOTE_ACCOUNT=""
 MINIMUM_BALANCE_SOL=""
 
 # Optional parameters with defaults
 FEE_RECORDS_DB_PATH="/var/lib/solana/fee_records"
 PRIORITY_FEE_DISTRIBUTION_PROGRAM="9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU"
+MERKLE_ROOT_UPLOAD_AUTHORITY="2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe"
 COMMISSION_BPS="5000"
 CHUNK_SIZE="1"
 CALL_LIMIT="1"
-GO_LIVE_EPOCH="1000"
 
 # Service configuration
 SERVICE_FILE="/etc/systemd/system/priority-fee-share.service"
@@ -157,82 +152,6 @@ ask_float() {
     done
 }
 
-# Function to get Solana config values
-get_solana_config() {
-    # Try to use solana directly (whether it's a command or alias)
-    echo "Trying to use solana command or alias..."
-
-    # We need to source the profile to get aliases
-    if [ -f ~/.bashrc ]; then
-        # Source the bashrc if it exists
-        source ~/.bashrc 2>/dev/null
-    fi
-    if [ -f ~/.bash_profile ]; then
-        # Source bash_profile if it exists
-        source ~/.bash_profile 2>/dev/null
-    fi
-    if [ -f ~/.profile ]; then
-        # Source profile if it exists
-        source ~/.profile 2>/dev/null
-    fi
-
-    # Try to run solana command (which should work if it's an alias or command)
-    CONFIG_OUTPUT=$(solana config get 2>/dev/null)
-
-    if [ $? -eq 0 ] && [ -n "$CONFIG_OUTPUT" ]; then
-        echo "Successfully accessed solana configuration."
-
-        # Extract RPC URL
-        RPC_URL_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "RPC URL:" | sed 's/RPC URL: //')
-
-        # Extract Keypair Path
-        KEYPAIR_PATH_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "Keypair Path:" | sed 's/Keypair Path: //')
-
-        echo "Found Solana configuration:"
-        [ -n "$RPC_URL_DEFAULT" ] && echo "- RPC URL: $RPC_URL_DEFAULT"
-        [ -n "$KEYPAIR_PATH_DEFAULT" ] && echo "- Keypair Path: $KEYPAIR_PATH_DEFAULT"
-
-        # Try to get validator address
-        VALIDATOR_ADDRESS_DEFAULT=$(solana address 2>/dev/null)
-        [ -n "$VALIDATOR_ADDRESS_DEFAULT" ] && echo "- Validator Address: $VALIDATOR_ADDRESS_DEFAULT"
-    else
-        echo "Could not access solana configuration. Using default values."
-
-        # Check common locations for Jito-Solana
-        JITO_PATHS=(
-            "~/jito-solana/docker-output/solana"
-            "/home/$(whoami)/jito-solana/docker-output/solana"
-            "/opt/jito-solana/docker-output/solana"
-        )
-
-        for path in "${JITO_PATHS[@]}"; do
-            eval expanded_path="$path"
-            if [ -f "$expanded_path" ]; then
-                echo "Found Jito Solana at: $expanded_path"
-                CONFIG_OUTPUT=$("$expanded_path" config get 2>/dev/null)
-
-                if [ -n "$CONFIG_OUTPUT" ]; then
-                    # Extract RPC URL
-                    RPC_URL_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "RPC URL:" | sed 's/RPC URL: //')
-
-                    # Extract Keypair Path
-                    KEYPAIR_PATH_DEFAULT=$(echo "$CONFIG_OUTPUT" | grep "Keypair Path:" | sed 's/Keypair Path: //')
-
-                    echo "Found Solana configuration:"
-                    [ -n "$RPC_URL_DEFAULT" ] && echo "- RPC URL: $RPC_URL_DEFAULT"
-                    [ -n "$KEYPAIR_PATH_DEFAULT" ] && echo "- Keypair Path: $KEYPAIR_PATH_DEFAULT"
-
-                    # Try to get validator address
-                    VALIDATOR_ADDRESS_DEFAULT=$("$expanded_path" address 2>/dev/null)
-                    [ -n "$VALIDATOR_ADDRESS_DEFAULT" ] && echo "- Validator Address: $VALIDATOR_ADDRESS_DEFAULT"
-
-                    break
-                fi
-            fi
-        done
-    fi
-}
-
 #################################################
 # INSTALL CARGO
 #################################################
@@ -315,20 +234,23 @@ setup_service_file() {
     sed -i "s|FEE_RECORDS_DB_PATH=.*|FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH|g" .priority-fee-share.service
 
     # Replace PRIORITY_FEE_KEYPAIR_PATH
-    sed -i "s|PRIORITY_FEE_KEYPAIR_PATH=.*|PRIORITY_FEE_KEYPAIR_PATH=$PRIORITY_FEE_KEYPAIR_PATH|g" .priority-fee-share.service
+    sed -i "s|PRIORITY_FEE_PAYER_KEYPAIR_PATH=.*|PRIORITY_FEE_PAYER_KEYPAIR_PATH=$PRIORITY_FEE_PAYER_KEYPAIR_PATH|g" .priority-fee-share.service
 
-    # Replace VALIDATOR_ADDRESS
-    sed -i "s|VALIDATOR_ADDRESS=.*|VALIDATOR_ADDRESS=$VALIDATOR_ADDRESS|g" .priority-fee-share.service
+    # Replace VOTE_AUTHORITY_KEYPAIR_PATH
+    sed -i "s|VOTE_AUTHORITY_KEYPAIR_PATH=.*|VOTE_AUTHORITY_KEYPAIR_PATH=$VOTE_AUTHORITY_KEYPAIR_PATH|g" .priority-fee-share.service
+
+    # Replace VALIDATOR_VOTE_ACCOUNT
+    sed -i "s|VALIDATOR_VOTE_ACCOUNT=.*|VALIDATOR_VOTE_ACCOUNT=$VALIDATOR_VOTE_ACCOUNT|g" .priority-fee-share.service
 
     # Replace MINIMUM_BALANCE_SOL
     sed -i "s|MINIMUM_BALANCE_SOL=.*|MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL|g" .priority-fee-share.service
 
     # Replace optional parameters if they differ from defaults
     sed -i "s|PRIORITY_FEE_DISTRIBUTION_PROGRAM=.*|PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM|g" .priority-fee-share.service
+    sed -i "s|MERKLE_ROOT_UPLOAD_AUTHORITY=.*|MERKLE_ROOT_UPLOAD_AUTHORITY=$MERKLE_ROOT_UPLOAD_AUTHORITY|g" .priority-fee-share.service
     sed -i "s|COMMISSION_BPS=.*|COMMISSION_BPS=$COMMISSION_BPS|g" .priority-fee-share.service
     sed -i "s|CHUNK_SIZE=.*|CHUNK_SIZE=$CHUNK_SIZE|g" .priority-fee-share.service
     sed -i "s|CALL_LIMIT=.*|CALL_LIMIT=$CALL_LIMIT|g" .priority-fee-share.service
-    sed -i "s|GO_LIVE_EPOCH=.*|GO_LIVE_EPOCH=$GO_LIVE_EPOCH|g" .priority-fee-share.service
 
     # Replace the ExecStart path with the actual CLI path
     sed -i "s|ExecStart=.*|ExecStart=$CLI_PATH run|g" .priority-fee-share.service
@@ -368,22 +290,31 @@ collect_parameters() {
     echo "This script will set up the Priority Fee Sharing Service."
     echo "You will need to provide the following information:"
     echo "- RPC URL"
-    echo "- Payer keypair path"
+    echo "- Priority fee payer keypair path"
+    echo "- Vote authority keypair path"
     echo "- Validator vote account address"
     echo "- Minimum balance of SOL that the service will maintain"
     echo
 
-    # Get RPC URL with comment
-    RPC_URL=$(ask_string "Enter your RPC URL" "${RPC_URL_DEFAULT}")
+    # Get required parameters with empty defaults
+    RPC_URL=$(ask_string "Enter your RPC URL" "")
     # Check if RPC URL is using port 8899 (Local)
     if [[ "$RPC_URL" == *":8899" ]]; then
         echo -e "\033[31m\033[1mIf you are using your local RPC, you have to run your validator with \`--enable-rpc-transaction-history\` enabled.\033[0m"
     fi
 
-    # Get other required parameters with detected defaults
-    PRIORITY_FEE_KEYPAIR_PATH=$(ask_string "Enter the path to your payer keypair file" "${KEYPAIR_PATH_DEFAULT}")
-    VALIDATOR_ADDRESS=$(ask_string "Enter your validator vote account address" "${VALIDATOR_ADDRESS_DEFAULT}")
-    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "${MINIMUM_BALANCE_SOL_DEFAULT}")
+    PRIORITY_FEE_PAYER_KEYPAIR_PATH=$(ask_string "Enter the path to your priority fee payer keypair file" "")
+    VOTE_AUTHORITY_KEYPAIR_PATH=$(ask_string "Enter the path to your vote authority keypair file" "")
+    VALIDATOR_VOTE_ACCOUNT=$(ask_string "Enter your validator vote account address" "")
+    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "100.0")
+
+    # Get optional parameters with defaults from service file
+    FEE_RECORDS_DB_PATH=$(ask_string "Enter the path for storing fee records" "$FEE_RECORDS_DB_PATH")
+    PRIORITY_FEE_DISTRIBUTION_PROGRAM=$(ask_string "Enter the priority fee distribution program address" "$PRIORITY_FEE_DISTRIBUTION_PROGRAM")
+    MERKLE_ROOT_UPLOAD_AUTHORITY=$(ask_string "Enter the merkle root upload authority" "$MERKLE_ROOT_UPLOAD_AUTHORITY")
+    COMMISSION_BPS=$(ask_integer "Enter commission in basis points (50% = 5000)" "$COMMISSION_BPS")
+    CHUNK_SIZE=$(ask_integer "Enter chunk size for batching transactions" "$CHUNK_SIZE")
+    CALL_LIMIT=$(ask_integer "Enter call limit for transactions per loop" "$CALL_LIMIT")
 }
 
 display_instructions() {
@@ -402,9 +333,6 @@ display_instructions() {
 main() {
     echo "Priority Fee Sharing Service Setup"
     echo "=================================="
-
-    # Get Solana config values
-    get_solana_config
 
     # Collect parameters from user
     collect_parameters

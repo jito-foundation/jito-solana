@@ -10,30 +10,33 @@ User=root
 # RPC URL - This RPC needs to be able to call `get_block`. If using a local RPC, ensure it is running with `--enable-rpc-transaction-history`
 Environment=RPC_URL=YOUR_RPC_URL_HERE
 
-# The keypair where your priority fees accumulate - this is where the priority fees will be sent from
-Environment=PRIORITY_FEE_KEYPAIR_PATH=YOUR_PRIORITY_FEE_KEYPAIR_PATH_HERE
+# The account that the priority fees are paid out from
+Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=YOUR_PRIORITY_FEE_PAYER_KEYPAIR_PATH
 
-# Your validator address
-Environment=VALIDATOR_ADDRESS=YOUR_VALIDATOR_ADDRESS_HERE
+# The vote authority needed to create the PriorityFeeDistribution Account
+# Can be found by running `solana vote-account YOUR_VOTE_ACCOUNT`
+Environment=VOTE_AUTHORITY_KEYPAIR_PATH=YOUR_VOTE_AUTHORITY_KEYPAIR_PATH
+
+# Your validator vote account address
+Environment=VALIDATOR_VOTE_ACCOUNT=YOUR_VALIDATOR_VOTE_ACCOUNT_HERE
 
 # Minimum balance in your priority fee keypair, no fees will be sent if below this amount
 Environment=MINIMUM_BALANCE_SOL=YOUR_MINIMUM_BALANCE_SOL_HERE
 
-# --------------- OPTIONAL --------------------
-# Rocks DB that holds all priority fee records - this will be created by the script and can go anywhere
-Environment=FEE_RECORDS_DB_PATH=/var/lib/solana/fee_records
+# --------------- DEFAULTS --------------------
+
+# How much priority fees to keep in bps ( Suggested 5000 - 50% )
+Environment=COMMISSION_BPS=5000
 
 # The Priority Fee Distribution Program
 Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU
 
-# Priority - merkle_root_upload_authority
-TODO 2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe
+# The merkle root upload authority
+Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe
 
-# Validator Vote address
-TODO 13sfDC74Rqz6i2cMWjY5wqyRaNdpdpRd75pGLYPzqs44
-
-# How much priority fees to distribute in bps ( 5000 = 50% )
-Environment=COMMISSION_BPS=5000
+# --------------- TWEAKS --------------------
+# Rocks DB that holds all priority fee records - this will be created by the script and can go anywhere
+Environment=FEE_RECORDS_DB_PATH=/var/lib/solana/fee_records
 
 # How many transfers to send in one transaction
 Environment=CHUNK_SIZE=1

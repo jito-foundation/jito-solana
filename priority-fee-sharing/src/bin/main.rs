@@ -31,7 +31,7 @@ enum Commands {
         priority_fee_payer_keypair_path: PathBuf,
 
         /// Needed to create the PriorityFeeDistribution Account
-        /// Can find my running `solana vote-account YOU_VOTE_ACCOUNT`
+        /// Can find by running `solana vote-account YOUR_VOTE_ACCOUNT`
         #[arg(long, env)]
         vote_authority_keypair_path: PathBuf,
 
@@ -39,7 +39,7 @@ enum Commands {
         #[arg(long, env)]
         validator_vote_account: Pubkey,
 
-        /// Priority fee distribution program
+        /// Merkle root upload authority
         #[arg(long, env)]
         merkle_root_upload_authority: Pubkey,
 
