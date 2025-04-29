@@ -5371,6 +5371,7 @@ pub mod tests {
             message::v0::LoadedAddresses,
             packet::PACKET_DATA_SIZE,
             pubkey::Pubkey,
+            shred_version::version_from_hash,
             signature::Signature,
             transaction::{Transaction, TransactionError},
         },
@@ -10689,48 +10690,67 @@ pub mod tests {
     }
 
     #[test]
+    /// Intentionally makes the ErasureMeta mismatch via the code index
+    /// by producing valid shreds with overlapping fec_set_index ranges
+    /// so that we fail the config check and mark the slot duplicate
     fn erasure_multiple_config() {
         solana_logger::setup();
         let slot = 1;
-        let parent = 0;
         let num_txs = 20;
-        let entry = make_large_tx_entry(num_txs);
-        let shreds = entries_to_test_shreds(
-            &[entry],
-            slot,
-            parent,
-            true,  // is_full_slot
-            0,     // version
-            false, // merkle_variant
+        // primary slot content
+        let entries = [make_large_tx_entry(num_txs)];
+        // "conflicting" slot content
+        let entries2 = [make_large_tx_entry(num_txs)];
+
+        let version = version_from_hash(&entries[0].hash);
+        let shredder = Shredder::new(slot, 0, 0, version).unwrap();
+        let reed_solomon_cache = ReedSolomonCache::default();
+        let merkle_root = Some(Hash::new_from_array(rand::thread_rng().gen()));
+        let kp = Keypair::new();
+        // produce normal shreds
+        let (data1, coding1) = shredder.entries_to_shreds(
+            &kp,
+            &entries,
+            true, // complete slot
+            merkle_root,
+            0,    // next_shred_index
+            0,    // next_code_index
+            true, // make merkle shreds
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
         );
-        assert!(shreds.len() > 1);
+        // produce shreds with conflicting FEC set index based off different data.
+        // it should not matter what data we use here though. Using the same merkle
+        // root as above as if we are building off the same previous block.
+        let (_data2, coding2) = shredder.entries_to_shreds(
+            &kp,
+            &entries2,
+            true, // complete slot
+            merkle_root,
+            0,    // next_shred_index
+            1,    // next_code_index (overlaps with FEC set in data1 + coding1)
+            true, // make merkle shreds
+            &reed_solomon_cache,
+            &mut ProcessShredsStats::default(),
+        );
 
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
 
-        let reed_solomon_cache = ReedSolomonCache::default();
-        let coding1 = Shredder::generate_coding_shreds(
-            &shreds,
-            0, // next_code_index
-            &reed_solomon_cache,
-        );
-        let coding2 = Shredder::generate_coding_shreds(
-            &shreds,
-            1, // next_code_index
-            &reed_solomon_cache,
-        );
-        for shred in &shreds {
-            info!("shred {:?}", shred);
+        for shred in &data1 {
+            info!("shred {:?}", shred.id());
         }
         for shred in &coding1 {
-            info!("coding1 {:?}", shred);
+            info!("coding1 {:?}", shred.id());
         }
         for shred in &coding2 {
-            info!("coding2 {:?}", shred);
+            info!("coding2 {:?}", shred.id());
         }
+        // insert all but 2 data shreds from first set (so it is not yet recoverable)
         blockstore
-            .insert_shreds(shreds[..shreds.len() - 2].to_vec(), None, false)
+            .insert_shreds(data1[..data1.len() - 2].to_vec(), None, false)
             .unwrap();
+        // insert two coding shreds from conflicting FEC sets
         blockstore
             .insert_shreds(vec![coding1[0].clone(), coding2[1].clone()], None, false)
             .unwrap();
