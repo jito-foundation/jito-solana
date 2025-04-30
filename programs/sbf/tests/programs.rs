@@ -1739,7 +1739,8 @@ fn test_program_sbf_invoke_in_same_tx_as_redeployment() {
             Some(&program_id),
         );
     let undeployment_instruction = loader_v4::retract(&program_id, &authority_keypair.pubkey());
-    let deployment_instruction = deployment_instructions.pop().unwrap();
+    let redeployment_instructions =
+        deployment_instructions.split_off(deployment_instructions.len() - 3);
     let signers: &[&[&Keypair]] = &[
         &[&mint_keypair, &source_program_keypair],
         &[&mint_keypair, &authority_keypair],
@@ -1782,7 +1783,7 @@ fn test_program_sbf_invoke_in_same_tx_as_redeployment() {
         ),
         (
             indirect_invoke_instruction,
-            TransactionError::InstructionError(2, InstructionError::UnsupportedProgramId),
+            TransactionError::InstructionError(4, InstructionError::UnsupportedProgramId),
         ),
     ] {
         // Call upgradeable program
@@ -1794,7 +1795,9 @@ fn test_program_sbf_invoke_in_same_tx_as_redeployment() {
         let message = Message::new(
             &[
                 undeployment_instruction.clone(),
-                deployment_instruction.clone(),
+                redeployment_instructions[0].clone(),
+                redeployment_instructions[1].clone(),
+                redeployment_instructions[2].clone(),
                 invoke_instruction,
             ],
             Some(&mint_keypair.pubkey()),
@@ -2061,7 +2064,7 @@ fn test_program_sbf_upgrade() {
             Some(&program_id),
         );
     deployment_instructions.insert(
-        deployment_instructions.len() - 1,
+        deployment_instructions.len() - 3,
         loader_v4::retract(&program_id, &new_authority_keypair.pubkey()),
     );
     let signers: &[&[&Keypair]] = &[
@@ -2167,7 +2170,7 @@ fn test_program_sbf_upgrade_via_cpi() {
             Some(&program_id),
         );
     deployment_instructions.insert(
-        deployment_instructions.len() - 1,
+        deployment_instructions.len() - 3,
         loader_v4::retract(&program_id, &new_authority_keypair.pubkey()),
     );
     let mut upgrade_instruction = deployment_instructions.pop().unwrap();
@@ -2187,13 +2190,9 @@ fn test_program_sbf_upgrade_via_cpi() {
         .accounts
         .insert(0, AccountMeta::new(loader_v4::id(), false));
     let message = Message::new(&[upgrade_instruction], Some(&mint_keypair.pubkey()));
-    let result =
-        bank_client.send_and_confirm_message(&[&mint_keypair, &new_authority_keypair], message);
-    // This fails for now because of the `callee_account.is_executable()` check in CPI `translate_and_update_accounts()`
-    assert_eq!(
-        result.unwrap_err().unwrap(),
-        TransactionError::InstructionError(0, InstructionError::AccountDataSizeChanged)
-    );
+    bank_client
+        .send_and_confirm_message(&[&mint_keypair, &new_authority_keypair], message)
+        .unwrap();
     bank_client
         .advance_slot(1, &bank_forks, &Pubkey::default())
         .expect("Failed to advance the slot");
@@ -2203,7 +2202,7 @@ fn test_program_sbf_upgrade_via_cpi() {
     let result = bank_client.send_and_confirm_instruction(&mint_keypair, instruction.clone());
     assert_eq!(
         result.unwrap_err().unwrap(),
-        TransactionError::InstructionError(0, InstructionError::UnsupportedProgramId)
+        TransactionError::InstructionError(0, InstructionError::Custom(43))
     );
 }
 
