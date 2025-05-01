@@ -687,7 +687,14 @@ pub async fn print_out_priority_fee_distribution_information(
     );
 
     // Get the external balance (total SOL in the account)
-    let external_balance = match rpc_client.get_balance(&address).await {
+    let external_balance = match get_priority_fee_distribution_account_balance(
+        &rpc_client,
+        &validator_vote_account,
+        &priority_fee_distribution_program,
+        running_epoch,
+    )
+    .await
+    {
         Ok(balance) => balance,
         Err(e) => {
             println!("Error fetching account balance: {}", e);
