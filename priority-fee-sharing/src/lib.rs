@@ -79,13 +79,13 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
     Ok(())
 }
 
-fn get_priority_fee_distribution_config_account(
+fn get_priority_fee_distribution_config_account_address(
     priority_fee_distribution_program: &Pubkey,
 ) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], priority_fee_distribution_program)
 }
 
-fn get_priority_fee_distribution_account(
+fn get_priority_fee_distribution_account_address(
     validator_vote_address: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch: u64,
@@ -98,6 +98,87 @@ fn get_priority_fee_distribution_account(
         ],
         priority_fee_distribution_program,
     )
+}
+
+async fn get_priority_fee_distribution_account_balance(
+    rpc_client: &RpcClient,
+    validator_vote_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    running_epoch: u64,
+) -> Result<u64> {
+    let (address, _) = get_priority_fee_distribution_account_address(
+        validator_vote_address,
+        priority_fee_distribution_program,
+        running_epoch,
+    );
+
+    let balance = rpc_client.get_balance(&address).await?;
+
+    Ok(balance)
+}
+
+async fn get_priority_fee_distribution_account_internal_balance(
+    rpc_client: &RpcClient,
+    validator_vote_address: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    running_epoch: u64,
+) -> Result<u64> {
+    let (address, _) = get_priority_fee_distribution_account_address(
+        validator_vote_address,
+        priority_fee_distribution_program,
+        running_epoch,
+    );
+
+    let account = rpc_client.get_account(&address).await?;
+
+    // The PriorityFeeDistributionAccount has a specific layout where total_lamports_transferred
+    // is after several other fields. According to the IDL:
+    // - 8 bytes: account discriminator
+    // - 32 bytes: validator_vote_account (pubkey)
+    // - 32 bytes: merkle_root_upload_authority (pubkey)
+    // - Variable: merkle_root (option) - depends on whether it's set
+    // - 8 bytes: epoch_created_at (u64)
+    // - 2 bytes: validator_commission_bps (u16)
+    // - 8 bytes: expires_at (u64)
+    // - 8 bytes: total_lamports_transferred (u64) <- this is what we want
+    // - 1 byte: bump (u8)
+
+    // Check if the merkle_root is set (first byte after the two pubkeys)
+    let merkle_root_offset = 8 + 32 + 32; // discriminator + validator_vote_account + merkle_root_upload_authority
+    let has_merkle_root = account.data[merkle_root_offset] != 0;
+
+    // Calculate offset to total_lamports_transferred
+    let mut offset = merkle_root_offset + 1; // +1 for the option tag
+
+    if has_merkle_root {
+        // Merkle root is present, skip it:
+        // - 32 bytes: root
+        // - 8 bytes: max_total_claim
+        // - 8 bytes: max_num_nodes
+        // - 8 bytes: total_funds_claimed
+        // - 8 bytes: num_nodes_claimed
+        offset += 32 + 8 + 8 + 8 + 8;
+    }
+
+    // Skip the remaining fields before total_lamports_transferred
+    // - 8 bytes: epoch_created_at
+    // - 2 bytes: validator_commission_bps
+    // - 8 bytes: expires_at
+    offset += 8 + 2 + 8;
+
+    // Now we're at total_lamports_transferred, read 8 bytes as u64
+    let total_lamports_transferred = u64::from_le_bytes([
+        account.data[offset],
+        account.data[offset + 1],
+        account.data[offset + 2],
+        account.data[offset + 3],
+        account.data[offset + 4],
+        account.data[offset + 5],
+        account.data[offset + 6],
+        account.data[offset + 7],
+    ]);
+
+    Ok(total_lamports_transferred)
 }
 
 async fn get_validator_identity(
@@ -131,7 +212,7 @@ async fn check_if_initialize_priority_fee_distribution_account_exsists(
     priority_fee_distribution_program: &Pubkey,
     running_epoch: u64,
 ) -> bool {
-    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account(
+    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(
         validator_vote_address,
         priority_fee_distribution_program,
         running_epoch,
@@ -155,7 +236,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
     // initialize_priority_fee_distribution_account
     let discriminator: [u8; 8] = [49, 128, 247, 162, 140, 2, 193, 87];
 
-    let (priority_fee_distribution_account, bump) = get_priority_fee_distribution_account(
+    let (priority_fee_distribution_account, bump) = get_priority_fee_distribution_account_address(
         validator_vote_address,
         priority_fee_distribution_program,
         running_epoch,
@@ -163,7 +244,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
 
     // Get the config account PDA
     let (config, _) =
-        get_priority_fee_distribution_config_account(&priority_fee_distribution_program);
+        get_priority_fee_distribution_config_account_address(&priority_fee_distribution_program);
 
     // Create the instruction data: discriminator + args
     let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
@@ -199,7 +280,7 @@ fn create_share_ix(
     let discriminator: [u8; 8] = [195, 208, 218, 42, 198, 181, 69, 74];
 
     // Get the priority fee distribution account PDA
-    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account(
+    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(
         validator_vote_address,
         priority_fee_distribution_program,
         running_epoch,
@@ -576,4 +657,87 @@ pub async fn share_priority_fees_loop(
 
         sleep_ms(LEADER_SLOT_MS).await;
     }
+}
+
+pub async fn print_out_priority_fee_distribution_information(
+    rpc_url: String,
+    validator_vote_account: Pubkey,
+    priority_fee_distribution_program: Pubkey,
+    epoch: Option<u64>,
+) -> Result<()> {
+    // Initialize RPC client
+    let rpc_client = RpcClient::new(rpc_url);
+
+    // Get the current epoch if not specified
+    let running_epoch = match epoch {
+        Some(e) => e,
+        None => {
+            let epoch_info = rpc_client
+                .get_epoch_info_with_commitment(CommitmentConfig::finalized())
+                .await?;
+            epoch_info.epoch
+        }
+    };
+
+    // Get the PriorityFeeDistributionAccount PDA address
+    let (address, _) = get_priority_fee_distribution_account_address(
+        &validator_vote_account,
+        &priority_fee_distribution_program,
+        running_epoch,
+    );
+
+    // Get the external balance (total SOL in the account)
+    let external_balance = match rpc_client.get_balance(&address).await {
+        Ok(balance) => balance,
+        Err(e) => {
+            println!("Error fetching account balance: {}", e);
+            return Err(anyhow!("Failed to get account balance: {}", e));
+        }
+    };
+
+    // Get the internal transferred balance
+    let internal_balance = match get_priority_fee_distribution_account_internal_balance(
+        &rpc_client,
+        &validator_vote_account,
+        &priority_fee_distribution_program,
+        running_epoch,
+    )
+    .await
+    {
+        Ok(balance) => balance,
+        Err(e) => {
+            println!("Error fetching internal balance: {}", e);
+            return Err(anyhow!("Failed to get internal balance: {}", e));
+        }
+    };
+
+    // Use the existing lamports_to_sol function
+    let external_balance_sol = solana_sdk::native_token::lamports_to_sol(external_balance);
+    let internal_balance_sol = solana_sdk::native_token::lamports_to_sol(internal_balance);
+
+    // Print the information
+    println!(
+        "Priority Fee Distribution Account Information for Epoch {}",
+        running_epoch
+    );
+    println!("Address: {}", address);
+    println!(
+        "Current Account Balance: {} lamports ({} SOL)",
+        external_balance, external_balance_sol
+    );
+    println!(
+        "Total Lamports Transferred: {} lamports ({} SOL)",
+        internal_balance, internal_balance_sol
+    );
+
+    if internal_balance > external_balance {
+        let claimed_lamports = internal_balance - external_balance;
+        let claimed_sol = solana_sdk::native_token::lamports_to_sol(claimed_lamports);
+        println!(
+            "Note: {} lamports ({} SOL) have been claimed by delegators",
+            claimed_lamports, claimed_sol
+        );
+    }
+
+    Ok(())
 }

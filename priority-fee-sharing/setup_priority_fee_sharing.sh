@@ -423,7 +423,7 @@ collect_parameters() {
 
     # Priority Fee Payer Keypair
     echo "The priority fee payer keypair is the account that will pay for priority fees."
-    echo "This should be an account with sufficient funds to cover commission payments."
+    echo "this is usually the validator's identity keypair"
     echo
     PRIORITY_FEE_PAYER_KEYPAIR_PATH=$(ask_string "Enter the path to your priority fee payer keypair file" "$PRIORITY_FEE_PAYER_KEYPAIR_PATH")
     echo

@@ -10,7 +10,7 @@ User=root
 # RPC URL - This RPC needs to be able to call `get_block`. If using a local RPC, ensure it is running with `--enable-rpc-transaction-history`
 Environment=RPC_URL=YOUR_RPC_URL_HERE
 
-# The account that the priority fees are paid out from
+# The account that the priority fees are paid out from - this is usually the identity keypair
 Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=YOUR_PRIORITY_FEE_PAYER_KEYPAIR_PATH
 
 # The vote authority needed to create the PriorityFeeDistribution Account

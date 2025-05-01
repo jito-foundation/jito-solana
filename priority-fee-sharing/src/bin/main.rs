@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
 use log::info;
 use priority_fee_sharing::fee_records::{FeeRecordState, FeeRecords};
-use priority_fee_sharing::share_priority_fees_loop;
+use priority_fee_sharing::{
+    print_out_priority_fee_distribution_information, share_priority_fees_loop,
+};
 use solana_pubkey::Pubkey;
 use solana_sdk::native_token::sol_to_lamports;
 use std::path::PathBuf;
@@ -80,6 +82,25 @@ enum Commands {
         #[arg(long, env, default_value = "any")]
         state: String,
     },
+
+    /// Print information about the Priority Fee Distribution Account
+    PrintInfo {
+        /// RPC URL to use
+        #[arg(long, env)]
+        rpc_url: String,
+
+        /// Validator vote account address
+        #[arg(long, env)]
+        validator_vote_account: Pubkey,
+
+        /// Priority fee distribution program
+        #[arg(long, env)]
+        priority_fee_distribution_program: Pubkey,
+
+        /// Optional: Specific epoch to query (defaults to current epoch)
+        #[arg(long)]
+        epoch: Option<u64>,
+    },
 }
 
 /// Parse state string to FeeRecordState enum
@@ -153,6 +174,21 @@ async fn main() -> Result<(), anyhow::Error> {
 
             fee_records.export_to_csv(output_path, state_enum)?;
             info!("Export completed successfully");
+        }
+
+        Commands::PrintInfo {
+            rpc_url,
+            validator_vote_account,
+            priority_fee_distribution_program,
+            epoch,
+        } => {
+            print_out_priority_fee_distribution_information(
+                rpc_url.clone(),
+                *validator_vote_account,
+                *priority_fee_distribution_program,
+                *epoch,
+            )
+            .await?
         }
     }
 
