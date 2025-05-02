@@ -29,6 +29,17 @@ cd jito-solana/priority-fee-sharing
 
 The easiest way to set up the Priority Fee Sharing service is to use the automated setup script:
 
+Info you will need before running the setup script:
+1. `RPC_URL` - this must be able to call `get_block`.  **Example:** `http://localhost:8899`
+2. `FEE_RECORDS_DB_PATH` - Path to store fee records. **Default:** `/var/lib/solana/fee_records`
+3. `PAYER_KEYPAIR` - the account which the priority fee shares come out of. This will usually be your validator's identity keypair.
+4. `VOTE_AUTHORITY_KEYPAIR` - the keypair of your vote authority - this is needed to sign and create the distribution account ( no funds will be used from this account ). To get the authority run: `'solana vote-account YOUR_VOTE_ACCOUNT'`
+5. `VALIDATOR_VOTE_ACCOUNT` - the vote account of your validator ( Not identity )
+6. `COMMISSION_BPS` - the commission the validator takes, this should be 50% or lower to receive stake ( 5000 )
+7. `MINIMUM_BALANCE_SOL` - a reserve balance of SOL kept in your `PAYER_KEYPAIR` for saftey, this should be kept above an amount needed to profitably run the validator.
+
+**Note**: It's advised to use the defaults on all other parameters unless you have a specific reason to change them.
+
 ```bash
 sudo ./setup_priority_fee_sharing.sh
 ```
