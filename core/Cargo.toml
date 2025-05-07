@@ -145,6 +145,9 @@ test-case = { workspace = true }
 [target."cfg(unix)".dependencies]
 sysctl = { workspace = true }
 
+[target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dependencies]
+jemallocator = { workspace = true }
+
 [features]
 dev-context-only-utils = [
     "solana-perf/dev-context-only-utils",
@@ -181,6 +184,10 @@ name = "sigverify_stage"
 
 [[bench]]
 name = "receive_and_buffer"
+harness = false
+
+[[bench]]
+name = "scheduler"
 harness = false
 
 [package.metadata.docs.rs]
