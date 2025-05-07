@@ -8801,7 +8801,6 @@ dependencies = [
  "anyhow",
  "bincode",
  "bytes",
- "clap 3.2.23",
  "hxdmp",
  "itertools 0.12.1",
  "log",
@@ -8813,7 +8812,6 @@ dependencies = [
  "socket2",
  "solana-logger",
  "solana-serde",
- "solana-version",
  "tokio",
  "url 2.5.4",
 ]
