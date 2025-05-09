@@ -5361,13 +5361,9 @@ impl AccountsDb {
     }
 
     fn purge_slot_cache(&self, purged_slot: Slot, slot_cache: &SlotCache) {
-        let mut purged_slot_pubkeys: HashSet<(Slot, Pubkey)> = HashSet::new();
         let pubkey_to_slot_set: Vec<(Pubkey, Slot)> = slot_cache
             .iter()
-            .map(|account| {
-                purged_slot_pubkeys.insert((purged_slot, *account.key()));
-                (*account.key(), purged_slot)
-            })
+            .map(|account| (*account.key(), purged_slot))
             .collect();
         self.purge_slot_cache_pubkeys(purged_slot, pubkey_to_slot_set, true);
     }
