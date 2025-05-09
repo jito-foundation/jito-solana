@@ -44,7 +44,7 @@ Docker's containerization overhead and resultant performance degradation unless
 specially configured.
 
 We use Docker only for development purposes. Docker Hub contains images for all
-releases at [agavexyz/agave](https://hub.docker.com/r/agavexyz/agave).
+releases at [solanalabs/solana](https://hub.docker.com/r/solanalabs/solana).
 
 ## Software
 
