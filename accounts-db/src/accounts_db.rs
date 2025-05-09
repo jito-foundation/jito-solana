@@ -7303,7 +7303,7 @@ impl AccountsDb {
                 if offsets.len() == store.count() {
                     // all remaining alive accounts in the storage are being removed, so the entire storage/slot is dead
                     store.remove_accounts(store.alive_bytes(), reset_accounts, offsets.len());
-                    self.dirty_stores.insert(*slot, store.clone());
+                    self.dirty_stores.insert(*slot, store);
                     dead_slots.insert(*slot);
                 } else {
                     // not all accounts are being removed, so figure out sizes of accounts we are removing and update the alive bytes and alive account count
