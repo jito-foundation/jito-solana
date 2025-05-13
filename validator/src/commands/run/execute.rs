@@ -28,6 +28,7 @@ use {
     solana_core::{
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
+        snapshot_packager_service::SnapshotPackagerService,
         system_monitor_service::SystemMonitorService,
         tpu::DEFAULT_TPU_COALESCE,
         validator::{
@@ -77,7 +78,7 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{Arc, RwLock},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         time::Duration,
     },
 };
@@ -1069,6 +1070,13 @@ pub fn execute(
                 .to_string())?;
         }
     }
+
+    let validator_exit_backpressure = [(
+        SnapshotPackagerService::NAME.to_string(),
+        Arc::new(AtomicBool::new(false)),
+    )]
+    .into();
+    validator_config.validator_exit_backpressure = validator_exit_backpressure;
 
     let mut ledger_lock = ledger_lockfile(&ledger_path);
     let _ledger_write_guard = lock_ledger(&ledger_path, &mut ledger_lock);
