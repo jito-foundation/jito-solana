@@ -4,8 +4,6 @@
 //! 2. multiple 'slots' squashed into a single older (ie. ancient) slot for convenience and performance
 //!
 //! Otherwise, an ancient append vec is the same as any other append vec
-#[cfg(test)]
-use crate::accounts_file::AccountsFile;
 use {
     crate::{
         account_storage::ShrinkInProgress,
@@ -1188,14 +1186,6 @@ pub const fn get_ancient_append_vec_capacity() -> u64 {
     RESULT
 }
 
-/// is this a max-size append vec designed to be used as an ancient append vec?
-//
-// NOTE: Only used by ancient append vecs "append" method, which is test-only now.
-#[cfg(test)]
-pub fn is_ancient(storage: &AccountsFile) -> bool {
-    storage.capacity() >= get_ancient_append_vec_capacity()
-}
-
 #[cfg(test)]
 pub mod tests {
     use {
@@ -1203,7 +1193,6 @@ pub mod tests {
         crate::{
             account_info::{AccountInfo, StorageLocation},
             accounts_db::{
-                get_temp_accounts_paths,
                 tests::{
                     append_single_account_with_default_hash, compare_all_accounts,
                     create_db_with_storages_and_index, create_storages_and_update_index,
@@ -1215,9 +1204,7 @@ pub mod tests {
             accounts_file::StorageAccess,
             accounts_hash::AccountHash,
             accounts_index::{AccountsIndexScanResult, ScanFilter, UpsertReclaim},
-            append_vec::{
-                aligned_stored_size, AccountMeta, AppendVec, StoredAccountMeta, StoredMeta,
-            },
+            append_vec::{aligned_stored_size, AccountMeta, StoredAccountMeta, StoredMeta},
             storable_accounts::{tests::build_accounts_from_storage, StorableAccountsBySlot},
         },
         rand::seq::SliceRandom as _,
@@ -2490,21 +2477,6 @@ pub mod tests {
     #[test]
     fn test_get_ancient_append_vec_capacity() {
         assert_eq!(get_ancient_append_vec_capacity(), 128 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_is_ancient() {
-        for (size, expected_ancient) in [
-            (get_ancient_append_vec_capacity() + 1, true),
-            (get_ancient_append_vec_capacity(), true),
-            (get_ancient_append_vec_capacity() - 1, false),
-        ] {
-            let tf = crate::append_vec::test_utils::get_append_vec_path("test_is_ancient");
-            let (_temp_dirs, _paths) = get_temp_accounts_paths(1).unwrap();
-            let av = AccountsFile::AppendVec(AppendVec::new(&tf.path, true, size as usize));
-
-            assert_eq!(expected_ancient, is_ancient(&av));
-        }
     }
 
     fn get_one_packed_ancient_append_vec_and_others(
