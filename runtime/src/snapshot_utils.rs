@@ -27,7 +27,6 @@ use {
         accounts_db::{AccountStorageEntry, AtomicAccountsFileId},
         accounts_file::{AccountsFile, AccountsFileError, InternalsForArchive, StorageAccess},
         accounts_hash::{AccountsDeltaHash, AccountsHash},
-        append_vec::StoredMetaWriteVersion,
         epoch_accounts_hash::EpochAccountsHash,
         hardened_unpack::{self, ParallelSelector, UnpackError},
         shared_buffer_reader::{SharedBuffer, SharedBufferReader},
@@ -881,7 +880,7 @@ fn serialize_snapshot(
     accounts_hash: AccountsHash,
     epoch_accounts_hash: Option<EpochAccountsHash>,
     bank_incremental_snapshot_persistence: Option<&BankIncrementalSnapshotPersistence>,
-    write_version: StoredMetaWriteVersion,
+    write_version: u64,
     should_flush_storages: bool,
 ) -> Result<BankSnapshotInfo> {
     let slot = bank_fields.slot;

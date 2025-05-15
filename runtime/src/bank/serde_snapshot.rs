@@ -516,14 +516,9 @@ mod tests {
     #[cfg(feature = "frozen-abi")]
     mod test_bank_serialize {
         use {
-            super::*,
-            crate::bank::BankHashStats,
-            solana_accounts_db::{
-                accounts_hash::AccountsLtHash, append_vec::StoredMetaWriteVersion,
-            },
-            solana_clock::Slot,
-            solana_frozen_abi::abi_example::AbiExample,
-            solana_lattice_hash::lt_hash::LtHash,
+            super::*, crate::bank::BankHashStats,
+            solana_accounts_db::accounts_hash::AccountsLtHash, solana_clock::Slot,
+            solana_frozen_abi::abi_example::AbiExample, solana_lattice_hash::lt_hash::LtHash,
             std::marker::PhantomData,
         };
 
@@ -589,7 +584,7 @@ mod tests {
                     versioned_epoch_stakes,
                     accounts_lt_hash: Some(AccountsLtHash(LtHash::identity()).into()),
                 },
-                StoredMetaWriteVersion::default(),
+                u64::default(), // obsolete, formerly write_version
             )
         }
     }

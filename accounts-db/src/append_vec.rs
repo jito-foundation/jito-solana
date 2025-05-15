@@ -9,8 +9,6 @@ pub mod test_utils;
 
 // Used all over the accounts-db crate.  Probably should be minimized.
 pub(crate) use meta::StoredAccountMeta;
-// Used by the snapshot code in the runtime crate
-pub use meta::StoredMetaWriteVersion;
 // Some tests/benches use AccountMeta/StoredMeta
 #[cfg(feature = "dev-context-only-utils")]
 pub use meta::{AccountMeta, StoredMeta};
