@@ -4,7 +4,7 @@ pub use solana_perf::report_target_features;
 use {
     crate::{
         accounts_hash_verifier::AccountsHashVerifier,
-        admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
+        admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
         banking_trace::{self, BankingTracer, TraceError},
         cluster_info_vote_listener::VoteTracker,
         completed_data_sets_service::CompletedDataSetsService,
@@ -1581,7 +1581,8 @@ impl Validator {
             return Err(ValidatorError::WenRestartFinished.into());
         }
 
-        let forwarding_tpu_client = if let Some(connection_cache) = connection_cache {
+        let key_notifiers = Arc::new(RwLock::new(KeyUpdaters::default()));
+        let forwarding_tpu_client = if let Some(connection_cache) = &connection_cache {
             ForwardingClientOption::ConnectionCache(connection_cache.clone())
         } else {
             let runtime_handle = tpu_client_next_runtime
@@ -1596,7 +1597,7 @@ impl Validator {
                 runtime_handle.clone(),
             ))
         };
-        let (tpu, mut key_notifies) = Tpu::new_with_client(
+        let tpu = Tpu::new_with_client(
             &cluster_info,
             &poh_recorder,
             transaction_recorder,
@@ -1646,6 +1647,7 @@ impl Validator {
             config.transaction_struct.clone(),
             config.enable_block_production_forwarding,
             config.generator_config.clone(),
+            key_notifiers.clone(),
         );
 
         datapoint_info!(
@@ -1661,7 +1663,10 @@ impl Validator {
         *start_progress.write().unwrap() = ValidatorStartProgress::Running;
         if config.use_tpu_client_next {
             if let Some(json_rpc_service) = &json_rpc_service {
-                key_notifies.push(json_rpc_service.get_client_key_updater())
+                key_notifiers.write().unwrap().add(
+                    KeyUpdaterType::RpcService,
+                    json_rpc_service.get_client_key_updater(),
+                );
             }
             // note, that we don't need to add ConnectionClient to key_notifiers
             // because it is added inside Tpu.
@@ -1672,7 +1677,7 @@ impl Validator {
             cluster_info: cluster_info.clone(),
             vote_account: *vote_account,
             repair_whitelist: config.repair_whitelist.clone(),
-            notifies: key_notifies,
+            notifies: key_notifiers,
             repair_socket: Arc::new(node.sockets.repair),
             outstanding_repair_requests,
             cluster_slots,
