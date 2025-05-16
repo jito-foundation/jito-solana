@@ -10,6 +10,7 @@ Clone the repository:
 
 ```bash
 git clone --recursive https://github.com/jito-foundation/jito-solana.git
+cd jito-solana
 git checkout ck/distro-script
 ```
 
@@ -22,8 +23,23 @@ git submodule update --init --recursive
 Move to the `priority-fee-sharing` directory:
 
 ```bash
-cd jito-solana/priority-fee-sharing
+cd priority-fee-sharing
 ```
+
+**NOTE**
+To help, you may want to install the [Solana CLI](https://solana.com/docs/intro/installation) if you have not already
+
+- TODO put error handling on pubkey
+- TODO put error handling on keypair
+- Look and skip to first available block
+- Docker container
+- Move into new repo
+- selectively release
+
+- Make into sperate repo - such that it's not confusing
+- people are going to have vastly different setups
+- How big the fee records ( estamated size )
+-
 
 ## Easy Setup
 
@@ -33,15 +49,15 @@ Info you will need before running the setup script:
 1. `RPC_URL` - this must be able to call `get_block`.  **Example:** `http://localhost:8899`
 2. `FEE_RECORDS_DB_PATH` - Path to store fee records. **Default:** `/var/lib/solana/fee_records`
 3. `PAYER_KEYPAIR` - the account which the priority fee shares come out of. This will usually be your validator's identity keypair.
-4. `VOTE_AUTHORITY_KEYPAIR` - the keypair of your vote authority - this is needed to sign and create the distribution account ( no funds will be used from this account ). To get the authority run: `'solana vote-account YOUR_VOTE_ACCOUNT'`
-5. `VALIDATOR_VOTE_ACCOUNT` - the vote account of your validator ( Not identity )
-6. `COMMISSION_BPS` - the commission the validator takes, this should be 50% or lower to receive stake ( 5000 )
+4. `VOTE_AUTHORITY_KEYPAIR` - the keypair of your vote authority - this is needed to sign and create the distribution account ( no funds will be used from this account ). This will most likely be the validator identiy. To check the authority run: `'solana vote-account YOUR_VOTE_ACCOUNT'`
+5. `VALIDATOR_VOTE_ACCOUNT` - the vote account of your validator ( Not identity ). This is a pubkey.
+6. `COMMISSION_BPS` - the priority fee commission the validator takes, this should be 50% or lower to receive stake ( 5000 )
 7. `MINIMUM_BALANCE_SOL` - a reserve balance of SOL kept in your `PAYER_KEYPAIR` for saftey, this should be kept above an amount needed to profitably run the validator.
 
 **Note**: It's advised to use the defaults on all other parameters unless you have a specific reason to change them.
 
 ```bash
-sudo ./setup_priority_fee_sharing.sh
+./setup_priority_fee_sharing.sh
 ```
 
 **NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
