@@ -35,7 +35,7 @@ solana-perf = { workspace = true }
 solana-program-runtime = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-rpc-client-api = { workspace = true }
-solana-sdk = { workspace = true, default-features = false }
+solana-sdk = { workspace = true }
 solana-sdk-ids = { workspace = true }
 solana-signature = { workspace = true }
 solana-svm = { workspace = true }
