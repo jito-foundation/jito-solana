@@ -395,29 +395,14 @@ fn link_solana_toolchain(config: &Config) {
     }
 }
 
-fn build_solana_package(
+fn install_tools(
     config: &Config,
-    package: &cargo_metadata::Package,
+    package: Option<&cargo_metadata::Package>,
     metadata: &cargo_metadata::Metadata,
 ) {
-    let root_package_dir = &package.manifest_path.parent().unwrap_or_else(|| {
-        error!("Unable to get directory of {}", package.manifest_path);
-        exit(1);
-    });
-
-    let target_triple = rust_target_triple(config);
-
-    env::set_current_dir(root_package_dir).unwrap_or_else(|err| {
-        error!(
-            "Unable to set current directory to {}: {}",
-            root_package_dir, err
-        );
-        exit(1);
-    });
-
     let platform_tools_version = config.platform_tools_version.unwrap_or_else(|| {
         let workspace_tools_version = metadata.workspace_metadata.get("solana").and_then(|v| v.get("tools-version")).and_then(|v| v.as_str());
-        let package_tools_version = package.metadata.get("solana").and_then(|v| v.get("tools-version")).and_then(|v| v.as_str());
+        let package_tools_version = package.map(|p| p.metadata.get("solana").and_then(|v| v.get("tools-version")).and_then(|v| v.as_str())).unwrap_or(None);
         match (workspace_tools_version, package_tools_version) {
             (Some(workspace_version), Some(package_version)) => {
                 if workspace_version != package_version {
@@ -431,20 +416,13 @@ fn build_solana_package(
         }
     });
 
-    info!("Solana SDK: {}", config.sbf_sdk.display());
-    if config.no_default_features {
-        info!("No default features");
-    }
-    if !config.features.is_empty() {
-        info!("Features: {}", config.features.join(" "));
-    }
-    let arch = if cfg!(target_arch = "aarch64") {
-        "aarch64"
-    } else {
-        "x86_64"
-    };
-
     if !config.skip_tools_install {
+        let arch = if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
+
         let platform_tools_version =
             validate_platform_tools_version(platform_tools_version, DEFAULT_PLATFORM_TOOLS_VERSION);
 
@@ -485,6 +463,7 @@ fn build_solana_package(
     }
 
     if config.no_rustup_override {
+        let target_triple = rust_target_triple(config);
         check_solana_target_installed(&target_triple);
     } else {
         link_solana_toolchain(config);
@@ -498,6 +477,40 @@ fn build_solana_package(
             );
             env::remove_var("RUSTC")
         }
+    }
+}
+
+fn prepare_environment(
+    config: &Config,
+    package: Option<&cargo_metadata::Package>,
+    metadata: &cargo_metadata::Metadata,
+) {
+    let root_dir = if let Some(package) = package {
+        &package.manifest_path.parent().unwrap_or_else(|| {
+            error!("Unable to get directory of {}", package.manifest_path);
+            exit(1);
+        })
+    } else {
+        &&*metadata.workspace_root
+    };
+
+    env::set_current_dir(root_dir).unwrap_or_else(|err| {
+        error!("Unable to set current directory to {}: {}", root_dir, err);
+        exit(1);
+    });
+
+    install_tools(config, package, metadata);
+}
+
+fn invoke_cargo(config: &Config) {
+    let target_triple = rust_target_triple(config);
+
+    info!("Solana SDK: {}", config.sbf_sdk.display());
+    if config.no_default_features {
+        info!("No default features");
+    }
+    if !config.features.is_empty() {
+        info!("Features: {}", config.features.join(" "));
     }
 
     if corrupted_toolchain(config) {
@@ -575,6 +588,9 @@ fn build_solana_package(
     if let Some(jobs) = &config.jobs {
         cargo_build_args.push("--jobs");
         cargo_build_args.push(jobs);
+    }
+    if config.workspace {
+        cargo_build_args.push("--workspace");
     }
     cargo_build_args.append(&mut config.cargo_args.clone());
     let output = spawn(
@@ -662,11 +678,15 @@ fn build_solana(config: Config, manifest_path: Option<PathBuf>) {
     if let Some(root_package) = metadata.root_package() {
         if !config.workspace {
             let program_name = generate_program_name(root_package);
-            build_solana_package(&config, root_package, &metadata);
+            prepare_environment(&config, Some(root_package), &metadata);
+            invoke_cargo(&config);
             post_process(&config, target_dir.as_ref(), program_name);
             return;
         }
     }
+
+    prepare_environment(&config, None, &metadata);
+    invoke_cargo(&config);
 
     let all_sbf_packages = metadata
         .packages
@@ -685,7 +705,6 @@ fn build_solana(config: Config, manifest_path: Option<PathBuf>) {
 
     for package in all_sbf_packages {
         let program_name = generate_program_name(package);
-        build_solana_package(&config, package, &metadata);
         post_process(&config, target_dir.as_ref(), program_name);
     }
 }
