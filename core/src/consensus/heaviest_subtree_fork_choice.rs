@@ -230,6 +230,203 @@ impl HeaviestSubtreeForkChoice {
         heaviest_subtree_fork_choice
     }
 
+    //NIK'S MOD BEGIN
+    // This method processes missed votes and updates the fork choice accordingly
+    pub fn process_missed_votes(
+        &mut self,
+        bank_forks: &RwLock<BankForks>,
+        vote_account_pubkey: &Pubkey,
+        tower: &mut Tower,
+        latest_validator_votes_for_frozen_banks: &mut LatestValidatorVotesForFrozenBanks,
+        bank: &Bank,
+    ) -> Result<(), String> {
+        let bank_forks_r = bank_forks.read().unwrap();
+        let current_slot = bank.slot();
+
+        // Define backfill window
+        const MAX_BACKFILL_LOOK_BACK: u64 = 5000;
+        const MIN_SLOT_AGE: u64 = 10;
+
+        // Calculate the range of slots to check for missed votes
+        let start_slot = std::cmp::max(
+            tower.root(),
+            current_slot.saturating_sub(MAX_BACKFILL_LOOK_BACK),
+        );
+        let end_slot = current_slot.saturating_sub(MIN_SLOT_AGE);
+
+        info!(
+            "Checking for missed votes between slots {} and {}",
+            start_slot, end_slot
+        );
+
+        // Find slots that we haven't voted on
+        let mut missed_slots = Vec::new();
+        for slot in start_slot..=end_slot {
+            // Verify the slot exists in fork choice
+            if let Some(bank) = bank_forks_r.get(slot) {
+                let slot_hash_key = (slot, bank.hash());
+
+                // Skip if we've already voted on this fork
+                if latest_validator_votes_for_frozen_banks.has_voted_for_this_or_descendant(slot) {
+                    continue;
+                }
+
+                // Check if the slot is valid for voting
+                if self.verify_slot_for_backfill(slot_hash_key, &bank_forks_r, tower) {
+                    missed_slots.push(slot_hash_key);
+                }
+            }
+        }
+
+        if missed_slots.is_empty() {
+            info!("No valid missed slots found for backfilling");
+            return Ok(());
+        }
+
+        info!(
+            "Found {} missed vote opportunities for backfilling",
+            missed_slots.len()
+        );
+
+        // Process missed slots in batches
+        const BATCH_SIZE: usize = 5;
+        for batch in missed_slots.chunks(BATCH_SIZE) {
+            let mut vote_slots = Vec::with_capacity(batch.len());
+            let mut vote_hashes = Vec::with_capacity(batch.len());
+
+            for &slot_hash_key in batch {
+                vote_slots.push(slot_hash_key.0);
+                vote_hashes.push(slot_hash_key.1);
+            }
+
+            if vote_slots.is_empty() {
+                continue;
+            }
+
+            // Sort slots to ensure they're in ascending order
+            let mut sorted_votes: Vec<_> = vote_slots.iter().zip(vote_hashes.iter()).collect();
+            sorted_votes.sort_by_key(|&(slot, _)| *slot);
+
+            let sorted_slots: Vec<_> = sorted_votes.iter().map(|(slot, _)| **slot).collect();
+            let sorted_hashes: Vec<_> = sorted_votes.iter().map(|(_, hash)| **hash).collect();
+
+            info!(
+                "Backfilling {} votes for slots: {:?}",
+                sorted_slots.len(),
+                sorted_slots
+            );
+
+            // Get the last slot and hash for the fork choice update
+            if let (Some(&last_slot), Some(&last_hash)) =
+                (sorted_slots.last(), sorted_hashes.last())
+            {
+                // Add the vote using the vote_account_pubkey
+                latest_validator_votes_for_frozen_banks.check_add_vote(
+                    *vote_account_pubkey, // Use the vote account pubkey directly
+                    last_slot,
+                    Some(last_hash),
+                    true,
+                );
+
+                // Update tower with new votes
+                //tower.record_vote(last_slot, last_hash);
+                // tower.record_bank_vote_and_update_lockouts(
+                //     last_slot,
+                //     last_hash,
+                //     true,
+                //     Hash::default(),
+                // );
+                if let Some(vote_bank) = bank_forks_r.get(last_slot) {
+                    // Get block_id using the same approach as record_bank_vote
+                    let block_id = vote_bank.block_id().unwrap_or_else(|| Hash::default());
+
+                    // Update tower with new votes using proper production method
+                    tower.record_bank_vote_and_update_lockouts(
+                        last_slot,
+                        last_hash,
+                        vote_bank
+                            .feature_set
+                            .is_active(&agave_feature_set::enable_tower_sync_ix::id()),
+                        block_id,
+                    );
+                } else {
+                    // Fallback to default approach if bank not available
+                    tower.record_bank_vote_and_update_lockouts(
+                        last_slot,
+                        last_hash,
+                        true, // Default to true for enable_tower_sync_ix
+                        Hash::default(),
+                    );
+                }
+            }
+
+            // Allow some time between batches
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        Ok(())
+    }
+
+    // Helper to verify if a slot is valid for backfilling
+    fn verify_slot_for_backfill(
+        &self,
+        slot_hash_key: SlotHashKey,
+        bank_forks: &BankForks,
+        tower: &Tower,
+    ) -> bool {
+        // Skip if the slot doesn't exist in fork_infos
+        if !self.fork_infos.contains_key(&slot_hash_key) {
+            return false;
+        }
+
+        // Skip if slot is not frozen
+        let bank = match bank_forks.get(slot_hash_key.0) {
+            Some(bank) => bank,
+            None => return false,
+        };
+
+        if !bank.is_frozen() {
+            return false;
+        }
+
+        // Skip if slot is not a candidate
+        if !self.is_candidate(&slot_hash_key).unwrap_or(false) {
+            return false;
+        }
+
+        // Skip if slot is older than or equal to tower root
+        if slot_hash_key.0 <= tower.root() {
+            return false;
+        }
+
+        // Skip if we've already voted on a descendant of this slot
+        let last_vote = tower.last_vote();
+        if let Some(last_voted_slot) = last_vote.last_voted_slot() {
+            if last_voted_slot <= slot_hash_key.0 {
+                // Can't vote for slots older or equal to last vote
+                return false;
+            }
+
+            // Check if last_voted_slot is a descendant of this slot
+            let mut current = bank_forks.get(last_voted_slot);
+            while let Some(check_bank) = current {
+                if check_bank.slot() == slot_hash_key.0 {
+                    // We already voted on a descendant
+                    return false;
+                }
+
+                if check_bank.slot() == 0 {
+                    break;
+                }
+
+                current = bank_forks.get(check_bank.parent_slot());
+            }
+        }
+
+        true
+    }
+    //NIK'S MOD END
+
     // Given a root and a list of `frozen_banks` sorted smallest to greatest by slot,
     // return a new HeaviestSubtreeForkChoice
     pub fn new_from_frozen_banks(root: SlotHashKey, frozen_banks: &[Arc<Bank>]) -> Self {

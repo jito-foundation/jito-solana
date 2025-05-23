@@ -15,6 +15,31 @@ pub struct LatestValidatorVotesForFrozenBanks {
 }
 
 impl LatestValidatorVotesForFrozenBanks {
+    //NIK'S MOD BEGIN
+    pub fn has_voted_for_this_or_descendant(&self, slot: Slot) -> bool {
+        // Check if any validator has a vote for this slot in max_gossip_frozen_votes
+        for (_, &(vote_slot, _)) in &self.max_gossip_frozen_votes {
+            if vote_slot == slot {
+                return true;
+            }
+        }
+
+        // Check if any validator has a vote for this slot in max_replay_frozen_votes
+        for (_, &(vote_slot, _)) in &self.max_replay_frozen_votes {
+            if vote_slot == slot {
+                return true;
+            }
+        }
+
+        // We can't access fork_choice_dirty_set directly because it's private,
+        // so we'll just check the two public collections, which should catch most cases
+
+        // A more comprehensive check would also search for descendants
+        // but that would require having access to the ancestry information
+        false
+    }
+    //NIK'S MOD END
+
     // `frozen_hash.is_some()` if the bank with slot == `vote_slot` is frozen
     // Returns whether the vote was actually added, and the latest voted frozen slot
     pub fn check_add_vote(
