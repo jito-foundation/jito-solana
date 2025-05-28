@@ -3,11 +3,14 @@ pub mod fee_records;
 
 use anyhow::{anyhow, Result};
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
+use log::warn;
 use log::{error, info};
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::compute_budget::ComputeBudgetInstruction;
+use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::reward_type::RewardType;
@@ -24,6 +27,47 @@ use tokio::time::sleep;
 // 1s/block, 4 leader blocks in a row
 const LEADER_SLOT_MS: u64 = 1000 * 4;
 const MAX_BPS: u64 = 10_000;
+
+// ------------------------- HELPER STRUCTS -----------------------------
+#[derive(Debug, Clone)]
+pub struct PFEpochInfo {
+    pub epoch: u64,
+    pub slot: u64,
+    pub slots_in_epoch: u64,
+    pub slot_index: u64,
+}
+
+impl PFEpochInfo {
+    pub fn new(epoch_info: EpochInfo) -> Self {
+        Self {
+            epoch: epoch_info.epoch,
+            slot: epoch_info.absolute_slot,
+            slots_in_epoch: epoch_info.slots_in_epoch,
+            slot_index: epoch_info.slot_index,
+        }
+    }
+
+    pub fn null() -> Self {
+        Self {
+            epoch: 0,
+            slot: 0,
+            slots_in_epoch: 0,
+            slot_index: 0,
+        }
+    }
+
+    pub fn first_slot_in_epoch(&self) -> u64 {
+        self.slot - self.slot_index
+    }
+
+    pub fn last_slot_in_epoch(&self) -> u64 {
+        self.first_slot_in_epoch() + self.slots_in_epoch
+    }
+
+    pub fn percentage_of_epoch(&self) -> f64 {
+        self.slot_index as f64 / self.slots_in_epoch as f64 * 100.0
+    }
+}
 
 // ------------------------- HELPER FUNCTIONS -----------------------------
 fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u64> {
@@ -206,7 +250,7 @@ async fn get_validator_identity(
     }
 }
 
-async fn check_if_initialize_priority_fee_distribution_account_exsists(
+async fn check_priority_fee_distribution_account_exsists(
     rpc_client: &RpcClient,
     validator_vote_address: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
@@ -223,6 +267,67 @@ async fn check_if_initialize_priority_fee_distribution_account_exsists(
         .await;
 
     result.is_ok()
+}
+
+async fn check_or_create_fee_distribution_account(
+    rpc_client: &RpcClient,
+    payer_keypair: &Keypair,
+    vote_authority_keypair: &Keypair,
+    validator_vote_address: &Pubkey,
+    merkle_root_upload_authority: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    commission_bps: u64,
+    running_epoch: u64,
+) -> Result<()> {
+    let account_exsists = check_priority_fee_distribution_account_exsists(
+        rpc_client,
+        validator_vote_address,
+        priority_fee_distribution_program,
+        running_epoch,
+    )
+    .await;
+
+    if account_exsists {
+        return Ok(());
+    }
+
+    let blockhash = rpc_client.get_latest_blockhash().await?;
+
+    let ix = create_initialize_priority_fee_distribution_account_ix(
+        vote_authority_keypair,
+        validator_vote_address,
+        priority_fee_distribution_program,
+        merkle_root_upload_authority,
+        commission_bps as u16,
+        running_epoch,
+    );
+    let tx = Transaction::new_signed_with_payer(
+        &[ix.clone()],
+        Some(&payer_keypair.pubkey()),
+        &[vote_authority_keypair, payer_keypair],
+        blockhash,
+    );
+
+    let result = rpc_client
+        .send_and_confirm_transaction_with_spinner_and_config(
+            &tx,
+            CommitmentConfig::finalized(),
+            RpcSendTransactionConfig {
+                skip_preflight: true,
+                ..Default::default()
+            },
+        )
+        .await;
+    match result {
+        Ok(sig) => {
+            info!("Create PDA Transaction sent: {}", sig);
+        }
+        Err(err) => {
+            return Err(anyhow!("Failed to send Create PDA transaction: {:?}", err,));
+        }
+    }
+
+    return Ok(());
 }
 
 fn create_initialize_priority_fee_distribution_account_ix(
@@ -288,8 +393,7 @@ fn create_share_ix(
 
     // Get the config account PDA
     let (config, _) =
-        Pubkey::find_program_address(&[b"CONFIG_ACCOUNT"], priority_fee_distribution_program);
-    info!("Config {}", config);
+        get_priority_fee_distribution_config_account_address(&priority_fee_distribution_program);
 
     // Create the instruction data: discriminator + lamports amount
     let mut data = Vec::with_capacity(8 + 8);
@@ -317,15 +421,16 @@ async fn handle_epoch_and_leader_slot(
     fee_records: &FeeRecords,
     validator_vote_account: &Pubkey,
     validator_identity: &Pubkey,
-    running_epoch: u64,
-) -> Result<(u64, u64)> {
+    running_epoch_info: &PFEpochInfo,
+) -> Result<(PFEpochInfo, bool)> {
+    // epoch, absolute_slot, start_slot, end_slot, is_new_epoch
     let epoch_info = rpc_client
         .get_epoch_info_with_commitment(CommitmentConfig::finalized())
         .await?;
     let epoch_start_slot = epoch_info.absolute_slot - epoch_info.slot_index;
 
-    if running_epoch == epoch_info.epoch {
-        return Ok((running_epoch, epoch_info.absolute_slot));
+    if running_epoch_info.epoch == epoch_info.epoch {
+        return Ok((PFEpochInfo::new(epoch_info), false));
     }
 
     let leader_schedule = rpc_client
@@ -361,14 +466,13 @@ async fn handle_epoch_and_leader_slot(
         }
     }
 
-    Ok((epoch_info.epoch, epoch_info.absolute_slot))
+    Ok((PFEpochInfo::new(epoch_info), true))
 }
 
 async fn handle_unprocessed_blocks(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
-    running_slot: u64,
-    call_limit: usize,
+    running_epoch_info: &PFEpochInfo,
 ) -> Result<()> {
     let records = fee_records.get_records_by_state(FeeRecordState::Unprocessed)?;
 
@@ -377,7 +481,7 @@ async fn handle_unprocessed_blocks(
     let total_records = records.len();
     let filtered_records: Vec<FeeRecordEntry> = records
         .into_iter()
-        .filter(|record| record.slot <= running_slot)
+        .filter(|record| record.slot <= running_epoch_info.slot)
         .collect();
     let total_filtered_records = filtered_records.len();
 
@@ -386,9 +490,9 @@ async fn handle_unprocessed_blocks(
         total_filtered_records,
         total_records - total_filtered_records
     );
-    for record in filtered_records.iter().take(call_limit) {
+    for record in filtered_records.iter() {
         // Try to fetch block and update
-        if record.slot <= running_slot {
+        if record.slot <= running_epoch_info.slot {
             let block_result = rpc_client.get_block(record.slot).await;
 
             match block_result {
@@ -417,7 +521,7 @@ async fn handle_unprocessed_blocks(
                     }
                 }
                 Err(e) => {
-                    error!("Could not get block, {}", e);
+                    warn!("Could not get block, {}", e);
                     let result = fee_records.skip_record(record.slot, record.epoch);
                     if let Err(err) = result {
                         error!(
@@ -433,6 +537,21 @@ async fn handle_unprocessed_blocks(
     Ok(())
 }
 
+fn should_handle_pending_blocks(
+    running_epoch_info: &PFEpochInfo,
+    transfer_count: u64,
+    transactions_per_epoch: u64,
+) -> bool {
+    let percentage_of_epoch = running_epoch_info.percentage_of_epoch();
+    let percentage_per_transaction = 100.0 / transactions_per_epoch as f64;
+
+    if transfer_count == 0 {
+        return true;
+    }
+
+    percentage_of_epoch >= transfer_count as f64 * percentage_per_transaction
+}
+
 async fn handle_pending_blocks(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
@@ -443,138 +562,133 @@ async fn handle_pending_blocks(
     merkle_root_upload_authority: &Pubkey,
     commission_bps: u64,
     minimum_balance_lamports: u64,
-    chunk_size: usize,
-    call_limit: usize,
-    running_epoch: u64,
-) -> Result<()> {
-    let records = fee_records.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
+    priority_fee_lamports: u64,
+    transactions_per_epoch: u64,
+    running_epoch_info: &PFEpochInfo,
+    transfer_count: u64,
+) -> Result<u64> {
+    if !should_handle_pending_blocks(running_epoch_info, transfer_count, transactions_per_epoch) {
+        return Ok(transfer_count);
+    }
 
+    let records = fee_records.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
     delay_past_leader_slot(rpc_client, fee_records).await?;
+
+    // Check or create Priority Fee Distribution Account
+    check_or_create_fee_distribution_account(
+        rpc_client,
+        payer_keypair,
+        vote_authority_keypair,
+        validator_vote_account,
+        merkle_root_upload_authority,
+        priority_fee_distribution_program,
+        commission_bps,
+        running_epoch_info.epoch,
+    )
+    .await?;
 
     let mut balance_after_transfer = rpc_client.get_balance(&payer_keypair.pubkey()).await?;
     let blockhash = rpc_client.get_latest_blockhash().await?;
 
-    // Check or create Priority Fee Distribution Account
-    if !check_if_initialize_priority_fee_distribution_account_exsists(
-        rpc_client,
-        &validator_vote_account,
-        priority_fee_distribution_program,
-        running_epoch,
-    )
-    .await
-    {
-        let ix = create_initialize_priority_fee_distribution_account_ix(
-            vote_authority_keypair,
-            &validator_vote_account,
-            priority_fee_distribution_program,
-            merkle_root_upload_authority,
-            commission_bps as u16,
-            running_epoch,
-        );
-        let tx = Transaction::new_signed_with_payer(
-            &[ix.clone()],
-            Some(&payer_keypair.pubkey()),
-            &[vote_authority_keypair, payer_keypair],
-            blockhash,
-        );
-
-        let result = rpc_client
-            .send_transaction_with_config(
-                &tx,
-                RpcSendTransactionConfig {
-                    skip_preflight: true,
-                    ..Default::default()
-                },
-            )
-            .await;
-        match result {
-            Ok(sig) => {
-                info!("Create PDA Transaction sent: {}", sig);
-            }
-            Err(err) => {
-                return Err(anyhow!("Failed to send Create PDA transaction: {:?}", err,));
-            }
+    let mut records_to_transfer: Vec<FeeRecordEntry> = vec![];
+    let mut amount_to_transfer: u64 = 0;
+    for record in records {
+        // Sanity Check
+        if record.vote_account.ne(&validator_vote_account.to_string()) {
+            info!(
+                "Record is not for the correct validator {} != {}",
+                record.vote_account, validator_vote_account
+            );
+            continue;
         }
-    }
+        // Sanity Check
+        if record.state != FeeRecordState::ProcessedAndPending {
+            info!(
+                "Record is not in the correct state {:?} != {:?}",
+                record.state,
+                FeeRecordState::ProcessedAndPending
+            );
+            continue;
+        }
 
-    for record_chunk in records.chunks(chunk_size).take(call_limit) {
-        // Try to send transactions
-        let mut ixs: Vec<Instruction> = vec![];
-        let mut records: Vec<FeeRecordEntry> = vec![];
-
-        for record in record_chunk {
-            if record.vote_account.ne(&validator_vote_account.to_string()) {
-                info!(
-                    "Record is not for the correct validator {} != {}",
-                    record.vote_account, validator_vote_account
-                );
+        let amount_to_share = match calculate_share(record.priority_fee_lamports, commission_bps) {
+            Ok(amount) => amount,
+            Err(err) => {
+                info!("Error calculating share: {}", err);
                 continue;
             }
+        };
 
-            let priority_fee_lamports: u64 = record.priority_fee_lamports;
-
-            let amount_to_share_lamports = calculate_share(priority_fee_lamports, commission_bps)?;
-
-            let share_ix = create_share_ix(
-                payer_keypair,
-                &validator_vote_account,
-                priority_fee_distribution_program,
-                amount_to_share_lamports,
-                running_epoch,
-            );
-            ixs.push(share_ix);
-            records.push(record.clone());
-
-            balance_after_transfer =
-                balance_after_transfer.saturating_sub(amount_to_share_lamports);
-        }
-
+        balance_after_transfer = balance_after_transfer.saturating_sub(amount_to_share);
         if balance_after_transfer < minimum_balance_lamports {
-            return Err(anyhow!(
-                "Minimum balance reached {}/{}",
-                balance_after_transfer,
-                minimum_balance_lamports
-            ));
+            info!(
+                "Balance after transfer would be below minimum balance {} < {}",
+                balance_after_transfer, minimum_balance_lamports
+            );
+            break;
         }
 
-        // Create TX
-        let tx = Transaction::new_signed_with_payer(
-            &ixs,
-            Some(&payer_keypair.pubkey()),
-            &[payer_keypair],
-            blockhash,
-        );
-
-        let result = rpc_client
-            .send_transaction_with_config(
-                &tx,
-                RpcSendTransactionConfig {
-                    skip_preflight: true,
-                    ..Default::default()
-                },
-            )
-            .await;
-
-        match result {
-            Ok(sig) => {
-                info!("Transaction sent: {}", sig);
-
-                for record in records {
-                    let result =
-                        fee_records.complete_record(record.slot, record.epoch, &sig.to_string(), 0);
-                    if let Err(err) = result {
-                        error!(
-                            "Error processing priority fee record for slot {}: {}",
-                            record.slot, err
-                        );
-                    }
-                }
-            }
-            Err(err) => error!("Failed to send transaction: {:?}", err),
-        }
+        amount_to_transfer = amount_to_transfer.saturating_add(amount_to_share);
+        records_to_transfer.push(record);
     }
 
-    Ok(())
+    // Create TX
+    let share_ix = create_share_ix(
+        payer_keypair,
+        &validator_vote_account,
+        priority_fee_distribution_program,
+        amount_to_transfer,
+        running_epoch_info.epoch,
+    );
+
+    let tx = Transaction::new_signed_with_payer(
+        &[
+            ComputeBudgetInstruction::set_compute_unit_price(priority_fee_lamports),
+            share_ix,
+        ],
+        Some(&payer_keypair.pubkey()),
+        &[payer_keypair],
+        blockhash,
+    );
+
+    let result = rpc_client
+        .send_and_confirm_transaction_with_spinner_and_config(
+            &tx,
+            CommitmentConfig::finalized(),
+            RpcSendTransactionConfig {
+                skip_preflight: true,
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let slot_landed = rpc_client
+        .get_slot_with_commitment(CommitmentConfig::finalized())
+        .await
+        .unwrap_or(running_epoch_info.slot);
+    match result {
+        Ok(sig) => {
+            info!("Transaction sent: {}", sig);
+
+            for record in records_to_transfer {
+                let result = fee_records.complete_record(
+                    record.slot,
+                    record.epoch,
+                    &sig.to_string(),
+                    slot_landed,
+                );
+                if let Err(err) = result {
+                    error!(
+                        "Error processing priority fee record for slot {}: {}",
+                        record.slot, err
+                    );
+                }
+            }
+        }
+        Err(err) => error!("Failed to send transaction: {:?}", err),
+    }
+
+    Ok(transfer_count.saturating_add(1))
 }
 
 // ------------------------- MAIN FUNCTIONS -----------------------------
@@ -588,8 +702,8 @@ pub async fn share_priority_fees_loop(
     priority_fee_distribution_program: Pubkey,
     minimum_balance_lamports: u64,
     commission_bps: u64,
-    chunk_size: usize,
-    call_limit: usize,
+    priority_fee_lamports: u64,
+    transactions_per_epoch: u64,
 ) -> Result<()> {
     check_commission_percentage(commission_bps)?;
 
@@ -602,8 +716,8 @@ pub async fn share_priority_fees_loop(
     let rpc_client = RpcClient::new(rpc_url);
     let fee_records = FeeRecords::new(fee_records_db_path)?;
 
-    let mut running_epoch = 0;
-    let mut running_slot = 0;
+    let mut running_epoch_info = PFEpochInfo::null();
+    let mut transfer_count = 0;
 
     let validator_identity = get_validator_identity(&rpc_client, &validator_vote_account).await?;
 
@@ -615,13 +729,15 @@ pub async fn share_priority_fees_loop(
             &fee_records,
             &validator_vote_account,
             &validator_identity,
-            running_epoch,
+            &running_epoch_info,
         )
         .await;
         match result {
-            Ok((epoch, slot)) => {
-                running_epoch = epoch;
-                running_slot = slot;
+            Ok((epoch_info, did_rollover)) => {
+                running_epoch_info = epoch_info;
+                if did_rollover {
+                    transfer_count = 0;
+                }
             }
             Err(err) => error!("Error handling epoch and leader slots: {}", err),
         }
@@ -629,7 +745,7 @@ pub async fn share_priority_fees_loop(
         // 2. Handle unprocessed blocks
         info!(" -------- 2. HANDLE UNPROCESSED BLOCKS -----------");
         let result =
-            handle_unprocessed_blocks(&rpc_client, &fee_records, running_slot, call_limit).await;
+            handle_unprocessed_blocks(&rpc_client, &fee_records, &running_epoch_info).await;
         if let Err(err) = result {
             error!("Error handling unprocessed records: {}", err);
         }
@@ -646,13 +762,15 @@ pub async fn share_priority_fees_loop(
             &merkle_root_upload_authority,
             commission_bps,
             minimum_balance_lamports,
-            chunk_size,
-            call_limit,
-            running_epoch,
+            priority_fee_lamports,
+            transactions_per_epoch,
+            &running_epoch_info,
+            transfer_count,
         )
         .await;
-        if let Err(err) = result {
-            error!("Error handling pending blocks: {}", err);
+        match result {
+            Ok(transfers) => transfer_count = transfers,
+            Err(err) => error!("Error handling pending blocks: {}", err),
         }
 
         sleep_ms(LEADER_SLOT_MS).await;

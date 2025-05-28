@@ -10,6 +10,7 @@ Clone the repository:
 
 ```bash
 git clone --recursive https://github.com/jito-foundation/jito-solana.git
+cd jito-solana
 git checkout ck/distro-script
 ```
 
@@ -22,60 +23,81 @@ git submodule update --init --recursive
 Move to the `priority-fee-sharing` directory:
 
 ```bash
-cd jito-solana/priority-fee-sharing
+cd priority-fee-sharing
 ```
+
+**NOTE**
+To help, you may want to install the [Solana CLI](https://solana.com/docs/intro/installation) if you have not already
 
 ## Easy Setup
 
-The easiest way to set up the Priority Fee Sharing service is to use the automated setup script:
+The easiest way to set up the Priority Fee Sharing service is to use the automated installation script. First, create and configure your environment file:
 
-Info you will need before running the setup script:
-1. `RPC_URL` - this must be able to call `get_block`.  **Example:** `http://localhost:8899`
-2. `FEE_RECORDS_DB_PATH` - Path to store fee records. **Default:** `/var/lib/solana/fee_records`
-3. `PAYER_KEYPAIR` - the account which the priority fee shares come out of. This will usually be your validator's identity keypair.
-4. `VOTE_AUTHORITY_KEYPAIR` - the keypair of your vote authority - this is needed to sign and create the distribution account ( no funds will be used from this account ). To get the authority run: `'solana vote-account YOUR_VOTE_ACCOUNT'`
-5. `VALIDATOR_VOTE_ACCOUNT` - the vote account of your validator ( Not identity )
-6. `COMMISSION_BPS` - the commission the validator takes, this should be 50% or lower to receive stake ( 5000 )
-7. `MINIMUM_BALANCE_SOL` - a reserve balance of SOL kept in your `PAYER_KEYPAIR` for saftey, this should be kept above an amount needed to profitably run the validator.
+### 1. Create Environment Configuration
 
-**Note**: It's advised to use the defaults on all other parameters unless you have a specific reason to change them.
+Copy the example environment file and fill in your values:
 
 ```bash
-sudo ./setup_priority_fee_sharing.sh
+cp .env.example .env
+```
+
+Edit the resulting `.env` file with your configuration:
+
+| Variable | Description |
+|----------|-------------|
+| `USER` | System user to run the service (e.g., 'solana') |
+| `RPC_URL` | RPC endpoint URL that supports `get_block` |
+| `PRIORITY_FEE_PAYER_KEYPAIR_PATH` | Path to validator identity keypair |
+| `VOTE_AUTHORITY_KEYPAIR_PATH` | Path to vote authority keypair |
+| `VALIDATOR_VOTE_ACCOUNT` | Your validator's vote account public key |
+| `MINIMUM_BALANCE_SOL` | Minimum SOL balance to maintain |
+| `COMMISSION_BPS` | Commission in basis points (5000 = 50%) |
+| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Fee distribution program address |
+| `MERKLE_ROOT_UPLOAD_AUTHORITY` | Merkle root upload authority address |
+| `FEE_RECORDS_DB_PATH` | Path for fee records database |
+| `PRIORITY_FEE_LAMPORTS` | Priority fee for transactions (in lamports) |
+| `TRANSACTIONS_PER_EPOCH` | Number of transactions per epoch |
+
+### 2. Run Installation Script
+
+Once your `.env` file is configured, run the installation script:
+
+```bash
+./setup_priority_fee_sharing.sh
 ```
 
 **NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
 
-The setup script will:
-1. Guide you through inputting the required parameters
-2. Install the necessary dependencies
-3. Create and configure the service files
-4. Enable and start the service automatically
+The installation script will:
+1. Install/update Rust (minimum version 1.75.0)
+2. Build and install the Priority Fee Sharing CLI
+3. Generate a systemd service file from your `.env` configuration
+4. Provide clear next steps for service setup
 
-### Required Parameters
 
-You will need to provide the following information during setup:
+### After Installation
 
-| Parameter | Description |
-|-----------|-------------|
-| `RPC_URL` | URL of the Solana RPC endpoint. This RPC needs to be able to call `get_block`. If using a local RPC, ensure it is running with `--enable-rpc-transaction-history` |
-| `PRIORITY_FEE_PAYER_KEYPAIR_PATH` | Path to keypair that will pay the priority fees |
-| `VOTE_AUTHORITY_KEYPAIR_PATH` | Path to your vote authority keypair (needed to create the PriorityFeeDistribution Account) |
-| `VALIDATOR_VOTE_ACCOUNT` | Your validator's vote account address |
-| `MINIMUM_BALANCE_SOL` | Minimum balance to maintain in the payer account (in SOL) |
+After the script completes, follow the displayed next steps to set up the systemd service:
 
-### Optional Parameters
+```bash
+# 1. Review the generated service file
+cat priority-fee-sharing.service
 
-These parameters have default values but can be customized during setup:
+# 2. Copy to systemd directory
+sudo cp priority-fee-sharing.service /etc/systemd/system/
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Program address for the fee distribution | `9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU` |
-| `MERKLE_ROOT_UPLOAD_AUTHORITY` | Authority for uploading the merkle root | `2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe` |
-| `COMMISSION_BPS` | Commission in basis points (100 = 1%, 5000 = 50%, 10000 = 100%) | `5000` |
-| `FEE_RECORDS_DB_PATH` | Directory path for storing fee records Rocks DB | `/var/lib/solana/fee_records` |
-| `CHUNK_SIZE` | Batch size for processing transactions | `1` |
-| `CALL_LIMIT` | Maximum number of calls | `1` |
+# 3. Reload systemd
+sudo systemctl daemon-reload
+
+# 4. Enable service
+sudo systemctl enable priority-fee-sharing
+
+# 5. Start service
+sudo systemctl start priority-fee-sharing
+
+# 6. Check status
+sudo systemctl status priority-fee-sharing
+```
 
 ## Manual Setup
 

@@ -25,14 +25,14 @@ enum Commands {
         rpc_url: String,
 
         /// Fee Records DB Path
-        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
+        #[arg(long, env)]
         fee_records_db_path: PathBuf,
 
-        /// Where the priority fees are paid out from
+        /// Where the priority fees are paid out from - usually the identity keypair
         #[arg(long, env)]
         priority_fee_payer_keypair_path: PathBuf,
 
-        /// Needed to create the PriorityFeeDistribution Account
+        /// Needed to create the PriorityFeeDistribution Account - usually the identity keypair
         /// Can find by running `solana vote-account YOUR_VOTE_ACCOUNT`
         #[arg(long, env)]
         vote_authority_keypair_path: PathBuf,
@@ -59,19 +59,19 @@ enum Commands {
         #[arg(long, env, default_value_t = 5_000)]
         commission_bps: u64,
 
-        /// How many share IXs to bundle into a single transaction
-        #[arg(long, env, default_value_t = 1)]
-        chunk_size: usize,
+        /// Priority Fee for sending share transactions
+        #[arg(long, env, default_value_t = 0)]
+        priority_fee_lamports: u64,
 
-        /// How many share TXs to send before timeout
-        #[arg(long, env, default_value_t = 1)]
-        call_limit: usize,
+        /// How many TXs to send per epoch
+        #[arg(long, env, default_value_t = 10)]
+        transactions_per_epoch: u64,
     },
 
     /// Export records to CSV
     ExportCsv {
         /// Fee Records DB Path
-        #[arg(long, env, default_value = "/var/lib/solana/fee_records")]
+        #[arg(long, env)]
         fee_records_db_path: PathBuf,
 
         /// Path to the output CSV file
@@ -134,13 +134,31 @@ async fn main() -> Result<(), anyhow::Error> {
             priority_fee_distribution_program,
             minimum_balance_sol,
             commission_bps,
-            chunk_size,
-            call_limit,
+            priority_fee_lamports,
+            transactions_per_epoch,
         } => {
-            info!("Running Transfer Loop");
-            info!("For vote account: {}", validator_vote_account);
-
             let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;
+
+            info!("Running Transfer Loop");
+            info!("Fee Records DB Path: {:?}", fee_records_db_path);
+            info!(
+                "Priority Fee Payer Keypair Path: {:?}",
+                priority_fee_payer_keypair_path
+            );
+            info!(
+                "Vote Authority Keypair Path: {:?}",
+                vote_authority_keypair_path
+            );
+            info!("Validator Vote Account: {}", validator_vote_account);
+            info!("Merkle Upload Authority: {}", merkle_root_upload_authority);
+            info!(
+                "Priority Fee Distribution Program: {}",
+                priority_fee_distribution_program
+            );
+            info!("Minimum balance SOL: {}", minimum_balance_sol);
+            info!("Commission bps: {}", commission_bps);
+            info!("Priority fee lamports: {}", priority_fee_lamports);
+            info!("Transactions per epoch: {}", transactions_per_epoch);
 
             share_priority_fees_loop(
                 rpc_url.clone(),
@@ -152,8 +170,8 @@ async fn main() -> Result<(), anyhow::Error> {
                 *priority_fee_distribution_program,
                 minimum_balance_lamports,
                 *commission_bps,
-                *chunk_size,
-                *call_limit,
+                *priority_fee_lamports,
+                *transactions_per_epoch,
             )
             .await?
         }

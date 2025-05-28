@@ -1,250 +1,80 @@
 #!/bin/bash
 
-#################################################
-# ALL VARIABLES
-#################################################
-# Required parameters (Will be filled out in script)
-RPC_URL=""
-FEE_RECORDS_DB_PATH="/var/lib/solana/fee_records"
-PRIORITY_FEE_PAYER_KEYPAIR_PATH=""
-VOTE_AUTHORITY_KEYPAIR_PATH=""
-VALIDATOR_VOTE_ACCOUNT=""
-PRIORITY_FEE_DISTRIBUTION_PROGRAM="9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU"
-MERKLE_ROOT_UPLOAD_AUTHORITY="2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe"
-COMMISSION_BPS="5000"
-MINIMUM_BALANCE_SOL=""
-CHUNK_SIZE="1"
-CALL_LIMIT="1"
+# Script to install Priority Fee Sharing CLI and generate systemd service file
+# Usage: ./install-and-generate.sh
 
-# Service configuration
-SERVICE_FILE="/etc/systemd/system/priority-fee-share.service"
-CLI_PATH=""
-SERVICE_NAME=""
+set -euo pipefail
 
 #################################################
 # HELPER FUNCTIONS
 #################################################
 
-# Function to ask a yes/no question with a default answer
-ask_yes_no() {
-    local prompt="$1"
-    local default="$2"
-    local yn
+# Function to compare version numbers
+version_compare() {
+    local version1="$1"
+    local version2="$2"
+    local IFS=.
+    local i ver1=($version1) ver2=($version2)
 
-    # Set default display and value
-    case $default in
-        [Yy]*)
-            prompt="$prompt [Y/n]: "
-            default="Y"
-            ;;
-        [Nn]*)
-            prompt="$prompt [y/N]: "
-            default="N"
-            ;;
-        *)
-            echo "Error: Default must be Y or N"
-            exit 1
-            ;;
-    esac
-
-    while true; do
-        # Print the prompt and read the answer
-        read -p "$prompt" yn
-
-        # If answer is empty, use the default
-        if [ -z "$yn" ]; then
-            yn=$default
-        fi
-
-        # Check the response
-        case $yn in
-            [Yy]*)
-                return 0  # Yes
-                ;;
-            [Nn]*)
-                return 1  # No
-                ;;
-            *)
-                echo "Please answer yes (y) or no (n)."
-                ;;
-        esac
+    # Fill empty fields in ver1 with zeros
+    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do
+        ver1[i]=0
     done
-}
 
-# Function to get a string input with a default value
-ask_string() {
-    local prompt="$1"
-    local default="$2"
-    local answer
-
-    # Display prompt with default value
-    prompt="$prompt [$default]: "
-
-    # Read the input
-    read -p "$prompt" answer
-
-    # If empty answer, use the default
-    if [ -z "$answer" ]; then
-        answer="$default"
-    fi
-
-    # Return the answer
-    echo "$answer"
-}
-
-# Function to get an integer input with a default value
-ask_integer() {
-    local prompt="$1"
-    local default="$2"
-    local answer
-
-    # Display prompt with default value
-    prompt="$prompt [$default]: "
-
-    while true; do
-        # Read the input
-        read -p "$prompt" answer
-
-        # If empty answer, use the default
-        if [ -z "$answer" ]; then
-            echo "$default"
-            return
+    for ((i=0; i<${#ver1[@]}; i++)); do
+        if [[ -z ${ver2[i]} ]]; then
+            # ver2 field is empty (or doesn't exist)
+            ver2[i]=0
         fi
-
-        # Check if the answer is an integer
-        if [[ "$answer" =~ ^[0-9]+$ ]]; then
-            echo "$answer"
-            return
-        else
-            echo "Please enter a valid integer."
+        if ((10#${ver1[i]} > 10#${ver2[i]})); then
+            return 1  # version1 > version2
+        fi
+        if ((10#${ver1[i]} < 10#${ver2[i]})); then
+            return 2  # version1 < version2
         fi
     done
-}
-
-# Function to get a floating-point input with a default value
-ask_float() {
-    local prompt="$1"
-    local default="$2"
-    local answer
-
-    # Display prompt with default value
-    prompt="$prompt [$default]: "
-
-    while true; do
-        # Read the input
-        read -p "$prompt" answer
-
-        # If empty answer, use the default
-        if [ -z "$answer" ]; then
-            echo "$default"
-            return
-        fi
-
-        # Check if the answer is a valid number (integer or float)
-        if [[ "$answer" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "$answer"
-            return
-        else
-            echo "Please enter a valid number."
-        fi
-    done
-}
-
-#################################################
-# READ EXISTING SERVICE FILE
-#################################################
-read_existing_service_file() {
-    local service_file="$1"
-
-    if [ -f "$service_file" ]; then
-        echo "Found existing service file. Loading current values..."
-
-        # Extract values from service file using grep and sed
-        local rpc_url=$(grep -E "^Environment=RPC_URL=" "$service_file" | sed -E 's/^Environment=RPC_URL=(.*)/\1/')
-        local fee_records_path=$(grep -E "^Environment=FEE_RECORDS_DB_PATH=" "$service_file" | sed -E 's/^Environment=FEE_RECORDS_DB_PATH=(.*)/\1/')
-        local payer_keypair=$(grep -E "^Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=" "$service_file" | sed -E 's/^Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=(.*)/\1/')
-        local vote_keypair=$(grep -E "^Environment=VOTE_AUTHORITY_KEYPAIR_PATH=" "$service_file" | sed -E 's/^Environment=VOTE_AUTHORITY_KEYPAIR_PATH=(.*)/\1/')
-        local vote_account=$(grep -E "^Environment=VALIDATOR_VOTE_ACCOUNT=" "$service_file" | sed -E 's/^Environment=VALIDATOR_VOTE_ACCOUNT=(.*)/\1/')
-        local min_balance=$(grep -E "^Environment=MINIMUM_BALANCE_SOL=" "$service_file" | sed -E 's/^Environment=MINIMUM_BALANCE_SOL=(.*)/\1/')
-        local distribution_program=$(grep -E "^Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=" "$service_file" | sed -E 's/^Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=(.*)/\1/')
-        local merkle_auth=$(grep -E "^Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=" "$service_file" | sed -E 's/^Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=(.*)/\1/')
-        local commission=$(grep -E "^Environment=COMMISSION_BPS=" "$service_file" | sed -E 's/^Environment=COMMISSION_BPS=(.*)/\1/')
-        local chunk_size=$(grep -E "^Environment=CHUNK_SIZE=" "$service_file" | sed -E 's/^Environment=CHUNK_SIZE=(.*)/\1/')
-        local call_limit=$(grep -E "^Environment=CALL_LIMIT=" "$service_file" | sed -E 's/^Environment=CALL_LIMIT=(.*)/\1/')
-
-        # Update variables if values are found
-        if [ -n "$rpc_url" ] && [ "$rpc_url" != "YOUR_RPC_URL_HERE" ]; then
-            RPC_URL="$rpc_url"
-            echo "- Found RPC URL: $RPC_URL"
-        fi
-
-        if [ -n "$fee_records_path" ] && [ "$fee_records_path" != "/var/lib/solana/fee_records" ]; then
-            FEE_RECORDS_DB_PATH="$fee_records_path"
-            echo "- Found fee records path: $FEE_RECORDS_DB_PATH"
-        fi
-
-        if [ -n "$payer_keypair" ] && [ "$payer_keypair" != "YOUR_PRIORITY_FEE_PAYER_KEYPAIR_PATH" ]; then
-            PRIORITY_FEE_PAYER_KEYPAIR_PATH="$payer_keypair"
-            echo "- Found payer keypair path: $PRIORITY_FEE_PAYER_KEYPAIR_PATH"
-        fi
-
-        if [ -n "$vote_keypair" ] && [ "$vote_keypair" != "YOUR_VOTE_AUTHORITY_KEYPAIR_PATH" ]; then
-            VOTE_AUTHORITY_KEYPAIR_PATH="$vote_keypair"
-            echo "- Found vote authority keypair path: $VOTE_AUTHORITY_KEYPAIR_PATH"
-        fi
-
-        if [ -n "$vote_account" ] && [ "$vote_account" != "YOUR_VALIDATOR_VOTE_ACCOUNT_HERE" ]; then
-            VALIDATOR_VOTE_ACCOUNT="$vote_account"
-            echo "- Found validator vote account: $VALIDATOR_VOTE_ACCOUNT"
-        fi
-
-        if [ -n "$min_balance" ] && [ "$min_balance" != "YOUR_MINIMUM_BALANCE_SOL_HERE" ]; then
-            MINIMUM_BALANCE_SOL="$min_balance"
-            echo "- Found minimum balance: $MINIMUM_BALANCE_SOL"
-        fi
-
-        if [ -n "$distribution_program" ]; then
-            PRIORITY_FEE_DISTRIBUTION_PROGRAM="$distribution_program"
-            echo "- Found distribution program: $PRIORITY_FEE_DISTRIBUTION_PROGRAM"
-        fi
-
-        if [ -n "$merkle_auth" ]; then
-            MERKLE_ROOT_UPLOAD_AUTHORITY="$merkle_auth"
-            echo "- Found merkle root authority: $MERKLE_ROOT_UPLOAD_AUTHORITY"
-        fi
-
-        if [ -n "$commission" ]; then
-            COMMISSION_BPS="$commission"
-            echo "- Found commission: $COMMISSION_BPS"
-        fi
-
-        if [ -n "$chunk_size" ]; then
-            CHUNK_SIZE="$chunk_size"
-            echo "- Found chunk size: $CHUNK_SIZE"
-        fi
-
-        if [ -n "$call_limit" ]; then
-            CALL_LIMIT="$call_limit"
-            echo "- Found call limit: $CALL_LIMIT"
-        fi
-
-        echo "Successfully loaded existing configuration."
-        echo
-    else
-        echo "No existing service file found at $service_file. Using default values."
-        echo
-    fi
+    return 0  # version1 == version2
 }
 
 #################################################
 # INSTALL CARGO
 #################################################
 install_cargo() {
+    local min_version="1.75.0"
+
     # Check if cargo is in PATH
     if command -v cargo &> /dev/null; then
         echo "✅ Cargo is already installed!"
-        cargo --version
-        return 0
+        local current_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        echo "Current version: $current_version"
+
+        # Check if version is sufficient
+        version_compare "$current_version" "$min_version"
+        case $? in
+            0|1)  # Equal or greater
+                echo "✅ Rust version $current_version meets minimum requirement ($min_version)"
+                return 0
+                ;;
+            2)  # Less than required
+                echo -e "\033[31m❌ Rust version $current_version is below minimum requirement ($min_version)\033[0m"
+                echo "Updating Rust..."
+                rustup update stable
+
+                # Check version again
+                local new_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+                version_compare "$new_version" "$min_version"
+                case $? in
+                    0|1)
+                        echo "✅ Rust updated to $new_version"
+                        return 0
+                        ;;
+                    2)
+                        echo -e "\033[31m❌ Failed to update Rust to minimum version\033[0m"
+                        return 1
+                        ;;
+                esac
+                ;;
+        esac
     else
         echo "❌ Cargo is not installed. Installing now..."
 
@@ -260,13 +90,25 @@ install_cargo() {
         # Source the environment to make cargo available in current shell
         source "$HOME/.cargo/env"
 
-        # Verify installation
+        # Verify installation and version
         if command -v cargo &> /dev/null; then
+            local installed_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
             echo "✅ Cargo installation successful!"
-            cargo --version
-            return 0
+            echo "Installed version: $installed_version"
+
+            version_compare "$installed_version" "$min_version"
+            case $? in
+                0|1)
+                    echo "✅ Rust version $installed_version meets minimum requirement ($min_version)"
+                    return 0
+                    ;;
+                2)
+                    echo -e "\033[31m❌ Installed Rust version $installed_version is below minimum requirement ($min_version)\033[0m"
+                    return 1
+                    ;;
+            esac
         else
-            echo "❌ Something went wrong with the Cargo installation."
+            echo -e "\033[31m❌ Something went wrong with the Cargo installation.\033[0m"
             echo "Please try installing manually with:"
             echo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
             echo "Then run: source \$HOME/.cargo/env"
@@ -279,258 +121,259 @@ install_cargo() {
 # INSTALL CLI
 #################################################
 install_cli() {
-    git submodule update --init --recursive
+    echo "Installing Priority Fee Sharing CLI..."
+
+    # Update git submodules if needed
+    if [ -f ".gitmodules" ]; then
+        echo "Updating git submodules..."
+        git submodule update --init --recursive
+    fi
 
     # Install the CLI
-    echo "Installing CLI..."
+    echo "Building and installing CLI from source..."
     cargo install --path .
 
-    echo
-    echo -e "Installed CLI, run: \033[34mpriority-fee-sharing --help\033[0m"
+    echo ""
+    echo -e "✅ CLI installed successfully! Run: \033[34mpriority-fee-sharing --help\033[0m"
 
-    # Set CLI path
-    CLI_PATH=$(which priority-fee-sharing)
-    echo "CLI_PATH: $CLI_PATH"
-
-    return 0
+    # Verify CLI installation
+    local cli_path=$(which priority-fee-sharing 2>/dev/null || echo "")
+    if [[ -n "$cli_path" ]]; then
+        echo "CLI installed at: $cli_path"
+        return 0
+    else
+        echo -e "\033[31m❌ CLI installation failed - binary not found in PATH\033[0m"
+        return 1
+    fi
 }
 
 #################################################
-# SETUP SERVICE FILE
+# GENERATE SERVICE FILE SCRIPT
 #################################################
-setup_service_file() {
-    # Create the fee records directory if it doesn't exist
-    sudo mkdir -p "$FEE_RECORDS_DB_PATH"
-    sudo chmod 777 "$FEE_RECORDS_DB_PATH"
-    echo
-    echo -e "Created fee records directory at \033[34m$FEE_RECORDS_DB_PATH\033[0m"
+generate_service_file() {
+    local env_file=".env"
+    local output_file="priority-fee-sharing.service"
 
-    # Create the service file directory if it doesn't exist
-    sudo mkdir -p "$(dirname "$SERVICE_FILE")"
-
-    cp "priority-fee-share.service" ".priority-fee-share.service"
-
-    # Now modify the service file with the correct values
-    # Replace RPC_URL
-    sed -i "s|RPC_URL=.*|RPC_URL=$RPC_URL|g" .priority-fee-share.service
-
-    # Replace FEE_RECORDS_DB_PATH
-    sed -i "s|FEE_RECORDS_DB_PATH=.*|FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH|g" .priority-fee-share.service
-
-    # Replace PRIORITY_FEE_KEYPAIR_PATH
-    sed -i "s|PRIORITY_FEE_PAYER_KEYPAIR_PATH=.*|PRIORITY_FEE_PAYER_KEYPAIR_PATH=$PRIORITY_FEE_PAYER_KEYPAIR_PATH|g" .priority-fee-share.service
-
-    # Replace VOTE_AUTHORITY_KEYPAIR_PATH
-    sed -i "s|VOTE_AUTHORITY_KEYPAIR_PATH=.*|VOTE_AUTHORITY_KEYPAIR_PATH=$VOTE_AUTHORITY_KEYPAIR_PATH|g" .priority-fee-share.service
-
-    # Replace VALIDATOR_VOTE_ACCOUNT
-    sed -i "s|VALIDATOR_VOTE_ACCOUNT=.*|VALIDATOR_VOTE_ACCOUNT=$VALIDATOR_VOTE_ACCOUNT|g" .priority-fee-share.service
-
-    # Replace MINIMUM_BALANCE_SOL
-    sed -i "s|MINIMUM_BALANCE_SOL=.*|MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL|g" .priority-fee-share.service
-
-    # Replace optional parameters if they differ from defaults
-    sed -i "s|PRIORITY_FEE_DISTRIBUTION_PROGRAM=.*|PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM|g" .priority-fee-share.service
-    sed -i "s|MERKLE_ROOT_UPLOAD_AUTHORITY=.*|MERKLE_ROOT_UPLOAD_AUTHORITY=$MERKLE_ROOT_UPLOAD_AUTHORITY|g" .priority-fee-share.service
-    sed -i "s|COMMISSION_BPS=.*|COMMISSION_BPS=$COMMISSION_BPS|g" .priority-fee-share.service
-    sed -i "s|CHUNK_SIZE=.*|CHUNK_SIZE=$CHUNK_SIZE|g" .priority-fee-share.service
-    sed -i "s|CALL_LIMIT=.*|CALL_LIMIT=$CALL_LIMIT|g" .priority-fee-share.service
-
-    # Replace the ExecStart path with the actual CLI path
-    sed -i "s|ExecStart=.*|ExecStart=$CLI_PATH run|g" .priority-fee-share.service
-
-    # Copy the modified service file to the system directory
-    sudo cp .priority-fee-share.service "$SERVICE_FILE"
-
-    echo
-    echo -e "Service file created at \033[34m$SERVICE_FILE\033[0m"
-
-    # Reload systemd
-    sudo systemctl daemon-reload
-
-    # Extract service name from service file path
-    SERVICE_NAME=$(basename "$SERVICE_FILE")
-
-    # Enable the service to start on boot
-    sudo systemctl enable "$SERVICE_NAME"
-    echo "Service enabled to start on boot"
-
-    if ask_yes_no "Start the service now?" "Y"; then
-        sudo systemctl stop "$SERVICE_NAME" 2>/dev/null
-        sudo systemctl start "$SERVICE_NAME"
-        echo "Service started"
-
-        # Check service status
-        echo
-        echo "Service status:"
-        sudo systemctl status "$SERVICE_NAME" --no-pager
+    # Check if .env file exists
+    if [[ ! -f "$env_file" ]]; then
+        echo -e "\033[31mError: Environment file '$env_file' not found!\033[0m"
+        echo -e "\033[34mRun \`cp .env.example .env\` and fill out the resulting .env file\033[0m"
+        return 1
     fi
+
+    echo "Reading configuration from: $env_file"
+    echo "Generating service file: $output_file"
+
+    # Source the .env file
+    set -a  # Automatically export all variables
+    source "$env_file"
+    set +a  # Turn off automatic export
+
+    # Check for ALL required variables (assuming all are required now)
+    local required_vars=(
+        "USER"
+        "RPC_URL"
+        "PRIORITY_FEE_PAYER_KEYPAIR_PATH"
+        "VOTE_AUTHORITY_KEYPAIR_PATH"
+        "VALIDATOR_VOTE_ACCOUNT"
+        "MINIMUM_BALANCE_SOL"
+        "COMMISSION_BPS"
+        "PRIORITY_FEE_DISTRIBUTION_PROGRAM"
+        "MERKLE_ROOT_UPLOAD_AUTHORITY"
+        "FEE_RECORDS_DB_PATH"
+        "PRIORITY_FEE_LAMPORTS"
+        "TRANSACTIONS_PER_EPOCH"
+    )
+
+    echo "Checking required variables..."
+    local missing_vars=()
+    for var in "${required_vars[@]}"; do
+        if [[ -z "${!var:-}" ]]; then
+            missing_vars+=("$var")
+        fi
+    done
+
+    if [[ ${#missing_vars[@]} -gt 0 ]]; then
+        echo -e "\033[31mError: The following required variables are missing or empty in $env_file:\033[0m"
+        for var in "${missing_vars[@]}"; do
+            case "$var" in
+                "USER")
+                    echo -e "\033[31m  - $var: System user to run the service (e.g., 'solana')\033[0m"
+                    ;;
+                "RPC_URL")
+                    echo -e "\033[31m  - $var: RPC endpoint URL (e.g., 'https://api.mainnet-beta.solana.com')\033[0m"
+                    ;;
+                "PRIORITY_FEE_PAYER_KEYPAIR_PATH")
+                    echo -e "\033[31m  - $var: Path to validator identity keypair (e.g., '/path/to/validator-keypair.json')\033[0m"
+                    ;;
+                "VOTE_AUTHORITY_KEYPAIR_PATH")
+                    echo -e "\033[31m  - $var: Path to vote authority keypair (e.g., '/path/to/vote-authority.json')\033[0m"
+                    ;;
+                "VALIDATOR_VOTE_ACCOUNT")
+                    echo -e "\033[31m  - $var: Your validator's vote account public key\033[0m"
+                    ;;
+                "MINIMUM_BALANCE_SOL")
+                    echo -e "\033[31m  - $var: Minimum SOL balance to maintain (e.g., '1.0')\033[0m"
+                    ;;
+                "COMMISSION_BPS")
+                    echo -e "\033[31m  - $var: Commission in basis points (e.g., '5000' for 50%)\033[0m"
+                    ;;
+                "PRIORITY_FEE_DISTRIBUTION_PROGRAM")
+                    echo -e "\033[31m  - $var: Priority fee distribution program address\033[0m"
+                    ;;
+                "MERKLE_ROOT_UPLOAD_AUTHORITY")
+                    echo -e "\033[31m  - $var: Merkle root upload authority address\033[0m"
+                    ;;
+                "FEE_RECORDS_DB_PATH")
+                    echo -e "\033[31m  - $var: Path for fee records database (e.g., '/var/lib/solana/fee_records')\033[0m"
+                    ;;
+                "PRIORITY_FEE_LAMPORTS")
+                    echo -e "\033[31m  - $var: Priority fee in lamports (e.g., '0')\033[0m"
+                    ;;
+                "TRANSACTIONS_PER_EPOCH")
+                    echo -e "\033[31m  - $var: Number of transactions per epoch (e.g., '10')\033[0m"
+                    ;;
+            esac
+        done
+        echo ""
+        echo -e "\033[34mPlease fill in all required values in your $env_file file and run this script again.\033[0m"
+        return 1
+    fi
+
+    # Get the binary path - try priority-fee-sharing first, then priority-fee-share
+    local binary_path=""
+    if command -v priority-fee-sharing &>/dev/null; then
+        binary_path=$(which priority-fee-sharing)
+    elif command -v priority-fee-share &>/dev/null; then
+        binary_path=$(which priority-fee-share)
+    else
+        binary_path="/usr/local/bin/priority-fee-sharing"
+        echo -e "\033[33mWarning: Binary not found in PATH. Using default path: $binary_path\033[0m"
+        echo -e "\033[33mMake sure to update the ExecStart path in the generated service file if needed.\033[0m"
+    fi
+
+    echo "Generating systemd service file..."
+
+    # Generate the service file
+    cat > "$output_file" << EOF
+[Unit]
+Description=Priority Fee Sharing Service
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+
+# --------------- REQUIRED --------------------
+# RPC URL - This RPC needs to be able to call \`get_block\`. If using a local RPC, ensure it is running with \`--enable-rpc-transaction-history\`
+Environment=RPC_URL=$RPC_URL
+# The account that the priority fees are paid out from - this is usually the validator's identity keypair
+Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=$PRIORITY_FEE_PAYER_KEYPAIR_PATH
+# The vote authority needed to create the PriorityFeeDistribution Account
+# Can be found by running \`solana vote-account YOUR_VOTE_ACCOUNT\`
+Environment=VOTE_AUTHORITY_KEYPAIR_PATH=$VOTE_AUTHORITY_KEYPAIR_PATH
+# Your validator vote account address
+Environment=VALIDATOR_VOTE_ACCOUNT=$VALIDATOR_VOTE_ACCOUNT
+# Minimum balance in your priority fee keypair, no fees will be sent if below this amount
+Environment=MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL
+
+# --------------- DEFAULTS --------------------
+# How much priority fees to keep in bps ( Suggested 5000 - 50% )
+Environment=COMMISSION_BPS=$COMMISSION_BPS
+# The Priority Fee Distribution Program
+Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM
+# The merkle root upload authority
+Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=$MERKLE_ROOT_UPLOAD_AUTHORITY
+# Rocks DB that holds all priority fee records - this will be created by the script and can go anywhere
+Environment=FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH
+
+# --------------- PERFORMANCE --------------------
+# Priority fee for sending share transactions (in lamports)
+Environment=PRIORITY_FEE_LAMPORTS=$PRIORITY_FEE_LAMPORTS
+# How many TXs to send per epoch
+Environment=TRANSACTIONS_PER_EPOCH=$TRANSACTIONS_PER_EPOCH
+
+# --------------- PATH REQUIRED --------------------
+ExecStart=$binary_path run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    echo -e "\033[32m✅ Service file generated successfully: $output_file\033[0m"
 
     return 0
-}
-
-collect_parameters() {
-    echo
-    echo "========================================================="
-    echo "           Priority Fee Sharing Service Setup            "
-    echo "========================================================="
-    echo
-    echo "This script will set up the Priority Fee Sharing Service"
-    echo "to distribute priority fees to your validator's delegators."
-    echo
-
-    # Check for existing service file and load values if found
-    read_existing_service_file "$SERVICE_FILE"
-
-    echo "You will need to provide the following REQUIRED information:"
-    echo
-    echo "  - RPC URL (must support get_block)"
-    echo "  - Fee Records DB Path"
-    echo "  - Priority fee payer keypair path"
-    echo "  - Vote authority keypair path"
-    echo "  - Validator vote account address"
-    echo "  - Priority fee distribution program address"
-    echo "  - Merkle root upload authority"
-    echo "  - Commission in basis points"
-    echo "  - Minimum balance of SOL to maintain"
-    echo "  - Chunk size and call limit (performance parameters)"
-    echo
-    echo "========================================================="
-    echo "                REQUIRED PARAMETERS                      "
-    echo "========================================================="
-    echo
-
-    # RPC URL
-    echo "The RPC URL must be able to call get_block."
-    echo "If using a local RPC, ensure it runs with --enable-rpc-transaction-history."
-    echo
-    RPC_URL=$(ask_string "Enter your RPC URL" "$RPC_URL")
-    echo
-
-    # Check if RPC URL is using port 8899 (Local)
-    if [[ "$RPC_URL" == *":8899" ]]; then
-        echo -e "\033[31m\033[1mWARNING: You are using a local RPC. Make sure your validator is running with"
-        echo -e "\`--enable-rpc-transaction-history\` enabled.\033[0m"
-        echo
-    fi
-
-    # Fee Records DB Path
-    echo "The directory path for storing fee records database."
-    echo "This directory will be created if it doesn't exist."
-    echo
-    FEE_RECORDS_DB_PATH=$(ask_string "Enter the path for storing fee records" "$FEE_RECORDS_DB_PATH")
-    echo
-
-    # Priority Fee Payer Keypair
-    echo "The priority fee payer keypair is the account that will pay for priority fees."
-    echo "this is usually the validator's identity keypair"
-    echo
-    PRIORITY_FEE_PAYER_KEYPAIR_PATH=$(ask_string "Enter the path to your priority fee payer keypair file" "$PRIORITY_FEE_PAYER_KEYPAIR_PATH")
-    echo
-
-    # Vote Authority Keypair
-    echo "The vote authority keypair is needed to create the PriorityFeeDistribution Account."
-    echo "This can be found by running 'solana vote-account YOUR_VOTE_ACCOUNT'."
-    echo
-    VOTE_AUTHORITY_KEYPAIR_PATH=$(ask_string "Enter the path to your vote authority keypair file" "$VOTE_AUTHORITY_KEYPAIR_PATH")
-    echo
-
-    # Validator Vote Account
-    echo "Your validator's vote account address is required to identify your validator."
-    echo
-    VALIDATOR_VOTE_ACCOUNT=$(ask_string "Enter your validator vote account address" "$VALIDATOR_VOTE_ACCOUNT")
-    echo
-
-    # Priority Fee Distribution Program
-    echo "The program address for the fee distribution. This should rarely change."
-    echo
-    PRIORITY_FEE_DISTRIBUTION_PROGRAM=$(ask_string "Enter the priority fee distribution program address" "$PRIORITY_FEE_DISTRIBUTION_PROGRAM")
-    echo
-
-    # Merkle Root Upload Authority
-    echo "The authority for uploading the merkle root."
-    echo
-    MERKLE_ROOT_UPLOAD_AUTHORITY=$(ask_string "Enter the merkle root upload authority" "$MERKLE_ROOT_UPLOAD_AUTHORITY")
-    echo
-
-    # Commission BPS
-    echo "Commission in basis points (100 = 1%, 5000 = 50%, 10000 = 100%)."
-    echo "This determines how much of the priority fees you keep vs. share with delegators."
-    echo
-    COMMISSION_BPS=$(ask_integer "Enter commission in basis points" "$COMMISSION_BPS")
-    echo
-
-    # Minimum Balance
-    echo "The minimum balance (in SOL) that should be maintained in the payer account."
-    echo "The service will stop sending fees if the balance drops below this amount."
-    echo
-    MINIMUM_BALANCE_SOL=$(ask_float "Enter minimum balance to maintain (in SOL)" "$MINIMUM_BALANCE_SOL")
-    echo
-
-    # Performance Parameters
-    echo "The following parameters affect performance:"
-    echo "- Chunk size: Number of transactions to batch together"
-    echo "- Call limit: Maximum number of transactions to process per loop"
-    echo
-    CHUNK_SIZE=$(ask_integer "Enter chunk size for batching transactions" "$CHUNK_SIZE")
-    echo
-    CALL_LIMIT=$(ask_integer "Enter call limit for transactions per loop" "$CALL_LIMIT")
-    echo
-}
-
-display_instructions() {
-    echo
-    echo "========================================================="
-    echo "                   SETUP COMPLETE                        "
-    echo "========================================================="
-    echo
-    echo "The Priority Fee Sharing Service has been successfully set up!"
-    echo
-    echo "You can manage the service with these commands:"
-    echo
-    echo -e "  \033[32msudo systemctl start $SERVICE_NAME\033[0m    # Start the service"
-    echo -e "  \033[32msudo systemctl stop $SERVICE_NAME\033[0m     # Stop the service"
-    echo -e "  \033[32msudo systemctl restart $SERVICE_NAME\033[0m  # Restart the service"
-    echo -e "  \033[32msudo systemctl status $SERVICE_NAME\033[0m   # Check service status"
-    echo -e "  \033[32msudo journalctl -u $SERVICE_NAME -f\033[0m   # View service logs"
-    echo
-    echo "For more information, please refer to the README.md file."
-    echo
-    echo "========================================================="
 }
 
 #################################################
 # MAIN SCRIPT
 #################################################
 main() {
-    # Collect parameters from user
-    collect_parameters
-
     echo "========================================================="
-    echo "              INSTALLING DEPENDENCIES                    "
+    echo "      Priority Fee Sharing CLI Installation Script       "
     echo "========================================================="
-    echo
+    echo ""
+    echo "This script will:"
+    echo "1. Install/update Rust (minimum version 1.75.0)"
+    echo "2. Build and install the Priority Fee Sharing CLI"
+    echo "3. Generate systemd service file from .env configuration"
+    echo ""
 
-    # Install Cargo
-    install_cargo || exit 1
-    echo
+    # Install Cargo/Rust
+    echo "========================================================="
+    echo "              INSTALLING/CHECKING RUST                   "
+    echo "========================================================="
+    install_cargo || {
+        echo -e "\033[31m❌ Failed to install/update Rust\033[0m"
+        exit 1
+    }
+    echo ""
 
     # Install CLI
-    install_cli || exit 1
-    echo
+    echo "========================================================="
+    echo "              BUILDING AND INSTALLING CLI                "
+    echo "========================================================="
+    install_cli || {
+        echo -e "\033[31m❌ Failed to install CLI\033[0m"
+        exit 1
+    }
+    echo ""
+
+    # Generate service file if .env exists
+    echo "========================================================="
+    echo "              GENERATING SERVICE FILE                    "
+    echo "========================================================="
+    if [[ -f ".env" ]]; then
+        generate_service_file
+    else
+        echo -e "\033[31mNo .env file found. Skipping service file generation.\033[0m"
+        echo -e "Copy and edit the .env file: \033[34mcp .env.example .env\033[0m"
+        exit 1
+    fi
+    echo ""
 
     echo "========================================================="
-    echo "              SETTING UP SERVICE                         "
+    echo "                   INSTALLATION COMPLETE                 "
     echo "========================================================="
-    echo
-
-    # Setup service file
-    setup_service_file || exit 1
-    echo
-
-    # Display instructions
-    display_instructions
+    echo -e "\033[32m✅ Priority Fee Sharing CLI installation completed successfully!\033[0m"
+    echo ""
+    echo "Available commands:"
+    echo -e "Show CLI help:\033[34m priority-fee-sharing --help\033[0m"
+    echo -e "Show run command help:\033[34m priority-fee-sharing run --help\033[0m"
+    echo -e "Show export command help:\033[34m priority-fee-sharing export-csv --help\033[0m"
+    echo -e "Show info command help:\033[34m priority-fee-sharing print-info --help\033[0m"
+    echo ""
+    echo "Next steps:"
+    echo -e "1. Review the generated service file: \033[34mcat priority-fee-sharing.service\033[0m"
+    echo -e "2. Copy to systemd directory: \033[34msudo cp priority-fee-sharing.service /etc/systemd/system/\033[0m"
+    echo -e "3. Reload systemd: \033[34msudo systemctl daemon-reload\033[0m"
+    echo -e "4. Enable service: \033[34msudo systemctl enable priority-fee-sharing\033[0m"
+    echo -e "5. Start service: \033[34msudo systemctl start priority-fee-sharing\033[0m"
+    echo -e "6. Check status: \033[34msudo systemctl status priority-fee-sharing\033[0m"
+    echo ""
 }
 
 # Call the main function
-main
+main "$@"
