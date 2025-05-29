@@ -3,8 +3,7 @@ pub mod fee_records;
 
 use anyhow::{anyhow, Result};
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
-use log::warn;
-use log::{error, info};
+use log::{debug, error, info, warn};
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -558,12 +557,12 @@ fn should_handle_pending_blocks(
     let percentage_of_epoch = running_epoch_info.percentage_of_epoch();
     let percentage_per_transaction = 100.0 / transactions_per_epoch as f64;
 
-    info!("TX count: {}", transfer_count);
+    debug!("TX count: {}", transfer_count);
     if transfer_count == 0 {
         return true;
     }
 
-    info!(
+    debug!(
         "{} > {} ({})",
         percentage_of_epoch,
         transfer_count as f64 * percentage_per_transaction,
