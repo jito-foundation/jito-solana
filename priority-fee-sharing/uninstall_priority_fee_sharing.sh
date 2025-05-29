@@ -1,22 +1,58 @@
 #!/bin/bash
 
 # Script to uninstall Priority Fee Sharing CLI
-# Usage: ./uninstall.sh
+# Usage: ./uninstall.sh [-yf|--yes-force]
 
 set -euo pipefail
 
 #################################################
-# TRACK ACTIONS TAKEN
+# GLOBAL VARIABLES
 #################################################
 declare -a actions_taken=()
+FORCE_YES=false
+
+#################################################
+# PARSE COMMAND LINE ARGUMENTS
+#################################################
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -yf|--yes-force)
+                FORCE_YES=true
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: $0 [-yf|--yes-force]"
+                echo ""
+                echo "Options:"
+                echo "  -yf, --yes-force    Answer 'yes' to all prompts and skip confirmations"
+                echo "  -h, --help          Show this help message"
+                echo ""
+                echo "WARNING: Using --yes-force will automatically delete all data without confirmation!"
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1"
+                echo "Use -h or --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+}
 
 #################################################
 # HELPER FUNCTIONS
 #################################################
 
-# Function to ask yes/no questions (defaults to no)
+# Function to ask yes/no questions (defaults to no, unless force mode)
 ask_yes_no() {
     local question="$1"
+
+    if [[ "$FORCE_YES" == true ]]; then
+        echo "$question [y/N]: y (forced)"
+        return 0  # Always yes in force mode
+    fi
+
     local response
 
     while true; do
@@ -42,10 +78,17 @@ ask_yes_no() {
     done
 }
 
-# Function to ask for confirmation with typed word
+# Function to ask for confirmation with typed word (skipped in force mode)
 ask_type_confirmation() {
     local word="$1"
     local question="$2"
+
+    if [[ "$FORCE_YES" == true ]]; then
+        echo "$question"
+        echo "Type '$word' to confirm: $word (forced)"
+        return 0  # Always confirmed in force mode
+    fi
+
     local response
 
     echo "$question"
@@ -211,9 +254,12 @@ delete_database() {
         echo "🔍 Backup directory: $FEE_RECORDS_DB_BACKUP_PATH"
     fi
     echo ""
-    echo -e "\033[31m⚠️  WARNING: This will permanently delete all fee records!\033[0m"
-    echo -e "\033[31m⚠️  This action is UNRECOVERABLE and may result in double spending!\033[0m"
-    echo ""
+
+    if [[ "$FORCE_YES" != true ]]; then
+        echo -e "\033[31m⚠️  WARNING: This will permanently delete all fee records!\033[0m"
+        echo -e "\033[31m⚠️  This action is UNRECOVERABLE and may result in double spending!\033[0m"
+        echo ""
+    fi
 
     # First confirmation
     if ask_yes_no "🗑️  Do you want to delete the fee records database ($FEE_RECORDS_DB_PATH)?"; then
@@ -254,9 +300,11 @@ delete_database() {
         fi
 
         echo ""
-        echo -e "\033[31m🚨 FINAL WARNING: This will permanently delete ALL fee records!\033[0m"
-        echo -e "\033[31m🚨 This action is UNRECOVERABLE and may result in double spending!\033[0m"
-        echo ""
+        if [[ "$FORCE_YES" != true ]]; then
+            echo -e "\033[31m🚨 FINAL WARNING: This will permanently delete ALL fee records!\033[0m"
+            echo -e "\033[31m🚨 This action is UNRECOVERABLE and may result in double spending!\033[0m"
+            echo ""
+        fi
 
         # Second confirmation with typed word
         if ask_type_confirmation "delete" "Are you absolutely sure you want to delete the database?"; then
@@ -366,6 +414,9 @@ uninstall_cli() {
 # MAIN SCRIPT
 #################################################
 main() {
+    # Parse command line arguments first
+    parse_args "$@"
+
     echo "========================================================="
     echo "      Priority Fee Sharing CLI Uninstall Script        "
     echo "========================================================="
@@ -373,8 +424,15 @@ main() {
     echo "This script will help you uninstall the Priority Fee Sharing CLI"
     echo "and clean up associated files and services."
     echo ""
-    echo -e "\033[33m⚠️  WARNING: This process may be irreversible!\033[0m"
-    echo ""
+
+    if [[ "$FORCE_YES" == true ]]; then
+        echo -e "\033[33m🚀 FORCE MODE ENABLED: All prompts will be answered 'yes'\033[0m"
+        echo -e "\033[31m⚠️  WARNING: This will automatically delete all data without confirmation!\033[0m"
+        echo ""
+    else
+        echo -e "\033[33m⚠️  WARNING: This process may be irreversible!\033[0m"
+        echo ""
+    fi
 
     if ! ask_yes_no "🤔 Do you want to proceed with the uninstallation?"; then
         echo ""
@@ -431,7 +489,12 @@ main() {
         done
         echo ""
     fi
+
+    if [[ "$FORCE_YES" == true ]]; then
+        echo -e "\033[33mNote: Force mode was used - all prompts were automatically answered 'yes'\033[0m"
+        echo ""
+    fi
 }
 
-# Call the main function
+# Call the main function with all arguments
 main "$@"
