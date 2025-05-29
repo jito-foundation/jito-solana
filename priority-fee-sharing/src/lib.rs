@@ -452,7 +452,7 @@ async fn handle_epoch_and_leader_slot(
 
     for slot in validator_slots {
         let slot = *slot as u64 + epoch_start_slot;
-        info!("Processing slot {} {}", slot, epoch_info.absolute_slot);
+        info!("Processing slot {}", epoch_info.absolute_slot);
         let result = fee_records.add_priority_fee_record(
             slot,
             epoch_info.epoch,
@@ -507,7 +507,8 @@ async fn handle_unprocessed_blocks(
 
                     info!(
                         "Recorded Priority Fees for {}: {}",
-                        record.slot, priority_fee_lamports
+                        record.slot,
+                        lamports_to_sol(priority_fee_lamports)
                     );
                     let result = fee_records.process_record(
                         record.slot,
