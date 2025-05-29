@@ -186,7 +186,7 @@ check_or_create_fee_records_directory() {
         else
             echo -e "\033[33m⚠️  Warning: Directory exists but may not be writable by current user\033[0m"
             echo "You may need to adjust permissions or run the service as a different user"
-            echo -e "\033[34mRun \`chmod 755 $FEE_RECORDS_DB_PATH\` to make it read/writable by the current user\033[0m"
+            echo -e "Run to set permissions: \033[34msudo chmod 755 $FEE_RECORDS_DB_PATH\033[0m"
             return 1
         fi
     else
@@ -198,7 +198,7 @@ check_or_create_fee_records_directory() {
         else
             echo -e "\033[31m❌ Failed to create directory: $FEE_RECORDS_DB_PATH\033[0m"
             echo "Either, use sudo to create and update permissions on the database directory"
-            echo -e "\033[34m\`sudo mkdir $FEE_RECORDS_DB_PATH && sudo chmod 755 $FEE_RECORDS_DB_PATH\`\033[0m"
+            echo -e "Run to create directory and set permissions: \033[34msudo mkdir $FEE_RECORDS_DB_PATH && sudo chmod 755 $FEE_RECORDS_DB_PATH\033[0m"
             echo "Or, change the FEE_RECORDS_DB_PATH .env variable to a different location"
 
             return 1
