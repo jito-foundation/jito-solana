@@ -181,11 +181,13 @@ check_or_create_fee_records_directory() {
         echo "✅ Fee records directory already exists: $FEE_RECORDS_DB_PATH"
 
         # Check permissions
-        if [[ -w "$FEE_RECORDS_DB_PATH" ]]; then
-            echo "✅ Directory is writable"
+        if [[ -r "$FEE_RECORDS_DB_PATH" && -w "$FEE_RECORDS_DB_PATH" ]]; then
+            echo "✅ Directory is read/writable"
         else
             echo -e "\033[33m⚠️  Warning: Directory exists but may not be writable by current user\033[0m"
             echo "You may need to adjust permissions or run the service as a different user"
+            echo -e "\033[34mRun \`chmod 755 $FEE_RECORDS_DB_PATH\` to make it read/writable by the current user\033[0m"
+            return 1
         fi
     else
         echo "📁 Creating fee records directory: $FEE_RECORDS_DB_PATH"
@@ -195,15 +197,10 @@ check_or_create_fee_records_directory() {
             echo "✅ Successfully created directory: $FEE_RECORDS_DB_PATH"
         else
             echo -e "\033[31m❌ Failed to create directory: $FEE_RECORDS_DB_PATH\033[0m"
-            echo "This might be due to insufficient permissions. You may need to:"
-            echo "1. Run this script with sudo, or"
-            echo "2. Manually create the directory with appropriate permissions, or"
-            echo "3. Choose a different path that doesn't require elevated permissions"
+            echo "Either, use sudo to create and update permissions on the database directory"
+            echo -e "\033[34m\`sudo mkdir $FEE_RECORDS_DB_PATH && sudo chmod 755 $FEE_RECORDS_DB_PATH\`\033[0m"
+            echo "Or, change the FEE_RECORDS_DB_PATH .env variable to a different location"
 
-            # Try to create in user's home directory as fallback suggestion
-            local fallback_path="$HOME/fee_records"
-            echo ""
-            echo -e "\033[34mSuggested fallback: Update FEE_RECORDS_DB_PATH in $env_file to: $fallback_path\033[0m"
             return 1
         fi
 
@@ -413,18 +410,6 @@ main() {
     }
     echo ""
 
-    # Check or create fee records directory if .env exists
-    echo "========================================================="
-    echo "              CHECK OR CREATE FEE RECORDS DIRECTORY      "
-    echo "========================================================="
-    if [[ -f ".env" ]]; then
-        check_or_create_fee_records_directory
-    else
-        echo -e "\033[33mNo .env file found. Skipping fee records directory check.\033[0m"
-        echo -e "\033[34mTo check/create the fee records directory later, create a .env file and run this script again.\033[0m"
-    fi
-    echo ""
-
     # Generate service file if .env exists
     echo "========================================================="
     echo "              GENERATING SERVICE FILE                   "
@@ -434,6 +419,18 @@ main() {
     else
         echo -e "\033[33mNo .env file found. Skipping service file generation.\033[0m"
         echo -e "\033[34mTo generate a service file later, create a .env file and run this script again.\033[0m"
+    fi
+    echo ""
+
+    # Check or create fee records directory if .env exists
+    echo "========================================================="
+    echo "              CHECK OR CREATE FEE RECORDS DIRECTORY      "
+    echo "========================================================="
+    if [[ -f ".env" ]]; then
+        check_or_create_fee_records_directory
+    else
+        echo -e "\033[33mNo .env file found. Skipping fee records directory check.\033[0m"
+        echo -e "\033[34mTo check/create the fee records directory later, create a .env file and run this script again.\033[0m"
     fi
     echo ""
 
@@ -456,6 +453,8 @@ main() {
     echo -e "\033[34m5. Start service: sudo systemctl start priority-fee-sharing\033[0m"
     echo -e "\033[34m6. Check status: sudo systemctl status priority-fee-sharing\033[0m"
     echo ""
+
+    # sudo journalctl -u priority-fee-sharing.service -f
 }
 
 # Call the main function
