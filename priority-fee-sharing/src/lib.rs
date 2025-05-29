@@ -508,7 +508,7 @@ async fn handle_unprocessed_blocks(
                     info!(
                         "Recorded Priority Fees for {}: {}",
                         record.slot,
-                        lamports_to_sol(priority_fee_lamports)
+                        lamports_to_sol(priority_fee_lamports as u64)
                     );
                     let result = fee_records.process_record(
                         record.slot,
