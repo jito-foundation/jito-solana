@@ -49,7 +49,7 @@ ask_type_confirmation() {
     local response
 
     echo "$question"
-    echo -n "Type '$word' to confirm: "
+    echo -ne "Type '\033[33m$word\033[0m' to confirm: "
     read -r response
 
     if [[ "$response" == "$word" ]]; then
@@ -394,12 +394,6 @@ main() {
         done
         echo ""
     fi
-
-    echo "🧹 System cleanup suggestions:"
-    echo -e "• Remove any remaining config files: \033[34mrm -f .env priority-fee-sharing.service\033[0m"
-    echo -e "• Clean up any log files if needed"
-    echo ""
-    echo "👋 Thank you for using Priority Fee Sharing CLI!"
 }
 
 # Call the main function
