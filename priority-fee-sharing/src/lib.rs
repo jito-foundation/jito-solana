@@ -13,6 +13,7 @@ use solana_sdk::compute_budget::ComputeBudgetInstruction;
 use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::instruction::Instruction;
+use solana_sdk::native_token::lamports_to_sol;
 use solana_sdk::reward_type::RewardType;
 use solana_sdk::signature::read_keypair_file;
 use solana_sdk::signature::Keypair;
@@ -545,11 +546,18 @@ fn should_handle_pending_blocks(
     let percentage_of_epoch = running_epoch_info.percentage_of_epoch();
     let percentage_per_transaction = 100.0 / transactions_per_epoch as f64;
 
+    info!("TX count: {}", transfer_count);
     if transfer_count == 0 {
         return true;
     }
 
-    percentage_of_epoch >= transfer_count as f64 * percentage_per_transaction
+    info!(
+        "{} > {} ({})",
+        percentage_of_epoch,
+        transfer_count as f64 * percentage_per_transaction,
+        percentage_of_epoch > transfer_count as f64 * percentage_per_transaction
+    );
+    percentage_of_epoch > transfer_count as f64 * percentage_per_transaction
 }
 
 async fn handle_pending_blocks(
@@ -632,6 +640,16 @@ async fn handle_pending_blocks(
         records_to_transfer.push(record);
     }
 
+    if records_to_transfer.is_empty() {
+        info!("No records to transfer");
+        return Ok(());
+    }
+
+    if amount_to_transfer == 0 {
+        info!("No amount to transfer");
+        return Ok(());
+    }
+
     // Create TX
     let share_ix = create_share_ix(
         payer_keypair,
@@ -668,7 +686,12 @@ async fn handle_pending_blocks(
         .unwrap_or(running_epoch_info.slot);
     match result {
         Ok(sig) => {
-            info!("Transaction sent: {}", sig);
+            info!(
+                "Share Transaction sent: {} ({}: {})",
+                sig,
+                slot_landed,
+                lamports_to_sol(amount_to_transfer)
+            );
 
             for record in records_to_transfer {
                 let result = fee_records.complete_record(
