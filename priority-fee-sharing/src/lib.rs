@@ -451,7 +451,7 @@ async fn handle_epoch_and_leader_slot(
 
     for slot in validator_slots {
         let slot = *slot as u64 + epoch_start_slot;
-        info!("Processing slot {}", epoch_info.absolute_slot);
+        info!("Processing slot {}", slot);
         let result = fee_records.add_priority_fee_record(
             slot,
             epoch_info.epoch,
