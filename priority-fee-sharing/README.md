@@ -202,4 +202,11 @@ priority-fee-sharing export-csv \
   --state any
 ```
 
-The state parameter can be one of: unprocessed, processed, pending, skipped, antedup, complete, any
+The state parameter can be one of: `unprocessed`, `processed`, `pending`, `skipped`, `antedup`, `complete`, `any`
+
+### Notes
+
+Block Errors:
+- `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
+
+- `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC

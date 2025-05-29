@@ -524,11 +524,22 @@ async fn handle_unprocessed_blocks(
                 }
                 Err(e) => {
                     warn!("Could not get block, {}", e);
-                    let result = fee_records.skip_record(record.slot, record.epoch);
-                    if let Err(err) = result {
+                    // Only skip if the error indicates the slot was skipped or missing in long-term storage
+                    let error_message = e.to_string();
+                    if error_message.contains("was skipped, or missing in long-term storage") {
+                        let result = fee_records.skip_record(record.slot, record.epoch);
+                        if let Err(err) = result {
+                            error!(
+                                "Error skipping priority fee record for slot {}: {}",
+                                record.slot, err
+                            );
+                        }
+                    } else {
+                        // For other errors (like "Transaction history is not available"),
+                        // you might want to handle differently - perhaps retry, return the error, etc.
                         error!(
-                            "Error skipping priority fee record for slot {}: {}",
-                            record.slot, err
+                            "Could not get block for slot {} - You may have to switch your RPC provider",
+                            record.slot
                         );
                     }
                 }
