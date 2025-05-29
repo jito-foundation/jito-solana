@@ -467,7 +467,7 @@ main() {
     echo "              CHECK OR CREATE FEE RECORDS DIRECTORY      "
     echo "========================================================="
     if [[ -f ".env" ]]; then
-        check_or_create_fee_records_directory
+        check_or_create_fee_records_directories
     else
         echo -e "\033[33mNo .env file found. Skipping fee records directory check.\033[0m"
         echo -e "\033[34mTo check/create the fee records directory later, create a .env file and run this script again.\033[0m"
