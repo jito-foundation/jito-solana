@@ -187,7 +187,7 @@ impl FeeRecords {
     ) -> Result<()> {
         // Check if record already exists
         if self.does_record_exsist(slot, epoch) {
-            return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
+            return Ok(());
         }
 
         let record = FeeRecordEntry {
