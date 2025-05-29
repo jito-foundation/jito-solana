@@ -233,17 +233,8 @@ delete_database() {
     # Check if main database directory exists
     if [[ ! -d "$FEE_RECORDS_DB_PATH" ]]; then
         echo "ℹ️  Database folder does not exist: $FEE_RECORDS_DB_PATH"
-        # Check if backup directory exists and offer to delete it too
         if [[ -d "$FEE_RECORDS_DB_BACKUP_PATH" && "$FEE_RECORDS_DB_BACKUP_PATH" != "." ]]; then
-            echo "🔍 Found backup directory: $FEE_RECORDS_DB_BACKUP_PATH"
-            if ask_yes_no "🗑️  Do you want to delete the backup directory as well?"; then
-                if sudo rm -rf "$FEE_RECORDS_DB_BACKUP_PATH"; then
-                    echo -e "✅ \033[32mBackup directory deleted successfully\033[0m"
-                    actions_taken+=("🗑️ Backup directory deleted")
-                else
-                    echo -e "❌ \033[31mFailed to delete backup directory\033[0m"
-                fi
-            fi
+            echo "ℹ️  Backup directory will be preserved: $FEE_RECORDS_DB_BACKUP_PATH"
         fi
         echo ""
         return 0
@@ -314,6 +305,11 @@ delete_database() {
             if sudo rm -rf "$FEE_RECORDS_DB_PATH"; then
                 echo -e "✅ \033[32mDatabase folder deleted successfully\033[0m"
                 actions_taken+=("🗑️ Database folder deleted")
+
+                # Always preserve backup directory
+                if [[ -d "$FEE_RECORDS_DB_BACKUP_PATH" && "$FEE_RECORDS_DB_BACKUP_PATH" != "." ]]; then
+                    echo -e "ℹ️  Backup directory preserved: $FEE_RECORDS_DB_BACKUP_PATH"
+                fi
             else
                 echo -e "❌ \033[31mFailed to delete database folder\033[0m"
                 return 1
