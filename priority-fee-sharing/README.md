@@ -6,7 +6,7 @@ This service enables validators to distribute priority fees to their delegators 
 
 ## Prerequisites
 
-Clone the repository:
+1. Clone the repository:
 
 ```bash
 git clone --recursive https://github.com/jito-foundation/jito-solana.git
@@ -14,24 +14,21 @@ cd jito-solana
 git checkout ck/distro-script
 ```
 
-*NOTE:* We need to have all submodules initialized and updated - if you've already cloned the repo, please run:
+**NOTE:**
+We need to have all submodules initialized and updated - if you've already cloned the repo, please run: `git submodule update --init --recursive`
 
-```bash
-git submodule update --init --recursive
-```
-
-Move to the `priority-fee-sharing` directory:
+2. Move to the `priority-fee-sharing` directory:
 
 ```bash
 cd priority-fee-sharing
 ```
 
-**NOTE**
+**NOTE:**
 To help, you may want to install the [Solana CLI](https://solana.com/docs/intro/installation) if you have not already
 
-## Easy Setup
+## Setup
 
-The easiest way to set up the Priority Fee Sharing service is to use the automated installation script. First, create and configure your environment file:
+The easiest way to set up the Priority Fee Sharing service is to use the automated setup script. First, create and configure your environment file:
 
 ### 1. Create Environment Configuration
 
@@ -41,7 +38,13 @@ Copy the example environment file and fill in your values:
 cp .env.example .env
 ```
 
-Edit the resulting `.env` file with your configuration:
+Edit the resulting `.env` file with your configuration. Everything needs to be filled out - if you are unsure about any value, keep the deafult if possible.
+
+```bash
+vim .env
+```
+
+**NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
 
 | Variable | Description |
 |----------|-------------|
@@ -60,20 +63,18 @@ Edit the resulting `.env` file with your configuration:
 
 ### 2. Run Installation Script
 
-Once your `.env` file is configured, run the installation script:
+The installation script will:
+1. Install/update Rust (minimum version 1.75.0)
+2. Build and install the Priority Fee Sharing CLI
+3. Generate a systemd `priority-fee-sharing.service` service file from your `.env` configuration
+4. Create the fee records database path
+5. Provide clear next steps for service setup
+
+Run the installation script:
 
 ```bash
 ./setup_priority_fee_sharing.sh
 ```
-
-**NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
-
-The installation script will:
-1. Install/update Rust (minimum version 1.75.0)
-2. Build and install the Priority Fee Sharing CLI
-3. Generate a systemd service file from your `.env` configuration
-4. Provide clear next steps for service setup
-
 
 ### After Installation
 
@@ -97,72 +98,6 @@ sudo systemctl start priority-fee-sharing
 
 # 6. Check status
 sudo systemctl status priority-fee-sharing
-```
-
-## Manual Setup
-
-If you prefer a manual setup, follow these steps:
-
-### 1. Install the Jito Priority Fee Sharing Binary
-
-Clone the repo
-
-```bash
-git clone --recursive https://github.com/jito-foundation/jito-solana.git
-cd jito-solana/priority-fee-sharing
-git checkout ck/distro-script
-```
-
-Install the binary
-
-```bash
-cargo install --path .
-```
-
-### 2. Copy and Edit the `.service` File
-
-Copy the `priority-fee-share.service` file to `/etc/systemd/system/`.
-
-```bash
-sudo cp priority-fee-sharing/priority-fee-share.service /etc/systemd/system/
-```
-
-Fill out the required parameters in the `.service` file:
-
-```bash
-sudo vim /etc/systemd/system/priority-fee-share.service
-```
-
-**NOTE:** Make sure to fill out all of the `REQUIRED` parameters in the service file
-
-**NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
-
-### 3. Create Fee Records Directory
-
-```bash
-sudo mkdir -p /var/lib/solana/fee_records
-```
-
-### 4. Enable and Start the Service
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable priority-fee-share.service
-sudo systemctl start priority-fee-share.service
-```
-
-### 5. Check Service Status
-
-Status
-
-```bash
-sudo systemctl status priority-fee-share.service
-```
-
-Logs
-
-```bash
-sudo journalctl -u priority-fee-share.service -f
 ```
 
 ## Managing the Service

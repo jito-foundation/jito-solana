@@ -148,6 +148,77 @@ install_cli() {
 }
 
 #################################################
+# CHECK OR CREATE FEE RECORDS DIRECTORY
+#################################################
+check_or_create_fee_records_directory() {
+    local env_file=".env"
+
+    # Check if .env file exists
+    if [[ ! -f "$env_file" ]]; then
+        echo -e "\033[31mError: Environment file '$env_file' not found!\033[0m"
+        echo -e "\033[34mRun \`cp .env.example .env\` and fill out the resulting .env file\033[0m"
+        return 1
+    fi
+
+    echo "Reading FEE_RECORDS_DB_PATH from: $env_file"
+
+    # Source the .env file to get FEE_RECORDS_DB_PATH
+    set -a  # Automatically export all variables
+    source "$env_file"
+    set +a  # Turn off automatic export
+
+    # Check if FEE_RECORDS_DB_PATH is set
+    if [[ -z "${FEE_RECORDS_DB_PATH:-}" ]]; then
+        echo -e "\033[31mError: FEE_RECORDS_DB_PATH is not set in $env_file\033[0m"
+        echo -e "\033[34mPlease set FEE_RECORDS_DB_PATH to the desired database path (e.g., '/var/lib/solana/fee_records')\033[0m"
+        return 1
+    fi
+
+    echo "Checking fee records directory: $FEE_RECORDS_DB_PATH"
+
+    # Check if directory exists
+    if [[ -d "$FEE_RECORDS_DB_PATH" ]]; then
+        echo "✅ Fee records directory already exists: $FEE_RECORDS_DB_PATH"
+
+        # Check permissions
+        if [[ -w "$FEE_RECORDS_DB_PATH" ]]; then
+            echo "✅ Directory is writable"
+        else
+            echo -e "\033[33m⚠️  Warning: Directory exists but may not be writable by current user\033[0m"
+            echo "You may need to adjust permissions or run the service as a different user"
+        fi
+    else
+        echo "📁 Creating fee records directory: $FEE_RECORDS_DB_PATH"
+
+        # Try to create the directory
+        if mkdir -p "$FEE_RECORDS_DB_PATH" 2>/dev/null; then
+            echo "✅ Successfully created directory: $FEE_RECORDS_DB_PATH"
+        else
+            echo -e "\033[31m❌ Failed to create directory: $FEE_RECORDS_DB_PATH\033[0m"
+            echo "This might be due to insufficient permissions. You may need to:"
+            echo "1. Run this script with sudo, or"
+            echo "2. Manually create the directory with appropriate permissions, or"
+            echo "3. Choose a different path that doesn't require elevated permissions"
+
+            # Try to create in user's home directory as fallback suggestion
+            local fallback_path="$HOME/fee_records"
+            echo ""
+            echo -e "\033[34mSuggested fallback: Update FEE_RECORDS_DB_PATH in $env_file to: $fallback_path\033[0m"
+            return 1
+        fi
+
+        # Set appropriate permissions if we created it successfully
+        if chmod 755 "$FEE_RECORDS_DB_PATH" 2>/dev/null; then
+            echo "✅ Set directory permissions to 755"
+        else
+            echo -e "\033[33m⚠️  Warning: Could not set directory permissions\033[0m"
+        fi
+    fi
+
+    return 0
+}
+
+#################################################
 # GENERATE SERVICE FILE SCRIPT
 #################################################
 generate_service_file() {
@@ -198,10 +269,10 @@ generate_service_file() {
         for var in "${missing_vars[@]}"; do
             case "$var" in
                 "USER")
-                    echo -e "\033[31m  - $var: System user to run the service (e.g., 'solana')\033[0m"
+                echo -e "\033[31m  - $var: System user to run the service (e.g., 'root, solana') - to find current user run `whoami`\033[0m"
                     ;;
                 "RPC_URL")
-                    echo -e "\033[31m  - $var: RPC endpoint URL (e.g., 'https://api.mainnet-beta.solana.com')\033[0m"
+                    echo -e "\033[31m  - $var: RPC endpoint URL\033[0m"
                     ;;
                 "PRIORITY_FEE_PAYER_KEYPAIR_PATH")
                     echo -e "\033[31m  - $var: Path to validator identity keypair (e.g., '/path/to/validator-keypair.json')\033[0m"
@@ -312,18 +383,19 @@ EOF
 #################################################
 main() {
     echo "========================================================="
-    echo "      Priority Fee Sharing CLI Installation Script       "
+    echo "      Priority Fee Sharing CLI Installation Script      "
     echo "========================================================="
     echo ""
     echo "This script will:"
     echo "1. Install/update Rust (minimum version 1.75.0)"
     echo "2. Build and install the Priority Fee Sharing CLI"
-    echo "3. Generate systemd service file from .env configuration"
+    echo "3. Check or create fee records directory"
+    echo "4. Generate systemd service file from .env configuration"
     echo ""
 
     # Install Cargo/Rust
     echo "========================================================="
-    echo "              INSTALLING/CHECKING RUST                   "
+    echo "              INSTALLING/CHECKING RUST                  "
     echo "========================================================="
     install_cargo || {
         echo -e "\033[31m❌ Failed to install/update Rust\033[0m"
@@ -333,7 +405,7 @@ main() {
 
     # Install CLI
     echo "========================================================="
-    echo "              BUILDING AND INSTALLING CLI                "
+    echo "              BUILDING AND INSTALLING CLI               "
     echo "========================================================="
     install_cli || {
         echo -e "\033[31m❌ Failed to install CLI\033[0m"
@@ -341,37 +413,48 @@ main() {
     }
     echo ""
 
+    # Check or create fee records directory if .env exists
+    echo "========================================================="
+    echo "              CHECK OR CREATE FEE RECORDS DIRECTORY      "
+    echo "========================================================="
+    if [[ -f ".env" ]]; then
+        check_or_create_fee_records_directory
+    else
+        echo -e "\033[33mNo .env file found. Skipping fee records directory check.\033[0m"
+        echo -e "\033[34mTo check/create the fee records directory later, create a .env file and run this script again.\033[0m"
+    fi
+    echo ""
+
     # Generate service file if .env exists
     echo "========================================================="
-    echo "              GENERATING SERVICE FILE                    "
+    echo "              GENERATING SERVICE FILE                   "
     echo "========================================================="
     if [[ -f ".env" ]]; then
         generate_service_file
     else
-        echo -e "\033[31mNo .env file found. Skipping service file generation.\033[0m"
-        echo -e "Copy and edit the .env file: \033[34mcp .env.example .env\033[0m"
-        exit 1
+        echo -e "\033[33mNo .env file found. Skipping service file generation.\033[0m"
+        echo -e "\033[34mTo generate a service file later, create a .env file and run this script again.\033[0m"
     fi
     echo ""
 
     echo "========================================================="
-    echo "                   INSTALLATION COMPLETE                 "
+    echo "                   INSTALLATION COMPLETE                "
     echo "========================================================="
     echo -e "\033[32m✅ Priority Fee Sharing CLI installation completed successfully!\033[0m"
     echo ""
     echo "Available commands:"
-    echo -e "Show CLI help:\033[34m priority-fee-sharing --help\033[0m"
-    echo -e "Show run command help:\033[34m priority-fee-sharing run --help\033[0m"
-    echo -e "Show export command help:\033[34m priority-fee-sharing export-csv --help\033[0m"
-    echo -e "Show info command help:\033[34m priority-fee-sharing print-info --help\033[0m"
+    echo -e "  \033[34mpriority-fee-sharing --help\033[0m          # Show CLI help"
+    echo -e "  \033[34mpriority-fee-sharing run --help\033[0m      # Show run command help"
+    echo -e "  \033[34mpriority-fee-sharing export-csv --help\033[0m # Show export command help"
+    echo -e "  \033[34mpriority-fee-sharing print-info --help\033[0m # Show info command help"
     echo ""
-    echo "Next steps:"
-    echo -e "1. Review the generated service file: \033[34mcat priority-fee-sharing.service\033[0m"
-    echo -e "2. Copy to systemd directory: \033[34msudo cp priority-fee-sharing.service /etc/systemd/system/\033[0m"
-    echo -e "3. Reload systemd: \033[34msudo systemctl daemon-reload\033[0m"
-    echo -e "4. Enable service: \033[34msudo systemctl enable priority-fee-sharing\033[0m"
-    echo -e "5. Start service: \033[34msudo systemctl start priority-fee-sharing\033[0m"
-    echo -e "6. Check status: \033[34msudo systemctl status priority-fee-sharing\033[0m"
+    echo -e "\033[34mNext steps:\033[0m"
+    echo -e "\033[34m1. Review the generated service file: cat priority-fee-sharing.service\033[0m"
+    echo -e "\033[34m2. Copy to systemd directory: sudo cp priority-fee-sharing.service /etc/systemd/system/\033[0m"
+    echo -e "\033[34m3. Reload systemd: sudo systemctl daemon-reload\033[0m"
+    echo -e "\033[34m4. Enable service: sudo systemctl enable priority-fee-sharing\033[0m"
+    echo -e "\033[34m5. Start service: sudo systemctl start priority-fee-sharing\033[0m"
+    echo -e "\033[34m6. Check status: sudo systemctl status priority-fee-sharing\033[0m"
     echo ""
 }
 
