@@ -148,74 +148,6 @@ install_cli() {
 }
 
 #################################################
-# CHECK OR CREATE FEE RECORDS DIRECTORY
-#################################################
-check_or_create_fee_records_directory() {
-    local env_file=".env"
-
-    # Check if .env file exists
-    if [[ ! -f "$env_file" ]]; then
-        echo -e "\033[31mError: Environment file '$env_file' not found!\033[0m"
-        echo -e "\033[34mRun \`cp .env.example .env\` and fill out the resulting .env file\033[0m"
-        return 1
-    fi
-
-    echo "Reading FEE_RECORDS_DB_PATH from: $env_file"
-
-    # Source the .env file to get FEE_RECORDS_DB_PATH
-    set -a  # Automatically export all variables
-    source "$env_file"
-    set +a  # Turn off automatic export
-
-    # Check if FEE_RECORDS_DB_PATH is set
-    if [[ -z "${FEE_RECORDS_DB_PATH:-}" ]]; then
-        echo -e "\033[31mError: FEE_RECORDS_DB_PATH is not set in $env_file\033[0m"
-        echo -e "\033[34mPlease set FEE_RECORDS_DB_PATH to the desired database path (e.g., '/var/lib/solana/fee_records')\033[0m"
-        return 1
-    fi
-
-    echo "Checking fee records directory: $FEE_RECORDS_DB_PATH"
-
-    # Check if directory exists
-    if [[ -d "$FEE_RECORDS_DB_PATH" ]]; then
-        echo "✅ Fee records directory already exists: $FEE_RECORDS_DB_PATH"
-
-        # Check permissions
-        if [[ -r "$FEE_RECORDS_DB_PATH" && -w "$FEE_RECORDS_DB_PATH" ]]; then
-            echo "✅ Directory is read/writable"
-        else
-            echo -e "\033[33m⚠️  Warning: Directory exists but may not be writable by current user\033[0m"
-            echo "You may need to adjust permissions or run the service as a different user"
-            echo -e "Run to set permissions: \033[34msudo chmod 777 $FEE_RECORDS_DB_PATH\033[0m"
-            return 1
-        fi
-    else
-        echo "📁 Creating fee records directory: $FEE_RECORDS_DB_PATH"
-
-        # Try to create the directory
-        if mkdir -p "$FEE_RECORDS_DB_PATH" 2>/dev/null; then
-            echo "✅ Successfully created directory: $FEE_RECORDS_DB_PATH"
-        else
-            echo -e "\033[31m❌ Failed to create directory: $FEE_RECORDS_DB_PATH\033[0m"
-            echo "Either, use sudo to create and update permissions on the database directory"
-            echo -e "Run to create directory and set permissions: \033[34msudo mkdir $FEE_RECORDS_DB_PATH && sudo chmod 777 $FEE_RECORDS_DB_PATH\033[0m"
-            echo "Or, change the FEE_RECORDS_DB_PATH .env variable to a different location"
-
-            return 1
-        fi
-
-        # Set appropriate permissions if we created it successfully
-        if chmod 755 "$FEE_RECORDS_DB_PATH" 2>/dev/null; then
-            echo "✅ Set directory permissions to 755"
-        else
-            echo -e "\033[33m⚠️  Warning: Could not set directory permissions\033[0m"
-        fi
-    fi
-
-    return 0
-}
-
-#################################################
 # GENERATE SERVICE FILE SCRIPT
 #################################################
 generate_service_file() {
@@ -249,6 +181,7 @@ generate_service_file() {
         "PRIORITY_FEE_DISTRIBUTION_PROGRAM"
         "MERKLE_ROOT_UPLOAD_AUTHORITY"
         "FEE_RECORDS_DB_PATH"
+        "FEE_RECORDS_DB_BACKUP_PATH"
         "PRIORITY_FEE_LAMPORTS"
         "TRANSACTIONS_PER_EPOCH"
         "RUST_LOG"
@@ -295,6 +228,9 @@ generate_service_file() {
                     ;;
                 "FEE_RECORDS_DB_PATH")
                     echo -e "\033[31m  - $var: Path for fee records database (e.g., '/var/lib/solana/fee_records')\033[0m"
+                    ;;
+                "FEE_RECORDS_DB_BACKUP_PATH")
+                    echo -e "\033[31m  - $var: Path for fee records database backup (e.g., '/var/lib/solana/fee_records_backup')\033[0m"
                     ;;
                 "PRIORITY_FEE_LAMPORTS")
                     echo -e "\033[31m  - $var: Priority fee in lamports (e.g., '0')\033[0m"
@@ -358,6 +294,8 @@ Environment=PRIORITY_FEE_DISTRIBUTION_PROGRAM=$PRIORITY_FEE_DISTRIBUTION_PROGRAM
 Environment=MERKLE_ROOT_UPLOAD_AUTHORITY=$MERKLE_ROOT_UPLOAD_AUTHORITY
 # Rocks DB that holds all priority fee records - this will be created by the script and can go anywhere
 Environment=FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH
+# Rocks DB backup path for fee records database
+Environment=FEE_RECORDS_DB_BACKUP_PATH=$FEE_RECORDS_DB_BACKUP_PATH
 
 # --------------- PERFORMANCE --------------------
 # Priority fee for sending share transactions (in lamports)
@@ -379,6 +317,100 @@ WantedBy=multi-user.target
 EOF
 
     echo -e "\033[32m✅ Service file generated successfully: $output_file\033[0m"
+
+    return 0
+}
+
+#################################################
+# CHECK OR CREATE DIRECTORY (REUSABLE FUNCTION)
+#################################################
+check_or_create_directory() {
+    local dir_path="$1"
+    local dir_description="$2"
+
+    if [[ -z "$dir_path" ]]; then
+        echo -e "\033[31mError: Directory path not provided\033[0m"
+        return 1
+    fi
+
+    echo "Checking $dir_description directory: $dir_path"
+
+    # Check if directory exists
+    if [[ -d "$dir_path" ]]; then
+        echo "✅ $dir_description directory already exists: $dir_path"
+
+        # Check permissions
+        if [[ -r "$dir_path" && -w "$dir_path" ]]; then
+            echo "✅ Directory is read/writable"
+        else
+            echo -e "\033[33m⚠️  Warning: Directory exists but may not be writable by current user\033[0m"
+            echo "You may need to adjust permissions or run the service as a different user"
+            echo -e "Run to set permissions: \033[34msudo chmod 777 $dir_path\033[0m"
+            return 1
+        fi
+    else
+        echo "📁 Creating $dir_description directory: $dir_path"
+
+        # Try to create the directory
+        if mkdir -p "$dir_path" 2>/dev/null; then
+            echo "✅ Successfully created directory: $dir_path"
+        else
+            echo -e "\033[31m❌ Failed to create directory: $dir_path\033[0m"
+            echo "Either, use sudo to create and update permissions on the database directory"
+            echo -e "Run to create directory and set permissions: \033[34msudo mkdir -p $dir_path && sudo chmod 777 $dir_path\033[0m"
+            echo "Or, change the path in your .env file to a different location"
+            return 1
+        fi
+
+        # Set appropriate permissions if we created it successfully
+        if chmod 755 "$dir_path" 2>/dev/null; then
+            echo "✅ Set directory permissions to 755"
+        else
+            echo -e "\033[33m⚠️  Warning: Could not set directory permissions\033[0m"
+        fi
+    fi
+
+    return 0
+}
+
+#################################################
+# CHECK OR CREATE FEE RECORDS DIRECTORIES
+#################################################
+check_or_create_fee_records_directories() {
+    local env_file=".env"
+
+    # Check if .env file exists
+    if [[ ! -f "$env_file" ]]; then
+        echo -e "\033[31mError: Environment file '$env_file' not found!\033[0m"
+        echo -e "\033[34mRun \`cp .env.example .env\` and fill out the resulting .env file\033[0m"
+        return 1
+    fi
+
+    echo "Reading directory paths from: $env_file"
+
+    # Source the .env file to get directory paths
+    set -a  # Automatically export all variables
+    source "$env_file"
+    set +a  # Turn off automatic export
+
+    # Check if FEE_RECORDS_DB_PATH is set
+    if [[ -z "${FEE_RECORDS_DB_PATH:-}" ]]; then
+        echo -e "\033[31mError: FEE_RECORDS_DB_PATH is not set in $env_file\033[0m"
+        echo -e "\033[34mPlease set FEE_RECORDS_DB_PATH to the desired database path (e.g., '/var/lib/solana/fee_records')\033[0m"
+        return 1
+    fi
+
+    if [[ -z "${FEE_RECORDS_DB_BACKUP_PATH:-}" ]]; then
+        echo -e "\033[31mError: FEE_RECORDS_DB_BACKUP_PATH is not set in $env_file\033[0m"
+        echo -e "\033[34mPlease set FEE_RECORDS_DB_BACKUP_PATH to the desired backup path (e.g., '/var/lib/solana/fee_records_backup')\033[0m"
+        return 1
+    fi
+
+    # Check/create main fee records directory
+    check_or_create_directory "$FEE_RECORDS_DB_PATH" "fee records" || return 1
+
+    # Check/create backup directory
+    check_or_create_directory "$FEE_RECORDS_DB_BACKUP_PATH" "fee records backup" || return 1
 
     return 0
 }

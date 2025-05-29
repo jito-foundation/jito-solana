@@ -165,9 +165,9 @@ delete_database() {
         return 0
     fi
 
-    echo "📖 Reading database path from: $env_file"
+    echo "📖 Reading database paths from: $env_file"
 
-    # Source the .env file to get FEE_RECORDS_DB_PATH
+    # Source the .env file to get database paths
     set -a  # Automatically export all variables
     source "$env_file"
     set +a  # Turn off automatic export
@@ -180,14 +180,36 @@ delete_database() {
         return 0
     fi
 
-    # Check if directory exists
+    # Check if backup path is set
+    if [[ -z "${FEE_RECORDS_DB_BACKUP_PATH:-}" ]]; then
+        echo -e "\033[33m⚠️  FEE_RECORDS_DB_BACKUP_PATH is not set in $env_file\033[0m"
+        echo "Will create backup in current directory instead"
+        FEE_RECORDS_DB_BACKUP_PATH="."
+    fi
+
+    # Check if main database directory exists
     if [[ ! -d "$FEE_RECORDS_DB_PATH" ]]; then
         echo "ℹ️  Database folder does not exist: $FEE_RECORDS_DB_PATH"
+        # Check if backup directory exists and offer to delete it too
+        if [[ -d "$FEE_RECORDS_DB_BACKUP_PATH" && "$FEE_RECORDS_DB_BACKUP_PATH" != "." ]]; then
+            echo "🔍 Found backup directory: $FEE_RECORDS_DB_BACKUP_PATH"
+            if ask_yes_no "🗑️  Do you want to delete the backup directory as well?"; then
+                if sudo rm -rf "$FEE_RECORDS_DB_BACKUP_PATH"; then
+                    echo -e "✅ \033[32mBackup directory deleted successfully\033[0m"
+                    actions_taken+=("🗑️ Backup directory deleted")
+                else
+                    echo -e "❌ \033[31mFailed to delete backup directory\033[0m"
+                fi
+            fi
+        fi
         echo ""
         return 0
     fi
 
     echo "🔍 Found database folder: $FEE_RECORDS_DB_PATH"
+    if [[ "$FEE_RECORDS_DB_BACKUP_PATH" != "." ]]; then
+        echo "🔍 Backup directory: $FEE_RECORDS_DB_BACKUP_PATH"
+    fi
     echo ""
     echo -e "\033[31m⚠️  WARNING: This will permanently delete all fee records!\033[0m"
     echo -e "\033[31m⚠️  This action is UNRECOVERABLE and may result in double spending!\033[0m"
@@ -198,15 +220,30 @@ delete_database() {
 
         # Create backup first
         local timestamp=$(date +"%Y%m%d_%H%M%S")
-        local backup_file="fee-records-backup-${timestamp}.tar.gz"
+        local backup_filename="fee-records-backup-${timestamp}.tar.gz"
+
+        # Ensure backup directory exists
+        if [[ "$FEE_RECORDS_DB_BACKUP_PATH" != "." ]]; then
+            echo "📁 Ensuring backup directory exists: $FEE_RECORDS_DB_BACKUP_PATH"
+            if ! mkdir -p "$FEE_RECORDS_DB_BACKUP_PATH" 2>/dev/null; then
+                echo -e "❌ \033[31mFailed to create backup directory, trying with sudo...\033[0m"
+                if ! sudo mkdir -p "$FEE_RECORDS_DB_BACKUP_PATH"; then
+                    echo -e "❌ \033[31mFailed to create backup directory\033[0m"
+                    echo "Will create backup in current directory instead"
+                    FEE_RECORDS_DB_BACKUP_PATH="."
+                fi
+            fi
+        fi
+
+        local backup_path="$FEE_RECORDS_DB_BACKUP_PATH/$backup_filename"
 
         echo ""
         echo "📦 Creating backup of database folder..."
-        echo "Backup file: $backup_file"
+        echo "Backup path: $backup_path"
 
-        if tar -czf "$backup_file" -C "$(dirname "$FEE_RECORDS_DB_PATH")" "$(basename "$FEE_RECORDS_DB_PATH")" 2>/dev/null; then
-            echo -e "✅ \033[32mBackup created successfully: $backup_file\033[0m"
-            actions_taken+=("📦 Database backup created: $backup_file")
+        if tar -czf "$backup_path" -C "$(dirname "$FEE_RECORDS_DB_PATH")" "$(basename "$FEE_RECORDS_DB_PATH")" 2>/dev/null; then
+            echo -e "✅ \033[32mBackup created successfully: $backup_path\033[0m"
+            actions_taken+=("📦 Database backup created: $backup_path")
         else
             echo -e "❌ \033[31mFailed to create backup\033[0m"
             if ! ask_yes_no "Continue with deletion without backup?"; then
