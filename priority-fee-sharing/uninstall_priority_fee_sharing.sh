@@ -302,17 +302,23 @@ delete_database() {
             echo ""
             echo "🗑️  Deleting database folder: $FEE_RECORDS_DB_PATH"
 
-            if sudo rm -rf "$FEE_RECORDS_DB_PATH"; then
-                echo -e "✅ \033[32mDatabase folder deleted successfully\033[0m"
-                actions_taken+=("🗑️ Database folder deleted")
+            # Check if folder contains any files
+            if [[ -n "$(ls -A "$FEE_RECORDS_DB_PATH" 2>/dev/null)" ]]; then
+                if sudo rm -rf "$FEE_RECORDS_DB_PATH"/*; then
+                    echo -e "✅ \033[32mDatabase contents deleted successfully\033[0m"
+                    actions_taken+=("🗑️ Database contents deleted")
 
-                # Always preserve backup directory
-                if [[ -d "$FEE_RECORDS_DB_BACKUP_PATH" && "$FEE_RECORDS_DB_BACKUP_PATH" != "." ]]; then
-                    echo -e "ℹ️  Backup directory preserved: $FEE_RECORDS_DB_BACKUP_PATH"
+                    # Verify the folder still exists and is empty
+                    if [[ -d "$FEE_RECORDS_DB_PATH" ]]; then
+                        echo -e "ℹ️  Database folder preserved (empty): $FEE_RECORDS_DB_PATH"
+                    fi
+                else
+                    echo -e "❌ \033[31mFailed to delete database contents\033[0m"
+                    return 1
                 fi
             else
-                echo -e "❌ \033[31mFailed to delete database folder\033[0m"
-                return 1
+                echo -e "ℹ️  Database folder is already empty: $FEE_RECORDS_DB_PATH"
+                actions_taken+=("ℹ️ Database folder was already empty")
             fi
         else
             echo -e "⏭️  Database deletion cancelled - \033[32mfee records preserved\033[0m"
