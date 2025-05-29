@@ -576,6 +576,7 @@ async fn handle_pending_blocks(
     transfer_count: u64,
 ) -> Result<u64> {
     if !should_handle_pending_blocks(running_epoch_info, transfer_count, transactions_per_epoch) {
+        info!("Not time to transfer");
         return Ok(transfer_count);
     }
 
@@ -642,12 +643,12 @@ async fn handle_pending_blocks(
 
     if records_to_transfer.is_empty() {
         info!("No records to transfer");
-        return Ok(());
+        return Ok(transfer_count);
     }
 
     if amount_to_transfer == 0 {
         info!("No amount to transfer");
-        return Ok(());
+        return Ok(transfer_count);
     }
 
     // Create TX
