@@ -118,6 +118,9 @@ fn parse_state(state_str: &str) -> Result<FeeRecordState, anyhow::Error> {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    // Load .env file if it exists
+    dotenv::dotenv().ok();
+
     let args: Args = Args::parse();
 
     // Initialize logger with default INFO level
