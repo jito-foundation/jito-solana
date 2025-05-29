@@ -251,6 +251,7 @@ generate_service_file() {
         "FEE_RECORDS_DB_PATH"
         "PRIORITY_FEE_LAMPORTS"
         "TRANSACTIONS_PER_EPOCH"
+        "RUST_LOG"
     )
 
     echo "Checking required variables..."
@@ -300,6 +301,9 @@ generate_service_file() {
                     ;;
                 "TRANSACTIONS_PER_EPOCH")
                     echo -e "\033[31m  - $var: Number of transactions per epoch (e.g., '10')\033[0m"
+                    ;;
+                "RUST_LOG")
+                    echo -e "\033[31m  - $var: Log level (e.g., 'info, debug')\033[0m"
                     ;;
             esac
         done
@@ -360,6 +364,10 @@ Environment=FEE_RECORDS_DB_PATH=$FEE_RECORDS_DB_PATH
 Environment=PRIORITY_FEE_LAMPORTS=$PRIORITY_FEE_LAMPORTS
 # How many TXs to send per epoch
 Environment=TRANSACTIONS_PER_EPOCH=$TRANSACTIONS_PER_EPOCH
+
+# --------------- LOGGING -------------------------
+# Log level
+Environment=RUST_LOG=$RUST_LOG
 
 # --------------- PATH REQUIRED --------------------
 ExecStart=$binary_path run
@@ -440,21 +448,20 @@ main() {
     echo -e "\033[32m✅ Priority Fee Sharing CLI installation completed successfully!\033[0m"
     echo ""
     echo "Available commands:"
-    echo -e "  \033[34mpriority-fee-sharing --help\033[0m          # Show CLI help"
-    echo -e "  \033[34mpriority-fee-sharing run --help\033[0m      # Show run command help"
-    echo -e "  \033[34mpriority-fee-sharing export-csv --help\033[0m # Show export command help"
-    echo -e "  \033[34mpriority-fee-sharing print-info --help\033[0m # Show info command help"
+    echo -e "Show CLI help: \033[34mpriority-fee-sharing --help\033[0m"
+    echo -e "Run manually: \033[34mpriority-fee-sharing run\033[0m"
+    echo -e "Show export command help: \033[34mpriority-fee-sharing export-csv --help\033[0m"
+    echo -e "Show info command help: \033[34mpriority-fee-sharing print-info --help\033[0m"
     echo ""
-    echo -e "\033[34mNext steps:\033[0m"
-    echo -e "\033[34m1. Review the generated service file: cat priority-fee-sharing.service\033[0m"
-    echo -e "\033[34m2. Copy to systemd directory: sudo cp priority-fee-sharing.service /etc/systemd/system/\033[0m"
-    echo -e "\033[34m3. Reload systemd: sudo systemctl daemon-reload\033[0m"
-    echo -e "\033[34m4. Enable service: sudo systemctl enable priority-fee-sharing\033[0m"
-    echo -e "\033[34m5. Start service: sudo systemctl start priority-fee-sharing\033[0m"
-    echo -e "\033[34m6. Check status: sudo systemctl status priority-fee-sharing\033[0m"
+    echo -e "\Next steps:\033[0m"
+    echo -e "1. Review the generated service file: \033[34mcat priority-fee-sharing.service\033[0m"
+    echo -e "2. Copy to systemd directory: \033[34msudo cp priority-fee-sharing.service /etc/systemd/system/\033[0m"
+    echo -e "3. Reload systemd: \033[34msudo systemctl daemon-reload\033[0m"
+    echo -e "4. Enable service: \033[34msudo systemctl enable priority-fee-sharing\033[0m"
+    echo -e "5. Start service: \033[34msudo systemctl start priority-fee-sharing\033[0m"
+    echo -e "6. Check status: \033[34msudo systemctl status priority-fee-sharing\033[0m"
+    echo -e "7. View logs: \033[34msudo journalctl -u priority-fee-sharing.service -f\033[0m"
     echo ""
-
-    # sudo journalctl -u priority-fee-sharing.service -f
 }
 
 # Call the main function
