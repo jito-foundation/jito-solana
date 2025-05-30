@@ -210,3 +210,4 @@ Block Errors:
 - `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
 - `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC
 - `Could not get block, RPC response error -32015: Transaction version (0) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 0;` - Not sure yet
+- `Could not get block, RPC response error -32007: Slot 336638156 was skipped, or missing due to ledger jump to recent snapshot;` - Not sure yet
