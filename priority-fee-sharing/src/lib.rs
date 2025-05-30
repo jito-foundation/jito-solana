@@ -557,7 +557,6 @@ fn should_handle_pending_blocks(
     let percentage_of_epoch = running_epoch_info.percentage_of_epoch();
     let percentage_per_transaction = 100.0 / transactions_per_epoch as f64;
 
-    debug!("TX count: {}", transfer_count);
     if transfer_count == 0 {
         return true;
     }
