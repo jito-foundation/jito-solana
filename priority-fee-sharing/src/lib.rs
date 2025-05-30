@@ -595,8 +595,8 @@ fn should_handle_pending_blocks(
         return true;
     }
 
-    debug!(
-        "{} > {} ({})",
+    info!(
+        "Should Transfer: {} > {} ({})",
         percentage_of_epoch,
         transfer_count as f64 * percentage_per_transaction,
         percentage_of_epoch > transfer_count as f64 * percentage_per_transaction
