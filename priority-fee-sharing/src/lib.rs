@@ -4,6 +4,7 @@ pub mod fee_records;
 use anyhow::{anyhow, Result};
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
 use log::{debug, error, info, warn};
+use solana_client::rpc_config::RpcBlockConfig;
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -223,6 +224,34 @@ async fn get_priority_fee_distribution_account_internal_balance(
     ]);
 
     Ok(total_lamports_transferred)
+}
+
+async fn check_get_block_ok(rpc_client: &RpcClient) -> Result<()> {
+    let epoch_info = rpc_client.get_epoch_info().await?;
+    let current_slot = epoch_info.absolute_slot;
+
+    // At least one block should be available
+    for i in 0..250 {
+        match rpc_client
+            .get_block_with_config(current_slot - i, RpcBlockConfig::rewards_only())
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                if e.to_string()
+                    .contains("Transaction history is not available from this node")
+                {
+                    return Err(anyhow!(format!(
+                        "ERROR: You need to switch to a different RPC node: {}",
+                        e
+                    )));
+                }
+            }
+        }
+        sleep_ms(100).await;
+    }
+
+    Err(anyhow!("Could not get block - unknown error"))
 }
 
 async fn get_validator_identity(
@@ -493,15 +522,20 @@ async fn handle_unprocessed_blocks(
     for record in filtered_records.iter() {
         // Try to fetch block and update
         if record.slot <= running_epoch_info.slot {
-            let block_result = rpc_client.get_block(record.slot).await;
+            let block_result = rpc_client
+                .get_block_with_config(record.slot, RpcBlockConfig::rewards_only())
+                .await;
 
             match block_result {
                 Ok(block) => {
                     let priority_fee_lamports = block
                         .rewards
-                        .iter()
-                        .find(|r| r.reward_type == Some(RewardType::Fee))
-                        .map(|r| r.lamports)
+                        .and_then(|rewards| {
+                            rewards
+                                .iter()
+                                .find(|r| r.reward_type == Some(RewardType::Fee))
+                                .map(|r| r.lamports)
+                        })
                         .unwrap_or(0);
 
                     info!(
@@ -754,6 +788,8 @@ pub async fn share_priority_fees_loop(
     let mut transfer_count = 0;
 
     let validator_identity = get_validator_identity(&rpc_client, &validator_vote_account).await?;
+
+    check_get_block_ok(&rpc_client).await?;
 
     loop {
         // 1. Handle Epoch
