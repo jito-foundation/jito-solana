@@ -206,8 +206,23 @@ The state parameter can be one of: `unprocessed`, `processed`, `pending`, `skipp
 
 ### Notes
 
-Block Errors:
+## Block Errors
 - `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
 - `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC
 - `Could not get block, RPC response error -32015: Transaction version (0) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 0;` - Not sure yet
 - `Could not get block, RPC response error -32007: Slot 336638156 was skipped, or missing due to ledger jump to recent snapshot;` - Not sure yet
+- `Could not get block, invalid type: null, expected struct UiConfirmedBlock` - Not sure yet
+
+## Usability
+
+- test configuration work
+- Group the PFPayer and Vote Authority will be simular
+- Account --> Pubkey, and move vote account higher
+- mv instead of cp .service ( systemctl cat priority-fee-sharing.service )
+- Explain at the top what is needed to run this service
+- Tell them to make a sandbox directory ( or rename to priority fee setup_priority_fee_sharing )
+- Show them the default localhost config
+- ```
+May 30 17:21:25 koddos-sol-main-1 priority-fee-sharing[1208226]: [2025-05-30T16:21:25Z WARN  priority_fee_sharing] Could not get block, invalid type: null, expected struct UiConfirmedBlock
+May 30 17:21:25 koddos-sol-main-1 priority-fee-sharing[1208226]: [2025-05-30T16:21:25Z ERROR priority_fee_sharing] Could not get block for slot 336770587 - You may have to switch your RPC provider
+```

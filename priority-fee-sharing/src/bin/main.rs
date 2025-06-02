@@ -39,7 +39,7 @@ enum Commands {
 
         /// Validator vote account address
         #[arg(long, env)]
-        validator_vote_account: Pubkey,
+        validator_vote_pubkey: Pubkey,
 
         /// Merkle root upload authority
         #[arg(long, env)]
@@ -66,6 +66,10 @@ enum Commands {
         /// How many TXs to send per epoch
         #[arg(long, env, default_value_t = 10)]
         transactions_per_epoch: u64,
+
+        /// Verifies the command setup
+        #[arg(long)]
+        verify: bool,
     },
 
     /// Export records to CSV
@@ -132,13 +136,14 @@ async fn main() -> Result<(), anyhow::Error> {
             fee_records_db_path,
             priority_fee_payer_keypair_path,
             vote_authority_keypair_path,
-            validator_vote_account,
+            validator_vote_pubkey,
             merkle_root_upload_authority,
             priority_fee_distribution_program,
             minimum_balance_sol,
             commission_bps,
             priority_fee_lamports,
             transactions_per_epoch,
+            verify,
         } => {
             let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;
 
@@ -152,7 +157,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 "Vote Authority Keypair Path: {:?}",
                 vote_authority_keypair_path
             );
-            info!("Validator Vote Account: {}", validator_vote_account);
+            info!("Validator Vote Pubkey: {}", validator_vote_pubkey);
             info!("Merkle Upload Authority: {}", merkle_root_upload_authority);
             info!(
                 "Priority Fee Distribution Program: {}",
@@ -168,13 +173,14 @@ async fn main() -> Result<(), anyhow::Error> {
                 fee_records_db_path.clone(),
                 priority_fee_payer_keypair_path.clone(),
                 vote_authority_keypair_path.clone(),
-                *validator_vote_account,
+                *validator_vote_pubkey,
                 *merkle_root_upload_authority,
                 *priority_fee_distribution_program,
                 minimum_balance_lamports,
                 *commission_bps,
                 *priority_fee_lamports,
                 *transactions_per_epoch,
+                *verify,
             )
             .await?
         }

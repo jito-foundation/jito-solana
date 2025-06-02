@@ -3,8 +3,8 @@ pub mod fee_records;
 
 use anyhow::{anyhow, Result};
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
-use log::{error, info, warn};
-use solana_client::rpc_config::RpcBlockConfig;
+use log::warn;
+use log::{error, info};
 use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -14,6 +14,7 @@ use solana_sdk::epoch_info::EpochInfo;
 use solana_sdk::instruction::AccountMeta;
 use solana_sdk::instruction::Instruction;
 use solana_sdk::native_token::lamports_to_sol;
+use solana_sdk::pubkey;
 use solana_sdk::reward_type::RewardType;
 use solana_sdk::signature::read_keypair_file;
 use solana_sdk::signature::Keypair;
@@ -70,6 +71,212 @@ impl PFEpochInfo {
     }
 }
 
+// ------------------------- VERIFY SETUP -----------------------------
+pub async fn verify_setup(
+    rpc_url: String,
+    fee_records_db_path: PathBuf,
+    priority_fee_payer_keypair_path: PathBuf,
+    vote_authority_keypair_path: PathBuf,
+    validator_vote_account: Pubkey,
+    merkle_root_upload_authority: Pubkey,
+    priority_fee_distribution_program: Pubkey,
+    minimum_balance_lamports: u64,
+    commission_bps: u64,
+    priority_fee_lamports: u64,
+    transactions_per_epoch: u64,
+) -> Result<()> {
+    // ---------------- RPC CHECK -------------------------
+    let rpc_client = RpcClient::new(rpc_url);
+
+    let epoch_info = match rpc_client.get_epoch_info().await {
+        Ok(epoch_info) => {
+            info!("✅ RPC able to get epoch info");
+            epoch_info
+        }
+        Err(err) => {
+            return Err(anyhow!(format!("❌ Failed to get epoch info: {}", err)));
+        }
+    };
+
+    for i in 0..250 {
+        let slot = epoch_info.absolute_slot - i;
+        match get_rewards_safe(&rpc_client, slot).await {
+            Ok((should_skip, _)) => {
+                if !should_skip {
+                    info!("✅ RPC able to get block");
+                    break;
+                }
+            }
+            Err(err) => {
+                // - `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
+                // - `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC
+                // - `Could not get block, RPC response error -32015: Transaction version (0) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 0;` - Not sure yet
+                // - `Could not get block, RPC response error -32007: Slot 336638156 was skipped, or missing due to ledger jump to recent snapshot;` - Not sure yet
+                // - `Could not get block, invalid type: null, expected struct UiConfirmedBlock` - Not sure yet
+                return Err(anyhow!(format!("❌ Failed to get block: {}", err)));
+            }
+        }
+    }
+
+    // ---------------- DATABASE CHECK ---------------------
+    let fee_records = match FeeRecords::new(fee_records_db_path) {
+        Ok(fee_records) => {
+            info!("✅ Database connected");
+            fee_records
+        }
+        Err(err) => return Err(anyhow!(format!("❌ Database could not connect: {}", err))),
+    };
+
+    match fee_records.check_connection() {
+        Ok(_) => info!("✅ Database checked"),
+        Err(err) => return Err(anyhow!(format!("❌ Database check failed: {}", err))),
+    }
+
+    // ---------------- PAYER CHECK ---------------------
+    let payer_keypair = match read_keypair_file(priority_fee_payer_keypair_path) {
+        Ok(keypair) => {
+            info!("✅ Payer keypair OK: {}", keypair.pubkey());
+            keypair
+        }
+        Err(err) => {
+            return Err(anyhow!(format!(
+                "❌ Failed to read payer keypair file: {}",
+                err
+            )))
+        }
+    };
+
+    let payer_balance = match rpc_client.get_balance(&payer_keypair.pubkey()).await {
+        Ok(payer_balance) => {
+            info!("✅ Payer balance OK {}", lamports_to_sol(payer_balance));
+            payer_balance
+        }
+        Err(err) => return Err(anyhow!(format!("❌ Payer balance check failed: {}", err))),
+    };
+
+    if payer_balance < minimum_balance_lamports {
+        warn!(
+            "⚠️ Minimum balance is not currently met {}/{}",
+            lamports_to_sol(payer_balance),
+            lamports_to_sol(minimum_balance_lamports)
+        )
+    } else {
+        info!("✅ Minimum balance OK: {}", lamports_to_sol(payer_balance));
+    }
+
+    // ---------------- VOTE AUTHORITY CHECK ---------------------
+    let vote_authority_keypair = match read_keypair_file(vote_authority_keypair_path) {
+        Ok(keypair) => {
+            info!("✅ Vote authority keypair OK");
+            keypair
+        }
+        Err(err) => {
+            return Err(anyhow!(format!(
+                "❌ Failed to read vote authority keypair file: {}",
+                err
+            )))
+        }
+    };
+
+    let validator_identity =
+        match get_validator_identity(&rpc_client, &validator_vote_account).await {
+            Ok(identity) => {
+                info!("✅ Validator identity OK");
+                identity
+            }
+            Err(err) => {
+                return Err(anyhow!(format!(
+                    "❌ Failed to get validator identity: {}",
+                    err
+                )))
+            }
+        };
+
+    if validator_identity.ne(&vote_authority_keypair.pubkey()) {
+        warn!("⚠️ Vote authority keypair does not match validator identity");
+    }
+
+    // ---------------- COMMISSION CHECK ---------------------
+    if commission_bps > MAX_BPS {
+        return Err(anyhow!(
+            "❌ Invalid commission percentage: {} cannot be larger than {}",
+            commission_bps,
+            MAX_BPS
+        ));
+    } else if commission_bps > 5000 {
+        warn!(
+            "⚠️ Commission is more than 50% ({}%) - this may result in loss of JitoSOL stake",
+            commission_bps
+        );
+    } else {
+        info!("✅ Commission OK");
+    }
+
+    // ---------------- MERKLE CHECK ---------------------
+    let default_merkle_root_upload_authority =
+        pubkey!("2AxPPApUQWvo2JsB52iQC4gbEipAWjRvmnNyDHJgd6Pe");
+    if merkle_root_upload_authority.ne(&default_merkle_root_upload_authority) {
+        warn!(
+            "⚠️ Merkle root upload authority is not default {} != {}",
+            merkle_root_upload_authority, default_merkle_root_upload_authority
+        );
+    } else {
+        info!("✅ Merkle root OK");
+    }
+
+    // -------------- PRIORITY FEE DISTRIBUTION CHECK --------------
+    let default_priority_fee_distribution_program =
+        pubkey!("9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU");
+    if priority_fee_distribution_program.ne(&default_priority_fee_distribution_program) {
+        warn!(
+            "⚠️ Priority fee distribution program is not default {} != {}",
+            priority_fee_distribution_program, default_priority_fee_distribution_program
+        );
+    } else {
+        info!("✅ Priority fee distribution program OK");
+    }
+
+    // -------------- TRANSACTIONS PER EPOCH CHECK --------------
+    if transactions_per_epoch == 0 {
+        return Err(anyhow!("❌ Transactions per epoch cannot be zero"));
+    } else {
+        info!("✅ Transactions per epoch OK: {}", transactions_per_epoch);
+    }
+
+    info!("✅ Priority fees OK: {}", priority_fee_lamports);
+
+    Ok(())
+}
+
+async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64) -> Result<(bool, u64)> {
+    match rpc_client.get_block(slot).await {
+        Ok(block) => {
+            let priority_fee_lamports: i64 = block
+                .rewards
+                .iter()
+                .filter(|r| r.reward_type == Some(RewardType::Fee))
+                .map(|r| r.lamports)
+                .sum();
+
+            return Ok((false, priority_fee_lamports as u64));
+        }
+        Err(e) => {
+            // - `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
+            // - `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC
+            // - `Could not get block, RPC response error -32015: Transaction version (0) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 0;` - Not sure yet
+            // - `Could not get block, RPC response error -32007: Slot 336638156 was skipped, or missing due to ledger jump to recent snapshot;` - Not sure yet
+            // - `Could not get block, invalid type: null, expected struct UiConfirmedBlock` - Not sure yet
+            if e.to_string().contains("RPC response error -32009")
+                || e.to_string().contains("RPC response error -32007")
+            {
+                return Ok((true, 0));
+            } else {
+                return Err(anyhow!(format!("Failed to get block: {}", e)));
+            }
+        }
+    }
+}
+
 // ------------------------- HELPER FUNCTIONS -----------------------------
 fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u64> {
     // Calculate the amount that goes to delegators (total minus commission)
@@ -88,21 +295,6 @@ fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u6
         .ok_or_else(|| anyhow!("Division by zero when calculating final share amount"))?;
 
     Ok(amount_to_share_lamports)
-}
-
-fn check_commission_percentage(commission_bps: u64) -> Result<()> {
-    if commission_bps > MAX_BPS {
-        error!(
-            "Commission percentage must be less than or equal to {}",
-            MAX_BPS
-        );
-        return Err(anyhow!(
-            "Invalid commission percentage: {} cannot be larger than {}",
-            commission_bps,
-            MAX_BPS
-        ));
-    }
-    Ok(())
 }
 
 async fn sleep_ms(ms: u64) {
@@ -224,34 +416,6 @@ async fn get_priority_fee_distribution_account_internal_balance(
     ]);
 
     Ok(total_lamports_transferred)
-}
-
-async fn check_get_block_ok(rpc_client: &RpcClient) -> Result<()> {
-    let epoch_info = rpc_client.get_epoch_info().await?;
-    let current_slot = epoch_info.absolute_slot;
-
-    // At least one block should be available
-    for i in 0..250 {
-        match rpc_client
-            .get_block_with_config(current_slot - i, RpcBlockConfig::rewards_only())
-            .await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                if e.to_string()
-                    .contains("Transaction history is not available from this node")
-                {
-                    return Err(anyhow!(format!(
-                        "ERROR: You need to switch to a different RPC node: {}",
-                        e
-                    )));
-                }
-            }
-        }
-        sleep_ms(100).await;
-    }
-
-    Err(anyhow!("Could not get block - unknown error"))
 }
 
 async fn get_validator_identity(
@@ -522,44 +686,11 @@ async fn handle_unprocessed_blocks(
     for record in filtered_records.iter() {
         // Try to fetch block and update
         if record.slot <= running_epoch_info.slot {
-            let block_result = rpc_client
-                .get_block_with_config(record.slot, RpcBlockConfig::rewards_only())
-                .await;
+            let block_result = get_rewards_safe(rpc_client, record.slot).await;
 
             match block_result {
-                Ok(block) => {
-                    let priority_fee_lamports = block
-                        .rewards
-                        .and_then(|rewards| {
-                            rewards
-                                .iter()
-                                .find(|r| r.reward_type == Some(RewardType::Fee))
-                                .map(|r| r.lamports)
-                        })
-                        .unwrap_or(0);
-
-                    info!(
-                        "Recorded Priority Fees for {}: {}",
-                        record.slot,
-                        lamports_to_sol(priority_fee_lamports as u64)
-                    );
-                    let result = fee_records.process_record(
-                        record.slot,
-                        record.epoch,
-                        priority_fee_lamports as u64,
-                    );
-                    if let Err(err) = result {
-                        error!(
-                            "Error processing priority fee record for slot {}: {}",
-                            record.slot, err
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!("Could not get block, {}", e);
-                    // Only skip if the error indicates the slot was skipped or missing in long-term storage
-                    let error_message = e.to_string();
-                    if error_message.contains("was skipped, or missing in long-term storage") {
+                Ok((should_skip, rewards)) => {
+                    if should_skip {
                         let result = fee_records.skip_record(record.slot, record.epoch);
                         if let Err(err) = result {
                             error!(
@@ -568,13 +699,26 @@ async fn handle_unprocessed_blocks(
                             );
                         }
                     } else {
-                        // For other errors (like "Transaction history is not available"),
-                        // you might want to handle differently - perhaps retry, return the error, etc.
-                        error!(
-                            "Could not get block for slot {} - You may have to switch your RPC provider",
-                            record.slot
+                        info!(
+                            "Recorded Priority Fees for {}: {}",
+                            record.slot,
+                            lamports_to_sol(rewards as u64)
                         );
+                        let result =
+                            fee_records.process_record(record.slot, record.epoch, rewards as u64);
+                        if let Err(err) = result {
+                            error!(
+                                "Error processing priority fee record for slot {}: {}",
+                                record.slot, err
+                            );
+                        }
                     }
+                }
+                Err(e) => {
+                    error!(
+                        "Could not get block for slot {} - You may have to switch your RPC provider: {}",
+                        record.slot, e
+                    );
                 }
             }
         }
@@ -773,25 +917,42 @@ pub async fn share_priority_fees_loop(
     commission_bps: u64,
     priority_fee_lamports: u64,
     transactions_per_epoch: u64,
+    verify: bool,
 ) -> Result<()> {
-    check_commission_percentage(commission_bps)?;
+    // ------------------ VERIFY SETUP -----------------------------
+    verify_setup(
+        rpc_url.clone(),
+        fee_records_db_path.clone(),
+        priority_fee_payer_keypair_path.clone(),
+        vote_authority_keypair_path.clone(),
+        validator_vote_account,
+        merkle_root_upload_authority,
+        priority_fee_distribution_program,
+        minimum_balance_lamports,
+        commission_bps,
+        priority_fee_lamports,
+        transactions_per_epoch,
+    )
+    .await?;
 
-    let payer_keypair = read_keypair_file(priority_fee_payer_keypair_path)
-        .unwrap_or_else(|err| panic!("Failed to read payer keypair file: {}", err));
+    if verify {
+        return Ok(());
+    }
 
-    let vote_authority_keypair = read_keypair_file(vote_authority_keypair_path)
-        .unwrap_or_else(|err| panic!("Failed to read vote authority keypair file: {}", err));
-
+    // ------------------ LOCAL SETUP -----------------------------
     let rpc_client = RpcClient::new(rpc_url);
     let fee_records = FeeRecords::new(fee_records_db_path)?;
+
+    let payer_keypair = read_keypair_file(priority_fee_payer_keypair_path)
+        .expect("Failed to read payer keypair file");
+    let vote_authority_keypair = read_keypair_file(vote_authority_keypair_path)
+        .expect("Failed to read vote authority keypair file");
+    let validator_identity = get_validator_identity(&rpc_client, &validator_vote_account).await?;
 
     let mut running_epoch_info = PFEpochInfo::null();
     let mut transfer_count = 0;
 
-    let validator_identity = get_validator_identity(&rpc_client, &validator_vote_account).await?;
-
-    check_get_block_ok(&rpc_client).await?;
-
+    // ------------------ LOOP -----------------------------
     loop {
         // 1. Handle Epoch
         info!(" -------- 1. HANDLE EPOCH AND LEADER SLOT -----------");
@@ -844,7 +1005,7 @@ pub async fn share_priority_fees_loop(
             Err(err) => error!("Error handling pending blocks: {}", err),
         }
 
-        sleep_ms(LEADER_SLOT_MS).await;
+        sleep_ms(LEADER_SLOT_MS * 10).await;
     }
 }
 

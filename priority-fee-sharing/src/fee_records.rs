@@ -524,6 +524,58 @@ impl FeeRecords {
         Ok(())
     }
 
+    pub fn check_connection(&self) -> Result<()> {
+        let test_slot = u64::MAX;
+        let test_epoch = u64::MAX; // Using epoch 0 for the test
+
+        // Create a test record
+        let test_record = FeeRecordEntry {
+            timestamp: Self::current_timestamp(),
+            slot: test_slot,
+            epoch: test_epoch,
+            priority_fee_lamports: test_slot,
+            state: FeeRecordState::Unprocessed,
+            category: FeeRecordCategory::Info, // Using Info category for test
+            slot_landed: test_slot,
+            signature: String::from("connection_test"),
+            vote_account: String::from("connection_test_vote"),
+            identity: String::from("connection_test_identity"),
+        };
+
+        // Check Write
+        let encoded = bincode::serialize(&test_record)?;
+        let record_key = FeeRecordKey::record(test_slot, test_epoch);
+        self.db.put(&record_key, &encoded)?;
+
+        // Check Read
+        match self.db.get(&record_key)? {
+            Some(data) => {
+                let _retrieved_record: FeeRecordEntry = bincode::deserialize(&data)?;
+                // Successfully read the record back
+            }
+            None => {
+                return Err(anyhow::anyhow!("Failed to read test record from database"));
+            }
+        }
+
+        // Check Delete
+        self.db.delete(&record_key)?;
+
+        // Verify deletion worked
+        match self.db.get(&record_key)? {
+            Some(_) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to delete test record from database"
+                ));
+            }
+            None => {
+                // Successfully deleted
+            }
+        }
+
+        Ok(())
+    }
+
     /// Compact the database to reclaim space and optimize performance
     /// Should be run periodically, especially after many updates
     pub fn compact(&self) -> Result<()> {
