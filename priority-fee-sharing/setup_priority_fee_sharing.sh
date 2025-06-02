@@ -175,7 +175,7 @@ generate_service_file() {
         "RPC_URL"
         "PRIORITY_FEE_PAYER_KEYPAIR_PATH"
         "VOTE_AUTHORITY_KEYPAIR_PATH"
-        "VALIDATOR_VOTE_ACCOUNT"
+        "VALIDATOR_VOTE_PUBKEY"
         "MINIMUM_BALANCE_SOL"
         "COMMISSION_BPS"
         "PRIORITY_FEE_DISTRIBUTION_PROGRAM"
@@ -211,7 +211,7 @@ generate_service_file() {
                 "VOTE_AUTHORITY_KEYPAIR_PATH")
                     echo -e "\033[31m  - $var: Path to vote authority keypair (e.g., '/path/to/vote-authority.json')\033[0m"
                     ;;
-                "VALIDATOR_VOTE_ACCOUNT")
+                "VALIDATOR_VOTE_PUBKEY")
                     echo -e "\033[31m  - $var: Your validator's vote account public key\033[0m"
                     ;;
                 "MINIMUM_BALANCE_SOL")
@@ -281,7 +281,7 @@ Environment=PRIORITY_FEE_PAYER_KEYPAIR_PATH=$PRIORITY_FEE_PAYER_KEYPAIR_PATH
 # Can be found by running \`solana vote-account YOUR_VOTE_ACCOUNT\`
 Environment=VOTE_AUTHORITY_KEYPAIR_PATH=$VOTE_AUTHORITY_KEYPAIR_PATH
 # Your validator vote account address
-Environment=VALIDATOR_VOTE_ACCOUNT=$VALIDATOR_VOTE_ACCOUNT
+Environment=VALIDATOR_VOTE_PUBKEY=$VALIDATOR_VOTE_PUBKEY
 # Minimum balance in your priority fee keypair, no fees will be sent if below this amount
 Environment=MINIMUM_BALANCE_SOL=$MINIMUM_BALANCE_SOL
 
