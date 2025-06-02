@@ -9,19 +9,13 @@ This service enables validators to distribute priority fees to their delegators 
 1. Clone the repository:
 
 ```bash
-git clone --recursive https://github.com/jito-foundation/jito-solana.git
-cd jito-solana
+git clone --recursive https://github.com/jito-foundation/jito-solana.git priority-fee-sharing
+cd priority-fee-sharing/priority-fee-sharing
 git checkout ck/distro-script
 ```
 
 **NOTE:**
 We need to have all submodules initialized and updated - if you've already cloned the repo, please run: `git submodule update --init --recursive`
-
-2. Move to the `priority-fee-sharing` directory:
-
-```bash
-cd priority-fee-sharing
-```
 
 **NOTE:**
 To help, you may want to install the [Solana CLI](https://solana.com/docs/intro/installation) if you have not already
@@ -46,24 +40,25 @@ vim .env
 
 **NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
 
-| Variable | Description |
-|----------|-------------|
-| `USER` | System user to run the service (e.g., 'solana') |
-| `RPC_URL` | RPC endpoint URL that supports `get_block` |
-| `PRIORITY_FEE_PAYER_KEYPAIR_PATH` | Path to validator identity keypair |
-| `VOTE_AUTHORITY_KEYPAIR_PATH` | Path to vote authority keypair |
-| `VALIDATOR_VOTE_ACCOUNT` | Your validator's vote account public key |
-| `MINIMUM_BALANCE_SOL` | Minimum SOL balance to maintain |
-| `COMMISSION_BPS` | Commission in basis points (5000 = 50%) |
-| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Fee distribution program address |
-| `MERKLE_ROOT_UPLOAD_AUTHORITY` | Merkle root upload authority address |
-| `FEE_RECORDS_DB_PATH` | Path for fee records database |
-| `PRIORITY_FEE_LAMPORTS` | Priority fee for transactions (in lamports) |
-| `TRANSACTIONS_PER_EPOCH` | Number of transactions per epoch |
+| Variable                            | Description                                     |
+| ----------------------------------- | ----------------------------------------------- |
+| `USER`                              | System user to run the service (e.g., 'solana') |
+| `RPC_URL`                           | RPC endpoint URL that supports `get_block`      |
+| `PRIORITY_FEE_PAYER_KEYPAIR_PATH`   | Path to validator identity keypair              |
+| `VOTE_AUTHORITY_KEYPAIR_PATH`       | Path to vote authority keypair                  |
+| `VALIDATOR_VOTE_ACCOUNT`            | Your validator's vote account public key        |
+| `MINIMUM_BALANCE_SOL`               | Minimum SOL balance to maintain                 |
+| `COMMISSION_BPS`                    | Commission in basis points (5000 = 50%)         |
+| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Fee distribution program address                |
+| `MERKLE_ROOT_UPLOAD_AUTHORITY`      | Merkle root upload authority address            |
+| `FEE_RECORDS_DB_PATH`               | Path for fee records database                   |
+| `PRIORITY_FEE_LAMPORTS`             | Priority fee for transactions (in lamports)     |
+| `TRANSACTIONS_PER_EPOCH`            | Number of transactions per epoch                |
 
 ### 2. Run Installation Script
 
 The installation script will:
+
 1. Install/update Rust (minimum version 1.75.0)
 2. Build and install the Priority Fee Sharing CLI
 3. Generate a systemd `priority-fee-sharing.service` service file from your `.env` configuration
@@ -126,27 +121,32 @@ sudo journalctl -u priority-fee-share.service -f
 If you encounter issues with the Priority Fee Sharing service:
 
 1. Check the service status and logs
+
    ```bash
    sudo systemctl status priority-fee-share.service
    sudo journalctl -u priority-fee-share.service -n 50
    ```
 
 2. Verify that the priority fee account has sufficient funds
+
    ```bash
    solana balance --keypair /path/to/priority-fee-keypair.json
    ```
 
 3. Ensure your validator vote account address is correct
+
    ```bash
    solana account YOUR_VALIDATOR_ADDRESS
    ```
 
 4. Check that your RPC endpoint is accessible
+
    ```bash
    curl -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' YOUR_RPC_URL
    ```
 
 5. If using a local RPC, verify it was started with transaction history enabled
+
    ```bash
    grep enable-rpc-transaction-history /etc/systemd/system/solana-validator.service
    ```
@@ -207,22 +207,9 @@ The state parameter can be one of: `unprocessed`, `processed`, `pending`, `skipp
 ### Notes
 
 ## Block Errors
+
 - `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
 - `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC
 - `Could not get block, RPC response error -32015: Transaction version (0) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 0;` - Not sure yet
 - `Could not get block, RPC response error -32007: Slot 336638156 was skipped, or missing due to ledger jump to recent snapshot;` - Not sure yet
 - `Could not get block, invalid type: null, expected struct UiConfirmedBlock` - Not sure yet
-
-## Usability
-
-- test configuration work
-- Group the PFPayer and Vote Authority will be simular
-- Account --> Pubkey, and move vote account higher
-- mv instead of cp .service ( systemctl cat priority-fee-sharing.service )
-- Explain at the top what is needed to run this service
-- Tell them to make a sandbox directory ( or rename to priority fee setup_priority_fee_sharing )
-- Show them the default localhost config
-- ```
-May 30 17:21:25 koddos-sol-main-1 priority-fee-sharing[1208226]: [2025-05-30T16:21:25Z WARN  priority_fee_sharing] Could not get block, invalid type: null, expected struct UiConfirmedBlock
-May 30 17:21:25 koddos-sol-main-1 priority-fee-sharing[1208226]: [2025-05-30T16:21:25Z ERROR priority_fee_sharing] Could not get block for slot 336770587 - You may have to switch your RPC provider
-```

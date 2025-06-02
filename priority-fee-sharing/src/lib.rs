@@ -245,6 +245,9 @@ pub async fn verify_setup(
 
     info!("✅ Priority fees OK: {}", priority_fee_lamports);
 
+    info!("");
+    info!("✅ All parameters OK");
+
     Ok(())
 }
 

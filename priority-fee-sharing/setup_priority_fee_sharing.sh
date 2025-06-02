@@ -457,8 +457,9 @@ main() {
     if [[ -f ".env" ]]; then
         generate_service_file
     else
-        echo -e "\033[33mNo .env file found. Skipping service file generation.\033[0m"
-        echo -e "\033[34mTo generate a service file later, create a .env file and run this script again.\033[0m"
+        echo -e "\033[33mNo .env file found.\033[0m"
+        echo -e "\033[34mTo generate a service file, create a .env file and run this script again.\033[0m"
+        exit 1
     fi
     echo ""
 
@@ -469,8 +470,30 @@ main() {
     if [[ -f ".env" ]]; then
         check_or_create_fee_records_directories
     else
-        echo -e "\033[33mNo .env file found. Skipping fee records directory check.\033[0m"
-        echo -e "\033[34mTo check/create the fee records directory later, create a .env file and run this script again.\033[0m"
+        echo -e "\033[33mNo .env file found.\033[0m"
+        echo -e "\033[34mTo generate a service file, create a .env file and run this script again.\033[0m"
+        exit 1
+    fi
+    echo ""
+
+    # Verify parameters
+    echo "========================================================="
+    echo "              VERIFY PARAMETERS                          "
+    echo "========================================================="
+    if [[ -f ".env" ]]; then
+        check_or_create_fee_records_directories
+
+        # Run verification and exit if it fails
+        echo "Running parameter verification..."
+        if ! priority-fee-sharing run --verify; then
+            echo -e "\033[31mVerification failed. Exiting script.\033[0m"
+            exit 1
+        fi
+        echo -e "\033[32mVerification passed.\033[0m"
+    else
+        echo -e "\033[33mNo .env file found.\033[0m"
+        echo -e "\033[34mTo generate a service file, create a .env file and run this script again.\033[0m"
+        exit 1
     fi
     echo ""
 
@@ -486,16 +509,16 @@ main() {
     echo -e "Show info command help: \033[34mpriority-fee-sharing print-info --help\033[0m"
     echo ""
     echo -e "Next steps:"
-    echo -e "1. Review the generated service file: \033[34mcat priority-fee-sharing.service\033[0m"
-    echo -e "2. Copy to systemd directory: \033[34msudo cp priority-fee-sharing.service /etc/systemd/system/\033[0m"
-    echo -e "3. Reload systemd: \033[34msudo systemctl daemon-reload\033[0m"
-    echo -e "4. Enable service: \033[34msudo systemctl enable priority-fee-sharing\033[0m"
+    echo -e "1. Move the generated service file to systemd directory: \033[34msudo mv priority-fee-sharing.service /etc/systemd/system/\033[0m"
+    echo -e "2. Reload systemd: \033[34msudo systemctl daemon-reload\033[0m"
+    echo -e "3. Enable service: \033[34msudo systemctl enable priority-fee-sharing\033[0m"
+    echo -e "4. Review the generated service file:  \033[34msystemctl cat priority-fee-sharing.service\033[0m"
     echo -e "5. Start service: \033[34msudo systemctl start priority-fee-sharing\033[0m"
     echo -e "6. Check status: \033[34msudo systemctl status priority-fee-sharing\033[0m"
     echo -e "7. View logs: \033[34msudo journalctl -u priority-fee-sharing.service -f\033[0m"
     echo ""
-    echo -e "2-7. All together:"
-    echo -e "\033[34msudo cp priority-fee-sharing.service /etc/systemd/system/ && \\"
+    echo -e "1-7. All together:"
+    echo -e "\033[34msudo mv priority-fee-sharing.service /etc/systemd/system/ && \\"
     echo -e "sudo systemctl daemon-reload && \\"
     echo -e "sudo systemctl enable priority-fee-sharing && \\"
     echo -e "sudo systemctl start priority-fee-sharing && \\"
