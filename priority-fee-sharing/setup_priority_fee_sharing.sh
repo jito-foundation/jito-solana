@@ -172,6 +172,7 @@ generate_service_file() {
     # Check for ALL required variables (assuming all are required now)
     local required_vars=(
         "USER"
+        "CLUSTER"
         "RPC_URL"
         "PRIORITY_FEE_PAYER_KEYPAIR_PATH"
         "VOTE_AUTHORITY_KEYPAIR_PATH"
@@ -184,6 +185,7 @@ generate_service_file() {
         "FEE_RECORDS_DB_BACKUP_PATH"
         "PRIORITY_FEE_LAMPORTS"
         "TRANSACTIONS_PER_EPOCH"
+        "SOLANA_METRICS_CONFIG"
         "RUST_LOG"
     )
 
@@ -201,6 +203,9 @@ generate_service_file() {
             case "$var" in
                 "USER")
                 echo -e "\033[31m  - $var: System user to run the service (e.g., 'root, solana') - to find current user run `whoami`\033[0m"
+                    ;;
+                "CLUSTER")
+                    echo -e "\033[31m  - $var: Cluster (testnet, devnet, mainnet)\033[0m"
                     ;;
                 "RPC_URL")
                     echo -e "\033[31m  - $var: RPC endpoint URL\033[0m"
@@ -238,6 +243,9 @@ generate_service_file() {
                 "TRANSACTIONS_PER_EPOCH")
                     echo -e "\033[31m  - $var: Number of transactions per epoch (e.g., '10')\033[0m"
                     ;;
+                "SOLANA_METRICS_CONFIG")
+                    echo -e "\033[31m  - $var: Solana metrics configuration\033[0m"
+                    ;;
                 "RUST_LOG")
                     echo -e "\033[31m  - $var: Log level (e.g., 'info, debug')\033[0m"
                     ;;
@@ -273,6 +281,8 @@ Type=simple
 User=$USER
 
 # --------------- REQUIRED --------------------
+# Cluster ( testnet, devnet, mainnet)
+Environment=CLUSTER=$CLUSTER
 # RPC URL - This RPC needs to be able to call \`get_block\`. If using a local RPC, ensure it is running with \`--enable-rpc-transaction-history\`
 Environment=RPC_URL=$RPC_URL
 # The account that the priority fees are paid out from - this is usually the validator's identity keypair
@@ -302,6 +312,10 @@ Environment=FEE_RECORDS_DB_BACKUP_PATH=$FEE_RECORDS_DB_BACKUP_PATH
 Environment=PRIORITY_FEE_LAMPORTS=$PRIORITY_FEE_LAMPORTS
 # How many TXs to send per epoch
 Environment=TRANSACTIONS_PER_EPOCH=$TRANSACTIONS_PER_EPOCH
+
+# --------------- METRICS --------------------
+# Solana metrics configuration
+Environment=SOLANA_METRICS_CONFIG=$SOLANA_METRICS_CONFIG
 
 # --------------- LOGGING -------------------------
 # Log level

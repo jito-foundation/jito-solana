@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 use priority_fee_sharing::fee_records::{FeeRecordState, FeeRecords};
 use priority_fee_sharing::{
-    print_out_priority_fee_distribution_information, share_priority_fees_loop,
+    print_out_priority_fee_distribution_information, share_priority_fees_loop, Cluster,
 };
 use solana_pubkey::Pubkey;
 use solana_sdk::native_token::sol_to_lamports;
@@ -20,6 +20,10 @@ struct Args {
 enum Commands {
     /// Run the fee sharing service
     Run {
+        /// Cluster to use
+        #[arg(long, env, default_value = "mainnet")]
+        cluster: Cluster,
+
         /// RPC URL to use
         #[arg(long, env)]
         rpc_url: String,
@@ -71,6 +75,9 @@ enum Commands {
         #[arg(long)]
         verify: bool,
     },
+
+    // SOLANA_METRICS_CONFIG="host=http://tip-router.metrics.jito.wtf:8086,db=tip-router,u=jito,p=tipRouterPW"
+
 
     /// Export records to CSV
     ExportCsv {
@@ -132,6 +139,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     match &args.command {
         Commands::Run {
+            cluster,
             rpc_url,
             fee_records_db_path,
             priority_fee_payer_keypair_path,
@@ -148,6 +156,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;
 
             info!("Running Transfer Loop");
+            info!("Cluster: {:?}", cluster.clone());
             info!("Fee Records DB Path: {:?}", fee_records_db_path);
             info!(
                 "Priority Fee Payer Keypair Path: {:?}",
@@ -169,6 +178,7 @@ async fn main() -> Result<(), anyhow::Error> {
             info!("Transactions per epoch: {}", transactions_per_epoch);
 
             share_priority_fees_loop(
+                cluster.clone(),
                 rpc_url.clone(),
                 fee_records_db_path.clone(),
                 priority_fee_payer_keypair_path.clone(),

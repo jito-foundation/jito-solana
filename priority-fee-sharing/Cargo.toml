@@ -22,7 +22,7 @@ solana-clock = { workspace = true }
 solana-compute-budget = { workspace = true }
 solana-epoch-rewards = { workspace = true }
 solana-hash = { workspace = true }
-solana-metrics = { workspace = true, optional = true }
+solana-metrics = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-sdk = { workspace = true }
 solana-rpc-client = { workspace = true }

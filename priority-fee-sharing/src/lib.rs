@@ -2,10 +2,12 @@ pub mod error;
 pub mod fee_records;
 
 use anyhow::{anyhow, Result};
+use clap::ValueEnum;
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
 use log::warn;
 use log::{error, info};
 use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_metrics::{datapoint_error, datapoint_info};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
@@ -21,6 +23,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::vote::state::VoteState;
+use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -29,6 +32,25 @@ use tokio::time::sleep;
 // 1s/block, 4 leader blocks in a row
 const LEADER_SLOT_MS: u64 = 1000 * 4;
 const MAX_BPS: u64 = 10_000;
+
+// ------------------------- HELPER ENUMS -----------------------------
+#[derive(ValueEnum, Debug, Clone)]
+pub enum Cluster {
+    Mainnet,
+    Testnet,
+    Localnet,
+}
+
+impl fmt::Display for Cluster {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mainnet => write!(f, "mainnet"),
+            Self::Testnet => write!(f, "testnet"),
+            Self::Localnet => write!(f, "localnet"),
+        }
+    }
+}
+
 
 // ------------------------- HELPER STRUCTS -----------------------------
 #[derive(Debug, Clone)]
@@ -753,6 +775,7 @@ fn should_handle_pending_blocks(
 }
 
 async fn handle_pending_blocks(
+    cluster: Cluster,
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
     payer_keypair: &Keypair,
@@ -886,6 +909,15 @@ async fn handle_pending_blocks(
                 lamports_to_sol(amount_to_transfer)
             );
 
+            emit_transfer(
+                cluster.clone(),
+                validator_vote_account,
+                running_epoch_info,
+                &sig.to_string(),
+                records_to_transfer.len() as u64,
+                amount_to_transfer
+            );
+
             for record in records_to_transfer {
                 let result = fee_records.complete_record(
                     record.slot,
@@ -906,9 +938,61 @@ async fn handle_pending_blocks(
 
     Ok(transfer_count.saturating_add(1))
 }
+// ------------------------- METRICS -----------------------------------
+pub fn emit_heartbeat(
+    cluster: Cluster,
+    validator_vote_account: &Pubkey,
+    running_epoch_info: &PFEpochInfo,
+){
+
+    datapoint_info!(
+        "pfs-heartbeat",
+        ("vote-account", validator_vote_account.to_string(), String),
+        ("epoch", running_epoch_info.slot, i64),
+        ("slot", running_epoch_info.epoch, i64),
+        "cluster" => cluster.to_string(),
+    );
+}
+
+pub fn emit_transfer(
+    cluster: Cluster,
+    validator_vote_account: &Pubkey,
+    running_epoch_info: &PFEpochInfo,
+    signature: &String,
+    slots_covered: u64,
+    transfer_amount_lamports: u64,
+){
+    datapoint_info!(
+        "pfs-transfer",
+        ("vote-account", validator_vote_account.to_string(), String),
+        ("epoch", running_epoch_info.slot, i64),
+        ("slot", running_epoch_info.epoch, i64),
+        ("signature", signature.to_string(), String),
+        ("slots-covered", slots_covered, i64),
+        ("transfer-amount-lamports", transfer_amount_lamports, i64),
+        "cluster" => cluster.to_string(),
+    );
+}
+
+pub fn emit_error(
+    cluster: Cluster,
+    validator_vote_account: &Pubkey,
+    running_epoch_info: &PFEpochInfo,
+    error_string: String,
+){
+    datapoint_error!(
+        "pfs-error",
+        ("vote-account", validator_vote_account.to_string(), String),
+        ("epoch", running_epoch_info.slot, i64),
+        ("slot", running_epoch_info.epoch, i64),
+        ("error", error_string, String),
+        "cluster" => cluster.to_string(),
+    );
+}
 
 // ------------------------- MAIN FUNCTIONS -----------------------------
 pub async fn share_priority_fees_loop(
+    cluster: Cluster,
     rpc_url: String,
     fee_records_db_path: PathBuf,
     priority_fee_payer_keypair_path: PathBuf,
@@ -974,7 +1058,15 @@ pub async fn share_priority_fees_loop(
                     transfer_count = 0;
                 }
             }
-            Err(err) => error!("Error handling epoch and leader slots: {}", err),
+            Err(err) => {
+                error!("Error handling epoch and leader slots: {}", err);
+                emit_error(
+                    cluster.clone(),
+                    &validator_vote_account,
+                    &running_epoch_info,
+                    err.to_string()
+                );
+            },
         }
 
         // 2. Handle unprocessed blocks
@@ -983,11 +1075,18 @@ pub async fn share_priority_fees_loop(
             handle_unprocessed_blocks(&rpc_client, &fee_records, &running_epoch_info).await;
         if let Err(err) = result {
             error!("Error handling unprocessed records: {}", err);
+            emit_error(
+                cluster.clone(),
+                &validator_vote_account,
+                &running_epoch_info,
+                err.to_string()
+            );
         }
 
         // 3. Handle pending blocks
         info!(" -------- 3. HANDLE PENDING BLOCKS -----------");
         let result = handle_pending_blocks(
+            cluster.clone(),
             &rpc_client,
             &fee_records,
             &payer_keypair,
@@ -1005,10 +1104,19 @@ pub async fn share_priority_fees_loop(
         .await;
         match result {
             Ok(transfers) => transfer_count = transfers,
-            Err(err) => error!("Error handling pending blocks: {}", err),
+            Err(err) => {
+                error!("Error handling pending blocks: {}", err);
+                emit_error(
+                    cluster.clone(),
+                    &validator_vote_account,
+                    &running_epoch_info,
+                    err.to_string()
+                );
+            },
         }
 
         sleep_ms(LEADER_SLOT_MS * 10).await;
+        emit_heartbeat(cluster.clone(), &validator_vote_account, &running_epoch_info);
     }
 }
 
