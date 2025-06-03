@@ -87,24 +87,39 @@ Run the installation script:
 
 After the script completes, follow the displayed next steps to set up the systemd service:
 
+    echo -e "Next steps:"
+    echo -e "1. Move the generated service file to systemd directory: \033[34msudo mv priority-fee-sharing.service /etc/systemd/system/\033[0m"
+    echo -e "2. Reload systemd: \033[34msudo systemctl daemon-reload\033[0m"
+    echo -e "3. Enable service: \033[34msudo systemctl enable priority-fee-sharing\033[0m"
+    echo -e "4. Review the generated service file:  \033[34msystemctl cat priority-fee-sharing.service\033[0m"
+    echo -e "5. Start service: \033[34msudo systemctl start priority-fee-sharing\033[0m"
+    echo -e "6. Check status: \033[34msudo systemctl status priority-fee-sharing\033[0m"
+    echo -e "7. View logs: \033[34msudo journalctl -u priority-fee-sharing.service -f\033[0m"
+
 ```bash
-# 1. Review the generated service file
-cat priority-fee-sharing.service
+# 0. Verify the .env file
+priority-fee-sharing run --verify
 
-# 2. Copy to systemd directory
-sudo cp priority-fee-sharing.service /etc/systemd/system/
+# 1. Move the generated service file to systemd directory
+sudo mv priority-fee-sharing.service
 
-# 3. Reload systemd
+# 2. Reload systemd
 sudo systemctl daemon-reload
 
-# 4. Enable service
+# 3. Enable service
 sudo systemctl enable priority-fee-sharing
+
+# 4. Review the generated service file
+systemctl cat priority-fee-sharing.service
 
 # 5. Start service
 sudo systemctl start priority-fee-sharing
 
 # 6. Check status
 sudo systemctl status priority-fee-sharing
+
+# 7. View logs
+sudo journalctl -u priority-fee-sharing.service -f
 ```
 
 ## Managing the Service
@@ -113,19 +128,19 @@ You can manage the service using the following commands:
 
 ```bash
 # Start the service
-sudo systemctl start priority-fee-share.service
+sudo systemctl start priority-fee-sharing.service
 
 # Stop the service
-sudo systemctl stop priority-fee-share.service
+sudo systemctl stop priority-fee-sharing.service
 
 # Restart the service
-sudo systemctl restart priority-fee-share.service
+sudo systemctl restart priority-fee-sharing.service
 
 # Check service status
-sudo systemctl status priority-fee-share.service
+sudo systemctl status priority-fee-sharing.service
 
 # View service logs
-sudo journalctl -u priority-fee-share.service -f
+sudo journalctl -u priority-fee-sharing.service -f
 ```
 
 ## Troubleshooting
@@ -135,93 +150,12 @@ If you encounter issues with the Priority Fee Sharing service:
 1. Check the service status and logs
 
    ```bash
-   sudo systemctl status priority-fee-share.service
-   sudo journalctl -u priority-fee-share.service -n 50
+   sudo systemctl status priority-fee-sharing.service
+   sudo journalctl -u priority-fee-sharing.service -n 50
    ```
 
-2. Verify that the priority fee account has sufficient funds
+2. Run the verify script to ensure the `.env` file is setup correctly + Check all fields
 
    ```bash
-   solana balance --keypair /path/to/priority-fee-keypair.json
+   priority-fee-sharing run --verify
    ```
-
-3. Ensure your validator vote account address is correct
-
-   ```bash
-   solana account YOUR_VALIDATOR_ADDRESS
-   ```
-
-4. Check that your RPC endpoint is accessible
-
-   ```bash
-   curl -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' YOUR_RPC_URL
-   ```
-
-5. If using a local RPC, verify it was started with transaction history enabled
-
-   ```bash
-   grep enable-rpc-transaction-history /etc/systemd/system/solana-validator.service
-   ```
-
-6. Make sure all required keypaths are valid and accessible
-   ```bash
-   ls -la /path/to/priority-fee-keypair.json
-   ls -la /path/to/vote-authority-keypair.json
-   ```
-
-# CLI
-
-## Install
-
-To install the CLI, run the following command:
-
-```bash
-git clone --recursive https://github.com/jito-foundation/jito-solana.git
-cd jito-solana/priority-fee-sharing
-git checkout ck/distro-script
-cargo install --path .
-```
-
-## Usage
-
-To use the CLI, run the following command:
-
-```bash
-priority-fee-sharing --help
-```
-
-### Run Service
-
-```bash
-priority-fee-sharing run \
-  --rpc-url http://localhost:8899 \
-  --fee-records-db-path /var/lib/solana/fee_records \
-  --priority-fee-payer-keypair-path PATH_TO_PRIORITY_FEE_KEYPAIR.json \
-  --vote-authority-keypair-path PATH_TO_VOTE_AUTHORITY_KEYPAIR.json \
-  --validator-vote-account YOUR_VALIDATOR_VOTE_ACCOUNT \
-  --merkle-root-upload-authority MERKLE_ROOT_UPLOAD_AUTHORITY \
-  --minimum-balance-sol 100.0
-```
-
-### Export CSV
-
-Export fee records to a CSV file:
-
-```bash
-priority-fee-sharing export-csv \
-  --fee-records-db-path /var/lib/solana/fee_records \
-  --output-path ./output.csv \
-  --state any
-```
-
-The state parameter can be one of: `unprocessed`, `processed`, `pending`, `skipped`, `antedup`, `complete`, `any`
-
-### Notes
-
-## Block Errors
-
-- `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
-- `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC
-- `Could not get block, RPC response error -32015: Transaction version (0) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 0;` - Not sure yet
-- `Could not get block, RPC response error -32007: Slot 336638156 was skipped, or missing due to ledger jump to recent snapshot;` - Not sure yet
-- `Could not get block, invalid type: null, expected struct UiConfirmedBlock` - Not sure yet
