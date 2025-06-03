@@ -9,9 +9,20 @@ This service enables validators to distribute priority fees to their delegators 
 1. Clone the repository:
 
 ```bash
-git clone --recursive https://github.com/jito-foundation/jito-solana.git priority-fee-sharing
-cd priority-fee-sharing/priority-fee-sharing
+git clone --recursive https://github.com/jito-foundation/jito-solana.git jito-priority-fee-sharing
+```
+
+2. Checkout the priority fee branch:
+
+```bash
+cd jito-priority-fee-sharing
 git checkout ck/distro-script
+```
+
+3. Navigate to the priority fee directory:
+
+```bash
+cd priority-fee-sharing
 ```
 
 **NOTE:**
@@ -43,6 +54,7 @@ vim .env
 | Variable                            | Description                                     |
 | ----------------------------------- | ----------------------------------------------- |
 | `USER`                              | System user to run the service (e.g., 'solana') |
+| `CLUSTER`                              | Cluster mainet, devnet, testnet                      |
 | `RPC_URL`                           | RPC endpoint URL that supports `get_block`      |
 | `PRIORITY_FEE_PAYER_KEYPAIR_PATH`   | Path to validator identity keypair              |
 | `VOTE_AUTHORITY_KEYPAIR_PATH`       | Path to vote authority keypair                  |
@@ -63,7 +75,7 @@ The installation script will:
 2. Build and install the Priority Fee Sharing CLI
 3. Generate a systemd `priority-fee-sharing.service` service file from your `.env` configuration
 4. Create the fee records database path
-5. Provide clear next steps for service setup
+5. Run verification and provide next steps
 
 Run the installation script:
 

@@ -185,7 +185,6 @@ generate_service_file() {
         "FEE_RECORDS_DB_BACKUP_PATH"
         "PRIORITY_FEE_LAMPORTS"
         "TRANSACTIONS_PER_EPOCH"
-        "SOLANA_METRICS_CONFIG"
         "RUST_LOG"
     )
 
@@ -242,9 +241,6 @@ generate_service_file() {
                     ;;
                 "TRANSACTIONS_PER_EPOCH")
                     echo -e "\033[31m  - $var: Number of transactions per epoch (e.g., '10')\033[0m"
-                    ;;
-                "SOLANA_METRICS_CONFIG")
-                    echo -e "\033[31m  - $var: Solana metrics configuration\033[0m"
                     ;;
                 "RUST_LOG")
                     echo -e "\033[31m  - $var: Log level (e.g., 'info, debug')\033[0m"
