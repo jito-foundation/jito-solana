@@ -51,21 +51,22 @@ vim .env
 
 **NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
 
-| Variable                            | Description                                     |
+| Variable                            | Required | Description                                     |
 | ----------------------------------- | ----------------------------------------------- |
-| `USER`                              | System user to run the service (e.g., 'solana') |
-| `CLUSTER`                              | Cluster mainet, devnet, testnet                      |
-| `RPC_URL`                           | RPC endpoint URL that supports `get_block`      |
-| `PRIORITY_FEE_PAYER_KEYPAIR_PATH`   | Path to validator identity keypair              |
-| `VOTE_AUTHORITY_KEYPAIR_PATH`       | Path to vote authority keypair                  |
-| `VALIDATOR_VOTE_ACCOUNT`            | Your validator's vote account public key        |
-| `MINIMUM_BALANCE_SOL`               | Minimum SOL balance to maintain                 |
-| `COMMISSION_BPS`                    | Commission in basis points (5000 = 50%)         |
-| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Fee distribution program address                |
-| `MERKLE_ROOT_UPLOAD_AUTHORITY`      | Merkle root upload authority address            |
-| `FEE_RECORDS_DB_PATH`               | Path for fee records database                   |
-| `PRIORITY_FEE_LAMPORTS`             | Priority fee for transactions (in lamports)     |
-| `TRANSACTIONS_PER_EPOCH`            | Number of transactions per epoch                |
+| `USER`                              | Required | System user to run the service (e.g., 'solana') |
+| `CLUSTER`                           | Required | Cluster mainet, devnet, testnet                 |
+| `RPC_URL`                           | Required | RPC endpoint URL that supports `get_block`      |
+| `PRIORITY_FEE_PAYER_KEYPAIR_PATH`   | Required | Path to validator identity keypair              |
+| `VOTE_AUTHORITY_KEYPAIR_PATH`       | Required | Path to vote authority keypair                  |
+| `VALIDATOR_VOTE_ACCOUNT`            | Required | Your validator's vote account public key        |
+| `MINIMUM_BALANCE_SOL`               | Required | Minimum SOL balance to maintain                 |
+| `COMMISSION_BPS`                    | Default  | Commission in basis points (5000 = 50%)         |
+| `PRIORITY_FEE_DISTRIBUTION_PROGRAM` | Default  | Fee distribution program address                |
+| `MERKLE_ROOT_UPLOAD_AUTHORITY`      | Default  | Merkle root upload authority address            |
+| `FEE_RECORDS_DB_PATH`               | Default  | Path for fee records database                   |
+| `PRIORITY_FEE_LAMPORTS`             | Default  | Priority fee for transactions (in lamports)     |
+| `TRANSACTIONS_PER_EPOCH`            | Default  | Number of transactions per epoch                |
+| `SOLANA_METRICS_CONFIG`             | Optional | Solana metrics configuration credentials        |
 
 ### 2. Run Installation Script
 
