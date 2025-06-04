@@ -311,7 +311,7 @@ Environment=TRANSACTIONS_PER_EPOCH=$TRANSACTIONS_PER_EPOCH
 
 # --------------- METRICS --------------------
 # Solana metrics configuration
-Environment=SOLANA_METRICS_CONFIG=$SOLANA_METRICS_CONFIG
+Environment=SOLANA_METRICS_CONFIG="$SOLANA_METRICS_CONFIG"
 
 # --------------- LOGGING -------------------------
 # Log level
