@@ -785,6 +785,7 @@ async fn handle_pending_blocks(
     payer_keypair: &Keypair,
     vote_authority_keypair: &Keypair,
     validator_vote_account: &Pubkey,
+    validator_identity: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     merkle_root_upload_authority: &Pubkey,
     commission_bps: u64,
@@ -916,6 +917,7 @@ async fn handle_pending_blocks(
             emit_transfer(
                 cluster.clone(),
                 validator_vote_account,
+                validator_identity,
                 running_epoch_info,
                 &sig.to_string(),
                 records_to_transfer.len() as u64,
@@ -946,12 +948,14 @@ async fn handle_pending_blocks(
 pub fn emit_heartbeat(
     cluster: Cluster,
     validator_vote_account: &Pubkey,
+    validator_identity: &Pubkey,
     running_epoch_info: &PFEpochInfo,
 ){
 
     datapoint_info!(
         "pfs-heartbeat",
         ("vote-account", validator_vote_account.to_string(), String),
+        ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         "cluster" => cluster.to_string(),
@@ -961,6 +965,7 @@ pub fn emit_heartbeat(
 pub fn emit_transfer(
     cluster: Cluster,
     validator_vote_account: &Pubkey,
+    validator_identity: &Pubkey,
     running_epoch_info: &PFEpochInfo,
     signature: &String,
     slots_covered: u64,
@@ -969,6 +974,7 @@ pub fn emit_transfer(
     datapoint_info!(
         "pfs-transfer",
         ("vote-account", validator_vote_account.to_string(), String),
+        ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         ("signature", signature.to_string(), String),
@@ -981,12 +987,14 @@ pub fn emit_transfer(
 pub fn emit_error(
     cluster: Cluster,
     validator_vote_account: &Pubkey,
+    validator_identity: &Pubkey,
     running_epoch_info: &PFEpochInfo,
     error_string: String,
 ){
     datapoint_error!(
         "pfs-error",
         ("vote-account", validator_vote_account.to_string(), String),
+        ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         ("error", error_string, String),
@@ -1067,6 +1075,7 @@ pub async fn share_priority_fees_loop(
                 emit_error(
                     cluster.clone(),
                     &validator_vote_account,
+                    &validator_identity,
                     &running_epoch_info,
                     err.to_string()
                 );
@@ -1082,6 +1091,7 @@ pub async fn share_priority_fees_loop(
             emit_error(
                 cluster.clone(),
                 &validator_vote_account,
+                &validator_identity,
                 &running_epoch_info,
                 err.to_string()
             );
@@ -1096,6 +1106,7 @@ pub async fn share_priority_fees_loop(
             &payer_keypair,
             &vote_authority_keypair,
             &validator_vote_account,
+            &validator_identity,
             &priority_fee_distribution_program,
             &merkle_root_upload_authority,
             commission_bps,
@@ -1113,6 +1124,7 @@ pub async fn share_priority_fees_loop(
                 emit_error(
                     cluster.clone(),
                     &validator_vote_account,
+                    &validator_identity,
                     &running_epoch_info,
                     err.to_string()
                 );
@@ -1120,7 +1132,7 @@ pub async fn share_priority_fees_loop(
         }
 
         sleep_ms(LEADER_SLOT_MS * 10).await;
-        emit_heartbeat(cluster.clone(), &validator_vote_account, &running_epoch_info);
+        emit_heartbeat(cluster.clone(), &validator_vote_account, &validator_identity, &running_epoch_info);
     }
 }
 
