@@ -6,7 +6,7 @@ use clap::ValueEnum;
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
 use log::warn;
 use log::{error, info};
-use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_client::rpc_config::{RpcLeaderScheduleConfig, RpcSendTransactionConfig};
 use solana_metrics::{datapoint_error, datapoint_info};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -652,9 +652,12 @@ async fn handle_epoch_and_leader_slot(
     }
 
     let leader_schedule = rpc_client
-        .get_leader_schedule_with_commitment(
+        .get_leader_schedule_with_config(
             Some(epoch_info.absolute_slot),
-            CommitmentConfig::finalized(),
+            RpcLeaderScheduleConfig {
+                identity: Some(validator_identity.to_string()),
+                commitment: Some(CommitmentConfig::finalized()),
+            }
         )
         .await?
         .ok_or(anyhow!(
