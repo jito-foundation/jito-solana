@@ -412,9 +412,9 @@ impl FeeRecords {
         }
     }
 
-    pub fn does_record_exsist(&self, slot: u64, epoch: u64) -> bool {
+    pub fn does_record_exist(&self, slot: u64, epoch: u64) -> bool {
         let key = FeeRecordKey::record(slot, epoch);
-        self.db.key_may_exist(key)
+        self.db.get(&key).unwrap_or(None).is_some()
     }
 
     /// Gets a specific fee record for the given slot
