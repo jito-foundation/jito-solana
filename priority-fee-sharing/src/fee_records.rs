@@ -186,7 +186,7 @@ impl FeeRecords {
         identity: &Pubkey,
     ) -> Result<()> {
         // Check if record already exists
-        if self.does_record_exsist(slot, epoch) {
+        if self.does_record_exist(slot, epoch) {
             return Ok(());
         }
 
@@ -222,7 +222,7 @@ impl FeeRecords {
         identity: &Pubkey,
     ) -> Result<()> {
         // Check if record already exists
-        if self.does_record_exsist(slot, epoch) {
+        if self.does_record_exist(slot, epoch) {
             return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
         }
 
@@ -279,7 +279,7 @@ impl FeeRecords {
         identity: &Pubkey,
     ) -> Result<()> {
         // Check if record already exists
-        if self.does_record_exsist(slot, epoch) {
+        if self.does_record_exist(slot, epoch) {
             return Err(anyhow::anyhow!("Record for slot {} already exists", slot));
         }
 

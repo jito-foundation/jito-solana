@@ -332,7 +332,7 @@ async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords
             .get_epoch_info_with_commitment(CommitmentConfig::finalized())
             .await?;
         info!("Delaying past leader slot: {}", epoch_info.absolute_slot);
-        if fee_records.does_record_exsist(epoch_info.absolute_slot, epoch_info.epoch) {
+        if fee_records.does_record_exist(epoch_info.absolute_slot, epoch_info.epoch) {
             sleep_ms(LEADER_SLOT_MS).await;
             continue;
         }
