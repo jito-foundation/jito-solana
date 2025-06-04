@@ -765,7 +765,7 @@ fn should_handle_pending_blocks(
     let percentage_per_transaction = 100.0 / transactions_per_epoch as f64;
 
     info!(
-        "Should Transfer: {} > {} ({})",
+        "Should Transfer: {:.1}% > {:.1}% ({})",
         percentage_of_epoch,
         transfer_count as f64 * percentage_per_transaction,
         percentage_of_epoch > transfer_count as f64 * percentage_per_transaction
@@ -1131,8 +1131,8 @@ pub async fn share_priority_fees_loop(
             },
         }
 
-        sleep_ms(LEADER_SLOT_MS * 10).await;
         emit_heartbeat(cluster.clone(), &validator_vote_account, &validator_identity, &running_epoch_info);
+        sleep_ms(LEADER_SLOT_MS * 10).await;
     }
 }
 
