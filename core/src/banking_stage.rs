@@ -684,7 +684,7 @@ mod tests {
         agave_banking_stage_ingress_types::BankingPacketBatch,
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
-        solana_entry::entry::{self, EntrySlice},
+        solana_entry::entry::{self, Entry, EntrySlice},
         solana_gossip::cluster_info::Node,
         solana_ledger::{
             blockstore::Blockstore,
@@ -696,7 +696,7 @@ mod tests {
         },
         solana_perf::packet::to_packet_batches,
         solana_poh::{
-            poh_recorder::{create_test_recorder, PohRecorderError, Record, WorkingBankEntry},
+            poh_recorder::{create_test_recorder, PohRecorderError, Record},
             poh_service::PohService,
             transaction_recorder::RecordTransactionsSummary,
         },
@@ -853,12 +853,7 @@ mod tests {
         trace!("getting entries");
         let entries: Vec<_> = entry_receiver
             .iter()
-            .flat_map(
-                |WorkingBankEntry {
-                     bank: _,
-                     entries_ticks,
-                 }| entries_ticks.into_iter().map(|(e, _)| e),
-            )
+            .map(|(_bank, (entry, _tick_height))| entry)
             .collect();
         trace!("done");
         assert_eq!(entries.len(), genesis_config.ticks_per_slot as usize);
@@ -962,14 +957,9 @@ mod tests {
         bank.process_transaction(&fund_tx).unwrap();
         //receive entries + ticks
         loop {
-            let entries: Vec<_> = entry_receiver
+            let entries: Vec<Entry> = entry_receiver
                 .iter()
-                .flat_map(
-                    |WorkingBankEntry {
-                         bank: _,
-                         entries_ticks,
-                     }| entries_ticks.into_iter().map(|(e, _)| e),
-                )
+                .map(|(_bank, (entry, _tick_height))| entry)
                 .collect();
 
             assert!(entries.verify(&blockhash, &entry::thread_pool_for_tests()));
@@ -1098,12 +1088,7 @@ mod tests {
         // check that the balance is what we expect.
         let entries: Vec<_> = entry_receiver
             .iter()
-            .flat_map(
-                |WorkingBankEntry {
-                     bank: _,
-                     entries_ticks,
-                 }| entries_ticks.into_iter().map(|e| e.0),
-            )
+            .map(|(_bank, (entry, _tick_height))| entry)
             .collect();
 
         let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
@@ -1164,12 +1149,7 @@ mod tests {
         ];
 
         let _ = recorder.record_transactions(bank.slot(), vec![txs.clone()]);
-        let WorkingBankEntry {
-            bank,
-            entries_ticks,
-        } = entry_receiver.recv().unwrap();
-        assert_eq!(entries_ticks.len(), 1);
-        let entry = &entries_ticks[0].0;
+        let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
         assert_eq!(entry.transactions, txs);
 
         // Once bank is set to a new bank (setting bank.slot() + 1 in record_transactions),
@@ -1439,8 +1419,8 @@ mod tests {
                         .unwrap();
 
                     // wait for 512 ticks or 8 leader slots to pass before checking state
-                    while let Ok(msg) = entry_receiver.recv() {
-                        if msg.entries_ticks.iter().any(|(_e, tick)| *tick == 511) {
+                    while let Ok((_bank, (_entry, tick))) = entry_receiver.recv() {
+                        if tick == 511 {
                             break;
                         }
                     }

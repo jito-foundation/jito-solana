@@ -1083,19 +1083,9 @@ mod tests {
         );
 
         let mut transactions = Vec::new();
-        while let Ok(WorkingBankEntry {
-            bank: wbe_bank,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
+        while let Ok((wbe_bank, (entry, _ticks))) = entry_receiver.recv() {
             assert_eq!(bank.slot(), wbe_bank.slot());
-            for (entry, _) in entries_ticks {
-                if !entry.transactions.is_empty() {
-                    // transactions in this test are all overlapping, so each entry will contain 1 transaction
-                    assert_eq!(entry.transactions.len(), 1);
-                    transactions.extend(entry.transactions);
-                }
-            }
+            transactions.extend(entry.transactions);
             if transactions.len() == sanitized_bundle.transactions.len() {
                 break;
             }
@@ -1227,13 +1217,9 @@ mod tests {
         // and another with the tip
 
         let mut transactions = Vec::new();
-        while let Ok(WorkingBankEntry {
-            bank: wbe_bank,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
+        while let Ok((wbe_bank, (entry, _ticks))) = entry_receiver.recv() {
             assert_eq!(bank.slot(), wbe_bank.slot());
-            transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
+            transactions.extend(entry.transactions);
             if transactions.len() == 5 {
                 break;
             }
@@ -1355,13 +1341,9 @@ mod tests {
         );
 
         let mut transactions = Vec::new();
-        while let Ok(WorkingBankEntry {
-            bank: wbe_bank,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
+        while let Ok((wbe_bank, (entry, _ticks))) = entry_receiver.recv() {
             assert_eq!(bank.slot(), wbe_bank.slot());
-            transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
+            transactions.extend(entry.transactions);
             if transactions.len() == 4 {
                 break;
             }

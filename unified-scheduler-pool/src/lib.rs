@@ -4107,11 +4107,10 @@ mod tests {
                         TransactionStatusBatch { .. }
                     ))
                 );
-                assert_eq!(
-                    signal_receiver.try_recv().unwrap().entries_ticks[0]
-                        .0
-                        .transactions,
-                    vec![tx.to_versioned_transaction()]
+                assert_matches!(
+                    signal_receiver.try_recv(),
+                    Ok((_, (solana_entry::entry::Entry {transactions, ..} , _)))
+                        if transactions == vec![tx.to_versioned_transaction()]
                 );
             } else {
                 assert_eq!(result, &expected_tx_result);

@@ -373,7 +373,6 @@ impl PohService {
 mod tests {
     use {
         super::*,
-        crate::poh_recorder::WorkingBankEntry,
         crossbeam_channel::unbounded,
         rand::{thread_rng, Rng},
         solana_clock::DEFAULT_HASHES_PER_TICK,
@@ -501,12 +500,7 @@ mod tests {
 
         let time = Instant::now();
         while run_time != 0 || need_tick || need_entry || need_partial {
-            let WorkingBankEntry {
-                bank: _,
-                mut entries_ticks,
-            } = entry_receiver.recv().unwrap();
-            assert_eq!(entries_ticks.len(), 1);
-            let entry = entries_ticks.pop().unwrap().0;
+            let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
 
             if entry.is_tick() {
                 num_ticks += 1;

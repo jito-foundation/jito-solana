@@ -53,12 +53,7 @@ pub enum PohRecorderError {
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
 
-#[derive(Clone, Debug)]
-pub struct WorkingBankEntry {
-    pub bank: Arc<Bank>,
-    // normal entries have len == 1, bundles have len > 1
-    pub entries_ticks: Vec<(Entry, u64)>,
-}
+pub type WorkingBankEntry = (Arc<Bank>, (Entry, u64));
 
 #[derive(Debug, Clone)]
 pub struct BankStart {
@@ -339,29 +334,20 @@ impl PohRecorder {
             if let Some(entries) = maybe_entries {
                 assert_eq!(entries.len(), transactions.len());
                 let num_transactions = transactions.iter().map(|txs| txs.len()).sum();
-                let (send_entry_res, send_entry_time_us) = measure_us!({
-                    let entries_tick_heights: Vec<(Entry, u64)> = entries
-                        .into_iter()
-                        .zip(transactions.into_iter())
-                        .map(|(poh_entry, transactions)| {
-                            (
-                                Entry {
-                                    num_hashes: poh_entry.num_hashes,
-                                    hash: poh_entry.hash,
-                                    transactions,
-                                },
-                                self.tick_height,
-                            )
-                        })
-                        .collect();
-                    let bank_clone = working_bank.bank.clone();
-                    self.working_bank_sender.send(WorkingBankEntry {
-                        bank: bank_clone,
-                        entries_ticks: entries_tick_heights,
-                    })
-                });
-                self.metrics.send_entry_us += send_entry_time_us;
-                send_entry_res?;
+
+                for (poh_entry, transactions) in entries.into_iter().zip(transactions.into_iter()) {
+                    let (send_entry_res, send_entry_us) = measure_us!({
+                        let entry = Entry {
+                            num_hashes: poh_entry.num_hashes,
+                            hash: poh_entry.hash,
+                            transactions,
+                        };
+                        self.working_bank_sender
+                            .send((working_bank.bank.clone(), (entry, self.tick_height)))
+                    });
+                    self.metrics.send_entry_us += send_entry_us;
+                    send_entry_res?;
+                }
                 let starting_transaction_index =
                     working_bank.transaction_index.inspect(|transaction_index| {
                         let next_starting_transaction_index =
@@ -555,10 +541,9 @@ impl PohRecorder {
 
             for tick in &self.tick_cache[..entry_count] {
                 working_bank.bank.register_tick(&tick.0.hash);
-                send_result = self.working_bank_sender.send(WorkingBankEntry {
-                    bank: working_bank.bank.clone(),
-                    entries_ticks: vec![tick.clone()],
-                });
+                send_result = self
+                    .working_bank_sender
+                    .send((working_bank.bank.clone(), tick.clone()));
                 if send_result.is_err() {
                     break;
                 }
@@ -1141,11 +1126,7 @@ mod tests {
         assert_eq!(poh_recorder.tick_height, tick_height_before + 1);
         assert_eq!(poh_recorder.tick_cache.len(), 0);
         let mut num_entries = 0;
-        while let Ok(WorkingBankEntry {
-            bank: wbank,
-            entries_ticks: _,
-        }) = entry_receiver.try_recv()
-        {
+        while let Ok((wbank, (_entry, _tick_height))) = entry_receiver.try_recv() {
             assert_eq!(wbank.slot(), bank1.slot());
             num_entries += 1;
         }
@@ -1320,20 +1301,12 @@ mod tests {
 
         //tick in the cache + entry
         for _ in 0..min_tick_height {
-            let WorkingBankEntry {
-                bank: _,
-                entries_ticks,
-            } = entry_receiver.recv().unwrap();
-            assert_eq!(entries_ticks.len(), 1);
-            assert!(entries_ticks[0].0.is_tick());
+            let (_bank, (e, _tick_height)) = entry_receiver.recv().unwrap();
+            assert!(e.is_tick());
         }
 
-        let WorkingBankEntry {
-            bank: _,
-            entries_ticks,
-        } = entry_receiver.recv().unwrap();
-        assert_eq!(entries_ticks.len(), 1);
-        assert!(!entries_ticks[0].0.is_tick());
+        let (_bank, (e, _tick_height)) = entry_receiver.recv().unwrap();
+        assert!(!e.is_tick());
     }
 
     #[test]
@@ -1367,12 +1340,8 @@ mod tests {
             .record(bank.slot(), &[(h1, vec![tx.into()])])
             .is_err());
         for _ in 0..num_ticks_to_max {
-            let WorkingBankEntry {
-                bank: _,
-                entries_ticks,
-            } = entry_receiver.recv().unwrap();
-            assert_eq!(entries_ticks.len(), 1);
-            assert!(entries_ticks[0].0.is_tick());
+            let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
+            assert!(entry.is_tick());
         }
     }
 

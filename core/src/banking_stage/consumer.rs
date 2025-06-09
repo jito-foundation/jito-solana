@@ -508,7 +508,7 @@ mod tests {
             get_tmp_ledger_path_auto_delete,
             leader_schedule_cache::LeaderScheduleCache,
         },
-        solana_poh::poh_recorder::{PohRecorder, Record, WorkingBankEntry},
+        solana_poh::poh_recorder::{PohRecorder, Record},
         solana_rpc::transaction_status_service::TransactionStatusService,
         solana_runtime::prioritization_fee_cache::PrioritizationFeeCache,
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
@@ -732,18 +732,12 @@ mod tests {
 
         let mut done = false;
         // read entries until I find mine, might be ticks...
-        while let Ok(WorkingBankEntry {
-            bank: _,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
-            for (entry, _) in entries_ticks {
-                if !entry.is_tick() {
-                    trace!("got entry");
-                    assert_eq!(entry.transactions.len(), transactions.len());
-                    assert_eq!(bank.get_balance(&pubkey), 1);
-                    done = true;
-                }
+        while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
+            if !entry.is_tick() {
+                trace!("got entry");
+                assert_eq!(entry.transactions.len(), transactions.len());
+                assert_eq!(bank.get_balance(&pubkey), 1);
+                done = true;
             }
             if done {
                 break;
@@ -935,19 +929,10 @@ mod tests {
 
         let mut done = false;
         // read entries until I find mine, might be ticks...
-        while let Ok(WorkingBankEntry {
-            bank: _,
-            entries_ticks,
-        }) = entry_receiver.recv()
-        {
-            for (entry, _) in entries_ticks {
-                if !entry.is_tick() {
-                    assert_eq!(entry.transactions.len(), transactions.len());
-                    done = true;
-                    break;
-                }
-            }
-            if done {
+        while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
+            if !entry.is_tick() {
+                assert_eq!(entry.transactions.len(), transactions.len());
+                done = true;
                 break;
             }
         }
