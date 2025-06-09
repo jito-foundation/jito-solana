@@ -52,7 +52,7 @@ vim .env
 **NOTE:** If you are using your local RPC, you have to run your validator with `--enable-rpc-transaction-history` enabled.
 
 | Variable                            | Required | Description                                     |
-| ----------------------------------- | ----------------------------------------------- |
+| ----------------------------------- | -------- | ----------------------------------------------- |
 | `USER`                              | Required | System user to run the service (e.g., 'solana') |
 | `CLUSTER`                           | Required | Cluster mainet, devnet, testnet                 |
 | `RPC_URL`                           | Required | RPC endpoint URL that supports `get_block`      |
@@ -87,15 +87,6 @@ Run the installation script:
 ### After Installation
 
 After the script completes, follow the displayed next steps to set up the systemd service:
-
-    echo -e "Next steps:"
-    echo -e "1. Move the generated service file to systemd directory: \033[34msudo mv priority-fee-sharing.service /etc/systemd/system/\033[0m"
-    echo -e "2. Reload systemd: \033[34msudo systemctl daemon-reload\033[0m"
-    echo -e "3. Enable service: \033[34msudo systemctl enable priority-fee-sharing\033[0m"
-    echo -e "4. Review the generated service file:  \033[34msystemctl cat priority-fee-sharing.service\033[0m"
-    echo -e "5. Start service: \033[34msudo systemctl start priority-fee-sharing\033[0m"
-    echo -e "6. Check status: \033[34msudo systemctl status priority-fee-sharing\033[0m"
-    echo -e "7. View logs: \033[34msudo journalctl -u priority-fee-sharing.service -f\033[0m"
 
 ```bash
 # 0. Verify the .env file

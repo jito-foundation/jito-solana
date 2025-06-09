@@ -6,7 +6,7 @@ use clap::ValueEnum;
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
 use log::warn;
 use log::{error, info};
-use solana_client::rpc_config::{RpcLeaderScheduleConfig, RpcSendTransactionConfig};
+use solana_client::rpc_config::{RpcBlockConfig, RpcLeaderScheduleConfig, RpcSendTransactionConfig};
 use solana_metrics::{datapoint_error, datapoint_info};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -274,16 +274,23 @@ pub async fn verify_setup(
 }
 
 async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64) -> Result<(bool, u64)> {
-    match rpc_client.get_block(slot).await {
+    match rpc_client.get_block_with_config(slot, RpcBlockConfig {
+        max_supported_transaction_version: Some(0),
+        rewards: Some(true),
+        ..RpcBlockConfig::default()
+    }).await {
         Ok(block) => {
-            let priority_fee_lamports: i64 = block
-                .rewards
-                .iter()
-                .filter(|r| r.reward_type == Some(RewardType::Fee))
-                .map(|r| r.lamports)
-                .sum();
-
-            return Ok((false, priority_fee_lamports as u64));
+            if let Some(rewards) = block.rewards {
+                let priority_fee_lamports: i64 =
+                    rewards
+                    .iter()
+                    .filter(|r| r.reward_type == Some(RewardType::Fee))
+                    .map(|r| r.lamports)
+                    .sum();
+                return Ok((false, priority_fee_lamports as u64));
+            } else {
+                return Err(anyhow!("No rewards found"));
+            }
         }
         Err(e) => {
             // - `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
