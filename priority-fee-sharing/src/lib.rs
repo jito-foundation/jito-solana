@@ -248,7 +248,7 @@ pub async fn verify_setup(
 
     // -------------- PRIORITY FEE DISTRIBUTION CHECK --------------
     let default_priority_fee_distribution_program =
-        pubkey!("9yw8YAKz16nFmA9EvHzKyVCYErHAJ6ZKtmK6adDBvmuU");
+        pubkey!("Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3");
     if priority_fee_distribution_program.ne(&default_priority_fee_distribution_program) {
         warn!(
             "⚠️ Priority fee distribution program is not default {} != {}",
