@@ -469,7 +469,7 @@ solana-hash = "2.2.1"
 solana-inflation = "2.2.1"
 solana-inline-spl = { path = "inline-spl", version = "=2.3.0" }
 solana-instruction = "2.2.1"
-solana-instructions-sysvar = "2.2.1"
+solana-instructions-sysvar = "2.2.2"
 solana-keccak-hasher = "2.2.1"
 solana-keypair = "2.2.1"
 solana-last-restart-slot = "2.2.1"
