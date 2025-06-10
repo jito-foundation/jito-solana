@@ -6,6 +6,7 @@ use clap::ValueEnum;
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
 use log::warn;
 use log::{error, info};
+use solana_account::Account;
 use solana_client::rpc_config::{RpcBlockConfig, RpcLeaderScheduleConfig, RpcSendTransactionConfig};
 use solana_metrics::{datapoint_error, datapoint_info};
 use solana_pubkey::Pubkey;
@@ -476,23 +477,42 @@ async fn get_validator_identity(
     }
 }
 
-async fn check_priority_fee_distribution_account_exsists(
+async fn get_priority_fee_distribution_account(
     rpc_client: &RpcClient,
-    validator_vote_address: &Pubkey,
+    validator_vote_account: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch: u64,
-) -> bool {
+) -> (Option<Account>, Pubkey) {
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(
-        validator_vote_address,
+        validator_vote_account,
         priority_fee_distribution_program,
         running_epoch,
     );
 
-    let result = rpc_client
-        .get_account(&priority_fee_distribution_account)
-        .await;
+    let result = rpc_client.get_account(&priority_fee_distribution_account).await;
 
-    result.is_ok()
+    let account = match result {
+        Ok(account) => Some(account),
+        _ => None,
+    };
+
+    (account, priority_fee_distribution_account)
+}
+
+async fn check_priority_fee_distribution_account_exsists(
+    rpc_client: &RpcClient,
+    validator_vote_account: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    running_epoch: u64,
+) -> bool {
+    let (account, _) = get_priority_fee_distribution_account(
+        rpc_client,
+        validator_vote_account,
+        priority_fee_distribution_program,
+        running_epoch,
+    ).await;
+
+    account.is_some()
 }
 
 async fn check_or_create_fee_distribution_account(
@@ -642,6 +662,7 @@ fn create_share_ix(
 }
 
 // ------------------------- BLOCK FUNCTIONS -----------------------------
+
 async fn handle_epoch_and_leader_slot(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
@@ -828,6 +849,7 @@ async fn handle_pending_blocks(
 
     let mut records_to_transfer: Vec<FeeRecordEntry> = vec![];
     let mut amount_to_transfer: u64 = 0;
+    let mut total_priority_fees: u64 = 0;
     for record in records {
         // Sanity Check
         if record.vote_account.ne(&validator_vote_account.to_string()) {
@@ -864,6 +886,7 @@ async fn handle_pending_blocks(
             break;
         }
 
+        total_priority_fees = total_priority_fees.saturating_add(record.priority_fee_lamports);
         amount_to_transfer = amount_to_transfer.saturating_add(amount_to_share);
         records_to_transfer.push(record);
     }
@@ -914,21 +937,46 @@ async fn handle_pending_blocks(
         .unwrap_or(running_epoch_info.slot);
     match result {
         Ok(sig) => {
+
+
+            let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(
+                validator_vote_account,
+                priority_fee_distribution_program,
+                running_epoch_info.epoch,
+            );
+            let internal_balance = match get_priority_fee_distribution_account_internal_balance(
+                rpc_client,
+                validator_vote_account,
+                priority_fee_distribution_program,
+                running_epoch_info.epoch,
+            ).await {
+                Ok(balance) => balance,
+                Err(err) => {
+                    error!("Error getting internal balance: {:?}", err);
+                    0
+                }
+            };
+
             info!(
-                "Share Transaction sent: {} ({}: {})",
+                "Share Transaction sent: {} ({}: {} | {})",
                 sig,
                 slot_landed,
-                lamports_to_sol(amount_to_transfer)
+                lamports_to_sol(amount_to_transfer),
+                lamports_to_sol(amount_to_transfer + internal_balance)
             );
 
             emit_transfer(
                 cluster.clone(),
                 validator_vote_account,
                 validator_identity,
+                &priority_fee_distribution_account,
+                priority_fee_distribution_program,
                 running_epoch_info,
                 &sig.to_string(),
                 records_to_transfer.len() as u64,
-                amount_to_transfer
+                total_priority_fees,
+                amount_to_transfer,
+internal_balance,
             );
 
             for record in records_to_transfer {
@@ -960,11 +1008,11 @@ pub fn emit_heartbeat(
 ){
 
     datapoint_info!(
-        "pfs-heartbeat",
+        "pfs-heartbeat-0.0.1",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
-        ("epoch", running_epoch_info.slot, i64),
-        ("slot", running_epoch_info.epoch, i64),
+        ("epoch", running_epoch_info.epoch, i64),
+        ("slot", running_epoch_info.slot, i64),
         "cluster" => cluster.to_string(),
     );
 }
@@ -973,20 +1021,28 @@ pub fn emit_transfer(
     cluster: Cluster,
     validator_vote_account: &Pubkey,
     validator_identity: &Pubkey,
+    priority_fee_distribution_account: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
     signature: &String,
     slots_covered: u64,
+    total_priority_fees: u64,
     transfer_amount_lamports: u64,
+    priority_fee_distribution_account_balance: u64,
 ){
     datapoint_info!(
-        "pfs-transfer",
+        "pfs-transfer-0.0.1",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         ("signature", signature.to_string(), String),
         ("slots-covered", slots_covered, i64),
+        ("total-priority-fees", total_priority_fees, i64),
         ("transfer-amount-lamports", transfer_amount_lamports, i64),
+        ("priority-fee-distribution-account-balance", priority_fee_distribution_account_balance, i64),
+        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
+        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
         "cluster" => cluster.to_string(),
     );
 }
@@ -999,7 +1055,7 @@ pub fn emit_error(
     error_string: String,
 ){
     datapoint_error!(
-        "pfs-error",
+        "pfs-error-0.0.1",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.slot, i64),
@@ -1155,7 +1211,7 @@ pub async fn print_out_priority_fee_distribution_information(
     // Get the current epoch if not specified
     let running_epoch = match epoch {
         Some(e) => e,
-        None => {
+        _ => {
             let epoch_info = rpc_client
                 .get_epoch_info_with_commitment(CommitmentConfig::finalized())
                 .await?;
