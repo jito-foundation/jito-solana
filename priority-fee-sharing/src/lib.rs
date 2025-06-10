@@ -1008,7 +1008,7 @@ pub fn emit_heartbeat(
 ){
 
     datapoint_info!(
-        "pfs-heartbeat-0.0.1",
+        "pfs-heartbeat-0.0.2",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.epoch, i64),
@@ -1031,11 +1031,11 @@ pub fn emit_transfer(
     priority_fee_distribution_account_balance: u64,
 ){
     datapoint_info!(
-        "pfs-transfer-0.0.1",
+        "pfs-transfer-0.0.2",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
-        ("epoch", running_epoch_info.slot, i64),
-        ("slot", running_epoch_info.epoch, i64),
+        ("epoch", running_epoch_info.epoch, i64),
+        ("slot", running_epoch_info.slot, i64),
         ("signature", signature.to_string(), String),
         ("slots-covered", slots_covered, i64),
         ("total-priority-fees", total_priority_fees, i64),
@@ -1055,7 +1055,7 @@ pub fn emit_error(
     error_string: String,
 ){
     datapoint_error!(
-        "pfs-error-0.0.1",
+        "pfs-error-0.0.2",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.slot, i64),
