@@ -1004,13 +1004,18 @@ pub fn emit_heartbeat(
     cluster: Cluster,
     validator_vote_account: &Pubkey,
     validator_identity: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
 ){
 
+    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
+
     datapoint_info!(
-        "pfs-heartbeat-0.0.2",
+        "pfs-heartbeat-0.0.3",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
+        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
+        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         "cluster" => cluster.to_string(),
@@ -1031,7 +1036,7 @@ pub fn emit_transfer(
     priority_fee_distribution_account_balance: u64,
 ){
     datapoint_info!(
-        "pfs-transfer-0.0.2",
+        "pfs-transfer-0.0.3",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.epoch, i64),
@@ -1051,13 +1056,18 @@ pub fn emit_error(
     cluster: Cluster,
     validator_vote_account: &Pubkey,
     validator_identity: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
     error_string: String,
 ){
+    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
+
     datapoint_error!(
-        "pfs-error-0.0.2",
+        "pfs-error-0.0.3",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
+        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
+        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         ("error", error_string, String),
@@ -1139,6 +1149,7 @@ pub async fn share_priority_fees_loop(
                     cluster.clone(),
                     &validator_vote_account,
                     &validator_identity,
+                    &priority_fee_distribution_program,
                     &running_epoch_info,
                     err.to_string()
                 );
@@ -1155,6 +1166,7 @@ pub async fn share_priority_fees_loop(
                 cluster.clone(),
                 &validator_vote_account,
                 &validator_identity,
+                &priority_fee_distribution_program,
                 &running_epoch_info,
                 err.to_string()
             );
@@ -1188,13 +1200,14 @@ pub async fn share_priority_fees_loop(
                     cluster.clone(),
                     &validator_vote_account,
                     &validator_identity,
+                    &priority_fee_distribution_program,
                     &running_epoch_info,
                     err.to_string()
                 );
             },
         }
 
-        emit_heartbeat(cluster.clone(), &validator_vote_account, &validator_identity, &running_epoch_info);
+        emit_heartbeat(cluster.clone(), &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info);
         sleep_ms(LEADER_SLOT_MS * 10).await;
     }
 }
