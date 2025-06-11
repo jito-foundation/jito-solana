@@ -201,6 +201,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agave-io-uring"
+version = "3.0.0"
+dependencies = [
+ "io-uring",
+ "libc",
+ "log",
+ "slab",
+ "smallvec",
+]
+
+[[package]]
 name = "agave-ledger-tool"
 version = "3.0.0"
 dependencies = [
@@ -3796,6 +3807,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ebb93303c65a11753dd0e45cd6bfa5c65ee1f0b9f8e2178b6998ddc8b284f04"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if 1.0.0",
+ "libc",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6700,6 +6722,7 @@ dependencies = [
 name = "solana-accounts-db"
 version = "3.0.0"
 dependencies = [
+ "agave-io-uring",
  "agave-reserved-account-keys",
  "ahash 0.8.11",
  "assert_matches",
@@ -6713,6 +6736,7 @@ dependencies = [
  "crossbeam-channel",
  "dashmap",
  "indexmap 2.9.0",
+ "io-uring",
  "itertools 0.12.1",
  "libsecp256k1",
  "log",
@@ -6730,6 +6754,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_derive",
+ "slab",
  "smallvec",
  "solana-account",
  "solana-accounts-db",
