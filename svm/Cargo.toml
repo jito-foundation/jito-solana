@@ -59,6 +59,9 @@ solana-type-overrides = { workspace = true }
 spl-generic-token = { workspace = true }
 thiserror = { workspace = true }
 
+[target.'cfg(debug_assertions)'.dependencies]
+solana-transaction-context = { workspace = true, features = ["debug-signature"] }
+
 [lib]
 crate-type = ["lib"]
 name = "solana_svm"
