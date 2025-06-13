@@ -185,6 +185,7 @@ generate_service_file() {
         "FEE_RECORDS_DB_BACKUP_PATH"
         "PRIORITY_FEE_LAMPORTS"
         "TRANSACTIONS_PER_EPOCH"
+        "LOOP_SLEEP_MS"
         "RUST_LOG"
     )
 
@@ -241,6 +242,9 @@ generate_service_file() {
                     ;;
                 "TRANSACTIONS_PER_EPOCH")
                     echo -e "\033[31m  - $var: Number of transactions per epoch (e.g., '10')\033[0m"
+                    ;;
+                "LOOP_SLEEP_MS")
+                    echo -e "\033[31m  - $var: MS inbetween each loop ( Default 5min )\033[0m"
                     ;;
                 "RUST_LOG")
                     echo -e "\033[31m  - $var: Log level (e.g., 'info, debug')\033[0m"
@@ -308,6 +312,8 @@ Environment=FEE_RECORDS_DB_BACKUP_PATH=$FEE_RECORDS_DB_BACKUP_PATH
 Environment=PRIORITY_FEE_LAMPORTS=$PRIORITY_FEE_LAMPORTS
 # How many TXs to send per epoch
 Environment=TRANSACTIONS_PER_EPOCH=$TRANSACTIONS_PER_EPOCH
+# MS inbetween each loop ( Default 5min )
+Environment=LOOP_SLEEP_MS=$LOOP_SLEEP_MS
 
 # --------------- METRICS --------------------
 # Solana metrics configuration

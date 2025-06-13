@@ -71,6 +71,10 @@ enum Commands {
         #[arg(long, env, default_value_t = 10)]
         transactions_per_epoch: u64,
 
+        /// MS inbetween each loop ( Default 5min )
+        #[arg(long, env, default_value_t = 1000 * 60 * 5)]
+        loop_sleep_ms: u64,
+
         /// Verifies the command setup
         #[arg(long)]
         verify: bool,
@@ -151,6 +155,7 @@ async fn main() -> Result<(), anyhow::Error> {
             commission_bps,
             priority_fee_lamports,
             transactions_per_epoch,
+            loop_sleep_ms: loop_sleep_ms,
             verify,
         } => {
             let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;
@@ -176,6 +181,7 @@ async fn main() -> Result<(), anyhow::Error> {
             info!("Commission bps: {}", commission_bps);
             info!("Priority fee lamports: {}", priority_fee_lamports);
             info!("Transactions per epoch: {}", transactions_per_epoch);
+            info!("Loop timeout ms: {}", loop_sleep_ms);
 
             share_priority_fees_loop(
                 cluster.clone(),
@@ -190,6 +196,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 *commission_bps,
                 *priority_fee_lamports,
                 *transactions_per_epoch,
+                *loop_sleep_ms,
                 *verify,
             )
             .await?

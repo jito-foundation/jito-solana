@@ -107,6 +107,7 @@ pub async fn verify_setup(
     commission_bps: u64,
     priority_fee_lamports: u64,
     transactions_per_epoch: u64,
+    loop_timeout_ms: u64,
 ) -> Result<()> {
     // ---------------- RPC CHECK -------------------------
     let rpc_client = RpcClient::new(rpc_url);
@@ -267,6 +268,8 @@ pub async fn verify_setup(
     }
 
     info!("✅ Priority fees OK: {}", priority_fee_lamports);
+    info!("✅ Loop sleep MS OK: {}", loop_timeout_ms);
+
 
     info!("");
     info!("✅ All parameters OK");
@@ -976,7 +979,7 @@ async fn handle_pending_blocks(
                 records_to_transfer.len() as u64,
                 total_priority_fees,
                 amount_to_transfer,
-internal_balance,
+                internal_balance,
             );
 
             for record in records_to_transfer {
@@ -1000,8 +1003,9 @@ internal_balance,
     Ok(transfer_count.saturating_add(1))
 }
 // ------------------------- METRICS -----------------------------------
-pub fn emit_heartbeat(
+pub async fn emit_heartbeat(
     cluster: Cluster,
+    rpc_client: &RpcClient,
     validator_vote_account: &Pubkey,
     validator_identity: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
@@ -1009,13 +1013,26 @@ pub fn emit_heartbeat(
 ){
 
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
+    let internal_balance = match get_priority_fee_distribution_account_internal_balance(
+        rpc_client,
+        validator_vote_account,
+        priority_fee_distribution_program,
+        running_epoch_info.epoch,
+    ).await {
+        Ok(balance) => balance as i64,
+        Err(err) => {
+            error!("Error getting internal balance: {:?}", err);
+            -1i64
+        }
+    };
 
     datapoint_info!(
-        "pfs-heartbeat-0.0.3",
+        "pfs-heartbeat-0.0.4",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
         ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
+        ("priority-fee-distribution-account-internal-balance", internal_balance, i64),
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         "cluster" => cluster.to_string(),
@@ -1036,7 +1053,7 @@ pub fn emit_transfer(
     priority_fee_distribution_account_balance: u64,
 ){
     datapoint_info!(
-        "pfs-transfer-0.0.3",
+        "pfs-transfer-0.0.4",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.epoch, i64),
@@ -1089,6 +1106,7 @@ pub async fn share_priority_fees_loop(
     commission_bps: u64,
     priority_fee_lamports: u64,
     transactions_per_epoch: u64,
+    loop_sleep_ms: u64,
     verify: bool,
 ) -> Result<()> {
     // ------------------ VERIFY SETUP -----------------------------
@@ -1104,6 +1122,7 @@ pub async fn share_priority_fees_loop(
         commission_bps,
         priority_fee_lamports,
         transactions_per_epoch,
+        loop_sleep_ms,
     )
     .await?;
 
@@ -1207,8 +1226,13 @@ pub async fn share_priority_fees_loop(
             },
         }
 
-        emit_heartbeat(cluster.clone(), &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info);
-        sleep_ms(LEADER_SLOT_MS * 10).await;
+        // 4. Emit heartbeat
+        info!(" -------- 4. EMIT HEARTBEAT -----------");
+        emit_heartbeat(cluster.clone(), &rpc_client, &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info).await;
+
+        // 5. Sleep
+        info!(" -------- 5. SLEEP {} SECONDS -----------", loop_sleep_ms / 1000);
+        sleep_ms(loop_sleep_ms).await;
     }
 }
 
