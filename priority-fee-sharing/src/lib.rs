@@ -1051,6 +1051,8 @@ pub async fn emit_state(
         return Ok(());
     }
 
+    delay_past_leader_slot(rpc_client, fee_records).await?;
+
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
     let external_balance = get_priority_fee_distribution_account_balance(
         rpc_client,
