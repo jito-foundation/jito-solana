@@ -1027,7 +1027,7 @@ pub fn emit_heartbeat(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_info!(
-        "pfs-heatbeat-0.0.5",
+        "pfs-heartbeat-0.0.6",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
@@ -1077,7 +1077,7 @@ pub async fn emit_state(
     let pending_lamports: i64 = pending_records.iter().map(|record| record.priority_fee_lamports as i64).sum();
 
     datapoint_info!(
-        "pfs-state-0.0.5",
+        "pfs-state-0.0.6",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
@@ -1113,7 +1113,7 @@ pub fn emit_transfer(
     }
 
     datapoint_info!(
-        "pfs-transfer-0.0.5",
+        "pfs-transfer-0.0.6",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.epoch, i64),
@@ -1144,7 +1144,7 @@ pub fn emit_error(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_error!(
-        "pfs-error-0.0.5",
+        "pfs-error-0.0.6",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
