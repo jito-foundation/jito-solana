@@ -155,7 +155,7 @@ async fn main() -> Result<(), anyhow::Error> {
             commission_bps,
             priority_fee_lamports,
             transactions_per_epoch,
-            loop_sleep_ms: loop_sleep_ms,
+            loop_sleep_ms,
             verify,
         } => {
             let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;

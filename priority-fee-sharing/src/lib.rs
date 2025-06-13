@@ -24,7 +24,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::vote::state::VoteState;
-use std::fmt;
+use std::{env, fmt};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -270,6 +270,9 @@ pub async fn verify_setup(
     info!("✅ Priority fees OK: {}", priority_fee_lamports);
     info!("✅ Loop sleep MS OK: {}", loop_timeout_ms);
 
+    if should_send_metrics() {
+        info!("✅ Metrics OK");
+    }
 
     info!("");
     info!("✅ All parameters OK");
@@ -314,6 +317,13 @@ async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64) -> Result<(bool, u6
 }
 
 // ------------------------- HELPER FUNCTIONS -----------------------------
+
+fn should_send_metrics() -> bool {
+    env::var("SOLANA_METRICS_CONFIG")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
 fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u64> {
     // Calculate the amount that goes to delegators (total minus commission)
     let delegator_share_bps = MAX_BPS
@@ -1003,40 +1013,84 @@ async fn handle_pending_blocks(
     Ok(transfer_count.saturating_add(1))
 }
 // ------------------------- METRICS -----------------------------------
-pub async fn emit_heartbeat(
+pub fn emit_heartbeat(
     cluster: Cluster,
-    rpc_client: &RpcClient,
     validator_vote_account: &Pubkey,
     validator_identity: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
-){
+) {
+    if !should_send_metrics() {
+        return;
+    }
 
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
-    let internal_balance = match get_priority_fee_distribution_account_internal_balance(
-        rpc_client,
-        validator_vote_account,
-        priority_fee_distribution_program,
-        running_epoch_info.epoch,
-    ).await {
-        Ok(balance) => balance as i64,
-        Err(err) => {
-            error!("Error getting internal balance: {:?}", err);
-            -1i64
-        }
-    };
 
     datapoint_info!(
-        "pfs-heartbeat-0.0.4",
+        "pfs-heatbeat-0.0.5",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
         ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
-        ("priority-fee-distribution-account-internal-balance", internal_balance, i64),
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         "cluster" => cluster.to_string(),
     );
+}
+
+pub async fn emit_state(
+    cluster: Cluster,
+    rpc_client: &RpcClient,
+    fee_records: &FeeRecords,
+    validator_vote_account: &Pubkey,
+    validator_identity: &Pubkey,
+    priority_fee_distribution_program: &Pubkey,
+    running_epoch_info: &PFEpochInfo,
+) -> Result<()> {
+    if !should_send_metrics() {
+        return Ok(());
+    }
+
+    let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
+    let external_balance = get_priority_fee_distribution_account_balance(
+        rpc_client,
+        validator_vote_account,
+        priority_fee_distribution_program,
+        running_epoch_info.epoch,
+    ).await?;
+
+    let internal_balance = get_priority_fee_distribution_account_internal_balance(
+        rpc_client,
+        validator_vote_account,
+        priority_fee_distribution_program,
+        running_epoch_info.epoch,
+    ).await?;
+
+
+    let unprocessed_records = fee_records.get_records_by_state(FeeRecordState::Unprocessed)?;
+    let pending_records = fee_records.get_records_by_state(FeeRecordState::ProcessedAndPending)?;
+
+    let unprocessed_record_count = unprocessed_records.len();
+    let pending_record_count = pending_records.len();
+    let pending_lamports: i64 = pending_records.iter().map(|record| record.priority_fee_lamports as i64).sum();
+
+    datapoint_info!(
+        "pfs-state-0.0.5",
+        ("vote-account", validator_vote_account.to_string(), String),
+        ("identity", validator_identity.to_string(), String),
+        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
+        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
+        ("priority-fee-distribution-account-external-balance", external_balance, i64),
+        ("priority-fee-distribution-account-internal-balance", internal_balance, i64),
+        ("unprocessed-record-count", unprocessed_record_count, i64),
+        ("pending-record-count", pending_record_count, i64),
+        ("pending-lamports", pending_lamports, i64),
+        ("epoch", running_epoch_info.epoch, i64),
+        ("slot", running_epoch_info.slot, i64),
+        "cluster" => cluster.to_string(),
+    );
+
+    Ok(())
 }
 
 pub fn emit_transfer(
@@ -1052,8 +1106,12 @@ pub fn emit_transfer(
     transfer_amount_lamports: u64,
     priority_fee_distribution_account_balance: u64,
 ){
+    if !should_send_metrics() {
+        return;
+    }
+
     datapoint_info!(
-        "pfs-transfer-0.0.4",
+        "pfs-transfer-0.0.5",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("epoch", running_epoch_info.epoch, i64),
@@ -1077,10 +1135,14 @@ pub fn emit_error(
     running_epoch_info: &PFEpochInfo,
     error_string: String,
 ){
+    if !should_send_metrics() {
+        return;
+    }
+
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_error!(
-        "pfs-error-0.0.3",
+        "pfs-error-0.0.5",
         ("vote-account", validator_vote_account.to_string(), String),
         ("identity", validator_identity.to_string(), String),
         ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
@@ -1228,7 +1290,19 @@ pub async fn share_priority_fees_loop(
 
         // 4. Emit heartbeat
         info!(" -------- 4. EMIT HEARTBEAT -----------");
-        emit_heartbeat(cluster.clone(), &rpc_client, &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info).await;
+        emit_heartbeat(cluster.clone(), &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info);
+        let result = emit_state(cluster.clone(), &rpc_client, &fee_records, &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info).await;
+        if let Err(err) = result {
+            error!("Error emitting state: {}", err);
+            emit_error(
+                cluster.clone(),
+                &validator_vote_account,
+                &validator_identity,
+                &priority_fee_distribution_program,
+                &running_epoch_info,
+                err.to_string()
+            );
+        }
 
         // 5. Sleep
         info!(" -------- 5. SLEEP {} SECONDS -----------", loop_sleep_ms / 1000);
