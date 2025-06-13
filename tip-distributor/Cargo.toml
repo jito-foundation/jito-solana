@@ -39,7 +39,7 @@ num-traits = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-solana-account = { workspace = true, features = ["dev-context-only-utils"] }
+solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-client = { workspace = true }
 solana-commitment-config = { workspace = true }
@@ -69,5 +69,5 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
+solana-account = { workspace = true, features = ["dev-context-only-utils"] }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
-
