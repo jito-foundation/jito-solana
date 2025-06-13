@@ -19,4 +19,4 @@ digest = { workspace = true }
 itertools = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
-solana-transaction = { workspace = true }
+solana-transaction = { workspace = true, features = ["serde"] }
