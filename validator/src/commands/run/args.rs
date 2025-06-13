@@ -126,7 +126,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
             .value_name("RPC_URL")
             .requires("entrypoint")
-            .conflicts_with_all(&["no_check_vote_account", "no_voting"])
+            .conflicts_with_all(&["no_voting"])
             .help(
                 "Sanity check vote account state at startup. The JSON RPC endpoint at RPC_URL \
                  must expose `--full-rpc-api`",
@@ -162,7 +162,6 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
     .arg(
         Arg::with_name("full_rpc_api")
             .long("full-rpc-api")
-            .conflicts_with("minimal_rpc_api")
             .takes_value(false)
             .help("Expose RPC methods for querying chain state and transaction history"),
     )
