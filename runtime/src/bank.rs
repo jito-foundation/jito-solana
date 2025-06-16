@@ -33,6 +33,7 @@
 //! It offers a high-level API that signs transactions
 //! on behalf of the caller, and a low-level API for when they have
 //! already been signed and verified.
+
 use {
     crate::{
         account_saver::collect_accounts_to_store,
@@ -108,6 +109,7 @@ use {
     solana_program_runtime::{
         invoke_context::BuiltinFunctionWithContext, loaded_programs::ProgramCacheEntry,
     },
+    solana_pubkey::Pubkey,
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
     },
@@ -139,7 +141,6 @@ use {
         native_loader,
         native_token::LAMPORTS_PER_SOL,
         packet::PACKET_DATA_SIZE,
-        pubkey::Pubkey,
         rent_collector::{CollectedInfo, RentCollector},
         rent_debits::RentDebits,
         reward_info::RewardInfo,
@@ -3189,8 +3190,8 @@ impl Bank {
         &'a self,
         transactions: &'b [Tx],
         transaction_results: impl Iterator<Item = Result<()>>,
-        additional_read_locks: Option<&HashSet<Pubkey>>,
-        additional_write_locks: Option<&HashSet<Pubkey>>,
+        is_read_prelocked_callback: &impl Fn(&Pubkey) -> bool,
+        is_write_prelocked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> TransactionBatch<'a, 'b, Tx> {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
@@ -3198,8 +3199,8 @@ impl Bank {
             transactions.iter(),
             transaction_results,
             tx_account_lock_limit,
-            additional_read_locks,
-            additional_write_locks,
+            is_read_prelocked_callback,
+            is_write_prelocked_callback,
         );
         TransactionBatch::new(lock_results, self, OwnedOrBorrowed::Borrowed(transactions))
     }

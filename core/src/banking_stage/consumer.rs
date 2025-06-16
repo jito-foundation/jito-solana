@@ -529,8 +529,8 @@ impl Consumer {
                 Ok(_cost) => Ok(()),
                 Err(err) => Err(err.clone()),
             }),
-            Some(&bundle_account_locks.read_locks()),
-            Some(&bundle_account_locks.write_locks())
+            &|key| { bundle_account_locks.read_locks().contains_key(key) },
+            &|key| { bundle_account_locks.write_locks().contains_key(key) }
         ));
         drop(bundle_account_locks);
 
