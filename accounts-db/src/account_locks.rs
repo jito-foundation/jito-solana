@@ -330,19 +330,16 @@ mod tests {
         let key1 = Pubkey::new_unique();
 
         // write lock key1 while key1 in addition write locks will fail
-        let result = account_locks.try_lock_accounts(
-            [(&key1, true)].into_iter(),
-            &|_| false,
-            &|key| *key == key1,
-        );
+        let result =
+            account_locks
+                .try_lock_accounts([(&key1, true)].into_iter(), &|_| false, &|key| *key == key1);
         assert_eq!(result, Err(TransactionError::AccountInUse));
 
         // read lock key1 while key1 in addition write locks will fail
-        let result = account_locks.try_lock_accounts(
-            [(&key1, false)].into_iter(),
-            &|_| false,
-            &|key| *key == key1,
-        );
+        let result =
+            account_locks.try_lock_accounts([(&key1, false)].into_iter(), &|_| false, &|key| {
+                *key == key1
+            });
         assert_eq!(result, Err(TransactionError::AccountInUse));
     }
 }

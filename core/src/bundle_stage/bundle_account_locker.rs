@@ -209,13 +209,13 @@ impl BundleAccountLocker {
 
 #[cfg(test)]
 mod tests {
-    use itertools::Itertools;
     use {
         crate::{
             bundle_stage::bundle_account_locker::BundleAccountLocker,
             immutable_deserialized_bundle::ImmutableDeserializedBundle,
             packet_bundle::PacketBundle,
         },
+        itertools::Itertools,
         solana_ledger::genesis_utils::create_genesis_config,
         solana_perf::packet::PacketBatch,
         solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
@@ -279,11 +279,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            bundle_account_locker.account_locks.lock().unwrap().write_locks().keys().collect_vec(),
+            bundle_account_locker
+                .account_locks
+                .lock()
+                .unwrap()
+                .write_locks()
+                .keys()
+                .collect_vec(),
             vec![&mint_keypair.pubkey(), &kp0.pubkey()]
         );
         assert_eq!(
-            bundle_account_locker.account_locks.lock().unwrap().read_locks().keys().collect_vec(),
+            bundle_account_locker
+                .account_locks
+                .lock()
+                .unwrap()
+                .read_locks()
+                .keys()
+                .collect_vec(),
             vec![&system_program::id()]
         );
 
@@ -291,26 +303,60 @@ mod tests {
             .prepare_locked_bundle(&sanitized_bundle1, &bank)
             .unwrap();
         assert_eq!(
-            bundle_account_locker.account_locks.lock().unwrap().write_locks().keys().collect_vec(),
+            bundle_account_locker
+                .account_locks
+                .lock()
+                .unwrap()
+                .write_locks()
+                .keys()
+                .collect_vec(),
             vec![&mint_keypair.pubkey(), &kp0.pubkey(), &kp1.pubkey()]
         );
         assert_eq!(
-            bundle_account_locker.account_locks.lock().unwrap().read_locks().keys().collect_vec(),
+            bundle_account_locker
+                .account_locks
+                .lock()
+                .unwrap()
+                .read_locks()
+                .keys()
+                .collect_vec(),
             vec![&system_program::id()]
         );
 
         drop(locked_bundle0);
         assert_eq!(
-            bundle_account_locker.account_locks.lock().unwrap().write_locks().keys().collect_vec(),
+            bundle_account_locker
+                .account_locks
+                .lock()
+                .unwrap()
+                .write_locks()
+                .keys()
+                .collect_vec(),
             vec![&mint_keypair.pubkey(), &kp1.pubkey()]
         );
         assert_eq!(
-            bundle_account_locker.account_locks.lock().unwrap().read_locks().keys().collect_vec(),
+            bundle_account_locker
+                .account_locks
+                .lock()
+                .unwrap()
+                .read_locks()
+                .keys()
+                .collect_vec(),
             vec![&system_program::id()]
         );
 
         drop(locked_bundle1);
-        assert!(bundle_account_locker.account_locks.lock().unwrap().write_locks().is_empty());
-        assert!(bundle_account_locker.account_locks.lock().unwrap().read_locks().is_empty());
+        assert!(bundle_account_locker
+            .account_locks
+            .lock()
+            .unwrap()
+            .write_locks()
+            .is_empty());
+        assert!(bundle_account_locker
+            .account_locks
+            .lock()
+            .unwrap()
+            .read_locks()
+            .is_empty());
     }
 }

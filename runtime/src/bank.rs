@@ -34,7 +34,6 @@
 //! on behalf of the caller, and a low-level API for when they have
 //! already been signed and verified.
 
-use solana_pubkey::Pubkey;
 use {
     crate::{
         account_saver::collect_accounts_to_store,
@@ -110,6 +109,7 @@ use {
     solana_program_runtime::{
         invoke_context::BuiltinFunctionWithContext, loaded_programs::ProgramCacheEntry,
     },
+    solana_pubkey::Pubkey,
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
     },

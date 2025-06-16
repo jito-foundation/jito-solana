@@ -1319,8 +1319,8 @@ mod tests {
             txs.iter(),
             qos_results.into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
-            &|_|false,
-            &|_|false
+            &|_| false,
+            &|_| false,
         );
 
         assert_eq!(
