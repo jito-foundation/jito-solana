@@ -570,7 +570,7 @@ impl Accounts {
                     .map(|_| TransactionAccountLocksIterator::new(tx))
             })
             .collect();
-        self.lock_accounts_inner(tx_account_locks_results, None, None)
+        self.lock_accounts_inner(tx_account_locks_results, &|_| false, &|_| false)
     }
 
     #[must_use]
@@ -579,8 +579,8 @@ impl Accounts {
         txs: impl Iterator<Item = &'a (impl SVMMessage + 'a)>,
         results: impl Iterator<Item = Result<()>>,
         tx_account_lock_limit: usize,
-        additional_read_locks: Option<&HashSet<Pubkey>>,
-        additional_write_locks: Option<&HashSet<Pubkey>>,
+        is_read_prelocked_callback: &impl Fn(&Pubkey) -> bool,
+        is_write_prelocked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> Vec<Result<()>> {
         // Validate the account locks, then get iterator if successful validation.
         let tx_account_locks_results: Vec<Result<_>> = txs
@@ -593,8 +593,8 @@ impl Accounts {
             .collect();
         self.lock_accounts_inner(
             tx_account_locks_results,
-            additional_read_locks,
-            additional_write_locks,
+            is_read_prelocked_callback,
+            is_write_prelocked_callback,
         )
     }
 
@@ -602,8 +602,8 @@ impl Accounts {
     fn lock_accounts_inner(
         &self,
         tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<impl SVMMessage>>>,
-        additional_read_locks: Option<&HashSet<Pubkey>>,
-        additional_write_locks: Option<&HashSet<Pubkey>>,
+        is_read_prelocked_callback: &impl Fn(&Pubkey) -> bool,
+        is_write_prelocked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> Vec<Result<()>> {
         let account_locks = &mut self.account_locks.lock().unwrap();
         tx_account_locks_results
@@ -611,8 +611,8 @@ impl Accounts {
             .map(|tx_account_locks_result| match tx_account_locks_result {
                 Ok(tx_account_locks) => account_locks.try_lock_accounts(
                     tx_account_locks.accounts_with_is_writable(),
-                    additional_read_locks,
-                    additional_write_locks,
+                    is_read_prelocked_callback,
+                    is_write_prelocked_callback,
                 ),
                 Err(err) => Err(err),
             })
@@ -694,8 +694,8 @@ impl Accounts {
                     false => {
                         let locked = account_locks.try_lock_accounts(
                             tx_account_locks.accounts_with_is_writable(),
-                            None,
-                            None,
+                            &|_| false,
+                            &|_| false,
                         );
                         if matches!(locked, Err(TransactionError::AccountInUse)) {
                             account_in_use_set = true;
@@ -1319,8 +1319,8 @@ mod tests {
             txs.iter(),
             qos_results.into_iter(),
             MAX_TX_ACCOUNT_LOCKS,
-            None,
-            None,
+            &|_|false,
+            &|_|false
         );
 
         assert_eq!(

@@ -14,7 +14,7 @@ use {
     solana_runtime::bank::Bank,
     solana_sdk::{pubkey::Pubkey, transaction::TransactionAccountLocks},
     std::{
-        collections::{hash_map::Entry, HashMap, HashSet},
+        collections::{hash_map::Entry, HashMap},
         sync::{Arc, Mutex, MutexGuard},
     },
     thiserror::Error,
@@ -68,12 +68,12 @@ pub struct BundleAccountLocks {
 }
 
 impl BundleAccountLocks {
-    pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.read_locks.keys().cloned().collect()
+    pub fn read_locks(&self) -> &HashMap<Pubkey, u64> {
+        &self.read_locks
     }
 
-    pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.write_locks.keys().cloned().collect()
+    pub fn write_locks(&self) -> &HashMap<Pubkey, u64> {
+        &self.write_locks
     }
 
     pub fn lock_accounts(
@@ -125,18 +125,6 @@ pub struct BundleAccountLocker {
 }
 
 impl BundleAccountLocker {
-    /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleAccountLocker
-    pub fn read_locks(&self) -> HashSet<Pubkey> {
-        self.account_locks.lock().unwrap().read_locks()
-    }
-
-    /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
-    /// doesn't lock anything currently locked in the BundleAccountLocker
-    pub fn write_locks(&self) -> HashSet<Pubkey> {
-        self.account_locks.lock().unwrap().write_locks()
-    }
-
     /// used in BankingStage during TransactionBatch construction to ensure that BankingStage
     /// doesn't lock anything currently locked in the BundleAccountLocker
     pub fn account_locks(&self) -> MutexGuard<BundleAccountLocks> {
@@ -221,6 +209,7 @@ impl BundleAccountLocker {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
     use {
         crate::{
             bundle_stage::bundle_account_locker::BundleAccountLocker,
@@ -290,38 +279,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            bundle_account_locker.write_locks(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey()])
+            bundle_account_locker.account_locks.lock().unwrap().write_locks().keys().collect_vec(),
+            vec![&mint_keypair.pubkey(), &kp0.pubkey()]
         );
         assert_eq!(
-            bundle_account_locker.read_locks(),
-            HashSet::from_iter([system_program::id()])
+            bundle_account_locker.account_locks.lock().unwrap().read_locks().keys().collect_vec(),
+            vec![&system_program::id()]
         );
 
         let locked_bundle1 = bundle_account_locker
             .prepare_locked_bundle(&sanitized_bundle1, &bank)
             .unwrap();
         assert_eq!(
-            bundle_account_locker.write_locks(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey(), kp1.pubkey()])
+            bundle_account_locker.account_locks.lock().unwrap().write_locks().keys().collect_vec(),
+            vec![&mint_keypair.pubkey(), &kp0.pubkey(), &kp1.pubkey()]
         );
         assert_eq!(
-            bundle_account_locker.read_locks(),
-            HashSet::from_iter([system_program::id()])
+            bundle_account_locker.account_locks.lock().unwrap().read_locks().keys().collect_vec(),
+            vec![&system_program::id()]
         );
 
         drop(locked_bundle0);
         assert_eq!(
-            bundle_account_locker.write_locks(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp1.pubkey()])
+            bundle_account_locker.account_locks.lock().unwrap().write_locks().keys().collect_vec(),
+            vec![&mint_keypair.pubkey(), &kp1.pubkey()]
         );
         assert_eq!(
-            bundle_account_locker.read_locks(),
-            HashSet::from_iter([system_program::id()])
+            bundle_account_locker.account_locks.lock().unwrap().read_locks().keys().collect_vec(),
+            vec![&system_program::id()]
         );
 
         drop(locked_bundle1);
-        assert!(bundle_account_locker.write_locks().is_empty());
-        assert!(bundle_account_locker.read_locks().is_empty());
+        assert!(bundle_account_locker.account_locks.lock().unwrap().write_locks().is_empty());
+        assert!(bundle_account_locker.account_locks.lock().unwrap().read_locks().is_empty());
     }
 }
