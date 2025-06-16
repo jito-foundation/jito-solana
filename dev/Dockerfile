@@ -8,6 +8,7 @@ RUN set -x \
  && apt update \
  && apt install -y \
       clang \
+      libclang-dev \
       cmake \
       libudev-dev \
       make \
