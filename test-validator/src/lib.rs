@@ -54,6 +54,7 @@ use {
     solana_signer::Signer,
     solana_streamer::socket::SocketAddrSpace,
     solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
+    solana_transaction::Transaction,
     solana_validator_exit::Exit,
     std::{
         collections::{HashMap, HashSet},
@@ -707,6 +708,22 @@ impl TestValidatorGenesis {
     ) -> (TestValidator, Keypair) {
         let mint_keypair = Keypair::new();
         self.start_with_mint_address(mint_keypair.pubkey(), socket_addr_space)
+            .inspect(|test_validator| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                    .unwrap();
+                let upgradeable_program_ids: Vec<&Pubkey> = self
+                    .upgradeable_programs
+                    .iter()
+                    .map(|p| &p.program_id)
+                    .collect();
+                runtime.block_on(test_validator.wait_for_upgradeable_programs_deployed(
+                    &upgradeable_program_ids,
+                    &mint_keypair,
+                ));
+            })
             .map(|test_validator| (test_validator, mint_keypair))
             .unwrap_or_else(|err| panic!("Test validator failed to start: {err}"))
     }
@@ -726,6 +743,14 @@ impl TestValidatorGenesis {
         match TestValidator::start(mint_keypair.pubkey(), self, socket_addr_space, None) {
             Ok(test_validator) => {
                 test_validator.wait_for_nonzero_fees().await;
+                let upgradeable_program_ids: Vec<&Pubkey> = self
+                    .upgradeable_programs
+                    .iter()
+                    .map(|p| &p.program_id)
+                    .collect();
+                test_validator
+                    .wait_for_upgradeable_programs_deployed(&upgradeable_program_ids, &mint_keypair)
+                    .await;
                 (test_validator, mint_keypair)
             }
             Err(err) => panic!("Test validator failed to start: {err}"),
@@ -1158,6 +1183,62 @@ impl TestValidator {
         }
     }
 
+    /// programs added to genesis ain't immediately usable. Actively check "Program
+    /// is not deployed" error for their availibility.
+    async fn wait_for_upgradeable_programs_deployed(
+        &self,
+        upgradeable_programs: &[&Pubkey],
+        payer: &Keypair,
+    ) {
+        let rpc_client = nonblocking::rpc_client::RpcClient::new_with_commitment(
+            self.rpc_url.clone(),
+            CommitmentConfig::processed(),
+        );
+
+        let mut deployed = vec![false; upgradeable_programs.len()];
+        const MAX_ATTEMPTS: u64 = 10;
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            let blockhash = rpc_client.get_latest_blockhash().await.unwrap();
+            for (program_id, is_deployed) in upgradeable_programs.iter().zip(deployed.iter_mut()) {
+                if *is_deployed {
+                    continue;
+                }
+
+                let transaction = Transaction::new_signed_with_payer(
+                    &[Instruction {
+                        program_id: **program_id,
+                        accounts: vec![],
+                        data: vec![],
+                    }],
+                    Some(&payer.pubkey()),
+                    &[&payer],
+                    blockhash,
+                );
+                match rpc_client.send_transaction(&transaction).await {
+                    Ok(_) => *is_deployed = true,
+                    Err(e) => {
+                        if format!("{:?}", e).contains("Program is not deployed") {
+                            debug!("{:?} - not deployed", program_id);
+                        } else {
+                            // Assuming all other other errors could only occur *after*
+                            // program is deployed for usability.
+                            *is_deployed = true;
+                            debug!("{:?} - Unexpected error: {:?}", program_id, e);
+                        }
+                    }
+                }
+            }
+            if deployed.iter().all(|&deployed| deployed) {
+                return;
+            }
+
+            println!("Waiting for programs to be fully deployed {} ...", attempt);
+            sleep(Duration::from_millis(DEFAULT_MS_PER_SLOT)).await;
+        }
+        panic!("Timeout waiting for program to become usable");
+    }
+
     /// Return the validator's TPU address
     pub fn tpu(&self) -> &SocketAddr {
         &self.tpu
@@ -1250,6 +1331,58 @@ mod test {
         test_validator.set_startup_verification_complete_for_tests();
         let rpc_client = test_validator.get_async_rpc_client();
         rpc_client.get_health().await.expect("health");
+    }
+
+    #[test]
+    fn test_upgradeable_program_deploayment() {
+        let program_id = Pubkey::new_unique();
+        let (test_validator, payer) = TestValidatorGenesis::default()
+            .add_program("../programs/bpf-loader-tests/noop", program_id)
+            .start();
+        let rpc_client = test_validator.get_rpc_client();
+
+        let blockhash = rpc_client.get_latest_blockhash().unwrap();
+        let transaction = Transaction::new_signed_with_payer(
+            &[Instruction {
+                program_id,
+                accounts: vec![],
+                data: vec![],
+            }],
+            Some(&payer.pubkey()),
+            &[&payer],
+            blockhash,
+        );
+
+        assert!(rpc_client
+            .send_and_confirm_transaction(&transaction)
+            .is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_nonblocking_upgradeable_program_deploayment() {
+        let program_id = Pubkey::new_unique();
+        let (test_validator, payer) = TestValidatorGenesis::default()
+            .add_program("../programs/bpf-loader-tests/noop", program_id)
+            .start_async()
+            .await;
+        let rpc_client = test_validator.get_async_rpc_client();
+
+        let blockhash = rpc_client.get_latest_blockhash().await.unwrap();
+        let transaction = Transaction::new_signed_with_payer(
+            &[Instruction {
+                program_id,
+                accounts: vec![],
+                data: vec![],
+            }],
+            Some(&payer.pubkey()),
+            &[&payer],
+            blockhash,
+        );
+
+        assert!(rpc_client
+            .send_and_confirm_transaction(&transaction)
+            .await
+            .is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
