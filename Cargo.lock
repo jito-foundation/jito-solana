@@ -11485,47 +11485,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-tip-distributor"
-version = "3.0.0"
-dependencies = [
- "agave-feature-set",
- "anchor-lang",
- "clap 4.5.31",
- "crossbeam-channel",
- "env_logger",
- "futures 0.3.31",
- "gethostname",
- "im",
- "itertools 0.12.1",
- "jito-tip-distribution",
- "jito-tip-payment",
- "log",
- "num-traits",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "solana-accounts-db",
- "solana-client",
- "solana-genesis-utils",
- "solana-ledger",
- "solana-measure",
- "solana-merkle-tree",
- "solana-metrics",
- "solana-program",
- "solana-program-runtime",
- "solana-rpc-client-api",
- "solana-runtime",
- "solana-sdk",
- "solana-stake-interface",
- "solana-stake-program",
- "solana-system-interface",
- "solana-transaction-status",
- "solana-vote",
- "thiserror 2.0.12",
- "tokio",
-]
-
-[[package]]
 name = "solana-tls-utils"
 version = "3.0.0"
 dependencies = [
