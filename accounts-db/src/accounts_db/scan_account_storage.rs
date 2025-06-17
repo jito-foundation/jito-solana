@@ -1119,7 +1119,7 @@ mod tests {
 
         // Mark each account obsolete at a different slot
         for (i, offsets) in offsets.unwrap().offsets.iter().enumerate() {
-            storage.mark_account_obsolete(*offsets, 0, i as Slot);
+            storage.mark_accounts_obsolete(vec![(*offsets, 0)].into_iter(), i as Slot);
         }
 
         // Perform scans of the storage assuming a different slot and verify the number of accounts found matches

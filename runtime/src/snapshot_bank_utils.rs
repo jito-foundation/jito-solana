@@ -1310,7 +1310,7 @@ mod tests {
         bank1.fill_bank_with_ticks_for_tests();
 
         // Mark the entry for pubkey1 as obsolete in slot0
-        account_storage_entry.mark_account_obsolete(offset, 0, slot);
+        account_storage_entry.mark_accounts_obsolete(vec![(offset, 0)].into_iter(), slot);
 
         let (_tmp_dir, accounts_dir) = create_tmp_accounts_dir_for_tests();
         let bank_snapshots_dir = tempfile::TempDir::new().unwrap();
