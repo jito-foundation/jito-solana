@@ -3517,6 +3517,18 @@ impl ReplayStage {
                         tower,
                         latest_validator_votes_for_frozen_banks,
                     );
+                      //NIK'S MOD BEGIN
+                    info!("Checking for missed vote opportunities to backfill");
+                    if let Err(err) = heaviest_subtree_fork_choice.process_missed_votes(
+                                            bank_forks,
+                                            my_vote_pubkey, 
+                                            tower,
+                                            latest_validator_votes_for_frozen_banks,
+                                            bank,
+                                        ) {
+                        warn!("Error during vote backfilling: {}", err);
+                    }
+                    //NIK'S MOD END
                     let ComputedBankState {
                         voted_stakes,
                         total_stake,
