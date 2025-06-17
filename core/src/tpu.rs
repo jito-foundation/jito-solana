@@ -259,7 +259,7 @@ impl Tpu {
             "quic_streamer_tpu",
             transactions_quic_sockets,
             keypair,
-            fetch_stage_manager_sender.clone(),,
+            fetch_stage_manager_sender.clone(),
             exit.clone(),
             staked_nodes.clone(),
             tpu_quic_server_config,
