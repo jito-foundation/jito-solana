@@ -118,7 +118,6 @@ members = [
     "thin-client",
     "thread-manager",
     "timings",
-    "tip-distributor",
     "tls-utils",
     "tokens",
     "tps-client",
