@@ -259,7 +259,7 @@ impl Tpu {
             "quic_streamer_tpu",
             transactions_quic_sockets,
             keypair,
-            fetch_stage_manager_sender.clone(),,
+            fetch_stage_manager_sender.clone(),
             exit.clone(),
             staked_nodes.clone(),
             tpu_quic_server_config,
@@ -289,7 +289,12 @@ impl Tpu {
                 banking_stage_sender.clone(),
                 enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
             );
-            SigVerifyStage::new(sigverify_stage_receiver, verifier, "solSigVerTpu", "tpu-verifier")
+            SigVerifyStage::new(
+                sigverify_stage_receiver,
+                verifier,
+                "solSigVerTpu",
+                "tpu-verifier",
+            )
         };
 
         let vote_sigverify_stage = {

@@ -334,7 +334,9 @@ dependencies = [
  "bincode",
  "borsh 0.10.4",
  "bytemuck",
+ "solana-loader-v3-interface 3.0.0",
  "solana-program",
+ "solana-sdk-ids",
  "thiserror 1.0.69",
 ]
 

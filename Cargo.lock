@@ -258,7 +258,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-ledger",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-log-collector",
  "solana-logger",
  "solana-measure",
@@ -704,7 +704,9 @@ dependencies = [
  "bincode",
  "borsh 0.10.3",
  "bytemuck",
+ "solana-loader-v3-interface 3.0.0",
  "solana-program",
+ "solana-sdk-ids",
  "thiserror 1.0.69",
 ]
 
@@ -6864,7 +6866,7 @@ dependencies = [
  "solana-fee-calculator",
  "solana-hash",
  "solana-instruction",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-nonce",
  "solana-program-option",
  "solana-program-pack",
@@ -7410,7 +7412,7 @@ dependencies = [
  "solana-instruction",
  "solana-keccak-hasher",
  "solana-last-restart-slot",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-log-collector",
  "solana-measure",
@@ -7450,7 +7452,7 @@ dependencies = [
  "solana-bpf-loader-program",
  "solana-instruction",
  "solana-keypair",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-program-test",
  "solana-pubkey",
  "solana-sdk-ids",
@@ -7699,7 +7701,7 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-keypair",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-loader-v4-program",
  "solana-logger",
@@ -8159,7 +8161,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-ledger",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-logger",
  "solana-measure",
  "solana-message",
@@ -8721,7 +8723,7 @@ dependencies = [
  "solana-inflation",
  "solana-keypair",
  "solana-ledger",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-logger",
  "solana-native-token",
  "solana-poh-config",
@@ -9173,6 +9175,20 @@ dependencies = [
 
 [[package]]
 name = "solana-loader-v3-interface"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4be76cfa9afd84ca2f35ebc09f0da0f0092935ccdac0595d98447f259538c2"
+dependencies = [
+ "serde",
+ "serde_bytes",
+ "serde_derive",
+ "solana-instruction",
+ "solana-pubkey",
+ "solana-sdk-ids",
+]
+
+[[package]]
+name = "solana-loader-v3-interface"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f7162a05b8b0773156b443bccd674ea78bb9aa406325b467ea78c06c99a63a2"
@@ -9213,7 +9229,7 @@ dependencies = [
  "solana-bpf-loader-program",
  "solana-clock",
  "solana-instruction",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-log-collector",
  "solana-measure",
@@ -9706,7 +9722,7 @@ dependencies = [
  "solana-keccak-hasher",
  "solana-last-restart-slot",
  "solana-loader-v2-interface",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-message",
  "solana-msg",
@@ -9868,7 +9884,7 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-keypair",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-log-collector",
  "solana-logger",
  "solana-message",
@@ -10448,7 +10464,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-lattice-hash",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-logger",
  "solana-measure",
@@ -11181,7 +11197,7 @@ dependencies = [
  "solana-instruction",
  "solana-instructions-sysvar",
  "solana-keypair",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-loader-v4-interface",
  "solana-loader-v4-program",
  "solana-log-collector",
@@ -11420,7 +11436,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-ledger",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-logger",
  "solana-message",
  "solana-native-token",
@@ -11791,7 +11807,7 @@ dependencies = [
  "solana-hash",
  "solana-instruction",
  "solana-loader-v2-interface",
- "solana-loader-v3-interface",
+ "solana-loader-v3-interface 5.0.0",
  "solana-message",
  "solana-program-option",
  "solana-pubkey",
