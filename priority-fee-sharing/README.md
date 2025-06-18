@@ -145,7 +145,7 @@ To update the Priority Fee Sharing service, follow these steps ( do in the `prio
    sudo systemctl stop priority-fee-sharing.service
    ```
 
-2. Update the repo files
+2. Update the repo
 
    ```bash
    git pull
