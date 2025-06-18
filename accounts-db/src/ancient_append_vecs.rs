@@ -2547,11 +2547,7 @@ pub mod tests {
                         let alive = alives[slot as usize];
                         if !alive {
                             // make this storage not alive
-                            remove_account_for_tests(
-                                storage,
-                                storage.written_bytes() as usize,
-                                false,
-                            );
+                            remove_account_for_tests(storage, storage.written_bytes() as usize);
                         }
                     });
                     let alive_storages = storages

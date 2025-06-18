@@ -1267,16 +1267,11 @@ impl AccountStorageEntry {
     }
 
     /// returns # of accounts remaining in the storage
-    fn remove_accounts(
-        &self,
-        num_bytes: usize,
-        reset_accounts: bool,
-        num_accounts: usize,
-    ) -> usize {
+    fn remove_accounts(&self, num_bytes: usize, num_accounts: usize) -> usize {
         let mut count_and_status = self.count_and_status.lock_write();
         let (mut count, mut status) = *count_and_status;
 
-        if count == num_accounts && status == AccountStorageStatus::Full && reset_accounts {
+        if count == num_accounts && status == AccountStorageStatus::Full {
             // this case arises when we remove the last account from the
             //  storage, but we've learned from previous write attempts that
             //  the storage is full
@@ -2087,14 +2082,9 @@ impl AccountsDb {
     ) -> ReclaimResult {
         let mut measure = Measure::start("clean_old_root_reclaims");
 
-        // Don't reset from clean, since the pubkeys in those stores may need to be unref'ed
-        // and those stores may be used for background hashing.
-        let reset_accounts = false;
-
         let reclaim_result = self.handle_reclaims(
             (!reclaims.is_empty()).then(|| reclaims.iter()),
             None,
-            reset_accounts,
             pubkeys_removed_from_accounts_index,
             HandleReclaims::ProcessDeadSlots(&self.clean_accounts_stats.purge_stats),
             MarkAccountsObsolete::No,
@@ -2944,13 +2934,9 @@ impl AccountsDb {
             self.purge_keys_exact(pubkey_to_slot_set.iter());
         pubkeys_removed_from_accounts_index.extend(pubkeys_removed_from_accounts_index2);
 
-        // Don't reset from clean, since the pubkeys in those stores may need to be unref'ed
-        // and those stores may be used for background hashing.
-        let reset_accounts = false;
         self.handle_reclaims(
             (!reclaims.is_empty()).then(|| reclaims.iter()),
             None,
-            reset_accounts,
             &pubkeys_removed_from_accounts_index,
             HandleReclaims::ProcessDeadSlots(&self.clean_accounts_stats.purge_stats),
             MarkAccountsObsolete::No,
@@ -3118,9 +3104,6 @@ impl AccountsDb {
     ///   is the slot == `S`. This is true for instance when `handle_reclaims` is called
     ///   from store or slot shrinking, as those should only touch the slot they are
     ///   currently storing to or shrinking.
-    /// * `reset_accounts` - Reset the append_vec store when the store is dead (count==0)
-    ///   From the clean and shrink paths it should be false since there may be an in-progress
-    ///   hash operation and the stores may hold accounts that need to be unref'ed.
     /// * `pubkeys_removed_from_accounts_index` - These keys have already been removed from the
     ///   accounts index and should not be unref'd. If they exist in the accounts index,
     ///   they are NEW.
@@ -3140,7 +3123,6 @@ impl AccountsDb {
         &'a self,
         reclaims: Option<I>,
         expected_single_dead_slot: Option<Slot>,
-        reset_accounts: bool,
         pubkeys_removed_from_accounts_index: &PubkeysRemovedFromAccountsIndex,
         handle_reclaims: HandleReclaims<'a>,
         mark_accounts_obsolete: MarkAccountsObsolete,
@@ -3153,7 +3135,6 @@ impl AccountsDb {
             let (dead_slots, reclaimed_offsets) = self.remove_dead_accounts(
                 reclaims,
                 expected_single_dead_slot,
-                reset_accounts,
                 mark_accounts_obsolete,
             );
             reclaim_result.1 = reclaimed_offsets;
@@ -5398,7 +5379,6 @@ impl AccountsDb {
         self.handle_reclaims(
             (!reclaims.is_empty()).then(|| reclaims.iter()),
             expected_dead_slot,
-            false,
             &pubkeys_removed_from_accounts_index,
             HandleReclaims::ProcessDeadSlots(purge_stats),
             MarkAccountsObsolete::No,
@@ -7234,7 +7214,6 @@ impl AccountsDb {
         &'a self,
         reclaims: I,
         expected_slot: Option<Slot>,
-        reset_accounts: bool,
         mark_accounts_obsolete: MarkAccountsObsolete,
     ) -> (IntSet<Slot>, SlotOffsets)
     where
@@ -7276,7 +7255,7 @@ impl AccountsDb {
                 );
                 if offsets.len() == store.count() {
                     // all remaining alive accounts in the storage are being removed, so the entire storage/slot is dead
-                    store.remove_accounts(store.alive_bytes(), reset_accounts, offsets.len());
+                    store.remove_accounts(store.alive_bytes(), offsets.len());
                     self.dirty_stores.insert(*slot, store);
                     dead_slots.insert(*slot);
                 } else {
@@ -7290,7 +7269,7 @@ impl AccountsDb {
                             .iter()
                             .map(|len| store.accounts.calculate_stored_size(*len))
                             .sum();
-                        store.remove_accounts(dead_bytes, reset_accounts, offsets.len());
+                        store.remove_accounts(dead_bytes, offsets.len());
 
                         if let MarkAccountsObsolete::Yes(slot_marked_obsolete) =
                             mark_accounts_obsolete
@@ -7716,14 +7695,6 @@ impl AccountsDb {
         transactions: Option<&'a [&'a SanitizedTransaction]>,
         update_index_thread_selection: UpdateIndexThreadSelection,
     ) {
-        // This path comes from a store to a non-frozen slot.
-        // If a store is dead here, then a newer update for
-        // each pubkey in the store must exist in another
-        // store in the slot. Thus it is safe to reset the store and
-        // re-use it for a future store op. The pubkey ref counts should still
-        // hold just 1 ref from this slot.
-        let reset_accounts = true;
-
         // We are storing accounts unfrozen accounts which
         // will always be stored in the cache
         let store_to = StoreTo::Cache;
@@ -7734,7 +7705,6 @@ impl AccountsDb {
         self.store_accounts_custom(
             accounts,
             &store_to,
-            reset_accounts,
             transactions,
             reclaim,
             update_index_thread_selection,
@@ -7747,14 +7717,9 @@ impl AccountsDb {
         accounts: impl StorableAccounts<'a>,
         storage: &Arc<AccountStorageEntry>,
     ) -> StoreAccountsTiming {
-        // stores on a frozen slot should not reset
-        // the append vec so that hashing could happen on the store
-        // and accounts in the append_vec can be unrefed correctly
-        let reset_accounts = false;
         self.store_accounts_custom(
             accounts,
             &StoreTo::Storage(storage),
-            reset_accounts,
             None,
             StoreReclaims::Ignore,
             UpdateIndexThreadSelection::PoolWithThreshold,
@@ -7766,7 +7731,6 @@ impl AccountsDb {
         &self,
         accounts: impl StorableAccounts<'a>,
         store_to: &StoreTo,
-        reset_accounts: bool,
         transactions: Option<&'a [&'a SanitizedTransaction]>,
         reclaim: StoreReclaims,
         update_index_thread_selection: UpdateIndexThreadSelection,
@@ -7838,7 +7802,6 @@ impl AccountsDb {
             self.handle_reclaims(
                 (!reclaims.is_empty()).then(|| reclaims.iter()),
                 expected_single_dead_slot,
-                reset_accounts,
                 &HashSet::default(),
                 // this callsite does NOT process dead slots
                 HandleReclaims::DoNotProcessDeadSlots,

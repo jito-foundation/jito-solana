@@ -2378,7 +2378,7 @@ fn test_get_snapshot_storages_exclude_empty() {
     db.storage
         .get_slot_storage_entry(0)
         .unwrap()
-        .remove_accounts(0, true, 1);
+        .remove_accounts(0, 1);
     assert!(db.get_storages(..=after_slot).0.is_empty());
 }
 
@@ -2405,8 +2405,8 @@ define_accounts_db_test!(
         accounts.store_for_tests(0, &[(&pubkey, &account)]);
         accounts.add_root_and_flush_write_cache(0);
         let storage_entry = accounts.storage.get_slot_storage_entry(0).unwrap();
-        storage_entry.remove_accounts(0, true, 1);
-        storage_entry.remove_accounts(0, true, 1);
+        storage_entry.remove_accounts(0, 1);
+        storage_entry.remove_accounts(0, 1);
     }
 );
 
@@ -3896,12 +3896,7 @@ define_accounts_db_test!(test_alive_bytes, |accounts_db| {
         assert_eq!(account_info.0, slot);
         let reclaims = [account_info];
         num_obsolete_accounts += reclaims.len();
-        accounts_db.remove_dead_accounts(
-            reclaims.iter(),
-            None,
-            true,
-            MarkAccountsObsolete::Yes(slot),
-        );
+        accounts_db.remove_dead_accounts(reclaims.iter(), None, MarkAccountsObsolete::Yes(slot));
         let after_size = storage0.alive_bytes();
         if storage0.count() == 0 {
             // when `remove_dead_accounts` reaches 0 accounts, all bytes are marked as dead
@@ -5070,7 +5065,7 @@ fn test_shrink_productive() {
     ));
     store.add_account(file_size as usize / 2);
     store.add_account(file_size as usize / 4);
-    store.remove_accounts(file_size as usize / 4, false, 1);
+    store.remove_accounts(file_size as usize / 4, 1);
     assert!(AccountsDb::is_shrinking_productive(&store));
 
     store.add_account(file_size as usize / 2);
@@ -6817,12 +6812,8 @@ fn populate_index(db: &AccountsDb, slots: Range<Slot>) {
     })
 }
 
-pub(crate) fn remove_account_for_tests(
-    storage: &AccountStorageEntry,
-    num_bytes: usize,
-    reset_accounts: bool,
-) {
-    storage.remove_accounts(num_bytes, reset_accounts, 1);
+pub(crate) fn remove_account_for_tests(storage: &AccountStorageEntry, num_bytes: usize) {
+    storage.remove_accounts(num_bytes, 1);
 }
 
 pub(crate) fn create_storages_and_update_index_with_customized_account_size_per_slot(
