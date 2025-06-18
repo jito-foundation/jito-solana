@@ -6,6 +6,7 @@ pub mod fee_records;
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
 use log::{error, info, warn};
+use solana_metrics::set_host_id;
 use tokio::time::sleep;
 
 // Standard library
@@ -899,13 +900,11 @@ fn should_handle_pending_blocks(
 }
 
 async fn handle_pending_blocks(
-    cluster: Cluster,
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
     payer_keypair: &Keypair,
     vote_authority_keypair: &Keypair,
     validator_vote_account: &Pubkey,
-    validator_identity: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     merkle_root_upload_authority: &Pubkey,
     commission_bps: u64,
@@ -1058,11 +1057,7 @@ async fn handle_pending_blocks(
             );
 
             emit_transfer(
-                cluster.clone(),
-                validator_vote_account,
-                validator_identity,
                 &priority_fee_distribution_account,
-                priority_fee_distribution_program,
                 running_epoch_info,
                 &sig.to_string(),
                 records_to_transfer.len() as u64,
@@ -1093,9 +1088,7 @@ async fn handle_pending_blocks(
 }
 // ------------------------- METRICS -----------------------------------
 pub fn emit_heartbeat(
-    cluster: Cluster,
     validator_vote_account: &Pubkey,
-    validator_identity: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
 ) {
@@ -1106,24 +1099,18 @@ pub fn emit_heartbeat(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_info!(
-        "pfs-heartbeat-0.0.7",
+        "pfs-heartbeat-0.0.8",
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         "epoch" => format!("{}", running_epoch_info.epoch),
-        "identity" => validator_identity.to_string(),
-        "vote-account" => validator_vote_account.to_string(),
         "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
-        "cluster" => cluster.to_string(),
     );
 }
 
 pub async fn emit_state(
-    cluster: Cluster,
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
     validator_vote_account: &Pubkey,
-    validator_identity: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
 ) -> Result<()> {
@@ -1157,7 +1144,7 @@ pub async fn emit_state(
     let pending_lamports: i64 = pending_records.iter().map(|record| record.priority_fee_lamports as i64).sum();
 
     datapoint_info!(
-        "pfs-state-0.0.7",
+        "pfs-state-0.0.8",
         ("priority-fee-distribution-account-external-balance", external_balance, i64),
         ("priority-fee-distribution-account-internal-balance", internal_balance, i64),
         ("unprocessed-record-count", unprocessed_record_count, i64),
@@ -1166,22 +1153,14 @@ pub async fn emit_state(
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         "epoch" => format!("{}", running_epoch_info.epoch),
-        "identity" => validator_identity.to_string(),
-        "vote-account" => validator_vote_account.to_string(),
         "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
-        "cluster" => cluster.to_string(),
     );
 
     Ok(())
 }
 
 pub fn emit_transfer(
-    cluster: Cluster,
-    validator_vote_account: &Pubkey,
-    validator_identity: &Pubkey,
     priority_fee_distribution_account: &Pubkey,
-    priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
     signature: &String,
     slots_covered: u64,
@@ -1194,7 +1173,7 @@ pub fn emit_transfer(
     }
 
     datapoint_info!(
-        "pfs-transfer-0.0.7",
+        "pfs-transfer-0.0.8",
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         ("signature", signature.to_string(), String),
@@ -1203,18 +1182,12 @@ pub fn emit_transfer(
         ("transfer-amount-lamports", transfer_amount_lamports, i64),
         ("priority-fee-distribution-account-balance", priority_fee_distribution_account_balance, i64),
         "epoch" => format!("{}", running_epoch_info.epoch),
-        "identity" => validator_identity.to_string(),
-        "vote-account" => validator_vote_account.to_string(),
         "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
-        "cluster" => cluster.to_string(),
     );
 }
 
 pub fn emit_error(
-    cluster: Cluster,
     validator_vote_account: &Pubkey,
-    validator_identity: &Pubkey,
     priority_fee_distribution_program: &Pubkey,
     running_epoch_info: &PFEpochInfo,
     error_string: String,
@@ -1226,16 +1199,12 @@ pub fn emit_error(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_error!(
-        "pfs-error-0.0.7",
+        "pfs-error-0.0.8",
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         ("error", error_string, String),
         "epoch" => format!("{}", running_epoch_info.epoch),
-        "identity" => validator_identity.to_string(),
-        "vote-account" => validator_vote_account.to_string(),
         "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
-        "cluster" => cluster.to_string(),
     );
 }
 
@@ -1290,6 +1259,24 @@ pub async fn share_priority_fees_loop(
     let mut running_epoch_info = PFEpochInfo::null();
     let mut transfer_count = 0;
 
+    // ----------------- METRICS SETUP -----------------------------
+    if should_send_metrics() {
+        let service_name = "priority_fee_sharing";
+        let vote = vote_authority_keypair.pubkey().to_string();
+        let identity = validator_identity.to_string();
+        set_host_id(format!(
+            "{}-{}-{},service_name={},vote={},identity={},priority_fee_distribution_program={},cluster={}",
+            service_name,
+            vote,
+            cluster,
+            service_name,
+            vote,
+            identity,
+            priority_fee_distribution_program.to_string(),
+            cluster,
+        ));
+    }
+
     // ------------------ LOOP -----------------------------
     loop {
         // 1. Handle Epoch
@@ -1312,9 +1299,8 @@ pub async fn share_priority_fees_loop(
             Err(err) => {
                 error!("Error handling epoch and leader slots: {}", err);
                 emit_error(
-                    cluster.clone(),
                     &validator_vote_account,
-                    &validator_identity,
+
                     &priority_fee_distribution_program,
                     &running_epoch_info,
                     err.to_string()
@@ -1329,9 +1315,8 @@ pub async fn share_priority_fees_loop(
         if let Err(err) = result {
             error!("Error handling unprocessed records: {}", err);
             emit_error(
-                cluster.clone(),
                 &validator_vote_account,
-                &validator_identity,
+
                 &priority_fee_distribution_program,
                 &running_epoch_info,
                 err.to_string()
@@ -1341,13 +1326,11 @@ pub async fn share_priority_fees_loop(
         // 3. Handle pending blocks
         info!(" -------- 3. HANDLE PENDING BLOCKS -----------");
         let result = handle_pending_blocks(
-            cluster.clone(),
             &rpc_client,
             &fee_records,
             &payer_keypair,
             &vote_authority_keypair,
             &validator_vote_account,
-            &validator_identity,
             &priority_fee_distribution_program,
             &merkle_root_upload_authority,
             commission_bps,
@@ -1363,9 +1346,8 @@ pub async fn share_priority_fees_loop(
             Err(err) => {
                 error!("Error handling pending blocks: {}", err);
                 emit_error(
-                    cluster.clone(),
                     &validator_vote_account,
-                    &validator_identity,
+
                     &priority_fee_distribution_program,
                     &running_epoch_info,
                     err.to_string()
@@ -1375,14 +1357,13 @@ pub async fn share_priority_fees_loop(
 
         // 4. Emit heartbeat
         info!(" -------- 4. EMIT HEARTBEAT -----------");
-        emit_heartbeat(cluster.clone(), &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info);
-        let result = emit_state(cluster.clone(), &rpc_client, &fee_records, &validator_vote_account, &validator_identity, &priority_fee_distribution_program, &running_epoch_info).await;
+        emit_heartbeat( &validator_vote_account, &priority_fee_distribution_program, &running_epoch_info);
+        let result = emit_state(&rpc_client, &fee_records, &validator_vote_account, &priority_fee_distribution_program, &running_epoch_info).await;
         if let Err(err) = result {
             error!("Error emitting state: {}", err);
             emit_error(
-                cluster.clone(),
                 &validator_vote_account,
-                &validator_identity,
+
                 &priority_fee_distribution_program,
                 &running_epoch_info,
                 err.to_string()
