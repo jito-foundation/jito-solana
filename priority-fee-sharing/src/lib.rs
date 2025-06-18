@@ -102,6 +102,10 @@ impl PFEpochInfo {
     pub fn percentage_of_epoch(&self) -> f64 {
         self.slot_index as f64 / self.slots_in_epoch as f64 * 100.0
     }
+
+    pub fn remaining_slots(&self) -> u64 {
+        self.slots_in_epoch - self.slot_index
+    }
 }
 
 // ------------------------- VERIFY SETUP -----------------------------
@@ -119,10 +123,43 @@ pub async fn verify_setup(
     transactions_per_epoch: u64,
     loop_timeout_ms: u64,
 ) -> Result<()> {
-    // ---------------- RPC CHECK -------------------------
     let rpc_client = RpcClient::new(rpc_url);
 
-    let epoch_info = match rpc_client.get_epoch_info().await {
+    // ---------------- VOTE AUTHORITY CHECK ---------------------
+    let vote_authority_keypair = match read_keypair_file(vote_authority_keypair_path) {
+        Ok(keypair) => {
+            info!("✅ Vote authority keypair OK");
+            keypair
+        }
+        Err(err) => {
+            return Err(anyhow!(format!(
+                "❌ Failed to read vote authority keypair file: {}",
+                err
+            )))
+        }
+    };
+
+    let validator_identity =
+        match get_validator_identity(&rpc_client, &validator_vote_account).await {
+            Ok(identity) => {
+                info!("✅ Validator identity OK");
+                identity
+            }
+            Err(err) => {
+                return Err(anyhow!(format!(
+                    "❌ Failed to get validator identity: {}",
+                    err
+                )))
+            }
+        };
+
+    if validator_identity.ne(&vote_authority_keypair.pubkey()) {
+        warn!("⚠️ Vote authority keypair does not match validator identity");
+    }
+
+    // ---------------- RPC CHECK -------------------------
+
+    let epoch_info = match get_epoch_info_safe(&rpc_client, None).await {
         Ok(epoch_info) => {
             info!("✅ RPC able to get epoch info");
             epoch_info
@@ -132,9 +169,23 @@ pub async fn verify_setup(
         }
     };
 
+    let leader_schedule = match get_leader_slots_safe(&rpc_client, &validator_identity, epoch_info.first_slot_in_epoch(), None).await {
+        Ok(leader_schedule) => {
+            info!("✅ RPC able to get leader schedule");
+            leader_schedule
+        }
+        Err(err) => {
+            return Err(anyhow!(format!("❌ Failed to get leader schedule: {}", err)));
+        }
+    };
+
+    if leader_schedule.is_empty() {
+        return Err(anyhow!("❌ Leader schedule is empty - check your validator {} or identity {}", validator_vote_account, validator_identity));
+    }
+
     for i in 0..250 {
-        let slot = epoch_info.absolute_slot - i;
-        match get_rewards_safe(&rpc_client, slot).await {
+        let slot = epoch_info.slot - i;
+        match get_rewards_safe(&rpc_client, slot, None).await {
             Ok((should_skip, _)) => {
                 if !should_skip {
                     info!("✅ RPC able to get block");
@@ -198,38 +249,6 @@ pub async fn verify_setup(
         info!("✅ Minimum balance OK: {}", lamports_to_sol(payer_balance));
     }
 
-    // ---------------- VOTE AUTHORITY CHECK ---------------------
-    let vote_authority_keypair = match read_keypair_file(vote_authority_keypair_path) {
-        Ok(keypair) => {
-            info!("✅ Vote authority keypair OK");
-            keypair
-        }
-        Err(err) => {
-            return Err(anyhow!(format!(
-                "❌ Failed to read vote authority keypair file: {}",
-                err
-            )))
-        }
-    };
-
-    let validator_identity =
-        match get_validator_identity(&rpc_client, &validator_vote_account).await {
-            Ok(identity) => {
-                info!("✅ Validator identity OK");
-                identity
-            }
-            Err(err) => {
-                return Err(anyhow!(format!(
-                    "❌ Failed to get validator identity: {}",
-                    err
-                )))
-            }
-        };
-
-    if validator_identity.ne(&vote_authority_keypair.pubkey()) {
-        warn!("⚠️ Vote authority keypair does not match validator identity");
-    }
-
     // ---------------- COMMISSION CHECK ---------------------
     if commission_bps > MAX_BPS {
         return Err(anyhow!(
@@ -290,9 +309,11 @@ pub async fn verify_setup(
     Ok(())
 }
 
-async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64) -> Result<(bool, u64)> {
+async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64, commitment: Option<CommitmentConfig>) -> Result<(bool, u64)> {
     const MAX_RETRIES: u32 = 3;
     const RETRY_DELAY_MS: u64 = 100;
+
+    let commitment = commitment.unwrap_or(CommitmentConfig::finalized());
 
     let mut attempt = 0;
 
@@ -300,6 +321,7 @@ async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64) -> Result<(bool, u6
         match rpc_client.get_block_with_config(slot, RpcBlockConfig {
             max_supported_transaction_version: Some(0),
             rewards: Some(true),
+            commitment: Some(commitment),
             ..RpcBlockConfig::default()
         }).await {
             Ok(block) => {
@@ -344,6 +366,45 @@ async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64) -> Result<(bool, u6
     }
 }
 
+async fn get_leader_slots_safe(rpc_client: &RpcClient, validator_identity: &Pubkey, epoch_start_slot: u64, commitment: Option<CommitmentConfig>) -> Result<Vec<u64>> {
+    let commitment = commitment.unwrap_or(CommitmentConfig::finalized());
+    let leader_schedule = rpc_client
+        .get_leader_schedule_with_config(
+            Some(epoch_start_slot),
+            RpcLeaderScheduleConfig {
+                identity: Some(validator_identity.to_string()),
+                commitment: Some(commitment),
+            }
+        )
+        .await?
+        .ok_or(anyhow!(
+            "Leader schedule for slot {} not available",
+            epoch_start_slot
+        ))?;
+
+    let relative_leader_slots = match leader_schedule
+        .get(&validator_identity.to_string()) {
+            Some(slots) => slots.clone(),
+            None => return Err(anyhow!("Validator identity not found in leader schedule")),
+        };
+
+    // Leader slots are relative to the epoch start slot
+    let leader_slots: Vec<u64> = relative_leader_slots.iter().map(|slot| epoch_start_slot.saturating_add(*slot as u64)).collect();
+
+    Ok(leader_slots)
+}
+
+async fn get_epoch_info_safe(rpc_client: &RpcClient, commitment: Option<CommitmentConfig>) -> Result<PFEpochInfo> {
+    let commitment = commitment.unwrap_or(CommitmentConfig::finalized());
+
+    let epoch_info = rpc_client
+        .get_epoch_info_with_commitment(commitment)
+        .await?;
+
+    Ok(PFEpochInfo::new(epoch_info))
+}
+
+
 // ------------------------- HELPER FUNCTIONS -----------------------------
 
 fn should_send_metrics() -> bool {
@@ -377,11 +438,9 @@ async fn sleep_ms(ms: u64) {
 
 async fn delay_past_leader_slot(rpc_client: &RpcClient, fee_records: &FeeRecords) -> Result<()> {
     loop {
-        let epoch_info = rpc_client
-            .get_epoch_info_with_commitment(CommitmentConfig::finalized())
-            .await?;
-        if fee_records.does_record_exist(epoch_info.absolute_slot, epoch_info.epoch) {
-            info!("Currently leader, sleeping...: ( {} )", epoch_info.absolute_slot);
+        let epoch_info = get_epoch_info_safe(rpc_client, None).await?;
+        if fee_records.does_record_exist(epoch_info.slot, epoch_info.epoch) {
+            info!("Currently leader, sleeping...: ( {} )", epoch_info.slot);
             sleep_ms(LEADER_SLOT_MS).await;
             continue;
         }
@@ -712,36 +771,15 @@ async fn handle_epoch_and_leader_slot(
     running_epoch_info: &PFEpochInfo,
 ) -> Result<(PFEpochInfo, bool)> {
     // epoch, absolute_slot, start_slot, end_slot, is_new_epoch
-    let epoch_info = rpc_client
-        .get_epoch_info_with_commitment(CommitmentConfig::finalized())
-        .await?;
-    let epoch_start_slot = epoch_info.absolute_slot - epoch_info.slot_index;
+    let epoch_info = get_epoch_info_safe(rpc_client, None).await?;
 
     if running_epoch_info.epoch == epoch_info.epoch {
-        return Ok((PFEpochInfo::new(epoch_info), false));
+        return Ok((epoch_info, false));
     }
 
-    let leader_schedule = rpc_client
-        .get_leader_schedule_with_config(
-            Some(epoch_info.absolute_slot),
-            RpcLeaderScheduleConfig {
-                identity: Some(validator_identity.to_string()),
-                commitment: Some(CommitmentConfig::finalized()),
-            }
-        )
-        .await?
-        .ok_or(anyhow!(
-            "Leader schedule for slot {} not available",
-            epoch_info.absolute_slot
-        ))?;
-
-    // Leader Schedules are found by identity
-    let validator_slots = leader_schedule
-        .get(&validator_identity.to_string())
-        .ok_or(anyhow!("No leader slots found for {}", validator_identity))?;
+    let validator_slots = get_leader_slots_safe(rpc_client, validator_identity, epoch_info.first_slot_in_epoch(), None).await?;
 
     for slot in validator_slots {
-        let slot = *slot as u64 + epoch_start_slot;
         info!("Processing slot {}", slot);
         let result = fee_records.add_priority_fee_record(
             slot,
@@ -757,7 +795,7 @@ async fn handle_epoch_and_leader_slot(
         }
     }
 
-    Ok((PFEpochInfo::new(epoch_info), true))
+    Ok((epoch_info, true))
 }
 
 async fn handle_unprocessed_blocks(
@@ -784,7 +822,7 @@ async fn handle_unprocessed_blocks(
     for record in filtered_records.iter() {
         // Try to fetch block and update
         if record.slot <= running_epoch_info.slot {
-            let block_result = get_rewards_safe(rpc_client, record.slot).await;
+            let block_result = get_rewards_safe(rpc_client, record.slot, None).await;
 
             match block_result {
                 Ok((should_skip, rewards)) => {
@@ -832,19 +870,32 @@ fn should_handle_pending_blocks(
 ) -> bool {
     let percentage_of_epoch = running_epoch_info.percentage_of_epoch();
     let percentage_per_transaction = 100.0 / transactions_per_epoch as f64;
+    let transfer_theshold = transfer_count as f64 * percentage_per_transaction;
+    let remaining_slots = running_epoch_info.remaining_slots();
 
     info!(
         "Should Transfer: {:.1}% > {:.1}% ({})",
         percentage_of_epoch,
-        transfer_count as f64 * percentage_per_transaction,
-        percentage_of_epoch > transfer_count as f64 * percentage_per_transaction
+        transfer_theshold,
+        percentage_of_epoch > transfer_theshold
     );
 
+    // If first transfer - transfer
     if transfer_count == 0 {
         return true;
     }
 
-    percentage_of_epoch > transfer_count as f64 * percentage_per_transaction
+    // If threshold is reached - transfer
+    if percentage_of_epoch > transfer_theshold {
+        return true;
+    }
+
+    // If we're in the last 1000 slots - transfer
+    if transfer_theshold < 100.0 && remaining_slots < 1_000{
+        return true;
+    }
+
+    false
 }
 
 async fn handle_pending_blocks(
@@ -1357,10 +1408,7 @@ pub async fn print_priority_fee_distribution_account_info(
     let running_epoch = match epoch {
         Some(e) => e,
         _ => {
-            let epoch_info = rpc_client
-                .get_epoch_info_with_commitment(CommitmentConfig::finalized())
-                .await?;
-            epoch_info.epoch
+            get_epoch_info_safe(&rpc_client, None).await?.epoch
         }
     };
 
@@ -1445,24 +1493,13 @@ pub async fn print_epoch_info(
     // Initialize RPC client
     let rpc_client = RpcClient::new(rpc_url.clone());
     let identity = get_validator_identity(&rpc_client, &validator_vote_account).await?;
-    let epoch_info = rpc_client.get_epoch_info().await?;
+    let current_epoch_info = get_epoch_info_safe(&rpc_client, None).await?;
     let epoch_schedule = rpc_client.get_epoch_schedule().await?;
     let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch);
     let last_slot_in_epoch = epoch_schedule.get_last_slot_in_epoch(epoch);
 
-    let leader_schedule_config: RpcLeaderScheduleConfig = RpcLeaderScheduleConfig {
-        identity: Some(identity.to_string()),
-        commitment: Some(CommitmentConfig::finalized()),
-    };
-
-    let leader_schedule = rpc_client
-        .get_leader_schedule_with_config(Some(first_slot_in_epoch), leader_schedule_config)
-        .await?
-        .expect("Failed to fetch leader schedule");
-
-    let leader_slots = leader_schedule
-        .get(&identity.to_string())
-        .expect("Could not find leader");
+    let leader_slots = get_leader_slots_safe(&rpc_client, &identity, first_slot_in_epoch, None)
+        .await?;
 
     // Print header
     println!("\n{}", "=".repeat(80));
@@ -1476,7 +1513,7 @@ pub async fn print_epoch_info(
     println!("  • Validator Identity: {}", identity);
     println!("  • Epoch: {}", epoch);
     println!("  • Epoch Slot Range: {} - {}", first_slot_in_epoch, last_slot_in_epoch);
-    println!("  • Current Slot: {}", epoch_info.absolute_slot);
+    println!("  • Current Slot: {}", current_epoch_info.slot);
     println!("  • Total Leader Slots: {}", leader_slots.len());
 
     // Initialize counters
@@ -1493,8 +1530,8 @@ pub async fn print_epoch_info(
     // Filter out future slots and convert to u64
     let slots_to_process: Vec<u64> = leader_slots
         .iter()
-        .map(|&relative_slot| first_slot_in_epoch + relative_slot as u64)
-        .filter(|&slot| slot < epoch_info.absolute_slot)
+        .map(|&slot| slot as u64)
+        .filter(|&slot| slot < current_epoch_info.slot)
         .collect();
 
     let future_slots = leader_slots.len() - slots_to_process.len();
@@ -1517,7 +1554,7 @@ pub async fn print_epoch_info(
         for &slot in batch {
             let rpc_client_clone = rpc_client.clone();
             join_set.spawn(async move {
-                let result = get_rewards_safe(&rpc_client_clone, slot).await;
+                let result = get_rewards_safe(&rpc_client_clone, slot, None).await;
                 (slot, result)
             });
         }
@@ -1545,8 +1582,7 @@ pub async fn print_epoch_info(
                     } else {
                         total_ok += 1;
                         total_priority_fees += rewards;
-                        expected_priority_fees += calculate_share(rewards, commission_bps as u64)
-                            .expect("Could not calculate share");
+                        expected_priority_fees += calculate_share(rewards, commission_bps as u64)?;
                     }
                 }
                 Err(_) => {
