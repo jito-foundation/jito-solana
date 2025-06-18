@@ -407,7 +407,7 @@ async fn get_epoch_info_safe(rpc_client: &RpcClient, commitment: Option<Commitme
 
 // ------------------------- HELPER FUNCTIONS -----------------------------
 
-fn should_send_metrics() -> bool {
+pub fn should_send_metrics() -> bool {
     env::var("SOLANA_METRICS_CONFIG")
         .map(|v| !v.is_empty())
         .unwrap_or(false)
