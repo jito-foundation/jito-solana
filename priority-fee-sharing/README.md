@@ -137,7 +137,7 @@ sudo journalctl -u priority-fee-sharing.service -f
 
 ## Updating the Service
 
-To update the Priority Fee Sharing service, follow these steps:
+To update the Priority Fee Sharing service, follow these steps ( do in the `priority-fee-sharing` directory ):
 
 1. Stop the service
 
