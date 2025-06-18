@@ -135,6 +135,28 @@ sudo systemctl status priority-fee-sharing.service
 sudo journalctl -u priority-fee-sharing.service -f
 ```
 
+## Updating the Service
+
+To update the Priority Fee Sharing service, follow these steps:
+
+1. Stop the service
+
+   ```bash
+   sudo systemctl stop priority-fee-sharing.service
+   ```
+
+2. Update the repo files
+
+   ```bash
+   git pull
+   ```
+
+3. Re-run startup script
+
+   ```bash
+   ./setup_priority_fee_sharing.sh
+   ```
+
 ## Troubleshooting
 
 If you encounter issues with the Priority Fee Sharing service:
