@@ -1,33 +1,43 @@
+// Local modules
 pub mod error;
 pub mod fee_records;
 
+// External crates
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
-use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
-use log::warn;
-use log::{error, info};
+use log::{error, info, warn};
+use tokio::time::sleep;
+
+// Standard library
+use std::env;
+use std::fmt;
+use std::path::PathBuf;
+use std::time::Duration;
+
+// Solana imports
 use solana_account::Account;
-use solana_client::rpc_config::{RpcBlockConfig, RpcLeaderScheduleConfig, RpcSendTransactionConfig};
+use solana_client::rpc_config::{
+    RpcBlockConfig, RpcLeaderScheduleConfig, RpcSendTransactionConfig,
+};
 use solana_metrics::{datapoint_error, datapoint_info};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::commitment_config::CommitmentConfig;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
-use solana_sdk::epoch_info::EpochInfo;
-use solana_sdk::instruction::AccountMeta;
-use solana_sdk::instruction::Instruction;
-use solana_sdk::native_token::lamports_to_sol;
-use solana_sdk::pubkey;
-use solana_sdk::reward_type::RewardType;
-use solana_sdk::signature::read_keypair_file;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
-use solana_sdk::transaction::Transaction;
-use solana_sdk::vote::state::VoteState;
-use std::{env, fmt};
-use std::path::PathBuf;
-use std::time::Duration;
-use tokio::time::sleep;
+use solana_sdk::{
+    commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
+    epoch_info::EpochInfo,
+    instruction::{AccountMeta, Instruction},
+    native_token::lamports_to_sol,
+    pubkey,
+    reward_type::RewardType,
+    signature::{read_keypair_file, Keypair},
+    signer::Signer,
+    transaction::Transaction,
+    vote::state::VoteState,
+};
+
+// Re-exports from local modules
+use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
 
 // ------------------------- GLOBAL CONSTANTS -----------------------------
 // 1s/block, 4 leader blocks in a row
@@ -281,36 +291,54 @@ pub async fn verify_setup(
 }
 
 async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64) -> Result<(bool, u64)> {
-    match rpc_client.get_block_with_config(slot, RpcBlockConfig {
-        max_supported_transaction_version: Some(0),
-        rewards: Some(true),
-        ..RpcBlockConfig::default()
-    }).await {
-        Ok(block) => {
-            if let Some(rewards) = block.rewards {
-                let priority_fee_lamports: i64 =
-                    rewards
-                    .iter()
-                    .filter(|r| r.reward_type == Some(RewardType::Fee))
-                    .map(|r| r.lamports)
-                    .sum();
-                return Ok((false, priority_fee_lamports as u64));
-            } else {
-                return Err(anyhow!("No rewards found"));
+    const MAX_RETRIES: u32 = 3;
+    const RETRY_DELAY_MS: u64 = 100;
+
+    let mut attempt = 0;
+
+    loop {
+        match rpc_client.get_block_with_config(slot, RpcBlockConfig {
+            max_supported_transaction_version: Some(0),
+            rewards: Some(true),
+            ..RpcBlockConfig::default()
+        }).await {
+            Ok(block) => {
+                if let Some(rewards) = block.rewards {
+                    let priority_fee_lamports: i64 =
+                        rewards
+                        .iter()
+                        .filter(|r| r.reward_type == Some(RewardType::Fee))
+                        .map(|r| r.lamports)
+                        .sum();
+                    return Ok((false, priority_fee_lamports as u64));
+                } else {
+                    return Err(anyhow!("No rewards found"));
+                }
             }
-        }
-        Err(e) => {
-            // - `Could not get block, RPC response error -32009: Slot 336212841 was skipped, or missing in long-term storage;` - This is OK
-            // - `Could not get block, RPC response error -32011: Transaction history is not available from this node;` - This is not okay, and will need a new RPC
-            // - `Could not get block, RPC response error -32015: Transaction version (0) is not supported by the requesting client. Please try the request again with the following configuration parameter: "maxSupportedTransactionVersion": 0;` - Not sure yet
-            // - `Could not get block, RPC response error -32007: Slot 336638156 was skipped, or missing due to ledger jump to recent snapshot;` - Not sure yet
-            // - `Could not get block, invalid type: null, expected struct UiConfirmedBlock` - Not sure yet
-            if e.to_string().contains("RPC response error -32009")
-                || e.to_string().contains("RPC response error -32007")
-            {
-                return Ok((true, 0));
-            } else {
-                return Err(anyhow!(format!("Failed to get block: {}", e)));
+            Err(e) => {
+                // Check if this is a "skipped slot" error (which is OK and shouldn't be retried)
+                if e.to_string().contains("RPC response error -32009")
+                    || e.to_string().contains("RPC response error -32007")
+                {
+                    return Ok((true, 0));
+                }
+
+                // For other errors, attempt retry
+                attempt += 1;
+
+                if attempt >= MAX_RETRIES {
+                    // Max retries reached, return the error
+                    return Err(anyhow!(format!("Failed to get block after {} attempts: {}", MAX_RETRIES, e)));
+                }
+
+                // Log retry attempt
+                warn!(
+                    "Failed to get block for slot {} (attempt {}/{}): {}. Retrying...",
+                    slot, attempt, MAX_RETRIES, e
+                );
+
+                // Wait before retrying (exponential backoff)
+                sleep_ms(RETRY_DELAY_MS * attempt as u64).await;
             }
         }
     }
@@ -1027,13 +1055,14 @@ pub fn emit_heartbeat(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_info!(
-        "pfs-heartbeat-0.0.6",
-        ("vote-account", validator_vote_account.to_string(), String),
-        ("identity", validator_identity.to_string(), String),
-        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
-        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
+        "pfs-heartbeat-0.0.7",
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
+        "epoch" => format!("{}", running_epoch_info.epoch),
+        "identity" => validator_identity.to_string(),
+        "vote-account" => validator_vote_account.to_string(),
+        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
+        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
         "cluster" => cluster.to_string(),
     );
 }
@@ -1077,11 +1106,7 @@ pub async fn emit_state(
     let pending_lamports: i64 = pending_records.iter().map(|record| record.priority_fee_lamports as i64).sum();
 
     datapoint_info!(
-        "pfs-state-0.0.6",
-        ("vote-account", validator_vote_account.to_string(), String),
-        ("identity", validator_identity.to_string(), String),
-        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
-        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
+        "pfs-state-0.0.7",
         ("priority-fee-distribution-account-external-balance", external_balance, i64),
         ("priority-fee-distribution-account-internal-balance", internal_balance, i64),
         ("unprocessed-record-count", unprocessed_record_count, i64),
@@ -1089,6 +1114,11 @@ pub async fn emit_state(
         ("pending-lamports", pending_lamports, i64),
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
+        "epoch" => format!("{}", running_epoch_info.epoch),
+        "identity" => validator_identity.to_string(),
+        "vote-account" => validator_vote_account.to_string(),
+        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
+        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
         "cluster" => cluster.to_string(),
     );
 
@@ -1113,9 +1143,7 @@ pub fn emit_transfer(
     }
 
     datapoint_info!(
-        "pfs-transfer-0.0.6",
-        ("vote-account", validator_vote_account.to_string(), String),
-        ("identity", validator_identity.to_string(), String),
+        "pfs-transfer-0.0.7",
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         ("signature", signature.to_string(), String),
@@ -1123,8 +1151,11 @@ pub fn emit_transfer(
         ("total-priority-fees", total_priority_fees, i64),
         ("transfer-amount-lamports", transfer_amount_lamports, i64),
         ("priority-fee-distribution-account-balance", priority_fee_distribution_account_balance, i64),
-        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
-        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
+        "epoch" => format!("{}", running_epoch_info.epoch),
+        "identity" => validator_identity.to_string(),
+        "vote-account" => validator_vote_account.to_string(),
+        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
+        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
         "cluster" => cluster.to_string(),
     );
 }
@@ -1144,14 +1175,15 @@ pub fn emit_error(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_error!(
-        "pfs-error-0.0.6",
-        ("vote-account", validator_vote_account.to_string(), String),
-        ("identity", validator_identity.to_string(), String),
-        ("priority-fee-distribution-account", priority_fee_distribution_account.to_string(), String),
-        ("priority-fee-distribution-program", priority_fee_distribution_program.to_string(), String),
+        "pfs-error-0.0.7",
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         ("error", error_string, String),
+        "epoch" => format!("{}", running_epoch_info.epoch),
+        "identity" => validator_identity.to_string(),
+        "vote-account" => validator_vote_account.to_string(),
+        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
+        "priority-fee-distribution-program" => priority_fee_distribution_program.to_string(),
         "cluster" => cluster.to_string(),
     );
 }
@@ -1312,7 +1344,7 @@ pub async fn share_priority_fees_loop(
     }
 }
 
-pub async fn print_out_priority_fee_distribution_information(
+pub async fn print_priority_fee_distribution_account_info(
     rpc_url: String,
     validator_vote_account: Pubkey,
     priority_fee_distribution_program: Pubkey,
@@ -1398,6 +1430,198 @@ pub async fn print_out_priority_fee_distribution_information(
             claimed_lamports, claimed_sol
         );
     }
+
+    Ok(())
+}
+
+pub async fn print_epoch_info(
+    rpc_url: String,
+    validator_vote_account: Pubkey,
+    epoch: u64,
+    commission_bps: u16,
+) -> Result<()> {
+    const BATCH_SIZE: usize = 10; // Adjust based on RPC limits
+
+    // Initialize RPC client
+    let rpc_client = RpcClient::new(rpc_url.clone());
+    let identity = get_validator_identity(&rpc_client, &validator_vote_account).await?;
+    let epoch_info = rpc_client.get_epoch_info().await?;
+    let epoch_schedule = rpc_client.get_epoch_schedule().await?;
+    let first_slot_in_epoch = epoch_schedule.get_first_slot_in_epoch(epoch);
+    let last_slot_in_epoch = epoch_schedule.get_last_slot_in_epoch(epoch);
+
+    let leader_schedule_config: RpcLeaderScheduleConfig = RpcLeaderScheduleConfig {
+        identity: Some(identity.to_string()),
+        commitment: Some(CommitmentConfig::finalized()),
+    };
+
+    let leader_schedule = rpc_client
+        .get_leader_schedule_with_config(Some(first_slot_in_epoch), leader_schedule_config)
+        .await?
+        .expect("Failed to fetch leader schedule");
+
+    let leader_slots = leader_schedule
+        .get(&identity.to_string())
+        .expect("Could not find leader");
+
+    // Print header
+    println!("\n{}", "=".repeat(80));
+    println!("{:^80}", "VALIDATOR PRIORITY FEES REPORT");
+    println!("{}", "=".repeat(80));
+
+    // Print parameters
+    println!("\n📊 Report Parameters:");
+    println!("  • RPC URL: {}", rpc_url);
+    println!("  • Validator Vote Account: {}", validator_vote_account);
+    println!("  • Validator Identity: {}", identity);
+    println!("  • Epoch: {}", epoch);
+    println!("  • Epoch Slot Range: {} - {}", first_slot_in_epoch, last_slot_in_epoch);
+    println!("  • Current Slot: {}", epoch_info.absolute_slot);
+    println!("  • Total Leader Slots: {}", leader_slots.len());
+
+    // Initialize counters
+    let mut total_priority_fees = 0u64;
+    let mut expected_priority_fees = 0u64;
+    let mut total_slots_processed = 0;
+    let mut total_ok = 0;
+    let mut total_skipped = 0;
+    let mut total_errors = 0;
+
+    // Batch configuration
+    let mut batches_processed = 0;
+
+    // Filter out future slots and convert to u64
+    let slots_to_process: Vec<u64> = leader_slots
+        .iter()
+        .map(|&relative_slot| first_slot_in_epoch + relative_slot as u64)
+        .filter(|&slot| slot < epoch_info.absolute_slot)
+        .collect();
+
+    let future_slots = leader_slots.len() - slots_to_process.len();
+
+    // Progress tracking
+    let start_time = std::time::Instant::now();
+    println!("\n⏳ Processing {} slots in batches of {}...", slots_to_process.len(), BATCH_SIZE);
+
+    // Clone RpcClient for use in spawned tasks
+    let rpc_client = std::sync::Arc::new(rpc_client);
+
+    // Process slots in batches
+    for (_, batch) in slots_to_process.chunks(BATCH_SIZE).enumerate() {
+        let batch_start_time = std::time::Instant::now();
+
+        // Create a JoinSet for concurrent execution
+        let mut join_set = tokio::task::JoinSet::new();
+
+        // Spawn tasks for each slot in the batch
+        for &slot in batch {
+            let rpc_client_clone = rpc_client.clone();
+            join_set.spawn(async move {
+                let result = get_rewards_safe(&rpc_client_clone, slot).await;
+                (slot, result)
+            });
+        }
+
+        // Collect results as they complete
+        let mut batch_results = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok((_, rewards_result)) => {
+                    batch_results.push(rewards_result);
+                }
+                Err(e) => {
+                    error!("Task join error: {}", e);
+                    batch_results.push(Err(anyhow!("Task join error")));
+                }
+            }
+        }
+
+        // Process results
+        for result in batch_results {
+            match result {
+                Ok((skipped, rewards)) => {
+                    if skipped {
+                        total_skipped += 1;
+                    } else {
+                        total_ok += 1;
+                        total_priority_fees += rewards;
+                        expected_priority_fees += calculate_share(rewards, commission_bps as u64)
+                            .expect("Could not calculate share");
+                    }
+                }
+                Err(_) => {
+                    total_errors += 1;
+                }
+            }
+            total_slots_processed += 1;
+        }
+
+        batches_processed += 1;
+        let batch_elapsed = batch_start_time.elapsed();
+
+        // Log batch completion
+        println!(
+            "  Batch {}/{}: Fetched {} blocks in {:.2} seconds ({:.1} blocks/sec)",
+            batches_processed,
+            (slots_to_process.len() + BATCH_SIZE - 1) / BATCH_SIZE, // ceiling division
+            batch.len(),
+            batch_elapsed.as_secs_f64(),
+            batch.len() as f64 / batch_elapsed.as_secs_f64()
+        );
+    }
+
+    let total_elapsed = start_time.elapsed();
+    println!(
+        "\n  ✅ Processing complete! Total: {} blocks in {:.2} seconds ({:.1} blocks/sec)",
+        total_slots_processed,
+        total_elapsed.as_secs_f64(),
+        total_slots_processed as f64 / total_elapsed.as_secs_f64()
+    );
+
+    // Print results
+    println!("\n{}", "─".repeat(80));
+    println!("📈 RESULTS SUMMARY");
+    println!("{}", "─".repeat(80));
+
+    println!("\n📋 Slot Statistics:");
+    println!("  • Total Leader Slots: {}", leader_slots.len());
+    println!("  • Processed Slots: {}", total_slots_processed);
+    println!("  • Future Slots (skipped): {}", future_slots);
+
+    println!("\n✅ Processing Breakdown:");
+    println!("  • Successful: {} ({:.1}%)",
+        total_ok,
+        (total_ok as f64 / total_slots_processed.max(1) as f64) * 100.0
+    );
+    println!("  • Skipped: {} ({:.1}%)",
+        total_skipped,
+        (total_skipped as f64 / total_slots_processed.max(1) as f64) * 100.0
+    );
+    println!("  • Errors: {} ({:.1}%)",
+        total_errors,
+        (total_errors as f64 / total_slots_processed.max(1) as f64) * 100.0
+    );
+
+    println!("\n💰 Priority Fees Summary:");
+    println!("  • Total Priority Fees: {:.6} SOL", total_priority_fees as f64 / 1_000_000_000.0);
+    println!("  • Expected Priority Fees: {:.6} SOL", expected_priority_fees as f64 / 1_000_000_000.0);
+
+    if total_ok > 0 {
+        let avg_per_slot = total_priority_fees as f64 / total_ok as f64;
+        println!("  • Average per Successful Slot: {:.9} SOL", avg_per_slot / 1_000_000_000.0);
+    }
+
+    if total_slots_processed > 0 {
+        let avg_per_all_slots = total_priority_fees as f64 / total_slots_processed as f64;
+        println!("  • Average per Processed Slot: {:.9} SOL", avg_per_all_slots / 1_000_000_000.0);
+    }
+
+    println!("\n⚡ Performance Statistics:");
+    println!("  • Total Batches: {}", batches_processed);
+    println!("  • Batch Size: {}", BATCH_SIZE);
+    println!("  • Average Blocks/Second: {:.1}", total_slots_processed as f64 / total_elapsed.as_secs_f64());
+
+    println!("\n{}", "=".repeat(80));
 
     Ok(())
 }

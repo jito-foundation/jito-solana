@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 use priority_fee_sharing::fee_records::{FeeRecordState, FeeRecords};
 use priority_fee_sharing::{
-    print_out_priority_fee_distribution_information, share_priority_fees_loop, Cluster,
+    print_priority_fee_distribution_account_info, print_epoch_info, share_priority_fees_loop, Cluster
 };
 use solana_pubkey::Pubkey;
 use solana_sdk::native_token::sol_to_lamports;
@@ -80,9 +80,6 @@ enum Commands {
         verify: bool,
     },
 
-    // SOLANA_METRICS_CONFIG="host=http://tip-router.metrics.jito.wtf:8086,db=tip-router,u=jito,p=tipRouterPW"
-
-
     /// Export records to CSV
     ExportCsv {
         /// Fee Records DB Path
@@ -99,7 +96,7 @@ enum Commands {
     },
 
     /// Print information about the Priority Fee Distribution Account
-    PrintInfo {
+    PrintPriorityFeeDistributionAccountInfo {
         /// RPC URL to use
         #[arg(long, env)]
         rpc_url: String,
@@ -115,6 +112,25 @@ enum Commands {
         /// Optional: Specific epoch to query (defaults to current epoch)
         #[arg(long)]
         epoch: Option<u64>,
+    },
+
+    /// Print information about the Epoch
+    PrintEpochInfo {
+        /// RPC URL to use
+        #[arg(long, env)]
+        rpc_url: String,
+
+        /// Validator vote account address
+        #[arg(long, env)]
+        validator_vote_account: Pubkey,
+
+        /// The epoch to query
+        #[arg(long, env)]
+        epoch: u64,
+
+        /// Commission fee basis points
+        #[arg(long, env, default_value_t = 5_000)]
+        commission_fee_bps: u16,
     },
 }
 
@@ -220,17 +236,32 @@ async fn main() -> Result<(), anyhow::Error> {
             info!("Export completed successfully");
         }
 
-        Commands::PrintInfo {
+        Commands::PrintPriorityFeeDistributionAccountInfo {
             rpc_url,
             validator_vote_account,
             priority_fee_distribution_program,
             epoch,
         } => {
-            print_out_priority_fee_distribution_information(
+            print_priority_fee_distribution_account_info(
                 rpc_url.clone(),
                 *validator_vote_account,
                 *priority_fee_distribution_program,
                 *epoch,
+            )
+            .await?
+        }
+
+        Commands::PrintEpochInfo {
+            rpc_url,
+            validator_vote_account,
+            epoch,
+            commission_fee_bps,
+        } => {
+            print_epoch_info(
+                rpc_url.clone(),
+                *validator_vote_account,
+                *epoch,
+                *commission_fee_bps,
             )
             .await?
         }
