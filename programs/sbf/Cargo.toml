@@ -136,7 +136,7 @@ solana-measure = { path = "../../measure", version = "=3.0.0" }
 solana-msg = "=2.2.1"
 solana-poseidon = { path = "../../poseidon/", version = "=3.0.0" }
 solana-program = "=2.2.1"
-solana-program-entrypoint = "=2.2.1"
+solana-program-entrypoint = "=2.3.0"
 solana-program-error = "=2.2.2"
 solana-program-memory = "=2.2.1"
 solana-program-runtime = { path = "../../program-runtime", version = "=3.0.0" }
@@ -219,7 +219,7 @@ solana-logger = { workspace = true }
 solana-measure = { workspace = true }
 solana-message = "2.3.0"
 solana-program = { workspace = true }
-solana-program-entrypoint = "2.2.1"
+solana-program-entrypoint = "2.3.0"
 solana-program-runtime = { workspace = true }
 solana-pubkey = "2.4.0"
 solana-rent = "2.2.1"
