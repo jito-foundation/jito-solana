@@ -144,6 +144,9 @@ trees = { workspace = true }
 [target."cfg(unix)".dependencies]
 sysctl = { workspace = true }
 
+[build-dependencies]
+tonic-build = { workspace = true }
+
 [dev-dependencies]
 agave-reserved-account-keys = { workspace = true }
 fs_extra = { workspace = true }
@@ -179,9 +182,6 @@ test-case = { workspace = true }
 
 [badges]
 codecov = { repository = "solana-labs/solana", branch = "master", service = "github" }
-
-[build-dependencies]
-tonic-build = { workspace = true }
 
 [[bench]]
 name = "banking_stage"
