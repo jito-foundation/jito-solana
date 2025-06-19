@@ -1099,7 +1099,7 @@ pub fn emit_heartbeat(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_info!(
-        "pfs-heartbeat-0.0.8",
+        "pfs-heartbeat-0.0.9",
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         "epoch" => format!("{}", running_epoch_info.epoch),
@@ -1144,7 +1144,7 @@ pub async fn emit_state(
     let pending_lamports: i64 = pending_records.iter().map(|record| record.priority_fee_lamports as i64).sum();
 
     datapoint_info!(
-        "pfs-state-0.0.8",
+        "pfs-state-0.0.9",
         ("priority-fee-distribution-account-external-balance", external_balance, i64),
         ("priority-fee-distribution-account-internal-balance", internal_balance, i64),
         ("unprocessed-record-count", unprocessed_record_count, i64),
@@ -1173,7 +1173,7 @@ pub fn emit_transfer(
     }
 
     datapoint_info!(
-        "pfs-transfer-0.0.8",
+        "pfs-transfer-0.0.9",
         ("epoch", running_epoch_info.epoch, i64),
         ("slot", running_epoch_info.slot, i64),
         ("signature", signature.to_string(), String),
@@ -1199,7 +1199,7 @@ pub fn emit_error(
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
     datapoint_error!(
-        "pfs-error-0.0.8",
+        "pfs-error-0.0.9",
         ("epoch", running_epoch_info.slot, i64),
         ("slot", running_epoch_info.epoch, i64),
         ("error", error_string, String),
@@ -1262,7 +1262,7 @@ pub async fn share_priority_fees_loop(
     // ----------------- METRICS SETUP -----------------------------
     if should_send_metrics() {
         let service_name = "priority_fee_sharing";
-        let vote = vote_authority_keypair.pubkey().to_string();
+        let vote = validator_vote_account.to_string();
         let identity = validator_identity.to_string();
         set_host_id(format!(
             "{}-{}-{},service_name={},vote={},identity={},priority_fee_distribution_program={},cluster={}",
