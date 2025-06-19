@@ -289,7 +289,12 @@ impl Tpu {
                 banking_stage_sender.clone(),
                 enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
             );
-            SigVerifyStage::new(sigverify_stage_receiver, verifier, "solSigVerTpu", "tpu-verifier")
+            SigVerifyStage::new(
+                sigverify_stage_receiver,
+                verifier,
+                "solSigVerTpu",
+                "tpu-verifier",
+            )
         };
 
         let vote_sigverify_stage = {
