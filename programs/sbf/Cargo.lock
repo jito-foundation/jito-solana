@@ -7559,16 +7559,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-rent-debits"
-version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f6f9113c6003492e74438d1288e30cffa8ccfdc2ef7b49b9e816d8034da18cd"
-dependencies = [
- "solana-pubkey",
- "solana-reward-info",
-]
-
-[[package]]
 name = "solana-reward-info"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7848,7 +7838,6 @@ dependencies = [
  "solana-rayon-threadlimit",
  "solana-rent",
  "solana-rent-collector",
- "solana-rent-debits",
  "solana-reward-info",
  "solana-runtime-transaction",
  "solana-sdk-ids",
@@ -9102,7 +9091,6 @@ dependencies = [
  "solana-pubkey",
  "solana-rent",
  "solana-rent-collector",
- "solana-rent-debits",
  "solana-sdk-ids",
  "solana-slot-hashes",
  "solana-svm-callback",

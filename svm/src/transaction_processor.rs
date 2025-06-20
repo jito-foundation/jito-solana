@@ -3,8 +3,8 @@ use qualifier_attr::{field_qualifiers, qualifiers};
 use {
     crate::{
         account_loader::{
-            collect_rent_from_account, load_transaction, validate_fee_payer, AccountLoader,
-            CheckedTransactionDetails, LoadedTransaction, TransactionCheckResult,
+            load_transaction, update_rent_exempt_status_for_account, validate_fee_payer,
+            AccountLoader, CheckedTransactionDetails, LoadedTransaction, TransactionCheckResult,
             TransactionLoadResult, ValidatedTransactionDetails,
         },
         account_overrides::AccountOverrides,
@@ -582,13 +582,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         };
 
         let fee_payer_loaded_rent_epoch = loaded_fee_payer.account.rent_epoch();
-        loaded_fee_payer.rent_collected = collect_rent_from_account(
-            account_loader.feature_set,
-            rent_collector,
-            fee_payer_address,
-            &mut loaded_fee_payer.account,
-        )
-        .rent_amount;
+        update_rent_exempt_status_for_account(rent_collector, &mut loaded_fee_payer.account);
 
         let fee_payer_index = 0;
         validate_fee_payer(
@@ -606,7 +600,6 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             nonce,
             *fee_payer_address,
             loaded_fee_payer.account.clone(),
-            loaded_fee_payer.rent_collected,
             fee_payer_loaded_rent_epoch,
         );
 
@@ -1123,7 +1116,6 @@ mod tests {
         },
         solana_rent::Rent,
         solana_rent_collector::{RentCollector, RENT_EXEMPT_RENT_EPOCH},
-        solana_rent_debits::RentDebits,
         solana_sdk_ids::{bpf_loader, system_program, sysvar},
         solana_signature::Signature,
         solana_svm_callback::{AccountState, InvokeContextCallback},
@@ -1370,8 +1362,6 @@ mod tests {
             fee_details: FeeDetails::default(),
             rollback_accounts: RollbackAccounts::default(),
             compute_budget: SVMTransactionExecutionBudget::default(),
-            rent: 0,
-            rent_debits: RentDebits::default(),
             loaded_accounts_data_size: 32,
         };
 
@@ -1467,8 +1457,6 @@ mod tests {
             fee_details: FeeDetails::default(),
             rollback_accounts: RollbackAccounts::default(),
             compute_budget: SVMTransactionExecutionBudget::default(),
-            rent: 0,
-            rent_debits: RentDebits::default(),
             loaded_accounts_data_size: 0,
         };
 
@@ -2080,7 +2068,6 @@ mod tests {
         );
 
         let fee_payer_rent_epoch = current_epoch;
-        let fee_payer_rent_debit = 0;
         let fee_payer_account = AccountSharedData::new_rent_epoch(
             starting_balance,
             0,
@@ -2136,7 +2123,6 @@ mod tests {
                     None, // nonce
                     *fee_payer_address,
                     post_validation_fee_payer_account.clone(),
-                    fee_payer_rent_debit,
                     fee_payer_rent_epoch
                 ),
                 compute_budget: compute_budget_and_limits.budget,
@@ -2146,7 +2132,6 @@ mod tests {
                 loaded_fee_payer_account: LoadedTransactionAccount {
                     loaded_size: base_account_size + fee_payer_account.data().len(),
                     account: post_validation_fee_payer_account,
-                    rent_collected: fee_payer_rent_debit,
                 },
             })
         );
@@ -2170,14 +2155,6 @@ mod tests {
         let transaction_fee = lamports_per_signature;
         let starting_balance = min_balance - 1;
         let fee_payer_account = AccountSharedData::new(starting_balance, 0, &Pubkey::default());
-        let fee_payer_rent_debit = rent_collector
-            .get_rent_due(
-                fee_payer_account.lamports(),
-                fee_payer_account.data().len(),
-                fee_payer_account.rent_epoch(),
-            )
-            .lamports();
-        assert!(fee_payer_rent_debit > 0);
 
         let mut mock_accounts = HashMap::new();
         mock_accounts.insert(*fee_payer_address, fee_payer_account.clone());
@@ -2187,7 +2164,6 @@ mod tests {
         };
         mock_bank.feature_set.formalize_loaded_transaction_data_size =
             formalize_loaded_transaction_data_size;
-        mock_bank.feature_set.disable_rent_fees_collection = false;
         let mut account_loader = (&mock_bank).into();
 
         let mut error_counters = TransactionErrorMetrics::default();
@@ -2206,8 +2182,7 @@ mod tests {
 
         let post_validation_fee_payer_account = {
             let mut account = fee_payer_account.clone();
-            account.set_rent_epoch(1);
-            account.set_lamports(starting_balance - transaction_fee - fee_payer_rent_debit);
+            account.set_lamports(starting_balance - transaction_fee);
             account
         };
 
@@ -2224,7 +2199,6 @@ mod tests {
                     None, // nonce
                     *fee_payer_address,
                     post_validation_fee_payer_account.clone(),
-                    fee_payer_rent_debit,
                     0, // rent epoch
                 ),
                 compute_budget: compute_budget_and_limits.budget,
@@ -2234,7 +2208,6 @@ mod tests {
                 loaded_fee_payer_account: LoadedTransactionAccount {
                     loaded_size: base_account_size + fee_payer_account.data().len(),
                     account: post_validation_fee_payer_account,
-                    rent_collected: fee_payer_rent_debit,
                 }
             })
         );
@@ -2507,7 +2480,6 @@ mod tests {
                         Some(future_nonce),
                         *fee_payer_address,
                         post_validation_fee_payer_account.clone(),
-                        0, // fee_payer_rent_debit
                         0, // fee_payer_rent_epoch
                     ),
                     compute_budget: compute_budget_and_limits.budget,
@@ -2517,7 +2489,6 @@ mod tests {
                     loaded_fee_payer_account: LoadedTransactionAccount {
                         loaded_size: base_account_size + fee_payer_account.data().len(),
                         account: post_validation_fee_payer_account,
-                        rent_collected: 0,
                     }
                 })
             );
