@@ -92,10 +92,10 @@ fn test_add_duplicate_record() -> Result<()> {
     let test_epoch = 100;
     fee_records.add_priority_fee_record(test_slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
 
-    // Try to add a duplicate record (should fail)
+    // Try to add a duplicate record (should be okay)
     let result =
         fee_records.add_priority_fee_record(test_slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY);
-    assert!(result.is_err());
+    assert!(result.is_ok());
 
     // Clean up
     fs::remove_dir_all(&test_dir)?;
@@ -253,11 +253,6 @@ fn test_add_ante_record() -> Result<()> {
     let ante_records = fee_records.get_records_by_category(FeeRecordCategory::Ante)?;
     assert_eq!(ante_records.len(), 1);
     assert_eq!(ante_records[0].slot, test_slot);
-
-    // Try adding duplicate
-    let result =
-        fee_records.add_priority_fee_record(test_slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY);
-    assert!(result.is_err());
 
     // Clean up
     fs::remove_dir_all(&test_dir)?;

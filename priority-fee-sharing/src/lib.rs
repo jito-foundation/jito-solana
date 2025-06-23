@@ -97,15 +97,15 @@ impl PFEpochInfo {
     }
 
     pub fn last_slot_in_epoch(&self) -> u64 {
-        self.first_slot_in_epoch() + self.slots_in_epoch
+        self.first_slot_in_epoch() + (self.slots_in_epoch - 1)
     }
 
     pub fn percentage_of_epoch(&self) -> f64 {
-        self.slot_index as f64 / self.slots_in_epoch as f64 * 100.0
+        self.slot_index as f64 / (self.slots_in_epoch - 1) as f64 * 100.0
     }
 
     pub fn remaining_slots(&self) -> u64 {
-        self.slots_in_epoch - self.slot_index
+        (self.slots_in_epoch - 1) - self.slot_index
     }
 }
 
@@ -944,27 +944,26 @@ async fn handle_pending_blocks(
     for record in records {
         // Sanity Check
         if record.vote_account.ne(&validator_vote_account.to_string()) {
-            info!(
-                "Record is not for the correct validator {} != {}",
-                record.vote_account, validator_vote_account
-            );
+            let error = format!("Record is not for the correct validator {} != {}", record.vote_account, validator_vote_account);
+            error!("{}", error);
             continue;
+            // return Err(anyhow!(error));
         }
         // Sanity Check
         if record.state != FeeRecordState::ProcessedAndPending {
-            info!(
-                "Record is not in the correct state {:?} != {:?}",
-                record.state,
-                FeeRecordState::ProcessedAndPending
-            );
+            let error = format!("Record is not for the correct state {:?} != {:?}", record.state, FeeRecordState::ProcessedAndPending);
+            error!("{}", error);
             continue;
+            // return Err(anyhow!(error));
         }
 
         let amount_to_share = match calculate_share(record.priority_fee_lamports, commission_bps) {
             Ok(amount) => amount,
             Err(err) => {
-                info!("Error calculating share: {}", err);
+                let error = format!("Error calculating share: {}", err);
+                error!("{}", error);
                 continue;
+                // return Err(anyhow!(error));
             }
         };
 
