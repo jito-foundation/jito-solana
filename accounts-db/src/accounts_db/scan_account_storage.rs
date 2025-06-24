@@ -232,6 +232,7 @@ impl AccountsDb {
             .range()
             .end
             .saturating_sub(slots_per_epoch);
+        let max_slot = snapshot_storages.max_slot_inclusive();
 
         stats.scan_chunks = splitter.chunk_count;
 
@@ -254,7 +255,7 @@ impl AccountsDb {
                         self.update_old_slot_stats(stats, storage);
                     }
                     if let Some(storage) = storage {
-                        let ok = Self::hash_storage_info(&mut hasher, storage, slot);
+                        let ok = Self::hash_storage_info(&mut hasher, storage, slot, max_slot);
                         if !ok {
                             load_from_cache = false;
                             break;

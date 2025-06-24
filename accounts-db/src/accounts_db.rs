@@ -6286,15 +6286,31 @@ impl AccountsDb {
         }
     }
 
-    /// hash info about 'storage' into 'hasher'
-    /// return true iff storage is valid for loading from cache
+    /// Hash information about `storage` into `hasher`.
+    ///
+    /// # Parameters
+    /// - `storage`: The storage to hash.
+    /// - `slot`: The slot of the storage.
+    /// - `hash_slot`: The slot at which the storage is being hashed.
+    ///   Obsolete account data is only relevant for the hash if `hash_slot` is greater than the slot that marked the account obsolete.
+    ///
+    /// # Returns
+    /// `true` if the storage is valid for loading from the cache.
     fn hash_storage_info(
         hasher: &mut impl StdHasher,
         storage: &AccountStorageEntry,
         slot: Slot,
+        hash_slot: Slot,
     ) -> bool {
         // hash info about this storage
         storage.written_bytes().hash(hasher);
+
+        // Obsolete accounts change the hash as they may cause accounts to no longer be included in the hash
+        storage
+            .get_obsolete_accounts(Some(hash_slot))
+            .len()
+            .hash(hasher);
+
         slot.hash(hasher);
         let storage_file = storage.accounts.path();
         storage_file.hash(hasher);

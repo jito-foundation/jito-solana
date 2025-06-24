@@ -6131,29 +6131,48 @@ fn test_hash_storage_info() {
         let mark_alive = false;
         let storage = sample_storage_with_entries(&tf, slot, &pubkey1, mark_alive);
 
-        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot);
+        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot, slot);
         let hash = hasher.finish();
         // can't assert hash here - it is a function of mod date
         assert!(load);
         let slot = 2; // changed this
         let mut hasher = DefaultHasher::new();
-        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot);
+        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot, slot);
         let hash2 = hasher.finish();
         assert_ne!(hash, hash2); // slot changed, these should be different
                                  // can't assert hash here - it is a function of mod date
         assert!(load);
         let mut hasher = DefaultHasher::new();
         append_sample_data_to_storage(&storage, &solana_pubkey::new_rand(), false, None);
-        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot);
+        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot, slot);
         let hash3 = hasher.finish();
         assert_ne!(hash2, hash3); // moddate and written size changed
                                   // can't assert hash here - it is a function of mod date
         assert!(load);
         let mut hasher = DefaultHasher::new();
-        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot);
+        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot, slot);
         let hash4 = hasher.finish();
         assert_eq!(hash4, hash3); // same
                                   // can't assert hash here - it is a function of mod date
+
+        assert!(load);
+        let mut hasher = DefaultHasher::new();
+        storage.mark_accounts_obsolete(vec![(0, 136)].into_iter(), slot + 1);
+        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot, slot);
+        let hash5 = hasher.finish();
+        assert_eq!(hash5, hash4); // Obsolete accounts hasn't changed, as the obsolete account is newer than the slot being hashed
+        assert!(load);
+
+        let mut hasher = DefaultHasher::new();
+        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot, slot + 1);
+        let hash6 = hasher.finish();
+        assert_ne!(hash6, hash5); // Obsolete accounts has changed, as the obsolete account is now included in the hash
+        assert!(load);
+
+        let mut hasher = DefaultHasher::new();
+        let load = AccountsDb::hash_storage_info(&mut hasher, &storage, slot, slot + 2);
+        let hash7 = hasher.finish();
+        assert_eq!(hash7, hash6); // Nothing has changed even though the slot that the hash is being performed at has changed.
         assert!(load);
     }
 }
