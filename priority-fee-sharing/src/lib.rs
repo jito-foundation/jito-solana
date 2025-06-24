@@ -892,7 +892,7 @@ fn should_handle_pending_blocks(
     }
 
     // If we're in the last 1000 slots - transfer
-    if transfer_theshold < 100.0 && remaining_slots < 1_000{
+    if transfer_theshold <= (100.0 + percentage_per_transaction) && remaining_slots < 1_000{
         return true;
     }
 
