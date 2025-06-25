@@ -1,16 +1,15 @@
 // Local modules
 pub mod error;
 pub mod fee_records;
+pub mod metrics;
 
 // External crates
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
 use log::{error, info, warn};
-use solana_metrics::set_host_id;
 use tokio::time::sleep;
 
 // Standard library
-use std::env;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,7 +19,6 @@ use solana_account::Account;
 use solana_client::rpc_config::{
     RpcBlockConfig, RpcLeaderScheduleConfig, RpcSendTransactionConfig,
 };
-use solana_metrics::{datapoint_error, datapoint_info};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -39,6 +37,13 @@ use solana_sdk::{
 
 // Re-exports from local modules
 use fee_records::{FeeRecordEntry, FeeRecordState, FeeRecords};
+
+use crate::metrics::emit_error_metrics;
+use crate::metrics::emit_heartbeat_metrics;
+use crate::metrics::emit_state_metrics;
+use crate::metrics::emit_transfer_metrics;
+use crate::metrics::setup_metrics;
+use crate::metrics::should_send_metrics;
 
 // ------------------------- GLOBAL CONSTANTS -----------------------------
 // 1s/block, 4 leader blocks in a row
@@ -111,6 +116,7 @@ impl PFEpochInfo {
 
 // ------------------------- VERIFY SETUP -----------------------------
 pub async fn verify_setup(
+    cluster: Cluster,
     rpc_url: String,
     fee_records_db_path: PathBuf,
     priority_fee_payer_keypair_path: PathBuf,
@@ -300,8 +306,12 @@ pub async fn verify_setup(
     info!("✅ Priority fees OK: {}", priority_fee_lamports);
     info!("✅ Loop sleep MS OK: {}", loop_timeout_ms);
 
-    if should_send_metrics() {
-        info!("✅ Metrics OK");
+    // --------------------- METRICS SETUP ------------------------
+    match setup_metrics(&cluster, &validator_vote_account, &validator_identity, &priority_fee_distribution_program) {
+        Ok(_) => info!("✅ Metrics OK"),
+        Err(err) => {
+            return Err(anyhow!("❌ Metrics setup failed: {}", err));
+        }
     }
 
     info!("");
@@ -407,12 +417,6 @@ async fn get_epoch_info_safe(rpc_client: &RpcClient, commitment: Option<Commitme
 
 
 // ------------------------- HELPER FUNCTIONS -----------------------------
-
-pub fn should_send_metrics() -> bool {
-    env::var("SOLANA_METRICS_CONFIG")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-}
 
 fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u64> {
     // Calculate the amount that goes to delegators (total minus commission)
@@ -1097,13 +1101,7 @@ pub fn emit_heartbeat(
 
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
-    datapoint_info!(
-        "pfs-heartbeat-0.0.9",
-        ("epoch", running_epoch_info.epoch, i64),
-        ("slot", running_epoch_info.slot, i64),
-        "epoch" => format!("{}", running_epoch_info.epoch),
-        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-    );
+    emit_heartbeat_metrics(&priority_fee_distribution_account, running_epoch_info);
 }
 
 pub async fn emit_state(
@@ -1142,18 +1140,7 @@ pub async fn emit_state(
     let pending_record_count = pending_records.len();
     let pending_lamports: i64 = pending_records.iter().map(|record| record.priority_fee_lamports as i64).sum();
 
-    datapoint_info!(
-        "pfs-state-0.0.9",
-        ("priority-fee-distribution-account-external-balance", external_balance, i64),
-        ("priority-fee-distribution-account-internal-balance", internal_balance, i64),
-        ("unprocessed-record-count", unprocessed_record_count, i64),
-        ("pending-record-count", pending_record_count, i64),
-        ("pending-lamports", pending_lamports, i64),
-        ("epoch", running_epoch_info.epoch, i64),
-        ("slot", running_epoch_info.slot, i64),
-        "epoch" => format!("{}", running_epoch_info.epoch),
-        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-    );
+    emit_state_metrics(&priority_fee_distribution_account, running_epoch_info, external_balance, internal_balance, unprocessed_record_count, pending_record_count, pending_lamports);
 
     Ok(())
 }
@@ -1171,18 +1158,7 @@ pub fn emit_transfer(
         return;
     }
 
-    datapoint_info!(
-        "pfs-transfer-0.0.9",
-        ("epoch", running_epoch_info.epoch, i64),
-        ("slot", running_epoch_info.slot, i64),
-        ("signature", signature.to_string(), String),
-        ("slots-covered", slots_covered, i64),
-        ("total-priority-fees", total_priority_fees, i64),
-        ("transfer-amount-lamports", transfer_amount_lamports, i64),
-        ("priority-fee-distribution-account-balance", priority_fee_distribution_account_balance, i64),
-        "epoch" => format!("{}", running_epoch_info.epoch),
-        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-    );
+    emit_transfer_metrics(priority_fee_distribution_account, running_epoch_info, signature, slots_covered, total_priority_fees, transfer_amount_lamports, priority_fee_distribution_account_balance);
 }
 
 pub fn emit_error(
@@ -1197,14 +1173,7 @@ pub fn emit_error(
 
     let (priority_fee_distribution_account, _) = get_priority_fee_distribution_account_address(validator_vote_account, priority_fee_distribution_program, running_epoch_info.epoch);
 
-    datapoint_error!(
-        "pfs-error-0.0.9",
-        ("epoch", running_epoch_info.slot, i64),
-        ("slot", running_epoch_info.epoch, i64),
-        ("error", error_string, String),
-        "epoch" => format!("{}", running_epoch_info.epoch),
-        "priority-fee-distribution-account" => priority_fee_distribution_account.to_string(),
-    );
+    emit_error_metrics(&priority_fee_distribution_account, running_epoch_info, error_string);
 }
 
 // ------------------------- MAIN FUNCTIONS -----------------------------
@@ -1226,6 +1195,7 @@ pub async fn share_priority_fees_loop(
 ) -> Result<()> {
     // ------------------ VERIFY SETUP -----------------------------
     verify_setup(
+        cluster,
         rpc_url.clone(),
         fee_records_db_path.clone(),
         priority_fee_payer_keypair_path.clone(),
@@ -1257,24 +1227,6 @@ pub async fn share_priority_fees_loop(
 
     let mut running_epoch_info = PFEpochInfo::null();
     let mut transfer_count = 0;
-
-    // ----------------- METRICS SETUP -----------------------------
-    if should_send_metrics() {
-        let service_name = "priority_fee_sharing";
-        let vote = validator_vote_account.to_string();
-        let identity = validator_identity.to_string();
-        set_host_id(format!(
-            "{}-{}-{},service_name={},vote={},identity={},priority_fee_distribution_program={},cluster={}",
-            service_name,
-            vote,
-            cluster,
-            service_name,
-            vote,
-            identity,
-            priority_fee_distribution_program.to_string(),
-            cluster,
-        ));
-    }
 
     // ------------------ LOOP -----------------------------
     loop {

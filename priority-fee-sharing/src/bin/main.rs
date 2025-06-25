@@ -2,9 +2,8 @@ use clap::{Parser, Subcommand};
 use log::info;
 use priority_fee_sharing::fee_records::{FeeRecordState, FeeRecords};
 use priority_fee_sharing::{
-    print_epoch_info, print_priority_fee_distribution_account_info, share_priority_fees_loop, should_send_metrics, Cluster
+    print_epoch_info, print_priority_fee_distribution_account_info, share_priority_fees_loop, Cluster
 };
-use solana_metrics::set_host_id;
 use solana_pubkey::Pubkey;
 use solana_sdk::native_token::sol_to_lamports;
 use std::path::PathBuf;
@@ -199,20 +198,6 @@ async fn main() -> Result<(), anyhow::Error> {
             info!("Priority fee lamports: {}", priority_fee_lamports);
             info!("Transactions per epoch: {}", transactions_per_epoch);
             info!("Loop timeout ms: {}", loop_sleep_ms);
-
-            if should_send_metrics() {
-                let service_name = "priority_fee_sharing";
-                let vote_account = validator_vote_pubkey.to_string();
-                set_host_id(format!(
-                    "{}-{}-{},cluster={},vote_account={},service_name={}",
-                    service_name,
-                    vote_account,
-                    cluster.clone(),
-                    cluster.clone(),
-                    vote_account,
-                    service_name
-                ));
-            }
 
             share_priority_fees_loop(
                 cluster.clone(),

@@ -319,6 +319,10 @@ Environment=LOOP_SLEEP_MS=$LOOP_SLEEP_MS
 # Solana metrics configuration
 Environment=SOLANA_METRICS_CONFIG="$SOLANA_METRICS_CONFIG"
 
+Environment=PROMETHEUS_PUSH_GATEWAY="$PROMETHEUS_PUSH_GATEWAY"
+Environment=PROMETHEUS_JOB_NAME="$PROMETHEUS_JOB_NAME"
+Environment=PROMETHEUS_INSTANCE="$PROMETHEUS_INSTANCE"
+
 # --------------- LOGGING -------------------------
 # Log level
 Environment=RUST_LOG=$RUST_LOG
