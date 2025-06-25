@@ -2340,8 +2340,8 @@ pub struct NodeConfig {
     /// The gossip port advertised to the cluster
     pub gossip_port: u16,
     pub port_range: PortRange,
-    /// The IP address the node binds to
-    pub bind_ip_addr: IpAddr,
+    /// Multihoming: The IP addresses the node can bind to
+    pub bind_ip_addrs: BindIpAddrs,
     pub public_tpu_addr: Option<SocketAddr>,
     pub public_tpu_forwards_addr: Option<SocketAddr>,
     pub vortexor_receiver_addr: Option<SocketAddr>,
@@ -2352,6 +2352,57 @@ pub struct NodeConfig {
     pub num_tvu_retransmit_sockets: NonZeroUsize,
     /// The number of QUIC tpu endpoints
     pub num_quic_endpoints: NonZeroUsize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BindIpAddrs {
+    /// The IP addresses this node may bind to
+    /// Index 0 is the primary address
+    /// Index 1+ are secondary addresses
+    addrs: Vec<IpAddr>,
+}
+
+impl BindIpAddrs {
+    pub fn new(addrs: Vec<IpAddr>) -> Result<Self, String> {
+        if addrs.is_empty() {
+            return Err(
+                "BindIpAddrs requires at least one IP address (--bind-address)".to_string(),
+            );
+        }
+        if addrs.len() > 1 {
+            for ip in &addrs {
+                if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+                    return Err(format!(
+                        "Invalid configuration: {:?} is not allowed with multiple --bind-address values (loopback, unspecified, or multicast)",
+                        ip
+                    ));
+                }
+            }
+        }
+
+        Ok(Self { addrs })
+    }
+
+    #[inline]
+    pub fn primary(&self) -> IpAddr {
+        self.addrs[0]
+    }
+}
+
+// Makes BindIpAddrs behave like &[IpAddr]
+impl Deref for BindIpAddrs {
+    type Target = [IpAddr];
+
+    fn deref(&self) -> &Self::Target {
+        &self.addrs
+    }
+}
+
+// For generic APIs expecting something like AsRef<[IpAddr]>
+impl AsRef<[IpAddr]> for BindIpAddrs {
+    fn as_ref(&self) -> &[IpAddr] {
+        &self.addrs
+    }
 }
 
 #[derive(Debug)]
@@ -2665,7 +2716,7 @@ impl Node {
             advertised_ip,
             gossip_port,
             port_range,
-            bind_ip_addr,
+            bind_ip_addrs,
             public_tpu_addr,
             public_tpu_forwards_addr,
             num_tvu_receive_sockets,
@@ -2673,6 +2724,7 @@ impl Node {
             num_quic_endpoints,
             vortexor_receiver_addr,
         } = config;
+        let bind_ip_addr = bind_ip_addrs.primary();
 
         let gossip_addr = SocketAddr::new(advertised_ip, gossip_port);
         let (gossip_port, (gossip, ip_echo)) =
@@ -3302,7 +3354,7 @@ mod tests {
             advertised_ip: IpAddr::V4(ip),
             gossip_port: 0,
             port_range,
-            bind_ip_addr: IpAddr::V4(ip),
+            bind_ip_addrs: BindIpAddrs::new(vec![IpAddr::V4(ip)]).unwrap(),
             public_tpu_addr: None,
             public_tpu_forwards_addr: None,
             num_tvu_receive_sockets: MINIMUM_NUM_TVU_RECEIVE_SOCKETS,
@@ -3327,7 +3379,7 @@ mod tests {
             advertised_ip: ip,
             gossip_port: port,
             port_range,
-            bind_ip_addr: ip,
+            bind_ip_addrs: BindIpAddrs::new(vec![ip]).unwrap(),
             public_tpu_addr: None,
             public_tpu_forwards_addr: None,
             num_tvu_receive_sockets: MINIMUM_NUM_TVU_RECEIVE_SOCKETS,

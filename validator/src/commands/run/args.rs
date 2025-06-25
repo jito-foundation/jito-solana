@@ -946,8 +946,9 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
             .validator(solana_net_utils::is_host)
             .default_value(&default_args.bind_address)
-            .help("IP address to bind the validator ports"),
-    )
+            .multiple(true)
+            .help("Repeatable. IP addresses to bind the validator ports on. First is primary (used on startup), the rest may be switched to during operation."),
+        )
     .arg(
         Arg::with_name("rpc_bind_address")
             .long("rpc-bind-address")
