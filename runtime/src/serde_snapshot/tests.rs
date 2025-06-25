@@ -27,7 +27,6 @@ mod serde_snapshot_tests {
         },
         solana_clock::Slot,
         solana_epoch_schedule::EpochSchedule,
-        solana_genesis_config::{ClusterType, GenesisConfig},
         solana_hash::Hash,
         solana_nohash_hasher::BuildNoHashHasher,
         solana_pubkey::Pubkey,
@@ -72,10 +71,6 @@ mod serde_snapshot_tests {
             snapshot_accounts_db_fields,
             account_paths,
             storage_and_next_append_vec_id,
-            &GenesisConfig {
-                cluster_type: ClusterType::Development,
-                ..GenesisConfig::default()
-            },
             None,
             false,
             Some(solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING),
