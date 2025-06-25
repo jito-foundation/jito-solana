@@ -162,9 +162,86 @@ To update the Priority Fee Sharing service, follow these steps ( do in the `prio
 
 ## Metrics
 
-### Influx
-
 ### Prometheus
+
+Prometheus is enabled when the corresponding `.env` variables are provided.
+
+### InfluxDB
+
+The Priority Fee Sharing service sends metrics to InfluxDB instances managed by Jito Labs. There are two separate datasources:
+
+1. **Priority Fee Sharing Script (PFS)** - Metrics from your validator's fee sharing service
+2. **Priority Fee History (PFH)** - Network-wide on-chain priority fee data
+
+To view your metrics, you'll need to:
+
+1. **Get Access Credentials**
+   - Contact Jito Labs to receive your InfluxDB credentials
+   - You'll receive connection details for both PFS and PFH datasources
+
+2. **Configure SOLANA_METRICS_CONFIG**
+   - Add the provided metrics configuration to your `.env` file
+   - This enables automatic metric submission from your PFS service
+
+### Grafana
+
+We provide a pre-configured Grafana dashboard template to monitor your Priority Fee Sharing service.
+
+#### Setting Up the Dashboard
+
+1. **Access Grafana**
+   - Log into your Grafana instance
+   - Navigate to Dashboards → Import
+
+2. **Import the Dashboard**
+   - Click "Upload dashboard JSON file"
+   - Select the provided `./grafana.json` file
+   - You'll be prompted to configure datasources
+
+3. **Configure Datasources**
+
+   During import, map the following datasources:
+
+   | Template Variable | Your Datasource | Description |
+   |------------------|-----------------|-------------|
+   | **Priority Fee Sharing Script** | Select your PFS InfluxDB | Requires read/write access |
+   | **Priority Fee History** | Select your PFH InfluxDB | Requires read access only |
+
+4. **Configure Dashboard Variables**
+
+   After import, the dashboard will auto-populate these variables:
+   - **Cluster**: Select `mainnet` or `testnet`
+   - **Vote Account**: Your validator's vote account will appear after datasource connection
+   - **Epoch**: Select the epoch you want to monitor
+
+#### Dashboard Panels
+
+Your dashboard includes four main panels:
+
+- 🟨 **PFS Heartbeat**: Shows the current epoch your Priority Fee Sharing service is processing
+- 🟨 **PFS Total Shared**: Displays the total SOL distributed to delegators for the selected epoch
+- 🟦 **PFH Heartbeat**: Monitors the on-chain history service availability
+- 🟦 **PFH Expected Share**: Shows the expected SOL distribution based on network data
+
+**Note**: A small difference between "Total Shared" and "Expected Share" is normal due to transfers near epoch boundaries.
+
+### Alerting
+
+To set up alerts for your Priority Fee Sharing service:
+
+1. **PFS Heartbeat Alert**
+   - Alert if the PFS epoch falls behind the current epoch
+   - Indicates your service may have stopped or encountered issues
+
+2. **Balance Monitoring**
+   - Alert if your fee payer account balance drops below `MINIMUM_BALANCE_SOL`
+   - Ensures you can continue distributing fees
+
+3. **Distribution Discrepancy**
+   - Alert if the difference between Total Shared and Expected Share exceeds 5%
+   - May indicate distribution issues
+
+Configure alerts through Grafana's alerting system to notify via your preferred channels (email, Slack, PagerDuty, etc.).
 
 ## Troubleshooting
 
