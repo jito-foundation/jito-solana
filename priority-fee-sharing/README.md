@@ -67,6 +67,9 @@ vim .env
 | `PRIORITY_FEE_LAMPORTS`             | Default  | Priority fee for transactions (in lamports)     |
 | `TRANSACTIONS_PER_EPOCH`            | Default  | Number of transactions per epoch                |
 | `SOLANA_METRICS_CONFIG`             | Optional | Solana metrics configuration credentials        |
+| `PROMETHEUS_PUSH_GATEWAY`           | Optional | Prometheus push gateway URL                     |
+| `PROMETHEUS_JOB_NAME`               | Optional | Prometheus job name                             |
+| `PROMETHEUS_INSTANCE`               | Optional | Prometheus instance                             |
 
 ### 2. Run Installation Script
 
@@ -156,6 +159,12 @@ To update the Priority Fee Sharing service, follow these steps ( do in the `prio
    ```bash
    ./setup_priority_fee_sharing.sh
    ```
+
+## Metrics
+
+### Influx
+
+### Prometheus
 
 ## Troubleshooting
 
