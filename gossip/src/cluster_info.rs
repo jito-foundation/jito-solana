@@ -73,6 +73,7 @@ use {
     solana_signature::Signature,
     solana_signer::Signer,
     solana_streamer::{
+        atomic_udp_socket::AtomicUdpSocket,
         packet,
         quic::DEFAULT_QUIC_ENDPOINTS,
         socket::SocketAddrSpace,
@@ -390,6 +391,15 @@ impl ClusterInfo {
         self.my_contact_info.write().unwrap().hot_swap_pubkey(id);
 
         self.refresh_my_gossip_contact_info();
+    }
+
+    pub fn set_gossip_socket(&self, gossip_addr: SocketAddr) -> Result<(), ContactInfoError> {
+        self.my_contact_info
+            .write()
+            .unwrap()
+            .set_gossip(gossip_addr)?;
+        self.refresh_my_gossip_contact_info();
+        Ok(())
     }
 
     pub fn set_tpu(&self, tpu_addr: SocketAddr) -> Result<(), ContactInfoError> {
@@ -2298,7 +2308,7 @@ impl ClusterInfo {
 
 #[derive(Debug)]
 pub struct Sockets {
-    pub gossip: UdpSocket,
+    pub gossip: AtomicUdpSocket,
     pub ip_echo: Option<TcpListener>,
     pub tvu: Vec<UdpSocket>,
     pub tvu_quic: UdpSocket,
@@ -2536,7 +2546,7 @@ impl Node {
         Node {
             info,
             sockets: Sockets {
-                gossip,
+                gossip: AtomicUdpSocket::new(gossip),
                 ip_echo: Some(ip_echo),
                 tvu: vec![tvu],
                 tvu_quic,
@@ -2684,7 +2694,7 @@ impl Node {
         Node {
             info,
             sockets: Sockets {
-                gossip,
+                gossip: AtomicUdpSocket::new(gossip),
                 ip_echo: Some(ip_echo),
                 tvu: vec![tvu],
                 tvu_quic,
@@ -2858,7 +2868,7 @@ impl Node {
         info!("vortexor_receivers is {vortexor_receivers:?}");
         trace!("new ContactInfo: {:?}", info);
         let sockets = Sockets {
-            gossip,
+            gossip: AtomicUdpSocket::new(gossip),
             tvu: tvu_sockets,
             tvu_quic,
             tpu: tpu_sockets,
@@ -3338,7 +3348,7 @@ mod tests {
     }
 
     fn check_node_sockets(node: &Node, ip: IpAddr, range: (u16, u16)) {
-        check_socket(&node.sockets.gossip, ip, range);
+        check_socket(&node.sockets.gossip.load(), ip, range);
         check_socket(&node.sockets.repair, ip, range);
         check_socket(&node.sockets.tvu_quic, ip, range);
 

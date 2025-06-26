@@ -1320,7 +1320,7 @@ impl Validator {
         let gossip_service = GossipService::new(
             &cluster_info,
             Some(bank_forks.clone()),
-            node.sockets.gossip,
+            node.sockets.gossip.clone(),
             config.gossip_validators.clone(),
             should_check_duplicate_instance,
             Some(stats_reporter_sender.clone()),
@@ -1681,6 +1681,7 @@ impl Validator {
             repair_socket: Arc::new(node.sockets.repair),
             outstanding_repair_requests,
             cluster_slots,
+            gossip_socket: Some(node.sockets.gossip.clone()),
         });
 
         Ok(Self {
