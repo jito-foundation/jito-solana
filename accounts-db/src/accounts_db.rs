@@ -7947,6 +7947,7 @@ impl AccountsDb {
                     let mut scan_time_sum = 0;
                     let mut all_accounts_are_zero_lamports_slots_inner = 0;
                     let mut all_zeros_slots_inner = vec![];
+                    let mut local_zero_lamport_pubkeys = Vec::new();
                     let mut insert_time_sum = 0;
                     let mut total_including_duplicates_sum = 0;
                     let mut accounts_data_len_sum = 0;
@@ -7972,7 +7973,7 @@ impl AccountsDb {
                                 insert_time_us: insert_us,
                                 num_accounts: total_this_slot,
                                 accounts_data_len: accounts_data_len_this_slot,
-                                zero_lamport_pubkeys: zero_pubkeys_this_slot,
+                                zero_lamport_pubkeys: mut zero_lamport_pubkeys_this_slot,
                                 all_accounts_are_zero_lamports,
                                 num_did_not_exist,
                                 num_existed_in_mem,
@@ -7993,10 +7994,7 @@ impl AccountsDb {
                                 all_accounts_are_zero_lamports_slots_inner += 1;
                                 all_zeros_slots_inner.push((*slot, Arc::clone(&storage)));
                             }
-                            let mut zero_pubkeys = zero_lamport_pubkeys.lock().unwrap();
-                            zero_pubkeys_this_slot.into_iter().for_each(|k| {
-                                zero_pubkeys.insert(k);
-                            });
+                            local_zero_lamport_pubkeys.append(&mut zero_lamport_pubkeys_this_slot);
 
                             insert_us
                         } else {
@@ -8030,6 +8028,11 @@ impl AccountsDb {
                     }
 
                     if pass == 0 {
+                        let mut zero_lamport_pubkeys_lock = zero_lamport_pubkeys.lock().unwrap();
+                        zero_lamport_pubkeys_lock.reserve(local_zero_lamport_pubkeys.len());
+                        zero_lamport_pubkeys_lock.extend(local_zero_lamport_pubkeys.into_iter());
+                        drop(zero_lamport_pubkeys_lock);
+
                         // This thread has finished processing its chunk of slots.
                         // Update the index stats now.
                         let index_stats = self.accounts_index.bucket_map_holder_stats();
