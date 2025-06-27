@@ -200,7 +200,7 @@ We provide a pre-configured Grafana dashboard template to monitor your Priority 
    During import, map the following datasources ( Reach out to Jito for datasources ):
 
    | Template Variable | URL | Database | User | Password |
-   |------------------|-----------------|-------------|
+   |---|---|---|---|---|
    | **Priority Fee Sharing Script** | http://tip-router.metrics.jito.wtf:8086 | priority-fee-sharing | validator | *Reach out to Jito |
    | **Priority Fee History** | http://tip-router.metrics.jito.wtf:8086 | priority-fee-history | validator | *Reach out to Jito |
 
