@@ -132,6 +132,22 @@ pub async fn verify_setup(
 ) -> Result<()> {
     let rpc_client = RpcClient::new(rpc_url);
 
+    // ---------------- CLUSTER CHECK ----------------------------
+    match cluster {
+        Cluster::MainnetBeta => {
+            info!("✅ Cluster {} OK", cluster);
+        }
+        Cluster::Devnet => {
+            info!("✅ Cluster {} OK", cluster);
+        }
+        Cluster::Testnet => {
+            info!("✅ Cluster {} OK", cluster);
+        }
+        Cluster::Localnet => {
+            info!("✅ Cluster {} OK", cluster);
+        }
+    }
+
     // ---------------- VOTE AUTHORITY CHECK ---------------------
     let vote_authority_keypair = match read_keypair_file(vote_authority_keypair_path) {
         Ok(keypair) => {

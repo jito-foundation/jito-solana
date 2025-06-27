@@ -12,17 +12,10 @@ This service enables validators to distribute priority fees to their delegators 
 git clone --recursive https://github.com/jito-foundation/jito-solana.git jito-priority-fee-sharing
 ```
 
-2. Checkout the priority fee branch:
+2. Navigate to the priority fee directory:
 
 ```bash
-cd jito-priority-fee-sharing
-git checkout ck/distro-script
-```
-
-3. Navigate to the priority fee directory:
-
-```bash
-cd priority-fee-sharing
+cd jito-priority-fee-sharing/priority-fee-sharing
 ```
 
 **NOTE:**
@@ -183,6 +176,10 @@ To view your metrics, you'll need to:
    - Add the provided metrics configuration to your `.env` file
    - This enables automatic metric submission from your PFS service
 
+   ```env
+   SOLANA_METRICS_CONFIG="host=http://tip-router.metrics.jito.wtf:8086,db=priority-fee-sharing,u=validator,p=<PASSWORD>"
+   ```
+
 ### Grafana
 
 We provide a pre-configured Grafana dashboard template to monitor your Priority Fee Sharing service.
@@ -202,10 +199,10 @@ We provide a pre-configured Grafana dashboard template to monitor your Priority 
 
    During import, map the following datasources ( Reach out to Jito for datasources ):
 
-   | Template Variable | Your Datasource | Description |
+   | Template Variable | URL | Database | User | Password |
    |------------------|-----------------|-------------|
-   | **Priority Fee Sharing Script** | Select your PFS InfluxDB | Requires read/write access |
-   | **Priority Fee History** | Select your PFH InfluxDB | Requires read access only |
+   | **Priority Fee Sharing Script** | http://tip-router.metrics.jito.wtf:8086 | priority-fee-sharing | validator | *Reach out to Jito |
+   | **Priority Fee History** | http://tip-router.metrics.jito.wtf:8086 | priority-fee-history | validator | *Reach out to Jito |
 
 4. **Configure Dashboard Variables**
 
