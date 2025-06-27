@@ -1,0 +1,617 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PRIORITY_FEE_SHARING_SCRIPT",
+      "label": "Priority Fee Sharing Script",
+      "description": "InfluxDB datasource for PFS metrics (requires read/write access)",
+      "type": "datasource",
+      "pluginId": "influxdb",
+      "pluginName": "InfluxDB"
+    },
+    {
+      "name": "DS_PRIORITY_FEE_HISTORY",
+      "label": "Priority Fee History",
+      "description": "InfluxDB datasource for PFH metrics (requires read access)",
+      "type": "datasource",
+      "pluginId": "influxdb",
+      "pluginName": "InfluxDB"
+    }
+  ],
+  "__elements": {},
+  "__requires": [
+    {
+      "type": "datasource",
+      "id": "influxdb",
+      "name": "InfluxDB",
+      "version": "1.0.0"
+    },
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "9.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "text",
+      "name": "Text",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Dashboard for monitoring Jito Priority Fee Sharing (PFS) service metrics including heartbeats, transfers, and fee distribution",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_PRIORITY_FEE_SHARING_SCRIPT}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "9.0.0",
+      "targets": [
+        {
+          "alias": "Epoch Heartbeat",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_PRIORITY_FEE_SHARING_SCRIPT}"
+          },
+          "groupBy": [],
+          "measurement": "pfs-heartbeat-0.0.6",
+          "orderByTime": "ASC",
+          "policy": "default",
+          "query": "SELECT \"epoch\" FROM \"pfs-heartbeat-$PFSversion\" WHERE (\"vote\"::tag =~ /^$vote$/ AND \"cluster\"::tag =~ /^$cluster$/) AND $timeFilter",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series",
+          "select": [
+            [
+              {
+                "params": [
+                  "epoch"
+                ],
+                "type": "field"
+              }
+            ]
+          ],
+          "tags": []
+        }
+      ],
+      "title": "PFS Heartbeat ( $cluster - $vote )",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_PRIORITY_FEE_HISTORY}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "9.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_PRIORITY_FEE_HISTORY}"
+          },
+          "groupBy": [
+            {
+              "params": [
+                "$__interval"
+              ],
+              "type": "time"
+            },
+            {
+              "params": [
+                "null"
+              ],
+              "type": "fill"
+            }
+          ],
+          "measurement": "pfh-block-info-0.0.3",
+          "orderByTime": "ASC",
+          "policy": "default",
+          "query": "SELECT distinct(\"epoch\") FROM \"pfh-block-info-$PFHversion\" WHERE (\"cluster\"::tag =~ /^$cluster$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series",
+          "select": [
+            [
+              {
+                "params": [
+                  "epoch"
+                ],
+                "type": "field"
+              },
+              {
+                "params": [],
+                "type": "distinct"
+              }
+            ]
+          ],
+          "tags": []
+        }
+      ],
+      "title": "PFH Heartbeat ( $epoch - $cluster )",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_PRIORITY_FEE_SHARING_SCRIPT}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 4,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              }
+            ]
+          },
+          "unit": "SOL"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "9.0.0",
+      "targets": [
+        {
+          "alias": "Sol Shared",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_PRIORITY_FEE_SHARING_SCRIPT}"
+          },
+          "groupBy": [],
+          "hide": false,
+          "measurement": "pfs-transfer-0.0.4",
+          "orderByTime": "ASC",
+          "policy": "default",
+          "query": "SELECT last(\"priority-fee-distribution-account-external-balance\")  / 1000000000 FROM \"pfs-state-$PFSversion\" WHERE (\"epoch\"::tag =~ /^$epoch$/ AND \"vote\"::tag =~ /^$vote$/ AND \"cluster\"::tag =~ /^$cluster$/)",
+          "rawQuery": true,
+          "refId": "C",
+          "resultFormat": "time_series",
+          "select": [
+            [
+              {
+                "params": [
+                  "priority-fee-distribution-account-balance"
+                ],
+                "type": "field"
+              },
+              {
+                "params": [
+                  " / 1000000000"
+                ],
+                "type": "math"
+              }
+            ]
+          ],
+          "tags": []
+        }
+      ],
+      "title": "PFS Total Shared ( $epoch - $cluster - $vote )",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_PRIORITY_FEE_HISTORY}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 4,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "SOL"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "9.0.0",
+      "targets": [
+        {
+          "alias": "Expected Share ( SOL )",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_PRIORITY_FEE_HISTORY}"
+          },
+          "groupBy": [
+            {
+              "params": [
+                "$__interval"
+              ],
+              "type": "time"
+            },
+            {
+              "params": [
+                "null"
+              ],
+              "type": "fill"
+            }
+          ],
+          "hide": false,
+          "measurement": "pfh-block-info-0.0.3",
+          "orderByTime": "ASC",
+          "policy": "default",
+          "query": "SELECT last(\"total-priority-fees\")  / 2000000000 FROM \"pfh-block-info-$PFHversion\" WHERE (\"vote\"::tag =~ /^$vote$/ AND \"epoch\"::tag =~ /^$epoch$/ AND \"cluster\"::tag =~ /^$cluster$/)",
+          "rawQuery": true,
+          "refId": "B",
+          "resultFormat": "time_series",
+          "select": [
+            [
+              {
+                "params": [
+                  "total-priority-fees"
+                ],
+                "type": "field"
+              },
+              {
+                "params": [],
+                "type": "distinct"
+              },
+              {
+                "params": [
+                  " / 2000000000"
+                ],
+                "type": "math"
+              }
+            ]
+          ],
+          "tags": []
+        }
+      ],
+      "title": "PFH Expected Share ( $epoch - $cluster - $vote )",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Dashboard --"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 18,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "## 🧮 Variables\n\n| Name | Variable | Description |\n|------|----------|-------------|\n| **Epoch** | **`$epoch`** | The Solana epoch during which priority fees are being shared with delegators |\n| **Vote Account** | **`$vote`** | Your validator's vote account public key used to identify your validator in the network |\n| **Cluster** | **`$cluster`** | The Solana cluster environment (`mainnet`, `testnet`, or `devnet`) |\n| **PFS Metrics Version** | **`$PFSversion`** | Priority Fee Sharing script metrics version for tracking compatibility |\n| **PFH Metrics Version** | **`$PFHversion`** | Priority Fee History metrics version for on-chain data tracking |\n\n🟨 **PFS** - Priority Fee Sharing Script\nThe script running alongside your validator to automatically distribute priority fees to delegators through Jito's fee distribution program.\n\n🟦 **PFH** - Priority Fee History  \nJito's managed on-chain history tracking priority fees earned by all validators in the network, providing transparency and verification.\n\n---\n\n## 📈 Panel Descriptions\n\n- **🟨 PFS Heartbeat**: Monitors the health and epoch tracking of your Priority Fee Sharing service\n- **🟨 PFS Total Shared**: The total amount of Solana the `$vote` validator shared on `$epoch`\n- **🟦 PFH Heartbeat**: Tracks the on-chain history service availability and epoch synchronization\n- **🟦 PFH Expected Share**: The expected share of Solana the `$vote` validator for epoch `$epoch`\n\n---\n\n## ⚠️ Note\n\nThere is an expected, *small* delta between 🟨 Total Shared and 🟦 Expected Share - this is due to transfers near the edges of the epoch. Shares may be delayed to the next epoch. This is okay as over the time horizon it should average out to be the same.",
+        "mode": "markdown"
+      },
+      "pluginVersion": "9.0.0",
+      "title": "README",
+      "type": "text"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 38,
+  "tags": ["jito", "priority-fees", "validator"],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${DS_PRIORITY_FEE_SHARING_SCRIPT}"
+        },
+        "definition": "SHOW TAG VALUES FROM \"pfs-heartbeat-$PFSversion\" WITH KEY = \"epoch\" WHERE (\"cluster\" =~ /^$cluster$/)",
+        "description": "Epoch which priority fees are transferred",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Epoch",
+        "multi": false,
+        "name": "epoch",
+        "options": [],
+        "query": {
+          "query": "SHOW TAG VALUES FROM \"pfs-heartbeat-$PFSversion\" WITH KEY = \"epoch\" WHERE (\"cluster\" =~ /^$cluster$/)",
+          "refId": "InfluxVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 4,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${DS_PRIORITY_FEE_SHARING_SCRIPT}"
+        },
+        "definition": "SHOW TAG VALUES FROM \"pfs-heartbeat-$PFSversion\" WITH KEY = \"vote\" WHERE (\"cluster\" =~ /^$cluster$/)",
+        "description": "Current validator stats to look at",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Vote Account",
+        "multi": false,
+        "name": "vote",
+        "options": [],
+        "query": {
+          "query": "SHOW TAG VALUES FROM \"pfs-heartbeat-$PFSversion\" WITH KEY = \"vote\" WHERE (\"cluster\" =~ /^$cluster$/)",
+          "refId": "InfluxVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 4,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "mainnet",
+          "value": "mainnet"
+        },
+        "description": "Solana cluster",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Cluster",
+        "multi": false,
+        "name": "cluster",
+        "options": [
+          {
+            "selected": true,
+            "text": "mainnet",
+            "value": "mainnet"
+          },
+          {
+            "selected": false,
+            "text": "testnet",
+            "value": "testnet"
+          }
+        ],
+        "query": "mainnet, testnet",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "0.0.9",
+          "value": "0.0.9"
+        },
+        "description": "PFS metrics version",
+        "hide": 0,
+        "includeAll": false,
+        "label": "PFS Metrics Version",
+        "multi": false,
+        "name": "PFSversion",
+        "options": [
+          {
+            "selected": true,
+            "text": "0.0.9",
+            "value": "0.0.9"
+          }
+        ],
+        "query": "0.0.9",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "0.0.9",
+          "value": "0.0.9"
+        },
+        "description": "PFH metrics version",
+        "hide": 0,
+        "includeAll": false,
+        "label": "PFH Metrics Version",
+        "multi": false,
+        "name": "PFHversion",
+        "options": [
+          {
+            "selected": true,
+            "text": "0.0.9",
+            "value": "0.0.9"
+          }
+        ],
+        "query": "0.0.9",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Priority Fee Sharing",
+  "uid": "${DASHBOARD_UID}",
+  "version": 1,
+  "weekStart": ""
+}
