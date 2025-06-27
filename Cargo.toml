@@ -72,7 +72,7 @@ members = [
     "poh-bench",
     "poseidon",
     "precompiles",
-    "jito-priority-fee-sharing",
+    "priority-fee-sharing",
     "program-runtime",
     "program-test",
     "programs/bpf-loader-tests",
