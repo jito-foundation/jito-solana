@@ -7,15 +7,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and follows a [Backwards Compatibility Policy](https://docs.solanalabs.com/backwards-compatibility)
 
-Release channels have their own copy of this changelog:
-* [edge - v2.3](#edge-channel)
-* [beta - v2.2](https://github.com/anza-xyz/agave/blob/v2.2/CHANGELOG.md)
-* [stable - v2.1](https://github.com/anza-xyz/agave/blob/v2.1/CHANGELOG.md)
-
-<a name="edge-channel"></a>
-## 2.3.0 - Unreleased
-
-
 ## 2.2.0
 * Breaking:
   * Blockstore Index column format change
