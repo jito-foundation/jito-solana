@@ -177,7 +177,7 @@ To view your metrics, you'll need to:
 
 1. **Get Access Credentials**
    - Contact Jito Labs to receive your InfluxDB credentials
-   - You'll receive connection details for both PFS and PFH datasources
+   - You'll receive connection details for the PFS datasource
 
 2. **Configure SOLANA_METRICS_CONFIG**
    - Add the provided metrics configuration to your `.env` file
@@ -200,7 +200,7 @@ We provide a pre-configured Grafana dashboard template to monitor your Priority 
 
 3. **Configure Datasources**
 
-   During import, map the following datasources:
+   During import, map the following datasources ( Reach out to Jito for datasources ):
 
    | Template Variable | Your Datasource | Description |
    |------------------|-----------------|-------------|
@@ -227,19 +227,11 @@ Your dashboard includes four main panels:
 
 ### Alerting
 
-To set up alerts for your Priority Fee Sharing service:
+It is reccomeneded to create the following alerting condition in grafana:
 
-1. **PFS Heartbeat Alert**
-   - Alert if the PFS epoch falls behind the current epoch
-   - Indicates your service may have stopped or encountered issues
-
-2. **Balance Monitoring**
-   - Alert if your fee payer account balance drops below `MINIMUM_BALANCE_SOL`
-   - Ensures you can continue distributing fees
-
-3. **Distribution Discrepancy**
-   - Alert if the difference between Total Shared and Expected Share exceeds 5%
-   - May indicate distribution issues
+**PFS Heartbeat Alert**
+  - Alert on PFSHeartbeat on `no data` - this is under `Configure no data and error handling` dropdown. Make sure to select `Alerting`, for both options.
+  - Alert based off of your `vote` account
 
 Configure alerts through Grafana's alerting system to notify via your preferred channels (email, Slack, PagerDuty, etc.).
 
