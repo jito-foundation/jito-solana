@@ -456,8 +456,6 @@ main() {
     echo "========================================================="
     install_cargo || {
         echo -e "\033[31m❌ Failed to install/update Rust\033[0m"
-        echo -e "\033[31mIf the error was about missing the CC linker, try installing the build-essential package\033[0m"
-        ecoh -e "\033[34msudo apt-get update && sudo apt install build-essential\033[0m"
         exit 1
     }
     echo ""
@@ -468,6 +466,8 @@ main() {
     echo "========================================================="
     install_cli || {
         echo -e "\033[31m❌ Failed to install CLI\033[0m"
+        echo -e "\033[31mIf the error was about missing the CC linker, try installing the build-essential package\033[0m"
+        ecoh -e "\033[34msudo apt-get update && sudo apt install build-essential clang\033[0m"
         exit 1
     }
     echo ""
