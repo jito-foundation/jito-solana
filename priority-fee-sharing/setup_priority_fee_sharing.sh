@@ -80,8 +80,10 @@ install_cargo() {
 
         # Check for curl
         if ! command -v curl &> /dev/null; then
-            echo "Installing curl first..."
-            sudo apt-get update && sudo apt-get install -y curl
+            echo -e "\033[31m❌ Curl is not installed - please install it first\033[0m"
+            echo -e "\033[34msudo apt-get update && sudo apt-get install -y curl\033[0m"
+
+            return 1
         fi
 
         # Install Rust and Cargo using rustup
