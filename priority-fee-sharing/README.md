@@ -2,9 +2,6 @@
 
 This service enables validators to distribute priority fees to their delegators through Jito's priority fee distribution program.
 
-### Notes
-
-
 # Service
 
 ## Prerequisites
