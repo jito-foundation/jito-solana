@@ -137,6 +137,7 @@ install_cli() {
     # Install the CLI
     echo "Building and installing CLI from source..."
     cargo build -p jito-priority-fee-sharing --bin priority-fee-sharing
+    cargo install --path . -p jito-priority-fee-sharing --bin priority-fee-sharing
 
     # Verify CLI installation
     local cli_path=$(which priority-fee-sharing 2>/dev/null || echo "")
