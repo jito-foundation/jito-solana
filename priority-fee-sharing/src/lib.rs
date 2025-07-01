@@ -1,5 +1,4 @@
 // Local modules
-pub mod error;
 pub mod fee_records;
 pub mod metrics;
 
@@ -134,16 +133,7 @@ pub async fn verify_setup(
 
     // ---------------- CLUSTER CHECK ----------------------------
     match cluster {
-        Cluster::MainnetBeta => {
-            info!("✅ Cluster {} OK", cluster);
-        }
-        Cluster::Devnet => {
-            info!("✅ Cluster {} OK", cluster);
-        }
-        Cluster::Testnet => {
-            info!("✅ Cluster {} OK", cluster);
-        }
-        Cluster::Localnet => {
+        Cluster::Mainnet | Cluster::Testnet | Cluster::Localnet => {
             info!("✅ Cluster {} OK", cluster);
         }
     }

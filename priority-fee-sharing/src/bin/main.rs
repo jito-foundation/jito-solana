@@ -1,12 +1,15 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use log::info;
-use priority_fee_sharing::fee_records::{FeeRecordState, FeeRecords};
-use priority_fee_sharing::{
-    print_epoch_info, print_priority_fee_distribution_account_info, share_priority_fees_loop, Cluster
-};
 use solana_pubkey::Pubkey;
 use solana_sdk::native_token::sol_to_lamports;
-use std::path::PathBuf;
+
+use priority_fee_sharing::{
+    fee_records::{FeeRecordState, FeeRecords},
+    print_epoch_info, print_priority_fee_distribution_account_info, share_priority_fees_loop,
+    Cluster,
+};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -152,10 +155,11 @@ async fn main() -> Result<(), anyhow::Error> {
     // Load .env file if it exists
     dotenv::dotenv().ok();
 
-    let args: Args = Args::parse();
-
     // Initialize logger with default INFO level
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Parse Args
+    let args: Args = Args::parse();
 
     match &args.command {
         Commands::Run {

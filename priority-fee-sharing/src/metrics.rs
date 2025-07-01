@@ -1,8 +1,11 @@
-use std::{env, collections::HashMap, sync::OnceLock};
+use std::collections::HashMap;
+use std::env;
+use std::sync::OnceLock;
+
 use anyhow::{anyhow, Result};
+use prometheus::{push_metrics, Counter, Gauge, Registry};
 use solana_metrics::{datapoint_error, datapoint_info, set_host_id};
 use solana_pubkey::Pubkey;
-use prometheus::{Counter, Gauge, push_metrics, Registry};
 
 // Metrics struct to hold all Prometheus metrics
 struct PrometheusMetrics {

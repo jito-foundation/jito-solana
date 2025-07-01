@@ -4,20 +4,6 @@ This service enables validators to distribute priority fees to their delegators 
 
 ### Notes
 
-1. `git status`
-```bash
-core@ny-testnet-validator-2:~/jito-priority-fee-sharing/priority-fee-sharing$ git status
-On branch ck/pfs
-Your branch is up to date with 'origin/ck/pfs'.
-
-Changes not staged for commit:
-  (use "git add <file>..." to update what will be committed)
-  (use "git restore <file>..." to discard changes in working directory)
-	modified:   ../anchor (new commits)
-	modified:   ../jito-programs (new commits)
-
-no changes added to commit (use "git add" and/or "git commit -a")
-```
 
 # Service
 
