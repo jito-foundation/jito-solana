@@ -133,13 +133,10 @@ install_cli() {
     echo "Building and installing CLI from source..."
     cargo install --path .
 
-    echo ""
-    echo -e "✅ CLI installed successfully! Run: \033[34mpriority-fee-sharing --help\033[0m"
-
     # Verify CLI installation
     local cli_path=$(which priority-fee-sharing 2>/dev/null || echo "")
     if [[ -n "$cli_path" ]]; then
-        echo "CLI installed at: $cli_path"
+        echo -e "✅ CLI installed successfully at $cli_path! Run: \033[34mpriority-fee-sharing --help\033[0m"
         return 0
     else
         echo -e "\033[31m❌ CLI installation failed - binary not found in PATH\033[0m"
