@@ -125,6 +125,9 @@ install_cargo() {
 install_cli() {
     echo "Installing Priority Fee Sharing CLI..."
 
+    # Clean Workspace
+    cargo clean
+
     # Update git submodules if needed
     if [ -f ".gitmodules" ]; then
         echo "Updating git submodules..."
