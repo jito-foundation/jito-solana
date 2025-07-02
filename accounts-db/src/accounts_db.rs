@@ -3432,7 +3432,7 @@ impl AccountsDb {
     pub(crate) fn shrink_collect<'a: 'b, 'b, T: ShrinkCollectRefs<'b>>(
         &self,
         store: &'a AccountStorageEntry,
-        unique_accounts: &'b GetUniqueAccountsResult,
+        unique_accounts: &'b mut GetUniqueAccountsResult,
         stats: &ShrinkStats,
     ) -> ShrinkCollect<'b, T> {
         let slot = store.slot();
@@ -3449,6 +3449,21 @@ impl AccountsDb {
         let alive_accounts_collect = Mutex::new(T::with_capacity(len, slot));
         let pubkeys_to_unref_collect = Mutex::new(Vec::with_capacity(len));
         let zero_lamport_single_ref_pubkeys_collect = Mutex::new(Vec::with_capacity(len));
+
+        // Get a set of all obsolete offsets
+        // Slot is not needed, as all obsolete accounts can be considered
+        // dead for shrink. Zero lamport accounts are not marked obsolete
+        let obsolete_offsets: IntSet<_> = store
+            .get_obsolete_accounts(None)
+            .into_iter()
+            .map(|(offset, _)| offset)
+            .collect();
+
+        // Filter all the accounts that are marked obsolete
+        let initial_len = stored_accounts.len();
+        stored_accounts.retain(|account| !obsolete_offsets.contains(&account.index_info.offset()));
+        let obsolete_accounts_filtered = initial_len - stored_accounts.len();
+
         stats
             .accounts_loaded
             .fetch_add(len as u64, Ordering::Relaxed);
@@ -3493,6 +3508,11 @@ impl AccountsDb {
             .unwrap();
 
         index_read_elapsed.stop();
+
+        stats
+            .obsolete_accounts_filtered
+            .fetch_add(obsolete_accounts_filtered as u64, Ordering::Relaxed);
+
         stats
             .index_read_elapsed
             .fetch_add(index_read_elapsed.as_us(), Ordering::Relaxed);
@@ -3730,11 +3750,14 @@ impl AccountsDb {
             // It is 'correct' to ignore calls to shrink when a slot is still in the write cache.
             return;
         }
-        let unique_accounts =
+        let mut unique_accounts =
             self.get_unique_accounts_from_storage_for_shrink(&store, &self.shrink_stats);
         debug!("do_shrink_slot_store: slot: {}", slot);
-        let shrink_collect =
-            self.shrink_collect::<AliveAccounts<'_>>(&store, &unique_accounts, &self.shrink_stats);
+        let shrink_collect = self.shrink_collect::<AliveAccounts<'_>>(
+            &store,
+            &mut unique_accounts,
+            &self.shrink_stats,
+        );
 
         // This shouldn't happen if alive_bytes is accurate.
         // However, it is possible that the remaining alive bytes could be 0. In that case, the whole slot should be marked dead by clean.
