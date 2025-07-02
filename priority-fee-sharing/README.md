@@ -12,10 +12,17 @@ This service enables validators to distribute priority fees to their delegators 
 git clone --recursive https://github.com/jito-foundation/jito-solana.git jito-priority-fee-sharing
 ```
 
-2. Navigate to the priority fee directory:
+2. Checkout the `feat/priority-fee-sharing` branch:
 
 ```bash
-cd jito-priority-fee-sharing/priority-fee-sharing
+cd jito-priority-fee-sharing
+git checkout feat/priority-fee-sharing
+```
+
+3. Navigate to the priority fee directory:
+
+```bash
+cd priority-fee-sharing
 ```
 
 **NOTE:**
