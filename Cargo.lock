@@ -10606,9 +10606,9 @@ dependencies = [
 
 [[package]]
 name = "solana-sdk"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "319ef2bd7269f3da5b338633102c9c0945ec08b2a4c9ac10414848f64660fa7c"
+checksum = "8cc0e4a7635b902791c44b6581bfb82f3ada32c5bc0929a64f39fe4bb384c86a"
 dependencies = [
  "bincode",
  "bs58 0.5.1",
