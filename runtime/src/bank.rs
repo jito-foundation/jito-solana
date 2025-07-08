@@ -6888,6 +6888,11 @@ impl Bank {
     pub fn get_bank_hash_stats(&self) -> BankHashStats {
         self.bank_hash_stats.load()
     }
+
+    /// Sets the accounts lt hash, only to be used by SnapshotMinimizer
+    pub fn set_accounts_lt_hash_for_snapshot_minimizer(&self, accounts_lt_hash: AccountsLtHash) {
+        *self.accounts_lt_hash.lock().unwrap() = accounts_lt_hash;
+    }
 }
 
 impl TransactionProcessingCallback for Bank {
