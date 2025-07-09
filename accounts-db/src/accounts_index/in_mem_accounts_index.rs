@@ -551,7 +551,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
     /// update 'entry' with 'new_value'
     fn update_slot_list_entry(
         &self,
-        entry: &Arc<AccountMapEntry<T>>,
+        entry: &AccountMapEntry<T>,
         new_value: PreAllocatedAccountMapEntry<T>,
         other_slot: Option<Slot>,
         reclaims: &mut SlotList<T>,
@@ -566,6 +566,22 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
         self.set_age_to_future(entry, upsert_cached);
     }
 
+    /// Insert a cached entry into the accounts index
+    /// If the entry is already present, just mark dirty and set the age to the future
+    /// Code is required just for test for now, but will be used in future PRs so not putting in the test area
+    #[cfg(test)]
+    fn cache_entry_at_slot(&self, entry: &AccountMapEntry<T>, slot: Slot, account_info: T) {
+        let mut slot_list = entry.slot_list.write().unwrap();
+        if !slot_list
+            .iter()
+            .any(|(existing_slot, _)| *existing_slot == slot)
+        {
+            slot_list.push((slot, account_info));
+        }
+        entry.set_dirty(true);
+        self.set_age_to_future(entry, true);
+    }
+
     pub fn upsert(
         &self,
         pubkey: &Pubkey,
@@ -574,11 +590,24 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
         reclaims: &mut SlotList<T>,
         reclaim: UpsertReclaim,
     ) {
+        self.get_or_create_index_entry_for_pubkey(pubkey, |entry| {
+            self.update_slot_list_entry(entry, new_value, other_slot, reclaims, reclaim)
+        });
+    }
+
+    /// Gets an entry for `pubkey` and calls `callback` with it.
+    /// If the entry is not in the index, an empty entry will be created and passed to `callback`.
+    /// If the entry is in the index, it will be passed to `callback` as is.
+    pub fn get_or_create_index_entry_for_pubkey(
+        &self,
+        pubkey: &Pubkey,
+        callback: impl FnOnce(&AccountMapEntry<T>),
+    ) {
         let mut updated_in_mem = true;
         // try to get it just from memory first using only a read lock
         self.get_only_in_mem(pubkey, false, |entry| {
             if let Some(entry) = entry {
-                self.update_slot_list_entry(entry, new_value, other_slot, reclaims, reclaim);
+                callback(entry);
             } else {
                 let mut m = Measure::start("entry");
                 let mut map = self.map_internal.write().unwrap();
@@ -588,9 +617,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
                 match entry {
                     Entry::Occupied(mut occupied) => {
                         let current = occupied.get_mut();
-                        self.update_slot_list_entry(
-                            current, new_value, other_slot, reclaims, reclaim,
-                        );
+                        callback(current);
                     }
                     Entry::Vacant(vacant) => {
                         // not in cache, look on disk
@@ -600,19 +627,24 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
                         let disk_entry = self.load_account_entry_from_disk(vacant.key());
                         let new_value = if let Some(disk_entry) = disk_entry {
                             // on disk, so merge new_value with what was on disk
-                            self.update_slot_list_entry(
-                                &disk_entry,
-                                new_value,
-                                other_slot,
-                                reclaims,
-                                reclaim,
-                            );
                             disk_entry
                         } else {
                             // not on disk, so insert new thing
                             self.stats().inc_insert();
-                            new_value.into_account_map_entry(&self.storage)
+                            Arc::new(AccountMapEntry::new(
+                                vec![],
+                                0,
+                                AccountMapEntryMeta::new_dirty(&self.storage, true),
+                            ))
                         };
+                        callback(&new_value);
+
+                        // Ensure that after callback there is an item in the slot list
+                        assert_ne!(
+                            new_value.slot_list.read().unwrap().len(),
+                            0,
+                            "Callback must insert item into slot list"
+                        );
                         assert!(new_value.dirty());
                         vacant.insert(new_value);
                         self.stats().inc_mem_count();
@@ -1671,6 +1703,113 @@ mod tests {
         let bucket = InMemAccountsIndex::new(&holder, bin);
         assert!(bucket.storage.is_disk_index_enabled());
         bucket
+    }
+
+    #[test]
+    fn test_get_or_create_index_entry_for_pubkey_insert_new() {
+        let accounts_index = new_for_test::<u64>();
+        let pubkey = solana_pubkey::new_rand();
+        let slot = 0;
+
+        let mut callback_called = false;
+        accounts_index.get_or_create_index_entry_for_pubkey(&pubkey, |entry| {
+            assert!(entry.slot_list.read().unwrap().is_empty());
+            assert_eq!(entry.ref_count(), 0);
+            assert!(entry.dirty());
+            accounts_index.cache_entry_at_slot(entry, slot, 0);
+            callback_called = true;
+        });
+
+        assert!(callback_called);
+
+        // Ensure the entry is now in memory
+        let mut found = false;
+        accounts_index.get_only_in_mem(&pubkey, false, |entry| {
+            found = entry.is_some();
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn test_get_or_create_index_entry_for_pubkey_existing_in_mem() {
+        let accounts_index = new_for_test::<u64>();
+        let pubkey = solana_pubkey::new_rand();
+
+        // Insert an entry manually
+        let entry = Arc::new(AccountMapEntry::new(
+            vec![(0, 42)],
+            1,
+            AccountMapEntryMeta::new_dirty(&accounts_index.storage, true),
+        ));
+        accounts_index
+            .map_internal
+            .write()
+            .unwrap()
+            .insert(pubkey, Arc::clone(&entry));
+
+        let mut callback_called = false;
+        accounts_index.get_or_create_index_entry_for_pubkey(&pubkey, |entry| {
+            assert_eq!(entry.slot_list.read().unwrap().len(), 1);
+            assert_eq!(entry.ref_count(), 1);
+            assert!(entry.dirty());
+            callback_called = true;
+        });
+
+        assert!(callback_called);
+    }
+
+    #[test]
+    fn test_get_or_create_index_entry_for_pubkey_existing_on_disk() {
+        let accounts_index = new_disk_buckets_for_test::<u64>();
+        let pubkey = solana_pubkey::new_rand();
+        let slot = 0;
+
+        // Simulate an entry on disk
+        let disk_entry: (&[(u64, u64)], u64) = (&[(0u64, 42u64)], 1u64);
+        accounts_index
+            .bucket
+            .as_ref()
+            .unwrap()
+            .try_write(&pubkey, disk_entry)
+            .unwrap();
+
+        // Ensure the entry is not found in meory
+        let mut found = false;
+        accounts_index.get_only_in_mem(&pubkey, false, |entry| {
+            found = entry.is_some();
+        });
+        assert!(!found);
+
+        let mut callback_called = false;
+        accounts_index.get_or_create_index_entry_for_pubkey(&pubkey, |entry| {
+            assert_eq!(entry.slot_list.read().unwrap().len(), 1);
+            assert_eq!(entry.ref_count(), 1);
+            assert!(!entry.dirty()); // Entry loaded from disk should not be dirty
+            accounts_index.cache_entry_at_slot(entry, slot, 0);
+            callback_called = true;
+        });
+
+        assert!(callback_called);
+
+        // Ensure the entry is now in memory
+        let mut found = false;
+        accounts_index.get_only_in_mem(&pubkey, false, |entry| {
+            found = entry.is_some();
+        });
+        assert!(found);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "assertion `left != right` failed: Callback must insert item into slot list"
+    )]
+    fn test_get_or_create_index_entry_for_pubkey_empty_slot_list_assertion() {
+        let accounts_index = new_for_test::<u64>();
+        let pubkey = solana_pubkey::new_rand();
+
+        accounts_index.get_or_create_index_entry_for_pubkey(&pubkey, |_entry| {
+            // Do not modify the slot list, which should trigger the assertion
+        });
     }
 
     #[test]
