@@ -35,9 +35,6 @@ use {
 pub struct SnapshotMinimizer<'a> {
     bank: &'a Bank,
     starting_slot: Slot,
-    /// Ending slot is not used, but kept for consistency with the function signature
-    /// TODO: Remove this field and CLI argument in the future.
-    _ending_slot: Slot,
     minimized_account_set: DashSet<Pubkey>,
 }
 
@@ -48,16 +45,10 @@ impl<'a> SnapshotMinimizer<'a> {
     ///
     /// This function will modify accounts_db by removing accounts not needed to replay [starting_slot, ending_slot],
     /// and update the bank's capitalization.
-    pub fn minimize(
-        bank: &'a Bank,
-        starting_slot: Slot,
-        ending_slot: Slot,
-        transaction_account_set: DashSet<Pubkey>,
-    ) {
+    pub fn minimize(bank: &'a Bank, starting_slot: Slot, transaction_account_set: DashSet<Pubkey>) {
         let minimizer = SnapshotMinimizer {
             bank,
             starting_slot,
-            _ending_slot: ending_slot,
             minimized_account_set: transaction_account_set,
         };
 
@@ -411,7 +402,6 @@ mod tests {
         let minimizer = SnapshotMinimizer {
             bank: &bank,
             starting_slot: 0,
-            _ending_slot: 0,
             minimized_account_set: DashSet::new(),
         };
         minimizer.get_vote_accounts();
@@ -440,7 +430,6 @@ mod tests {
         let minimizer = SnapshotMinimizer {
             bank: &bank,
             starting_slot: 0,
-            _ending_slot: 0,
             minimized_account_set: DashSet::new(),
         };
         minimizer.get_stake_accounts();
@@ -480,7 +469,6 @@ mod tests {
         let minimizer = SnapshotMinimizer {
             bank: &bank,
             starting_slot: 0,
-            _ending_slot: 0,
             minimized_account_set: owner_accounts,
         };
 
@@ -518,7 +506,6 @@ mod tests {
         let minimizer = SnapshotMinimizer {
             bank: &bank,
             starting_slot: 0,
-            _ending_slot: 0,
             minimized_account_set: programdata_accounts,
         };
         minimizer.get_programdata_accounts();
@@ -576,7 +563,6 @@ mod tests {
         let minimizer = SnapshotMinimizer {
             bank: &bank,
             starting_slot: current_slot,
-            _ending_slot: current_slot,
             minimized_account_set,
         };
         minimizer.minimize_accounts_db();
@@ -639,12 +625,7 @@ mod tests {
         bank.force_flush_accounts_cache();
 
         // do the minimization
-        SnapshotMinimizer::minimize(
-            &bank,
-            bank.slot(),
-            bank.slot(),
-            DashSet::from_iter([pubkey_to_keep]),
-        );
+        SnapshotMinimizer::minimize(&bank, bank.slot(), DashSet::from_iter([pubkey_to_keep]));
 
         // take a snapshot of the minimized bank, then load it
         let snapshot_config = SnapshotConfig::default();
