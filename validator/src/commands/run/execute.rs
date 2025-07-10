@@ -169,21 +169,6 @@ pub fn execute(
 
     let init_complete_file = matches.value_of("init_complete_file");
 
-    let rpc_bootstrap_config = bootstrap::RpcBootstrapConfig {
-        no_genesis_fetch: matches.is_present("no_genesis_fetch"),
-        no_snapshot_fetch: matches.is_present("no_snapshot_fetch"),
-        check_vote_account: matches
-            .value_of("check_vote_account")
-            .map(|url| url.to_string()),
-        only_known_rpc: matches.is_present("only_known_rpc"),
-        max_genesis_archive_unpacked_size: value_t_or_exit!(
-            matches,
-            "max_genesis_archive_unpacked_size",
-            u64
-        ),
-        incremental_snapshot_fetch: !matches.is_present("no_incremental_snapshots"),
-    };
-
     let private_rpc = matches.is_present("private_rpc");
     let do_port_check = !matches.is_present("no_port_check");
     let tpu_coalesce = value_t!(matches, "tpu_coalesce_ms", u64)
@@ -270,12 +255,6 @@ pub fn execute(
         None
     };
 
-    let known_validators = validators_set(
-        &identity_keypair.pubkey(),
-        matches,
-        "known_validators",
-        "--known-validator",
-    )?;
     let repair_validators = validators_set(
         &identity_keypair.pubkey(),
         matches,
@@ -349,16 +328,7 @@ pub fn execute(
     } else {
         AccountShrinkThreshold::IndividualStore { shrink_ratio }
     };
-    let entrypoint_addrs = values_t!(matches, "entrypoint", String)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entrypoint| {
-            solana_net_utils::parse_host_port(&entrypoint)
-                .map_err(|err| format!("failed to parse entrypoint address: {err}"))
-        })
-        .collect::<Result<HashSet<_>, _>>()?
-        .into_iter()
-        .collect::<Vec<_>>();
+    let entrypoint_addrs = run_args.entrypoints;
     for addr in &entrypoint_addrs {
         if !socket_addr_space.check(addr) {
             Err(format!("invalid entrypoint address: {addr}"))?;
@@ -682,7 +652,7 @@ pub fn execute(
         },
         voting_disabled: matches.is_present("no_voting") || restricted_repair_only_mode,
         wait_for_supermajority: value_t!(matches, "wait_for_supermajority", Slot).ok(),
-        known_validators,
+        known_validators: run_args.known_validators,
         repair_validators,
         repair_whitelist,
         gossip_validators,
@@ -915,7 +885,7 @@ pub fn execute(
             (SnapshotInterval::Disabled, SnapshotInterval::Disabled)
         } else {
             match (
-                !matches.is_present("no_incremental_snapshots"),
+                run_args.rpc_bootstrap_config.incremental_snapshot_fetch,
                 value_t_or_exit!(matches, "snapshot_interval_slots", NonZeroU64),
             ) {
                 (true, incremental_snapshot_interval_slots) => {
@@ -1256,7 +1226,7 @@ pub fn execute(
             authorized_voter_keypairs.clone(),
             &cluster_entrypoints,
             &mut validator_config,
-            rpc_bootstrap_config,
+            run_args.rpc_bootstrap_config,
             do_port_check,
             use_progress_bar,
             maximum_local_snapshot_age,
