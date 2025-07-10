@@ -421,6 +421,9 @@ async fn run_server(
                     ));
                 }
                 Err(err) => {
+                    stats
+                        .outstanding_incoming_connection_attempts
+                        .fetch_sub(1, Ordering::Relaxed);
                     debug!("Incoming::accept(): error {:?}", err);
                 }
             }
