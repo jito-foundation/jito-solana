@@ -4937,6 +4937,7 @@ impl Bank {
                              match, expected: {expected}, calculated: {calculated}",
                         );
                     }
+                    self.set_initial_accounts_hash_verification_completed();
                     is_ok
                 }
                 VerifyKind::Merkle => {
