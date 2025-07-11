@@ -4299,11 +4299,15 @@ impl AccountsDb {
             ancestors,
             bank_id,
             |pubkey, (account_info, slot)| {
-                let account_slot = self
-                    .get_account_accessor(slot, pubkey, &account_info.storage_location())
-                    .get_loaded_account(|loaded_account| {
+                let mut account_accessor =
+                    self.get_account_accessor(slot, pubkey, &account_info.storage_location());
+
+                let account_slot = match account_accessor {
+                    LoadedAccountAccessor::Cached(None) => None,
+                    _ => account_accessor.get_loaded_account(|loaded_account| {
                         (pubkey, loaded_account.take_account(), slot)
-                    });
+                    }),
+                };
                 scan_func(account_slot)
             },
             config,
