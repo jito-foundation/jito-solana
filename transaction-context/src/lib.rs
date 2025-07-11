@@ -55,6 +55,7 @@ pub type IndexOfAccount = u16;
 /// Contains account meta data which varies between instruction.
 ///
 /// It also contains indices to other structures for faster lookup.
+#[repr(C)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstructionAccount {
     /// Points to the account and its key in the `TransactionContext`
@@ -68,9 +69,43 @@ pub struct InstructionAccount {
     /// This excludes the program accounts.
     pub index_in_callee: IndexOfAccount,
     /// Is this account supposed to sign
-    pub is_signer: bool,
+    is_signer: u8,
     /// Is this account allowed to become writable
-    pub is_writable: bool,
+    is_writable: u8,
+}
+
+impl InstructionAccount {
+    pub fn new(
+        index_in_transaction: IndexOfAccount,
+        index_in_caller: IndexOfAccount,
+        index_in_callee: IndexOfAccount,
+        is_signer: bool,
+        is_writable: bool,
+    ) -> InstructionAccount {
+        InstructionAccount {
+            index_in_transaction,
+            index_in_caller,
+            index_in_callee,
+            is_signer: is_signer as u8,
+            is_writable: is_writable as u8,
+        }
+    }
+
+    pub fn is_signer(&self) -> bool {
+        self.is_signer != 0
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.is_writable != 0
+    }
+
+    pub fn set_is_signer(&mut self, value: bool) {
+        self.is_signer = value as u8;
+    }
+
+    pub fn set_is_writable(&mut self, value: bool) {
+        self.is_writable = value as u8;
+    }
 }
 
 /// An account key and the matching account
@@ -797,7 +832,7 @@ impl InstructionContext {
             .instruction_accounts
             .get(instruction_account_index as usize)
             .ok_or(InstructionError::MissingAccount)?
-            .is_signer)
+            .is_signer())
     }
 
     /// Returns whether an instruction account is writable
@@ -809,7 +844,7 @@ impl InstructionContext {
             .instruction_accounts
             .get(instruction_account_index as usize)
             .ok_or(InstructionError::MissingAccount)?
-            .is_writable)
+            .is_writable())
     }
 
     /// Calculates the set of all keys of signer instruction accounts in this Instruction
@@ -819,7 +854,7 @@ impl InstructionContext {
     ) -> Result<HashSet<Pubkey>, InstructionError> {
         let mut result = HashSet::new();
         for instruction_account in self.instruction_accounts.iter() {
-            if instruction_account.is_signer {
+            if instruction_account.is_signer() {
                 result.insert(
                     *transaction_context
                         .get_key_of_account_at_index(instruction_account.index_in_transaction)?,
