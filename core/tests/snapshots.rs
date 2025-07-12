@@ -707,12 +707,8 @@ fn test_snapshots_with_background_services(
         snapshot_controller.clone(),
     );
 
-    let accounts_background_service = AccountsBackgroundService::new(
-        bank_forks.clone(),
-        exit.clone(),
-        abs_request_handler,
-        false,
-    );
+    let accounts_background_service =
+        AccountsBackgroundService::new(bank_forks.clone(), exit.clone(), abs_request_handler);
 
     let mut latest_full_snapshot_slot = None;
     let mut latest_incremental_snapshot_slot = None;
