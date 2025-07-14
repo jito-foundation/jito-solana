@@ -61,39 +61,48 @@ impl TransactionRecorder {
     pub fn record_transactions(
         &self,
         bank_slot: Slot,
-        transactions: Vec<VersionedTransaction>,
+        // Expects each list of transaction to be non-conflicting, otherwise consensus will reject it.
+        batches: Vec<Vec<VersionedTransaction>>,
     ) -> RecordTransactionsSummary {
         let mut record_transactions_timings = RecordTransactionsTimings::default();
         let mut starting_transaction_index = None;
 
-        if !transactions.is_empty() {
-            let (hash, hash_us) = measure_us!(hash_transactions(&transactions));
-            record_transactions_timings.hash_us = Saturating(hash_us);
+        if batches.is_empty() {
+            return RecordTransactionsSummary {
+                record_transactions_timings,
+                result: Ok(()),
+                starting_transaction_index,
+            };
+        }
 
-            let (res, poh_record_us) =
-                measure_us!(self.record(bank_slot, vec![hash], vec![transactions]));
-            record_transactions_timings.poh_record_us = Saturating(poh_record_us);
+        let (hashes, hash_us) = measure_us!(batches
+            .iter()
+            .map(|txns| hash_transactions(txns))
+            .collect::<Vec<_>>());
+        record_transactions_timings.hash_us = Saturating(hash_us);
 
-            match res {
-                Ok(starting_index) => {
-                    starting_transaction_index = starting_index;
-                }
-                Err(PohRecorderError::MaxHeightReached) => {
-                    return RecordTransactionsSummary {
-                        record_transactions_timings,
-                        result: Err(PohRecorderError::MaxHeightReached),
-                        starting_transaction_index: None,
-                    };
-                }
-                Err(PohRecorderError::SendError(e)) => {
-                    return RecordTransactionsSummary {
-                        record_transactions_timings,
-                        result: Err(PohRecorderError::SendError(e)),
-                        starting_transaction_index: None,
-                    };
-                }
-                Err(e) => panic!("Poh recorder returned unexpected error: {e:?}"),
+        let (res, poh_record_us) = measure_us!(self.record(bank_slot, hashes, batches));
+        record_transactions_timings.poh_record_us = Saturating(poh_record_us);
+
+        match res {
+            Ok(starting_index) => {
+                starting_transaction_index = starting_index;
             }
+            Err(PohRecorderError::MaxHeightReached) => {
+                return RecordTransactionsSummary {
+                    record_transactions_timings,
+                    result: Err(PohRecorderError::MaxHeightReached),
+                    starting_transaction_index: None,
+                };
+            }
+            Err(PohRecorderError::SendError(e)) => {
+                return RecordTransactionsSummary {
+                    record_transactions_timings,
+                    result: Err(PohRecorderError::SendError(e)),
+                    starting_transaction_index: None,
+                };
+            }
+            Err(e) => panic!("Poh recorder returned unexpected error: {e:?}"),
         }
 
         RecordTransactionsSummary {

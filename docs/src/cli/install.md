@@ -20,7 +20,7 @@ on your preferred workflow:
 - Open your favorite Terminal application
 
 - Install the Agave release
-  [LATEST_AGAVE_RELEASE_VERSION](https://github.com/jito-foundation/jito-solana/releases/tag/LATEST_AGAVE_RELEASE_VERSION)
+  [LATEST_AGAVE_RELEASE_VERSION](https://github.com/jito-labs/bam-client/releases/tag/LATEST_AGAVE_RELEASE_VERSION)
   on your machine by running:
 
 ```bash
@@ -38,7 +38,7 @@ downloading LATEST_AGAVE_RELEASE_VERSION installer
 Configuration: /home/solana/.config/solana/install/config.yml
 Active release directory: /home/solana/.local/share/solana/install/active_release
 * Release version: LATEST_AGAVE_RELEASE_VERSION
-* Release URL: https://github.com/jito-foundation/jito-solana/releases/download/LATEST_AGAVE_RELEASE_VERSION/solana-release-x86_64-unknown-linux-gnu.tar.bz2
+* Release URL: https://github.com/jito-labs/bam-client/releases/download/LATEST_AGAVE_RELEASE_VERSION/solana-release-x86_64-unknown-linux-gnu.tar.bz2
 Update successful
 ```
 
@@ -108,7 +108,7 @@ manually download and install the binaries.
 ### Linux
 
 Download the binaries by navigating to
-[https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
+[https://github.com/jito-labs/bam-client/releases/latest](https://github.com/jito-labs/bam-client/releases/latest),
 
 ```bash
 tar jxf solana-release-x86_64-unknown-linux-gnu.tar.bz2
@@ -119,7 +119,7 @@ export PATH=$PWD/bin:$PATH
 ### MacOS
 
 Download the binaries by navigating to
-[https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
+[https://github.com/jito-labs/bam-client/releases/latest](https://github.com/jito-labs/bam-client/releases/latest),
 
 ```bash
 tar jxf solana-release-x86_64-apple-darwin.tar.bz2
@@ -130,7 +130,7 @@ export PATH=$PWD/bin:$PATH
 ### Windows
 
 - Download the binaries by navigating to
-  [https://github.com/jito-foundation/jito-solana/releases/latest](https://github.com/jito-foundation/jito-solana/releases/latest),
+  [https://github.com/jito-labs/bam-client/releases/latest](https://github.com/jito-labs/bam-client/releases/latest),
 - Open a Command Prompt and navigate to the directory into which you extracted
   the binaries and run:
 
@@ -221,7 +221,7 @@ above.
 
 After installing the prerequisites, proceed with building Solana from source,
 navigate to the
-[Solana's GitHub releases page](https://github.com/jito-foundation/jito-solana/releases/latest),
+[Solana's GitHub releases page](https://github.com/jito-labs/bam-client/releases/latest),
 and download the **Source Code** archive. Extract the code and build the
 binaries with:
 

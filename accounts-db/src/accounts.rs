@@ -1712,4 +1712,89 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn test_batched_locking() {
+        let keypair0 = Keypair::new();
+        let keypair1 = Keypair::new();
+        let keypair2 = Keypair::new();
+        let keypair3 = Keypair::new();
+
+        let account0 = AccountSharedData::new(1, 0, &Pubkey::default());
+        let account1 = AccountSharedData::new(2, 0, &Pubkey::default());
+        let account2 = AccountSharedData::new(3, 0, &Pubkey::default());
+        let account3 = AccountSharedData::new(4, 0, &Pubkey::default());
+
+        let accounts_db = AccountsDb::new_single_for_tests();
+        let accounts = Accounts::new(Arc::new(accounts_db));
+        accounts.store_for_tests(0, &keypair0.pubkey(), &account0);
+        accounts.store_for_tests(0, &keypair1.pubkey(), &account1);
+        accounts.store_for_tests(0, &keypair2.pubkey(), &account2);
+        accounts.store_for_tests(0, &keypair3.pubkey(), &account3);
+
+        let instructions = vec![CompiledInstruction::new(2, &(), vec![0, 1])];
+        let message = Message::new_with_compiled_instructions(
+            1,
+            0,
+            2,
+            vec![keypair1.pubkey(), keypair0.pubkey(), native_loader::id()],
+            Hash::default(),
+            instructions,
+        );
+        let tx0 = new_sanitized_tx(&[&keypair1], message, Hash::default());
+        let instructions = vec![CompiledInstruction::new(2, &(), vec![0, 1])];
+        let message = Message::new_with_compiled_instructions(
+            1,
+            0,
+            2,
+            vec![keypair2.pubkey(), keypair0.pubkey(), native_loader::id()],
+            Hash::default(),
+            instructions,
+        );
+        let tx1 = new_sanitized_tx(&[&keypair2], message, Hash::default());
+        let instructions = vec![CompiledInstruction::new(2, &(), vec![0, 1])];
+        let message = Message::new_with_compiled_instructions(
+            1,
+            0,
+            2,
+            vec![keypair3.pubkey(), keypair0.pubkey(), native_loader::id()],
+            Hash::default(),
+            instructions,
+        );
+        let tx2 = new_sanitized_tx(&[&keypair3], message, Hash::default());
+        let txs = vec![tx0, tx1, tx2];
+
+        let qos_results = vec![Ok(()), Ok(()), Ok(())];
+
+        let results = accounts.lock_accounts(
+            txs.iter(),
+            qos_results.into_iter(),
+            MAX_TX_ACCOUNT_LOCKS,
+            true,
+            &|_| false,
+            &|_| false,
+        );
+
+        assert_eq!(
+            results,
+            vec![
+                Ok(()), // Read-only account (keypair0) can be referenced multiple times
+                Ok(()), // Read-only account (keypair0) can be referenced multiple times
+                Ok(()), // Read-only account (keypair0) can be referenced multiple times
+            ],
+        );
+
+        // verify that keypair0 read-only locked
+        assert!(accounts
+            .account_locks
+            .lock()
+            .unwrap()
+            .is_locked_readonly(&keypair0.pubkey()));
+        // verify that keypair2 (for tx1) is write-locked (2 txns referencing it)
+        assert!(accounts
+            .account_locks
+            .lock()
+            .unwrap()
+            .is_locked_write(&keypair2.pubkey()));
+    }
 }

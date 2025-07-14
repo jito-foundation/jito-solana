@@ -444,6 +444,7 @@ mod tests {
         solana_transaction::{sanitized::SanitizedTransaction, Transaction},
         std::borrow::Borrow,
     };
+    use crate::banking_stage::decision_maker::BufferedPacketsDecision;
 
     #[allow(clippy::type_complexity)]
     fn create_test_frame(
@@ -699,9 +700,12 @@ mod tests {
             .send(FinishedConsumeWork {
                 work: thread_0_work.into_iter().next().unwrap(),
                 retryable_indexes: vec![],
+                extra_info: None,
             })
             .unwrap();
-        scheduler.receive_completed(&mut container).unwrap();
+        scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
         let scheduling_summary = scheduler
             .schedule(&mut container, test_pre_graph_filter, test_pre_lock_filter)
             .unwrap();
