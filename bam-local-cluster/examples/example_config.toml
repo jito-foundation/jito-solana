@@ -1,0 +1,39 @@
+bam_url = "http://127.0.0.1:50055"
+tip_payment_program_id = "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"
+tip_distribution_program_id = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
+faucet_address = "127.0.0.1:12345"
+ledger_base_directory = "output/ledger"
+validator_build_path = "/path/to/bam-client/target/release/"
+ledger_tool_build_path = "/path/to/bam-client/dev-bins/target/release/"
+
+[[validators]]
+geyser_config = "/path/to/validator-1/geyser1.json"
+node_keypair = /path/to/validator-1/node-keypair.json"
+node_pubkey = "9uFHWmQQHX2Bgz9EKmDJcHGEwGvPywkuWoLH4oaKCj7A"
+vote_keypair = "/path/to/validator-1/vote-keypair.json"
+vote_pubkey = "2vGoCmcm1eeMmjFiw5vkEMBe9nBTwZdiL6FTVvEvekMW"
+ledger_path = "/path/to/validator-1"
+
+[[validators]]
+geyser_config = "/path/to/validator-2/geyser2.json"
+node_keypair = "/path/to/validator-2/node-keypair.json"
+node_pubkey = "9k7XKLbNS85FCGMo6vGNyLM1JBGE3j32tEwLW6cQS2z2"
+vote_keypair = "/path/to/validator-2/vote-keypair.json"
+vote_pubkey = "vCbtKZFqtMU5UZUK4A1rSv2JVeNBgpzAKEfitmAr2md"
+ledger_path = "/path/to/validator-2"
+
+[[validators]]
+geyser_config = "/path/to/validator-3/geyser3.json"
+node_keypair = "/path/to/validator-3/node-keypair.json"
+node_pubkey = "5sVJpE9gRcbuQDjXZoA87SJQwp12avysdGdPUYsW9QVd"
+vote_keypair = "/path/to/validator-3/vote-keypair.json"
+vote_pubkey = "Cj8XxNaCCsWP9jMsna2fog3svsEzqhsRPhJ2YYkFG5KU"
+ledger_path = "/path/to/validator-3"
+
+[[validators]]
+geyser_config = "/path/to/validator-4/geyser4.json"
+node_keypair = "/path/to/validator-4/node-keypair.json"
+node_pubkey = "EwjV6iZRemLb98wrjFVBoJMRfoYTmCyeeUjvdiSDxG4s"
+vote_keypair = "/path/to/validator-4/vote-keypair.json"
+vote_pubkey = "3Wdvr1BRH9GWdsrqbjyDWsof2UCnqszQnwWFcEJdH5LZ"
+ledger_path = "/path/to/validator-4"

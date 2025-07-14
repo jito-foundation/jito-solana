@@ -543,6 +543,8 @@ pub fn execute(
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
 
+    let bam_url = Arc::new(Mutex::new(crate::commands::bam::extract_bam_url(matches)?));
+
     // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms: u64 =
         value_of(matches, "relayer_expected_heartbeat_interval_ms").unwrap();
@@ -702,6 +704,7 @@ pub fn execute(
         shred_receiver_address,
         shred_retransmit_receiver_address,
         tip_manager_config,
+        bam_url,
     };
 
     let reserved = validator_config
@@ -795,6 +798,7 @@ pub fn execute(
             tower_storage: validator_config.tower_storage.clone(),
             staked_nodes_overrides,
             rpc_to_plugin_manager_sender,
+            bam_url: validator_config.bam_url.clone(),
         },
     );
 
