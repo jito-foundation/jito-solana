@@ -130,7 +130,7 @@ Create a PR that makes the following updates to [CHANGELOG.md](https://github.co
 
 ### Create the Release Tag on GitHub
 
-1. Go to [GitHub Releases](https://github.com/jito-foundation/jito-solana/releases) for tagging a release.
+1. Go to [GitHub Releases](https://github.com/jito-labs/bam-client/releases) for tagging a release.
 1. Click "Draft new release". The release tag must exactly match the `version`
    field in `/Cargo.toml` prefixed by `v`.
     1. If the Cargo.toml version field is **0.12.3**, then the release tag must be **v0.12.3**
@@ -138,7 +138,7 @@ Create a PR that makes the following updates to [CHANGELOG.md](https://github.co
     1. If you want to release v0.12.0, the target branch must be v0.12
 1. Fill the release notes.
     1. If this is the first release on the branch (e.g. v0.13.**0**), paste in [this
-       template](https://raw.githubusercontent.com/jito-foundation/jito-solana/master/.github/RELEASE_TEMPLATE.md).
+       template](https://raw.githubusercontent.com/jito-labs/bam-client/master/.github/RELEASE_TEMPLATE.md).
        Engineering Lead can provide summary contents for release notes if needed.
     1. If this is a patch release, review all the commits since the previous release on this branch and add details as
        needed.
@@ -151,7 +151,7 @@ Create a PR that makes the following updates to [CHANGELOG.md](https://github.co
 
 ### Update release branch with the next patch version
 
-[This action](https://github.com/jito-foundation/jito-solana/blob/master/.github/workflows/increment-cargo-version-on-release.yml)
+[This action](https://github.com/jito-labs/bam-client/blob/master/.github/workflows/increment-cargo-version-on-release.yml)
 ensures that publishing a release will trigger the creation of a PR to update the Cargo.toml files on **release branch**
 to the next semantic version (e.g. 0.9.0 -> 0.9.1). Ensure that the created PR makes it through CI and gets submitted.
 
@@ -160,14 +160,14 @@ incorrectly updating hashbrown and proc-macro2 versions which should be reverted
 
 ### Prepare for the next release
 
-1. Go to [GitHub Releases](https://github.com/jito-foundation/jito-solana/releases) and create a new draft release
+1. Go to [GitHub Releases](https://github.com/jito-labs/bam-client/releases) and create a new draft release
    for `X.Y.Z+1` with empty release notes. This allows people to incrementally add new release notes until it's time for
    the next release
     1. Also, point the branch field to the same branch and mark the release as **"This is a pre-release"**.
 
 ### Verify release automation success
 
-Go to [Agave Releases](https://github.com/jito-foundation/jito-solana/releases) and click on the latest release that you
+Go to [Agave Releases](https://github.com/jito-labs/bam-client/releases) and click on the latest release that you
 just published.
 Verify that all of the build artifacts are present (15 assets), then uncheck **"This is a pre-release"** for the
 release.
@@ -176,9 +176,9 @@ Build artifacts can take up to 60 minutes after creating the tag before
 appearing. To check for progress:
 
 * The `agave-secondary` Buildkite pipeline handles creating the Linux and macOS release artifacts and updated crates.
-  Look for a job under the tag name of the release: https://buildkite.com/jito-foundation/jito-solana-secondary.
+  Look for a job under the tag name of the release: https://buildkite.com/jito-labs/bam-client-secondary.
 * The Windows release artifacts are produced by GitHub Actions. Look for a job under the tag name of the
-  release: https://github.com/jito-foundation/jito-solana/actions.
+  release: https://github.com/jito-labs/bam-client/actions.
 
 [Crates.io agave-validator](https://crates.io/crates/agave-validator) should have an updated agave-validator version.
 This can take 2-3 hours, and sometimes fails in the `agave-secondary` job.

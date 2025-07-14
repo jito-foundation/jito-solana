@@ -259,6 +259,8 @@ fn bench_banking(
         Arc::new(PrioritizationFeeCache::new(0u64)),
         HashSet::default(),
         BundleAccountLocker::default(),
+        None,
+        None,
     );
 
     let chunk_len = verified.len() / CHUNKS;

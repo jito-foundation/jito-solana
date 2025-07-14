@@ -2989,19 +2989,25 @@ impl Bank {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(TransactionBatch::new(
-            self.try_lock_accounts(&sanitized_txs),
+            self.try_lock_accounts(&sanitized_txs, false),
             self,
             OwnedOrBorrowed::Owned(sanitized_txs),
         ))
     }
 
     /// Attempt to take locks on the accounts in a transaction batch
-    pub fn try_lock_accounts(&self, txs: &[impl TransactionWithMeta]) -> Vec<Result<()>> {
+    pub fn try_lock_accounts(
+        &self,
+        txs: &[impl TransactionWithMeta],
+        batched: bool,
+    ) -> Vec<Result<()>> {
         self.try_lock_accounts_with_results(
             txs,
             txs.iter().map(|_| Ok(())),
-            self.feature_set
-                .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+            batched
+                || self
+                    .feature_set
+                    .is_active(&feature_set::relax_intrabatch_account_locks::id()),
         )
     }
 
@@ -3046,7 +3052,7 @@ impl Bank {
         &'a self,
         txs: &'b [Tx],
     ) -> TransactionBatch<'a, 'b, Tx> {
-        self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())))
+        self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())), false)
     }
 
     /// Override the relax_intrabatch_account_locks feature flag and use the SIMD83 logic for bundle execution
@@ -3075,14 +3081,17 @@ impl Bank {
         &'a self,
         transactions: &'b [Tx],
         transaction_results: impl Iterator<Item = Result<()>>,
+        batched_locking: bool,
     ) -> TransactionBatch<'a, 'b, Tx> {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         TransactionBatch::new(
             self.try_lock_accounts_with_results(
                 transactions,
                 transaction_results,
-                self.feature_set
-                    .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+                batched_locking
+                    || self
+                        .feature_set
+                        .is_active(&feature_set::relax_intrabatch_account_locks::id()),
             ),
             self,
             OwnedOrBorrowed::Borrowed(transactions),
@@ -3528,7 +3537,7 @@ impl Bank {
         &self,
         txs_and_results: impl Iterator<Item = (&'a Tx, &'a Result<()>)> + Clone,
     ) {
-        self.rc.accounts.unlock_accounts(txs_and_results)
+        self.rc.accounts.unlock_accounts(txs_and_results);
     }
 
     pub fn remove_unrooted_slots(&self, slots: &[(Slot, BankId)]) {
@@ -6079,6 +6088,13 @@ impl Bank {
     pub fn get_collector_fee_details(&self) -> CollectorFeeDetails {
         self.collector_fee_details.read().unwrap().clone()
     }
+
+    /// Total priority fees (lamports) that this bank collected
+    /// **Only populated once the bank is Executed. Always call
+    /// it after the bank is rooted.**
+    pub fn priority_fee_total(&self) -> u64 {
+        self.collector_fee_details.read().unwrap().priority_fee
+    }
 }
 
 impl InvokeContextCallback for Bank {
@@ -6261,7 +6277,7 @@ impl Bank {
             .map(RuntimeTransaction::from_transaction_for_tests)
             .collect::<Vec<_>>();
         TransactionBatch::new(
-            self.try_lock_accounts(&sanitized_txs),
+            self.try_lock_accounts(&sanitized_txs, false),
             self,
             OwnedOrBorrowed::Owned(sanitized_txs),
         )

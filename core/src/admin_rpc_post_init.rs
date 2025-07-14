@@ -31,6 +31,8 @@ pub enum KeyUpdaterType {
     Forward,
     /// For the RPC service
     RpcService,
+    /// For the BAM connection
+    BamConnection,
 }
 
 /// Responsible for managing the updaters for identity key change
