@@ -7431,10 +7431,15 @@ impl AccountsDb {
                     .map(|store| {
                         let slot = store.slot();
                         let mut pubkeys = Vec::with_capacity(store.count());
+                        // Obsolete accounts are already unreffed before this point, so do not add
+                        // them to the pubkeys list.
+                        let obsolete_accounts = store.get_obsolete_accounts(None);
                         store
                             .accounts
-                            .scan_pubkeys(|pubkey| {
-                                pubkeys.push((slot, *pubkey));
+                            .scan_accounts_without_data(|offset, account| {
+                                if !obsolete_accounts.contains(&(offset, account.data_len)) {
+                                    pubkeys.push((slot, *account.pubkey));
+                                }
                             })
                             .expect("must scan accounts storage");
                         pubkeys

@@ -1133,6 +1133,61 @@ fn test_clean_zero_lamport_and_dead_slot() {
 }
 
 #[test]
+fn test_clean_dead_slot_with_obsolete_accounts() {
+    solana_logger::setup();
+
+    // This test is triggering a scenario in reclaim_accounts where the entire slot is reclaimed
+    // When an entire slot is reclaimed, it normally unrefs the pubkeys, while when individual
+    // accounts are reclaimed it does not unref the pubkeys
+
+    // Obsolete accounts are already unreffed so they should not be unreffed again
+
+    let accounts = AccountsDb::new_single_for_tests();
+    let pubkey = solana_pubkey::new_rand();
+    let account = AccountSharedData::new(1, 1, AccountSharedData::default().owner());
+
+    // Store account 1 in slot 0
+    accounts.store_for_tests(0, &[(&pubkey, &account)]);
+
+    // Update account 1 as in slot 1
+    accounts.store_for_tests(1, &[(&pubkey, &account)]);
+
+    // Update account 1 as in slot 2
+    accounts.store_for_tests(2, &[(&pubkey, &account)]);
+
+    // Flush the slots individually to avoid reclaims
+    accounts.add_root_and_flush_write_cache(0);
+    accounts.add_root_and_flush_write_cache(1);
+    accounts.add_root_and_flush_write_cache(2);
+
+    // Pubkey1 should be in 3 slots, 0 and 1 and 2
+    assert_eq!(accounts.accounts_index.ref_count_from_storage(&pubkey), 3);
+
+    // Mark pubkey in slot 1 as obsolete, simulating obsolete accounts being enabled
+    let old_storage = accounts
+        .storage
+        .get_slot_storage_entry_shrinking_in_progress_ok(1)
+        .unwrap();
+    old_storage.mark_accounts_obsolete(vec![(0, 1)].into_iter(), 2);
+
+    // Unreference pubkey, which would occur during the normal mark_accounts_obsolete flow
+    accounts.unref_pubkeys([pubkey].iter(), 1, &HashSet::new());
+
+    // Pubkey1 should now have two references: Slot0 and Slot2.
+    assert_eq!(accounts.accounts_index.ref_count_from_storage(&pubkey), 2);
+
+    // Clean, remove slot0/1.
+    accounts.clean_accounts_for_tests();
+    assert!(accounts.storage.get_slot_storage_entry(0).is_none());
+    assert!(accounts.storage.get_slot_storage_entry(1).is_none());
+
+    // Ref count for pubkey should be 1. It was decremented for slot1 and above, and decremented
+    // for slot0 during clean_accounts_for_tests
+    // It was NOT decremented for slot1 during clean_accounts_for_test as it was marked obsolete
+    assert_eq!(accounts.accounts_index.ref_count_from_storage(&pubkey), 1);
+}
+
+#[test]
 #[should_panic(expected = "ref count expected to be zero")]
 fn test_remove_zero_lamport_multi_ref_accounts_panic() {
     let accounts = AccountsDb::new_single_for_tests();
