@@ -840,7 +840,6 @@ fn bank_to_full_snapshot_archive_with(
         bank,
         snapshot_storages,
         status_cache_slot_deltas,
-        None,
     );
     let snapshot_package =
         SnapshotPackage::new(accounts_package, merkle_or_lattice_accounts_hash, None);
@@ -935,7 +934,6 @@ pub fn bank_to_incremental_snapshot_archive(
         bank,
         snapshot_storages,
         status_cache_slot_deltas,
-        None,
     );
     let snapshot_package = SnapshotPackage::new(
         accounts_package,

@@ -208,7 +208,7 @@ where
                 .unwrap()
                 .set_root(bank.slot(), Some(&snapshot_controller), None)
                 .unwrap();
-            snapshot_request_handler.handle_snapshot_requests(false, 0, &AtomicBool::new(false));
+            snapshot_request_handler.handle_snapshot_requests(0, &AtomicBool::new(false));
         }
     }
 
@@ -448,7 +448,7 @@ fn test_bank_forks_incremental_snapshot() {
                 .unwrap()
                 .set_root(bank.slot(), Some(&snapshot_controller), None)
                 .unwrap();
-            snapshot_request_handler.handle_snapshot_requests(false, 0, &AtomicBool::new(false));
+            snapshot_request_handler.handle_snapshot_requests(0, &AtomicBool::new(false));
         }
 
         // Since AccountsBackgroundService isn't running, manually make a full snapshot archive
