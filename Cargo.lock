@@ -11395,6 +11395,7 @@ dependencies = [
  "Inflector",
  "agave-reserved-account-keys",
  "base64 0.22.1",
+ "bencher",
  "bincode",
  "borsh 1.5.7",
  "bs58",
