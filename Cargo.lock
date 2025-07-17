@@ -7196,6 +7196,7 @@ dependencies = [
 name = "solana-bloom"
 version = "3.0.0"
 dependencies = [
+ "bencher",
  "bv",
  "fnv",
  "rand 0.8.5",
