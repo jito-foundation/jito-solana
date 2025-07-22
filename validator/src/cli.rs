@@ -319,6 +319,12 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
         .takes_value(true)
         .validator(is_parsable::<usize>)
         .help("The maximum size in bytes to which the outgoing websocket buffer can grow."));
+    add_arg!(Arg::with_name("shred_receiver_address")
+        .long("shred-receiver-address")
+        .value_name("SHRED_RECEIVER_ADDRESS")
+        .takes_value(true)
+        .help("Validator will forward all leader shreds to this address in addition to normal turbine operation. Set to empty string to disable."),
+    );
     add_arg!(
         Arg::with_name("skip_poh_verify")
             .long("skip-poh-verify")
