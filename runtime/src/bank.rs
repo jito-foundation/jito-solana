@@ -247,7 +247,7 @@ impl AddAssign for SquashTiming {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CollectorFeeDetails {
     transaction_fee: u64,
     priority_fee: u64,
@@ -263,8 +263,12 @@ impl CollectorFeeDetails {
             .saturating_add(fee_details.prioritization_fee());
     }
 
-    pub(crate) fn total(&self) -> u64 {
+    pub fn total_transaction_fee(&self) -> u64 {
         self.transaction_fee.saturating_add(self.priority_fee)
+    }
+
+    pub fn total_priority_fee(&self) -> u64 {
+        self.priority_fee
     }
 }
 
@@ -5685,6 +5689,11 @@ impl Bank {
     /// Sets the accounts lt hash, only to be used by SnapshotMinimizer
     pub fn set_accounts_lt_hash_for_snapshot_minimizer(&self, accounts_lt_hash: AccountsLtHash) {
         *self.accounts_lt_hash.lock().unwrap() = accounts_lt_hash;
+    }
+
+    /// Return total transaction fee collected
+    pub fn get_collector_fee_details(&self) -> CollectorFeeDetails {
+        self.collector_fee_details.read().unwrap().clone()
     }
 }
 
