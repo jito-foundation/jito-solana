@@ -19,7 +19,7 @@ use {
             AtomicAccountsFileId, DuplicatesLtHash, IndexGenerationInfo,
         },
         accounts_file::{AccountsFile, StorageAccess},
-        accounts_hash::{AccountsDeltaHash, AccountsHash},
+        accounts_hash::{AccountsDeltaHash, AccountsHash, AccountsLtHash},
         accounts_update_notifier_interface::AccountsUpdateNotifier,
         ancestors::AncestorsForSerialization,
         blockhash_queue::BlockhashQueue,
@@ -32,6 +32,7 @@ use {
     solana_hard_forks::HardForks,
     solana_hash::Hash,
     solana_inflation::Inflation,
+    solana_lattice_hash::lt_hash::LtHash,
     solana_measure::measure::Measure,
     solana_pubkey::Pubkey,
     solana_rent_collector::RentCollector,
@@ -164,6 +165,9 @@ struct DeserializableVersionedBank {
 
 impl From<DeserializableVersionedBank> for BankFieldsToDeserialize {
     fn from(dvb: DeserializableVersionedBank) -> Self {
+        // This serves as a canary for the LtHash.
+        // If it is not replaced during deserialization, it indicates a bug.
+        const LT_HASH_CANARY: LtHash = LtHash([0xCAFE; LtHash::NUM_ELEMENTS]);
         BankFieldsToDeserialize {
             blockhash_queue: dvb.blockhash_queue,
             ancestors: dvb.ancestors,
@@ -195,8 +199,8 @@ impl From<DeserializableVersionedBank> for BankFieldsToDeserialize {
             is_delta: dvb.is_delta,
             incremental_snapshot_persistence: None,
             versioned_epoch_stakes: HashMap::default(), // populated from ExtraFieldsToDeserialize
-            accounts_lt_hash: None,                     // populated from ExtraFieldsToDeserialize
-            bank_hash_stats: BankHashStats::default(),  // populated from AccountsDbFields
+            accounts_lt_hash: AccountsLtHash(LT_HASH_CANARY), // populated from ExtraFieldsToDeserialize
+            bank_hash_stats: BankHashStats::default(),        // populated from AccountsDbFields
         }
     }
 }
@@ -472,7 +476,9 @@ where
         .clone_with_lamports_per_signature(lamports_per_signature);
     bank_fields.incremental_snapshot_persistence = incremental_snapshot_persistence;
     bank_fields.versioned_epoch_stakes = versioned_epoch_stakes;
-    bank_fields.accounts_lt_hash = accounts_lt_hash.map(Into::into);
+    bank_fields.accounts_lt_hash = accounts_lt_hash
+        .expect("snapshot must have accounts_lt_hash")
+        .into();
 
     Ok((bank_fields, accounts_db_fields))
 }
@@ -875,7 +881,7 @@ where
         exit,
         capitalizations,
         bank_fields.incremental_snapshot_persistence.as_ref(),
-        bank_fields.accounts_lt_hash.is_some(),
+        true,
     )?;
     bank_fields.bank_hash_stats = reconstructed_accounts_db_info.bank_hash_stats;
 
@@ -1039,7 +1045,7 @@ fn reconstruct_accountsdb_from_fields<E>(
     exit: Arc<AtomicBool>,
     capitalizations: (u64, Option<u64>),
     incremental_snapshot_persistence: Option<&BankIncrementalSnapshotPersistence>,
-    has_accounts_lt_hash: bool,
+    has_accounts_lt_hash: bool, // always true, will be removed next
 ) -> Result<(AccountsDb, ReconstructedAccountsDbInfo), Error>
 where
     E: SerializableStorage + std::marker::Sync,
