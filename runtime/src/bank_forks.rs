@@ -649,6 +649,18 @@ impl ForkGraph for BankForks {
     }
 }
 
+impl Drop for BankForks {
+    fn drop(&mut self) {
+        info!("BankForks::drop(): started...");
+        self.banks.clear();
+
+        if let Some(scheduler_pool) = self.scheduler_pool.take() {
+            scheduler_pool.uninstalled_from_bank_forks();
+        }
+        info!("BankForks::drop(): ...finished");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {
