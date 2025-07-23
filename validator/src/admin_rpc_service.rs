@@ -1041,6 +1041,7 @@ pub fn load_staked_nodes_overrides(
 mod tests {
     use {
         super::*,
+        arc_swap::ArcSwap,
         serde_json::Value,
         solana_account::{Account, AccountSharedData},
         solana_accounts_db::{

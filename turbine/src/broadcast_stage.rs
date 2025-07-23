@@ -735,7 +735,8 @@ pub mod test {
             bank_forks,
             quic_endpoint_sender,
             StandardBroadcastRun::new(0),
-            Arc::new(RwLock::new(None)),
+            Arc::default(),
+            Arc::default(),
         );
 
         MockBroadcastStage {

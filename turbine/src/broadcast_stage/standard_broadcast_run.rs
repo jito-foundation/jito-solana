@@ -181,7 +181,8 @@ impl StandardBroadcastRun {
             sock,
             bank_forks,
             quic_endpoint_sender,
-            &Arc::new(RwLock::new(None)),
+            &ArcSwap::default(),
+            &ArcSwap::default(),
         );
         let _ = self.record(&brecv, blockstore);
         Ok(())
