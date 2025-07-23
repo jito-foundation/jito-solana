@@ -292,7 +292,7 @@ impl BlockEngineStage {
         let endpoints_to_ping = endpoints
             .regioned_endpoints
             .iter()
-            .flat_map(|endpoint| std::iter::repeat(endpoint).take(PING_COUNT)) // send multiple pings to each destination to get the best time
+            .flat_map(|endpoint| std::iter::repeat_n(endpoint, PING_COUNT)) // send multiple pings to each destination to get the best time
             .filter_map(|endpoint| {
                 let uri = endpoint
                     .block_engine_url
