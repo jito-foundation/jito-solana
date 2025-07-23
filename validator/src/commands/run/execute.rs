@@ -17,6 +17,7 @@ use {
             AccountIndex, AccountSecondaryIndexes, AccountSecondaryIndexesIncludeExclude,
             AccountsIndexConfig, IndexLimitMb, ScanFilter,
         },
+        hardened_unpack::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
         utils::{
             create_all_accounts_run_and_snapshot_dirs, create_and_canonicalize_directories,
             create_and_canonicalize_directory,
@@ -29,6 +30,7 @@ use {
     solana_core::{
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
+        repair::repair_handler::RepairHandlerType,
         snapshot_packager_service::SnapshotPackagerService,
         system_monitor_service::SystemMonitorService,
         validator::{
@@ -38,7 +40,7 @@ use {
         },
     },
     solana_gossip::{
-        cluster_info::{BindIpAddrs, Node, NodeConfig},
+        cluster_info::{BindIpAddrs, Node, NodeConfig, DEFAULT_CONTACT_SAVE_INTERVAL_MILLIS},
         contact_info::ContactInfo,
     },
     solana_hash::Hash,
@@ -67,7 +69,11 @@ use {
         socket::SocketAddrSpace,
     },
     solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
-    solana_turbine::xdp::{set_cpu_affinity, XdpConfig},
+    solana_turbine::{
+        broadcast_stage::BroadcastStageType,
+        xdp::{set_cpu_affinity, XdpConfig},
+    },
+    solana_validator_exit::Exit,
     std::{
         collections::HashSet,
         fs::{self, File},
@@ -566,9 +572,11 @@ pub fn execute(
         require_tower: matches.is_present("require_tower"),
         tower_storage,
         halt_at_slot: value_t!(matches, "dev_halt_at_slot", Slot).ok(),
+        max_genesis_archive_unpacked_size: MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
         expected_genesis_hash: matches
             .value_of("expected_genesis_hash")
             .map(|s| Hash::from_str(s).unwrap()),
+        fixed_leader_schedule: None,
         expected_bank_hash: matches
             .value_of("expected_bank_hash")
             .map(|s| Hash::from_str(s).unwrap()),
@@ -645,12 +653,16 @@ pub fn execute(
         known_validators: run_args.known_validators,
         repair_validators,
         repair_whitelist,
+        repair_handler_type: RepairHandlerType::default(),
         gossip_validators,
         max_ledger_shreds,
         blockstore_options: run_args.blockstore_options,
         run_verification: !matches.is_present("skip_startup_ledger_verification"),
         debug_keys,
+        warp_slot: None,
+        generator_config: None,
         contact_debug_interval,
+        contact_save_interval: DEFAULT_CONTACT_SAVE_INTERVAL_MILLIS,
         send_transaction_service_config: send_transaction_service::Config {
             retry_rate_ms: rpc_send_retry_rate_ms,
             leader_forward_count,
@@ -692,6 +704,7 @@ pub fn execute(
         snapshot_config,
         tpu_coalesce,
         no_wait_for_vote_to_start_leader: matches.is_present("no_wait_for_vote_to_start_leader"),
+        wait_to_vote_slot: None,
         runtime_config: RuntimeConfig {
             log_messages_bytes_limit: value_of(matches, "log_messages_bytes_limit"),
             ..RuntimeConfig::default()
@@ -711,9 +724,35 @@ pub fn execute(
             .is_present("delay_leader_block_for_pending_fork"),
         wen_restart_proto_path: value_t!(matches, "wen_restart", PathBuf).ok(),
         wen_restart_coordinator: value_t!(matches, "wen_restart_coordinator", Pubkey).ok(),
+        turbine_disabled: Arc::<AtomicBool>::default(),
         retransmit_xdp,
+        broadcast_stage_type: BroadcastStageType::Standard,
         use_tpu_client_next: !matches.is_present("use_connection_cache"),
-        ..ValidatorConfig::default()
+        block_verification_method: value_t_or_exit!(
+            matches,
+            "block_verification_method",
+            BlockVerificationMethod
+        ),
+        unified_scheduler_handler_threads: value_t!(
+            matches,
+            "unified_scheduler_handler_threads",
+            usize
+        )
+        .ok(),
+        block_production_method: value_t_or_exit!(
+            matches,
+            "block_production_method",
+            BlockProductionMethod
+        ),
+        transaction_struct: value_t_or_exit!(matches, "transaction_struct", TransactionStructure),
+        enable_block_production_forwarding: staked_nodes_overrides_path.is_some(),
+        banking_trace_dir_byte_limit: parse_banking_trace_dir_byte_limit(matches),
+        validator_exit: Arc::new(RwLock::new(Exit::default())),
+        validator_exit_backpressure: [(
+            SnapshotPackagerService::NAME.to_string(),
+            Arc::new(AtomicBool::new(false)),
+        )]
+        .into(),
     };
 
     let reserved = validator_config
@@ -752,12 +791,6 @@ pub fn execute(
     let maximum_snapshot_download_abort =
         value_t_or_exit!(matches, "maximum_snapshot_download_abort", u64);
 
-    configure_banking_trace_dir_byte_limit(&mut validator_config, matches);
-    validator_config.block_verification_method = value_t_or_exit!(
-        matches,
-        "block_verification_method",
-        BlockVerificationMethod
-    );
     match validator_config.block_verification_method {
         BlockVerificationMethod::BlockstoreProcessor => {
             warn!(
@@ -769,19 +802,6 @@ pub fn execute(
         }
         BlockVerificationMethod::UnifiedScheduler => {}
     }
-    validator_config.block_production_method = value_t_or_exit!(
-        matches, // comment to align formatting...
-        "block_production_method",
-        BlockProductionMethod
-    );
-    validator_config.transaction_struct = value_t_or_exit!(
-        matches, // comment to align formatting...
-        "transaction_struct",
-        TransactionStructure
-    );
-    validator_config.enable_block_production_forwarding = staked_nodes_overrides_path.is_some();
-    validator_config.unified_scheduler_handler_threads =
-        value_t!(matches, "unified_scheduler_handler_threads", usize).ok();
 
     let public_rpc_addr = matches
         .value_of("public_rpc_addr")
@@ -800,13 +820,6 @@ pub fn execute(
                 .to_string())?;
         }
     }
-
-    let validator_exit_backpressure = [(
-        SnapshotPackagerService::NAME.to_string(),
-        Arc::new(AtomicBool::new(false)),
-    )]
-    .into();
-    validator_config.validator_exit_backpressure = validator_exit_backpressure;
 
     let mut ledger_lock = ledger_lockfile(&ledger_path);
     let _ledger_write_guard = lock_ledger(&ledger_path, &mut ledger_lock);
@@ -1165,11 +1178,8 @@ fn get_cluster_shred_version(entrypoints: &[SocketAddr], bind_address: IpAddr) -
     None
 }
 
-fn configure_banking_trace_dir_byte_limit(
-    validator_config: &mut ValidatorConfig,
-    matches: &ArgMatches,
-) {
-    validator_config.banking_trace_dir_byte_limit = if matches.is_present("disable_banking_trace") {
+fn parse_banking_trace_dir_byte_limit(matches: &ArgMatches) -> u64 {
+    if matches.is_present("disable_banking_trace") {
         // disable with an explicit flag; This effectively becomes `opt-out` by resetting to
         // DISABLED_BAKING_TRACE_DIR, while allowing us to specify a default sensible limit in clap
         // configuration for cli help.
@@ -1178,7 +1188,7 @@ fn configure_banking_trace_dir_byte_limit(
         // a default value in clap configuration (BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT) or
         // explicit user-supplied override value
         value_t_or_exit!(matches, "banking_trace_dir_byte_limit", u64)
-    };
+    }
 }
 
 fn new_snapshot_config(
