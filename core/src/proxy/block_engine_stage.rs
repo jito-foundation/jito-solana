@@ -234,30 +234,30 @@ impl BlockEngineStage {
         if !local_block_engine_config.disable_block_engine_autoconfig {
             return Self::connect_auth_and_stream_autoconfig(
                 endpoint,
-                &local_block_engine_config,
-                &block_engine_config,
-                &cluster_info,
-                &bundle_tx,
-                &packet_tx,
-                &banking_packet_sender,
-                &exit,
-                &block_builder_fee_info,
+                local_block_engine_config,
+                block_engine_config,
+                cluster_info,
+                bundle_tx,
+                packet_tx,
+                banking_packet_sender,
+                exit,
+                block_builder_fee_info,
                 &mut error_count,
-                &shredstream_receiver_address,
+                shredstream_receiver_address,
             )
             .await;
         }
 
         Self::connect_auth_and_stream(
             endpoint,
-            &local_block_engine_config,
-            &block_engine_config,
-            &cluster_info,
-            &bundle_tx,
-            &packet_tx,
-            &banking_packet_sender,
-            &exit,
-            &block_builder_fee_info,
+            local_block_engine_config,
+            block_engine_config,
+            cluster_info,
+            bundle_tx,
+            packet_tx,
+            banking_packet_sender,
+            exit,
+            block_builder_fee_info,
             &Self::CONNECTION_TIMEOUT,
         )
         .await
@@ -303,9 +303,7 @@ impl BlockEngineStage {
                         )
                     })
                     .ok()?;
-                if uri.host().is_none() {
-                    return None;
-                }
+                let _ = uri.host()?;
                 Some((endpoint, uri))
             })
             .collect_vec();
@@ -681,8 +679,7 @@ impl BlockEngineStage {
                         return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
-                    let global_config = global_config.clone();
-                    if !global_config.lock().unwrap().eq(&local_config)
+                    if !global_config.lock().unwrap().eq(local_config)
                       {
                         return Err(ProxyError::AuthenticationConnectionError("block engine config changed".to_string()));
                     }
