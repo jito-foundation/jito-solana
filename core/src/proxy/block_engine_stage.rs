@@ -218,6 +218,7 @@ impl BlockEngineStage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream_maybe_autoconfig(
         block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
@@ -227,7 +228,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
-        mut error_count: &mut u64,
+        error_count: &mut u64,
         local_block_engine_config: &BlockEngineConfig,
     ) -> crate::proxy::Result<()> {
         let endpoint = Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
@@ -242,7 +243,7 @@ impl BlockEngineStage {
                 banking_packet_sender,
                 exit,
                 block_builder_fee_info,
-                &mut error_count,
+                error_count,
                 shredstream_receiver_address,
             )
             .await;
@@ -263,6 +264,7 @@ impl BlockEngineStage {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream_autoconfig(
         mut backend_endpoint: Endpoint,
         local_block_engine_config: &BlockEngineConfig,
@@ -327,7 +329,6 @@ impl BlockEngineStage {
                     return;
                 };
 
-                // todo: only show best ping
                 datapoint_info!(
                     "block_engine_stage-ping",
                     "endpoint" => endpoint.block_engine_url,
@@ -364,7 +365,7 @@ impl BlockEngineStage {
         debug!("No reachable Block Engine found yet; retrying in {CONNECTION_BACKOFF_S}s...");
         sleep(Duration::from_secs(CONNECTION_BACKOFF_S)).await;
 
-        // try
+        // try connecting to block engine
         for (block_engine_url, (shredstream_socket, latency_us)) in agg_endpoints
             .into_iter()
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
@@ -380,14 +381,14 @@ impl BlockEngineStage {
             // TODO: have failure logic here
             if let Err(e) = Self::connect_auth_and_stream(
                 backend_endpoint.clone(),
-                &local_block_engine_config,
-                &global_block_engine_config,
-                &cluster_info,
-                &bundle_tx,
-                &packet_tx,
-                &banking_packet_sender,
-                &exit,
-                &block_builder_fee_info,
+                local_block_engine_config,
+                global_block_engine_config,
+                cluster_info,
+                bundle_tx,
+                packet_tx,
+                banking_packet_sender,
+                exit,
+                block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
             )
             .await
@@ -417,6 +418,7 @@ impl BlockEngineStage {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream(
         backend_endpoint: Endpoint,
         local_block_engine_config: &BlockEngineConfig,
