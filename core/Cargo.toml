@@ -45,6 +45,7 @@ agave-transaction-view = { workspace = true }
 ahash = { workspace = true }
 anchor-lang = { workspace = true }
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 arrayvec = { workspace = true }
 assert_matches = { workspace = true }
 base64 = { workspace = true }

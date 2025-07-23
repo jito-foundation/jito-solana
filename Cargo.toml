@@ -1,4 +1,3 @@
-
 [workspace]
 members = [
     "account-decoder",
@@ -190,6 +189,7 @@ anchor-lang = { path = "anchor/lang" }
 anyhow = "1.0.95"
 aquamarine = "0.6.0"
 arbitrary = "1.4.1"
+arc-swap = "1"
 ark-bn254 = "0.4.0"
 ark-ec = "0.4.0"
 ark-ff = "0.4.0"
@@ -549,7 +549,7 @@ solana-tps-client = { path = "tps-client", version = "=2.2.21" }
 solana-tpu-client = { path = "tpu-client", version = "=2.2.21", default-features = false }
 solana-tpu-client-next = { path = "tpu-client-next", version = "=2.2.21" }
 solana-transaction = "2.2.2"
-solana-transaction-context = { path = "transaction-context", version = "=2.2.21", features = [ "bincode" ] }
+solana-transaction-context = { path = "transaction-context", version = "=2.2.21", features = ["bincode"] }
 solana-transaction-error = "2.2.1"
 solana-transaction-metrics-tracker = { path = "transaction-metrics-tracker", version = "=2.2.21" }
 solana-transaction-status = { path = "transaction-status", version = "=2.2.21" }

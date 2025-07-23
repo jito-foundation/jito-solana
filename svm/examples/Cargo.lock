@@ -5911,6 +5911,7 @@ dependencies = [
  "ahash 0.8.11",
  "anchor-lang",
  "anyhow",
+ "arc-swap",
  "arrayvec",
  "assert_matches",
  "base64 0.22.1",
@@ -8551,6 +8552,7 @@ name = "solana-turbine"
 version = "2.2.21"
 dependencies = [
  "agave-feature-set",
+ "arc-swap",
  "bincode",
  "bytes",
  "crossbeam-channel",

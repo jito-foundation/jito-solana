@@ -254,6 +254,7 @@ pub trait AdminRpc {
         &self,
         meta: Self::Metadata,
         block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
         trust_packets: bool,
     ) -> Result<()>;
 
@@ -483,11 +484,13 @@ impl AdminRpc for AdminRpcImpl {
         &self,
         meta: Self::Metadata,
         block_engine_url: String,
+        disable_block_engine_autoconfig: bool,
         trust_packets: bool,
     ) -> Result<()> {
         debug!("set_block_engine_config request received");
         let config = BlockEngineConfig {
             block_engine_url,
+            disable_block_engine_autoconfig,
             trust_packets,
         };
         // Detailed log messages are printed inside validate function
@@ -581,7 +584,9 @@ impl AdminRpc for AdminRpcImpl {
         };
 
         meta.with_post_init(|post_init| {
-            *post_init.shred_receiver_address.write().unwrap() = shred_receiver_address;
+            post_init
+                .shred_receiver_address
+                .store(Arc::new(shred_receiver_address));
             Ok(())
         })
     }
@@ -603,7 +608,9 @@ impl AdminRpc for AdminRpcImpl {
         };
 
         meta.with_post_init(|post_init| {
-            *post_init.shred_retransmit_receiver_address.write().unwrap() = shred_receiver_address;
+            post_init
+                .shred_retransmit_receiver_address
+                .store(Arc::new(shred_receiver_address));
             Ok(())
         })
     }
@@ -992,6 +999,7 @@ pub fn load_staked_nodes_overrides(
 mod tests {
     use {
         super::*,
+        arc_swap::ArcSwap,
         serde_json::Value,
         solana_accounts_db::{
             accounts_db::{AccountsDbConfig, ACCOUNTS_DB_CONFIG_FOR_TESTING},
@@ -1073,8 +1081,8 @@ mod tests {
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
-            let shred_receiver_address = Arc::new(RwLock::new(None));
-            let shred_retransmit_receiver_address = Arc::new(RwLock::new(None));
+            let shred_receiver_address = Arc::new(ArcSwap::default());
+            let shred_retransmit_receiver_address = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),

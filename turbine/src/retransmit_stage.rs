@@ -2,6 +2,7 @@
 
 use {
     crate::cluster_nodes::{self, ClusterNodes, ClusterNodesCache, Error, MAX_NUM_TURBINE_HOPS},
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{Receiver, RecvError},
     lru::LruCache,
@@ -193,7 +194,7 @@ fn retransmit(
     max_slots: &MaxSlots,
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
-    shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
+    shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
 ) -> Result<(), RecvError> {
     // wait for something on the channel
     let mut shreds = retransmit_receiver.recv()?;
@@ -251,6 +252,7 @@ fn retransmit(
         entry.record(now, root_distance, num_nodes);
         stats
     };
+    let shred_receiver_address_local = shred_receiver_address.load();
     let slot_stats = if shreds.len() < PAR_ITER_MIN_NUM_SHREDS {
         stats.num_small_batches += 1;
         shreds
@@ -266,7 +268,7 @@ fn retransmit(
                     &retransmit_sockets[index % retransmit_sockets.len()],
                     quic_endpoint_sender,
                     stats,
-                    &shred_receiver_address.read().unwrap(),
+                    &shred_receiver_address_local,
                 )
             })
             .fold(HashMap::new(), record)
@@ -285,7 +287,7 @@ fn retransmit(
                         &retransmit_sockets[index % retransmit_sockets.len()],
                         quic_endpoint_sender,
                         stats,
-                        &shred_receiver_address.read().unwrap(),
+                        &shred_receiver_address_local,
                     )
                 })
                 .fold(HashMap::new, record)
@@ -404,7 +406,7 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
-        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
+        shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,

@@ -9,6 +9,7 @@ use {
         standard_broadcast_run::StandardBroadcastRun,
     },
     crate::cluster_nodes::{self, ClusterNodes, ClusterNodesCache},
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{unbounded, Receiver, RecvError, RecvTimeoutError, Sender},
     itertools::{Either, Itertools},
@@ -121,7 +122,8 @@ impl BroadcastStageType {
         bank_forks: Arc<RwLock<BankForks>>,
         shred_version: u16,
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
-        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> BroadcastStage {
         match self {
             BroadcastStageType::Standard => BroadcastStage::new(
@@ -134,6 +136,7 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 StandardBroadcastRun::new(shred_version),
+                shredstream_receiver_address,
                 shred_receiver_address,
             ),
 
@@ -147,7 +150,8 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 FailEntryVerificationBroadcastRun::new(shred_version),
-                Arc::new(RwLock::new(None)),
+                shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(None)),
             ),
 
             BroadcastStageType::BroadcastFakeShreds => BroadcastStage::new(
@@ -160,7 +164,8 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 BroadcastFakeShredsRun::new(0, shred_version),
-                Arc::new(RwLock::new(None)),
+                shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(None)),
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -173,7 +178,8 @@ impl BroadcastStageType {
                 bank_forks,
                 quic_endpoint_sender,
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
-                Arc::new(RwLock::new(None)),
+                shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(None)),
             ),
         }
     }
@@ -195,7 +201,8 @@ trait BroadcastRun {
         sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
-        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()>;
 }
@@ -292,7 +299,8 @@ impl BroadcastStage {
         bank_forks: Arc<RwLock<BankForks>>,
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
         mut broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
-        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -324,6 +332,7 @@ impl BroadcastStage {
             let cluster_info = cluster_info.clone();
             let bank_forks = bank_forks.clone();
             let quic_endpoint_sender = quic_endpoint_sender.clone();
+            let shredstream_receiver_address = shredstream_receiver_address.clone();
             let shred_receiver_address = shred_receiver_address.clone();
 
             let run_transmit = move || loop {
@@ -333,6 +342,7 @@ impl BroadcastStage {
                     &sock,
                     &bank_forks,
                     &quic_endpoint_sender,
+                    &shredstream_receiver_address,
                     &shred_receiver_address,
                 );
                 let res = Self::handle_error(res, "solana-broadcaster-transmit");
@@ -454,6 +464,7 @@ pub fn broadcast_shreds(
     bank_forks: &RwLock<BankForks>,
     socket_addr_space: &SocketAddrSpace,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+    shredstream_receiver_address: &Option<SocketAddr>,
     shred_receiver_address: &Option<SocketAddr>,
 ) -> Result<()> {
     let mut result = Ok(());
@@ -487,8 +498,14 @@ pub fn broadcast_shreds(
         })
         .partition_map(std::convert::identity);
 
-    if let Some(addr) = shred_receiver_address {
-        packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
+    if let Some(ss_addr) = shredstream_receiver_address {
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), *ss_addr)));
+        if let Some(sr_addr) = shred_receiver_address {
+            // avoid sending dupes
+            if ss_addr != sr_addr {
+                packets.extend(shreds.iter().map(|shred| (shred.payload(), *sr_addr)));
+            }
+        }
     }
 
     shred_select.stop();
@@ -717,7 +734,8 @@ pub mod test {
             bank_forks,
             quic_endpoint_sender,
             StandardBroadcastRun::new(0),
-            Arc::new(RwLock::new(None)),
+            Arc::default(),
+            Arc::default(),
         );
 
         MockBroadcastStage {

@@ -1690,7 +1690,7 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .arg(
             Arg::with_name("block_engine_url")
                 .long("block-engine-url")
-                .help("Block engine url.  Set to empty string to disable block engine connection.")
+                .help("URL entrypoint to the Block Engine. Connected Block Engine will be autoconfigured unless `--disable-block-engine-autoconfig` is used. Set to empty string to disable block engine connection.")
                 .takes_value(true)
         )
         .arg(
@@ -1762,11 +1762,11 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .help("Number of CUs to allocate for bundles at beginning of slot.")
         )
         .arg(
-            Arg::with_name("shred_receiver_address")
-                .long("shred-receiver-address")
-                .value_name("SHRED_RECEIVER_ADDRESS")
-                .takes_value(true)
-                .help("Validator will forward all leader shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
+            Arg::with_name("disable_block_engine_autoconfig")
+                .long("disable-block-engine-autoconfig")
+                .value_name("DISABLE_BLOCK_ENGINE_AUTOCONFIG")
+                .takes_value(false)
+                .help("Disables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
         )
         .arg(
             Arg::with_name("shred_retransmit_receiver_address")
@@ -2051,6 +2051,12 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
         .takes_value(true)
         .validator(is_parsable::<usize>)
         .help("The maximum size in bytes to which the outgoing websocket buffer can grow."));
+    add_arg!(Arg::with_name("shred_receiver_address")
+        .long("shred-receiver-address")
+        .value_name("SHRED_RECEIVER_ADDRESS")
+        .takes_value(true)
+        .help("Validator will forward all leader shreds to this address in addition to normal turbine operation. Set to empty string to disable."),
+    );
     add_arg!(
         Arg::with_name("skip_poh_verify")
             .long("skip-poh-verify")
