@@ -1107,8 +1107,7 @@ impl Bank {
         bank.transaction_processor =
             TransactionBatchProcessor::new_uninitialized(bank.slot, bank.epoch);
 
-        let accounts_data_size_initial = bank.get_total_accounts_stats().unwrap().data_len as u64;
-        bank.accounts_data_size_initial = accounts_data_size_initial;
+        bank.accounts_data_size_initial = bank.calculate_accounts_data_size().unwrap();
 
         bank
     }
@@ -5480,28 +5479,22 @@ impl Bank {
         }
     }
 
-    /// Get all the accounts for this bank and calculate stats
-    pub fn get_total_accounts_stats(&self) -> ScanResult<TotalAccountsStats> {
+    /// Calculates the accounts data size of all accounts
+    ///
+    /// Panics if total overflows a u64.
+    ///
+    /// Note, this may be *very* expensive, as *all* accounts are collected
+    /// into a Vec before summing each account's data size.
+    ///
+    /// Only intended to be called by tests or when the number of accounts is small.
+    pub fn calculate_accounts_data_size(&self) -> ScanResult<u64> {
         let accounts = self.get_all_accounts(false)?;
-        Ok(self.calculate_total_accounts_stats(
-            accounts
-                .iter()
-                .map(|(pubkey, account, _slot)| (pubkey, account)),
-        ))
-    }
-
-    /// Given all the accounts for a bank, calculate stats
-    pub fn calculate_total_accounts_stats<'a>(
-        &self,
-        accounts: impl Iterator<Item = (&'a Pubkey, &'a AccountSharedData)>,
-    ) -> TotalAccountsStats {
-        let rent_collector = self.rent_collector();
-        let mut total_accounts_stats = TotalAccountsStats::default();
-        accounts.for_each(|(pubkey, account)| {
-            total_accounts_stats.accumulate_account(pubkey, account, rent_collector);
-        });
-
-        total_accounts_stats
+        let accounts_data_size = accounts
+            .into_iter()
+            .map(|(_pubkey, account, _slot)| account.data().len() as u64)
+            .try_fold(0, u64::checked_add)
+            .expect("accounts data size cannot overflow");
+        Ok(accounts_data_size)
     }
 
     pub fn is_in_slot_hashes_history(&self, slot: &Slot) -> bool {
