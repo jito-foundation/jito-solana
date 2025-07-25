@@ -91,7 +91,7 @@ use {
     },
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_compute_budget_instruction::instructions_processor::process_compute_budget_instructions,
-    solana_cost_model::cost_tracker::CostTracker,
+    solana_cost_model::{block_cost_limits::simd_0286_block_limits, cost_tracker::CostTracker},
     solana_epoch_info::EpochInfo,
     solana_epoch_schedule::EpochSchedule,
     solana_feature_gate_interface as feature,
@@ -4038,6 +4038,21 @@ impl Bank {
             debug_do_not_add_builtins,
         );
 
+        // Cost-Tracker is not serialized in snapshot or any configs.
+        // We must apply previously activated features related to limits here
+        // so that the initial bank state is consistent with the feature set.
+        // Cost-tracker limits are propagated through children banks.
+        if self
+            .feature_set
+            .is_active(&feature_set::raise_block_limits_to_100m::id())
+        {
+            let block_cost_limit = simd_0286_block_limits();
+            let mut cost_tracker = self.write_cost_tracker().unwrap();
+            let account_cost_limit = cost_tracker.get_account_limit();
+            let vote_cost_limit = cost_tracker.get_vote_limit();
+            cost_tracker.set_limits(account_cost_limit, block_cost_limit, vote_cost_limit);
+        }
+
         if !debug_do_not_add_builtins {
             for builtin in BUILTINS
                 .iter()
@@ -5290,6 +5305,14 @@ impl Bank {
                 allow_new_activations,
                 &new_feature_activations,
             );
+        }
+
+        if new_feature_activations.contains(&feature_set::raise_block_limits_to_100m::id()) {
+            let block_cost_limit = simd_0286_block_limits();
+            let mut cost_tracker = self.write_cost_tracker().unwrap();
+            let account_cost_limit = cost_tracker.get_account_limit();
+            let vote_cost_limit = cost_tracker.get_vote_limit();
+            cost_tracker.set_limits(account_cost_limit, block_cost_limit, vote_cost_limit);
         }
     }
 
