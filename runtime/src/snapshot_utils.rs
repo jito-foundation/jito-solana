@@ -84,6 +84,11 @@ pub const FULL_SNAPSHOT_ARCHIVE_FILENAME_REGEX: &str =
     r"^snapshot-(?P<slot>[[:digit:]]+)-(?P<hash>[[:alnum:]]+)\.(?P<ext>tar\.zst|tar\.lz4)$";
 pub const INCREMENTAL_SNAPSHOT_ARCHIVE_FILENAME_REGEX: &str = r"^incremental-snapshot-(?P<base>[[:digit:]]+)-(?P<slot>[[:digit:]]+)-(?P<hash>[[:alnum:]]+)\.(?P<ext>tar\.zst|tar\.lz4)$";
 
+// Balance large and small files order in snapshot tar with bias towards small (4 small + 1 large),
+// such that during unpacking large writes are mixed with file metadata operations
+// and towards the end of archive (sizes equalize) writes are >256KiB / file.
+const INTERLEAVE_TAR_ENTRIES_SMALL_TO_LARGE_RATIO: (usize, usize) = (4, 1);
+
 #[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 pub enum SnapshotVersion {
     #[default]
@@ -1123,11 +1128,11 @@ fn archive_snapshot(
             let mut sorted_storage_indices = (0..snapshot_storages.len()).collect::<Vec<_>>();
             sorted_storage_indices.sort_by_key(|&i| snapshot_storages[i].accounts.len());
             for i in 0..sorted_storage_indices.len() {
-                // Balance large and small files with bias towards small (4 small + 1 large), such
-                // that during unpacking large writes are mixed with file metadata operations
-                // and towards the end of archive (sizes equalize) writes are >256KiB / file.
-                let indices_range = 0..sorted_storage_indices.len();
-                let index = select_from_range_with_start_end_rates(indices_range, i, 4, 1);
+                let index = select_from_range_with_start_end_rates(
+                    0..sorted_storage_indices.len(),
+                    i,
+                    INTERLEAVE_TAR_ENTRIES_SMALL_TO_LARGE_RATIO,
+                );
                 let storage = &snapshot_storages[sorted_storage_indices[index]];
                 let path_in_archive = Path::new(ACCOUNTS_DIR)
                     .join(AccountsFile::file_name(storage.slot(), storage.id()));
@@ -1219,8 +1224,7 @@ fn archive_snapshot(
 fn select_from_range_with_start_end_rates(
     range: Range<usize>,
     nth: usize,
-    start_rate: usize,
-    end_rate: usize,
+    (start_rate, end_rate): (usize, usize),
 ) -> usize {
     let range_len = range.len();
     let cycle = start_rate + end_rate;
@@ -3699,27 +3703,27 @@ mod tests {
     #[test]
     fn test_select_from_start_or_end_index_by_ratio() {
         let interleaved: Vec<_> = (0..10)
-            .map(|i| select_from_range_with_start_end_rates(1..11, i, 2, 1))
+            .map(|i| select_from_range_with_start_end_rates(1..11, i, (2, 1)))
             .collect();
         assert_eq!(interleaved, vec![1, 2, 10, 3, 4, 9, 5, 6, 8, 7]);
 
         let interleaved: Vec<_> = (0..10)
-            .map(|i| select_from_range_with_start_end_rates(1..11, i, 1, 1))
+            .map(|i| select_from_range_with_start_end_rates(1..11, i, (1, 1)))
             .collect();
         assert_eq!(interleaved, vec![1, 10, 2, 9, 3, 8, 4, 7, 5, 6]);
 
         let interleaved: Vec<_> = (0..9)
-            .map(|i| select_from_range_with_start_end_rates(1..10, i, 2, 1))
+            .map(|i| select_from_range_with_start_end_rates(1..10, i, (2, 1)))
             .collect();
         assert_eq!(interleaved, vec![1, 2, 9, 3, 4, 8, 5, 6, 7]);
 
         let interleaved: Vec<_> = (0..9)
-            .map(|i| select_from_range_with_start_end_rates(1..10, i, 1, 2))
+            .map(|i| select_from_range_with_start_end_rates(1..10, i, (1, 2)))
             .collect();
         assert_eq!(interleaved, vec![1, 9, 8, 2, 7, 6, 3, 5, 4]);
 
         let interleaved: Vec<_> = (0..13)
-            .map(|i| select_from_range_with_start_end_rates(1..14, i, 2, 3))
+            .map(|i| select_from_range_with_start_end_rates(1..14, i, (2, 3)))
             .collect();
         assert_eq!(interleaved, vec![1, 2, 13, 12, 11, 3, 4, 10, 9, 8, 5, 6, 7]);
     }
