@@ -91,6 +91,7 @@ impl<'a> CallerAccount<'a> {
     fn from_account_info(
         invoke_context: &InvokeContext,
         memory_mapping: &MemoryMapping<'_>,
+        check_aligned: bool,
         _vm_addr: u64,
         account_info: &AccountInfo,
         account_metadata: &SerializedAccountMetadata,
@@ -121,7 +122,7 @@ impl<'a> CallerAccount<'a> {
             let ptr = translate_type::<u64>(
                 memory_mapping,
                 account_info.lamports.as_ptr() as u64,
-                invoke_context.get_check_aligned(),
+                check_aligned,
             )?;
             if direct_mapping {
                 if account_info.lamports.as_ptr() as u64 >= ebpf::MM_INPUT_START {
@@ -135,13 +136,13 @@ impl<'a> CallerAccount<'a> {
                     "lamports",
                 )?;
             }
-            translate_type_mut::<u64>(memory_mapping, *ptr, invoke_context.get_check_aligned())?
+            translate_type_mut::<u64>(memory_mapping, *ptr, check_aligned)?
         };
 
         let owner = translate_type_mut::<Pubkey>(
             memory_mapping,
             account_info.owner as *const _ as u64,
-            invoke_context.get_check_aligned(),
+            check_aligned,
         )?;
 
         let (serialized_data, vm_data_addr, ref_to_len_in_vm) = {
@@ -153,7 +154,7 @@ impl<'a> CallerAccount<'a> {
             let data = *translate_type::<&[u8]>(
                 memory_mapping,
                 account_info.data.as_ptr() as *const _ as u64,
-                invoke_context.get_check_aligned(),
+                check_aligned,
             )?;
             if direct_mapping {
                 check_account_info_pointer(
@@ -203,7 +204,7 @@ impl<'a> CallerAccount<'a> {
                     memory_mapping,
                     vm_data_addr,
                     data.len() as u64,
-                    invoke_context.get_check_aligned(),
+                    check_aligned,
                 )?
             };
             (serialized_data, vm_data_addr, ref_to_len_in_vm)
@@ -223,6 +224,7 @@ impl<'a> CallerAccount<'a> {
     fn from_sol_account_info(
         invoke_context: &InvokeContext,
         memory_mapping: &MemoryMapping<'_>,
+        check_aligned: bool,
         vm_addr: u64,
         account_info: &SolAccountInfo,
         account_metadata: &SerializedAccountMetadata,
@@ -263,16 +265,10 @@ impl<'a> CallerAccount<'a> {
 
         // account_info points to host memory. The addresses used internally are
         // in vm space so they need to be translated.
-        let lamports = translate_type_mut::<u64>(
-            memory_mapping,
-            account_info.lamports_addr,
-            invoke_context.get_check_aligned(),
-        )?;
-        let owner = translate_type_mut::<Pubkey>(
-            memory_mapping,
-            account_info.owner_addr,
-            invoke_context.get_check_aligned(),
-        )?;
+        let lamports =
+            translate_type_mut::<u64>(memory_mapping, account_info.lamports_addr, check_aligned)?;
+        let owner =
+            translate_type_mut::<Pubkey>(memory_mapping, account_info.owner_addr, check_aligned)?;
 
         consume_compute_meter(
             invoke_context,
@@ -290,7 +286,7 @@ impl<'a> CallerAccount<'a> {
                 memory_mapping,
                 account_info.data_addr,
                 account_info.data_len,
-                invoke_context.get_check_aligned(),
+                check_aligned,
             )?
         };
 
@@ -327,20 +323,21 @@ trait SyscallInvokeSigned {
         addr: u64,
         memory_mapping: &MemoryMapping,
         invoke_context: &mut InvokeContext,
+        check_aligned: bool,
     ) -> Result<Instruction, Error>;
     fn translate_accounts<'a>(
         account_infos_addr: u64,
         account_infos_len: u64,
-        is_loader_deprecated: bool,
         memory_mapping: &MemoryMapping<'_>,
         invoke_context: &mut InvokeContext,
+        check_aligned: bool,
     ) -> Result<Vec<TranslatedAccount<'a>>, Error>;
     fn translate_signers(
         program_id: &Pubkey,
         signers_seeds_addr: u64,
         signers_seeds_len: u64,
         memory_mapping: &MemoryMapping,
-        invoke_context: &InvokeContext,
+        check_aligned: bool,
     ) -> Result<Vec<Pubkey>, Error>;
 }
 
@@ -373,23 +370,20 @@ impl SyscallInvokeSigned for SyscallInvokeSignedRust {
         addr: u64,
         memory_mapping: &MemoryMapping,
         invoke_context: &mut InvokeContext,
+        check_aligned: bool,
     ) -> Result<Instruction, Error> {
-        let ix = translate_type::<StableInstruction>(
-            memory_mapping,
-            addr,
-            invoke_context.get_check_aligned(),
-        )?;
+        let ix = translate_type::<StableInstruction>(memory_mapping, addr, check_aligned)?;
         let account_metas = translate_slice::<AccountMeta>(
             memory_mapping,
             ix.accounts.as_vaddr(),
             ix.accounts.len(),
-            invoke_context.get_check_aligned(),
+            check_aligned,
         )?;
         let data = translate_slice::<u8>(
             memory_mapping,
             ix.data.as_vaddr(),
             ix.data.len(),
-            invoke_context.get_check_aligned(),
+            check_aligned,
         )?
         .to_vec();
 
@@ -429,9 +423,9 @@ impl SyscallInvokeSigned for SyscallInvokeSignedRust {
     fn translate_accounts<'a>(
         account_infos_addr: u64,
         account_infos_len: u64,
-        is_loader_deprecated: bool,
         memory_mapping: &MemoryMapping<'_>,
         invoke_context: &mut InvokeContext,
+        check_aligned: bool,
     ) -> Result<Vec<TranslatedAccount<'a>>, Error> {
         let (account_infos, account_info_keys) = translate_account_infos(
             account_infos_addr,
@@ -439,15 +433,16 @@ impl SyscallInvokeSigned for SyscallInvokeSignedRust {
             |account_info: &AccountInfo| account_info.key as *const _ as u64,
             memory_mapping,
             invoke_context,
+            check_aligned,
         )?;
 
         translate_and_update_accounts(
             &account_info_keys,
             account_infos,
             account_infos_addr,
-            is_loader_deprecated,
             invoke_context,
             memory_mapping,
+            check_aligned,
             CallerAccount::from_account_info,
         )
     }
@@ -457,7 +452,7 @@ impl SyscallInvokeSigned for SyscallInvokeSignedRust {
         signers_seeds_addr: u64,
         signers_seeds_len: u64,
         memory_mapping: &MemoryMapping,
-        invoke_context: &InvokeContext,
+        check_aligned: bool,
     ) -> Result<Vec<Pubkey>, Error> {
         let mut signers = Vec::new();
         if signers_seeds_len > 0 {
@@ -465,7 +460,7 @@ impl SyscallInvokeSigned for SyscallInvokeSignedRust {
                 memory_mapping,
                 signers_seeds_addr,
                 signers_seeds_len,
-                invoke_context.get_check_aligned(),
+                check_aligned,
             )?;
             if signers_seeds.len() > MAX_SIGNERS {
                 return Err(Box::new(SyscallError::TooManySigners));
@@ -475,7 +470,7 @@ impl SyscallInvokeSigned for SyscallInvokeSignedRust {
                     memory_mapping,
                     signer_seeds.ptr(),
                     signer_seeds.len(),
-                    invoke_context.get_check_aligned(),
+                    check_aligned,
                 )?;
                 if untranslated_seeds.len() > MAX_SEEDS {
                     return Err(Box::new(InstructionError::MaxSeedLengthExceeded));
@@ -483,8 +478,7 @@ impl SyscallInvokeSigned for SyscallInvokeSignedRust {
                 let seeds = untranslated_seeds
                     .iter()
                     .map(|untranslated_seed| {
-                        untranslated_seed
-                            .translate(memory_mapping, invoke_context.get_check_aligned())
+                        untranslated_seed.translate(memory_mapping, check_aligned)
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
                 let signer = Pubkey::create_program_address(&seeds, program_id)
@@ -578,31 +572,21 @@ impl SyscallInvokeSigned for SyscallInvokeSignedC {
         addr: u64,
         memory_mapping: &MemoryMapping,
         invoke_context: &mut InvokeContext,
+        check_aligned: bool,
     ) -> Result<Instruction, Error> {
-        let ix_c = translate_type::<SolInstruction>(
-            memory_mapping,
-            addr,
-            invoke_context.get_check_aligned(),
-        )?;
+        let ix_c = translate_type::<SolInstruction>(memory_mapping, addr, check_aligned)?;
 
-        let program_id = translate_type::<Pubkey>(
-            memory_mapping,
-            ix_c.program_id_addr,
-            invoke_context.get_check_aligned(),
-        )?;
+        let program_id =
+            translate_type::<Pubkey>(memory_mapping, ix_c.program_id_addr, check_aligned)?;
         let account_metas = translate_slice::<SolAccountMeta>(
             memory_mapping,
             ix_c.accounts_addr,
             ix_c.accounts_len,
-            invoke_context.get_check_aligned(),
+            check_aligned,
         )?;
-        let data = translate_slice::<u8>(
-            memory_mapping,
-            ix_c.data_addr,
-            ix_c.data_len,
-            invoke_context.get_check_aligned(),
-        )?
-        .to_vec();
+        let data =
+            translate_slice::<u8>(memory_mapping, ix_c.data_addr, ix_c.data_len, check_aligned)?
+                .to_vec();
 
         check_instruction_size(ix_c.accounts_len as usize, data.len(), invoke_context)?;
 
@@ -627,11 +611,8 @@ impl SyscallInvokeSigned for SyscallInvokeSignedC {
             } {
                 return Err(Box::new(InstructionError::InvalidArgument));
             }
-            let pubkey = translate_type::<Pubkey>(
-                memory_mapping,
-                account_meta.pubkey_addr,
-                invoke_context.get_check_aligned(),
-            )?;
+            let pubkey =
+                translate_type::<Pubkey>(memory_mapping, account_meta.pubkey_addr, check_aligned)?;
             accounts.push(AccountMeta {
                 pubkey: *pubkey,
                 is_signer: account_meta.is_signer,
@@ -649,9 +630,9 @@ impl SyscallInvokeSigned for SyscallInvokeSignedC {
     fn translate_accounts<'a>(
         account_infos_addr: u64,
         account_infos_len: u64,
-        is_loader_deprecated: bool,
         memory_mapping: &MemoryMapping<'_>,
         invoke_context: &mut InvokeContext,
+        check_aligned: bool,
     ) -> Result<Vec<TranslatedAccount<'a>>, Error> {
         let (account_infos, account_info_keys) = translate_account_infos(
             account_infos_addr,
@@ -659,15 +640,16 @@ impl SyscallInvokeSigned for SyscallInvokeSignedC {
             |account_info: &SolAccountInfo| account_info.key_addr,
             memory_mapping,
             invoke_context,
+            check_aligned,
         )?;
 
         translate_and_update_accounts(
             &account_info_keys,
             account_infos,
             account_infos_addr,
-            is_loader_deprecated,
             invoke_context,
             memory_mapping,
+            check_aligned,
             CallerAccount::from_sol_account_info,
         )
     }
@@ -677,14 +659,14 @@ impl SyscallInvokeSigned for SyscallInvokeSignedC {
         signers_seeds_addr: u64,
         signers_seeds_len: u64,
         memory_mapping: &MemoryMapping,
-        invoke_context: &InvokeContext,
+        check_aligned: bool,
     ) -> Result<Vec<Pubkey>, Error> {
         if signers_seeds_len > 0 {
             let signers_seeds = translate_slice::<SolSignerSeedsC>(
                 memory_mapping,
                 signers_seeds_addr,
                 signers_seeds_len,
-                invoke_context.get_check_aligned(),
+                check_aligned,
             )?;
             if signers_seeds.len() > MAX_SIGNERS {
                 return Err(Box::new(SyscallError::TooManySigners));
@@ -696,7 +678,7 @@ impl SyscallInvokeSigned for SyscallInvokeSignedC {
                         memory_mapping,
                         signer_seeds.addr,
                         signer_seeds.len,
-                        invoke_context.get_check_aligned(),
+                        check_aligned,
                     )?;
                     if seeds.len() > MAX_SEEDS {
                         return Err(Box::new(InstructionError::MaxSeedLengthExceeded) as Error);
@@ -708,7 +690,7 @@ impl SyscallInvokeSigned for SyscallInvokeSignedC {
                                 memory_mapping,
                                 seed.addr,
                                 seed.len,
-                                invoke_context.get_check_aligned(),
+                                check_aligned,
                             )
                         })
                         .collect::<Result<Vec<_>, Error>>()?;
@@ -728,6 +710,7 @@ fn translate_account_infos<'a, T, F>(
     key_addr: F,
     memory_mapping: &'a MemoryMapping,
     invoke_context: &mut InvokeContext,
+    check_aligned: bool,
 ) -> Result<(&'a [T], Vec<&'a Pubkey>), Error>
 where
     F: Fn(&T) -> u64,
@@ -751,7 +734,7 @@ where
         memory_mapping,
         account_infos_addr,
         account_infos_len,
-        invoke_context.get_check_aligned(),
+        check_aligned,
     )?;
     check_account_infos(account_infos.len(), invoke_context)?;
     let mut account_info_keys = Vec::with_capacity(account_infos_len as usize);
@@ -762,7 +745,7 @@ where
         account_info_keys.push(translate_type::<Pubkey>(
             memory_mapping,
             key_addr(account_info),
-            invoke_context.get_check_aligned(),
+            check_aligned,
         )?);
     }
     Ok((account_infos, account_info_keys))
@@ -774,15 +757,16 @@ fn translate_and_update_accounts<'a, T, F>(
     account_info_keys: &[&Pubkey],
     account_infos: &[T],
     account_infos_addr: u64,
-    is_loader_deprecated: bool,
     invoke_context: &mut InvokeContext,
     memory_mapping: &MemoryMapping<'_>,
+    check_aligned: bool,
     do_translate: F,
 ) -> Result<Vec<TranslatedAccount<'a>>, Error>
 where
     F: Fn(
         &InvokeContext,
         &MemoryMapping<'_>,
+        bool,
         u64,
         &T,
         &SerializedAccountMetadata,
@@ -853,6 +837,7 @@ where
                 do_translate(
                     invoke_context,
                     memory_mapping,
+                    check_aligned,
                     account_infos_addr.saturating_add(
                         caller_account_index.saturating_mul(mem::size_of::<T>()) as u64,
                     ),
@@ -865,10 +850,10 @@ where
             // BorrowedAccount (callee_account) so the callee can see the
             // changes.
             let update_caller = update_callee_account(
-                is_loader_deprecated,
                 &caller_account,
                 callee_account,
                 direct_mapping,
+                check_aligned,
             )?;
 
             accounts.push(TranslatedAccount {
@@ -999,6 +984,8 @@ fn cpi_common<S: SyscallInvokeSigned>(
     signers_seeds_len: u64,
     memory_mapping: &mut MemoryMapping,
 ) -> Result<u64, Error> {
+    let check_aligned = invoke_context.get_check_aligned();
+
     // CPI entry.
     //
     // Translate the inputs to the syscall and synchronize the caller's account
@@ -1012,7 +999,12 @@ fn cpi_common<S: SyscallInvokeSigned>(
         invoke_context.timings.execute_us += execute_time.as_us();
     }
 
-    let instruction = S::translate_instruction(instruction_addr, memory_mapping, invoke_context)?;
+    let instruction = S::translate_instruction(
+        instruction_addr,
+        memory_mapping,
+        invoke_context,
+        check_aligned,
+    )?;
     let transaction_context = &invoke_context.transaction_context;
     let instruction_context = transaction_context.get_current_instruction_context()?;
     let caller_program_id = instruction_context.get_last_program_key(transaction_context)?;
@@ -1021,22 +1013,17 @@ fn cpi_common<S: SyscallInvokeSigned>(
         signers_seeds_addr,
         signers_seeds_len,
         memory_mapping,
-        invoke_context,
+        check_aligned,
     )?;
-    let is_loader_deprecated = *instruction_context
-        .try_borrow_last_program_account(transaction_context)?
-        .get_owner()
-        == bpf_loader_deprecated::id();
-
     check_authorized_program(&instruction.program_id, &instruction.data, invoke_context)?;
     invoke_context.prepare_next_instruction(&instruction, &signers)?;
 
     let mut accounts = S::translate_accounts(
         account_infos_addr,
         account_infos_len,
-        is_loader_deprecated,
         memory_mapping,
         invoke_context,
+        check_aligned,
     )?;
 
     // Process the callee instruction
@@ -1064,6 +1051,7 @@ fn cpi_common<S: SyscallInvokeSigned>(
             update_caller_account(
                 invoke_context,
                 memory_mapping,
+                check_aligned,
                 &mut translate_account.caller_account,
                 &mut callee_account,
                 direct_mapping,
@@ -1080,9 +1068,9 @@ fn cpi_common<S: SyscallInvokeSigned>(
             if translate_account.update_caller_account_region {
                 update_caller_account_region(
                     memory_mapping,
+                    check_aligned,
                     &translate_account.caller_account,
                     &mut callee_account,
-                    is_loader_deprecated,
                 )?;
             }
         }
@@ -1104,10 +1092,10 @@ fn cpi_common<S: SyscallInvokeSigned>(
 // When true is returned, the caller account must be updated after CPI. This
 // is only set for direct mapping when the pointer may have changed.
 fn update_callee_account(
-    is_loader_deprecated: bool,
     caller_account: &CallerAccount,
     mut callee_account: BorrowedAccount<'_>,
     direct_mapping: bool,
+    check_aligned: bool,
 ) -> Result<bool, Error> {
     let mut must_update_caller = false;
 
@@ -1119,7 +1107,8 @@ fn update_callee_account(
         let prev_len = callee_account.get_data().len();
         let post_len = *caller_account.ref_to_len_in_vm as usize;
         if prev_len != post_len {
-            let address_space_reserved_for_account = if is_loader_deprecated {
+            let is_caller_loader_deprecated = !check_aligned;
+            let address_space_reserved_for_account = if is_caller_loader_deprecated {
                 caller_account.original_data_len
             } else {
                 caller_account
@@ -1156,11 +1145,12 @@ fn update_callee_account(
 
 fn update_caller_account_region(
     memory_mapping: &mut MemoryMapping,
+    check_aligned: bool,
     caller_account: &CallerAccount,
     callee_account: &mut BorrowedAccount<'_>,
-    is_loader_deprecated: bool,
 ) -> Result<(), Error> {
-    let address_space_reserved_for_account = if is_loader_deprecated {
+    let is_caller_loader_deprecated = !check_aligned;
+    let address_space_reserved_for_account = if is_caller_loader_deprecated {
         caller_account.original_data_len
     } else {
         caller_account
@@ -1198,6 +1188,7 @@ fn update_caller_account_region(
 fn update_caller_account(
     invoke_context: &InvokeContext,
     memory_mapping: &MemoryMapping<'_>,
+    check_aligned: bool,
     caller_account: &mut CallerAccount<'_>,
     callee_account: &mut BorrowedAccount<'_>,
     direct_mapping: bool,
@@ -1207,8 +1198,8 @@ fn update_caller_account(
 
     let prev_len = *caller_account.ref_to_len_in_vm as usize;
     let post_len = callee_account.get_data().len();
-    let is_loader_deprecated = !invoke_context.get_check_aligned();
-    let address_space_reserved_for_account = if direct_mapping && is_loader_deprecated {
+    let is_caller_loader_deprecated = !check_aligned;
+    let address_space_reserved_for_account = if direct_mapping && is_caller_loader_deprecated {
         caller_account.original_data_len
     } else {
         caller_account
@@ -1256,7 +1247,7 @@ fn update_caller_account(
             caller_account
                 .vm_data_addr
                 .saturating_sub(std::mem::size_of::<u64>() as u64),
-            invoke_context.get_check_aligned(),
+            check_aligned,
         )?;
         *serialized_len_ptr = post_len as u64;
     }
@@ -1398,6 +1389,7 @@ mod tests {
             vm_addr,
             &memory_mapping,
             &mut invoke_context,
+            true, // check_aligned
         )
         .unwrap();
         assert_eq!(ins.program_id, program_id);
@@ -1435,7 +1427,7 @@ mod tests {
             vm_addr,
             1,
             &memory_mapping,
-            &invoke_context,
+            true, // check_aligned
         )
         .unwrap();
         assert_eq!(signers[0], derived_key);
@@ -1471,6 +1463,7 @@ mod tests {
         let caller_account = CallerAccount::from_account_info(
             &invoke_context,
             &memory_mapping,
+            true, // check_aligned
             vm_addr,
             account_info,
             &account_metadata,
@@ -1525,6 +1518,7 @@ mod tests {
         update_caller_account(
             &invoke_context,
             &memory_mapping,
+            true, // check_aligned
             &mut caller_account,
             &mut callee_account,
             direct_mapping,
@@ -1587,6 +1581,7 @@ mod tests {
             update_caller_account(
                 &invoke_context,
                 &memory_mapping,
+                true, // check_aligned
                 &mut caller_account,
                 &mut callee_account,
                 false,
@@ -1611,6 +1606,7 @@ mod tests {
         update_caller_account(
             &invoke_context,
             &memory_mapping,
+            true, // check_aligned
             &mut caller_account,
             &mut callee_account,
             false,
@@ -1627,6 +1623,7 @@ mod tests {
             update_caller_account(
                 &invoke_context,
                 &memory_mapping,
+                true, // check_aligned
                 &mut caller_account,
                 &mut callee_account,
                 false,
@@ -1642,6 +1639,7 @@ mod tests {
         update_caller_account(
             &invoke_context,
             &memory_mapping,
+            true, // check_aligned
             &mut caller_account,
             &mut callee_account,
             false,
@@ -1675,7 +1673,7 @@ mod tests {
         *caller_account.lamports = 42;
         *caller_account.owner = Pubkey::new_unique();
 
-        update_callee_account(false, &caller_account, callee_account, direct_mapping).unwrap();
+        update_callee_account(&caller_account, callee_account, direct_mapping, true).unwrap();
 
         let callee_account = borrow_instruction_account!(invoke_context, 0);
         assert_eq!(callee_account.get_lamports(), 42);
@@ -1705,7 +1703,7 @@ mod tests {
 
         // direct mapping does not copy data in update_callee_account()
         caller_account.serialized_data[0] = b'b';
-        update_callee_account(false, &caller_account, callee_account, false).unwrap();
+        update_callee_account(&caller_account, callee_account, false, true).unwrap();
         let callee_account = borrow_instruction_account!(invoke_context, 0);
         assert_eq!(callee_account.get_data(), b"boobar");
 
@@ -1714,7 +1712,7 @@ mod tests {
         *caller_account.ref_to_len_in_vm = data.len() as u64;
         caller_account.serialized_data = &mut data;
         assert_eq!(
-            update_callee_account(false, &caller_account, callee_account, direct_mapping).unwrap(),
+            update_callee_account(&caller_account, callee_account, direct_mapping, true).unwrap(),
             direct_mapping,
         );
 
@@ -1724,7 +1722,7 @@ mod tests {
         caller_account.serialized_data = &mut data;
         let callee_account = borrow_instruction_account!(invoke_context, 0);
         assert_eq!(
-            update_callee_account(false, &caller_account, callee_account, direct_mapping).unwrap(),
+            update_callee_account(&caller_account, callee_account, direct_mapping, true).unwrap(),
             direct_mapping,
         );
 
@@ -1735,13 +1733,13 @@ mod tests {
         let mut owner = system_program::id();
         caller_account.owner = &mut owner;
         let callee_account = borrow_instruction_account!(invoke_context, 0);
-        update_callee_account(false, &caller_account, callee_account, direct_mapping).unwrap();
+        update_callee_account(&caller_account, callee_account, direct_mapping, true).unwrap();
         let callee_account = borrow_instruction_account!(invoke_context, 0);
         assert_eq!(callee_account.get_data(), b"");
 
         // growing beyond address_space_reserved_for_account
         *caller_account.ref_to_len_in_vm = (7 + MAX_PERMITTED_DATA_INCREASE) as u64;
-        let result = update_callee_account(false, &caller_account, callee_account, direct_mapping);
+        let result = update_callee_account(&caller_account, callee_account, direct_mapping, true);
         if direct_mapping {
             assert_matches!(
                 result,
@@ -1776,10 +1774,10 @@ mod tests {
         caller_account.serialized_data[0] = b'b';
         assert_matches!(
             update_callee_account(
-                false,
                 &caller_account,
                 callee_account,
                 false,
+                true,
             ),
             Err(error) if error.downcast_ref::<InstructionError>().unwrap() == &InstructionError::ExternalAccountDataModified
         );
@@ -1791,10 +1789,10 @@ mod tests {
         let callee_account = borrow_instruction_account!(invoke_context, 0);
         assert_matches!(
             update_callee_account(
-                false,
                 &caller_account,
                 callee_account,
                 direct_mapping,
+                true,
             ),
             Err(error) if error.downcast_ref::<InstructionError>().unwrap() == &InstructionError::AccountDataSizeChanged
         );
@@ -1806,10 +1804,10 @@ mod tests {
         let callee_account = borrow_instruction_account!(invoke_context, 0);
         assert_matches!(
             update_callee_account(
-                false,
                 &caller_account,
                 callee_account,
                 direct_mapping,
+                true,
             ),
             Err(error) if error.downcast_ref::<InstructionError>().unwrap() == &InstructionError::AccountDataSizeChanged
         );
@@ -1859,9 +1857,9 @@ mod tests {
         let accounts = SyscallInvokeSignedRust::translate_accounts(
             vm_addr,
             1,
-            false,
             &memory_mapping,
             &mut invoke_context,
+            true, // check_aligned
         )
         .unwrap();
         assert_eq!(accounts.len(), 1);
