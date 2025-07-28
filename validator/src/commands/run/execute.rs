@@ -64,10 +64,7 @@ use {
     },
     solana_send_transaction_service::send_transaction_service,
     solana_signer::Signer,
-    solana_streamer::{
-        quic::{QuicServerParams, DEFAULT_TPU_COALESCE},
-        socket::SocketAddrSpace,
-    },
+    solana_streamer::quic::{QuicServerParams, DEFAULT_TPU_COALESCE},
     solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
     solana_turbine::{
         broadcast_stage::BroadcastStageType,
@@ -98,7 +95,6 @@ const MILLIS_PER_SECOND: u64 = 1000;
 pub fn execute(
     matches: &ArgMatches,
     solana_version: &str,
-    socket_addr_space: SocketAddrSpace,
     ledger_path: &Path,
     operation: Operation,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -284,7 +280,7 @@ pub fn execute(
     };
     let entrypoint_addrs = run_args.entrypoints;
     for addr in &entrypoint_addrs {
-        if !socket_addr_space.check(addr) {
+        if !run_args.socket_addr_space.check(addr) {
             Err(format!("invalid entrypoint address: {addr}"))?;
         }
     }
@@ -1019,7 +1015,7 @@ pub fn execute(
             &start_progress,
             minimal_snapshot_download_speed,
             maximum_snapshot_download_abort,
-            socket_addr_space,
+            run_args.socket_addr_space,
         );
         *start_progress.write().unwrap() = ValidatorStartProgress::Initializing;
     }
@@ -1076,7 +1072,7 @@ pub fn execute(
         should_check_duplicate_instance,
         rpc_to_plugin_manager_receiver,
         start_progress,
-        socket_addr_space,
+        run_args.socket_addr_space,
         ValidatorTpuConfig {
             use_quic: tpu_use_quic,
             vote_use_quic,

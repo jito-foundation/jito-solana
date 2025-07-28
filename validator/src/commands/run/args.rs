@@ -28,6 +28,7 @@ use {
         MAX_BATCH_SEND_RATE_MS, MAX_TRANSACTION_BATCH_SIZE,
     },
     solana_signer::Signer,
+    solana_streamer::socket::SocketAddrSpace,
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     std::{collections::HashSet, net::SocketAddr, str::FromStr},
 };
@@ -44,6 +45,7 @@ pub struct RunArgs {
     pub logfile: String,
     pub entrypoints: Vec<SocketAddr>,
     pub known_validators: Option<HashSet<Pubkey>>,
+    pub socket_addr_space: SocketAddrSpace,
     pub rpc_bootstrap_config: RpcBootstrapConfig,
     pub blockstore_options: BlockstoreOptions,
 }
@@ -83,11 +85,14 @@ impl FromClapArgMatches for RunArgs {
             "known validator",
         )?;
 
+        let socket_addr_space = SocketAddrSpace::new(matches.is_present("allow_private_addr"));
+
         Ok(RunArgs {
             identity_keypair,
             logfile,
             entrypoints,
             known_validators,
+            socket_addr_space,
             rpc_bootstrap_config: RpcBootstrapConfig::from_clap_arg_match(matches)?,
             blockstore_options: BlockstoreOptions::from_clap_arg_match(matches)?,
         })
@@ -1747,6 +1752,7 @@ mod tests {
                 logfile,
                 entrypoints,
                 known_validators,
+                socket_addr_space: SocketAddrSpace::Global,
                 rpc_bootstrap_config: RpcBootstrapConfig::default(),
                 blockstore_options: BlockstoreOptions::default(),
             }
@@ -1760,6 +1766,7 @@ mod tests {
                 logfile: self.logfile.clone(),
                 entrypoints: self.entrypoints.clone(),
                 known_validators: self.known_validators.clone(),
+                socket_addr_space: self.socket_addr_space,
                 rpc_bootstrap_config: self.rpc_bootstrap_config.clone(),
                 blockstore_options: self.blockstore_options.clone(),
             }
@@ -2136,5 +2143,19 @@ mod tests {
                 expected_args,
             );
         }
+    }
+
+    #[test]
+    fn verify_args_struct_by_command_run_with_allow_private_addr() {
+        let default_run_args = RunArgs::default();
+        let expected_args = RunArgs {
+            socket_addr_space: SocketAddrSpace::Unspecified,
+            ..default_run_args.clone()
+        };
+        verify_args_struct_by_command_run_with_identity_setup(
+            default_run_args,
+            vec!["--allow-private-addr"],
+            expected_args,
+        );
     }
 }
