@@ -66,7 +66,7 @@ const SIGNATURE_SAMPLE_LEADING_ZEROS: u32 = 19;
 
 pub struct Crds {
     /// Stores the map of labels and values
-    table: IndexMap<CrdsValueLabel, VersionedCrdsValue>,
+    pub table: IndexMap<CrdsValueLabel, VersionedCrdsValue>,
     cursor: Cursor, // Next insert ordinal location.
     shards: CrdsShards,
     nodes: IndexSet<usize>, // Indices of nodes' ContactInfo.
@@ -411,7 +411,7 @@ impl Crds {
     }
 
     /// Returns all records associated with a pubkey.
-    pub(crate) fn get_records(&self, pubkey: &Pubkey) -> impl Iterator<Item = &VersionedCrdsValue> {
+    pub fn get_records(&self, pubkey: &Pubkey) -> impl Iterator<Item = &VersionedCrdsValue> {
         self.records
             .get(pubkey)
             .into_iter()
@@ -420,12 +420,12 @@ impl Crds {
     }
 
     /// Returns number of known contact-infos (network size).
-    pub(crate) fn num_nodes(&self) -> usize {
+    pub fn num_nodes(&self) -> usize {
         self.nodes.len()
     }
 
     /// Returns number of unique pubkeys.
-    pub(crate) fn num_pubkeys(&self) -> usize {
+    pub fn num_pubkeys(&self) -> usize {
         self.records.len()
     }
 
