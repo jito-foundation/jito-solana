@@ -664,44 +664,28 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
         slot_list: &mut SlotList<T>,
         slot: Slot,
         account_info: T,
-        mut other_slot: Option<Slot>,
+        other_slot: Option<Slot>,
         reclaims: &mut SlotList<T>,
         reclaim: UpsertReclaim,
     ) -> bool {
         let mut addref = !account_info.is_cached();
 
-        if other_slot == Some(slot) {
-            other_slot = None; // redundant info, so ignore
-        }
+        let old_slot = other_slot.unwrap_or(slot);
 
-        // There may be 0..=2 dirty accounts found (one at 'slot' and one at 'other_slot')
-        // that are already in the slot list.  Since the first one found will be swapped with the
-        // new account, if a second one is found, we cannot swap again. Instead, just remove it.
+        // If we find an existing account at old_slot, replace it rather than adding a new entry to the list
         let mut found_slot = false;
-        let mut found_other_slot = false;
         (0..slot_list.len())
             .rev() // rev since we delete from the list in some cases
             .for_each(|slot_list_index| {
                 let (cur_slot, cur_account_info) = &slot_list[slot_list_index];
-                let matched_slot = *cur_slot == slot;
-                if matched_slot || Some(*cur_slot) == other_slot {
-                    // make sure neither 'slot' nor 'other_slot' are in the slot list more than once
-                    let matched_other_slot = !matched_slot;
-                    assert!(
-                        !(found_slot && matched_slot || matched_other_slot && found_other_slot),
-                        "{slot_list:?}, slot: {slot}, other_slot: {other_slot:?}"
-                    );
-
+                if *cur_slot == old_slot {
+                    // Ensure we only find one!
+                    assert!(!found_slot);
                     let is_cur_account_cached = cur_account_info.is_cached();
 
-                    let reclaim_item = if !(found_slot || found_other_slot) {
-                        // first time we found an entry in 'slot' or 'other_slot', so replace it in-place.
-                        // this may be the only instance we find
-                        std::mem::replace(&mut slot_list[slot_list_index], (slot, account_info))
-                    } else {
-                        // already replaced one entry, so this one has to be removed
-                        slot_list.remove(slot_list_index)
-                    };
+                    // Replace the item
+                    let reclaim_item =
+                        std::mem::replace(&mut slot_list[slot_list_index], (slot, account_info));
                     match reclaim {
                         UpsertReclaim::PopulateReclaims => {
                             // Reclaims are used to reclaim other versions of accounts when they are
@@ -719,18 +703,25 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
                         }
                     }
 
-                    if matched_slot {
-                        found_slot = true;
-                    } else {
-                        found_other_slot = true;
-                    }
+                    found_slot = true;
+
                     if !is_cur_account_cached {
-                        // current info at 'slot' is NOT cached, so we should NOT addref. This slot already has a ref count for this pubkey.
+                        // Replacing an existing entry at 'old_slot' with a new entry at 'slot'.
+                        // If the previous entry at 'old_slot' was uncached, addref is not needed
+                        // as the previous entry already had a reference and is being removed.
                         addref = false;
                     }
+                } else {
+                    // Slot is new item that is being added to the slot list
+                    // If slot is already in the slot list, it must be replaced otherwise it will
+                    // lead to the same slot being duplicated in the list
+                    assert_ne!(
+                        *cur_slot, slot,
+                        "slot_list has slot in slot_list but is not replacing it"
+                    );
                 }
             });
-        if !found_slot && !found_other_slot {
+        if !found_slot {
             // if we make it here, we did not find the slot in the list
             slot_list.push((slot, account_info));
         }
@@ -1403,6 +1394,7 @@ mod tests {
         crate::accounts_index::{AccountsIndexConfig, BINS_FOR_TESTING},
         assert_matches::assert_matches,
         itertools::Itertools,
+        test_case::test_case,
     };
 
     fn new_for_test<T: IndexValue>() -> InMemAccountsIndex<T, T> {
@@ -1814,29 +1806,6 @@ mod tests {
         assert_eq!(slot_list, vec![at_new_slot]);
         assert_eq!(reclaims, expected_reclaims);
 
-        // replace other and new_slot
-        let mut slot_list = vec![(unique_other_slot, other_value), (new_slot, other_value)];
-        let expected_reclaims = slot_list.clone();
-        let other_slot = Some(unique_other_slot);
-        // upserting into slot_list that already contain an entry at 'new-slot', so do NOT addref
-        let mut reclaims = Vec::default();
-        assert!(
-            !InMemAccountsIndex::<u64, u64>::update_slot_list(
-                &mut slot_list,
-                new_slot,
-                info,
-                other_slot,
-                &mut reclaims,
-                reclaim
-            ),
-            "other_slot: {other_slot:?}"
-        );
-        assert_eq!(slot_list, vec![at_new_slot]);
-        assert_eq!(
-            reclaims,
-            expected_reclaims.into_iter().rev().collect::<Vec<_>>()
-        );
-
         // nothing will exist at this slot
         let missing_other_slot = unique_other_slot + 1;
         let ignored_slot = 10; // bigger than is used elsewhere in the test
@@ -1881,6 +1850,15 @@ mod tests {
                     Some(missing_other_slot),
                     None,
                 ] {
+                    if other_slot.is_some()
+                        && new_slot != other_slot.unwrap()
+                        && slot_list.contains(&(new_slot, info))
+                    {
+                        // skip this permutation if 'new_slot' is already in the slot_list, but we are trying to reclaim other slot
+                        // This is an assert case as only one of new_slot and other_slot should be in the slot list
+                        continue;
+                    }
+
                     attempts += 1;
                     // initialize slot_list prior to call to 'InMemAccountsIndex::update_slot_list'
                     // by inserting each possible entry at each possible position
@@ -1942,7 +1920,28 @@ mod tests {
                 }
             }
         }
-        assert_eq!(attempts, 1304); // complicated permutations, so make sure we ran the right #
+        assert_eq!(attempts, 652); // complicated permutations, so make sure we ran the right #
+    }
+
+    #[should_panic(expected = "slot_list has slot in slot_list but is not replacing it")]
+    #[test_case(2; "Slot to replace is in the slot list")]
+    #[test_case(3; "Slot to replace is not in the slot list")]
+    fn test_update_slot_list_new_slot_duplicate_panic(slot_to_replace: u64) {
+        let new_slot = 1; // This slot already exists in the list
+        let old_slot = 2; // This slot already exists in the list
+        let mut slot_list = vec![(new_slot, 0), (old_slot, 0)];
+        let mut reclaims = Vec::default();
+        let new_info = 1;
+
+        // Attempt to update the slot list with a duplicate slot, which should trigger the panic
+        InMemAccountsIndex::<u64, u64>::update_slot_list(
+            &mut slot_list,
+            new_slot,
+            new_info,
+            Some(slot_to_replace),
+            &mut reclaims,
+            UpsertReclaim::IgnoreReclaims,
+        );
     }
 
     #[test]
