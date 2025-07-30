@@ -11985,6 +11985,8 @@ dependencies = [
 [[package]]
 name = "solana-zk-sdk"
 version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dffbd0b7537f4249d69b74c632f8eac1d2726572022791f9ead65a67d3f6905"
 dependencies = [
  "aes-gcm-siv",
  "base64 0.22.1",
@@ -12004,7 +12006,6 @@ dependencies = [
  "sha3",
  "solana-derivation-path",
  "solana-instruction",
- "solana-keypair",
  "solana-pubkey",
  "solana-sdk-ids",
  "solana-seed-derivable",
@@ -12013,7 +12014,6 @@ dependencies = [
  "solana-signer",
  "subtle",
  "thiserror 2.0.12",
- "tiny-bip39",
  "wasm-bindgen",
  "zeroize",
 ]

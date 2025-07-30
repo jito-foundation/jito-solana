@@ -140,7 +140,6 @@ members = [
     "wen-restart",
     "xdp",
     "zk-keygen",
-    "zk-sdk",
     "zk-token-sdk",
 ]
 
@@ -562,7 +561,7 @@ solana-vote-program = { path = "programs/vote", version = "=3.0.0", default-feat
 solana-wen-restart = { path = "wen-restart", version = "=3.0.0" }
 solana-zk-elgamal-proof-program = { path = "programs/zk-elgamal-proof", version = "=3.0.0" }
 solana-zk-keygen = { path = "zk-keygen", version = "=3.0.0" }
-solana-zk-sdk = { path = "zk-sdk", version = "=3.0.0" }
+solana-zk-sdk = "3.0.0"
 solana-zk-token-proof-program = { path = "programs/zk-token-proof", version = "=3.0.0" }
 solana-zk-token-sdk = { path = "zk-token-sdk", version = "=3.0.0" }
 spl-associated-token-account = "7.0.0"
@@ -678,4 +677,3 @@ crossbeam-epoch = { git = "https://github.com/anza-xyz/crossbeam", rev = "fd279d
 # There is a similar override in `programs/sbf/Cargo.toml`.  Please keep both
 # comments and the overrides in sync.
 solana-curve25519 = { path = "curves/curve25519" }
-solana-zk-sdk = { path = "zk-sdk" }

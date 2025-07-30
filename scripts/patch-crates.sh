@@ -71,7 +71,6 @@ update_solana_dependencies() {
     solana-udp-client
     solana-version
     solana-zk-token-sdk
-    solana-zk-sdk
     solana-curve25519
   )
 
@@ -160,7 +159,6 @@ patch_crates_io_solana_no_header() {
   crates_map+=("solana-udp-client udp-client")
   crates_map+=("solana-version version")
   crates_map+=("solana-zk-token-sdk zk-token-sdk")
-  crates_map+=("solana-zk-sdk zk-sdk")
   crates_map+=("solana-bn254 curves/bn254")
   crates_map+=("solana-curve25519 curves/curve25519")
   crates_map+=("solana-secp256k1-recover curves/secp256k1-recover")

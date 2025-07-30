@@ -169,7 +169,6 @@ solana-transaction-status = { path = "../../transaction-status", version = "=3.0
 solana-type-overrides = { path = "../../type-overrides", version = "=3.0.0" }
 solana-vote = { path = "../../vote", version = "=3.0.0" }
 solana-vote-program = { path = "../../programs/vote", version = "=3.0.0" }
-solana-zk-sdk = { path = "../../zk-sdk", version = "=3.0.0" }
 thiserror = "1.0"
 
 [features]
@@ -301,4 +300,3 @@ name = "bpf_loader"
 # There is a similar override in `../../Cargo.toml`.  Please keep both comments
 # and the overrides in sync.
 solana-curve25519 = { path = "../../curves/curve25519" }
-solana-zk-sdk = { path = "../../zk-sdk" }
