@@ -33,6 +33,7 @@ use {
         bank_forks::{BankForks, SetRootError},
         bank_utils,
         commitment::VOTE_THRESHOLD_SIZE,
+        dependency_tracker::DependencyTracker,
         installed_scheduler_pool::BankWithScheduler,
         prioritization_fee_cache::PrioritizationFeeCache,
         runtime_config::RuntimeConfig,
@@ -2158,10 +2159,12 @@ pub fn process_single_slot(
     Ok(())
 }
 
+type WorkSequence = u64;
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum TransactionStatusMessage {
-    Batch(TransactionStatusBatch),
+    Batch((TransactionStatusBatch, Option<WorkSequence>)),
     Freeze(Arc<Bank>),
 }
 
@@ -2179,6 +2182,7 @@ pub struct TransactionStatusBatch {
 #[derive(Clone, Debug)]
 pub struct TransactionStatusSender {
     pub sender: Sender<TransactionStatusMessage>,
+    pub dependency_tracker: Option<Arc<DependencyTracker>>,
 }
 
 impl TransactionStatusSender {
@@ -2192,9 +2196,13 @@ impl TransactionStatusSender {
         costs: Vec<Option<u64>>,
         transaction_indexes: Vec<usize>,
     ) {
-        if let Err(e) = self
-            .sender
-            .send(TransactionStatusMessage::Batch(TransactionStatusBatch {
+        let work_sequence = self
+            .dependency_tracker
+            .as_ref()
+            .map(|dependency_tracker| dependency_tracker.declare_work());
+
+        if let Err(e) = self.sender.send(TransactionStatusMessage::Batch((
+            TransactionStatusBatch {
                 slot,
                 transactions,
                 commit_results,
@@ -2202,8 +2210,9 @@ impl TransactionStatusSender {
                 token_balances,
                 costs,
                 transaction_indexes,
-            }))
-        {
+            },
+            work_sequence,
+        ))) {
             trace!("Slot {slot} transaction_status send batch failed: {e:?}");
         }
     }
@@ -4863,6 +4872,7 @@ pub mod tests {
             crossbeam_channel::unbounded();
         let transaction_status_sender = TransactionStatusSender {
             sender: transaction_status_sender,
+            dependency_tracker: None,
         };
 
         let blockhash = bank.last_blockhash();
@@ -4898,7 +4908,7 @@ pub mod tests {
         .unwrap();
         assert_eq!(progress.num_txs, 2);
         let batch = transaction_status_receiver.recv().unwrap();
-        if let TransactionStatusMessage::Batch(batch) = batch {
+        if let TransactionStatusMessage::Batch((batch, _sequence)) = batch {
             assert_eq!(batch.transactions.len(), 2);
             assert_eq!(batch.transaction_indexes.len(), 2);
             assert_eq!(batch.transaction_indexes, [0, 1]);
@@ -4943,7 +4953,7 @@ pub mod tests {
         .unwrap();
         assert_eq!(progress.num_txs, 5);
         let batch = transaction_status_receiver.recv().unwrap();
-        if let TransactionStatusMessage::Batch(batch) = batch {
+        if let TransactionStatusMessage::Batch((batch, _sequnce)) = batch {
             assert_eq!(batch.transactions.len(), 3);
             assert_eq!(batch.transaction_indexes.len(), 3);
             assert_eq!(batch.transaction_indexes, [2, 3, 4]);
@@ -5121,7 +5131,10 @@ pub mod tests {
         let result = execute_batch(
             &batch,
             &bank,
-            Some(&TransactionStatusSender { sender }),
+            Some(&TransactionStatusSender {
+                sender,
+                dependency_tracker: None,
+            }),
             None,
             &mut timing,
             None,
@@ -5158,13 +5171,13 @@ pub mod tests {
         if poh_with_index && expected_tx_result.is_ok() {
             assert_matches!(
                 receiver.try_recv(),
-                Ok(TransactionStatusMessage::Batch(TransactionStatusBatch{transaction_indexes, ..}))
+                Ok(TransactionStatusMessage::Batch((TransactionStatusBatch{transaction_indexes, ..}, _sequence)))
                     if transaction_indexes == vec![4_usize]
             );
         } else if should_commit && expected_tx_result.is_ok() {
             assert_matches!(
                 receiver.try_recv(),
-                Ok(TransactionStatusMessage::Batch(TransactionStatusBatch{transaction_indexes, ..}))
+                Ok(TransactionStatusMessage::Batch((TransactionStatusBatch{transaction_indexes, ..}, _sequence)))
                     if transaction_indexes.is_empty()
             );
         } else {

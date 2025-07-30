@@ -9,6 +9,7 @@ pub mod bank_forks;
 pub mod bank_hash_cache;
 pub mod bank_utils;
 pub mod commitment;
+pub mod dependency_tracker;
 pub mod epoch_stakes;
 pub mod genesis_utils;
 pub mod inflation_rewards;

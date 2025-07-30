@@ -3283,9 +3283,16 @@ impl ReplayStage {
                     );
                 }
                 if let Some(sender) = bank_notification_sender {
+                    let dependency_work = sender
+                        .dependency_tracker
+                        .as_ref()
+                        .map(|s| s.get_current_declared_work());
                     sender
                         .sender
-                        .send(BankNotification::Frozen(bank.clone_without_scheduler()))
+                        .send((
+                            BankNotification::Frozen(bank.clone_without_scheduler()),
+                            dependency_work,
+                        ))
                         .unwrap_or_else(|err| warn!("bank_notification_sender failed: {err:?}"));
                 }
 
@@ -4048,15 +4055,19 @@ impl ReplayStage {
             rpc_subscriptions.notify_roots(rooted_slots);
         }
         if let Some(sender) = bank_notification_sender {
+            let dependency_work = sender
+                .dependency_tracker
+                .as_ref()
+                .map(|s| s.get_current_declared_work());
             sender
                 .sender
-                .send(BankNotification::NewRootBank(root_bank))
+                .send((BankNotification::NewRootBank(root_bank), dependency_work))
                 .unwrap_or_else(|err| warn!("bank_notification_sender failed: {err:?}"));
 
             if let Some(new_chain) = rooted_slots_with_parents {
                 sender
                     .sender
-                    .send(BankNotification::NewRootedChain(new_chain))
+                    .send((BankNotification::NewRootedChain(new_chain), dependency_work))
                     .unwrap_or_else(|err| warn!("bank_notification_sender failed: {err:?}"));
             }
         }
