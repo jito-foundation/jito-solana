@@ -31,7 +31,7 @@ use {
         account_info::{AccountInfo, Offset, StorageLocation},
         account_storage::{
             stored_account_info::{StoredAccountInfo, StoredAccountInfoWithoutData},
-            AccountStorage, AccountStorageStatus, ShrinkInProgress,
+            AccountStorage, AccountStorageStatus, AccountStoragesOrderer, ShrinkInProgress,
         },
         accounts_cache::{AccountsCache, CachedAccount, SlotCache},
         accounts_db::stats::{
@@ -5701,6 +5701,10 @@ impl AccountsDb {
         storages: &[Arc<AccountStorageEntry>],
         duplicates_lt_hash: &DuplicatesLtHash,
     ) -> AccountsLtHash {
+        // Randomized order works well with rayon work splitting, since we only care about
+        // uniform distribution of total work size per batch (other ordering strategies might be
+        // useful for optimizing disk read sizes and buffers usage in a single IO queue).
+        let storages = AccountStoragesOrderer::with_random_order(storages);
         let mut lt_hash = storages
             .par_iter()
             .fold(LtHash::identity, |mut accum, storage| {
