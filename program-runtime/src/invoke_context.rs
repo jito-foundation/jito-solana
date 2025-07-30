@@ -368,23 +368,9 @@ impl<'a> InvokeContext<'a> {
                     };
                     instruction_accounts.push(cloned_account);
                 } else {
-                    let index_in_caller = instruction_context
-                        .find_index_of_instruction_account(
-                            self.transaction_context,
-                            &account_meta.pubkey,
-                        )
-                        .ok_or_else(|| {
-                            ic_msg!(
-                                self,
-                                "Instruction references an unknown account {}",
-                                account_meta.pubkey,
-                            );
-                            InstructionError::MissingAccount
-                        })?;
                     *index_in_callee = instruction_accounts.len() as u8;
                     instruction_accounts.push(InstructionAccount::new(
                         index_in_transaction,
-                        index_in_caller,
                         instruction_account_index as IndexOfAccount,
                         account_meta.is_signer,
                         account_meta.is_writable,
@@ -413,10 +399,11 @@ impl<'a> InvokeContext<'a> {
                     continue;
                 }
 
-                let borrowed_account = instruction_context.try_borrow_instruction_account(
-                    self.transaction_context,
-                    instruction_account.index_in_caller,
+                let index_in_caller = instruction_context.get_index_of_account_in_instruction(
+                    instruction_account.index_in_transaction,
                 )?;
+                let borrowed_account = instruction_context
+                    .try_borrow_instruction_account(self.transaction_context, index_in_caller)?;
 
                 // Readonly in caller cannot become writable in callee
                 if instruction_account.is_writable() && !borrowed_account.is_writable() {
@@ -506,7 +493,6 @@ impl<'a> InvokeContext<'a> {
 
             let index_in_transaction = *index_in_transaction as usize;
             instruction_accounts.push(InstructionAccount::new(
-                index_in_transaction as IndexOfAccount,
                 index_in_transaction as IndexOfAccount,
                 *index_in_callee as IndexOfAccount,
                 message.is_signer(index_in_transaction),
@@ -902,7 +888,6 @@ pub fn mock_process_instruction_with_feature_set<
             .unwrap_or(instruction_account_index) as IndexOfAccount;
         instruction_accounts.push(InstructionAccount::new(
             index_in_transaction,
-            index_in_transaction,
             index_in_callee,
             account_meta.is_signer,
             account_meta.is_writable,
@@ -1024,7 +1009,6 @@ mod tests {
                     InstructionAccount::new(
                         instruction_account_index,
                         instruction_account_index,
-                        instruction_account_index,
                         false,
                         false,
                     )
@@ -1129,7 +1113,6 @@ mod tests {
             ));
             instruction_accounts.push(InstructionAccount::new(
                 index as IndexOfAccount,
-                index as IndexOfAccount,
                 instruction_accounts.len() as IndexOfAccount,
                 false,
                 true,
@@ -1141,7 +1124,6 @@ mod tests {
                 AccountSharedData::new(1, 1, &solana_pubkey::Pubkey::default()),
             ));
             instruction_accounts.push(InstructionAccount::new(
-                index as IndexOfAccount,
                 index as IndexOfAccount,
                 index as IndexOfAccount,
                 false,
@@ -1221,7 +1203,6 @@ mod tests {
                 InstructionAccount::new(
                     instruction_account_index,
                     instruction_account_index,
-                    instruction_account_index,
                     false,
                     instruction_account_index < 2,
                 )
@@ -1277,7 +1258,6 @@ mod tests {
         let instruction_accounts = (0..4)
             .map(|instruction_account_index| {
                 InstructionAccount::new(
-                    instruction_account_index,
                     instruction_account_index,
                     instruction_account_index,
                     false,
@@ -1368,8 +1348,8 @@ mod tests {
             (program_key, program_account),
         ];
         let instruction_accounts = vec![
-            InstructionAccount::new(0, 0, 0, false, true),
-            InstructionAccount::new(1, 1, 1, false, false),
+            InstructionAccount::new(0, 0, false, true),
+            InstructionAccount::new(1, 1, false, false),
         ];
         with_mock_invoke_context!(invoke_context, transaction_context, transaction_accounts);
         let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
