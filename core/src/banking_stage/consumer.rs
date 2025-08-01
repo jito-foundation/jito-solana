@@ -401,7 +401,13 @@ impl Consumer {
             } else {
                 (
                     0,
-                    vec![CommitTransactionDetails::NotCommitted; processing_results.len()],
+                    processing_results
+                        .into_iter()
+                        .map(|processing_result| match processing_result {
+                            Ok(_) => unreachable!("processed transaction count is 0"),
+                            Err(err) => CommitTransactionDetails::NotCommitted(err),
+                        })
+                        .collect(),
                 )
             };
 
@@ -997,7 +1003,12 @@ mod tests {
         assert!(retryable_transaction_indexes.is_empty());
         assert_eq!(
             commit_transactions_result.ok(),
-            Some(vec![CommitTransactionDetails::NotCommitted; 1])
+            Some(vec![
+                CommitTransactionDetails::NotCommitted(
+                    TransactionError::AccountLoadedTwice
+                );
+                1
+            ])
         );
 
         poh_recorder
@@ -1135,7 +1146,7 @@ mod tests {
         );
         assert_matches!(
             commit_transactions_result.get(1),
-            Some(CommitTransactionDetails::NotCommitted)
+            Some(CommitTransactionDetails::NotCommitted(_))
         );
         assert_eq!(retryable_transaction_indexes, vec![1]);
 
@@ -1145,6 +1156,7 @@ mod tests {
                     CommitTransactionDetails::Committed {
                         compute_units,
                         loaded_accounts_data_size,
+                        result: _,
                     } => (
                         *compute_units,
                         CostModel::calculate_loaded_accounts_data_size_cost(
@@ -1152,7 +1164,7 @@ mod tests {
                             &bank.feature_set,
                         ),
                     ),
-                    CommitTransactionDetails::NotCommitted => {
+                    CommitTransactionDetails::NotCommitted(_err) => {
                         unreachable!()
                     }
                 };
@@ -1791,6 +1803,7 @@ mod tests {
         let CommitTransactionDetails::Committed {
             compute_units,
             loaded_accounts_data_size,
+            result: _,
         } = consumer_output
             .execute_and_commit_transactions_output
             .commit_transactions_result
