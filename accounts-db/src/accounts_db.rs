@@ -1309,8 +1309,8 @@ pub struct AccountsDb {
     pub thread_pool: ThreadPool,
     /// Thread pool for AccountsBackgroundServices
     pub thread_pool_clean: ThreadPool,
-    /// Thread pool for AccountsHashVerifier
-    pub thread_pool_hash: ThreadPool,
+    // number of threads to use for accounts hash verify at startup
+    pub num_hash_threads: Option<NonZeroUsize>,
 
     pub stats: AccountsStats,
 
@@ -1555,8 +1555,6 @@ impl AccountsDb {
             .build()
             .expect("new rayon threadpool");
 
-        let thread_pool_hash = make_hash_thread_pool(accounts_db_config.num_hash_threads);
-
         let new = Self {
             accounts_index,
             paths,
@@ -1589,7 +1587,7 @@ impl AccountsDb {
             scan_filter_for_shrinking: accounts_db_config.scan_filter_for_shrinking,
             thread_pool,
             thread_pool_clean,
-            thread_pool_hash,
+            num_hash_threads: accounts_db_config.num_hash_threads,
             verify_accounts_hash_in_bg: VerifyAccountsHashInBackground::default(),
             active_stats: ActiveStats::default(),
             storage: AccountStorage::default(),
