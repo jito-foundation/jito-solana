@@ -2128,12 +2128,12 @@ pub mod tests {
 
     #[test]
     fn test_clean_and_unref_rooted_entries_by_bin_with_reclaim() {
-        let index = AccountsIndex::<bool, bool>::default_for_tests();
+        let index = AccountsIndex::<u64, u64>::default_for_tests();
         let pubkey = solana_pubkey::new_rand();
         let slot1 = 0;
         let slot2 = 1;
-        let account_info1 = true;
-        let account_info2 = false;
+        let account_info1 = 0;
+        let account_info2 = 1;
 
         let mut gc = Vec::new();
         for (slot, account_info) in [(slot1, account_info1), (slot2, account_info2)] {
@@ -2400,7 +2400,7 @@ pub mod tests {
                 test_new_entry_code_paths_helper([1.0, 2.0], true, *is_upsert, use_disk);
 
                 // account_info type that is NOT cached
-                test_new_entry_code_paths_helper([true, false], false, *is_upsert, use_disk);
+                test_new_entry_code_paths_helper([1, 2], false, *is_upsert, use_disk);
             }
         }
     }
@@ -2746,7 +2746,7 @@ pub mod tests {
     #[test]
     fn test_update_last_wins() {
         let key = solana_pubkey::new_rand();
-        let index = AccountsIndex::<bool, bool>::default_for_tests();
+        let index = AccountsIndex::<u64, u64>::default_for_tests();
         let ancestors = vec![(0, 0)].into_iter().collect();
         let mut gc = Vec::new();
         index.upsert(
@@ -2755,7 +2755,7 @@ pub mod tests {
             &key,
             &AccountSharedData::default(),
             &AccountSecondaryIndexes::default(),
-            true,
+            1,
             &mut gc,
             UPSERT_RECLAIM_TEST_DEFAULT,
         );
@@ -2768,7 +2768,7 @@ pub mod tests {
                 false,
                 |(slot, account_info)| {
                     assert_eq!(slot, 0);
-                    assert!(account_info);
+                    assert_eq!(account_info, 1);
                 },
             )
             .unwrap();
@@ -2780,11 +2780,11 @@ pub mod tests {
             &key,
             &AccountSharedData::default(),
             &AccountSecondaryIndexes::default(),
-            false,
+            0,
             &mut gc,
             UPSERT_RECLAIM_TEST_DEFAULT,
         );
-        assert_eq!(gc, vec![(0, true)]);
+        assert_eq!(gc, vec![(0, 1)]);
         index
             .get_with_and_then(
                 &key,
@@ -2793,7 +2793,7 @@ pub mod tests {
                 false,
                 |(slot, account_info)| {
                     assert_eq!(slot, 0);
-                    assert!(!account_info);
+                    assert_eq!(account_info, 0);
                 },
             )
             .unwrap();
