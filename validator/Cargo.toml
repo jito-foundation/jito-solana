@@ -85,7 +85,7 @@ solana-vote-program = { workspace = true }
 symlink = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["tls", "tls-roots"] }
+tonic = { workspace = true, features = ["tls", "tls-roots", "tls-webpki-roots"] }
 
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dependencies]
 jemallocator = { workspace = true }
