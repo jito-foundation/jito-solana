@@ -1929,7 +1929,7 @@ pub mod tests {
         assert!(index.include_key(&pk2));
     }
 
-    const UPSERT_POPULATE_RECLAIMS: UpsertReclaim = UpsertReclaim::PopulateReclaims;
+    const UPSERT_RECLAIM_TEST_DEFAULT: UpsertReclaim = UpsertReclaim::PopulateReclaims;
 
     #[test]
     fn test_insert_no_ancestors() {
@@ -1944,7 +1944,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
 
@@ -2113,7 +2113,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             account_info,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
 
         assert!(gc.is_empty());
@@ -2314,7 +2314,7 @@ pub mod tests {
                 &AccountSecondaryIndexes::default(),
                 account_infos[0],
                 &mut gc,
-                UPSERT_POPULATE_RECLAIMS,
+                UPSERT_RECLAIM_TEST_DEFAULT,
             );
         } else {
             let items = vec![(key, account_infos[0])];
@@ -2355,7 +2355,7 @@ pub mod tests {
                 &AccountSecondaryIndexes::default(),
                 account_infos[1],
                 &mut gc,
-                UPSERT_POPULATE_RECLAIMS,
+                UPSERT_RECLAIM_TEST_DEFAULT,
             );
         } else {
             // this has the effect of aging out everything in the in-mem cache
@@ -2424,7 +2424,7 @@ pub mod tests {
             new_entry,
             None,
             &mut SlotList::default(),
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert_eq!(1, account_maps_stats_len(&index));
 
@@ -2464,7 +2464,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
 
@@ -2588,7 +2588,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
 
@@ -2637,7 +2637,7 @@ pub mod tests {
                 &AccountSecondaryIndexes::default(),
                 true,
                 &mut vec![],
-                UPSERT_POPULATE_RECLAIMS,
+                UPSERT_RECLAIM_TEST_DEFAULT,
             );
             new_pubkey
         })
@@ -2654,7 +2654,7 @@ pub mod tests {
                 &AccountSecondaryIndexes::default(),
                 true,
                 &mut vec![],
-                UPSERT_POPULATE_RECLAIMS,
+                UPSERT_RECLAIM_TEST_DEFAULT,
             );
         }
 
@@ -2709,7 +2709,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
 
@@ -2757,7 +2757,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
         index
@@ -2782,7 +2782,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             false,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert_eq!(gc, vec![(0, true)]);
         index
@@ -2814,7 +2814,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
         index.upsert(
@@ -2825,7 +2825,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             false,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
         index
@@ -2868,7 +2868,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(gc.is_empty());
         index.upsert(
@@ -2879,7 +2879,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             false,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         index.upsert(
             2,
@@ -2889,7 +2889,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         index.upsert(
             3,
@@ -2899,7 +2899,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         index.add_root(0);
         index.add_root(1);
@@ -2912,7 +2912,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             true,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
 
         // Updating index should not purge older roots, only purges
@@ -2961,7 +2961,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             12,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert_eq!(1, account_maps_stats_len(&index));
 
@@ -2973,7 +2973,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             10,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert_eq!(1, account_maps_stats_len(&index));
 
@@ -2993,7 +2993,7 @@ pub mod tests {
             &AccountSecondaryIndexes::default(),
             9,
             &mut gc,
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert_eq!(1, account_maps_stats_len(&index));
     }
@@ -3082,7 +3082,7 @@ pub mod tests {
                 secondary_indexes,
                 true,
                 &mut vec![],
-                UPSERT_POPULATE_RECLAIMS,
+                UPSERT_RECLAIM_TEST_DEFAULT,
             );
         }
 
@@ -3257,7 +3257,7 @@ pub mod tests {
             &secondary_indexes,
             true,
             &mut vec![],
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(secondary_index.index.is_empty());
         assert!(secondary_index.reverse_index.is_empty());
@@ -3271,7 +3271,7 @@ pub mod tests {
             &secondary_indexes,
             true,
             &mut vec![],
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert!(secondary_index.index.is_empty());
         assert!(secondary_index.reverse_index.is_empty());
@@ -3396,7 +3396,7 @@ pub mod tests {
             secondary_indexes,
             true,
             &mut vec![],
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
 
         // Now write a different mint index for the same account
@@ -3408,7 +3408,7 @@ pub mod tests {
             secondary_indexes,
             true,
             &mut vec![],
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
 
         // Both pubkeys will now be present in the index
@@ -3428,7 +3428,7 @@ pub mod tests {
             secondary_indexes,
             true,
             &mut vec![],
-            UPSERT_POPULATE_RECLAIMS,
+            UPSERT_RECLAIM_TEST_DEFAULT,
         );
         assert_eq!(secondary_index.get(&secondary_key1), vec![account_key]);
 
@@ -3595,7 +3595,7 @@ pub mod tests {
                 &AccountSecondaryIndexes::default(),
                 value,
                 &mut gc,
-                UPSERT_POPULATE_RECLAIMS,
+                UPSERT_RECLAIM_TEST_DEFAULT,
             );
             assert!(gc.is_empty());
         }
