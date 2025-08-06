@@ -8184,7 +8184,6 @@ name = "solana-svm"
 version = "3.0.0"
 dependencies = [
  "ahash 0.8.11",
- "itertools 0.12.1",
  "log",
  "percentage",
  "serde",
@@ -8210,7 +8209,6 @@ dependencies = [
  "solana-rent",
  "solana-rent-collector",
  "solana-sdk-ids",
- "solana-slot-hashes",
  "solana-svm-callback",
  "solana-svm-feature-set",
  "solana-svm-transaction",
