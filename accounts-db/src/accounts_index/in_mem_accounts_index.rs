@@ -500,33 +500,18 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
         })
     }
 
-    /// update 'entry' with 'new_value'
-    fn update_slot_list_entry(
-        &self,
-        entry: &AccountMapEntry<T>,
-        new_value: (Slot, T),
-        other_slot: Option<Slot>,
-        reclaims: &mut SlotList<T>,
-        reclaim: UpsertReclaim,
-    ) {
-        let slot_list_length =
-            Self::lock_and_update_slot_list(entry, new_value, other_slot, reclaims, reclaim);
-        // if slot list > 1, then we are going to hold this entry in memory until it gets set back to 1
-        self.set_age_to_future(entry, slot_list_length > 1);
-    }
-
     /// Insert a cached entry into the accounts index
     /// If the entry is already present, just mark dirty and set the age to the future
-    fn cache_entry_at_slot(&self, entry: &AccountMapEntry<T>, slot: Slot, account_info: T) {
-        let mut slot_list = entry.slot_list.write().unwrap();
+    fn cache_entry_at_slot(current: &AccountMapEntry<T>, new_value: (Slot, T)) {
+        let mut slot_list = current.slot_list.write().unwrap();
+        let (slot, new_entry) = new_value;
         if !slot_list
             .iter()
             .any(|(existing_slot, _)| *existing_slot == slot)
         {
-            slot_list.push((slot, account_info));
+            slot_list.push((slot, new_entry));
         }
-        entry.set_dirty(true);
-        self.set_age_to_future(entry, true);
+        current.set_dirty(true);
     }
 
     pub fn upsert(
@@ -542,15 +527,17 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
 
         self.get_or_create_index_entry_for_pubkey(pubkey, |entry| {
             if is_cached {
-                self.cache_entry_at_slot(entry, slot, account_info);
+                Self::cache_entry_at_slot(entry, (slot, account_info));
+                self.set_age_to_future(entry, true);
             } else {
-                self.update_slot_list_entry(
+                let slot_list_length = Self::lock_and_update_slot_list(
                     entry,
                     (slot, account_info),
                     other_slot,
                     reclaims,
                     reclaim,
-                )
+                );
+                self.set_age_to_future(entry, slot_list_length > 1);
             }
         });
     }
@@ -634,9 +621,9 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
     /// Try to update an item in the slot list the given `slot` If an item for the slot
     /// already exists in the list, remove the older item, add it to `reclaims`, and insert
     /// the new item.
-    /// if 'other_slot' is some, then also remove any entries in the slot list that are at 'other_slot'
-    /// return resulting len of slot list
-    pub fn lock_and_update_slot_list(
+    /// if 'other_slot' is some, then remove any entries in the slot list at 'other_slot' instead
+    /// Note:: This function only supports uncached types `T`.
+    fn lock_and_update_slot_list(
         current: &AccountMapEntry<T>,
         new_value: (Slot, T),
         other_slot: Option<Slot>,
@@ -822,7 +809,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
                 }
                 drop(slot_list);
 
-                let updated_slot_list_len = InMemAccountsIndex::<T, U>::lock_and_update_slot_list(
+                let updated_slot_list_len = Self::lock_and_update_slot_list(
                     occupied.get(),
                     (slot, account_info),
                     None, // should be None because we don't expect a different slot # during index generation
@@ -1450,7 +1437,7 @@ mod tests {
             assert!(entry.slot_list.read().unwrap().is_empty());
             assert_eq!(entry.ref_count(), 0);
             assert!(entry.dirty());
-            accounts_index.cache_entry_at_slot(entry, slot, 0);
+            InMemAccountsIndex::<u64, u64>::cache_entry_at_slot(entry, (slot, 0));
             callback_called = true;
         });
 
@@ -1519,7 +1506,7 @@ mod tests {
             assert_eq!(entry.slot_list.read().unwrap().len(), 1);
             assert_eq!(entry.ref_count(), 1);
             assert!(!entry.dirty()); // Entry loaded from disk should not be dirty
-            accounts_index.cache_entry_at_slot(entry, slot, 0);
+            InMemAccountsIndex::<u64, u64>::cache_entry_at_slot(entry, (slot, 0));
             callback_called = true;
         });
 
