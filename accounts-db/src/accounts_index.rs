@@ -2943,6 +2943,66 @@ pub mod tests {
         assert!(found_key);
     }
 
+    #[test]
+    fn test_upsert_reclaims() {
+        let key = solana_pubkey::new_rand();
+        let index =
+            AccountsIndex::<CacheableIndexValueTest, CacheableIndexValueTest>::default_for_tests();
+        let mut reclaims = Vec::new();
+        index.upsert(
+            0,
+            0,
+            &key,
+            &AccountSharedData::default(),
+            &AccountSecondaryIndexes::default(),
+            CacheableIndexValueTest(true),
+            &mut reclaims,
+            UPSERT_RECLAIM_TEST_DEFAULT,
+        );
+        // No reclaims should be returned on the first item
+        assert!(reclaims.is_empty());
+
+        index.upsert(
+            0,
+            0,
+            &key,
+            &AccountSharedData::default(),
+            &AccountSecondaryIndexes::default(),
+            CacheableIndexValueTest(false),
+            &mut reclaims,
+            UPSERT_RECLAIM_TEST_DEFAULT,
+        );
+        // Cached item should not be reclaimed
+        assert!(reclaims.is_empty());
+
+        // Slot list should only have a single entry
+        // Using brackets to limit scope of read lock
+        {
+            let entry = index.get_cloned(&key).unwrap();
+            let slot_list = entry.slot_list.read().unwrap();
+            assert_eq!(slot_list.len(), 1);
+        }
+
+        index.upsert(
+            0,
+            0,
+            &key,
+            &AccountSharedData::default(),
+            &AccountSecondaryIndexes::default(),
+            CacheableIndexValueTest(false),
+            &mut reclaims,
+            UPSERT_RECLAIM_TEST_DEFAULT,
+        );
+
+        // Uncached item should be returned as reclaim
+        assert!(!reclaims.is_empty());
+
+        // Slot list should only have a single entry
+        let entry = index.get_cloned(&key).unwrap();
+        let slot_list = entry.slot_list.read().unwrap();
+        assert_eq!(slot_list.len(), 1);
+    }
+
     fn account_maps_stats_len<T: IndexValue>(index: &AccountsIndex<T, T>) -> usize {
         index.storage.storage.stats.total_count()
     }
@@ -3508,6 +3568,24 @@ pub mod tests {
     }
 
     impl IsZeroLamport for u64 {
+        fn is_zero_lamport(&self) -> bool {
+            false
+        }
+    }
+
+    /// Type that supports caching for tests. Used to test upsert behaviour
+    /// when the slot list has mixed cached and uncached items.
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+    struct CacheableIndexValueTest(bool);
+    impl IndexValue for CacheableIndexValueTest {}
+    impl DiskIndexValue for CacheableIndexValueTest {}
+    impl IsCached for CacheableIndexValueTest {
+        fn is_cached(&self) -> bool {
+            // Return self value as whether the item is cached or not
+            self.0
+        }
+    }
+    impl IsZeroLamport for CacheableIndexValueTest {
         fn is_zero_lamport(&self) -> bool {
             false
         }
