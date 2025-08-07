@@ -2991,17 +2991,17 @@ impl ReplayStage {
             debug!("bank_slot {bank_slot:?} is marked dead");
             replay_result.is_slot_dead = true;
         } else {
-            let bank = bank_forks
-                .read()
-                .unwrap()
-                .get_with_scheduler(bank_slot)
-                .unwrap();
+            let Some(bank) = bank_forks.read().unwrap().get_with_scheduler(bank_slot) else {
+                info!("Abandoning replay of unrooted slot {bank_slot}");
+                return replay_result;
+            };
             let parent_slot = bank.parent_slot();
             let prev_leader_slot = progress.get_bank_prev_leader_slot(&bank);
             let (num_blocks_on_fork, num_dropped_blocks_on_fork) = {
-                let stats = progress
-                    .get(&parent_slot)
-                    .expect("parent of active bank must exist in progress map");
+                let Some(stats) = progress.get(&parent_slot) else {
+                    info!("Abandoning replay of unrooted slot {bank_slot}");
+                    return replay_result;
+                };
                 let num_blocks_on_fork = stats.num_blocks_on_fork + 1;
                 let new_dropped_blocks = bank.slot() - parent_slot - 1;
                 let num_dropped_blocks_on_fork =
@@ -3073,11 +3073,10 @@ impl ReplayStage {
             }
 
             let bank_slot = replay_result.bank_slot;
-            let bank = &bank_forks
-                .read()
-                .unwrap()
-                .get_with_scheduler(bank_slot)
-                .unwrap();
+            let Some(bank) = &bank_forks.read().unwrap().get_with_scheduler(bank_slot) else {
+                info!("Abandoning replay of unrooted slot {bank_slot}");
+                continue;
+            };
             if let Some(replay_result) = &replay_result.replay_result {
                 match replay_result {
                     Ok(replay_tx_count) => tx_count += replay_tx_count,
@@ -4202,7 +4201,14 @@ impl ReplayStage {
         let mut generate_new_bank_forks_write_lock =
             Measure::start("generate_new_bank_forks_write_lock");
         let mut forks = bank_forks.write().unwrap();
-        for (_, bank) in new_banks {
+        let root = forks.root();
+        for (slot, bank) in new_banks {
+            if slot < root {
+                continue;
+            }
+            if forks.get(bank.parent_slot()).is_none() {
+                continue;
+            }
             forks.insert(bank);
         }
         generate_new_bank_forks_write_lock.stop();
