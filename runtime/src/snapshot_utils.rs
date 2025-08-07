@@ -84,6 +84,9 @@ pub const FULL_SNAPSHOT_ARCHIVE_FILENAME_REGEX: &str =
     r"^snapshot-(?P<slot>[[:digit:]]+)-(?P<hash>[[:alnum:]]+)\.(?P<ext>tar\.zst|tar\.lz4)$";
 pub const INCREMENTAL_SNAPSHOT_ARCHIVE_FILENAME_REGEX: &str = r"^incremental-snapshot-(?P<base>[[:digit:]]+)-(?P<slot>[[:digit:]]+)-(?P<hash>[[:alnum:]]+)\.(?P<ext>tar\.zst|tar\.lz4)$";
 
+// Allows scheduling a large number of reads such that temporary disk access delays
+// shouldn't block decompression (unless read bandwidth is saturated).
+const MAX_SNAPSHOT_READER_BUF_SIZE: u64 = 128 * 1024 * 1024;
 // Balance large and small files order in snapshot tar with bias towards small (4 small + 1 large),
 // such that during unpacking large writes are mixed with file metadata operations
 // and towards the end of archive (sizes equalize) writes are >256KiB / file.
@@ -1677,9 +1680,13 @@ fn streaming_unarchive_snapshot(
     Builder::new()
         .name("solTarUnpack".to_string())
         .spawn(move || {
-            let decompressor = decompressed_tar_reader(archive_format, snapshot_archive_path)?;
+            let archive_size = fs::metadata(&snapshot_archive_path)?.len();
+            let buf_size = archive_size.min(MAX_SNAPSHOT_READER_BUF_SIZE);
+            let decompressor =
+                decompressed_tar_reader(archive_format, snapshot_archive_path, buf_size)?;
             hardened_unpack::streaming_unpack_snapshot(
                 Archive::new(decompressor),
+                archive_size,
                 ledger_dir.as_path(),
                 &account_paths,
                 &file_sender,
@@ -1692,10 +1699,10 @@ fn streaming_unarchive_snapshot(
 fn decompressed_tar_reader(
     archive_format: ArchiveFormat,
     archive_path: impl AsRef<Path>,
+    buf_size: u64,
 ) -> Result<ArchiveFormatDecompressor<Box<dyn BufRead + 'static>>> {
-    const INPUT_READER_BUF_SIZE: usize = 128 * 1024 * 1024;
     let buf_reader =
-        solana_accounts_db::large_file_buf_reader(archive_path.as_ref(), INPUT_READER_BUF_SIZE)
+        solana_accounts_db::large_file_buf_reader(archive_path.as_ref(), buf_size as usize)
             .map_err(|err| {
                 io::Error::other(format!(
                     "failed to open snapshot archive '{}': {err}",
@@ -2412,9 +2419,14 @@ fn unpack_snapshot_local(
     num_threads: usize,
 ) -> Result<UnpackedAppendVecMap> {
     assert!(num_threads > 0);
-    let archive = Archive::new(decompressed_tar_reader(archive_format, snapshot_path)?);
+    let archive_size = fs::metadata(&snapshot_path)?.len();
+    let archive = Archive::new(decompressed_tar_reader(
+        archive_format,
+        snapshot_path,
+        archive_size,
+    )?);
     let unpacked_append_vec_map =
-        hardened_unpack::unpack_snapshot(archive, ledger_dir, account_paths)?;
+        hardened_unpack::unpack_snapshot(archive, archive_size, ledger_dir, account_paths)?;
 
     Ok(unpacked_append_vec_map)
 }
