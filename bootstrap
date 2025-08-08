@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -eu
 
-BANK_HASH=$(cargo run --release --bin solana-ledger-tool -- -l config/bootstrap-validator bank-hash)
+BANK_HASH=$(cargo run --release --bin agave-ledger-tool -- -l config/bootstrap-validator verify --print-bank-hash)
 
 # increase max file handle limit
 ulimit -Hn 1000000
