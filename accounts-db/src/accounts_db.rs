@@ -6219,15 +6219,39 @@ impl AccountsDb {
     }
 
     /// Stores accounts in the storage and updates the index.
-    /// This should only be used on accounts that are rooted (frozen)
+    /// This function is intended for accounts that are rooted (frozen).
+    /// - `UpsertReclaims` is set to `IgnoreReclaims`. If the slot in `accounts` differs from the new slot,
+    ///   accounts may be removed from the account index. In such cases, the caller must ensure that alive
+    ///   accounts are decremented for the older storage or that the old storage is removed entirely
     pub fn store_accounts_frozen<'a>(
         &self,
         accounts: impl StorableAccounts<'a>,
         storage: &Arc<AccountStorageEntry>,
         update_index_thread_selection: UpdateIndexThreadSelection,
     ) -> StoreAccountsTiming {
+        self._store_accounts_frozen(
+            accounts,
+            storage,
+            UpsertReclaim::IgnoreReclaims,
+            update_index_thread_selection,
+        )
+    }
+
+    /// Stores accounts in the storage and updates the index.
+    /// This function is intended for accounts that are rooted (frozen).
+    /// - `UpsertReclaims` must be set to `IgnoreReclaims` at this time
+    fn _store_accounts_frozen<'a>(
+        &self,
+        accounts: impl StorableAccounts<'a>,
+        storage: &Arc<AccountStorageEntry>,
+        reclaim_handling: UpsertReclaim,
+        update_index_thread_selection: UpdateIndexThreadSelection,
+    ) -> StoreAccountsTiming {
         let slot = accounts.target_slot();
         let mut store_accounts_time = Measure::start("store_accounts");
+
+        // Other values for UpsertReclaim are not supported yet
+        assert_eq!(reclaim_handling, UpsertReclaim::IgnoreReclaims);
 
         // Flush the read cache if necessary. This will occur during shrink or clean
         if self.read_only_accounts_cache.can_slot_be_in_cache(slot) {
@@ -6247,8 +6271,6 @@ impl AccountsDb {
             .fetch_add(store_accounts_time.as_us(), Ordering::Relaxed);
         let mut update_index_time = Measure::start("update_index");
 
-        let reclaim = UpsertReclaim::IgnoreReclaims;
-
         // if we are squashing a single slot, then we can expect a single dead slot
         let expected_single_dead_slot =
             (!accounts.contains_multiple_slots()).then(|| accounts.target_slot());
@@ -6260,7 +6282,7 @@ impl AccountsDb {
         let reclaims = self.update_index(
             infos,
             &accounts,
-            UpsertReclaim::IgnoreReclaims,
+            reclaim_handling,
             update_index_thread_selection,
             &self.thread_pool_clean,
         );
@@ -6283,7 +6305,7 @@ impl AccountsDb {
         // From 1) and 2) we guarantee passing `no_purge_stats` == None, which is
         // equivalent to asserting there will be no dead slots, is safe.
         let mut handle_reclaims_elapsed = 0;
-        if reclaim == UpsertReclaim::PopulateReclaims {
+        if reclaim_handling == UpsertReclaim::PopulateReclaims {
             let mut handle_reclaims_time = Measure::start("handle_reclaims");
             self.handle_reclaims(
                 (!reclaims.is_empty()).then(|| reclaims.iter()),
