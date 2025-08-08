@@ -6286,10 +6286,6 @@ impl AccountsDb {
             .fetch_add(store_accounts_time.as_us(), Ordering::Relaxed);
         let mut update_index_time = Measure::start("update_index");
 
-        // if we are squashing a single slot, then we can expect a single dead slot
-        let expected_single_dead_slot =
-            (!accounts.contains_multiple_slots()).then(|| accounts.target_slot());
-
         // If the cache was flushed, then because `update_index` occurs
         // after the account are stored by the above `store_accounts_to`
         // call and all the accounts are stored, all reads after this point
@@ -6324,7 +6320,7 @@ impl AccountsDb {
             let mut handle_reclaims_time = Measure::start("handle_reclaims");
             self.handle_reclaims(
                 (!reclaims.is_empty()).then(|| reclaims.iter()),
-                expected_single_dead_slot,
+                None,
                 &HashSet::default(),
                 // this callsite does NOT process dead slots
                 HandleReclaims::DoNotProcessDeadSlots,
