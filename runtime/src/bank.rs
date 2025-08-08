@@ -160,6 +160,7 @@ use {
     std::{
         collections::{HashMap, HashSet},
         fmt,
+        num::NonZeroUsize,
         ops::{AddAssign, RangeFull},
         path::PathBuf,
         slice,
@@ -4630,25 +4631,17 @@ impl Bank {
                     .spawn(move || {
                         info!("Verifying accounts in background...");
                         let start = Instant::now();
-                        let thread_pool = {
-                            let num_threads = accounts_db_
-                                .num_hash_threads
-                                .unwrap_or_else(accounts_db::default_num_hash_threads)
-                                .get();
-                            ThreadPoolBuilder::new()
-                                .thread_name(|i| format!("solVerfyAccts{i:02}"))
-                                .num_threads(num_threads)
-                                .build()
-                                .unwrap()
-                        };
+                        let num_threads = accounts_db_
+                            .num_hash_threads
+                            .unwrap_or_else(accounts_db::default_num_hash_threads);
                         let (calculated_accounts_lt_hash, lattice_verify_time) =
-                            meas_dur!(thread_pool.install(|| {
-                                accounts_db_.calculate_accounts_lt_hash_at_startup_from_storages(
+                            meas_dur!(accounts_db_
+                                .calculate_accounts_lt_hash_at_startup_from_storages(
                                     snapshot_storages.0.as_slice(),
                                     &duplicates_lt_hash.unwrap(),
                                     slot,
-                                )
-                            }));
+                                    num_threads
+                                ));
                         let is_ok =
                             check_lt_hash(&expected_accounts_lt_hash, &calculated_accounts_lt_hash);
                         accounts_db_
@@ -4673,11 +4666,13 @@ impl Bank {
         } else {
             info!("Verifying accounts in foreground...");
             let start = Instant::now();
+            let num_threads = NonZeroUsize::new(num_cpus::get()).unwrap();
             let calculated_accounts_lt_hash = if let Some(duplicates_lt_hash) = duplicates_lt_hash {
                 accounts_db.calculate_accounts_lt_hash_at_startup_from_storages(
                     snapshot_storages.0.as_slice(),
                     &duplicates_lt_hash,
                     slot,
+                    num_threads,
                 )
             } else {
                 accounts_db.calculate_accounts_lt_hash_at_startup_from_index(&self.ancestors, slot)
