@@ -31,7 +31,6 @@ use {
     std::{
         collections::HashSet,
         sync::{Arc, RwLock},
-        time::Instant,
     },
 };
 
