@@ -7053,7 +7053,7 @@ dependencies = [
  "solana-rent",
  "solana-sdk-ids",
  "solana-slot-hashes",
- "solana-slot-history",
+ "solana-slot-history 3.0.0",
  "solana-stake-interface",
  "solana-sysvar",
  "solana-vote-interface",
@@ -7209,7 +7209,7 @@ dependencies = [
  "solana-signature",
  "solana-signer",
  "solana-slot-hashes",
- "solana-slot-history",
+ "solana-slot-history 3.0.0",
  "solana-stake-program",
  "solana-svm-transaction",
  "solana-system-interface",
@@ -7878,7 +7878,7 @@ dependencies = [
  "solana-sha256-hasher",
  "solana-signature",
  "solana-signer",
- "solana-slot-history",
+ "solana-slot-history 3.0.0",
  "solana-stake-interface",
  "solana-streamer",
  "solana-system-interface",
@@ -8352,7 +8352,7 @@ dependencies = [
  "solana-signature",
  "solana-signer",
  "solana-slot-hashes",
- "solana-slot-history",
+ "solana-slot-history 3.0.0",
  "solana-stake-program",
  "solana-streamer",
  "solana-svm",
@@ -9923,7 +9923,7 @@ dependencies = [
  "solana-sha256-hasher",
  "solana-short-vec",
  "solana-slot-hashes",
- "solana-slot-history",
+ "solana-slot-history 2.2.1",
  "solana-stable-layout",
  "solana-stake-interface",
  "solana-system-interface",
@@ -10369,7 +10369,7 @@ dependencies = [
  "solana-sha256-hasher",
  "solana-signature",
  "solana-signer",
- "solana-slot-history",
+ "solana-slot-history 3.0.0",
  "solana-stake-interface",
  "solana-stake-program",
  "solana-storage-bigtable",
@@ -10677,7 +10677,7 @@ dependencies = [
  "solana-signature",
  "solana-signer",
  "solana-slot-hashes",
- "solana-slot-history",
+ "solana-slot-history 3.0.0",
  "solana-stake-interface",
  "solana-stake-program",
  "solana-svm",
@@ -11099,6 +11099,15 @@ dependencies = [
  "serde_derive",
  "solana-sdk-ids",
  "solana-sysvar-id",
+]
+
+[[package]]
+name = "solana-slot-history"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f914f6b108f5bba14a280b458d023e3621c9973f27f015a4d755b50e88d89e97"
+dependencies = [
+ "bv",
 ]
 
 [[package]]
@@ -11579,7 +11588,7 @@ dependencies = [
  "solana-sdk-ids",
  "solana-sdk-macro",
  "solana-slot-hashes",
- "solana-slot-history",
+ "solana-slot-history 2.2.1",
  "solana-stake-interface",
  "solana-sysvar-id",
 ]
