@@ -279,7 +279,6 @@ pub trait AdminRpc {
         &self,
         meta: Self::Metadata,
         relayer_url: String,
-        trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
     ) -> Result<()>;
@@ -587,7 +586,6 @@ impl AdminRpc for AdminRpcImpl {
         &self,
         meta: Self::Metadata,
         relayer_url: String,
-        trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
     ) -> Result<()> {
@@ -599,7 +597,6 @@ impl AdminRpc for AdminRpcImpl {
             relayer_url,
             expected_heartbeat_interval,
             oldest_allowed_heartbeat,
-            trust_packets,
         };
         // Detailed log messages are printed inside validate function
         if RelayerStage::is_valid_relayer_config(&config) {
