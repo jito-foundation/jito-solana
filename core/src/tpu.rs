@@ -379,7 +379,7 @@ impl Tpu {
             heartbeat_tx,
             sigverify_stage_sender,
             banking_stage_sender,
-            enable_block_production_forwarding.then(|| forward_stage_sender),
+            enable_block_production_forwarding.then_some(forward_stage_sender),
             exit.clone(),
         );
 
