@@ -338,7 +338,7 @@ impl Tpu {
         let vote_sigverify_stage = {
             let verifier = TransactionSigVerifier::new_reject_non_vote(
                 tpu_vote_sender,
-                Some(forward_stage_sender),
+                Some(forward_stage_sender.clone()),
             );
             SigVerifyStage::new(
                 vote_packet_receiver,
@@ -379,6 +379,7 @@ impl Tpu {
             heartbeat_tx,
             sigverify_stage_sender,
             banking_stage_sender,
+            enable_block_production_forwarding.then(|| forward_stage_sender),
             exit.clone(),
         );
 

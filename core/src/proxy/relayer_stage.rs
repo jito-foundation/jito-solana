@@ -17,6 +17,7 @@ use {
             HeartbeatEvent, ProxyError,
         },
     },
+    agave_banking_stage_ingress_types::BankingPacketBatch,
     crossbeam_channel::Sender,
     jito_protos::proto::{
         auth::{auth_service_client::AuthServiceClient, Token},
@@ -99,6 +100,7 @@ impl RelayerStage {
         packet_tx: Sender<PacketBatch>,
         // Channel that trusted streamed packets are piped through.
         banking_packet_sender: BankingPacketSender,
+        forward_stage_sender: Option<Sender<(BankingPacketBatch, bool)>>,
         exit: Arc<AtomicBool>,
     ) -> Self {
         let thread = Builder::new()
@@ -115,6 +117,7 @@ impl RelayerStage {
                     heartbeat_tx,
                     packet_tx,
                     banking_packet_sender,
+                    forward_stage_sender,
                     exit,
                 ));
             })
@@ -139,6 +142,7 @@ impl RelayerStage {
         heartbeat_tx: Sender<HeartbeatEvent>,
         packet_tx: Sender<PacketBatch>,
         banking_packet_sender: BankingPacketSender,
+        forward_stage_sender: Option<Sender<(BankingPacketBatch, bool)>>,
         exit: Arc<AtomicBool>,
     ) {
         const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
@@ -164,6 +168,7 @@ impl RelayerStage {
                 &heartbeat_tx,
                 &packet_tx,
                 &banking_packet_sender,
+                &forward_stage_sender,
                 &exit,
                 &CONNECTION_TIMEOUT,
             )
@@ -196,6 +201,7 @@ impl RelayerStage {
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
         banking_packet_sender: &BankingPacketSender,
+        forward_stage_sender: &Option<Sender<(BankingPacketBatch, bool)>>,
         exit: &Arc<AtomicBool>,
         connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
@@ -262,6 +268,7 @@ impl RelayerStage {
             heartbeat_tx,
             packet_tx,
             banking_packet_sender,
+            forward_stage_sender,
             local_relayer_config,
             global_relayer_config,
             exit,
@@ -281,6 +288,7 @@ impl RelayerStage {
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
         banking_packet_sender: &BankingPacketSender,
+        forward_stage_sender: &Option<Sender<(BankingPacketBatch, bool)>>,
         local_config: &RelayerConfig, // local copy of config with current connections
         global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
         exit: &Arc<AtomicBool>,
@@ -333,6 +341,7 @@ impl RelayerStage {
             local_config,
             global_config,
             banking_packet_sender,
+            forward_stage_sender,
             exit,
             auth_client,
             access_token,
@@ -353,6 +362,7 @@ impl RelayerStage {
         local_config: &RelayerConfig, // local copy of config with current connections
         global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
         banking_packet_sender: &BankingPacketSender,
+        forward_stage_sender: &Option<Sender<(BankingPacketBatch, bool)>>,
         exit: &Arc<AtomicBool>,
         mut auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
@@ -379,7 +389,7 @@ impl RelayerStage {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
-                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, local_config.trust_packets, banking_packet_sender, &mut relayer_stats)?;
+                    Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, local_config.trust_packets, banking_packet_sender, forward_stage_sender, &mut relayer_stats)?;
                 }
                 _ = heartbeat_check_interval.tick() => {
                     if last_heartbeat_ts.elapsed() > local_config.oldest_allowed_heartbeat {
@@ -445,6 +455,7 @@ impl RelayerStage {
         packet_tx: &Sender<PacketBatch>,
         trust_packets: bool,
         banking_packet_sender: &BankingPacketSender,
+        forward_stage_sender: &Option<Sender<(BankingPacketBatch, bool)>>,
         relayer_stats: &mut RelayerStageStats,
     ) -> crate::proxy::Result<()> {
         match subscribe_packets_resp.msg {
@@ -469,10 +480,21 @@ impl RelayerStage {
                     .num_packets
                     .add_assign(packet_batch.len() as u64);
 
+                // if packets are trusted, they skip signature verification and go directly
+                // to the banking stage. however, packet forwarding for swqos forwarding is
+                // handled in signature verification now, so those packets need to be sent
+                // to the forward stage.
                 if trust_packets {
+                    let packets = Arc::new(vec![packet_batch]);
                     banking_packet_sender
-                        .send(Arc::new(vec![packet_batch]))
+                        .send(packets.clone())
                         .map_err(|_| ProxyError::PacketForwardError)?;
+
+                    if let Some(forward_stage_sender) = forward_stage_sender {
+                        forward_stage_sender
+                            .try_send((packets, true))
+                            .map_err(|_| ProxyError::PacketForwardError)?;
+                    }
                 } else {
                     packet_tx
                         .send(packet_batch)
