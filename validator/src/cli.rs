@@ -154,6 +154,14 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
         .long("disable-accounts-disk-index")
         .help("Disable the disk-based accounts index if it is enabled by default."));
 
+    add_arg!(
+        Arg::with_name("trust_relayer_packets")
+            .long("trust-relayer-packets")
+            .takes_value(false)
+            .help("(DEPRECATED): Not used anymore."),
+        usage_warning: "The trust_relayer_packets argument is obsolete",
+    );
+
     res
 }
 
