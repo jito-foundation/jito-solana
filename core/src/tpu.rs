@@ -340,7 +340,6 @@ impl Tpu {
             cluster_info.clone(),
             heartbeat_tx,
             sigverify_stage_sender,
-            banking_stage_sender,
             exit.clone(),
         );
 
