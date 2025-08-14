@@ -210,6 +210,14 @@ fn deprecated_arguments() -> Vec<DeprecatedArg> {
             .help("Enable UDP for receiving/sending transactions."),
         usage_warning: "UDP support will be dropped"
     );
+    add_arg!(
+        Arg::with_name("trust_relayer_packets")
+            .long("trust-relayer-packets")
+            .takes_value(false)
+            .help("(DEPRECATED): Not used anymore."),
+        usage_warning: "The trust_relayer_packets argument is obsolete",
+    );
+
     res
 }
 

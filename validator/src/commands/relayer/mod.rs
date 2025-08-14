@@ -16,12 +16,6 @@ pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
                 .required(true)
         )
         .arg(
-            Arg::with_name("trust_relayer_packets")
-                .long("trust-relayer-packets")
-                .takes_value(false)
-                .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
-        )
-        .arg(
             Arg::with_name("relayer_expected_heartbeat_interval_ms")
                 .long("relayer-expected-heartbeat-interval-ms")
                 .takes_value(true)
@@ -41,7 +35,6 @@ pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
 
 pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> Result<()> {
     let relayer_url = value_t_or_exit!(subcommand_matches, "relayer_url", String);
-    let trust_packets = subcommand_matches.is_present("trust_relayer_packets");
     let expected_heartbeat_interval_ms: u64 =
         value_of(subcommand_matches, "relayer_expected_heartbeat_interval_ms").unwrap();
     let max_failed_heartbeats: u64 =
@@ -52,7 +45,6 @@ pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> Result<()
             .await?
             .set_relayer_config(
                 relayer_url,
-                trust_packets,
                 expected_heartbeat_interval_ms,
                 max_failed_heartbeats,
             )
