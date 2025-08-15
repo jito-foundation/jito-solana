@@ -6156,6 +6156,9 @@ impl AccountsDb {
         self.stats
             .store_accounts
             .fetch_add(store_accounts_time.as_us(), Ordering::Relaxed);
+
+        self.mark_zero_lamport_single_ref_accounts(&infos, storage, reclaim_handling);
+
         let mut update_index_time = Measure::start("update_index");
 
         // If the cache was flushed, then because `update_index` occurs
@@ -6312,6 +6315,50 @@ impl AccountsDb {
         infos
     }
 
+    /// Marks zero lamport single reference accounts in the storage during store_accounts
+    fn mark_zero_lamport_single_ref_accounts(
+        &self,
+        account_infos: &[AccountInfo],
+        storage: &AccountStorageEntry,
+        reclaim_handling: UpsertReclaim,
+    ) {
+        // If the reclaim handling is `ReclaimOldSlots`, then all zero lamport accounts are single
+        // ref accounts and they need to be inserted into the storages zero lamport single ref
+        // accounts list
+        // For other values of reclaim handling, there are no zero lamport single ref accounts
+        // so nothing needs to be done in this function
+        if reclaim_handling == UpsertReclaim::ReclaimOldSlots {
+            let mut add_zero_lamport_accounts = Measure::start("add_zero_lamport_accounts");
+            let mut num_zero_lamport_accounts_added = 0;
+
+            for account_info in account_infos {
+                if account_info.is_zero_lamport() {
+                    storage.insert_zero_lamport_single_ref_account_offset(account_info.offset());
+                    num_zero_lamport_accounts_added += 1;
+                }
+            }
+
+            // If any zero lamport accounts were added, the storage may be valid for shrinking
+            if num_zero_lamport_accounts_added > 0
+                && self.is_candidate_for_shrink(storage)
+                && Self::is_shrinking_productive(storage)
+            {
+                self.shrink_candidate_slots
+                    .lock()
+                    .unwrap()
+                    .insert(storage.slot);
+            }
+
+            add_zero_lamport_accounts.stop();
+            self.stats
+                .add_zero_lamport_accounts_us
+                .fetch_add(add_zero_lamport_accounts.as_us(), Ordering::Relaxed);
+            self.stats
+                .num_zero_lamport_accounts_added
+                .fetch_add(num_zero_lamport_accounts_added, Ordering::Relaxed);
+        }
+    }
+
     fn report_store_timings(&self) {
         if self.stats.last_store_report.should_update(1000) {
             let read_cache_stats = self.read_only_accounts_cache.get_and_reset_stats();
@@ -6431,6 +6478,20 @@ impl AccountsDb {
                     "num_obsolete_bytes_removed",
                     self.stats
                         .num_obsolete_bytes_removed
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "add_zero_lamport_accounts_us",
+                    self.stats
+                        .add_zero_lamport_accounts_us
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "num_zero_lamport_accounts_added",
+                    self.stats
+                        .num_zero_lamport_accounts_added
                         .swap(0, Ordering::Relaxed),
                     i64
                 ),

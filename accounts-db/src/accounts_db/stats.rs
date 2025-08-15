@@ -28,6 +28,8 @@ pub struct AccountsStats {
     pub purge_exact_count: AtomicU64,
     pub num_obsolete_slots_removed: AtomicUsize,
     pub num_obsolete_bytes_removed: AtomicU64,
+    pub add_zero_lamport_accounts_us: AtomicU64,
+    pub num_zero_lamport_accounts_added: AtomicU64,
 }
 
 #[derive(Debug, Default)]
