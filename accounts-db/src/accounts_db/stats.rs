@@ -26,6 +26,8 @@ pub struct AccountsStats {
     pub handle_dead_keys_us: AtomicU64,
     pub purge_exact_us: AtomicU64,
     pub purge_exact_count: AtomicU64,
+    pub num_obsolete_slots_removed: AtomicUsize,
+    pub num_obsolete_bytes_removed: AtomicU64,
 }
 
 #[derive(Debug, Default)]

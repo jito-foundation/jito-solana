@@ -2671,24 +2671,20 @@ impl AccountsDb {
                 mark_accounts_obsolete,
             );
             reclaim_result.1 = reclaimed_offsets;
-
-            if let HandleReclaims::ProcessDeadSlots(purge_stats) = handle_reclaims {
-                if let Some(expected_single_dead_slot) = expected_single_dead_slot {
-                    assert!(dead_slots.len() <= 1);
-                    if dead_slots.len() == 1 {
-                        assert!(dead_slots.contains(&expected_single_dead_slot));
-                    }
+            let HandleReclaims::ProcessDeadSlots(purge_stats) = handle_reclaims;
+            if let Some(expected_single_dead_slot) = expected_single_dead_slot {
+                assert!(dead_slots.len() <= 1);
+                if dead_slots.len() == 1 {
+                    assert!(dead_slots.contains(&expected_single_dead_slot));
                 }
-
-                self.process_dead_slots(
-                    &dead_slots,
-                    Some(&mut reclaim_result.0),
-                    purge_stats,
-                    pubkeys_removed_from_accounts_index,
-                );
-            } else {
-                assert!(dead_slots.is_empty());
             }
+
+            self.process_dead_slots(
+                &dead_slots,
+                Some(&mut reclaim_result.0),
+                purge_stats,
+                pubkeys_removed_from_accounts_index,
+            );
         }
         reclaim_result
     }
@@ -6141,6 +6137,7 @@ impl AccountsDb {
         let mut store_accounts_time = Measure::start("store_accounts");
 
         // Other values for UpsertReclaim are not supported yet
+        #[cfg(not(test))]
         assert_eq!(reclaim_handling, UpsertReclaim::IgnoreReclaims);
 
         // Flush the read cache if necessary. This will occur during shrink or clean
@@ -6181,33 +6178,34 @@ impl AccountsDb {
             .store_num_accounts
             .fetch_add(accounts.len() as u64, Ordering::Relaxed);
 
-        // A store for a single slot should:
-        // 1) Only make "reclaims" for the same slot
-        // 2) Should not cause any slots to be removed from the storage
-        // database because
-        //    a) this slot  has at least one account (the one being stored),
-        //    b)From 1) we know no other slots are included in the "reclaims"
-        //
-        // From 1) and 2) we guarantee passing `no_purge_stats` == None, which is
-        // equivalent to asserting there will be no dead slots, is safe.
+        // If there are any reclaims then they should be handled. Reclaims affect
+        // all storages, and may result in the removal of dead storages.
         let mut handle_reclaims_elapsed = 0;
-        if reclaim_handling == UpsertReclaim::PopulateReclaims {
+        if !reclaims.is_empty() {
+            let purge_stats = PurgeStats::default();
             let mut handle_reclaims_time = Measure::start("handle_reclaims");
             self.handle_reclaims(
                 (!reclaims.is_empty()).then(|| reclaims.iter()),
                 None,
                 &HashSet::default(),
-                // this callsite does NOT process dead slots
-                HandleReclaims::DoNotProcessDeadSlots,
+                HandleReclaims::ProcessDeadSlots(&purge_stats),
                 MarkAccountsObsolete::No,
             );
             handle_reclaims_time.stop();
             handle_reclaims_elapsed = handle_reclaims_time.as_us();
+            self.stats.num_obsolete_slots_removed.fetch_add(
+                purge_stats.num_stored_slots_removed.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            self.stats.num_obsolete_bytes_removed.fetch_add(
+                purge_stats
+                    .total_removed_stored_bytes
+                    .load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
             self.stats
                 .store_handle_reclaims
                 .fetch_add(handle_reclaims_elapsed, Ordering::Relaxed);
-        } else {
-            assert!(reclaims.is_empty());
         }
 
         StoreAccountsTiming {
@@ -6420,6 +6418,20 @@ impl AccountsDb {
                 (
                     "purge_exact_count",
                     self.stats.purge_exact_count.swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "num_obsolete_slots_removed",
+                    self.stats
+                        .num_obsolete_slots_removed
+                        .swap(0, Ordering::Relaxed),
+                    i64
+                ),
+                (
+                    "num_obsolete_bytes_removed",
+                    self.stats
+                        .num_obsolete_bytes_removed
+                        .swap(0, Ordering::Relaxed),
                     i64
                 ),
             );
@@ -7283,7 +7295,6 @@ impl AccountsDb {
 #[derive(Debug, Copy, Clone)]
 enum HandleReclaims<'a> {
     ProcessDeadSlots(&'a PurgeStats),
-    DoNotProcessDeadSlots,
 }
 
 /// Specify whether obsolete accounts should be marked or not during reclaims

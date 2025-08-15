@@ -646,6 +646,72 @@ define_accounts_db_test!(test_accounts_unsquashed, |db0| {
     );
 });
 
+/// Test to verify that reclaiming old storages during flush works correctly.
+/// Creates multiple storages with accounts, flushes them, and then creates a new storage
+/// that invalidates some of the old accounts. The test checks that one of the old storages
+/// is reclaimed as the storage is fully invalidated
+#[test]
+fn test_flush_slots_with_reclaim_old_slots() {
+    let accounts = AccountsDb::new_single_for_tests();
+    let mut pubkeys = vec![];
+
+    // Create and flush 5 slots with 5 accounts each
+    for slot in 0..5 {
+        let mut slot_pubkeys = vec![];
+        for _ in 0..5 {
+            let pubkey = solana_pubkey::new_rand();
+            let account = AccountSharedData::new(slot + 1, 0, &pubkey);
+            accounts.store_for_tests((slot, [(&pubkey, &account)].as_slice()));
+            slot_pubkeys.push(pubkey);
+        }
+        pubkeys.push(slot_pubkeys);
+        accounts.add_root_and_flush_write_cache(slot);
+    }
+
+    // Create another slot which invalidates 5 accounts from the first slot,
+    // 4 accounts from the second slot, etc.
+    let new_slot = 5;
+    for (slot, slot_pubkeys) in pubkeys.iter().enumerate() {
+        for pubkey in slot_pubkeys.iter().take(5 - slot) {
+            let account = AccountSharedData::new(new_slot + 1, 0, pubkey);
+            accounts.store_for_tests((new_slot, [(pubkey, &account)].as_slice()));
+        }
+    }
+
+    // Get the accounts from the write cache slot
+    let accounts_list: Vec<(_, _)> = accounts
+        .accounts_cache
+        .slot_cache(new_slot)
+        .unwrap()
+        .iter()
+        .map(|iter_item| {
+            let pubkey = *iter_item.key();
+            let account = iter_item.value().account.clone();
+            (pubkey, account)
+        })
+        .collect();
+
+    let storage = accounts.create_and_insert_store(new_slot, 4096, "test_flush_slots");
+
+    // Flushing this storage directly using _store_accounts_frozen. This is done to pass in UpsertReclaim::ReclaimOldSlots
+    accounts._store_accounts_frozen(
+        (new_slot, &accounts_list[..]),
+        &storage,
+        UpsertReclaim::ReclaimOldSlots,
+        UpdateIndexThreadSelection::Inline,
+    );
+
+    // Remove the flushed slot from the cache
+    assert!(accounts.accounts_cache.remove_slot(new_slot).is_some());
+
+    // Verify that the storage for the first slot has been removed
+    assert!(accounts.storage.get_slot_storage_entry(0).is_none());
+    for slot in 1..5 {
+        assert!(accounts.storage.get_slot_storage_entry(slot).is_some());
+    }
+    assert!(accounts.storage.get_slot_storage_entry(new_slot).is_some());
+}
+
 fn run_test_remove_unrooted_slot(is_cached: bool, db: AccountsDb) {
     let unrooted_slot = 9;
     let unrooted_bank_id = 9;
