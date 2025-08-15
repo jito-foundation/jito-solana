@@ -436,7 +436,7 @@ fn retransmit_shred(
                 if num_addrs > 0 {
                     // shred receiver not included in the stats
                     let mut send_addrs = Vec::with_capacity(num_addrs + 1);
-                    send_addrs.extend(addrs.into_iter());
+                    send_addrs.extend(addrs.iter());
                     if let Some(addr) = shred_receiver_addr {
                         send_addrs.push(*addr);
                     }
@@ -456,7 +456,7 @@ fn retransmit_shred(
             }
             RetransmitSocket::Socket(socket) => {
                 let mut send_addrs = Vec::with_capacity(num_addrs + 1);
-                send_addrs.extend(addrs.into_iter());
+                send_addrs.extend(addrs.iter());
                 // shred receiver not included in the stats
                 if let Some(addr) = shred_receiver_addr {
                     send_addrs.push(*addr);
