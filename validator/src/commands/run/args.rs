@@ -1638,12 +1638,6 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
     )
     .arg(
-        Arg::with_name("trust_relayer_packets")
-            .long("trust-relayer-packets")
-            .takes_value(false)
-            .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
-    )
-    .arg(
         Arg::with_name("relayer_expected_heartbeat_interval_ms")
             .long("relayer-expected-heartbeat-interval-ms")
             .takes_value(true)
