@@ -411,15 +411,8 @@ fn retransmit_shred(
         return None;
     }
     let mut compute_turbine_peers = Measure::start("turbine_start");
-    let (root_distance, addrs) = get_retransmit_addrs(
-        &key,
-        root_bank,
-        cache,
-        addr_cache,
-        socket_addr_space,
-        stats,
-        shred_receiver_addr,
-    )?;
+    let (root_distance, addrs) =
+        get_retransmit_addrs(&key, root_bank, cache, addr_cache, socket_addr_space, stats)?;
     compute_turbine_peers.stop();
     stats
         .compute_turbine_peers_total
@@ -441,9 +434,15 @@ fn retransmit_shred(
             RetransmitSocket::Xdp(sender) => {
                 let mut sent = num_addrs;
                 if num_addrs > 0 {
+                    // shred receiver not included in the stats
+                    let mut send_addrs = Vec::with_capacity(num_addrs + 1);
+                    send_addrs.extend(addrs.iter());
+                    if let Some(addr) = shred_receiver_addr {
+                        send_addrs.push(*addr);
+                    }
                     if let Err(e) = sender.try_send(
                         key.index() as usize,
-                        addrs.to_vec(),
+                        send_addrs,
                         XdpShredPayload::Owned(shred),
                     ) {
                         log::warn!("xdp channel full: {e:?}");
@@ -455,16 +454,24 @@ fn retransmit_shred(
                 }
                 sent
             }
-            RetransmitSocket::Socket(socket) => match multi_target_send(socket, shred, &addrs) {
-                Ok(()) => num_addrs,
-                Err(SendPktsError::IoError(ioerr, num_failed)) => {
-                    error!(
-                        "retransmit_to multi_target_send error: {ioerr:?}, \
-                         {num_failed}/{num_addrs} packets failed"
-                    );
-                    num_addrs - num_failed
+            RetransmitSocket::Socket(socket) => {
+                let mut send_addrs = Vec::with_capacity(num_addrs + 1);
+                send_addrs.extend(addrs.iter());
+                // shred receiver not included in the stats
+                if let Some(addr) = shred_receiver_addr {
+                    send_addrs.push(*addr);
                 }
-            },
+                match multi_target_send(socket, shred, &send_addrs) {
+                    Ok(()) => num_addrs,
+                    Err(SendPktsError::IoError(ioerr, num_failed)) => {
+                        error!(
+                            "retransmit_to multi_target_send error: {ioerr:?}, \
+                         {num_failed}/{num_addrs} packets failed"
+                        );
+                        num_addrs.saturating_sub(num_failed)
+                    }
+                }
+            }
         },
     };
     retransmit_time.stop();
@@ -494,7 +501,6 @@ fn get_retransmit_addrs<'a>(
     addr_cache: &'a AddrCache,
     socket_addr_space: &SocketAddrSpace,
     stats: &RetransmitStats,
-    shred_receiver_addr: &Option<SocketAddr>,
 ) -> Option<(/*root_distance:*/ u8, Cow<'a, [SocketAddr]>)> {
     if let Some((root_distance, addrs)) = addr_cache.get(shred) {
         stats.addr_cache_hit.fetch_add(1, Ordering::Relaxed);
@@ -502,7 +508,7 @@ fn get_retransmit_addrs<'a>(
     }
     let (slot_leader, cluster_nodes) = cache.get(&shred.slot())?;
     let data_plane_fanout = cluster_nodes::get_data_plane_fanout(shred.slot(), root_bank);
-    let (root_distance, mut addrs) = cluster_nodes
+    let (root_distance, addrs) = cluster_nodes
         .get_retransmit_addrs(slot_leader, shred, data_plane_fanout, socket_addr_space)
         .inspect_err(|err| match err {
             Error::Loopback { .. } => {
@@ -510,9 +516,6 @@ fn get_retransmit_addrs<'a>(
             }
         })
         .ok()?;
-    if let Some(shred_receiver_addr) = shred_receiver_addr {
-        addrs.push(*shred_receiver_addr);
-    }
     stats.addr_cache_miss.fetch_add(1, Ordering::Relaxed);
     Some((root_distance, Cow::Owned(addrs)))
 }
