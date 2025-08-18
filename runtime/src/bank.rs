@@ -38,7 +38,7 @@ use {
         account_saver::collect_accounts_to_store,
         bank::{
             metrics::*,
-            partitioned_epoch_rewards::{EpochRewardStatus, StakeRewards, VoteRewardsAccounts},
+            partitioned_epoch_rewards::{EpochRewardStatus, VoteRewardsAccounts},
         },
         bank_forks::BankForks,
         epoch_stakes::{NodeVoteAccounts, VersionedEpochStakes},
@@ -2396,24 +2396,15 @@ impl Bank {
         result
     }
 
-    fn update_reward_history(
-        &self,
-        stake_rewards: StakeRewards,
-        vote_rewards: &VoteRewardsAccounts,
-    ) {
-        let additional_reserve = stake_rewards.len() + vote_rewards.accounts_with_rewards.len();
+    fn update_vote_rewards(&self, vote_rewards: &VoteRewardsAccounts) {
         let mut rewards = self.rewards.write().unwrap();
-        rewards.reserve(additional_reserve);
+        rewards.reserve(vote_rewards.accounts_with_rewards.len());
         vote_rewards
             .accounts_with_rewards
             .iter()
             .for_each(|(vote_pubkey, vote_reward, _)| {
                 rewards.push((*vote_pubkey, *vote_reward));
             });
-        stake_rewards
-            .into_iter()
-            .filter(|x| x.get_stake_reward() > 0)
-            .for_each(|x| rewards.push((x.stake_pubkey, x.stake_reward_info)));
     }
 
     fn update_recent_blockhashes_locked(&self, locked_blockhash_queue: &BlockhashQueue) {
