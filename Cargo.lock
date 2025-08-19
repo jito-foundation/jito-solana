@@ -7121,7 +7121,7 @@ dependencies = [
  "solana-message",
  "solana-native-token",
  "solana-net-utils",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-program-pack",
  "solana-pubkey",
  "solana-rpc-client",
@@ -8329,7 +8329,7 @@ dependencies = [
  "solana-packet",
  "solana-perf",
  "solana-poh",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-program-runtime",
  "solana-program-test",
  "solana-pubkey",
@@ -8894,7 +8894,7 @@ dependencies = [
  "solana-loader-v3-interface 5.0.0",
  "solana-logger 3.0.0",
  "solana-native-token",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-pubkey",
  "solana-rent",
  "solana-rpc-client",
@@ -8930,7 +8930,7 @@ dependencies = [
  "solana-inflation",
  "solana-keypair",
  "solana-logger 2.3.1",
- "solana-poh-config",
+ "solana-poh-config 2.2.1",
  "solana-pubkey",
  "solana-rent",
  "solana-sdk-ids",
@@ -9446,7 +9446,7 @@ dependencies = [
  "solana-message",
  "solana-native-token",
  "solana-net-utils",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-pubkey",
  "solana-pubsub-client",
  "solana-quic-client",
@@ -9768,7 +9768,7 @@ dependencies = [
  "solana-metrics",
  "solana-perf",
  "solana-poh",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-pubkey",
  "solana-runtime",
  "solana-sha256-hasher",
@@ -9805,6 +9805,12 @@ dependencies = [
  "serde",
  "serde_derive",
 ]
+
+[[package]]
+name = "solana-poh-config"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f1fef1f2ff2480fdbcc64bef5e3c47bec6e1647270db88b43f23e3a55f8d9cf"
 
 [[package]]
 name = "solana-poseidon"
@@ -10069,7 +10075,7 @@ dependencies = [
  "solana-message",
  "solana-msg",
  "solana-native-token",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-program",
  "solana-program-entrypoint",
  "solana-program-error",
@@ -10352,7 +10358,7 @@ dependencies = [
  "solana-nonce-account",
  "solana-perf",
  "solana-poh",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-program-option",
  "solana-program-pack",
  "solana-program-runtime",
@@ -10659,7 +10665,7 @@ dependencies = [
  "solana-nonce-account",
  "solana-packet",
  "solana-perf",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-precompile-error",
  "solana-program-runtime",
  "solana-pubkey",
@@ -10820,7 +10826,7 @@ dependencies = [
  "solana-nonce-account",
  "solana-offchain-message",
  "solana-packet",
- "solana-poh-config",
+ "solana-poh-config 2.2.1",
  "solana-precompile-error",
  "solana-precompiles",
  "solana-presigner",
@@ -11895,7 +11901,7 @@ dependencies = [
  "solana-message",
  "solana-net-utils",
  "solana-packet",
- "solana-poh-config",
+ "solana-poh-config 3.0.0",
  "solana-pubkey",
  "solana-rpc-client",
  "solana-runtime",

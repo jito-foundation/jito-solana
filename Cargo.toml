@@ -484,7 +484,7 @@ solana-offchain-message = "2.2.1"
 solana-packet = "2.2.1"
 solana-perf = { path = "perf", version = "=3.0.0" }
 solana-poh = { path = "poh", version = "=3.0.0" }
-solana-poh-config = "2.2.1"
+solana-poh-config = "3.0.0"
 solana-poseidon = { path = "poseidon", version = "=3.0.0" }
 solana-precompile-error = "2.2.2"
 solana-presigner = "2.2.1"
