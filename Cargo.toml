@@ -196,7 +196,7 @@ agave-verified-packet-receiver = { path = "verified-packet-receiver", version = 
 agave-xdp = { path = "xdp", version = "=3.0.0" }
 ahash = "0.8.11"
 anchor-lang = { path = "anchor/lang" }
-anyhow = "1.0.98"
+anyhow = "1.0.99"
 aquamarine = "0.6.0"
 arbitrary = "1.4.1"
 arc-swap = "1.7.1"
