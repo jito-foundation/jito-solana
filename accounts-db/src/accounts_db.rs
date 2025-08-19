@@ -2678,12 +2678,16 @@ impl AccountsDb {
                     assert!(dead_slots.contains(&expected_single_dead_slot));
                 }
             }
+            // if we are marking accounts obsolete, then any dead slots have already been cleaned
+            let clean_stored_dead_slots =
+                !matches!(mark_accounts_obsolete, MarkAccountsObsolete::Yes(_));
 
             self.process_dead_slots(
                 &dead_slots,
                 Some(&mut reclaim_result.0),
                 purge_stats,
                 pubkeys_removed_from_accounts_index,
+                clean_stored_dead_slots,
             );
         }
         reclaim_result
@@ -2776,22 +2780,34 @@ impl AccountsDb {
     // supported pipelines in AccountsDb
     /// pubkeys_removed_from_accounts_index - These keys have already been removed from the accounts index
     ///    and should not be unref'd. If they exist in the accounts index, they are NEW.
+    /// clean_stored_dead_slots - clean_stored_dead_slots iterates through all the pubkeys in the dead
+    ///    slots and unrefs them in the acocunts index if they are not present in
+    ///    pubkeys_removed_from_accounts_index. Skipping clean is the equivilent to
+    ///    pubkeys_removed_from_accounts_index containing all the pubkeys in the dead slots
     fn process_dead_slots(
         &self,
         dead_slots: &IntSet<Slot>,
         purged_account_slots: Option<&mut AccountSlots>,
         purge_stats: &PurgeStats,
         pubkeys_removed_from_accounts_index: &PubkeysRemovedFromAccountsIndex,
+        clean_stored_dead_slots: bool,
     ) {
         if dead_slots.is_empty() {
             return;
         }
         let mut clean_dead_slots = Measure::start("reclaims::clean_dead_slots");
-        self.clean_stored_dead_slots(
-            dead_slots,
-            purged_account_slots,
-            pubkeys_removed_from_accounts_index,
-        );
+
+        if clean_stored_dead_slots {
+            self.clean_stored_dead_slots(
+                dead_slots,
+                purged_account_slots,
+                pubkeys_removed_from_accounts_index,
+            );
+        }
+
+        // Remove dead slots from the accounts index root tracker
+        self.remove_dead_slots_metadata(dead_slots.iter());
+
         clean_dead_slots.stop();
 
         let mut purge_removed_slots = Measure::start("reclaims::purge_removed_slots");
@@ -6053,7 +6069,6 @@ impl AccountsDb {
             .latest_accounts_index_roots_stats
             .update(&accounts_index_root_stats);
 
-        self.remove_dead_slots_metadata(dead_slots.iter());
         measure.stop();
         self.clean_accounts_stats
             .clean_stored_dead_slots_us
@@ -7128,15 +7143,11 @@ impl AccountsDb {
                 );
                 let stats = PurgeStats::default();
 
-                // Convert from a vector to a hashset for use in reclaims
-                let pubkeys_removed_from_accounts_index: PubkeysRemovedFromAccountsIndex =
-                    pubkeys_by_bin.iter().cloned().collect();
-
                 // Mark all the entries as obsolete, and remove any empty storages
                 self.handle_reclaims(
                     (!reclaims.is_empty()).then(|| reclaims.iter()),
                     None,
-                    &pubkeys_removed_from_accounts_index,
+                    &HashSet::new(),
                     HandleReclaims::ProcessDeadSlots(&stats),
                     MarkAccountsObsolete::Yes(slot_marked_obsolete),
                 );
@@ -7369,9 +7380,8 @@ enum HandleReclaims<'a> {
 /// Specify whether obsolete accounts should be marked or not during reclaims
 /// They should only be marked if they are also getting unreffed in the index
 /// Temporarily allow dead code until the feature is implemented
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum MarkAccountsObsolete {
-    #[allow(dead_code)]
     Yes(Slot),
     No,
 }
