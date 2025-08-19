@@ -1461,7 +1461,7 @@ declare_builtin_function!(
         let program_id = *transaction_context
             .get_current_instruction_context()
             .and_then(|instruction_context| {
-                instruction_context.get_program_key(transaction_context)
+                instruction_context.get_program_key()
             })?;
 
         transaction_context.set_return_data(program_id, return_data)?;
@@ -1581,19 +1581,12 @@ declare_builtin_function!(
                 let _ = result_header;
 
                 *program_id = *instruction_context
-                    .get_program_key(invoke_context.transaction_context)?;
+                    .get_program_key()?;
                 data.clone_from_slice(instruction_context.get_instruction_data());
                 let account_metas = (0..instruction_context.get_number_of_instruction_accounts())
                     .map(|instruction_account_index| {
                         Ok(AccountMeta {
-                            pubkey: *invoke_context
-                                .transaction_context
-                                .get_key_of_account_at_index(
-                                    instruction_context
-                                        .get_index_of_instruction_account_in_transaction(
-                                            instruction_account_index,
-                                        )?,
-                                )?,
+                            pubkey: *instruction_context.get_key_of_instruction_account(instruction_account_index)?,
                             is_signer: instruction_context
                                 .is_instruction_account_signer(instruction_account_index)?,
                             is_writable: instruction_context
@@ -4435,14 +4428,14 @@ mod tests {
             while stack_height
                 <= invoke_context
                     .transaction_context
-                    .get_instruction_context_stack_height()
+                    .get_instruction_stack_height()
             {
                 invoke_context.transaction_context.pop().unwrap();
             }
             if stack_height
                 > invoke_context
                     .transaction_context
-                    .get_instruction_context_stack_height()
+                    .get_instruction_stack_height()
             {
                 let instruction_accounts = vec![InstructionAccount::new(
                     index_in_trace.saturating_add(1) as IndexOfAccount,
