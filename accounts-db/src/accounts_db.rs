@@ -5305,10 +5305,23 @@ impl AccountsDb {
                 flush_stats.num_bytes_flushed.0,
                 "flush_slot_cache",
             );
+
+            // Use ReclaimOldSlots to reclaim old slots if marking obsolete accounts and cleaning
+            // Cleaning is enabled if `should_flush_f` is Some.
+            // should_flush_f is set to None when
+            // 1) There's an ongoing scan to avoid reclaiming accounts being scanned.
+            // 2) The slot is > max_clean_root to prevent unrooted slots from reclaiming rooted versions.
+            let reclaim_method = if self.mark_obsolete_accounts && should_flush_f.is_some() {
+                UpsertReclaim::ReclaimOldSlots
+            } else {
+                UpsertReclaim::IgnoreReclaims
+            };
+
             let (store_accounts_timing_inner, store_accounts_total_inner_us) = measure_us!(self
-                .store_accounts_frozen(
+                ._store_accounts_frozen(
                     (slot, &accounts[..]),
                     &flushed_store,
+                    reclaim_method,
                     UpdateIndexThreadSelection::PoolWithThreshold,
                 ));
             flush_stats.store_accounts_timing = store_accounts_timing_inner;
@@ -6158,10 +6171,6 @@ impl AccountsDb {
     ) -> StoreAccountsTiming {
         let slot = accounts.target_slot();
         let mut store_accounts_time = Measure::start("store_accounts");
-
-        // Other values for UpsertReclaim are not supported yet
-        #[cfg(not(test))]
-        assert_eq!(reclaim_handling, UpsertReclaim::IgnoreReclaims);
 
         // Flush the read cache if necessary. This will occur during shrink or clean
         if self.read_only_accounts_cache.can_slot_be_in_cache(slot) {
