@@ -1,11 +1,75 @@
+#![cfg(feature = "agave-unstable-api")]
 use std::{
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, UdpSocket},
     ops::Deref,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
+
+pub enum CurrentSocket<'a> {
+    Same(&'a UdpSocket),
+    Changed(&'a UdpSocket),
+}
+
+pub trait SocketProvider {
+    fn current_socket(&self) -> CurrentSocket<'_>;
+
+    #[inline]
+    fn current_socket_ref(&self) -> &UdpSocket {
+        match self.current_socket() {
+            CurrentSocket::Same(sock) | CurrentSocket::Changed(sock) => sock,
+        }
+    }
+}
+
+/// Fixed UDP Socket -> default
+pub struct FixedSocketProvider {
+    socket: Arc<UdpSocket>,
+}
+impl FixedSocketProvider {
+    pub fn new(socket: Arc<UdpSocket>) -> Self {
+        Self { socket }
+    }
+}
+impl SocketProvider for FixedSocketProvider {
+    #[inline]
+    fn current_socket(&self) -> CurrentSocket<'_> {
+        CurrentSocket::Same(self.socket.as_ref())
+    }
+}
+
+pub struct MultihomedSocketProvider {
+    sockets: Arc<[UdpSocket]>,
+    bind_ip_addrs: Arc<BindIpAddrs>,
+    last_index: AtomicUsize,
+}
+
+impl MultihomedSocketProvider {
+    pub fn new(sockets: Arc<[UdpSocket]>, bind_ip_addrs: Arc<BindIpAddrs>) -> Self {
+        Self {
+            sockets,
+            bind_ip_addrs,
+            last_index: AtomicUsize::new(usize::MAX),
+        }
+    }
+}
+
+impl SocketProvider for MultihomedSocketProvider {
+    #[inline]
+    fn current_socket(&self) -> CurrentSocket<'_> {
+        let idx = self.bind_ip_addrs.active_index();
+        let last = self.last_index.swap(idx, Ordering::AcqRel);
+
+        let sock = &self.sockets[idx];
+        if last == idx {
+            CurrentSocket::Same(sock)
+        } else {
+            CurrentSocket::Changed(sock)
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct BindIpAddrs {

@@ -68,7 +68,6 @@ use {
     solana_signature::Signature,
     solana_signer::Signer,
     solana_streamer::{
-        atomic_udp_socket::AtomicUdpSocket,
         packet,
         socket::SocketAddrSpace,
         streamer::{ChannelSend, PacketBatchReceiver},
@@ -215,6 +214,10 @@ impl ClusterInfo {
 
     pub fn set_bind_ip_addrs(&mut self, ip_addrs: Arc<BindIpAddrs>) {
         self.bind_ip_addrs = ip_addrs;
+    }
+
+    pub fn bind_ip_addrs(&self) -> Arc<BindIpAddrs> {
+        self.bind_ip_addrs.clone()
     }
 
     fn refresh_push_active_set(
@@ -2353,7 +2356,7 @@ impl ClusterInfo {
 
 #[derive(Debug)]
 pub struct Sockets {
-    pub gossip: AtomicUdpSocket,
+    pub gossip: Arc<[UdpSocket]>,
     pub ip_echo: Option<TcpListener>,
     pub tvu: Vec<UdpSocket>,
     pub tvu_quic: UdpSocket,
@@ -2837,26 +2840,33 @@ mod tests {
         assert!(x < range.1);
     }
 
-    fn check_sockets(sockets: &[UdpSocket], ip: IpAddr, range: (u16, u16)) {
+    fn check_sockets<T>(sockets: &[T], ip: IpAddr, range: (u16, u16))
+    where
+        T: Borrow<UdpSocket>,
+    {
         assert!(!sockets.is_empty());
-        let port = sockets[0].local_addr().unwrap().port();
-        for socket in sockets.iter() {
-            check_socket(socket, ip, range);
-            assert_eq!(socket.local_addr().unwrap().port(), port);
+        let port = sockets[0].borrow().local_addr().unwrap().port();
+        for s in sockets {
+            let s = s.borrow();
+            let local_addr = s.local_addr().unwrap();
+            assert_eq!(local_addr.ip(), ip);
+            assert_in_range(local_addr.port(), range);
+            assert_eq!(local_addr.port(), port);
         }
     }
 
-    fn check_socket(socket: &UdpSocket, ip: IpAddr, range: (u16, u16)) {
-        let local_addr = socket.local_addr().unwrap();
-        assert_eq!(local_addr.ip(), ip);
-        assert_in_range(local_addr.port(), range);
+    fn check_socket<T>(socket: &T, ip: IpAddr, range: (u16, u16))
+    where
+        T: Borrow<UdpSocket>,
+    {
+        check_sockets(std::slice::from_ref(socket), ip, range);
     }
 
     fn check_node_sockets(node: &Node, ip: IpAddr, range: (u16, u16)) {
-        check_socket(&node.sockets.gossip.load(), ip, range);
         check_socket(&node.sockets.repair, ip, range);
         check_socket(&node.sockets.tvu_quic, ip, range);
 
+        check_sockets(&node.sockets.gossip, ip, range);
         check_sockets(&node.sockets.tvu, ip, range);
         check_sockets(&node.sockets.tpu, ip, range);
     }
@@ -2906,8 +2916,7 @@ mod tests {
         let node = Node::new_with_external_ip(&solana_pubkey::new_rand(), config);
 
         check_node_sockets(&node, ip, port_range);
-
-        assert_eq!(node.sockets.gossip.local_addr().unwrap().port(), port);
+        check_sockets(&node.sockets.gossip, ip, port_range);
     }
 
     //test that all cluster_info objects only generate signed messages
