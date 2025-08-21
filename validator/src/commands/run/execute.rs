@@ -408,6 +408,8 @@ pub fn execute(
         })
         .unwrap_or_default();
 
+    let mark_obsolete_accounts = matches.is_present("accounts_db_mark_obsolete_accounts");
+
     let accounts_db_config = AccountsDbConfig {
         index: Some(accounts_index_config),
         account_indexes: Some(account_indexes.clone()),
@@ -432,6 +434,7 @@ pub fn execute(
         num_background_threads: Some(accounts_db_background_threads),
         num_foreground_threads: Some(accounts_db_foreground_threads),
         num_hash_threads: Some(accounts_db_hash_threads),
+        mark_obsolete_accounts,
         ..AccountsDbConfig::default()
     };
 
@@ -538,6 +541,24 @@ pub fn execute(
         run_args.rpc_bootstrap_config.incremental_snapshot_fetch,
     )?;
 
+    let use_snapshot_archives_at_startup = value_t_or_exit!(
+        matches,
+        use_snapshot_archives_at_startup::cli::NAME,
+        UseSnapshotArchivesAtStartup
+    );
+
+    if mark_obsolete_accounts
+        && use_snapshot_archives_at_startup != UseSnapshotArchivesAtStartup::Always
+    {
+        Err(format!(
+            "The --accounts-db-mark-obsolete-accounts option requires \
+             the --use-snapshot-archives-at-startup option to be set to {}. \
+             Current value: {}",
+            UseSnapshotArchivesAtStartup::Always,
+            use_snapshot_archives_at_startup
+        ))?;
+    }
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -627,11 +648,7 @@ pub fn execute(
             ..RuntimeConfig::default()
         },
         staked_nodes_overrides: staked_nodes_overrides.clone(),
-        use_snapshot_archives_at_startup: value_t_or_exit!(
-            matches,
-            use_snapshot_archives_at_startup::cli::NAME,
-            UseSnapshotArchivesAtStartup
-        ),
+        use_snapshot_archives_at_startup,
         ip_echo_server_threads,
         rayon_global_threads,
         replay_forks_threads,
