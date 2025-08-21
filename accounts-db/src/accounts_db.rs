@@ -7560,8 +7560,21 @@ impl AccountsDb {
         sizes
     }
 
-    pub fn ref_count_for_pubkey(&self, pubkey: &Pubkey) -> RefCount {
-        self.accounts_index.ref_count_from_storage(pubkey)
+    // With obsolete accounts marked, obsolete references are marked in the storage
+    // and no longer need to be referenced. This leads to a static reference count
+    // of 1. As referencing checking is common in tests, this test wrapper abstracts the behavior
+    pub fn assert_ref_count(&self, pubkey: &Pubkey, expected_ref_count: RefCount) {
+        let expected_ref_count = if self.mark_obsolete_accounts {
+            // Account for the case where expected_ref_count is 0 by setting it to the minimum of
+            // current value or 1
+            expected_ref_count.min(1)
+        } else {
+            expected_ref_count
+        };
+        assert_eq!(
+            expected_ref_count,
+            self.accounts_index.ref_count_from_storage(pubkey)
+        );
     }
 
     pub fn alive_account_count_in_slot(&self, slot: Slot) -> usize {

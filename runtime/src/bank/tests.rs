@@ -5334,10 +5334,7 @@ fn test_clean_nonrooted() {
     bank3.force_flush_accounts_cache();
 
     bank3.clean_accounts_for_tests();
-    assert_eq!(
-        bank3.rc.accounts.accounts_db.ref_count_for_pubkey(&pubkey0),
-        2
-    );
+    bank3.rc.accounts.accounts_db.assert_ref_count(&pubkey0, 2);
     assert!(bank3
         .rc
         .accounts
@@ -8682,43 +8679,24 @@ fn do_test_clean_dropped_unrooted_banks(freeze_bank1: FreezeBank1) {
     let expected_ref_count_for_cleaned_up_keys = 0;
     let expected_ref_count_for_keys_in_both_slot1_and_slot2 = 1;
 
-    assert_eq!(
-        bank2
-            .rc
-            .accounts
-            .accounts_db
-            .accounts_index
-            .ref_count_from_storage(&key1.pubkey()),
-        expected_ref_count_for_cleaned_up_keys
-    );
-    assert_ne!(
-        bank2
-            .rc
-            .accounts
-            .accounts_db
-            .accounts_index
-            .ref_count_from_storage(&key3.pubkey()),
-        expected_ref_count_for_cleaned_up_keys
-    );
-    assert_eq!(
-        bank2
-            .rc
-            .accounts
-            .accounts_db
-            .accounts_index
-            .ref_count_from_storage(&key4.pubkey()),
-        expected_ref_count_for_cleaned_up_keys
-    );
-    assert_eq!(
-        bank2
-            .rc
-            .accounts
-            .accounts_db
-            .accounts_index
-            .ref_count_from_storage(&key5.pubkey()),
+    bank2
+        .rc
+        .accounts
+        .accounts_db
+        .assert_ref_count(&key1.pubkey(), expected_ref_count_for_cleaned_up_keys);
+    bank2.rc.accounts.accounts_db.assert_ref_count(
+        &key3.pubkey(),
         expected_ref_count_for_keys_in_both_slot1_and_slot2,
     );
-
+    bank2
+        .rc
+        .accounts
+        .accounts_db
+        .assert_ref_count(&key4.pubkey(), expected_ref_count_for_cleaned_up_keys);
+    bank2.rc.accounts.accounts_db.assert_ref_count(
+        &key5.pubkey(),
+        expected_ref_count_for_keys_in_both_slot1_and_slot2,
+    );
     assert_eq!(
         bank2.rc.accounts.accounts_db.alive_account_count_in_slot(1),
         0
