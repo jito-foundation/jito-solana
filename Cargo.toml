@@ -138,7 +138,6 @@ members = [
     "watchtower",
     "wen-restart",
     "xdp",
-    "zk-keygen",
     "zk-token-sdk",
 ]
 
@@ -558,7 +557,6 @@ solana-vote-interface = "3.0.0"
 solana-vote-program = { path = "programs/vote", version = "=3.1.0", default-features = false }
 solana-wen-restart = { path = "wen-restart", version = "=3.1.0" }
 solana-zk-elgamal-proof-program = { path = "programs/zk-elgamal-proof", version = "=3.1.0" }
-solana-zk-keygen = { path = "zk-keygen", version = "=3.1.0" }
 solana-zk-sdk = "4.0.0"
 solana-zk-token-proof-program = { path = "programs/zk-token-proof", version = "=3.1.0" }
 solana-zk-token-sdk = { path = "zk-token-sdk", version = "=3.1.0" }
