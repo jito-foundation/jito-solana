@@ -36,6 +36,7 @@ use {
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig, TransactionStructure},
     },
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{bounded, unbounded, Receiver},
     solana_clock::Slot,
@@ -170,7 +171,7 @@ impl Tpu {
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
-        shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
     ) -> Self {
         let TpuSockets {
@@ -315,6 +316,7 @@ impl Tpu {
             block_builder_commission: 0,
         }));
 
+        let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
         let (bundle_sender, bundle_receiver) = unbounded();
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
@@ -324,6 +326,7 @@ impl Tpu {
             banking_stage_sender.clone(),
             exit.clone(),
             &block_builder_fee_info,
+            shredstream_receiver_address.clone(),
         );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
@@ -450,6 +453,7 @@ impl Tpu {
             bank_forks,
             shred_version,
             turbine_quic_endpoint_sender,
+            shredstream_receiver_address,
             shred_receiver_address,
         );
 

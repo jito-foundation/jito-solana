@@ -21,9 +21,9 @@ pub fn shred_retransmit_receiver_command(_default_args: &DefaultArgs) -> App<'_,
     SubCommand::with_name("set-shred-retransmit-receiver-address")
         .about("Changes shred retransmit receiver address")
         .arg(
-            Arg::with_name("shred_receiver_address")
-                .long("shred-receiver-address")
-                .value_name("SHRED_RECEIVER_ADDRESS")
+            Arg::with_name("shred_retransmit_receiver_address")
+                .long("shred-retransmit-receiver-address")
+                .value_name("SHRED_RETRANSMIT_RECEIVER_ADDRESS")
                 .takes_value(true)
                 .help("Validator will forward all retransmit shreds to this address in addition to normal turbine operation. Set to empty string to disable.")
                 .required(true)
