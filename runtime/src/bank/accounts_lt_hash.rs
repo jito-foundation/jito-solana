@@ -398,7 +398,10 @@ mod tests {
         },
         solana_account::{ReadableAccount as _, WritableAccount as _},
         solana_accounts_db::{
-            accounts_db::{AccountsDbConfig, DuplicatesLtHash, ACCOUNTS_DB_CONFIG_FOR_TESTING},
+            accounts_db::{
+                AccountsDbConfig, DuplicatesLtHash, MarkObsoleteAccounts,
+                ACCOUNTS_DB_CONFIG_FOR_TESTING,
+            },
             accounts_index::{
                 AccountsIndexConfig, IndexLimitMb, ACCOUNTS_INDEX_CONFIG_FOR_TESTING,
             },
@@ -785,11 +788,11 @@ mod tests {
     }
     #[test_matrix(
         [Features::None, Features::All],
-        [true, false]
+        [MarkObsoleteAccounts::Enabled, MarkObsoleteAccounts::Disabled]
     )]
     fn test_calculate_accounts_lt_hash_at_startup_from_storages(
         features: Features,
-        mark_obsolete_accounts: bool,
+        mark_obsolete_accounts: MarkObsoleteAccounts,
     ) {
         let (genesis_config, mint_keypair) = genesis_config_with(features);
 
@@ -857,23 +860,24 @@ mod tests {
 
         // calculate the duplicates lt hash by skipping the first version (latest) of each account,
         // and then mixing together all the rest
-        let duplicates_lt_hash = if !mark_obsolete_accounts {
-            let duplicates_lt_hash = stored_accounts_map
-                .values()
-                .map(|lt_hashes| {
-                    // the first element in the vec is the latest; all the rest are duplicates
-                    &lt_hashes[1..]
-                })
-                .fold(LtHash::identity(), |mut accum, duplicate_lt_hashes| {
-                    for duplicate_lt_hash in duplicate_lt_hashes {
-                        accum.mix_in(&duplicate_lt_hash.0);
-                    }
-                    accum
-                });
-            DuplicatesLtHash(duplicates_lt_hash)
-        } else {
+        let duplicates_lt_hash = match mark_obsolete_accounts {
+            MarkObsoleteAccounts::Disabled => {
+                let duplicates_lt_hash = stored_accounts_map
+                    .values()
+                    .map(|lt_hashes| {
+                        // the first element in the vec is the latest; all the rest are duplicates
+                        &lt_hashes[1..]
+                    })
+                    .fold(LtHash::identity(), |mut accum, duplicate_lt_hashes| {
+                        for duplicate_lt_hash in duplicate_lt_hashes {
+                            accum.mix_in(&duplicate_lt_hash.0);
+                        }
+                        accum
+                    });
+                DuplicatesLtHash(duplicates_lt_hash)
+            }
             // if mark_obsolete_accounts is enabled, then the duplicates lt hash is empty
-            DuplicatesLtHash::default()
+            MarkObsoleteAccounts::Enabled => DuplicatesLtHash::default(),
         };
 
         // ensure that calculating the accounts lt hash from storages is correct

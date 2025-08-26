@@ -6628,9 +6628,11 @@ fn test_mark_obsolete_accounts_at_startup_multiple_bins() {
 
 // This test verifies that when obsolete accounts are marked, the duplicates lt hash is set to the
 // default value. When they are not marked, it is populated. The second case ensures test validity.
-#[test_case(true; "mark_obsolete_accounts")]
-#[test_case(false; "do_not_mark_obsolete_accounts")]
-fn test_obsolete_accounts_empty_default_duplicate_hash(mark_obsolete_accounts: bool) {
+#[test_case(MarkObsoleteAccounts::Enabled)]
+#[test_case(MarkObsoleteAccounts::Disabled)]
+fn test_obsolete_accounts_empty_default_duplicate_hash(
+    mark_obsolete_accounts: MarkObsoleteAccounts,
+) {
     let slot0 = 0;
     let slot1 = 1;
 
@@ -6663,7 +6665,7 @@ fn test_obsolete_accounts_empty_default_duplicate_hash(mark_obsolete_accounts: b
 
     assert!(!db.accounts_index.contains(&pubkey));
     let result = db.generate_index(None, false);
-    if mark_obsolete_accounts {
+    if mark_obsolete_accounts == MarkObsoleteAccounts::Enabled {
         // If obsolete accounts are marked, the duplicates lt hash should be the default value
         // This is because all duplicates are marked as obsolete and skipped during lt hash calculation.
         assert_eq!(
