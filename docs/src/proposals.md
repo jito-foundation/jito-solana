@@ -30,7 +30,7 @@ To submit a new design proposal for Solana:
 2. Add any relevant Solana maintainers to the PR review.
 3. Publish the PR for community review and feedback.
 
-> **NOTE:** All people submitting PRs to the Solana repo should consult the [CONTRIBUTING](https://github.com/solana-labs/solana/blob/master/CONTRIBUTING.md) doc in the repo.
+> **NOTE:** All people submitting PRs to the Solana repo should consult the [CONTRIBUTING](https://github.com/anza-xyz/agave/blob/master/CONTRIBUTING.md) doc in the repo.
 
 ### After Accepted
 

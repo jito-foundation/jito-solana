@@ -5,7 +5,8 @@ sidebar_label: Anatomy
 pagination_label: Anatomy of a Validator
 ---
 
-![Validator block diagrams](/img/validator.svg)
+<!-- TODO: Add new validator.svg diagram to replace placeholder -->
+<!-- ![Validator block diagrams](/img/validator.svg) -->
 
 ## Pipelining
 
