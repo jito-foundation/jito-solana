@@ -45,7 +45,11 @@ pub fn set_shred_retransmit_receiver_execute(
     subcommand_matches: &ArgMatches,
     ledger_path: &Path,
 ) -> Result<()> {
-    let addr = value_t_or_exit!(subcommand_matches, "shred_receiver_address", String);
+    let addr = value_t_or_exit!(
+        subcommand_matches,
+        "shred_retransmit_receiver_address",
+        String
+    );
     let admin_client = admin_rpc_service::connect(ledger_path);
     admin_rpc_service::runtime().block_on(async move {
         admin_client
