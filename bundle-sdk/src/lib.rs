@@ -1,12 +1,9 @@
 use {
-    digest::Digest,
-    itertools::Itertools,
-    serde::{Deserialize, Serialize},
-    sha2::Sha256,
+    digest::Digest, itertools::Itertools, sha2::Sha256,
     solana_transaction::versioned::VersionedTransaction,
 };
 
-#[derive(Debug, PartialEq, Default, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Eq, Clone)]
 pub struct VersionedBundle {
     pub transactions: Vec<VersionedTransaction>,
 }
