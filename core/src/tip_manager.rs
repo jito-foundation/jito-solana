@@ -355,14 +355,14 @@ impl TipManager {
             }
             .data(),
             accounts: vec![
-                AccountMeta::new(
+                AccountMeta::new_readonly(
                     self.tip_distribution_program_info.config_pda_and_bump.0,
                     false,
                 ),
-                AccountMeta::new(kp.pubkey(), true),
-                AccountMeta::new_readonly(system_program::id(), false),
                 AccountMeta::new(tip_distribution_account, false),
                 AccountMeta::new_readonly(self.tip_distribution_account_config.vote_account, false),
+                AccountMeta::new(kp.pubkey(), true),
+                AccountMeta::new_readonly(system_program::id(), false),
             ],
         };
 
