@@ -67,7 +67,7 @@ jobs:
         run: git rebase upstream/${{ matrix.upstream_branch }}
       - name: Send warning for rebase error
         if: failure() && steps.rebase.outcome == 'failure'
-        uses: slackapi/slack-github-action@v1.25.0
+        uses: slackapi/slack-github-action@v2.1.1
         with:
           payload: |
             {
@@ -88,7 +88,7 @@ jobs:
           fi
       - name: Send warning for rebase error
         if: failure() && steps.check_rebase_applied.outcome == 'failure'
-        uses: slackapi/slack-github-action@v1.25.0
+        uses: slackapi/slack-github-action@v2.1.1
         with:
           payload: |
             {
@@ -135,7 +135,7 @@ jobs:
           sleep 30
           done
       - name: Send failure update
-        uses: slackapi/slack-github-action@v1.25.0
+        uses: slackapi/slack-github-action@v2.1.1
         if: failure() && steps.wait_for_buildkite.outcome == 'failure'
         with:
           payload: |
@@ -170,7 +170,7 @@ jobs:
           branch: ${{ matrix.branch }}
           force: true
       - name: Send success update
-        uses: slackapi/slack-github-action@v1.25.0
+        uses: slackapi/slack-github-action@v2.1.1
         with:
           payload: |
             {
