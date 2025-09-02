@@ -4,8 +4,9 @@ use {
     crate::{
         addr_cache::AddrCache,
         cluster_nodes::{self, ClusterNodes, ClusterNodesCache, Error, MAX_NUM_TURBINE_HOPS},
-        xdp::XdpSender,
+        xdp::{XdpConfig, XdpRetransmitter, XdpSender},
     },
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{Receiver, RecvError, TryRecvError},
     lru::LruCache,
@@ -242,7 +243,7 @@ fn retransmit(
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
     shred_buf: &mut Vec<Vec<shred::Payload>>,
-    shred_receiver_address: &Option<SocketAddr>,
+    shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
 ) -> Result<(), RecvError> {
     // Try to receive shreds from the channel without blocking. If the channel
     // is empty precompute turbine trees speculatively. If no cache updates are
@@ -329,6 +330,7 @@ fn retransmit(
         entry.record(now, out);
         stats
     };
+    let shred_receiver_address_local = shred_receiver_address.load();
     let retransmit_shred = |shred, socket, stats| {
         retransmit_shred(
             shred,
@@ -340,7 +342,7 @@ fn retransmit(
             socket,
             quic_endpoint_sender,
             stats,
-            shred_receiver_address,
+            &shred_receiver_address_local,
         )
     };
 
@@ -583,6 +585,7 @@ fn cache_retransmit_addrs(
 /// Service to retransmit messages received from other peers in turbine.
 pub struct RetransmitStage {
     retransmit_thread_handle: JoinHandle<()>,
+    xdp_retransmitter: Option<XdpRetransmitter>,
 }
 
 impl RetransmitStage {
@@ -606,8 +609,8 @@ impl RetransmitStage {
         max_slots: Arc<MaxSlots>,
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
-        xdp_sender: Option<XdpSender>,
-        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
+        xdp_config: Option<XdpConfig>,
+        shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -625,6 +628,18 @@ impl RetransmitStage {
                 .thread_name(|i| format!("solRetransmit{i:02}"))
                 .build()
                 .unwrap()
+        };
+
+        let (xdp_retransmitter, xdp_sender) = if let Some(xdp_config) = xdp_config {
+            let src_port = retransmit_sockets[0]
+                .local_addr()
+                .expect("failed to get local address")
+                .port();
+            let (rtx, sender) = XdpRetransmitter::new(xdp_config, src_port)
+                .expect("failed to create xdp retransmitter");
+            (Some(rtx), Some(sender))
+        } else {
+            (None, None)
         };
 
         let retransmit_thread_handle = Builder::new()
@@ -649,7 +664,7 @@ impl RetransmitStage {
                         rpc_subscriptions.as_deref(),
                         slot_status_notifier.as_ref(),
                         &mut shred_buf,
-                        &shred_receiver_addr.read().unwrap(),
+                        &shred_receiver_addr,
                     )
                     .is_ok()
                     {}
@@ -659,10 +674,14 @@ impl RetransmitStage {
 
         Self {
             retransmit_thread_handle,
+            xdp_retransmitter,
         }
     }
 
     pub fn join(self) -> thread::Result<()> {
+        if let Some(rtx) = self.xdp_retransmitter {
+            rtx.join()?;
+        }
         self.retransmit_thread_handle.join()
     }
 }

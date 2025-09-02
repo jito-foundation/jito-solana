@@ -49,6 +49,7 @@ agave-votor = { workspace = true, features = ["agave-unstable-api"] }
 ahash = { workspace = true }
 anchor-lang = { workspace = true }
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 arrayvec = { workspace = true }
 assert_matches = { workspace = true }
 async-trait = { workspace = true }

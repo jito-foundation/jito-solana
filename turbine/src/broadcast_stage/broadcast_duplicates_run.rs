@@ -295,10 +295,11 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         &mut self,
         receiver: &TransmitReceiver,
         cluster_info: &ClusterInfo,
-        sock: BroadcastSocket,
+        sock: &UdpSocket,
         bank_forks: &RwLock<BankForks>,
         _quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
-        _shred_receiver_addr: &Arc<RwLock<Option<SocketAddr>>>,
+        _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addr: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {
@@ -397,12 +398,6 @@ impl BroadcastRun for BroadcastDuplicatesRun {
             .flatten()
             .collect();
 
-        let sock = match sock {
-            BroadcastSocket::Udp(sock) => sock,
-            BroadcastSocket::Xdp(_) => {
-                panic!("Xdp not supported for duplicate shreds run");
-            }
-        };
         batch_send(sock, packets).map_err(|SendPktsError::IoError(err, _)| Error::Io(err))
     }
 

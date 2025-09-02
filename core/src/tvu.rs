@@ -20,6 +20,7 @@ use {
         warm_quic_cache_service::WarmQuicCacheService,
         window_service::{WindowService, WindowServiceChannels},
     },
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{unbounded, Receiver, Sender},
     solana_client::connection_cache::ConnectionCache,
@@ -47,7 +48,7 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_streamer::evicting_sender::EvictingSender,
-    solana_turbine::{retransmit_stage::RetransmitStage, xdp::XdpSender},
+    solana_turbine::{retransmit_stage::RetransmitStage, xdp::XdpConfig},
     std::{
         collections::HashSet,
         net::{SocketAddr, UdpSocket},
@@ -100,7 +101,7 @@ pub struct TvuConfig {
     pub replay_forks_threads: NonZeroUsize,
     pub replay_transactions_threads: NonZeroUsize,
     pub shred_sigverify_threads: NonZeroUsize,
-    pub xdp_sender: Option<XdpSender>,
+    pub retransmit_xdp: Option<XdpConfig>,
 }
 
 impl Default for TvuConfig {
@@ -114,7 +115,7 @@ impl Default for TvuConfig {
             replay_forks_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             replay_transactions_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             shred_sigverify_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
-            xdp_sender: None,
+            retransmit_xdp: None,
         }
     }
 }
@@ -173,7 +174,7 @@ impl Tvu {
         wen_restart_repair_slots: Option<Arc<RwLock<Vec<Slot>>>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
-        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
+        shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let in_wen_restart = wen_restart_repair_slots.is_some();
 
@@ -229,7 +230,7 @@ impl Tvu {
             max_slots.clone(),
             rpc_subscriptions.clone(),
             slot_status_notifier.clone(),
-            tvu_config.xdp_sender,
+            tvu_config.retransmit_xdp,
             shred_receiver_addr,
         );
 
@@ -608,7 +609,7 @@ pub mod tests {
             wen_restart_repair_slots,
             None,
             Arc::new(connection_cache),
-            Arc::new(RwLock::new(None)),
+            Arc::new(ArcSwap::from_pointee(None)),
         )
         .expect("assume success");
         if enable_wen_restart {

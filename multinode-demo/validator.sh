@@ -100,6 +100,9 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --tip-distribution-program-pubkey ]]; then
       args+=("$1" "$2")
       shift 2
+    elif [[ $1 == --disable-block-engine-autoconfig ]]; then
+      args+=("$1")
+      shift
     elif [[ $1 == --commission-bps ]]; then
       args+=("$1" "$2")
       shift 2
@@ -222,6 +225,9 @@ while [[ -n $1 ]]; do
       args+=("$1" "$2")
       shift 2
     elif [[ $1 == --shred-receiver-address ]]; then
+      args+=("$1" "$2")
+      shift 2
+    elif [[ $1 == --shred-retransmit-receiver-address ]]; then
       args+=("$1" "$2")
       shift 2
     elif [[ $1 == --trust-block-engine-packets ]]; then

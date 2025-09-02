@@ -42,3 +42,4 @@ log-*/
 
 .env
 docker-output/
+/.cargo-home/
