@@ -199,6 +199,7 @@ anchor-lang = { path = "anchor/lang" }
 anyhow = "1.0.98"
 aquamarine = "0.6.0"
 arbitrary = "1.4.1"
+arc-swap = "1"
 ark-bn254 = "0.4.0"
 ark-ec = "0.4.0"
 ark-ff = "0.4.0"

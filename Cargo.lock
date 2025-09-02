@@ -403,6 +403,7 @@ name = "agave-validator"
 version = "2.3.7"
 dependencies = [
  "agave-geyser-plugin-interface",
+ "arc-swap",
  "assert_cmd",
  "chrono",
  "clap 2.33.3",
@@ -8067,6 +8068,7 @@ dependencies = [
  "ahash 0.8.11",
  "anchor-lang",
  "anyhow",
+ "arc-swap",
  "arrayvec",
  "assert_matches",
  "async-trait",
@@ -11722,6 +11724,7 @@ version = "2.3.7"
 dependencies = [
  "agave-feature-set",
  "agave-xdp",
+ "arc-swap",
  "assert_matches",
  "bincode",
  "bs58 0.5.1",

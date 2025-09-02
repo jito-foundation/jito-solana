@@ -6190,6 +6190,7 @@ dependencies = [
  "ahash 0.8.11",
  "anchor-lang",
  "anyhow",
+ "arc-swap",
  "arrayvec",
  "assert_matches",
  "async-trait",
@@ -8984,6 +8985,7 @@ version = "2.3.7"
 dependencies = [
  "agave-feature-set",
  "agave-xdp",
+ "arc-swap",
  "bincode",
  "bytes",
  "caps",
