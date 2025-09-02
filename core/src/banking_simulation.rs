@@ -12,6 +12,7 @@ use {
         validator::{BlockProductionMethod, TransactionStructure},
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
+    arc_swap::ArcSwap,
     assert_matches::assert_matches,
     bincode::deserialize_from,
     crossbeam_channel::{unbounded, Sender},
@@ -817,7 +818,8 @@ impl BankingSimulator {
             bank_forks.clone(),
             shred_version,
             sender,
-            Arc::new(RwLock::new(None)),
+            Arc::new(ArcSwap::default()),
+            Arc::new(ArcSwap::default()),
         );
 
         info!("Start banking stage!...");
