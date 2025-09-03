@@ -7589,6 +7589,7 @@ dependencies = [
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-transaction-context",
+ "thiserror 2.0.16",
 ]
 
 [[package]]
