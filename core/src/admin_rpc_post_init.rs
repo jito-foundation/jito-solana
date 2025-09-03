@@ -4,6 +4,7 @@ use {
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{outstanding_requests::OutstandingRequests, serve_repair::ShredRepairType},
     },
+    arc_swap::ArcSwap,
     solana_gossip::{cluster_info::ClusterInfo, node::NodeMultihoming},
     solana_pubkey::Pubkey,
     solana_quic_definitions::NotifyKeyUpdate,
@@ -82,6 +83,6 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub node: Option<Arc<NodeMultihoming>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
-    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
-    pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
 }
