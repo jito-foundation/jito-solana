@@ -74,19 +74,25 @@ impl Default for SlotsStats {
 }
 
 impl SlotsStats {
+    /// Returns a mutable reference to [`SlotStats`] associated with the slot in the stats LruCache
+    /// and a possibly evicted cache entry.
+    ///
+    /// A new SlotStats entry will be inserted if there is not one present for `slot`; insertion
+    /// may cause an existing entry to be evicted.
     fn get_or_default_with_eviction_check<'a>(
         stats: &'a mut MutexGuard<LruCache<Slot, SlotStats>>,
         slot: Slot,
     ) -> (&'a mut SlotStats, Option<(Slot, SlotStats)>) {
-        let evicted = if stats.len() == stats.cap() {
-            match stats.peek_lru() {
-                Some((s, _)) if *s == slot => None,
-                _ => stats.pop_lru(),
-            }
-        } else {
+        let evicted = if stats.contains(&slot) {
             None
+        } else {
+            // insert slot in cache which might potentially evict an entry
+            let evicted = stats.push(slot, SlotStats::default());
+            if let Some((evicted_slot, _)) = evicted {
+                assert_ne!(evicted_slot, slot);
+            }
+            evicted
         };
-        stats.get_or_insert(slot, SlotStats::default);
         (stats.get_mut(&slot).unwrap(), evicted)
     }
 
