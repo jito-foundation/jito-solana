@@ -38,7 +38,7 @@ use {
         net::{IpAddr, Ipv4Addr, SocketAddr},
         path::{Path, PathBuf},
         process::exit,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
         time::{Duration, SystemTime, UNIX_EPOCH},
     },
 };
@@ -431,6 +431,7 @@ fn main() {
             post_init: admin_service_post_init,
             tower_storage: tower_storage.clone(),
             rpc_to_plugin_manager_sender,
+            tip_manager: Arc::new(Mutex::new(solana_core::tip_manager::TipManager::new(solana_core::tip_manager::TipManagerConfig::default()))),
         },
     );
     let dashboard = if output == Output::Dashboard {
