@@ -13,7 +13,10 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
-    crate::{poh_service::PohService, transaction_recorder::TransactionRecorder},
+    crate::{
+        poh_controller::PohController, poh_service::PohService,
+        transaction_recorder::TransactionRecorder,
+    },
     arc_swap::ArcSwapOption,
     crossbeam_channel::{unbounded, Receiver, SendError, Sender, TrySendError},
     log::*,
@@ -285,7 +288,7 @@ impl PohRecorder {
     }
 
     // synchronize PoH with a bank
-    pub fn reset(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
+    pub(crate) fn reset(&mut self, reset_bank: Arc<Bank>, next_leader_slot: Option<(Slot, Slot)>) {
         self.clear_bank();
         self.reset_poh(reset_bank, true);
 
@@ -428,7 +431,7 @@ impl PohRecorder {
         }
     }
 
-    pub fn set_bank(&mut self, bank: BankWithScheduler) {
+    pub(crate) fn set_bank(&mut self, bank: BankWithScheduler) {
         assert!(self.working_bank.is_none());
         let working_bank = WorkingBank {
             min_tick_height: bank.tick_height(),
@@ -891,6 +894,7 @@ impl PohRecorder {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn do_create_test_recorder(
     bank: Arc<Bank>,
     blockstore: Arc<Blockstore>,
@@ -900,6 +904,7 @@ fn do_create_test_recorder(
 ) -> (
     Arc<AtomicBool>,
     Arc<RwLock<PohRecorder>>,
+    PohController,
     TransactionRecorder,
     PohService,
     Receiver<WorkingBankEntry>,
@@ -931,6 +936,7 @@ fn do_create_test_recorder(
     let (record_sender, record_receiver) = unbounded();
     let transaction_recorder = TransactionRecorder::new(record_sender, exit.clone());
     let poh_recorder = Arc::new(RwLock::new(poh_recorder));
+    let (poh_controller, poh_service_message_receiver) = PohController::new();
     let poh_service = PohService::new(
         poh_recorder.clone(),
         &poh_config,
@@ -939,17 +945,20 @@ fn do_create_test_recorder(
         crate::poh_service::DEFAULT_PINNED_CPU_CORE,
         crate::poh_service::DEFAULT_HASHES_PER_BATCH,
         record_receiver,
+        poh_service_message_receiver,
     );
 
     (
         exit,
         poh_recorder,
+        poh_controller,
         transaction_recorder,
         poh_service,
         entry_receiver,
     )
 }
 
+#[allow(clippy::type_complexity)]
 pub fn create_test_recorder(
     bank: Arc<Bank>,
     blockstore: Arc<Blockstore>,
@@ -958,6 +967,7 @@ pub fn create_test_recorder(
 ) -> (
     Arc<AtomicBool>,
     Arc<RwLock<PohRecorder>>,
+    PohController,
     TransactionRecorder,
     PohService,
     Receiver<WorkingBankEntry>,
@@ -965,6 +975,7 @@ pub fn create_test_recorder(
     do_create_test_recorder(bank, blockstore, poh_config, leader_schedule_cache, false)
 }
 
+#[allow(clippy::type_complexity)]
 pub fn create_test_recorder_with_index_tracking(
     bank: Arc<Bank>,
     blockstore: Arc<Blockstore>,
@@ -973,6 +984,7 @@ pub fn create_test_recorder_with_index_tracking(
 ) -> (
     Arc<AtomicBool>,
     Arc<RwLock<PohRecorder>>,
+    PohController,
     TransactionRecorder,
     PohService,
     Receiver<WorkingBankEntry>,
