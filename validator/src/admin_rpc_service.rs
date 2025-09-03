@@ -17,6 +17,7 @@ use {
             relayer_stage::{RelayerConfig, RelayerStage},
         },
         repair::repair_service,
+        tip_manager::TipManager,
         validator::ValidatorStartProgress,
     },
     solana_geyser_plugin_manager::GeyserPluginManagerRequest,
@@ -36,7 +37,7 @@ use {
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, RwLock, Mutex,
         },
         thread::{self, Builder},
         time::{Duration, SystemTime},
@@ -56,6 +57,7 @@ pub struct AdminRpcRequestMetadata {
     pub staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
+    pub tip_manager: Arc<Mutex<TipManager>>,
 }
 
 impl Metadata for AdminRpcRequestMetadata {}
@@ -291,6 +293,12 @@ pub trait AdminRpc {
         meta: Self::Metadata,
         addr: String,
     ) -> Result<()>;
+
+    #[rpc(meta, name = "getMevCommission")]
+    fn get_mev_commission(&self, meta: Self::Metadata) -> Result<u16>;
+
+    #[rpc(meta, name = "setMevCommission")]
+    fn set_mev_commission(&self, meta: Self::Metadata, commission_bps: u16) -> Result<()>;
 }
 
 pub struct AdminRpcImpl;
@@ -864,6 +872,26 @@ impl AdminRpc for AdminRpcImpl {
             Ok(())
         })
     }
+
+    fn get_mev_commission(&self, meta: Self::Metadata) -> Result<u16> {
+        debug!("get_mev_commission request received");
+        let tip_manager = meta.tip_manager.lock().unwrap();
+        Ok(tip_manager.get_commission_bps())
+    }
+
+    fn set_mev_commission(&self, meta: Self::Metadata, commission_bps: u16) -> Result<()> {
+        debug!("set_mev_commission request received");
+
+        if commission_bps > 10000 {
+            return Err(jsonrpc_core::error::Error::invalid_params(
+                "Commission bps cannot be larger than 100%",
+            ))
+        }
+
+        let mut tip_manager = meta.tip_manager.lock().unwrap();
+        tip_manager.set_commission_bps(commission_bps);
+        Ok(())
+    }
 }
 
 impl AdminRpcImpl {
@@ -1062,6 +1090,7 @@ mod tests {
         solana_core::{
             admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
             consensus::tower_storage::NullTowerStorage,
+            tip_manager::TipManagerConfig,
             validator::{Validator, ValidatorConfig, ValidatorTpuConfig},
         },
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
@@ -1136,6 +1165,8 @@ mod tests {
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
             let shred_receiver_address = Arc::new(RwLock::new(None));
             let shred_retransmit_receiver_address = Arc::new(RwLock::new(None));
+            let shared_tip_manager = Arc::new(Mutex::new(TipManager::new(TipManagerConfig::default())));
+            
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),
@@ -1162,9 +1193,11 @@ mod tests {
                     relayer_config,
                     shred_receiver_address,
                     shred_retransmit_receiver_address,
+                    tip_manager: shared_tip_manager.clone(),
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                tip_manager: shared_tip_manager,
             };
             let mut io = MetaIoHandler::default();
             io.extend_with(AdminRpcImpl.to_delegate());
@@ -1585,6 +1618,7 @@ mod tests {
                 post_init: post_init.clone(),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
+                tip_manager: Arc::new(Mutex::new(TipManager::new(TipManagerConfig::default()))),
             };
 
             let _validator = Validator::new(
@@ -1690,5 +1724,106 @@ mod tests {
             serde_json::from_str(&exit_response.expect("actual response"))
                 .expect("actual response deserialization");
         assert_eq!(actual_parsed_response, expected_parsed_response);
+    }
+
+    #[test]
+    fn test_get_mev_commission() {
+        let test_validator = TestValidatorWithAdminRpc::new();
+        
+        // Test getting initial commission (should be 0 by default)
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"getMevCommission","params":[]}"#;
+        let response = test_validator.handle_request(&request);
+        let parsed_response: Value = serde_json::from_str(&response.expect("response")).expect("parse");
+        
+        // Should return 0 (default commission)
+        assert_eq!(parsed_response["result"], 0);
+        assert_eq!(parsed_response["id"], 1);
+    }
+
+    #[test]
+    fn test_set_mev_commission_valid() {
+        let test_validator = TestValidatorWithAdminRpc::new();
+        
+        // Test setting valid commission (50% = 5000 bps)
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setMevCommission","params":[5000]}"#;
+        let response = test_validator.handle_request(&request);
+        let parsed_response: Value = serde_json::from_str(&response.expect("response")).expect("parse");
+        
+        // Should succeed
+        assert_eq!(parsed_response["result"], Value::Null);
+        assert_eq!(parsed_response["id"], 1);
+        
+        // Verify the commission was actually set by getting it
+        let get_request = r#"{"jsonrpc":"2.0","id":2,"method":"getMevCommission","params":[]}"#;
+        let get_response = test_validator.handle_request(&get_request);
+        let get_parsed: Value = serde_json::from_str(&get_response.expect("response")).expect("parse");
+        
+        assert_eq!(get_parsed["result"], 5000);
+    }
+
+    #[test]
+    fn test_set_mev_commission_max_valid() {
+        let test_validator = TestValidatorWithAdminRpc::new();
+        
+        // Test setting maximum valid commission (100% = 10000 bps)
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setMevCommission","params":[10000]}"#;
+        let response = test_validator.handle_request(&request);
+        let parsed_response: Value = serde_json::from_str(&response.expect("response")).expect("parse");
+        
+        // Should succeed
+        assert_eq!(parsed_response["result"], Value::Null);
+        
+        // Verify it was set
+        let get_request = r#"{"jsonrpc":"2.0","id":2,"method":"getMevCommission","params":[]}"#;
+        let get_response = test_validator.handle_request(&get_request);
+        let get_parsed: Value = serde_json::from_str(&get_response.expect("response")).expect("parse");
+        
+        assert_eq!(get_parsed["result"], 10000);
+    }
+
+    #[test]
+    fn test_set_mev_commission_invalid_too_high() {
+        let test_validator = TestValidatorWithAdminRpc::new();
+        
+        // Test setting invalid commission (>100% = >10000 bps)
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"setMevCommission","params":[10001]}"#;
+        let response = test_validator.handle_request(&request);
+        let parsed_response: Value = serde_json::from_str(&response.expect("response")).expect("parse");
+        
+        // Should return error
+        assert!(parsed_response["error"].is_object());
+        assert_eq!(parsed_response["error"]["code"], -32602); // Invalid params error code
+        assert!(parsed_response["error"]["message"].as_str().unwrap().contains("Commission bps cannot be larger than 100%"));
+        
+        // Verify commission wasn't changed (should still be 0)
+        let get_request = r#"{"jsonrpc":"2.0","id":2,"method":"getMevCommission","params":[]}"#;
+        let get_response = test_validator.handle_request(&get_request);
+        let get_parsed: Value = serde_json::from_str(&get_response.expect("response")).expect("parse");
+        
+        assert_eq!(get_parsed["result"], 0);
+    }
+
+    #[test]
+    fn test_set_mev_commission_zero() {
+        let test_validator = TestValidatorWithAdminRpc::new();
+        
+        // First set to non-zero
+        let set_request = r#"{"jsonrpc":"2.0","id":1,"method":"setMevCommission","params":[2500]}"#;
+        test_validator.handle_request(&set_request);
+        
+        // Then set back to zero
+        let zero_request = r#"{"jsonrpc":"2.0","id":2,"method":"setMevCommission","params":[0]}"#;
+        let response = test_validator.handle_request(&zero_request);
+        let parsed_response: Value = serde_json::from_str(&response.expect("response")).expect("parse");
+        
+        // Should succeed
+        assert_eq!(parsed_response["result"], Value::Null);
+        
+        // Verify it was set to zero
+        let get_request = r#"{"jsonrpc":"2.0","id":3,"method":"getMevCommission","params":[]}"#;
+        let get_response = test_validator.handle_request(&get_request);
+        let get_parsed: Value = serde_json::from_str(&get_response.expect("response")).expect("parse");
+        
+        assert_eq!(get_parsed["result"], 0);
     }
 }

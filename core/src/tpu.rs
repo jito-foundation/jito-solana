@@ -26,7 +26,7 @@ use {
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
-        tip_manager::{TipManager, TipManagerConfig},
+        tip_manager::TipManager,
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig, TransactionStructure},
         vortexor_receiver_adapter::VortexorReceiverAdapter,
@@ -185,7 +185,7 @@ impl Tpu {
         key_notifiers: Arc<RwLock<KeyUpdaters>>,
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
-        tip_manager_config: TipManagerConfig,
+        tip_manager: Arc<Mutex<TipManager>>,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
     ) -> Self {
@@ -398,8 +398,6 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
-        let tip_manager = TipManager::new(tip_manager_config);
-
         let bundle_account_locker = BundleAccountLocker::default();
 
         // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
@@ -413,7 +411,7 @@ impl Tpu {
             .saturating_div(10);
 
         let mut blacklisted_accounts = HashSet::new();
-        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
+        blacklisted_accounts.insert(tip_manager.lock().unwrap().tip_payment_program_id());
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
@@ -461,7 +459,7 @@ impl Tpu {
             replay_vote_sender,
             log_messages_bytes_limit,
             exit.clone(),
-            tip_manager,
+            tip_manager.lock().unwrap().clone(),
             bundle_account_locker,
             &block_builder_fee_info,
             prioritization_fee_cache,

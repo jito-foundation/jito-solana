@@ -31,7 +31,7 @@ use {
         repair::repair_handler::RepairHandlerType,
         snapshot_packager_service::SnapshotPackagerService,
         system_monitor_service::SystemMonitorService,
-        tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
+        tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         validator::{
             is_snapshot_config_valid, BlockProductionMethod, BlockVerificationMethod,
             TransactionStructure, Validator, ValidatorConfig, ValidatorError,
@@ -745,7 +745,7 @@ pub fn execute(
         block_engine_config,
         shred_receiver_address,
         shred_retransmit_receiver_address,
-        tip_manager_config,
+        tip_manager_config: tip_manager_config.clone(),
         preallocated_bundle_cost: value_of(matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
     };
@@ -841,6 +841,7 @@ pub fn execute(
             tower_storage: validator_config.tower_storage.clone(),
             staked_nodes_overrides,
             rpc_to_plugin_manager_sender,
+            tip_manager: Arc::new(Mutex::new(TipManager::new(tip_manager_config.clone()))),
         },
     );
 

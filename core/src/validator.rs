@@ -27,7 +27,7 @@ use {
         system_monitor_service::{
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
-        tip_manager::TipManagerConfig,
+        tip_manager::{TipManager, TipManagerConfig},
         tpu::{ForwardingClientOption, Tpu, TpuSockets, DEFAULT_TPU_COALESCE},
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
@@ -1631,6 +1631,9 @@ impl Validator {
                 cancel_tpu_client_next,
             ))
         };
+        // Create shared TipManager for both TPU and AdminRPC
+        let shared_tip_manager = Arc::new(Mutex::new(TipManager::new(config.tip_manager_config.clone())));
+
         let tpu = Tpu::new_with_client(
             &cluster_info,
             &poh_recorder,
@@ -1686,7 +1689,7 @@ impl Validator {
             key_notifiers.clone(),
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
-            config.tip_manager_config.clone(),
+            shared_tip_manager.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
         );
@@ -1727,6 +1730,7 @@ impl Validator {
             relayer_config: config.relayer_config.clone(),
             shred_receiver_address: config.shred_receiver_address.clone(),
             shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
+            tip_manager: shared_tip_manager.clone(),
         });
 
         Ok(Self {

@@ -3,6 +3,7 @@ use {
         cluster_slots_service::cluster_slots::ClusterSlots,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{outstanding_requests::OutstandingRequests, serve_repair::ShredRepairType},
+        tip_manager::TipManager,
     },
     solana_gossip::{cluster_info::ClusterInfo, node::NodeMultihoming},
     solana_pubkey::Pubkey,
@@ -84,4 +85,5 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub tip_manager: Arc<Mutex<TipManager>>,
 }
