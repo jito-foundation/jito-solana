@@ -298,7 +298,8 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         _quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
-        _shred_receiver_addr: &Arc<RwLock<Option<SocketAddr>>>,
+        _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addr: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {
