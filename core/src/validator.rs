@@ -701,6 +701,10 @@ impl Validator {
         sigverify::init();
         info!("Initializing sigverify done.");
 
+        solana_accounts_db::validate_memlock_limit_for_disk_io(
+            config.accounts_db_config.memlock_budget_size,
+        )?;
+
         if !ledger_path.is_dir() {
             return Err(anyhow!(
                 "ledger directory does not exist or is not accessible: {ledger_path:?}"
