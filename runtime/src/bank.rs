@@ -2732,16 +2732,6 @@ impl Bank {
         Some(self.get_fee_for_message_with_lamports_per_signature(message, lamports_per_signature))
     }
 
-    /// Returns true when startup accounts hash verification has completed or never had to run in background.
-    pub fn get_startup_verification_complete(&self) -> &Arc<AtomicBool> {
-        &self
-            .rc
-            .accounts
-            .accounts_db
-            .verify_accounts_hash_in_bg
-            .verified
-    }
-
     pub fn get_fee_for_message_with_lamports_per_signature(
         &self,
         message: &impl SVMMessage,
@@ -4573,11 +4563,6 @@ impl Bank {
         calculated_accounts_lt_hash: Option<&AccountsLtHash>,
     ) -> bool {
         let accounts_db = &self.rc.accounts.accounts_db;
-        // Wait until initial hash calc is complete before starting a new hash calc.
-        // This should only occur when we halt at a slot in ledger-tool.
-        accounts_db
-            .verify_accounts_hash_in_bg
-            .join_background_thread();
 
         let slot = self.slot();
 
@@ -4623,31 +4608,8 @@ impl Bank {
                 accounts_db.calculate_accounts_lt_hash_at_startup_from_index(&self.ancestors, slot);
             check_lt_hash(&expected_accounts_lt_hash, &calculated_accounts_lt_hash)
         };
-        self.set_initial_accounts_hash_verification_completed();
         info!("Verifying accounts... Done in {:?}", start.elapsed());
         is_ok
-    }
-
-    /// Specify that initial verification has completed.
-    /// Called internally when verification runs in the foreground thread.
-    /// Also has to be called by some tests which don't do verification on startup.
-    pub fn set_initial_accounts_hash_verification_completed(&self) {
-        self.rc
-            .accounts
-            .accounts_db
-            .verify_accounts_hash_in_bg
-            .verification_complete();
-    }
-
-    /// return true if bg hash verification is complete
-    /// return false if bg hash verification has not completed yet
-    /// if hash verification failed, a panic will occur
-    pub fn has_initial_accounts_hash_verification_completed(&self) -> bool {
-        self.rc
-            .accounts
-            .accounts_db
-            .verify_accounts_hash_in_bg
-            .check_complete()
     }
 
     /// Get this bank's storages to use for snapshots.
@@ -4747,11 +4709,6 @@ impl Bank {
         self.rc
             .accounts
             .accounts_db
-            .verify_accounts_hash_in_bg
-            .join_background_thread();
-        self.rc
-            .accounts
-            .accounts_db
             .calculate_capitalization_at_startup_from_index(&self.ancestors, self.slot())
     }
 
@@ -4797,7 +4754,6 @@ impl Bank {
                 )
             } else {
                 info!("Verifying accounts... Skipped.");
-                self.set_initial_accounts_hash_verification_completed();
                 true
             }
         });
@@ -5834,16 +5790,6 @@ impl Bank {
             .accounts
             .accounts_db
             .flush_accounts_cache_slot_for_tests(self.slot())
-    }
-
-    /// This is only valid to call from tests.
-    /// block until initial accounts hash verification has completed
-    pub fn wait_for_initial_accounts_hash_verification_completed_for_tests(&self) {
-        self.rc
-            .accounts
-            .accounts_db
-            .verify_accounts_hash_in_bg
-            .join_background_thread()
     }
 
     pub fn get_sysvar_cache_for_tests(&self) -> SysvarCache {
