@@ -106,7 +106,6 @@ members = [
     "svm-feature-set",
     "svm-log-collector",
     "svm-measure",
-    "svm-metrics",
     "svm-timings",
     "svm-transaction",
     "svm-type-overrides",
@@ -525,7 +524,6 @@ solana-svm-callback = { path = "svm-callback", version = "=3.0.1" }
 solana-svm-feature-set = { path = "svm-feature-set", version = "=3.0.1" }
 solana-svm-log-collector = { path = "svm-log-collector", version = "=3.0.1" }
 solana-svm-measure = { path = "svm-measure", version = "=3.0.1" }
-solana-svm-metrics = { path = "svm-metrics", version = "=3.0.1" }
 solana-svm-timings = { path = "svm-timings", version = "=3.0.1" }
 solana-svm-transaction = { path = "svm-transaction", version = "=3.0.1" }
 solana-svm-type-overrides = { path = "svm-type-overrides", version = "=3.0.1" }
