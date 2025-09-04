@@ -107,7 +107,6 @@ members = [
     "streamer",
     "svm",
     "svm-callback",
-    "svm-conformance",
     "svm-feature-set",
     "svm-rent-collector",
     "svm-transaction",
@@ -522,7 +521,6 @@ solana-storage-proto = { path = "storage-proto", version = "=2.3.8" }
 solana-streamer = { path = "streamer", version = "=2.3.8" }
 solana-svm = { path = "svm", version = "=2.3.8" }
 solana-svm-callback = { path = "svm-callback", version = "=2.3.8" }
-solana-svm-conformance = { path = "svm-conformance", version = "=2.3.8" }
 solana-svm-feature-set = { path = "svm-feature-set", version = "=2.3.8" }
 solana-svm-rent-collector = { path = "svm-rent-collector", version = "=2.3.8" }
 solana-svm-transaction = { path = "svm-transaction", version = "=2.3.8" }
