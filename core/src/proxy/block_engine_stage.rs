@@ -40,7 +40,7 @@ use {
             Arc, Mutex,
         },
         thread::{self, Builder, JoinHandle},
-        time::Duration,
+        time::{Duration, Instant},
     },
     thiserror::Error,
     tokio::{
@@ -196,7 +196,6 @@ impl BlockEngineStage {
                 &exit,
                 &block_builder_fee_info,
                 &shredstream_receiver_address,
-                &mut error_count,
                 &local_block_engine_config,
             )
             .await
@@ -229,7 +228,6 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
-        error_count: &mut u64,
         local_block_engine_config: &BlockEngineConfig,
     ) -> crate::proxy::Result<()> {
         let endpoint = Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
@@ -249,7 +247,6 @@ impl BlockEngineStage {
                 banking_packet_sender,
                 exit,
                 block_builder_fee_info,
-                error_count,
                 shredstream_receiver_address,
             )
             .await;
@@ -287,7 +284,6 @@ impl BlockEngineStage {
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
-        error_count: &mut u64,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> crate::proxy::Result<()> {
         let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
@@ -361,6 +357,7 @@ impl BlockEngineStage {
             }
             shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
             attempted = true;
+            let connect_start = Instant::now();
             match Self::connect_auth_and_stream(
                 backend_endpoint.clone(),
                 local_block_engine_config,
@@ -384,22 +381,26 @@ impl BlockEngineStage {
                 }
                 Err(e) => {
                     // log each connection error
-                    match e {
+                    match &e {
                         // This error is frequent on hot spares, and the parsed string does not work
                         // with datapoints (incorrect escaping).
                         ProxyError::AuthenticationPermissionDenied => warn!(
                             "block engine permission denied. not on leader schedule. ignore if hot-spare."
                         ),
                         other => {
-                            *error_count += 1;
                             datapoint_warn!(
-                                "block_engine_stage-proxy_error",
-                                ("count", *error_count, i64),
+                                "block_engine_stage-autoconfig_error",
+                                ("url", block_engine_url, String),
+                                ("count", 1, i64),
                                 ("error", other.to_string(), String),
                             );
                         }
                     }
-                    // try next endpoint without delay; caller handles backoff on overall failure
+
+                    if connect_start.elapsed() > Self::CONNECTION_TIMEOUT * 3 {
+                        return Err(e); // run a new round of pings and connect to new best
+                    }
+                    // Otherwise, try next endpoint without delay; caller handles backoff on overall failure
                 }
             }
         }
@@ -766,9 +767,8 @@ impl BlockEngineStage {
                         return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
-                    if !global_config.lock().unwrap().eq(local_config)
-                      {
-                        return Err(ProxyError::AuthenticationConnectionError("block engine config changed".to_string()));
+                    if !global_config.lock().unwrap().eq(local_config) {
+                        return Err(ProxyError::BlockEngineConfigChanged);
                     }
 
                     let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
