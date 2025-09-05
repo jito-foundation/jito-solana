@@ -919,7 +919,7 @@ impl AppendVec {
         let data_len = self.get_account_data_lens(&[offset]);
         let sizes: usize = data_len
             .iter()
-            .map(|len| self.calculate_stored_size(*len))
+            .map(|len| AppendVec::calculate_stored_size(*len))
             .sum();
         let result = self.get_stored_account_meta_callback(offset, |r_callback| {
             let r2 = self.get_account_shared_data(offset);
@@ -1088,7 +1088,7 @@ impl AppendVec {
 
     /// Calculate the amount of storage required for an account with the passed
     /// in data_len
-    pub(crate) fn calculate_stored_size(&self, data_len: usize) -> usize {
+    pub(crate) fn calculate_stored_size(data_len: usize) -> usize {
         aligned_stored_size(data_len)
     }
 
@@ -1701,7 +1701,7 @@ pub mod tests {
             let stored_size = av
                 .get_account_data_lens(indexes.as_slice())
                 .iter()
-                .map(|len| av.calculate_stored_size(*len))
+                .map(|len| AppendVec::calculate_stored_size(*len))
                 .sum::<usize>();
             assert_eq!(sizes.iter().sum::<usize>(), stored_size);
         }
@@ -2084,7 +2084,7 @@ pub mod tests {
         let account_sizes = append_vec
             .get_account_data_lens(account_offsets.as_slice())
             .iter()
-            .map(|len| append_vec.calculate_stored_size(*len))
+            .map(|len| AppendVec::calculate_stored_size(*len))
             .sum::<usize>();
         assert_eq!(account_sizes, total_stored_size);
     }

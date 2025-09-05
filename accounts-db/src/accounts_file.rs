@@ -314,7 +314,7 @@ impl AccountsFile {
     /// in data_len
     pub(crate) fn calculate_stored_size(&self, data_len: usize) -> usize {
         match self {
-            Self::AppendVec(av) => av.calculate_stored_size(data_len),
+            Self::AppendVec(_) => AppendVec::calculate_stored_size(data_len),
             Self::TieredStorage(ts) => ts
                 .reader()
                 .expect("Reader must be initialized as stored size is specific to format")
