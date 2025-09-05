@@ -14,6 +14,7 @@ use {
             ProxyError,
         },
     },
+    ahash::HashMapExt,
     arc_swap::ArcSwap,
     crossbeam_channel::Sender,
     itertools::Itertools,
@@ -233,6 +234,11 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<()> {
         let endpoint = Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
         if !local_block_engine_config.disable_block_engine_autoconfig {
+            datapoint_info!(
+                "block_engine_stage-connect",
+                "type" => "autoconfig",
+                ("count", 1, i64),
+            );
             return Self::connect_auth_and_stream_autoconfig(
                 endpoint,
                 local_block_engine_config,
@@ -250,6 +256,11 @@ impl BlockEngineStage {
         }
 
         shredstream_receiver_address.store(Arc::new(None));
+        datapoint_info!(
+            "block_engine_stage-connect",
+            "type" => "legacy",
+            ("count", 1, i64),
+        );
         Self::connect_auth_and_stream(
             endpoint,
             local_block_engine_config,
@@ -261,7 +272,6 @@ impl BlockEngineStage {
             exit,
             block_builder_fee_info,
             &Self::CONNECTION_TIMEOUT,
-            local_block_engine_config.block_engine_url.as_str(),
         )
         .await
     }
@@ -332,7 +342,6 @@ impl BlockEngineStage {
                 exit,
                 block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
-                global.block_engine_url.as_str(),
             )
             .await;
         }
@@ -345,7 +354,7 @@ impl BlockEngineStage {
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
         {
             if block_engine_url != local_block_engine_config.block_engine_url {
-                debug!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
+                info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
                     Duration::from_micros(latency_us)
                 );
                 backend_endpoint = Self::get_endpoint(block_engine_url.to_owned())?;
@@ -363,7 +372,6 @@ impl BlockEngineStage {
                 exit,
                 block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
-                block_engine_url,
             )
             .await
             {
@@ -417,7 +425,6 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
-        block_engine_url: &str,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -438,9 +445,10 @@ impl BlockEngineStage {
         .await
         .map_err(|_| ProxyError::AuthenticationTimeout)??;
 
+        let backend_url = backend_endpoint.uri().to_string();
         datapoint_info!(
             "block_engine_stage-tokens_generated",
-            ("url", &block_engine_url, String),
+            ("url", backend_url, String),
             ("count", 1, i64),
         );
 
@@ -454,6 +462,12 @@ impl BlockEngineStage {
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
             block_engine_channel,
             AuthInterceptor::new(access_token.clone()),
+        );
+
+        datapoint_info!(
+            "block_engine_stage-connected",
+            ("url", backend_url, String),
+            ("count", 1, i64),
         );
 
         Self::start_consuming_block_engine_bundles_and_packets(
@@ -471,7 +485,7 @@ impl BlockEngineStage {
             connection_timeout,
             keypair,
             cluster_info,
-            block_engine_url,
+            &backend_url,
         )
         .await
     }
@@ -579,7 +593,7 @@ impl BlockEngineStage {
                 SocketAddr, /* shredstream receiver */
                 u64,        /* latency us */
             ),
-        > = ahash::HashMap::default();
+        > = ahash::HashMap::with_capacity(endpoints.len());
         ping_res.iter().zip(endpoints_to_ping.iter()).for_each(
             |(maybe_ping_res, (endpoint, _uri))| {
                 let Ok(latency_us) = maybe_ping_res.as_ref() else {
@@ -587,7 +601,7 @@ impl BlockEngineStage {
                 };
 
                 datapoint_info!(
-                    "block_engine_stage-ping",
+                    "block_engine_stage-autoconfig_ping",
                     ("endpoint", endpoint.block_engine_url, String),
                     ("latency_us", *latency_us, i64),
                 );
