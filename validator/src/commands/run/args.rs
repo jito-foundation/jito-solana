@@ -1694,11 +1694,11 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .help("Number of CUs to allocate for bundles at beginning of slot.")
     )
     .arg(
-        Arg::with_name("disable_block_engine_autoconfig")
-            .long("disable-block-engine-autoconfig")
-            .value_name("DISABLE_BLOCK_ENGINE_AUTOCONFIG")
+        Arg::with_name("enable_block_engine_autoconfig")
+            .long("enable-block-engine-autoconfig")
+            .value_name("ENABLE_BLOCK_ENGINE_AUTOCONFIG")
             .takes_value(false)
-            .help("Disables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
+            .help("Enables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
     )
     .arg(
         Arg::with_name("shred_receiver_address")
