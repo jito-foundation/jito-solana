@@ -20,6 +20,7 @@ use {
         warm_quic_cache_service::WarmQuicCacheService,
         window_service::{WindowService, WindowServiceChannels},
     },
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{unbounded, Receiver, Sender},
     solana_client::connection_cache::ConnectionCache,
@@ -173,7 +174,7 @@ impl Tvu {
         wen_restart_repair_slots: Option<Arc<RwLock<Vec<Slot>>>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
-        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
+        shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let in_wen_restart = wen_restart_repair_slots.is_some();
 
@@ -608,7 +609,7 @@ pub mod tests {
             wen_restart_repair_slots,
             None,
             Arc::new(connection_cache),
-            Arc::new(RwLock::new(None)),
+            Arc::new(ArcSwap::from_pointee(None)),
         )
         .expect("assume success");
         if enable_wen_restart {
