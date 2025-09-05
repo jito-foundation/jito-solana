@@ -6874,7 +6874,7 @@ impl AccountsDb {
         }
 
         let (num_zero_lamport_single_refs, visit_zero_lamports_us) = measure_us!(
-            self.visit_zero_lamport_pubkeys_during_startup(&total_accum.zero_lamport_pubkeys)
+            self.visit_zero_lamport_pubkeys_during_startup(total_accum.zero_lamport_pubkeys)
         );
         timings.visit_zero_lamports_us = visit_zero_lamports_us;
         timings.num_zero_lamport_single_refs = num_zero_lamport_single_refs;
@@ -7033,9 +7033,15 @@ impl AccountsDb {
     /// Returns the number of zero lamport single ref accounts found.
     fn visit_zero_lamport_pubkeys_during_startup(
         &self,
-        pubkeys: &HashSet<Pubkey, PubkeyHasherBuilder>,
+        pubkeys: HashSet<Pubkey, PubkeyHasherBuilder>,
     ) -> u64 {
         let mut slot_offsets = HashMap::<_, Vec<_>>::default();
+        let mut pubkeys: Vec<_> = pubkeys.into_iter().collect();
+
+        // sort the pubkeys first so that in scan, the pubkeys are visited in
+        // index bucket in order. This helps to reduce the page faults and speed
+        // up the scan compared to visiting the pubkeys in random order.
+        pubkeys.sort_unstable();
         self.accounts_index.scan(
             pubkeys.iter(),
             |_pubkey, slots_refs, _entry| {
