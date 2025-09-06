@@ -230,7 +230,7 @@ impl BlockEngineStage {
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
     ) -> crate::proxy::Result<()> {
-        let endpoint = Self::get_endpoint(local_block_engine_config.block_engine_url.clone())?;
+        let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
         if !local_block_engine_config.disable_block_engine_autoconfig {
             datapoint_info!(
                 "block_engine_stage-connect",
@@ -252,14 +252,22 @@ impl BlockEngineStage {
             .await;
         }
 
-        shredstream_receiver_address.store(Arc::new(None));
+        if let Some((_best_url, (best_socket, _best_latency_us))) =
+            Self::get_ranked_endpoints(&endpoint)
+                .await?
+                .into_iter()
+                .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
+        {
+            shredstream_receiver_address.store(Arc::new(Some(best_socket))); // no else branch needed since we'll still send to shred_receiver_address
+        }
+
         datapoint_info!(
             "block_engine_stage-connect",
-            "type" => "legacy",
+            "type" => "direct",
             ("count", 1, i64),
         );
         Self::connect_auth_and_stream(
-            endpoint,
+            &endpoint,
             local_block_engine_config,
             block_engine_config,
             cluster_info,
@@ -271,11 +279,19 @@ impl BlockEngineStage {
             &Self::CONNECTION_TIMEOUT,
         )
         .await
+        .inspect(|_| {
+            datapoint_info!(
+                "block_engine_stage-connect",
+                "type" => "closed_connection",
+                ("url", endpoint.uri().to_string(), String),
+                ("count", 1, i64),
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream_autoconfig(
-        mut backend_endpoint: Endpoint,
+        endpoint: Endpoint,
         local_block_engine_config: &BlockEngineConfig,
         global_block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
@@ -286,66 +302,13 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> crate::proxy::Result<()> {
-        let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
-            .await
-            .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
-        let endpoints = endpoint_discovery
-            .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
-            .await
-            .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?
-            .into_inner();
-        let endpoint_latencies = Self::ping_and_rank_endpoints(&endpoints.regioned_endpoints).await;
-
-        // If no endpoints were reachable via ping (or ping is unavailable), fall back to the global
-        // endpoint returned by discovery.
-        if endpoint_latencies.is_empty() {
-            let Some(global) = endpoints.global_endpoint else {
-                return Err(ProxyError::BlockEngineConnectionError("autoconfig failed: no reachable endpoints via ping and no global endpoint provided".to_string()));
-            };
-
-            let Some(ss) = global
-                .shredstream_receiver_address
-                .to_socket_addrs()
-                .inspect_err(|e| {
-                    warn!(
-                        "Failed to resolve global shredstream address {}, error: {e}",
-                        global.shredstream_receiver_address
-                    )
-                })
-                .ok()
-                .and_then(|mut shredstream_sockets| shredstream_sockets.next())
-            else {
-                return Err(ProxyError::BlockEngineConnectionError(
-                    "Failed to resolve global shredstream receiver address".to_string(),
-                ));
-            };
-
-            shredstream_receiver_address.store(Arc::new(Some(ss)));
-            datapoint_info!(
-                "block_engine_stage-autoconfig_fallback_global",
-                ("endpoint", global.block_engine_url, String),
-                ("count", 1, i64),
-            );
-
-            return Self::connect_auth_and_stream(
-                Self::get_endpoint(global.block_engine_url.clone())?,
-                local_block_engine_config,
-                global_block_engine_config,
-                cluster_info,
-                bundle_tx,
-                packet_tx,
-                banking_packet_sender,
-                exit,
-                block_builder_fee_info,
-                &Self::CONNECTION_TIMEOUT,
-            )
-            .await;
-        }
+        let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
         // try connecting to best block engine
         let mut attempted = false;
-        let endpoint_count = endpoint_latencies.len();
-        for (block_engine_url, (shredstream_socket, latency_us)) in endpoint_latencies
+        let mut backend_endpoint = endpoint.clone();
+        let endpoint_count = candidates.len();
+        for (block_engine_url, (shredstream_socket, latency_us)) in candidates
             .into_iter()
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
         {
@@ -353,13 +316,13 @@ impl BlockEngineStage {
                 info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {shredstream_socket}, ping: ({:?})",
                     Duration::from_micros(latency_us)
                 );
-                backend_endpoint = Self::get_endpoint(block_engine_url.to_owned())?;
+                backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
             }
             shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
             attempted = true;
             let connect_start = Instant::now();
             match Self::connect_auth_and_stream(
-                backend_endpoint.clone(),
+                &backend_endpoint,
                 local_block_engine_config,
                 global_block_engine_config,
                 cluster_info,
@@ -373,9 +336,11 @@ impl BlockEngineStage {
             .await
             {
                 Ok(()) => {
-                    info!(
-                        "Closed block engine connection to {}",
-                        backend_endpoint.uri()
+                    datapoint_info!(
+                        "block_engine_stage-connect",
+                        "type" => "closed_connection",
+                        ("url", backend_endpoint.uri().to_string(), String),
+                        ("count", 1, i64),
                     );
                     return Ok(());
                 }
@@ -405,18 +370,81 @@ impl BlockEngineStage {
             }
         }
         if !attempted {
-            return Err(ProxyError::BlockEngineConnectionError(
+            return Err(ProxyError::BlockEngineEndpointError(
                 "autoconfig failed: no endpoints available after ping ranking".to_string(),
             ));
         }
-        Err(ProxyError::BlockEngineConnectionError(format!(
+        Err(ProxyError::BlockEngineEndpointError(format!(
             "autoconfig failed: all {endpoint_count} candidate endpoints failed to connect",
         )))
     }
 
+    /// Discover candidate endpoints either ranked via ping or using global fallback.
+    /// Use u64::MAX for latency value to indicate global fallback (no ping data).
+    async fn get_ranked_endpoints(
+        backend_endpoint: &Endpoint,
+    ) -> crate::proxy::Result<
+        ahash::HashMap<
+            String, /* block engine url */
+            (
+                SocketAddr, /* shredstream receiver */
+                u64,        /* latency us */
+            ),
+        >,
+    > {
+        let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
+            .await
+            .map_err(ProxyError::BlockEngineConnectionError)?;
+        let endpoints = endpoint_discovery
+            .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
+            .await
+            .map_err(ProxyError::BlockEngineRequestError)?
+            .into_inner();
+        datapoint_info!(
+            "block_engine_stage-autoconfig",
+            ("regioned_count", endpoints.regioned_endpoints.len(), i64),
+            ("count", 1, i64),
+        );
+        let endpoint_latencies = Self::ping_and_rank_endpoints(&endpoints.regioned_endpoints).await;
+        if endpoint_latencies.is_empty() {
+            let Some(global) = endpoints.global_endpoint else {
+                return Err(ProxyError::BlockEngineEndpointError(
+                    "Block engine configuration failed: no reachable endpoints found".to_owned(),
+                ));
+            };
+
+            let Some(ss) = global
+                .shredstream_receiver_address
+                .to_socket_addrs()
+                .inspect_err(|e| {
+                    datapoint_warn!(
+                        "block_engine_stage-autoconfig_error",
+                        "type" => "shredstream_resolve",
+                        ("address", global.shredstream_receiver_address, String),
+                        ("count", 1, i64),
+                        ("err", e.to_string(), String),
+                    );
+                })
+                .ok()
+                .and_then(|mut shredstream_sockets| shredstream_sockets.next())
+            else {
+                return Err(ProxyError::BlockEngineEndpointError(
+                    "Failed to resolve global shredstream receiver address".to_owned(),
+                ));
+            };
+
+            return Ok(ahash::HashMap::from_iter([(
+                global.block_engine_url,
+                (ss, u64::MAX),
+            )]));
+        }
+
+        Ok(endpoint_latencies)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream(
-        backend_endpoint: Endpoint,
+        backend_endpoint: &Endpoint,
         local_block_engine_config: &BlockEngineConfig,
         global_block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
@@ -457,7 +485,7 @@ impl BlockEngineStage {
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
-            .map_err(|e| ProxyError::BlockEngineConnectionError(e.to_string()))?;
+            .map_err(ProxyError::BlockEngineConnectionError)?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
@@ -492,10 +520,10 @@ impl BlockEngineStage {
     }
 
     /// Build an Endpoint from the URL provided
-    fn get_endpoint(block_engine_url: String) -> Result<Endpoint, ProxyError> {
-        let mut backend_endpoint = Endpoint::from_shared(block_engine_url.clone())
+    fn get_endpoint(block_engine_url: &str) -> Result<Endpoint, ProxyError> {
+        let mut backend_endpoint = Endpoint::from_shared(block_engine_url.to_owned())
             .map_err(|_| {
-                ProxyError::BlockEngineConnectionError(format!(
+                ProxyError::BlockEngineEndpointError(format!(
                     "invalid block engine url value: {block_engine_url}",
                 ))
             })?
@@ -504,9 +532,9 @@ impl BlockEngineStage {
             backend_endpoint = backend_endpoint
                 .tls_config(tonic::transport::ClientTlsConfig::new())
                 .map_err(|_| {
-                    ProxyError::BlockEngineConnectionError(
-                        "failed to set tls_config for block engine service".to_owned(),
-                    )
+                    ProxyError::BlockEngineEndpointError(format!(
+                        "failed to set tls_config for block engine: {block_engine_url}",
+                    ))
                 })?;
         }
         Ok(backend_endpoint)
@@ -555,7 +583,7 @@ impl BlockEngineStage {
     async fn ping_and_rank_endpoints(
         endpoints: &[BlockEngineEndpoint],
     ) -> ahash::HashMap<
-        &str, /* block engine url */
+        String, /* block engine url */
         (
             SocketAddr, /* shredstream receiver */
             u64,        /* latency us */
@@ -589,24 +617,27 @@ impl BlockEngineStage {
         .await;
 
         let mut agg_endpoints: ahash::HashMap<
-            &str, /* block engine url */
+            String, /* block engine url */
             (
                 SocketAddr, /* shredstream receiver */
                 u64,        /* latency us */
             ),
         > = ahash::HashMap::with_capacity(endpoints.len());
+        let mut best_endpoint = (None, u64::MAX);
         ping_res.iter().zip(endpoints_to_ping.iter()).for_each(
             |(maybe_ping_res, (endpoint, _uri))| {
-                let Ok(latency_us) = maybe_ping_res.as_ref() else {
+                let Ok(latency_us) = maybe_ping_res else {
                     return;
                 };
-
+                if *latency_us <= best_endpoint.1 {
+                    best_endpoint = (Some(endpoint), *latency_us);
+                };
                 datapoint_info!(
                     "block_engine_stage-autoconfig_ping",
                     ("endpoint", endpoint.block_engine_url, String),
                     ("latency_us", *latency_us, i64),
                 );
-                match agg_endpoints.entry(endpoint.block_engine_url.as_str()) {
+                match agg_endpoints.entry(endpoint.block_engine_url.clone()) {
                     Entry::Occupied(mut ent) => {
                         let (_shredstream_socket, best_ping_us) = ent.get_mut();
                         if latency_us <= best_ping_us {
@@ -632,6 +663,21 @@ impl BlockEngineStage {
                     }
                 };
             },
+        );
+
+        datapoint_info!(
+            "block_engine_stage-autoconfig",
+            ("endpoints_count", agg_endpoints.len(), i64),
+            (
+                "best_endpoint_url",
+                best_endpoint
+                    .0
+                    .map(|x| x.block_engine_url.as_str())
+                    .unwrap_or_default(),
+                String
+            ),
+            ("best_endpoint_latency_us", best_endpoint.1, i64),
+            ("count", 1, i64),
         );
 
         agg_endpoints
