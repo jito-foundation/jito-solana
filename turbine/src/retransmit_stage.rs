@@ -6,6 +6,7 @@ use {
         cluster_nodes::{self, ClusterNodes, ClusterNodesCache, Error, MAX_NUM_TURBINE_HOPS},
         xdp::XdpSender,
     },
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{Receiver, RecvError, TryRecvError},
     lru::LruCache,
@@ -242,7 +243,7 @@ fn retransmit(
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
     shred_buf: &mut Vec<Vec<shred::Payload>>,
-    shred_receiver_address: &Option<SocketAddr>,
+    shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
 ) -> Result<(), RecvError> {
     // Try to receive shreds from the channel without blocking. If the channel
     // is empty precompute turbine trees speculatively. If no cache updates are
@@ -329,6 +330,7 @@ fn retransmit(
         entry.record(now, out);
         stats
     };
+    let shred_receiver_address_local = shred_receiver_address.load();
     let retransmit_shred = |shred, socket, stats| {
         retransmit_shred(
             shred,
@@ -340,7 +342,7 @@ fn retransmit(
             socket,
             quic_endpoint_sender,
             stats,
-            shred_receiver_address,
+            &shred_receiver_address_local,
         )
     };
 
@@ -607,7 +609,7 @@ impl RetransmitStage {
         rpc_subscriptions: Option<Arc<RpcSubscriptions>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
         xdp_sender: Option<XdpSender>,
-        shred_receiver_addr: Arc<RwLock<Option<SocketAddr>>>,
+        shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -649,7 +651,7 @@ impl RetransmitStage {
                         rpc_subscriptions.as_deref(),
                         slot_status_notifier.as_ref(),
                         &mut shred_buf,
-                        &shred_receiver_addr.read().unwrap(),
+                        &shred_receiver_addr,
                     )
                     .is_ok()
                     {}
