@@ -74,8 +74,14 @@ pub enum ProxyError {
     #[error("BlockEngineTimeout")]
     BlockEngineTimeout,
 
+    #[error("BlockEngineEndpointError: {0:?}")]
+    BlockEngineEndpointError(String),
+
     #[error("BlockEngineConnectionError: {0:?}")]
-    BlockEngineConnectionError(String),
+    BlockEngineConnectionError(tonic::transport::Error),
+
+    #[error("BlockEngineRequestError: {0:?}")]
+    BlockEngineRequestError(tonic::Status),
 
     #[error("RelayerConnectionTimeout")]
     RelayerConnectionTimeout,
