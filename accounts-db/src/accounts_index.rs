@@ -671,21 +671,6 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
         }
     }
 
-    #[cfg(feature = "dev-context-only-utils")]
-    pub fn do_unchecked_scan_accounts<F, R>(
-        &self,
-        metric_name: &'static str,
-        ancestors: &Ancestors,
-        func: F,
-        range: Option<R>,
-        config: &ScanConfig,
-    ) where
-        F: FnMut(&Pubkey, (&T, Slot)),
-        R: RangeBounds<Pubkey> + std::fmt::Debug,
-    {
-        self.do_scan_accounts(metric_name, ancestors, func, range, None, config);
-    }
-
     // Scan accounts and return latest version of each account that is either:
     // 1) rooted or
     // 2) present in ancestors
@@ -913,24 +898,6 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
         )
     }
 
-    #[cfg(feature = "dev-context-only-utils")]
-    pub(crate) fn unchecked_scan_accounts<F>(
-        &self,
-        metric_name: &'static str,
-        ancestors: &Ancestors,
-        func: F,
-        config: &ScanConfig,
-    ) where
-        F: FnMut(&Pubkey, (&T, Slot)),
-    {
-        self.do_unchecked_scan_accounts(
-            metric_name,
-            ancestors,
-            func,
-            None::<Range<Pubkey>>,
-            config,
-        );
-    }
     /// call func with every pubkey and index visible from a given set of ancestors
     pub(crate) fn index_scan_accounts<F>(
         &self,
@@ -1867,12 +1834,14 @@ pub mod tests {
         assert!(!index.contains_with(key, None, None));
 
         let mut num = 0;
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 0);
     }
 
@@ -1945,12 +1914,14 @@ pub mod tests {
         assert!(!index.contains_with(&key, None, None));
 
         let mut num = 0;
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 0);
     }
 
@@ -2007,22 +1978,26 @@ pub mod tests {
         assert!(!index.contains_with(pubkey, None, None));
 
         let mut num = 0;
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 0);
         ancestors.insert(slot, 0);
         assert!(index.contains_with(pubkey, Some(&ancestors), None));
         assert_eq!(index.ref_count_from_storage(pubkey), 1);
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 1);
 
         // not zero lamports
@@ -2040,22 +2015,26 @@ pub mod tests {
         assert!(!index.contains_with(pubkey, None, None));
 
         let mut num = 0;
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 0);
         ancestors.insert(slot, 0);
         assert!(index.contains_with(pubkey, Some(&ancestors), None));
         assert_eq!(index.ref_count_from_storage(pubkey), 1);
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 1);
     }
 
@@ -2448,21 +2427,25 @@ pub mod tests {
         assert!(!index.contains_with(&key, None, None));
 
         let mut num = 0;
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 0);
         ancestors.insert(slot, 0);
         assert!(index.contains_with(&key, Some(&ancestors), None));
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 1);
     }
 
@@ -2487,12 +2470,14 @@ pub mod tests {
         assert!(!index.contains_with(&key, Some(&ancestors), None));
 
         let mut num = 0;
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |_pubkey, _index| num += 1,
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |_pubkey, _index| num += 1,
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 0);
     }
     #[test]
@@ -2623,17 +2608,20 @@ pub mod tests {
 
         let mut num = 0;
         let mut found_key = false;
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |pubkey, _index| {
-                if pubkey == &key {
-                    found_key = true
-                };
-                num += 1
-            },
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &ancestors,
+                0,
+                |pubkey, _index| {
+                    if pubkey == &key {
+                        found_key = true
+                    };
+                    num += 1
+                },
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
+
         assert_eq!(num, 1);
         assert!(found_key);
     }
@@ -2680,17 +2668,18 @@ pub mod tests {
 
     fn run_test_scan_accounts(num_pubkeys: usize) {
         let (index, _) = setup_accounts_index_keys(num_pubkeys);
-        let ancestors = Ancestors::default();
 
         let mut scanned_keys = HashSet::new();
-        index.unchecked_scan_accounts(
-            "",
-            &ancestors,
-            |pubkey, _index| {
-                scanned_keys.insert(*pubkey);
-            },
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &Ancestors::default(),
+                0,
+                |pubkey, _index| {
+                    scanned_keys.insert(*pubkey);
+                },
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(scanned_keys.len(), num_pubkeys);
     }
 
@@ -2942,18 +2931,20 @@ pub mod tests {
 
         let mut num = 0;
         let mut found_key = false;
-        index.unchecked_scan_accounts(
-            "",
-            &Ancestors::default(),
-            |pubkey, index| {
-                if pubkey == &key {
-                    found_key = true;
-                    assert_eq!(index, (&true, 3));
-                };
-                num += 1
-            },
-            &ScanConfig::default(),
-        );
+        index
+            .scan_accounts(
+                &Ancestors::default(),
+                0,
+                |pubkey, index| {
+                    if pubkey == &key {
+                        found_key = true;
+                        assert_eq!(index, (&true, 3));
+                    };
+                    num += 1
+                },
+                &ScanConfig::default(),
+            )
+            .expect("scan should succeed");
         assert_eq!(num, 1);
         assert!(found_key);
     }
