@@ -11111,7 +11111,6 @@ fn test_squash_timing_add_assign() {
         squash_accounts_ms: 1,
         squash_accounts_cache_ms: 2,
         squash_accounts_index_ms: 3,
-        squash_accounts_store_ms: 4,
         squash_cache_ms: 5,
     };
 
@@ -11119,7 +11118,6 @@ fn test_squash_timing_add_assign() {
         squash_accounts_ms: 2,
         squash_accounts_cache_ms: 2 * 2,
         squash_accounts_index_ms: 3 * 2,
-        squash_accounts_store_ms: 4 * 2,
         squash_cache_ms: 5 * 2,
     };
 

@@ -394,7 +394,6 @@ pub struct GetUniqueAccountsResult {
 pub struct AccountsAddRootTiming {
     pub index_us: u64,
     pub cache_us: u64,
-    pub store_us: u64,
 }
 
 /// Slots older the "number of slots in an epoch minus this number"
@@ -6312,7 +6311,6 @@ impl AccountsDb {
         AccountsAddRootTiming {
             index_us: index_time.as_us(),
             cache_us: cache_time.as_us(),
-            store_us: 0,
         }
     }
 
