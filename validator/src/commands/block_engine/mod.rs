@@ -15,10 +15,10 @@ pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
                 .required(true)
         )
         .arg(
-            Arg::with_name("disable_block_engine_autoconfig")
-                .long("disable-block-engine-autoconfig")
+            Arg::with_name("enable_block_engine_autoconfig")
+                .long("enable-block-engine-autoconfig")
                 .takes_value(false)
-                .help("Disables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
+                .help("Enables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
         )
         .arg(
             Arg::with_name("trust_block_engine_packets")
@@ -30,8 +30,10 @@ pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
 
 pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> Result<()> {
     let block_engine_url = value_t_or_exit!(subcommand_matches, "block_engine_url", String);
+    // Temporary default change: disable autoconfig by default until users are comfortable
+    // with it; explicit flag remains supported
     let disable_block_engine_autoconfig =
-        subcommand_matches.is_present("disable_block_engine_autoconfig");
+        !subcommand_matches.is_present("enable_block_engine_autoconfig");
     let trust_packets = subcommand_matches.is_present("trust_block_engine_packets");
     let admin_client = admin_rpc_service::connect(ledger_path);
 

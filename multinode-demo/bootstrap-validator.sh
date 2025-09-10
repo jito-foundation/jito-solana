@@ -112,7 +112,7 @@ while [[ -n $1 ]]; do
     elif [[ $1 == --block-engine-url ]]; then
       args+=("$1" "$2")
       shift 2
-    elif [[ $1 == --disable-block-engine-autoconfig ]]; then
+    elif [[ $1 == --enable-block-engine-autoconfig ]]; then
       args+=("$1")
       shift
     elif [[ $1 == --tip-payment-program-pubkey ]]; then
