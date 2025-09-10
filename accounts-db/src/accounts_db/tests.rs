@@ -3376,9 +3376,22 @@ fn test_flush_cache_clean() {
         .is_none());
 }
 
-#[test]
-fn test_flush_cache_dont_clean_zero_lamport_account() {
-    let db = Arc::new(AccountsDb::new_single_for_tests());
+#[test_case(MarkObsoleteAccounts::Enabled)]
+#[test_case(MarkObsoleteAccounts::Disabled)]
+fn test_flush_cache_dont_clean_zero_lamport_account(mark_obsolete_accounts: MarkObsoleteAccounts) {
+    let db = AccountsDb::new_with_config(
+        Vec::new(),
+        AccountsDbConfig {
+            mark_obsolete_accounts,
+            ..ACCOUNTS_DB_CONFIG_FOR_TESTING
+        },
+        None,
+        Arc::default(),
+    );
+
+    // If there is no latest full snapshot, zero lamport accounts can be cleaned and removed
+    // immediately. Set latest full snapshot slot to zero to avoid cleaning zero lamport accounts
+    db.set_latest_full_snapshot_slot(0);
 
     let zero_lamport_account_key = Pubkey::new_unique();
     let other_account_key = Pubkey::new_unique();
@@ -3402,7 +3415,7 @@ fn test_flush_cache_dont_clean_zero_lamport_account() {
 
     // Store into slot 2, which makes all updates from slot 1 outdated.
     // This means slot 1 is a dead slot. Later, slot 1 will be cleaned/purged
-    // before it even reaches storage, but this purge of slot 1should not affect
+    // before it even reaches storage, but this purge of slot 1 should not affect
     // the refcount of `zero_lamport_account_key` because cached keys do not bump
     // the refcount in the index. This means clean should *not* remove
     // `zero_lamport_account_key` from slot 2
@@ -3415,13 +3428,20 @@ fn test_flush_cache_dont_clean_zero_lamport_account() {
     db.flush_accounts_cache(true, None);
     db.clean_accounts_for_tests();
 
-    // The `zero_lamport_account_key` is still alive in slot 1, so refcount for the
+    // The `zero_lamport_account_key` is still alive in slot 0, so refcount for the
     // pubkey should be 2
-    db.assert_ref_count(&zero_lamport_account_key, 2);
+    if mark_obsolete_accounts == MarkObsoleteAccounts::Disabled {
+        db.assert_ref_count(&zero_lamport_account_key, 2);
+    } else {
+        // However, if obsolete accounts are enabled, it will only be alive in slot 2
+        db.assert_ref_count(&zero_lamport_account_key, 1);
+    }
     db.assert_ref_count(&other_account_key, 1);
 
     // The zero-lamport account in slot 2 should not be purged yet, because the
-    // entry in slot 1 is blocking cleanup of the zero-lamport account.
+    // entry in slot 0 is blocking cleanup of the zero-lamport account.
+    // With obsolete accounts enabled, the zero lamport account being newer
+    // than the latest full snapshot blocks cleanup
     let max_root = None;
     // Fine to simulate a transaction load since we are not doing any out of band
     // removals, only using clean_accounts
