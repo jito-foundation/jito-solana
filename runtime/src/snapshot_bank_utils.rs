@@ -2314,11 +2314,9 @@ mod tests {
         let mut bank = Arc::new(Bank::new_for_tests(&genesis_config));
 
         // take some snapshots, and archive them
-        // note the `+1` at the end; we'll turn it into a PRE afterwards
         for _ in 0..snapshot_config
             .maximum_full_snapshot_archives_to_retain
             .get()
-            + 1
         {
             let slot = bank.slot() + 1;
             bank = Arc::new(Bank::new_from_parent(bank, &Pubkey::default(), slot));
