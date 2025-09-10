@@ -640,7 +640,9 @@ pub fn execute(
         } else {
             String::default()
         },
-        disable_block_engine_autoconfig: matches.is_present("disable_block_engine_autoconfig"),
+        // Temporary default change: disable autoconfig by default until users are comfortable
+        // with it; explicit flag remains supported
+        disable_block_engine_autoconfig: !matches.is_present("enable_block_engine_autoconfig"),
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
 
