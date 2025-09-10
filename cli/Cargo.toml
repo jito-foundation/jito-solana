@@ -17,7 +17,7 @@ name = "solana"
 path = "src/main.rs"
 
 [features]
-dev-context-only-utils = []
+dev-context-only-utils = ["solana-faucet/dev-context-only-utils"]
 
 [dependencies]
 agave-feature-set = { workspace = true }
@@ -103,9 +103,8 @@ tiny-bip39 = { workspace = true }
 
 [dev-dependencies]
 assert_matches = { workspace = true }
-solana-cli = { path = ".", features = ["dev-context-only-utils"] }
 solana-client = { workspace = true, features = ["dev-context-only-utils"] }
-solana-faucet = { workspace = true }
+solana-faucet = { workspace = true, features = ["dev-context-only-utils"] }
 solana-nonce-account = { workspace = true }
 solana-presigner = { workspace = true }
 solana-rpc = { workspace = true }
