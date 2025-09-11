@@ -62,6 +62,7 @@ pub const SNAPSHOT_STATE_COMPLETE_FILENAME: &str = "state_complete";
 pub const SNAPSHOT_STORAGES_FLUSHED_FILENAME: &str = "storages_flushed";
 pub const SNAPSHOT_ACCOUNTS_HARDLINKS: &str = "accounts_hardlinks";
 pub const SNAPSHOT_ARCHIVE_DOWNLOAD_DIR: &str = "remote";
+/// No longer checked in version v3.1. Can be removed in v3.2
 pub const SNAPSHOT_FULL_SNAPSHOT_SLOT_FILENAME: &str = "full_snapshot_slot";
 /// When a snapshot is taken of a bank, the state is serialized under this directory.
 /// Specifically in `BANK_SNAPSHOTS_DIR/SLOT/`.
@@ -734,30 +735,14 @@ fn are_bank_snapshot_storages_flushed(bank_snapshot_dir: impl AsRef<Path>) -> bo
 /// Gets the highest, loadable, bank snapshot
 ///
 /// The highest bank snapshot is the one with the highest slot.
-/// And if we're generating snapshots (e.g. running a normal validator), then
-/// the full snapshot file's slot must match the highest full snapshot archive's.
-/// Lastly, the account storages must have been flushed to be loadable.
 pub fn get_highest_loadable_bank_snapshot(
     snapshot_config: &SnapshotConfig,
 ) -> Option<BankSnapshotInfo> {
     let highest_bank_snapshot = get_highest_bank_snapshot(&snapshot_config.bank_snapshots_dir)?;
 
-    // If we're *not* generating snapshots, e.g. running ledger-tool, then we *can* load
-    // this bank snapshot, and we do not need to check for anything else.
-    if !snapshot_config.should_generate_snapshots() {
-        return Some(highest_bank_snapshot);
-    }
-
-    // Otherwise, the bank snapshot's full snapshot slot *must* be the same as
-    // the highest full snapshot archive's slot.
-    let highest_full_snapshot_archive_slot =
-        get_highest_full_snapshot_archive_slot(&snapshot_config.full_snapshot_archives_dir)?;
-    let full_snapshot_file_slot =
-        read_full_snapshot_slot_file(&highest_bank_snapshot.snapshot_dir).ok()?;
     let are_storages_flushed =
         are_bank_snapshot_storages_flushed(&highest_bank_snapshot.snapshot_dir);
-    (are_storages_flushed && (full_snapshot_file_slot == highest_full_snapshot_archive_slot))
-        .then_some(highest_bank_snapshot)
+    are_storages_flushed.then_some(highest_bank_snapshot)
 }
 
 /// If the validator halts in the middle of `archive_snapshot_package()`, the temporary staging

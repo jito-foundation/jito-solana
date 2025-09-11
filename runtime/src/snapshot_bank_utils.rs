@@ -2290,8 +2290,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_highest_loadable_bank_snapshot() {
+    #[test_case(SnapshotConfig::new_load_only())]
+    #[test_case(SnapshotConfig::default())]
+    fn test_get_highest_loadable_bank_snapshot(snapshot_config: SnapshotConfig) {
         let bank_snapshots_dir = TempDir::new().unwrap();
         let snapshot_archives_dir = TempDir::new().unwrap();
 
@@ -2299,15 +2300,7 @@ mod tests {
             bank_snapshots_dir: bank_snapshots_dir.as_ref().to_path_buf(),
             full_snapshot_archives_dir: snapshot_archives_dir.as_ref().to_path_buf(),
             incremental_snapshot_archives_dir: snapshot_archives_dir.as_ref().to_path_buf(),
-            ..Default::default()
-        };
-        let load_only_snapshot_config = SnapshotConfig {
-            bank_snapshots_dir: snapshot_config.bank_snapshots_dir.clone(),
-            full_snapshot_archives_dir: snapshot_config.full_snapshot_archives_dir.clone(),
-            incremental_snapshot_archives_dir: snapshot_config
-                .incremental_snapshot_archives_dir
-                .clone(),
-            ..SnapshotConfig::new_load_only()
+            ..snapshot_config
         };
 
         let genesis_config = GenesisConfig::default();
@@ -2332,9 +2325,6 @@ mod tests {
             )
             .unwrap();
         }
-
-        let highest_full_snapshot_archive =
-            get_highest_full_snapshot_archive_info(&snapshot_archives_dir).unwrap();
         let highest_bank_snapshot = get_highest_bank_snapshot(&bank_snapshots_dir).unwrap();
 
         // 1. call get_highest_loadable() but bad snapshot dir, so returns None
@@ -2348,19 +2338,11 @@ mod tests {
         let bank_snapshot = get_highest_loadable_bank_snapshot(&snapshot_config).unwrap();
         assert_eq!(bank_snapshot, highest_bank_snapshot);
 
-        // 4. delete highest full snapshot archive, get_highest_loadable() should return NONE
-        fs::remove_file(highest_full_snapshot_archive.path()).unwrap();
-        assert!(get_highest_loadable_bank_snapshot(&snapshot_config).is_none());
-
-        // 5. get_highest_loadable(), but with a load-only snapshot config, should return Some()
-        let bank_snapshot = get_highest_loadable_bank_snapshot(&load_only_snapshot_config).unwrap();
-        assert_eq!(bank_snapshot, highest_bank_snapshot);
-
-        // 6. delete highest bank snapshot, get_highest_loadable() should return NONE
+        // 4. delete highest bank snapshot, get_highest_loadable() should return NONE
         fs::remove_dir_all(&highest_bank_snapshot.snapshot_dir).unwrap();
         assert!(get_highest_loadable_bank_snapshot(&snapshot_config).is_none());
 
-        // 7. write 'storages flushed' file, get_highest_loadable() should return Some() again, with slot-1
+        // 5. write 'storages flushed' file, get_highest_loadable() should return Some() again, with slot-1
         snapshot_utils::write_storages_flushed_file(get_bank_snapshot_dir(
             &snapshot_config.bank_snapshots_dir,
             highest_bank_snapshot.slot - 1,
@@ -2369,18 +2351,14 @@ mod tests {
         let bank_snapshot = get_highest_loadable_bank_snapshot(&snapshot_config).unwrap();
         assert_eq!(bank_snapshot.slot, highest_bank_snapshot.slot - 1);
 
-        // 8. delete the full snapshot slot file, get_highest_loadable() should return NONE
+        // 6. delete the full snapshot slot file, get_highest_loadable() should return return Some() again, with slot-1
         fs::remove_file(
             bank_snapshot
                 .snapshot_dir
                 .join(SNAPSHOT_FULL_SNAPSHOT_SLOT_FILENAME),
         )
         .unwrap();
-        assert!(get_highest_loadable_bank_snapshot(&snapshot_config).is_none());
-
-        // 9. however, a load-only snapshot config should return Some() again
-        let bank_snapshot2 =
-            get_highest_loadable_bank_snapshot(&load_only_snapshot_config).unwrap();
+        let bank_snapshot2 = get_highest_loadable_bank_snapshot(&snapshot_config).unwrap();
         assert_eq!(bank_snapshot2, bank_snapshot);
     }
 }
