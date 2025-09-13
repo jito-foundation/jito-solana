@@ -67,7 +67,7 @@ use {
     dashmap::DashMap,
     log::*,
     partitioned_epoch_rewards::PartitionedRewardsCalculation,
-    rayon::ThreadPoolBuilder,
+    rayon::{ThreadPool, ThreadPoolBuilder},
     serde::Serialize,
     solana_account::{
         create_account_shared_data_with_fields as create_account, from_account, Account,
@@ -1823,30 +1823,6 @@ impl Bank {
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
         };
 
-        bank.transaction_processor =
-            TransactionBatchProcessor::new_uninitialized(bank.slot, bank.epoch);
-
-        // TODO: Only create the thread pool if we need to recalculate rewards,
-        // i.e. epoch_reward_status is active. Currently, this thread pool is
-        // always created and used for recalculate_partitioned_rewards and
-        // lt_hash calculation. Once lt_hash feature is active, lt_hash won't
-        // need the thread pool. Thereby, after lt_hash feature activation, we
-        // can change to create the thread pool only when we need to recalculate
-        // rewards.
-        let thread_pool = ThreadPoolBuilder::new()
-            .thread_name(|i| format!("solBnkNewFlds{i:02}"))
-            .build()
-            .expect("new rayon threadpool");
-        bank.recalculate_partitioned_rewards(null_tracer(), &thread_pool);
-
-        bank.finish_init(
-            genesis_config,
-            additional_builtins,
-            debug_do_not_add_builtins,
-        );
-        bank.transaction_processor
-            .fill_missing_sysvar_cache_entries(&bank);
-
         // Sanity assertions between bank snapshot and genesis config
         // Consider removing from serializable bank state
         // (BankFieldsToSerialize/BankFieldsToDeserialize) and initializing
@@ -1873,6 +1849,18 @@ impl Bank {
         );
         assert_eq!(bank.epoch_schedule, genesis_config.epoch_schedule);
         assert_eq!(bank.epoch, bank.epoch_schedule.get_epoch(bank.slot));
+
+        bank.initialize_after_snapshot_restore(
+            genesis_config,
+            additional_builtins,
+            debug_do_not_add_builtins,
+            || {
+                ThreadPoolBuilder::new()
+                    .thread_name(|i| format!("solBnkClcRwds{i:02}"))
+                    .build()
+                    .expect("new rayon threadpool")
+            },
+        );
 
         datapoint_info!(
             "bank-new-from-fields",
@@ -5325,6 +5313,41 @@ impl Bank {
     /// be write-locked during transaction processing.
     pub fn get_reserved_account_keys(&self) -> &HashSet<Pubkey> {
         &self.reserved_account_keys.active
+    }
+
+    /// Compute and apply all activated features, initialize the transaction
+    /// processor, and recalculate partitioned rewards if needed
+    fn initialize_after_snapshot_restore<F, TP>(
+        &mut self,
+        genesis_config: &GenesisConfig,
+        additional_builtins: Option<&[BuiltinPrototype]>,
+        debug_do_not_add_builtins: bool,
+        rewards_thread_pool_builder: F,
+    ) where
+        F: FnOnce() -> TP,
+        TP: std::borrow::Borrow<ThreadPool>,
+    {
+        self.transaction_processor =
+            TransactionBatchProcessor::new_uninitialized(self.slot, self.epoch);
+
+        self.finish_init(
+            genesis_config,
+            additional_builtins,
+            debug_do_not_add_builtins,
+        );
+
+        // TODO: Only create the thread pool if we need to recalculate rewards,
+        // i.e. epoch_reward_status is active. Currently, this thread pool is
+        // always created and used for recalculate_partitioned_rewards and
+        // lt_hash calculation. Once lt_hash feature is active, lt_hash won't
+        // need the thread pool. Thereby, after lt_hash feature activation, we
+        // can change to create the thread pool only when we need to recalculate
+        // rewards.
+        let thread_pool = rewards_thread_pool_builder();
+        self.recalculate_partitioned_rewards(null_tracer(), thread_pool.borrow());
+
+        self.transaction_processor
+            .fill_missing_sysvar_cache_entries(self);
     }
 
     // This is called from snapshot restore AND for each epoch boundary
