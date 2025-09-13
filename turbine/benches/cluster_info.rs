@@ -94,6 +94,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
             &SocketAddrSpace::Unspecified,
             &quic_endpoint_sender,
             &None,
+            &None,
         )
         .unwrap();
     });
