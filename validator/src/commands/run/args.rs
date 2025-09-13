@@ -1628,7 +1628,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
     ).arg(
         Arg::with_name("block_engine_url")
             .long("block-engine-url")
-            .help("Block engine url.  Set to empty string to disable block engine connection.")
+            .help("URL entrypoint to the Block Engine. Connected Block Engine will be autoconfigured unless `--disable-block-engine-autoconfig` is used. Set to empty string to disable block engine connection.")
             .takes_value(true)
     )
     .arg(
@@ -1692,6 +1692,13 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
             .default_value(&default_args.preallocated_bundle_cost)
             .help("Number of CUs to allocate for bundles at beginning of slot.")
+    )
+    .arg(
+        Arg::with_name("enable_block_engine_autoconfig")
+            .long("enable-block-engine-autoconfig")
+            .value_name("ENABLE_BLOCK_ENGINE_AUTOCONFIG")
+            .takes_value(false)
+            .help("Enables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is."),
     )
     .arg(
         Arg::with_name("shred_receiver_address")
