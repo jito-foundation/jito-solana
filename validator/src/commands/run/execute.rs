@@ -5,6 +5,7 @@ use {
         cli::{self},
         ledger_lockfile, lock_ledger,
     },
+    arc_swap::ArcSwap,
     clap::{crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit, ArgMatches},
     crossbeam_channel::unbounded,
     log::*,
@@ -637,8 +638,11 @@ pub fn execute(
         block_engine_url: if matches.is_present("block_engine_url") {
             value_of(matches, "block_engine_url").expect("couldn't parse block_engine_url")
         } else {
-            "".to_string()
+            String::default()
         },
+        // Temporary default change: disable autoconfig by default until users are comfortable
+        // with it; explicit flag remains supported
+        disable_block_engine_autoconfig: !matches.is_present("enable_block_engine_autoconfig"),
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
 
@@ -667,11 +671,12 @@ pub fn execute(
         ),
     }));
 
-    let shred_receiver_address =
-        Arc::new(RwLock::new(matches.value_of("shred_receiver_address").map(
-            |addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid"),
-        )));
-    let shred_retransmit_receiver_address = Arc::new(RwLock::new(
+    let shred_receiver_address = Arc::new(ArcSwap::from_pointee(
+        matches
+            .value_of("shred_receiver_address")
+            .map(|addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid")),
+    ));
+    let shred_retransmit_receiver_address = Arc::new(ArcSwap::from_pointee(
         matches
             .value_of("shred_retransmit_receiver_address")
             .map(|addr| {

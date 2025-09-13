@@ -403,6 +403,7 @@ name = "agave-validator"
 version = "2.3.8"
 dependencies = [
  "agave-geyser-plugin-interface",
+ "arc-swap",
  "assert_cmd",
  "chrono",
  "clap 2.33.3",
@@ -8067,6 +8068,7 @@ dependencies = [
  "ahash 0.8.11",
  "anchor-lang",
  "anyhow",
+ "arc-swap",
  "arrayvec",
  "assert_matches",
  "async-trait",
@@ -11709,6 +11711,7 @@ version = "2.3.8"
 dependencies = [
  "agave-feature-set",
  "agave-xdp",
+ "arc-swap",
  "assert_matches",
  "bincode",
  "bs58 0.5.1",
@@ -13431,9 +13434,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-core"
-version = "0.1.32"
+version = "0.1.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c06d3da6113f116aaee68e4d601191614c9053067f9ab7f6edbcb161237daa54"
+checksum = "b9d12581f227e93f094d3af2ae690a574abb8a2b9b7a96e7cfe9647b2b617678"
 dependencies = [
  "once_cell",
  "valuable",
@@ -13453,9 +13456,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.3.7"
+version = "0.3.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5312f325fe3588e277415f5a6cca1f4ccad0f248c4cd5a4bd33032d7286abc22"
+checksum = "2054a14f5307d601f88daf0553e1cbf472acc4f2c51afab632431cdcd72124d5"
 dependencies = [
  "sharded-slab",
  "thread_local",
