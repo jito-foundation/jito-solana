@@ -7670,6 +7670,7 @@ dependencies = [
  "solana-sbpf",
  "solana-sdk-ids",
  "solana-slot-hashes",
+ "solana-stable-layout",
  "solana-stake-interface",
  "solana-svm-callback",
  "solana-svm-feature-set",
