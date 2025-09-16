@@ -4251,6 +4251,9 @@ fn test_clean_drop_dead_storage_handle_zero_lamport_single_ref_accounts() {
     assert!(db.shrink_candidate_slots.lock().unwrap().contains(&1));
 }
 
+/// Tests that shrink correctly marks newly single ref zero lamport accounts and sends them to clean
+/// This test is still relevant with obsolete accounts enabled, but can be removed if all
+/// scenarios where flush_write_cache doesn't clean are eliminated.
 #[test]
 fn test_shrink_unref_handle_zero_lamport_single_ref_accounts() {
     let db = AccountsDb::new_single_for_tests();
@@ -4268,8 +4271,8 @@ fn test_shrink_unref_handle_zero_lamport_single_ref_accounts() {
     // Make account_key1 in slot 0 outdated by updating in rooted slot 1 with a zero lamport account
     db.store_for_tests((1, &[(&account_key1, &account0)][..]));
     db.add_root(1);
-    // Flushes all roots
-    db.flush_accounts_cache(true, None);
+    // Flushes all roots without clean
+    db.flush_rooted_accounts_cache(None, false);
 
     // Clean to remove outdated entry from slot 0
     db.clean_accounts(Some(1), false, &EpochSchedule::default());
@@ -4302,12 +4305,13 @@ fn test_shrink_unref_handle_zero_lamport_single_ref_accounts() {
     // Flushes all roots
     db.flush_accounts_cache(true, None);
 
-    // Should be one store before clean for slot 0 and slot 1
-    db.get_and_assert_single_storage(0);
+    // Should be one store before clean for slot 1
     db.get_and_assert_single_storage(1);
     db.clean_accounts(Some(2), false, &EpochSchedule::default());
 
-    // No stores should exist for slot 0 after clean
+    // No stores should exist for slot 0. If obsolete accounts are enabled, slot 0 stores are
+    // cleaned when slot 2 is flushed. If obsolete accounts are disabled, slot 0 stores are
+    // cleaned during the clean_accounts function call.
     assert_no_storages_at_slot(&db, 0);
     // No store should exit for slot 1 too as it has only a zero lamport single ref account.
     assert_no_storages_at_slot(&db, 1);
