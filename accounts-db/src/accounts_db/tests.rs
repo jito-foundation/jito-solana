@@ -1210,8 +1210,12 @@ fn test_remove_zero_lamport_single_ref_accounts_after_shrink() {
             accounts
                 .store_for_tests((slot + 1, [(&pubkey_zero, &zero_lamport_account)].as_slice()));
             if pass == 2 {
-                // move to a storage (causing ref count to increase)
-                accounts.add_root_and_flush_write_cache(slot + 1);
+                // This test pass is still relevant with obsolete accounts enabled, but can be
+                // removed if all scenarios where flush_write_cache doesn't clean are eliminated.
+
+                // add root and flush without clean (causing ref count to increase)
+                accounts.add_root(slot + 1);
+                accounts.flush_rooted_accounts_cache(None, false);
             }
         }
 
