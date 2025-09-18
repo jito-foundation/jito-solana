@@ -448,9 +448,6 @@ pub enum AddBankSnapshotError {
     #[error("failed to flush storage '{1}': {0}")]
     FlushStorage(#[source] AccountsFileError, PathBuf),
 
-    #[error("failed to mark snapshot storages as 'flushed': {0}")]
-    MarkStoragesFlushed(#[source] IoError),
-
     #[error("failed to hard link storages: {0}")]
     HardLinkStorages(#[source] HardLinkStoragesToSnapshotError),
 
@@ -463,8 +460,8 @@ pub enum AddBankSnapshotError {
     #[error("failed to write snapshot version file '{1}': {0}")]
     WriteSnapshotVersionFile(#[source] IoError, PathBuf),
 
-    #[error("failed to mark snapshot as 'complete': {0}")]
-    MarkSnapshotComplete(#[source] IoError),
+    #[error("failed to mark snapshot as 'loadable': {0}")]
+    MarkSnapshotLoadable(#[source] IoError),
 }
 
 /// Errors that can happen in `archive_snapshot_package()`
@@ -650,20 +647,6 @@ fn is_bank_snapshot_complete(bank_snapshot_dir: impl AsRef<Path>) -> bool {
     version_path.is_file()
 }
 
-/// Marks the bank snapshot as complete
-pub fn write_snapshot_state_complete_file(bank_snapshot_dir: impl AsRef<Path>) -> io::Result<()> {
-    let state_complete_path = bank_snapshot_dir
-        .as_ref()
-        .join(SNAPSHOT_STATE_COMPLETE_FILENAME);
-    fs::File::create(&state_complete_path).map_err(|err| {
-        IoError::other(format!(
-            "failed to create file '{}': {err}",
-            state_complete_path.display(),
-        ))
-    })?;
-    Ok(())
-}
-
 /// Writes the full snapshot slot file into the bank snapshot dir
 pub fn write_full_snapshot_slot_file(
     bank_snapshot_dir: impl AsRef<Path>,
@@ -707,8 +690,23 @@ pub fn read_full_snapshot_slot_file(bank_snapshot_dir: impl AsRef<Path>) -> io::
     Ok(slot)
 }
 
-/// Writes the 'snapshot storages have been flushed' file to the bank snapshot dir
-pub fn write_storages_flushed_file(bank_snapshot_dir: impl AsRef<Path>) -> io::Result<()> {
+/// Writes files that indicate the bank snapshot is loadable
+/// Prior to writing these files, the bank snapshot can be saved to an archive
+/// but can't be loaded from directly
+pub fn mark_bank_snapshot_as_loadable(bank_snapshot_dir: impl AsRef<Path>) -> io::Result<()> {
+    // Mark this directory complete. Used in older versions to check if the snapshot is complete
+    // Never read in v3.1, can be removed in v3.2
+    let state_complete_path = bank_snapshot_dir
+        .as_ref()
+        .join(SNAPSHOT_STATE_COMPLETE_FILENAME);
+    fs::File::create(&state_complete_path).map_err(|err| {
+        IoError::other(format!(
+            "failed to create file '{}': {err}",
+            state_complete_path.display(),
+        ))
+    })?;
+
+    // Write the storages flushed file, this is used to determine if the snapshot bank is loadable
     let flushed_storages_path = bank_snapshot_dir
         .as_ref()
         .join(SNAPSHOT_STORAGES_FLUSHED_FILENAME);
@@ -721,8 +719,8 @@ pub fn write_storages_flushed_file(bank_snapshot_dir: impl AsRef<Path>) -> io::R
     Ok(())
 }
 
-/// Were the snapshot storages flushed in this bank snapshot?
-fn are_bank_snapshot_storages_flushed(bank_snapshot_dir: impl AsRef<Path>) -> bool {
+/// Is this bank snapshot loadable?
+fn is_bank_snapshot_loadable(bank_snapshot_dir: impl AsRef<Path>) -> bool {
     let flushed_storages = bank_snapshot_dir
         .as_ref()
         .join(SNAPSHOT_STORAGES_FLUSHED_FILENAME);
@@ -737,9 +735,8 @@ pub fn get_highest_loadable_bank_snapshot(
 ) -> Option<BankSnapshotInfo> {
     let highest_bank_snapshot = get_highest_bank_snapshot(&snapshot_config.bank_snapshots_dir)?;
 
-    let are_storages_flushed =
-        are_bank_snapshot_storages_flushed(&highest_bank_snapshot.snapshot_dir);
-    are_storages_flushed.then_some(highest_bank_snapshot)
+    let is_bank_snapshot_loadable = is_bank_snapshot_loadable(&highest_bank_snapshot.snapshot_dir);
+    is_bank_snapshot_loadable.then_some(highest_bank_snapshot)
 }
 
 /// If the validator halts in the middle of `archive_snapshot_package()`, the temporary staging
@@ -935,14 +932,10 @@ fn serialize_snapshot(
             )
             .map_err(AddBankSnapshotError::HardLinkStorages)?);
 
-            // Mark this directory complete. Used in older versions to check if the snapshot is complete
-            // Never read in v3.1, can be removed in v3.2
-            write_snapshot_state_complete_file(&bank_snapshot_dir)
-                .map_err(AddBankSnapshotError::MarkSnapshotComplete)?;
+            // Now that the storages are flushed and hard linked, mark the snapshot as loadable
+            mark_bank_snapshot_as_loadable(&bank_snapshot_dir)
+                .map_err(AddBankSnapshotError::MarkSnapshotLoadable)?;
 
-            // Write the storages flushed file
-            write_storages_flushed_file(&bank_snapshot_dir)
-                .map_err(AddBankSnapshotError::MarkStoragesFlushed)?;
             Some((flush_us, hard_link_us))
         } else {
             None
@@ -1757,7 +1750,7 @@ fn create_snapshot_meta_files_for_unarchived_snapshot(unpack_dir: impl AsRef<Pat
         slot_dir.join(SNAPSHOT_STATUS_CACHE_FILENAME),
     )?;
 
-    write_snapshot_state_complete_file(slot_dir)?;
+    mark_bank_snapshot_as_loadable(slot_dir)?;
 
     Ok(())
 }
@@ -2849,9 +2842,6 @@ mod tests {
 
             let version_path = snapshot_dir.join(SNAPSHOT_VERSION_FILENAME);
             fs::write(version_path, SnapshotVersion::default().as_str().as_bytes()).unwrap();
-
-            // Mark this directory complete so it can be used.  Check this flag first before selecting for deserialization.
-            write_snapshot_state_complete_file(snapshot_dir).unwrap();
         }
     }
 
