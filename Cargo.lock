@@ -467,6 +467,7 @@ dependencies = [
  "qualifier_attr",
  "rand 0.8.5",
  "rayon",
+ "scopeguard",
  "serde",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
