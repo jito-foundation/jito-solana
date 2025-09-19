@@ -10299,6 +10299,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rayon",
  "regex",
+ "semver 1.0.27",
  "serde",
  "serde_derive",
  "serde_json",
