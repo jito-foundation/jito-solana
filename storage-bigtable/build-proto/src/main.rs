@@ -17,7 +17,7 @@ fn main() -> Result<(), std::io::Error> {
         .build_client(true)
         .build_server(false)
         .out_dir(&out_dir)
-        .compile(
+        .compile_protos(
             &[googleapis.join("google/bigtable/v2/bigtable.proto")],
             &[googleapis],
         )
