@@ -137,6 +137,7 @@ mod tests {
         crate::{
             accounts_db::{get_temp_accounts_paths, AccountStorageEntry},
             accounts_file::{AccountsFile, AccountsFileProvider, StorageAccess},
+            ObsoleteAccounts,
         },
         log::*,
         rand::{rngs::StdRng, seq::SliceRandom, SeedableRng},
@@ -329,7 +330,12 @@ mod tests {
             );
 
             // Create a new AccountStorageEntry from the output file
-            let new_storage = AccountStorageEntry::new_existing(slot, 0, accounts_file);
+            let new_storage = AccountStorageEntry::new_existing(
+                slot,
+                0,
+                accounts_file,
+                ObsoleteAccounts::default(),
+            );
 
             // Verify that the new storage has the same length as the reader
             assert_eq!(new_storage.accounts.len(), reader.len());
@@ -431,7 +437,12 @@ mod tests {
                     .unwrap();
 
             // Create a new AccountStorageEntry from the output file
-            let new_storage = AccountStorageEntry::new_existing(slot, 0, accounts_file);
+            let new_storage = AccountStorageEntry::new_existing(
+                slot,
+                0,
+                accounts_file,
+                ObsoleteAccounts::default(),
+            );
 
             // Verify that the new storage has the same length as the reader
             assert_eq!(new_storage.accounts.len(), reader.len());
