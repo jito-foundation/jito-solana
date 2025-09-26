@@ -14,7 +14,8 @@ version_compare() {
     local version1="$1"
     local version2="$2"
     local IFS=.
-    local i ver1=($version1) ver2=($version2)
+    local i
+    local -a ver1=($version1) ver2=($version2)
 
     # Fill empty fields in ver1 with zeros
     for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do
@@ -45,7 +46,8 @@ install_cargo() {
     # Check if cargo is in PATH
     if command -v cargo &> /dev/null; then
         echo "✅ Cargo is already installed!"
-        local current_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+        local current_version
+        current_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         echo "Current version: $current_version"
 
         # Check if version is sufficient
@@ -61,7 +63,8 @@ install_cargo() {
                 rustup update stable
 
                 # Check version again
-                local new_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+                local new_version
+                new_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
                 version_compare "$new_version" "$min_version"
                 case $? in
                     0|1)
@@ -94,7 +97,8 @@ install_cargo() {
 
         # Verify installation and version
         if command -v cargo &> /dev/null; then
-            local installed_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+            local installed_version
+            installed_version=$(cargo --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
             echo "✅ Cargo installation successful!"
             echo "Installed version: $installed_version"
 
@@ -139,7 +143,8 @@ install_cli() {
     RUSTFLAGS="-A deprecated" cargo install --path . --bin priority-fee-sharing
 
     # Verify CLI installation
-    local cli_path=$(which priority-fee-sharing 2>/dev/null || echo "")
+    local cli_path
+    cli_path=$(which priority-fee-sharing 2>/dev/null || echo "")
     if [[ -n "$cli_path" ]]; then
         echo -e "✅ CLI installed successfully at $cli_path! Run: \033[34mpriority-fee-sharing --help\033[0m"
         return 0
@@ -192,7 +197,8 @@ generate_service_file() {
     )
 
     echo "Checking required variables..."
-    local missing_vars=()
+    local missing_vars
+    missing_vars=()
     for var in "${required_vars[@]}"; do
         if [[ -z "${!var:-}" ]]; then
             missing_vars+=("$var")
@@ -200,7 +206,7 @@ generate_service_file() {
     done
 
     if [[ ${#missing_vars[@]} -gt 0 ]]; then
-        echo -e "\033[31mError: The following required variables are missing or empty in $env_file:\033[0m"
+        echo -e "\033[31m  - $var: System user to run the service (e.g., 'root, solana') - to find current user run \$(whoami)\033[0m"
         for var in "${missing_vars[@]}"; do
             case "$var" in
                 "USER")
@@ -259,7 +265,8 @@ generate_service_file() {
     fi
 
     # Get the binary path - try priority-fee-sharing first, then priority-fee-share
-    local binary_path=""
+    local binary_path
+    binary_path=""
     if command -v priority-fee-sharing &>/dev/null; then
         binary_path=$(which priority-fee-sharing)
     elif command -v priority-fee-share &>/dev/null; then
@@ -347,8 +354,10 @@ EOF
 # CHECK OR CREATE DIRECTORY (REUSABLE FUNCTION)
 #################################################
 check_or_create_directory() {
-    local dir_path="$1"
-    local dir_description="$2"
+    local dir_path
+    dir_path="$1"
+    local dir_description
+    dir_description="$2"
 
     if [[ -z "$dir_path" ]]; then
         echo -e "\033[31mError: Directory path not provided\033[0m"
@@ -399,7 +408,8 @@ check_or_create_directory() {
 # CHECK OR CREATE FEE RECORDS DIRECTORIES
 #################################################
 check_or_create_fee_records_directories() {
-    local env_file=".env"
+    local env_file
+    env_file=".env"
 
     # Check if .env file exists
     if [[ ! -f "$env_file" ]]; then

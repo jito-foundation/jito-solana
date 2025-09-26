@@ -46,7 +46,8 @@ parse_args() {
 
 # Function to ask yes/no questions (defaults to no, unless force mode)
 ask_yes_no() {
-    local question="$1"
+    local question
+    question="$1"
 
     if [[ "$FORCE_YES" == true ]]; then
         echo "$question [y/N]: y (forced)"
@@ -80,8 +81,10 @@ ask_yes_no() {
 
 # Function to ask for confirmation with typed word (skipped in force mode)
 ask_type_confirmation() {
-    local word="$1"
-    local question="$2"
+    local word
+    word="$1"
+    local question
+    question="$2"
 
     if [[ "$FORCE_YES" == true ]]; then
         echo "$question"
@@ -106,7 +109,8 @@ ask_type_confirmation() {
 # STOP SERVICE
 #################################################
 stop_service() {
-    local service_name="priority-fee-sharing"
+    local service_name
+    service_name="priority-fee-sharing"
 
     echo "========================================================="
     echo "                   STOPPING SERVICE                     "
@@ -143,7 +147,8 @@ stop_service() {
 # REMOVE SERVICE FILE
 #################################################
 remove_service_file() {
-    local service_file="/etc/systemd/system/priority-fee-sharing.service"
+    local service_file
+    service_file="/etc/systemd/system/priority-fee-sharing.service"
 
     echo "========================================================="
     echo "                 REMOVING SERVICE FILE                   "
@@ -194,7 +199,8 @@ remove_service_file() {
 # DELETE DATABASE
 #################################################
 delete_database() {
-    local env_file=".env"
+    local env_file
+    env_file=".env"
 
     echo "========================================================="
     echo "                 DELETING DATABASE                      "
@@ -256,8 +262,10 @@ delete_database() {
     if ask_yes_no "🗑️  Do you want to delete the fee records database ($FEE_RECORDS_DB_PATH)?"; then
 
         # Create backup first
-        local timestamp=$(date +"%Y%m%d_%H%M%S")
-        local backup_filename="fee-records-backup-${timestamp}.tar.gz"
+        local timestamp
+        timestamp=$(date +"%Y%m%d_%H%M%S")
+        local backup_filename
+        backup_filename="fee-records-backup-${timestamp}.tar.gz"
 
         # Ensure backup directory exists
         if [[ "$FEE_RECORDS_DB_BACKUP_PATH" != "." ]]; then
@@ -272,7 +280,8 @@ delete_database() {
             fi
         fi
 
-        local backup_path="$FEE_RECORDS_DB_BACKUP_PATH/$backup_filename"
+        local backup_path
+        backup_path="$FEE_RECORDS_DB_BACKUP_PATH/$backup_filename"
 
         echo ""
         echo "📦 Creating backup of database folder..."
@@ -340,22 +349,29 @@ uninstall_cli() {
     echo "========================================================="
 
     # Check for binary locations
-    local binary_paths=()
-    local found_binaries=()
+    local binary_paths
+    binary_paths=()
+    local found_binaries
+    found_binaries=()
 
     # Check common locations
     if command -v priority-fee-sharing &>/dev/null; then
-        binary_paths+=($(which priority-fee-sharing))
+        local pfs_path
+        pfs_path=$(which priority-fee-sharing)
+        [[ -n "$pfs_path" ]] && binary_paths+=("$pfs_path")
         found_binaries+=("priority-fee-sharing")
     fi
 
     if command -v priority-fee-share &>/dev/null; then
-        binary_paths+=($(which priority-fee-share))
+        local pfs_path
+        pfs_path=$(which priority-fee-sharing)
+        [[ -n "$pfs_path" ]] && binary_paths+=("$pfs_path")
         found_binaries+=("priority-fee-share")
     fi
 
     # Check cargo install location
-    local cargo_bin="$HOME/.cargo/bin/priority-fee-sharing"
+    local cargo_bin
+    cargo_bin="$HOME/.cargo/bin/priority-fee-sharing"
     if [[ -f "$cargo_bin" ]]; then
         binary_paths+=("$cargo_bin")
         found_binaries+=("priority-fee-sharing (cargo)")
@@ -376,7 +392,8 @@ uninstall_cli() {
     if ask_yes_no "🗑️  Do you want to remove the CLI binaries?"; then
         echo "Removing CLI binaries..."
 
-        local success=true
+        local success
+        success=true
         for path in "${binary_paths[@]}"; do
             if [[ -f "$path" ]]; then
                 if rm -f "$path" 2>/dev/null || sudo rm -f "$path" 2>/dev/null; then
