@@ -20,18 +20,19 @@ use solana_client::rpc_config::{
 };
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use solana_commitment_config::CommitmentConfig;
+use solana_compute_budget_interface::ComputeBudgetInstruction;
+use solana_reward_info::RewardType;
+use solana_vote_interface::state::VoteStateV3;
+use solana_system_interface::program::id as system_program_id;
 use solana_sdk::{
-    commitment_config::CommitmentConfig,
-    compute_budget::ComputeBudgetInstruction,
+    native_token::LAMPORTS_PER_SOL,
     epoch_info::EpochInfo,
     instruction::{AccountMeta, Instruction},
-    native_token::lamports_to_sol,
     pubkey,
-    reward_type::RewardType,
     signature::{read_keypair_file, Keypair},
     signer::Signer,
     transaction::Transaction,
-    vote::state::VoteState,
 };
 
 // Re-exports from local modules
@@ -424,6 +425,14 @@ async fn get_epoch_info_safe(rpc_client: &RpcClient, commitment: Option<Commitme
 
 // ------------------------- HELPER FUNCTIONS -----------------------------
 
+pub fn lamports_to_sol(lamports: u64) -> f64 {
+    lamports as f64 / LAMPORTS_PER_SOL as f64
+}
+
+pub fn sol_to_lamports(sol: f64) -> u64 {
+    (sol * LAMPORTS_PER_SOL as f64) as u64
+}
+
 fn calculate_share(priority_fee_lamports: u64, commission_bps: u64) -> Result<u64> {
     // Calculate the amount that goes to delegators (total minus commission)
     let delegator_share_bps = MAX_BPS
@@ -571,7 +580,7 @@ async fn get_validator_identity(
 
     match account_result {
         Ok(account) => {
-            let vote_state_result = VoteState::deserialize(&account.data);
+            let vote_state_result = VoteStateV3::deserialize(&account.data);
 
             match vote_state_result {
                 Ok(state) => {
@@ -721,7 +730,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
         AccountMeta::new(priority_fee_distribution_account, false), // priority_fee_distribution_account (writable)
         AccountMeta::new_readonly(*validator_vote_address, false),  // validator_vote_account
         AccountMeta::new(vote_authority_keypair.pubkey(), true),    // signer (writable, signer)
-        AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
+        AccountMeta::new_readonly(system_program_id(), false), // system_program
     ];
 
     Instruction {
@@ -762,7 +771,7 @@ fn create_share_ix(
         AccountMeta::new_readonly(config, false), // config
         AccountMeta::new(priority_fee_distribution_account, false), // priority_fee_distribution_account (writable)
         AccountMeta::new(payer_keypair.pubkey(), true),             // from (writable, signer)
-        AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
+        AccountMeta::new_readonly(system_program_id(), false), // system_program
     ];
 
     Instruction {
@@ -1390,8 +1399,8 @@ pub async fn print_priority_fee_distribution_account_info(
     };
 
     // Use the existing lamports_to_sol function
-    let external_balance_sol = solana_sdk::native_token::lamports_to_sol(external_balance);
-    let internal_balance_sol = solana_sdk::native_token::lamports_to_sol(internal_balance);
+    let external_balance_sol = lamports_to_sol(external_balance);
+    let internal_balance_sol = lamports_to_sol(internal_balance);
 
     // Print the information
     println!(
@@ -1410,7 +1419,7 @@ pub async fn print_priority_fee_distribution_account_info(
 
     if internal_balance > external_balance {
         let claimed_lamports = internal_balance - external_balance;
-        let claimed_sol = solana_sdk::native_token::lamports_to_sol(claimed_lamports);
+        let claimed_sol = lamports_to_sol(claimed_lamports);
         println!(
             "Note: {} lamports ({} SOL) have been claimed by delegators",
             claimed_lamports, claimed_sol
