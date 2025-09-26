@@ -149,9 +149,9 @@ impl FeeRecords {
 
         // Use a WriteBatch for atomicity
         batch.put(&record_key, &encoded);
-        batch.put(&state_key, &[]); // Empty value since the key itself is the index
-        batch.put(&category_key, &[]); // Empty value since the key itself is the index
-        batch.put(&any_key, &[]); // Add to "any" index for querying all records regardless of state
+        batch.put(&state_key, []); // Empty value since the key itself is the index
+        batch.put(&category_key, []); // Empty value since the key itself is the index
+        batch.put(&any_key, []); // Add to "any" index for querying all records regardless of state
 
         Ok(())
     }
@@ -173,7 +173,7 @@ impl FeeRecords {
 
         batch.put(&record_key, &encoded);
         batch.delete(&old_state_key); // Delete old state
-        batch.put(&new_state_key, &[]); // Add in new state
+        batch.put(&new_state_key, []); // Add in new state
 
         Ok(())
     }
@@ -482,7 +482,7 @@ impl FeeRecords {
         let mut writer = Writer::from_path(csv_path)?;
 
         // Write header
-        writer.write_record(&[
+        writer.write_record([
             "timestamp",
             "slot",
             "state",
