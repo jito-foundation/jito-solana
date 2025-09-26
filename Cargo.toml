@@ -69,11 +69,8 @@ members = [
     "poh-bench",
     "poseidon",
     "precompiles",
-<<<<<<< HEAD
     "program-binaries",
-=======
     "priority-fee-sharing",
->>>>>>> 20acdd9112 (merge in PFS)
     "program-runtime",
     "program-test",
     "programs/bpf-loader-tests",
