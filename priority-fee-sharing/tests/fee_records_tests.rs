@@ -495,7 +495,7 @@ fn test_performance() -> Result<()> {
     // Add records
     let start_add = Instant::now();
     for i in 0..total_records {
-        let slot = 1000 + i as u64;
+        let slot = 1000 + i;
         fee_records.add_priority_fee_record(slot, test_epoch, &VOTE_ACCOUNT, &IDENTITY)?;
     }
     let add_duration = start_add.elapsed();
@@ -509,7 +509,7 @@ fn test_performance() -> Result<()> {
     // Process records
     let start_process = Instant::now();
     for i in 0..total_records {
-        let slot = 1000 + i as u64;
+        let slot = 1000 + i;
         let fee = 100000 + (i % 10) * 10000;
         fee_records.process_record(slot, test_epoch, fee)?;
     }
@@ -537,7 +537,7 @@ fn test_performance() -> Result<()> {
     // Complete records
     let start_complete = Instant::now();
     for i in 0..total_records {
-        let slot = 1000 + i as u64;
+        let slot = 1000 + i;
         fee_records.complete_record(slot, test_epoch, &format!("sig_{}", slot), slot + 100)?;
     }
     let complete_duration = start_complete.elapsed();

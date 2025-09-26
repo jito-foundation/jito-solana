@@ -200,7 +200,7 @@ pub fn setup_metrics(
             service_name,
             vote,
             identity,
-            priority_fee_distribution_program.to_string(),
+            priority_fee_distribution_program,
             cluster,
         ));
     }
@@ -316,7 +316,7 @@ pub fn emit_transfer_metrics(
             "pfs-transfer-0.0.9",
             ("epoch", running_epoch_info.epoch, i64),
             ("slot", running_epoch_info.slot, i64),
-            ("signature", signature.to_string(), String),
+            ("signature", signature, String),
             ("slots-covered", slots_covered, i64),
             ("total-priority-fees", total_priority_fees, i64),
             ("transfer-amount-lamports", transfer_amount_lamports, i64),

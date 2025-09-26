@@ -177,7 +177,7 @@ async fn main() -> Result<(), anyhow::Error> {
             loop_sleep_ms,
             verify,
         } => {
-            let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol) as u64;
+            let minimum_balance_lamports: u64 = sol_to_lamports(*minimum_balance_sol);
 
             info!("Running Transfer Loop");
             info!("Cluster: {:?}", cluster.clone());

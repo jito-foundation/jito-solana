@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects)]
+
 // Local modules
 pub mod fee_records;
 pub mod metrics;
@@ -115,6 +117,7 @@ impl PFEpochInfo {
 }
 
 // ------------------------- VERIFY SETUP -----------------------------
+#[allow(clippy::too_many_arguments)]
 pub async fn verify_setup(
     cluster: Cluster,
     rpc_url: String,
@@ -584,15 +587,15 @@ async fn get_validator_identity(
 
             match vote_state_result {
                 Ok(state) => {
-                    return Ok(state.node_pubkey);
+                    Ok(state.node_pubkey)
                 }
                 Err(e) => {
-                    return Err(anyhow!("Could not parse Vote State: {:?}", e));
+                    Err(anyhow!("Could not parse Vote State: {:?}", e))
                 }
             }
         }
         Err(e) => {
-            return Err(anyhow!("Could not get Validator Idenity: {:?}", e));
+            Err(anyhow!("Could not get Validator Idenity: {:?}", e))
         }
     }
 }
@@ -611,10 +614,7 @@ async fn get_priority_fee_distribution_account(
 
     let result = rpc_client.get_account(&priority_fee_distribution_account).await;
 
-    let account = match result {
-        Ok(account) => Some(account),
-        _ => None,
-    };
+    let account = result.ok();
 
     (account, priority_fee_distribution_account)
 }
@@ -693,7 +693,7 @@ async fn check_or_create_fee_distribution_account(
         }
     }
 
-    return Ok(());
+    Ok(())
 }
 
 fn create_initialize_priority_fee_distribution_account_ix(
@@ -715,7 +715,7 @@ fn create_initialize_priority_fee_distribution_account_ix(
 
     // Get the config account PDA
     let (config, _) =
-        get_priority_fee_distribution_config_account_address(&priority_fee_distribution_program);
+        get_priority_fee_distribution_config_account_address(priority_fee_distribution_program);
 
     // Create the instruction data: discriminator + args
     let mut data = Vec::with_capacity(8 + 32 + 2 + 1);
@@ -759,7 +759,7 @@ fn create_share_ix(
 
     // Get the config account PDA
     let (config, _) =
-        get_priority_fee_distribution_config_account_address(&priority_fee_distribution_program);
+        get_priority_fee_distribution_config_account_address(priority_fee_distribution_program);
 
     // Create the instruction data: discriminator + lamports amount
     let mut data = Vec::with_capacity(8 + 8);
@@ -858,10 +858,10 @@ async fn handle_unprocessed_blocks(
                         info!(
                             "Recorded Priority Fees for {}: {}",
                             record.slot,
-                            lamports_to_sol(rewards as u64)
+                            lamports_to_sol(rewards)
                         );
                         let result =
-                            fee_records.process_record(record.slot, record.epoch, rewards as u64);
+                            fee_records.process_record(record.slot, record.epoch, rewards);
                         if let Err(err) = result {
                             error!(
                                 "Error processing priority fee record for slot {}: {}",
@@ -918,6 +918,7 @@ fn should_handle_pending_blocks(
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_pending_blocks(
     rpc_client: &RpcClient,
     fee_records: &FeeRecords,
@@ -1013,7 +1014,7 @@ async fn handle_pending_blocks(
     // Create TX
     let share_ix = create_share_ix(
         payer_keypair,
-        &validator_vote_account,
+        validator_vote_account,
         priority_fee_distribution_program,
         amount_to_transfer,
         running_epoch_info.epoch,
@@ -1163,7 +1164,7 @@ pub async fn emit_state(
 pub fn emit_transfer(
     priority_fee_distribution_account: &Pubkey,
     running_epoch_info: &PFEpochInfo,
-    signature: &String,
+    signature: &str,
     slots_covered: u64,
     total_priority_fees: u64,
     transfer_amount_lamports: u64,
@@ -1192,6 +1193,7 @@ pub fn emit_error(
 }
 
 // ------------------------- MAIN FUNCTIONS -----------------------------
+#[allow(clippy::too_many_arguments)]
 pub async fn share_priority_fees_loop(
     cluster: Cluster,
     rpc_url: String,
@@ -1477,7 +1479,7 @@ pub async fn print_epoch_info(
     // Filter out future slots and convert to u64
     let slots_to_process: Vec<u64> = leader_slots
         .iter()
-        .map(|&slot| slot as u64)
+        .copied()
         .filter(|&slot| slot < current_epoch_info.slot)
         .collect();
 
@@ -1491,7 +1493,7 @@ pub async fn print_epoch_info(
     let rpc_client = std::sync::Arc::new(rpc_client);
 
     // Process slots in batches
-    for (_, batch) in slots_to_process.chunks(BATCH_SIZE).enumerate() {
+    for batch in slots_to_process.chunks(BATCH_SIZE) {
         let batch_start_time = std::time::Instant::now();
 
         // Create a JoinSet for concurrent execution
@@ -1546,7 +1548,7 @@ pub async fn print_epoch_info(
         println!(
             "  Batch {}/{}: Fetched {} blocks in {:.2} seconds ({:.1} blocks/sec)",
             batches_processed,
-            (slots_to_process.len() + BATCH_SIZE - 1) / BATCH_SIZE, // ceiling division
+            slots_to_process.len().div_ceil(BATCH_SIZE),
             batch.len(),
             batch_elapsed.as_secs_f64(),
             batch.len() as f64 / batch_elapsed.as_secs_f64()
