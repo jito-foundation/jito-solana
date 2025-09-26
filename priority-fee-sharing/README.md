@@ -12,14 +12,7 @@ This service enables validators to distribute priority fees to their delegators 
 git clone --recursive https://github.com/jito-foundation/jito-solana.git jito-priority-fee-sharing
 ```
 
-2. Checkout the `feat/priority-fee-sharing` branch:
-
-```bash
-cd jito-priority-fee-sharing
-git checkout feat/priority-fee-sharing
-```
-
-3. Navigate to the priority fee directory:
+2. Navigate to the priority fee directory:
 
 ```bash
 cd priority-fee-sharing
@@ -234,7 +227,8 @@ Your dashboard includes four main panels:
 It is reccomeneded to create the following alerting condition in grafana:
 
 **PFS Heartbeat Alert**
-  - Alert on PFSHeartbeat on `no data` - this is under `Configure no data and error handling` dropdown. Make sure to select `Alerting`, for both options.
+  - Alert on PFSHeartbeat on `no data` - this is under `Configure no data and error handling` dropdown. Make sure to select `Alerting`, for both
+  options.
   - Alert based off of your `vote` account
 
 Configure alerts through Grafana's alerting system to notify via your preferred channels (email, Slack, PagerDuty, etc.).
