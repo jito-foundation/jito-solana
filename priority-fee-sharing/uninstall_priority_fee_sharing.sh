@@ -218,6 +218,7 @@ delete_database() {
 
     # Source the .env file to get database paths
     set -a  # Automatically export all variables
+    # shellcheck source=/dev/null
     source "$env_file"
     set +a  # Turn off automatic export
 

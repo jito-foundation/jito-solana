@@ -15,7 +15,9 @@ version_compare() {
     local version2="$2"
     local IFS=.
     local i
-    local -a ver1=($version1) ver2=($version2)
+    local -a ver1 ver2
+    IFS='.' read -ra ver1 <<< "$version1"
+    IFS='.' read -ra ver2 <<< "$version2"
 
     # Fill empty fields in ver1 with zeros
     for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do
@@ -93,6 +95,8 @@ install_cargo() {
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
         # Source the environment to make cargo available in current shell
+        # # Add shellcheck directive to ignore since this file exists at runtime:
+        # shellcheck source=/dev/null
         source "$HOME/.cargo/env"
 
         # Verify installation and version
@@ -173,6 +177,7 @@ generate_service_file() {
 
     # Source the .env file
     set -a  # Automatically export all variables
+    # shellcheck source=/dev/null
     source "$env_file"
     set +a  # Turn off automatic export
 
@@ -210,7 +215,7 @@ generate_service_file() {
         for var in "${missing_vars[@]}"; do
             case "$var" in
                 "USER")
-                echo -e "\033[31m  - $var: System user to run the service (e.g., 'root, solana') - to find current user run `whoami`\033[0m"
+                    echo -e "\033[31m  - $var: System user to run the service (e.g., 'root, solana') - to find current user run \$(whoami)\033[0m"
                     ;;
                 "CLUSTER")
                     echo -e "\033[31m  - $var: Cluster (testnet, devnet, mainnet)\033[0m"
@@ -422,6 +427,7 @@ check_or_create_fee_records_directories() {
 
     # Source the .env file to get directory paths
     set -a  # Automatically export all variables
+    # shellcheck source=/dev/null
     source "$env_file"
     set +a  # Turn off automatic export
 
