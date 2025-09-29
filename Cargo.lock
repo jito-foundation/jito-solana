@@ -855,9 +855,9 @@ dependencies = [
 
 [[package]]
 name = "anstyle"
-version = "1.0.11"
+version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "862ed96ca487e809f1c8e5a8447f6ee2cf102f846893800b20cebdf541fc6bbd"
+checksum = "5192cca8006f1fd4f7237516f40fa183bb07f8fbdfedaa0036de5ea9b0b45e78"
 
 [[package]]
 name = "anstyle-parse"
@@ -1752,9 +1752,9 @@ dependencies = [
 
 [[package]]
 name = "camino"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1de8bc0aa9e9385ceb3bf0c152e3a9b9544f6c4a912c8ae504e80c1f0368603"
+checksum = "276a59bf2b2c967788139340c9f0c5b12d7fd6630315c15c217e559de85d2609"
 dependencies = [
  "serde_core",
 ]
@@ -4365,12 +4365,18 @@ dependencies = [
  "solana-client",
  "solana-commitment-config",
  "solana-compute-budget-interface",
+ "solana-epoch-info",
+ "solana-instruction 3.0.0",
+ "solana-keypair",
  "solana-metrics",
+ "solana-native-token 3.0.0",
  "solana-pubkey 3.0.0",
  "solana-reward-info",
  "solana-rpc-client",
- "solana-sdk",
+ "solana-signature",
+ "solana-signer",
  "solana-system-interface 2.0.0",
+ "solana-transaction",
  "solana-vote-interface 3.0.0",
  "tokio",
 ]
@@ -10545,7 +10551,6 @@ dependencies = [
  "solana-account-info 3.0.0",
  "solana-big-mod-exp 3.0.0",
  "solana-blake3-hasher 3.0.0",
- "solana-borsh 3.0.0",
  "solana-clock 3.0.0",
  "solana-cpi 3.0.0",
  "solana-define-syscall 3.0.0",
@@ -11486,44 +11491,6 @@ dependencies = [
  "shuttle",
  "thiserror 2.0.17",
  "winapi 0.3.9",
-]
-
-[[package]]
-name = "solana-sdk"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f03df7969f5e723ad31b6c9eadccc209037ac4caa34d8dc259316b05c11e82b"
-dependencies = [
- "bincode",
- "bs58 0.5.1",
- "serde",
- "solana-account 3.0.0",
- "solana-epoch-info",
- "solana-epoch-rewards-hasher",
- "solana-fee-structure",
- "solana-inflation",
- "solana-keypair",
- "solana-message 3.0.0",
- "solana-offchain-message",
- "solana-presigner",
- "solana-program 3.0.0",
- "solana-program-memory 3.0.0",
- "solana-pubkey 3.0.0",
- "solana-sanitize 3.0.0",
- "solana-sdk-ids 3.0.0",
- "solana-sdk-macro 3.0.0",
- "solana-seed-derivable",
- "solana-seed-phrase",
- "solana-serde",
- "solana-serde-varint 3.0.0",
- "solana-short-vec 3.0.0",
- "solana-shred-version",
- "solana-signature",
- "solana-signer",
- "solana-time-utils",
- "solana-transaction",
- "solana-transaction-error 3.0.0",
- "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -15658,9 +15625,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.8.1"
+version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
+checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
 dependencies = [
  "zeroize_derive",
 ]

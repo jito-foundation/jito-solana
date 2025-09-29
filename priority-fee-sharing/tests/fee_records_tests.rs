@@ -3,8 +3,7 @@ use {
     priority_fee_sharing::fee_records::{
         FeeRecordCategory, FeeRecordKey, FeeRecordState, FeeRecords, FeeRecordsConfig,
     },
-    solana_pubkey::Pubkey,
-    solana_sdk::pubkey,
+    solana_pubkey::{Pubkey, pubkey},
     std::{fs, path::Path},
 };
 
