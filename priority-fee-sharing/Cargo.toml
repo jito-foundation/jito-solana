@@ -31,7 +31,7 @@ csv = "1.3.1"
 dotenv = "0.15"
 env_logger = "0.10.0"
 log = { workspace = true }
-prometheus = { version = "0.13", features = ["push"] }
+prometheus = { version = "0.14", features = ["push"] }
 rocksdb = "0.23.0"
 serde = { workspace = true }
 solana-account = { workspace = true, features = ["bincode"] }
