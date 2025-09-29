@@ -1,12 +1,11 @@
-use std::fs;
-use std::path::Path;
-
-use anyhow::Result;
-use solana_pubkey::Pubkey;
-use solana_sdk::pubkey;
-
-use priority_fee_sharing::fee_records::{
-    FeeRecordCategory, FeeRecordKey, FeeRecordState, FeeRecords, FeeRecordsConfig,
+use {
+    anyhow::Result,
+    priority_fee_sharing::fee_records::{
+        FeeRecordCategory, FeeRecordKey, FeeRecordState, FeeRecords, FeeRecordsConfig,
+    },
+    solana_pubkey::Pubkey,
+    solana_sdk::pubkey,
+    std::{fs, path::Path},
 };
 
 // TEST KEYS

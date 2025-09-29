@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-use std::env;
-use std::sync::OnceLock;
-
-use anyhow::{anyhow, Result};
-use prometheus::{push_metrics, Counter, Gauge, Registry};
-use solana_metrics::{datapoint_error, datapoint_info, set_host_id};
-use solana_pubkey::Pubkey;
+use {
+    anyhow::{anyhow, Result},
+    prometheus::{push_metrics, Counter, Gauge, Registry},
+    solana_metrics::{datapoint_error, datapoint_info, set_host_id},
+    solana_pubkey::Pubkey,
+    std::{collections::HashMap, env, sync::OnceLock},
+};
 
 // Metrics struct to hold all Prometheus metrics
 struct PrometheusMetrics {
@@ -74,7 +73,7 @@ fn push_prometheus_metrics() -> Result<()> {
     let (gateway, job, instance) = (
         env::var("PROMETHEUS_PUSH_GATEWAY")?,
         env::var("PROMETHEUS_JOB_NAME")?,
-        env::var("PROMETHEUS_INSTANCE")?
+        env::var("PROMETHEUS_INSTANCE")?,
     );
 
     // Get metrics from our registry
@@ -86,13 +85,8 @@ fn push_prometheus_metrics() -> Result<()> {
     let mut labels = HashMap::new();
     labels.insert("instance".to_string(), instance);
 
-    push_metrics(
-        &job,
-        labels,
-        &gateway,
-        metric_families,
-        None
-    ).map_err(|e| anyhow!("Failed to push metrics: {}", e))
+    push_metrics(&job, labels, &gateway, metric_families, None)
+        .map_err(|e| anyhow!("Failed to push metrics: {}", e))
 }
 
 // ============================================================================
@@ -106,63 +100,63 @@ fn initialize_prometheus_metrics() -> Result<PrometheusMetrics> {
     // Create counters with no variable labels
     let heartbeat_counter = Counter::new(
         "pfs_heartbeat_total",
-        format!("Total heartbeats (version {})", METRICS_VERSION)
+        format!("Total heartbeats (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(heartbeat_counter.clone()))?;
 
     let error_counter = Counter::new(
         "pfs_error_total",
-        format!("Total errors (version {})", METRICS_VERSION)
+        format!("Total errors (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(error_counter.clone()))?;
 
     let transfer_counter = Counter::new(
         "pfs_transfer_total",
-        format!("Total transfers (version {})", METRICS_VERSION)
+        format!("Total transfers (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(transfer_counter.clone()))?;
 
     // Create gauges for state metrics
     let external_balance_gauge = Gauge::new(
         "pfs_external_balance",
-        format!("External balance (version {})", METRICS_VERSION)
+        format!("External balance (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(external_balance_gauge.clone()))?;
 
     let internal_balance_gauge = Gauge::new(
         "pfs_internal_balance",
-        format!("Internal balance (version {})", METRICS_VERSION)
+        format!("Internal balance (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(internal_balance_gauge.clone()))?;
 
     let unprocessed_record_count_gauge = Gauge::new(
         "pfs_unprocessed_record_count",
-        format!("Unprocessed record count (version {})", METRICS_VERSION)
+        format!("Unprocessed record count (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(unprocessed_record_count_gauge.clone()))?;
 
     let pending_record_count_gauge = Gauge::new(
         "pfs_pending_record_count",
-        format!("Pending record count (version {})", METRICS_VERSION)
+        format!("Pending record count (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(pending_record_count_gauge.clone()))?;
 
     let pending_lamports_gauge = Gauge::new(
         "pfs_pending_lamports",
-        format!("Pending lamports (version {})", METRICS_VERSION)
+        format!("Pending lamports (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(pending_lamports_gauge.clone()))?;
 
     // Gauges to track current epoch and slot
     let current_epoch_gauge = Gauge::new(
         "pfs_current_epoch",
-        format!("Current epoch (version {})", METRICS_VERSION)
+        format!("Current epoch (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(current_epoch_gauge.clone()))?;
 
     let current_slot_gauge = Gauge::new(
         "pfs_current_slot",
-        format!("Current slot (version {})", METRICS_VERSION)
+        format!("Current slot (version {})", METRICS_VERSION),
     )?;
     registry.register(Box::new(current_slot_gauge.clone()))?;
 
@@ -208,7 +202,8 @@ pub fn setup_metrics(
     // Initialize Prometheus metrics
     if should_send_prometheus_metrics() {
         let metrics = initialize_prometheus_metrics()?;
-        METRICS.set(metrics)
+        METRICS
+            .set(metrics)
             .map_err(|_| anyhow!("Metrics already initialized"))?;
     }
 
@@ -241,8 +236,12 @@ pub fn emit_heartbeat_metrics(
             metrics.heartbeat_counter.inc();
 
             // Update current epoch and slot
-            metrics.current_epoch_gauge.set(running_epoch_info.epoch as f64);
-            metrics.current_slot_gauge.set(running_epoch_info.slot as f64);
+            metrics
+                .current_epoch_gauge
+                .set(running_epoch_info.epoch as f64);
+            metrics
+                .current_slot_gauge
+                .set(running_epoch_info.slot as f64);
 
             // Push all accumulated metrics to Prometheus
             if let Err(e) = push_prometheus_metrics() {
@@ -286,13 +285,21 @@ pub fn emit_state_metrics(
             // Update all gauge values (but don't push - wait for heartbeat)
             metrics.external_balance_gauge.set(external_balance as f64);
             metrics.internal_balance_gauge.set(internal_balance as f64);
-            metrics.unprocessed_record_count_gauge.set(unprocessed_record_count as f64);
-            metrics.pending_record_count_gauge.set(pending_record_count as f64);
+            metrics
+                .unprocessed_record_count_gauge
+                .set(unprocessed_record_count as f64);
+            metrics
+                .pending_record_count_gauge
+                .set(pending_record_count as f64);
             metrics.pending_lamports_gauge.set(pending_lamports as f64);
 
             // Update current epoch and slot
-            metrics.current_epoch_gauge.set(running_epoch_info.epoch as f64);
-            metrics.current_slot_gauge.set(running_epoch_info.slot as f64);
+            metrics
+                .current_epoch_gauge
+                .set(running_epoch_info.epoch as f64);
+            metrics
+                .current_slot_gauge
+                .set(running_epoch_info.slot as f64);
         }
     }
 }
@@ -332,8 +339,12 @@ pub fn emit_transfer_metrics(
             metrics.transfer_counter.inc();
 
             // Update current epoch and slot
-            metrics.current_epoch_gauge.set(running_epoch_info.epoch as f64);
-            metrics.current_slot_gauge.set(running_epoch_info.slot as f64);
+            metrics
+                .current_epoch_gauge
+                .set(running_epoch_info.epoch as f64);
+            metrics
+                .current_slot_gauge
+                .set(running_epoch_info.slot as f64);
         }
     }
 }
@@ -365,8 +376,12 @@ pub fn emit_error_metrics(
             metrics.error_counter.inc();
 
             // Update current epoch and slot
-            metrics.current_epoch_gauge.set(running_epoch_info.epoch as f64);
-            metrics.current_slot_gauge.set(running_epoch_info.slot as f64);
+            metrics
+                .current_epoch_gauge
+                .set(running_epoch_info.epoch as f64);
+            metrics
+                .current_slot_gauge
+                .set(running_epoch_info.slot as f64);
         }
     }
 }

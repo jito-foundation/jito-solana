@@ -1,13 +1,13 @@
-use std::path::PathBuf;
-
-use clap::{Parser, Subcommand};
-use log::info;
-use solana_pubkey::Pubkey;
-
-use priority_fee_sharing::{
-    fee_records::{FeeRecordState, FeeRecords},
-    print_epoch_info, print_priority_fee_distribution_account_info, share_priority_fees_loop, sol_to_lamports,
-    Cluster,
+use {
+    clap::{Parser, Subcommand},
+    log::info,
+    priority_fee_sharing::{
+        fee_records::{FeeRecordState, FeeRecords},
+        print_epoch_info, print_priority_fee_distribution_account_info, share_priority_fees_loop,
+        sol_to_lamports, Cluster,
+    },
+    solana_pubkey::Pubkey,
+    std::path::PathBuf,
 };
 
 #[derive(Parser)]
