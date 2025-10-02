@@ -20,7 +20,7 @@ Dpkg::Post-Invoke { "which iftop 2>&1 >/dev/null && setcap cap_net_raw=eip $(whi
 EOF
 
 apt-get install -y build-essential pkg-config clang cmake sysstat linux-tools-common \
-  linux-generic-hwe-22.04-edge linux-tools-generic-hwe-22.04-edge \
+  linux-generic-hwe-24.04-edge linux-tools-generic-hwe-24.04-edge \
   iftop heaptrack jq ruby python3-venv gcc-multilib libudev-dev
 
 gem install ejson ejson2env
