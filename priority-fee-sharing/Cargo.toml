@@ -24,7 +24,7 @@ path = "src/bin/main.rs"
 # Workspace dependencies
 anyhow = { workspace = true }
 bincode = { workspace = true }
-clap = { workspace = true }  # Now using workspace v2.33.1
+clap = { version = "=4.5.31", features = ["derive", "env"] }
 csv = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
