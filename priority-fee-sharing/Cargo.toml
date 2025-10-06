@@ -26,8 +26,13 @@ anyhow = { workspace = true }
 bincode = { workspace = true }
 clap = { version = "=4.5.31", features = ["derive", "env"] }
 csv = { workspace = true }
+
+# External dependencies (not in workspace)
+dotenv = { version = "=0.15.0" }
 env_logger = { workspace = true }
 log = { workspace = true }
+prometheus = { version = "=0.14.0", features = ["push"] }
+rocksdb = { version = "=0.23.0" }
 serde = { workspace = true }
 
 # Solana workspace dependencies
@@ -49,11 +54,6 @@ solana-system-interface = { workspace = true }
 solana-transaction = { workspace = true }
 solana-vote-interface = { workspace = true }
 tokio = { workspace = true }
-
-# External dependencies (not in workspace)
-dotenv = { version = "=0.15.0" }
-prometheus = { version = "=0.14.0", features = ["push"] }
-rocksdb = { version = "=0.23.0" }
 
 [lints]
 workspace = true
