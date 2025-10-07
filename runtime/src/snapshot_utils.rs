@@ -1874,6 +1874,7 @@ fn unarchive_snapshot(
                     next_append_vec_id,
                     SnapshotFrom::Archive,
                     accounts_db_config.storage_access,
+                    None,
                 )?,
                 measure_name
             );
@@ -2012,6 +2013,7 @@ pub fn rebuild_storages_from_snapshot_dir(
         next_append_vec_id,
         SnapshotFrom::Dir,
         storage_access,
+        None,
     )?;
 
     Ok((storage, bank_fields, accounts_db_fields))
