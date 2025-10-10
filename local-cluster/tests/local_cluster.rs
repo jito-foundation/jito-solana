@@ -1,5 +1,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 use {
+    agave_snapshots::SnapshotInterval,
     assert_matches::assert_matches,
     crossbeam_channel::{unbounded, Receiver},
     gag::BufferRedirect,
@@ -74,7 +75,7 @@ use {
         snapshot_bank_utils,
         snapshot_config::SnapshotConfig,
         snapshot_package::SnapshotKind,
-        snapshot_utils::{self, SnapshotInterval, BANK_SNAPSHOTS_DIR},
+        snapshot_utils::{self, BANK_SNAPSHOTS_DIR},
     },
     solana_signer::Signer,
     solana_stake_interface::{self as stake, state::NEW_WARMUP_COOLDOWN_RATE},
