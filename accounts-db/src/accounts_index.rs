@@ -945,7 +945,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
         reclaims: &mut ReclaimsSlotList<T>,
     ) -> bool {
         self.slot_list_mut(pubkey, |mut slot_list| {
-            slot_list.retain(|(slot, item)| {
+            slot_list.retain_and_count(|(slot, item)| {
                 let should_purge = slots_to_purge.contains(slot);
                 if should_purge {
                     reclaims.push((*slot, *item));
@@ -1504,7 +1504,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
             max_clean_root_inclusive.unwrap_or_else(|| roots_tracker.alive_roots.max_inclusive())
         };
 
-        slot_list.retain(|(slot, value)| {
+        slot_list.retain_and_count(|(slot, value)| {
             let should_purge = Self::can_purge_older_entries(
                 // Note that we have a root that is inclusive here.
                 // Calling a function that expects 'exclusive'
@@ -1572,7 +1572,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
 
         let mut reclaim_count = 0;
 
-        slot_list.retain(|(slot, value)| {
+        slot_list.retain_and_count(|(slot, value)| {
             // keep the newest entry, and reclaim all others
             if *slot < max_slot {
                 assert!(!value.is_cached(), "Unsafe to reclaim cached entries");
@@ -1729,7 +1729,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
     pub fn purge_roots(&self, pubkey: &Pubkey) -> (SlotList<T>, bool) {
         self.slot_list_mut(pubkey, |mut slot_list| {
             let reclaims = self.get_rooted_entries(&slot_list, None);
-            let is_empty = slot_list.retain(|(slot, _)| !self.is_alive_root(*slot)) == 0;
+            let is_empty = slot_list.retain_and_count(|(slot, _)| !self.is_alive_root(*slot)) == 0;
             (reclaims, is_empty)
         })
         .unwrap()

@@ -657,7 +657,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
 
         // If we find an existing account at old_slot, replace it rather than adding a new entry to the list
         let mut found_slot = false;
-        let mut final_len = slot_list.retain(|cur_item| {
+        let mut final_len = slot_list.retain_and_count(|cur_item| {
             let (cur_slot, cur_account_info) = cur_item;
             if *cur_slot == old_slot {
                 // Ensure we only find one!

@@ -171,7 +171,7 @@ impl<T> SlotListWriteGuard<'_, T> {
     /// Retains only the elements specified by the predicate.
     ///
     /// Returns number of preserved elements (size of the slot list after processing).
-    pub fn retain<F>(&mut self, f: F) -> usize
+    pub fn retain_and_count<F>(&mut self, f: F) -> usize
     where
         F: FnMut(&mut (Slot, T)) -> bool,
     {
