@@ -258,9 +258,9 @@ impl BlockEngineStage {
                 .into_iter()
                 .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
         {
-            if let Some(best_socket) = best_socket {
+            if best_socket.is_some() {
                 // no else branch needed since we'll still send to shred_receiver_address
-                shredstream_receiver_address.store(Arc::new(Some(best_socket)));
+                shredstream_receiver_address.store(Arc::new(best_socket));
             }
         }
 
