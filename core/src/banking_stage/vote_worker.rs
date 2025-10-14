@@ -298,9 +298,7 @@ impl VoteWorker {
             ..
         } = process_transactions_summary;
 
-        if reached_max_poh_height || !bank.is_complete() {
-            *reached_end_of_slot = true;
-        }
+        *reached_end_of_slot = has_reached_end_of_slot(reached_max_poh_height, bank);
 
         // The difference between all transactions passed to execution and the ones that
         // are retryable were the ones that were either:
@@ -527,9 +525,17 @@ fn consume_scan_should_process_packet(
     }
 }
 
+fn has_reached_end_of_slot(reached_max_poh_height: bool, bank: &Bank) -> bool {
+    reached_max_poh_height || bank.is_complete()
+}
+
 #[cfg(test)]
 mod tests {
-    use {super::*, solana_svm::account_loader::CheckedTransactionDetails};
+    use {
+        super::*, crate::banking_stage::tests::create_slow_genesis_config,
+        solana_ledger::genesis_utils::GenesisConfigInfo,
+        solana_svm::account_loader::CheckedTransactionDetails,
+    };
 
     #[test]
     fn test_bank_prepare_filter_for_pending_transaction() {
@@ -583,5 +589,20 @@ mod tests {
             ]),
             [0, 3, 4, 5]
         );
+    }
+
+    #[test]
+    fn test_has_reached_end_of_slot() {
+        let GenesisConfigInfo { genesis_config, .. } = create_slow_genesis_config(10_000);
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        assert!(!has_reached_end_of_slot(false, &bank));
+        assert!(has_reached_end_of_slot(true, &bank));
+
+        bank.fill_bank_with_ticks_for_tests();
+        assert!(bank.is_complete());
+
+        assert!(has_reached_end_of_slot(false, &bank));
+        assert!(has_reached_end_of_slot(true, &bank));
     }
 }
