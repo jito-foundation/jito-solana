@@ -7583,6 +7583,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.24",
  "semver 1.0.27",
+ "serde",
  "serial_test",
  "solana-file-download",
  "solana-keypair",
