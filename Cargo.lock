@@ -5540,7 +5540,7 @@ dependencies = [
 [[package]]
 name = "protosol"
 version = "1.0.1"
-source = "git+https://github.com/firedancer-io/protosol?tag=v1.0.2#56629ce3939dd8059acd900b74e29e3aaa1b178b"
+source = "git+https://github.com/firedancer-io/protosol?tag=v1.0.4#72fb79f2a24e60a55d392c386c1ac7c2d15c13a4"
 dependencies = [
  "prost",
  "prost-build",
