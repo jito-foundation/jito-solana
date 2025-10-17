@@ -4,14 +4,11 @@
 #[cfg(feature = "dev-context-only-utils")]
 pub mod handler;
 #[cfg(not(feature = "dev-context-only-utils"))]
-mod handler;
+pub(crate) mod handler;
 
-pub use {
-    handler::VoteStateTargetVersion,
-    solana_vote_interface::state::{vote_state_versions::*, *},
-};
+pub use solana_vote_interface::state::{vote_state_versions::*, *};
 use {
-    handler::{VoteStateHandle, VoteStateHandler},
+    handler::{VoteStateHandle, VoteStateHandler, VoteStateTargetVersion},
     log::*,
     solana_account::{AccountSharedData, WritableAccount},
     solana_clock::{Clock, Epoch, Slot},
@@ -28,9 +25,6 @@ use {
         collections::{HashSet, VecDeque},
     },
 };
-
-// TODO: Change me once the program has full v4 feature gate support.
-pub(crate) const TEMP_HARDCODED_TARGET_VERSION: VoteStateTargetVersion = VoteStateTargetVersion::V3;
 
 // Switch that preserves old behavior before vote state v4 feature gate.
 // This should be cleaned up when vote state v4 is activated.
