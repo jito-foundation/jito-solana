@@ -4,6 +4,7 @@ use {
         account_storage::stored_account_info::StoredAccountInfo,
         accounts_db::{AccountFromStorage, AccountStorageEntry, AccountsDb},
         is_zero_lamport::IsZeroLamport,
+        utils::create_account_shared_data,
     },
     solana_account::{AccountSharedData, ReadableAccount},
     solana_clock::{Epoch, Slot},
@@ -46,6 +47,13 @@ impl<'a> AccountForStorage<'a> {
             AccountForStorage::StoredAccountInfo(account) => account.pubkey(),
         }
     }
+
+    pub fn take_account(&self) -> AccountSharedData {
+        match self {
+            AccountForStorage::AddressAndAccount((_pubkey, account)) => (*account).clone(),
+            AccountForStorage::StoredAccountInfo(account) => create_account_shared_data(*account),
+        }
+    }
 }
 
 impl ReadableAccount for AccountForStorage<'_> {
@@ -80,12 +88,7 @@ impl ReadableAccount for AccountForStorage<'_> {
         }
     }
     fn to_account_shared_data(&self) -> AccountSharedData {
-        match self {
-            AccountForStorage::AddressAndAccount((_pubkey, account)) => {
-                account.to_account_shared_data()
-            }
-            AccountForStorage::StoredAccountInfo(account) => account.to_account_shared_data(),
-        }
+        self.take_account()
     }
 }
 
