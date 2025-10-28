@@ -417,6 +417,7 @@ impl ConsensusPool {
                 validator_vote_key,
             ));
         }
+        let vote = vote_message.vote;
         match self.update_vote_pool(vote_message, validator_vote_key, validator_stake) {
             None => {
                 // No new vote pool entry was created, just return empty vec
@@ -429,7 +430,7 @@ impl ConsensusPool {
                     .entry(vote_slot)
                     .or_insert_with(|| SlotStakeCounters::new(total_stake));
                 fallback_vote_counters.add_vote(
-                    vote,
+                    &vote,
                     entry_stake,
                     my_vote_pubkey == &validator_vote_key,
                     events,
@@ -437,9 +438,10 @@ impl ConsensusPool {
                 );
             }
         }
-        self.stats.incr_ingested_vote_type(vote_type);
+        self.stats
+            .incr_ingested_vote_type(VoteType::get_type(&vote));
 
-        self.update_certificates(vote, block_id, events, total_stake)
+        self.update_certificates(&vote, block_id, events, total_stake)
     }
 
     fn add_certificate(
