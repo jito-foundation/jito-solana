@@ -21,8 +21,7 @@ pub(crate) trait QosController<C: ConnectionContext> {
     fn build_connection_context(&self, connection: &Connection) -> C;
 
     /// Try to add a new connection to the connection table. This is an async operation that
-    /// returns a Future. If successful, the Future resolves to Some containing a CancellationToken
-    /// and a ConnectionStreamCounter to track the streams created on this connection.
+    /// returns a Future. If successful, the Future resolves to Some containing a CancellationToken.
     /// Otherwise, the Future resolves to None.
     fn try_add_connection(
         &self,

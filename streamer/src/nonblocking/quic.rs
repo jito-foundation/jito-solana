@@ -226,8 +226,8 @@ where
         keypair,
         packet_sender,
         quic_server_params,
-        cancel,
         swqos,
+        cancel,
     )
 }
 
@@ -239,8 +239,8 @@ pub(crate) fn spawn_server_with_cancel_and_qos<Q, C>(
     keypair: &Keypair,
     packet_sender: Sender<PacketBatch>,
     quic_server_params: QuicStreamerConfig,
-    cancel: CancellationToken,
     qos: Arc<Q>,
+    cancel: CancellationToken,
 ) -> Result<SpawnNonBlockingServerResult, QuicServerError>
 where
     Q: QosController<C> + Send + Sync + 'static,
