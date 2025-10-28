@@ -2691,6 +2691,7 @@ fn run_test_load_program_accounts_partition(scan_commitment: CommitmentConfig) {
         on_partition_before_resolved,
         on_partition_resolved,
         None,
+        false,
         additional_accounts,
     );
 }
@@ -3841,6 +3842,7 @@ fn test_kill_heaviest_partition() {
         empty,
         on_partition_resolved,
         None,
+        true,
         vec![],
     )
 }
@@ -4422,6 +4424,7 @@ fn test_cluster_partition_1_1() {
         empty,
         on_partition_resolved,
         None,
+        false,
         vec![],
     )
 }
@@ -4441,6 +4444,7 @@ fn test_cluster_partition_1_1_1() {
         empty,
         on_partition_resolved,
         None,
+        false,
         vec![],
     )
 }
