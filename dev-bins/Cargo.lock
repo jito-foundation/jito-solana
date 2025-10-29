@@ -271,8 +271,12 @@ dependencies = [
  "solana-genesis-config",
  "solana-hash",
  "solana-lattice-hash",
+ "solana-measure",
+ "solana-metrics",
  "strum",
+ "symlink",
  "tar",
+ "tempfile",
  "thiserror 2.0.17",
  "zstd",
 ]
@@ -8572,10 +8576,8 @@ dependencies = [
  "strum",
  "strum_macros",
  "symlink",
- "tar",
  "tempfile",
  "thiserror 2.0.17",
- "zstd",
 ]
 
 [[package]]
