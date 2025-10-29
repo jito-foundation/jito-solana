@@ -7472,7 +7472,7 @@ dependencies = [
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
  "solana-program-error 3.0.0",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-sha256-hasher 3.0.0",
 ]
 
@@ -7827,7 +7827,7 @@ dependencies = [
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
  "solana-hash 3.0.0",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-sha256-hasher 3.0.0",
  "solana-signature",
  "solana-time-utils",
@@ -8664,7 +8664,7 @@ dependencies = [
  "solana-runtime",
  "solana-runtime-plugin",
  "solana-runtime-transaction",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-sdk-ids 3.0.0",
  "solana-send-transaction-service",
  "solana-sha256-hasher 3.0.0",
@@ -9428,7 +9428,7 @@ dependencies = [
  "solana-rayon-threadlimit",
  "solana-rpc-client",
  "solana-runtime",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-serde-varint 3.0.0",
  "solana-sha256-hasher 3.0.0",
  "solana-short-vec 3.0.0",
@@ -9493,7 +9493,7 @@ dependencies = [
  "solana-atomic-u64 3.0.0",
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
 ]
 
 [[package]]
@@ -9586,7 +9586,7 @@ dependencies = [
  "solana-instruction-error",
  "solana-program-error 3.0.0",
  "solana-pubkey 3.0.0",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-sdk-ids 3.0.0",
  "solana-serialize-utils 3.0.0",
  "solana-sysvar-id 3.0.0",
@@ -10070,7 +10070,7 @@ dependencies = [
  "solana-hash 3.0.0",
  "solana-instruction 3.0.0",
  "solana-pubkey 3.0.0",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-sdk-ids 3.0.0",
  "solana-short-vec 3.0.0",
  "solana-transaction-error 3.0.0",
@@ -10224,7 +10224,7 @@ dependencies = [
  "solana-hash 3.0.0",
  "solana-packet",
  "solana-pubkey 3.0.0",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-sha256-hasher 3.0.0",
  "solana-signature",
  "solana-signer",
@@ -11393,9 +11393,9 @@ checksum = "61f1bc1357b8188d9c4a3af3fc55276e56987265eb7ad073ae6f8180ee54cecf"
 
 [[package]]
 name = "solana-sanitize"
-version = "3.0.0"
+version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "927e833259588ac8f860861db0f6e2668c3cc46d917798ade116858960acfe8a"
+checksum = "dcf09694a0fc14e5ffb18f9b7b7c0f15ecb6eac5b5610bf76a1853459d19daf9"
 
 [[package]]
 name = "solana-sbpf"
@@ -11618,7 +11618,7 @@ checksum = "e7665da4f6e07b58c93ef6aaf9fb6a923fd11b0922ffc53ba74c3cadfa490f26"
 dependencies = [
  "solana-instruction-error",
  "solana-pubkey 3.0.0",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
 ]
 
 [[package]]
@@ -11688,7 +11688,7 @@ dependencies = [
  "serde_derive",
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
 ]
 
 [[package]]
@@ -12560,7 +12560,7 @@ dependencies = [
  "solana-instruction 3.0.0",
  "solana-message 3.0.0",
  "solana-pubkey 3.0.0",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-sdk-ids 3.0.0",
  "solana-short-vec 3.0.0",
  "solana-signature",
@@ -12649,7 +12649,7 @@ dependencies = [
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
  "solana-instruction-error",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
 ]
 
 [[package]]
@@ -12887,7 +12887,7 @@ dependencies = [
  "serde_derive",
  "solana-frozen-abi",
  "solana-frozen-abi-macro",
- "solana-sanitize 3.0.0",
+ "solana-sanitize 3.0.1",
  "solana-serde-varint 3.0.0",
 ]
 
