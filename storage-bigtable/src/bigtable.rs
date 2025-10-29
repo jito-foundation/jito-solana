@@ -192,24 +192,28 @@ impl BigTableConnection {
                     }
                 };
 
-                let mut http = hyper::client::HttpConnector::new();
-                http.enforce_http(false);
-                http.set_nodelay(true);
                 let channel = match std::env::var("BIGTABLE_PROXY") {
-                    Ok(proxy_uri) => {
-                        let proxy = hyper_proxy::Proxy::new(
-                            hyper_proxy::Intercept::All,
-                            proxy_uri
-                                .parse::<http::Uri>()
-                                .map_err(|err| Error::InvalidUri(proxy_uri, err.to_string()))?,
+                    Ok(proxy_uri_str) => {
+                        let proxy_uri = proxy_uri_str
+                            .parse::<tonic::transport::Uri>()
+                            .map_err(|err| Error::InvalidUri(proxy_uri_str, err.to_string()))?;
+                        let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+                        http.enforce_http(false);
+                        http.set_nodelay(true);
+                        let proxy = hyper_http_proxy::Proxy::new(
+                            hyper_http_proxy::Intercept::All,
+                            proxy_uri,
                         );
-                        let mut proxy_connector =
-                            hyper_proxy::ProxyConnector::from_proxy(http, proxy)?;
-                        // tonic handles TLS as a separate layer
-                        proxy_connector.set_tls(None);
+                        let proxy_connector =
+                            hyper_http_proxy::ProxyConnector::from_proxy(http, proxy)?;
                         endpoint.connect_with_connector_lazy(proxy_connector)
                     }
-                    _ => endpoint.connect_with_connector_lazy(http),
+                    _ => {
+                        let mut http = hyper_util::client::legacy::connect::HttpConnector::new();
+                        http.enforce_http(false);
+                        http.set_nodelay(true);
+                        endpoint.connect_with_connector_lazy(http)
+                    }
                 };
 
                 Ok(Self {

@@ -28,7 +28,8 @@ futures = { workspace = true }
 goauth = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
-hyper-proxy = { workspace = true }
+hyper-http-proxy = { workspace = true }
+hyper-util = { workspace = true }
 log = { workspace = true }
 # openssl is a dependency of the goauth and smpl_jwt crates, but explicitly
 # declare it here as well to activate the "vendored" feature that builds OpenSSL
@@ -51,7 +52,7 @@ solana-transaction-error = { workspace = true }
 solana-transaction-status = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["tls", "transport"] }
+tonic = { workspace = true, features = ["tls-webpki-roots", "transport"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
