@@ -1057,7 +1057,14 @@ impl<FG: ForkGraph> ProgramCache<FG> {
             } => {
                 search_for.retain(|(key, match_criteria)| {
                     if let Some(second_level) = entries.get(key) {
+                        let mut filter_by_deployment_slot = None;
                         for entry in second_level.iter().rev() {
+                            if filter_by_deployment_slot
+                                .map(|slot| slot != entry.deployment_slot)
+                                .unwrap_or(false)
+                            {
+                                continue;
+                            }
                             if entry.deployment_slot <= self.latest_root_slot
                                 || matches!(
                                     locked_fork_graph.relationship(
@@ -1069,10 +1076,15 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                             {
                                 let entry_to_return = if loaded_programs_for_tx_batch.slot
                                     >= entry.effective_slot
-                                    && Self::matches_environment(
+                                {
+                                    if !Self::matches_environment(
                                         entry,
                                         program_runtime_environments_for_execution,
                                     ) {
+                                        filter_by_deployment_slot = filter_by_deployment_slot
+                                            .or(Some(entry.deployment_slot));
+                                        continue;
+                                    }
                                     if !Self::matches_criteria(entry, match_criteria) {
                                         break;
                                     }
@@ -2618,6 +2630,55 @@ mod tests {
         cache.extract(&mut missing, &mut extracted, &envs, true, true);
         assert!(match_slot(&extracted, &program1, 20, 22));
         assert!(match_missing(&missing, &program3, true));
+    }
+
+    #[test]
+    fn test_extract_different_environment() {
+        let mut cache = ProgramCache::<TestForkGraphSpecific>::new(0);
+        let envs = get_mock_envs();
+        let other_envs = ProgramRuntimeEnvironments {
+            program_runtime_v1: Arc::new(BuiltinProgram::new_mock()),
+            program_runtime_v2: Arc::new(BuiltinProgram::new_mock()),
+        };
+
+        // Fork graph created for the test
+        //                0
+        //                |
+        //                10
+        //                |
+        //                20
+        //                |
+        //                22
+
+        let mut fork_graph = TestForkGraphSpecific::default();
+        fork_graph.insert_fork(&[0, 10, 20, 22]);
+
+        let fork_graph = Arc::new(RwLock::new(fork_graph));
+        cache.set_fork_graph(Arc::downgrade(&fork_graph));
+
+        let program1 = Pubkey::new_unique();
+        cache.assign_program(
+            &envs,
+            program1,
+            Arc::new(ProgramCacheEntry::new_tombstone(
+                10,
+                ProgramCacheEntryOwner::LoaderV3,
+                ProgramCacheEntryType::Closed,
+            )),
+        );
+        cache.assign_program(&envs, program1, new_test_entry(20, 21));
+
+        // Testing fork 0 - 10 - 20 - 22 with current slot at 22
+        let mut missing = get_entries_to_load(&cache, 22, &[program1]);
+        let mut extracted = ProgramCacheForTxBatch::new(22);
+        cache.extract(&mut missing, &mut extracted, &envs, true, true);
+        assert!(match_slot(&extracted, &program1, 20, 22));
+
+        // Looking for a different environment
+        let mut missing = get_entries_to_load(&cache, 22, &[program1]);
+        let mut extracted = ProgramCacheForTxBatch::new(22);
+        cache.extract(&mut missing, &mut extracted, &other_envs, true, true);
+        assert!(match_missing(&missing, &program1, true));
     }
 
     #[test]
