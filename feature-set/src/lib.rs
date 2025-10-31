@@ -1187,6 +1187,18 @@ pub mod fix_alt_bn128_pairing_length_check {
     solana_pubkey::declare_id!("bnYzodLwmybj7e1HAe98yZrdJTd7we69eMMLgCXqKZm");
 }
 
+pub mod replace_spl_token_with_p_token {
+    use super::Pubkey;
+
+    solana_pubkey::declare_id!("ptokSWRqZz5u2xdqMdstkMKpFurauUpVen7TZXgDpkQ");
+
+    pub const SPL_TOKEN_PROGRAM_ID: Pubkey =
+        Pubkey::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+    pub const PTOKEN_PROGRAM_BUFFER: Pubkey =
+        Pubkey::from_str_const("ptokNfvuU7terQ2r2452RzVXB3o4GT33yPWo1fUkkZ2");
+}
+
 pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::new(|| {
     [
         (secp256k1_program_enabled::id(), "secp256k1 program"),
@@ -2133,6 +2145,10 @@ pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::n
         (
             fix_alt_bn128_pairing_length_check::id(),
             "SIMD-0334: Fix alt_bn128_pairing length check",
+        ),
+        (
+            replace_spl_token_with_p_token::id(),
+            "SIMD-0266: Efficient Token program",
         ),
         /*************** ADD NEW FEATURES HERE ***************/
     ]

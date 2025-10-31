@@ -5360,6 +5360,19 @@ impl Bank {
         if new_feature_activations.contains(&feature_set::increase_cpi_account_info_limit::id()) {
             self.apply_simd_0339_invoke_cost_changes();
         }
+
+        if new_feature_activations.contains(&feature_set::replace_spl_token_with_p_token::id()) {
+            if let Err(e) = self.upgrade_loader_v2_program_with_loader_v3_program(
+                &feature_set::replace_spl_token_with_p_token::SPL_TOKEN_PROGRAM_ID,
+                &feature_set::replace_spl_token_with_p_token::PTOKEN_PROGRAM_BUFFER,
+                "replace_spl_token_with_p_token",
+            ) {
+                warn!(
+                    "Failed to replace SPL Token with p-token buffer '{}': {e}",
+                    feature_set::replace_spl_token_with_p_token::PTOKEN_PROGRAM_BUFFER,
+                );
+            }
+        }
     }
 
     fn apply_new_builtin_program_feature_transitions(
