@@ -1,6 +1,5 @@
 use {
     crate::{
-        commitment::CommitmentError,
         common::{
             certificate_limits_and_vote_types, conflicting_types, vote_to_certificate_ids, Stake,
             VoteType, MAX_ENTRIES_PER_PUBKEY_FOR_NOTARIZE_LITE,
@@ -42,34 +41,33 @@ mod vote_pool;
 
 type PoolId = (Slot, VoteType);
 
-#[derive(Debug, Error, PartialEq)]
+/// Different failure cases from calling `add_vote()`.
+#[derive(Debug, Error)]
 pub(crate) enum AddVoteError {
     #[error("Conflicting vote type: {0:?} vs existing {1:?} for slot: {2} pubkey: {3}")]
     ConflictingVoteType(VoteType, VoteType, Slot, Pubkey),
-
     #[error("Epoch stakes missing for epoch: {0}")]
     EpochStakesNotFound(Epoch),
-
     #[error("Unrooted slot")]
     UnrootedSlot,
-
     #[error("Certificate builder error: {0}")]
     CertificateBuilder(#[from] CertificateBuilderError),
-
-    #[error("{0} channel disconnected")]
-    ChannelDisconnected(String),
-
-    #[error("Voting Service queue full")]
-    VotingServiceQueueFull,
-
     #[error("Invalid rank: {0}")]
     InvalidRank(u16),
 }
 
-impl From<CommitmentError> for AddVoteError {
-    fn from(_: CommitmentError) -> Self {
-        AddVoteError::ChannelDisconnected("CommitmentSender".to_string())
-    }
+/// Different failure cases from calling `add_certificate()`.
+#[derive(Debug, Error)]
+pub(crate) enum AddCertError {
+    #[error("Unrooted slot")]
+    UnrootedSlot,
+}
+
+/// Different failure cases from calling `add_message()`.
+#[derive(Debug, PartialEq, Eq, Error)]
+pub(crate) enum AddMessageError {
+    #[error("internal failure {0}")]
+    Internal(String),
 }
 
 fn get_key_and_stakes(
@@ -353,18 +351,22 @@ impl ConsensusPool {
         my_vote_pubkey: &Pubkey,
         message: ConsensusMessage,
         events: &mut Vec<VotorEvent>,
-    ) -> Result<(Option<Slot>, Vec<Arc<Certificate>>), AddVoteError> {
+    ) -> Result<(Option<Slot>, Vec<Arc<Certificate>>), AddMessageError> {
         let current_highest_finalized_slot = self.highest_finalized_slot;
         let new_certficates_to_send = match message {
-            ConsensusMessage::Vote(vote_message) => self.add_vote(
-                epoch_schedule,
-                epoch_stakes_map,
-                root_slot,
-                my_vote_pubkey,
-                vote_message,
-                events,
-            )?,
-            ConsensusMessage::Certificate(cert) => self.add_certificate(root_slot, cert, events)?,
+            ConsensusMessage::Vote(vote_message) => self
+                .add_vote(
+                    epoch_schedule,
+                    epoch_stakes_map,
+                    root_slot,
+                    my_vote_pubkey,
+                    vote_message,
+                    events,
+                )
+                .map_err(|e| AddMessageError::Internal(e.to_string()))?,
+            ConsensusMessage::Certificate(cert) => self
+                .add_certificate(root_slot, cert, events)
+                .map_err(|e| AddMessageError::Internal(e.to_string()))?,
         };
         // If we have a new highest finalized slot, return it
         let new_finalized_slot = if self.highest_finalized_slot > current_highest_finalized_slot {
@@ -449,12 +451,12 @@ impl ConsensusPool {
         root_slot: Slot,
         cert: Certificate,
         events: &mut Vec<VotorEvent>,
-    ) -> Result<Vec<Arc<Certificate>>, AddVoteError> {
+    ) -> Result<Vec<Arc<Certificate>>, AddCertError> {
         let cert_type = cert.cert_type;
         self.stats.incoming_certs = self.stats.incoming_certs.saturating_add(1);
         if cert_type.slot() < root_slot {
             self.stats.out_of_range_certs = self.stats.out_of_range_certs.saturating_add(1);
-            return Err(AddVoteError::UnrootedSlot);
+            return Err(AddCertError::UnrootedSlot);
         }
         if self.completed_certificates.contains_key(&cert_type) {
             self.stats.exist_certs = self.stats.exist_certs.saturating_add(1);
@@ -1238,8 +1240,8 @@ mod tests {
     fn test_add_vote_zero_stake() {
         let (_, mut pool, bank_forks) = create_initial_state();
         let bank = bank_forks.read().unwrap().root_bank();
-        assert_eq!(
-            pool.add_message(
+        let err = pool
+            .add_message(
                 bank.epoch_schedule(),
                 bank.epoch_stakes_map(),
                 bank.slot(),
@@ -1249,9 +1251,12 @@ mod tests {
                     rank: 100,
                     signature: BLSSignature::default(),
                 }),
-                &mut vec![]
-            ),
-            Err(AddVoteError::InvalidRank(100))
+                &mut vec![],
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AddMessageError::Internal("Invalid rank: 100".to_string())
         );
     }
 
