@@ -1514,7 +1514,7 @@ pub mod test {
         } = setup_quic_server(
             None,
             QuicStreamerConfig {
-                max_connections_per_peer: 2,
+                max_connections_per_unstaked_peer: 2,
                 ..QuicStreamerConfig::default_for_tests()
             },
             SwQosConfig::default(),
@@ -1758,7 +1758,7 @@ pub mod test {
             sender,
             staked_nodes,
             QuicStreamerConfig {
-                max_connections_per_peer: 2,
+                max_connections_per_unstaked_peer: 2,
                 ..QuicStreamerConfig::default_for_tests()
             },
             SwQosConfig::default(),
