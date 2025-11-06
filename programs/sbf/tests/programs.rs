@@ -2717,6 +2717,7 @@ fn test_program_sbf_realloc() {
         // disable when needed
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
         let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
         let mut bank_client = BankClient::new_shared(bank.clone());
@@ -3986,6 +3987,7 @@ fn test_cpi_account_ownership_writability() {
         let mut feature_set = FeatureSet::all_enabled();
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
 
         bank.feature_set = Arc::new(feature_set);
@@ -4187,6 +4189,7 @@ fn test_cpi_account_data_updates() {
         let mut feature_set = FeatureSet::all_enabled();
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
 
         bank.feature_set = Arc::new(feature_set);
@@ -4638,6 +4641,7 @@ fn test_deny_access_beyond_current_length() {
         // disable when needed
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
         let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
         let mut bank_client = BankClient::new_shared(bank);
@@ -4706,6 +4710,7 @@ fn test_deny_executable_write() {
         // disable when needed
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
         let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
         let mut bank_client = BankClient::new_shared(bank);
@@ -4761,6 +4766,7 @@ fn test_update_callee_account() {
         // disable when needed
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
         let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
         let mut bank_client = BankClient::new_shared(bank.clone());
@@ -5045,6 +5051,7 @@ fn test_account_info_in_account() {
             // disable when needed
             if !stricter_abi_and_runtime_constraints {
                 feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+                feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
             }
 
             let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
@@ -5106,6 +5113,7 @@ fn test_account_info_rc_in_account() {
         // disable when needed
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
 
         let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
@@ -5196,6 +5204,7 @@ fn test_clone_account_data() {
     let feature_set = Arc::make_mut(&mut bank.feature_set);
 
     feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+    feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
 
     let (bank, bank_forks) = bank.wrap_with_bank_forks_for_tests();
     let mut bank_client = BankClient::new_shared(bank.clone());
@@ -5545,6 +5554,7 @@ fn test_mem_syscalls_overlap_account_begin_or_end() {
         let mut feature_set = FeatureSet::all_enabled();
         if !stricter_abi_and_runtime_constraints {
             feature_set.deactivate(&feature_set::stricter_abi_and_runtime_constraints::id());
+            feature_set.deactivate(&feature_set::account_data_direct_mapping::id());
         }
 
         let account_keypair = Keypair::new();
