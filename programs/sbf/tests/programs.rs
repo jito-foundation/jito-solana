@@ -933,25 +933,30 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_success(
             TEST_MAX_ACCOUNT_INFOS_OK,
             &[],
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             &bank,
         );
 
         do_invoke_success(
             TEST_CU_USAGE_MINIMUM,
             &[],
-            &[noop_program_id.clone()],
+            std::slice::from_ref(&noop_program_id),
             &bank,
         );
 
         do_invoke_success(
             TEST_CU_USAGE_BASELINE,
             &[],
-            &[noop_program_id.clone()],
+            std::slice::from_ref(&noop_program_id),
             &bank,
         );
 
-        do_invoke_success(TEST_CU_USAGE_MAX, &[], &[noop_program_id.clone()], &bank);
+        do_invoke_success(
+            TEST_CU_USAGE_MAX,
+            &[],
+            std::slice::from_ref(&noop_program_id),
+            &bank,
+        );
 
         let bank = bank_with_feature_deactivated(
             &bank_forks,
@@ -966,7 +971,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_success(
             TEST_MAX_ACCOUNT_INFOS_OK_BEFORE_SIMD_0339,
             &[],
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             &bank,
         );
 
@@ -982,7 +987,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_success(
             TEST_MAX_ACCOUNT_INFOS_OK_BEFORE_INCREASE_TX_ACCOUNT_LOCK_BEFORE_SIMD_0339,
             &[],
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             &bank,
         );
         let bank = bank_with_feature_activated(
@@ -1068,7 +1073,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local(
             TEST_PRIVILEGE_ESCALATION_SIGNER,
             TransactionError::InstructionError(0, InstructionError::PrivilegeEscalation),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             &bank,
         );
@@ -1076,7 +1081,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local(
             TEST_PRIVILEGE_ESCALATION_WRITABLE,
             TransactionError::InstructionError(0, InstructionError::PrivilegeEscalation),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             &bank,
         );
@@ -1231,7 +1236,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local(
             TEST_RETURN_ERROR,
             TransactionError::InstructionError(0, InstructionError::Custom(42)),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             &bank,
         );
@@ -1239,7 +1244,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local(
             TEST_PRIVILEGE_DEESCALATION_ESCALATION_SIGNER,
             TransactionError::InstructionError(0, InstructionError::PrivilegeEscalation),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             &bank,
         );
@@ -1247,7 +1252,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local(
             TEST_PRIVILEGE_DEESCALATION_ESCALATION_WRITABLE,
             TransactionError::InstructionError(0, InstructionError::PrivilegeEscalation),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             &bank,
         );
@@ -1255,7 +1260,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local_with_compute_check(
             TEST_WRITABLE_DEESCALATION_WRITABLE,
             TransactionError::InstructionError(0, InstructionError::ReadonlyDataModified),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             true, // should_deplete_compute_meter
             &bank,
@@ -1322,7 +1327,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local(
             TEST_DUPLICATE_PRIVILEGE_ESCALATION_SIGNER,
             TransactionError::InstructionError(0, InstructionError::PrivilegeEscalation),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             &bank,
         );
@@ -1330,7 +1335,7 @@ fn test_program_sbf_invoke_sanity() {
         do_invoke_failure_test_local(
             TEST_DUPLICATE_PRIVILEGE_ESCALATION_WRITABLE,
             TransactionError::InstructionError(0, InstructionError::PrivilegeEscalation),
-            &[invoked_program_id.clone()],
+            std::slice::from_ref(&invoked_program_id),
             None,
             &bank,
         );
