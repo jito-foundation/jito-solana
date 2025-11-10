@@ -604,7 +604,7 @@ mod tests {
         const MIN_CHUNK_SIZE: usize = DATA_SHREDS_PER_FEC_BLOCK;
         let chunks: Vec<_> = data_shreds
             .iter()
-            .group_by(|shred| shred.fec_set_index())
+            .chunk_by(|shred| shred.fec_set_index())
             .into_iter()
             .map(|(fec_set_index, chunk)| (fec_set_index, chunk.count()))
             .collect();

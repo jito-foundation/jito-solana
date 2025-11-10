@@ -1830,7 +1830,7 @@ mod test {
                 Shred::ShredCode(_) => Some(shred.clone()),
                 Shred::ShredData(_) => None,
             })
-            .group_by(|shred| shred.common_header().fec_set_index)
+            .chunk_by(|shred| shred.common_header().fec_set_index)
             .into_iter()
             .flat_map(|(_, shreds)| {
                 recover(shreds.collect(), reed_solomon_cache)
