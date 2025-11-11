@@ -473,7 +473,7 @@ mod tests {
     use {
         crate::{
             bundle_execution::{load_and_execute_bundle, LoadAndExecuteBundleError},
-            derive_bundle_id_from_sanitized_transactions, SanitizedBundle,
+            SanitizedBundle,
         },
         assert_matches::assert_matches,
         solana_clock::MAX_PROCESSING_AGE,
@@ -527,11 +527,9 @@ mod tests {
             })
             .collect();
 
-        let bundle_id = derive_bundle_id_from_sanitized_transactions(&transactions);
-
         SanitizedBundle {
             transactions,
-            bundle_id,
+            bundle_id: "".to_string(),
         }
     }
 

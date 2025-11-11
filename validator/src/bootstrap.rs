@@ -788,13 +788,12 @@ fn get_highest_local_snapshot_hash(
     incremental_snapshot_archives_dir: impl AsRef<Path>,
     incremental_snapshot_fetch: bool,
 ) -> Option<(Slot, Hash)> {
-    snapshot_paths::get_highest_full_snapshot_archive_info(full_snapshot_archives_dir, None)
+    snapshot_paths::get_highest_full_snapshot_archive_info(full_snapshot_archives_dir)
         .and_then(|full_snapshot_info| {
             if incremental_snapshot_fetch {
                 snapshot_paths::get_highest_incremental_snapshot_archive_info(
                     incremental_snapshot_archives_dir,
                     full_snapshot_info.slot(),
-                    None,
                 )
                 .map(|incremental_snapshot_info| {
                     (

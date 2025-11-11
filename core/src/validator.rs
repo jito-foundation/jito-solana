@@ -1,6 +1,8 @@
 //! The `validator` module hosts all the validator microservices.
 
+use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
+
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
@@ -221,7 +223,7 @@ impl BlockVerificationMethod {
     Deserialize,
     PartialEq,
     Eq,
-    EnumIter
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -253,7 +255,7 @@ impl BlockProductionMethod {
     Deserialize,
     PartialEq,
     Eq,
-    EnumIter
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -1832,7 +1834,6 @@ impl Validator {
             cluster_slots,
             node: Some(node_multihoming),
             banking_control_sender,
-            node: Some(Arc::new(node_multihoming)),
             block_engine_config: config.block_engine_config.clone(),
             relayer_config: config.relayer_config.clone(),
             shred_receiver_address: config.shred_receiver_address.clone(),

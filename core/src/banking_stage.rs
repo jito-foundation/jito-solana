@@ -22,7 +22,7 @@ use {
             },
         },
         // bundle_stage::bundle_account_locker::BundleAccountLocker,
-        validator::{BlockProductionMethod, TransactionStructure},
+        validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
     crossbeam_channel::{unbounded, Receiver, Sender},
@@ -464,8 +464,8 @@ impl BankingStage {
         self.spawn_scheduler(
             initial_args,
             // bundle_account_locker,
-            blacklisted_accounts,
-            block_cost_limit_reservation_cb,
+            blacklisted_accounts.clone(),
+            block_cost_limit_reservation_cb.clone(),
         );
 
         loop {
@@ -473,7 +473,7 @@ impl BankingStage {
                 biased;
 
                 _ = self.banking_shutdown_signal.cancelled() => break,
-                Some(args) = self.banking_control_receiver.recv() => self.cycle_threads(args).await,
+                Some(args) = self.banking_control_receiver.recv() => self.cycle_threads(args, blacklisted_accounts.clone(), block_cost_limit_reservation_cb.clone()).await,
                 opt = self.threads.next() => {
                     let (name, res) = opt.unwrap();
                     match res.unwrap() {
@@ -485,7 +485,7 @@ impl BankingStage {
                         block_production_method: BlockProductionMethod::default(),
                         num_workers: BankingStage::default_num_workers(),
                         config: SchedulerConfig::default(),
-                    }).await;
+                    }, blacklisted_accounts.clone(), block_cost_limit_reservation_cb.clone()).await;
                 },
             }
         }
@@ -499,7 +499,12 @@ impl BankingStage {
         Ok(())
     }
 
-    async fn cycle_threads(&mut self, args: BankingControlMsg) {
+    async fn cycle_threads(
+        &mut self,
+        args: BankingControlMsg,
+        blacklisted_accounts: HashSet<Pubkey>,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+    ) {
         // Shutdown all current threads.
         self.worker_exit_signal.store(true, Ordering::Relaxed);
         while let Some((name, res)) = self.threads.next().await {
@@ -513,7 +518,7 @@ impl BankingStage {
         self.worker_exit_signal.store(false, Ordering::Relaxed);
 
         // Spawn the requested threads.
-        self.spawn_scheduler(args);
+        self.spawn_scheduler(args, blacklisted_accounts, block_cost_limit_reservation_cb);
     }
 
     fn spawn_scheduler(
@@ -576,7 +581,7 @@ impl BankingStage {
 
         // Spawn vote worker.
         let mut threads = Vec::with_capacity(num_workers + 2);
-        threads.push(self.spawn_vote_worker());
+        threads.push(self.spawn_vote_worker(block_cost_limit_reservation_cb.clone()));
 
         // Create channels for communication between scheduler and workers
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
@@ -602,6 +607,8 @@ impl BankingStage {
                 finished_work_sender.clone(),
                 self.poh_recorder.read().unwrap().shared_leader_state(),
             );
+
+            let block_cost_limit_reservation_cb = block_cost_limit_reservation_cb.clone();
 
             worker_metrics.push(consume_worker.metrics_handle());
             threads.push(
@@ -668,7 +675,10 @@ impl BankingStage {
         threads
     }
 
-    fn spawn_vote_worker(&self) -> JoinHandle<()> {
+    fn spawn_vote_worker(
+        &self,
+        block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+    ) -> JoinHandle<()> {
         let vote_storage = VoteStorage::new(&self.bank_forks.read().unwrap().working_bank());
         let tpu_receiver = VotePacketReceiver::new(self.tpu_vote_receiver.clone());
         let gossip_receiver = VotePacketReceiver::new(self.gossip_vote_receiver.clone());
@@ -751,7 +761,7 @@ mod external {
                     tpu_vote_receiver: Some(self.tpu_vote_receiver.clone()),
                 }
             } else {
-                threads.push(self.spawn_vote_worker());
+                threads.push(self.spawn_vote_worker(|_| 0));
 
                 BankingPacketReceivers {
                     non_vote_receiver: self.non_vote_receiver.clone(),

@@ -2,6 +2,10 @@
 //! multi-stage transaction processing pipeline in software.
 
 pub use crate::forwarding_stage::ForwardingClientOption;
+use crate::{
+    bundle_stage::bundle_account_locker::BundleAccountLocker,
+    tip_manager::{TipManager, TipManagerConfig},
+};
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
@@ -330,8 +334,7 @@ impl Tpu {
             let adapter = VortexorReceiverAdapter::new(
                 sockets,
                 Duration::from_millis(5),
-                fetch_stage_manager_sender.clone(),
-                forward_stage_sender.clone(),
+                banking_stage_sender.clone(),
                 enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
                 exit.clone(),
             );
@@ -369,7 +372,7 @@ impl Tpu {
         }));
 
         let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
-        let (bundle_sender, bundle_receiver) = unbounded();
+        let (bundle_sender, _bundle_receiver) = unbounded();
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
             bundle_sender,
@@ -413,9 +416,7 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
-        // let tip_manager = TipManager::new(tip_manager_config);
-
-        let bundle_account_locker = BundleAccountLocker::default();
+        let _bundle_account_locker = BundleAccountLocker::default();
 
         // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
         // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
@@ -427,8 +428,9 @@ impl Tpu {
             .saturating_mul(8)
             .saturating_div(10);
 
+        let tip_manager = TipManager::new(tip_manager_config);
         let mut blacklisted_accounts = HashSet::new();
-        // blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
+        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,

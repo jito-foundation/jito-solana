@@ -69,10 +69,8 @@ impl LocalCluster {
         next_snapshot_type: NextSnapshotType,
         max_wait_duration: Option<Duration>,
     ) -> NextSnapshotResult {
-        let full_snapshot_slot = snapshot_paths::get_highest_full_snapshot_archive_slot(
-            &full_snapshot_archives_dir,
-            None,
-        );
+        let full_snapshot_slot =
+            snapshot_paths::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir);
         let last_slot = match next_snapshot_type {
             NextSnapshotType::FullSnapshot => full_snapshot_slot,
             NextSnapshotType::IncrementalAndFullSnapshot => {
@@ -80,7 +78,6 @@ impl LocalCluster {
                     snapshot_paths::get_highest_incremental_snapshot_archive_slot(
                         incremental_snapshot_archives_dir.as_ref().unwrap(),
                         full_snapshot_slot,
-                        None,
                     )
                 })
             }
@@ -95,10 +92,7 @@ impl LocalCluster {
         let timer = Instant::now();
         let next_snapshot = loop {
             if let Some(full_snapshot_archive_info) =
-                snapshot_paths::get_highest_full_snapshot_archive_info(
-                    &full_snapshot_archives_dir,
-                    None,
-                )
+                snapshot_paths::get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir)
             {
                 match next_snapshot_type {
                     NextSnapshotType::FullSnapshot => {
@@ -111,7 +105,6 @@ impl LocalCluster {
                             snapshot_paths::get_highest_incremental_snapshot_archive_info(
                                 incremental_snapshot_archives_dir.as_ref().unwrap(),
                                 full_snapshot_archive_info.slot(),
-                                None,
                             )
                         {
                             if incremental_snapshot_archive_info.slot() > last_slot {

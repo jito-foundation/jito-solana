@@ -81,7 +81,7 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(commands::staked_nodes_overrides::command())
         .subcommand(commands::wait_for_restart_window::command())
         .subcommand(commands::set_public_address::command())
-        .subcommand(commands::manage_block_production::command(default_args));
+        .subcommand(commands::manage_block_production::command(default_args))
         // jito subcommands
         .subcommand(commands::block_engine::command(default_args))
         .subcommand(commands::relayer::command(default_args))
