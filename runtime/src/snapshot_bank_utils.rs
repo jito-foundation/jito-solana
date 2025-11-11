@@ -298,14 +298,13 @@ pub fn bank_from_latest_snapshot_archives(
     Option<IncrementalSnapshotArchiveInfo>,
 )> {
     let full_snapshot_archive_info =
-        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir, None).ok_or_else(
-            || SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf()),
-        )?;
+        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir).ok_or_else(|| {
+            SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf())
+        })?;
 
     let incremental_snapshot_archive_info = get_highest_incremental_snapshot_archive_info(
         &incremental_snapshot_archives_dir,
         full_snapshot_archive_info.slot(),
-        None,
     );
 
     let bank = bank_from_snapshot_archives(
@@ -2510,30 +2509,7 @@ mod tests {
             )
             .unwrap();
         }
-<<<<<<< HEAD
         let highest_bank_snapshot = get_highest_bank_snapshot(&bank_snapshots_dir).unwrap();
-=======
-
-        // As a hack, to make a PRE bank snapshot, just rename the last POST one.
-        let slot = bank.slot();
-        let bank_snapshot_dir = get_bank_snapshot_dir(&bank_snapshots_dir, slot);
-        let post = bank_snapshot_dir.join(get_snapshot_file_name(slot));
-        let pre = post.with_extension(BANK_SNAPSHOT_PRE_FILENAME_EXTENSION);
-        fs::rename(post, pre).unwrap();
-
-        // ...and we also need to delete the last snapshot archive
-        fs::remove_file(full_snapshot_archive_info.unwrap().path()).unwrap();
-
-        let highest_full_snapshot_archive =
-            get_highest_full_snapshot_archive_info(&snapshot_archives_dir, None).unwrap();
-        let highest_bank_snapshot_post =
-            get_highest_bank_snapshot_post(&bank_snapshots_dir).unwrap();
-        let highest_bank_snapshot_pre = get_highest_bank_snapshot_pre(&bank_snapshots_dir).unwrap();
-
-        // we want a bank snapshot PRE with the highest slot to ensure get_highest_loadable()
-        // correctly skips bank snapshots PRE
-        assert!(highest_bank_snapshot_pre.slot > highest_bank_snapshot_post.slot);
->>>>>>> 5377c89437 (Jito Patch)
 
         // 1. call get_highest_loadable() but bad snapshot dir, so returns None
         assert!(get_highest_loadable_bank_snapshot(&SnapshotConfig::default()).is_none());

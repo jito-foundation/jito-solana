@@ -42,8 +42,8 @@ use {
     },
     solana_time_utils::AtomicInterval,
     std::{
-        num::{NonZeroU64, NonZeroUsize, Saturating},
         collections::HashSet,
+        num::{NonZeroU64, NonZeroUsize, Saturating},
         ops::Deref,
         sync::{
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -72,10 +72,7 @@ pub mod vote_storage;
 mod consume_worker;
 mod vote_worker;
 
-#[cfg(feature = "dev-context-only-utils")]
 pub mod decision_maker;
-#[cfg(not(feature = "dev-context-only-utils"))]
-mod decision_maker;
 
 mod latest_validator_vote_packet;
 mod leader_slot_timing_metrics;

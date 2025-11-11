@@ -163,9 +163,10 @@ pub fn load_and_process_ledger(
             .value_of("incremental_snapshot_archive_path")
             .map(PathBuf::from)
             .unwrap_or_else(|| snapshots_dir.clone());
-        if let Some(full_snapshot_slot) =
-            snapshot_paths::get_highest_full_snapshot_archive_slot(&full_snapshot_archives_dir, snapshot_halt_at_slot)
-        {
+        if let Some(full_snapshot_slot) = snapshot_paths::get_highest_full_snapshot_archive_slot(
+            &full_snapshot_archives_dir,
+            snapshot_halt_at_slot,
+        ) {
             let incremental_snapshot_slot =
                 snapshot_paths::get_highest_incremental_snapshot_archive_slot(
                     &incremental_snapshot_archives_dir,
@@ -356,7 +357,6 @@ pub fn load_and_process_ledger(
             None, // Maybe support this later, though
             accounts_update_notifier,
             exit.clone(),
-            ignore_halt_at_slot_for_snapshot_loading,
         )
         .map_err(LoadAndProcessLedgerError::LoadBankForks)?;
     let block_verification_method = value_t_or_exit!(

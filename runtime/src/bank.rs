@@ -78,8 +78,10 @@ use {
         AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
     },
     solana_accounts_db::{
-        account_locks::validate_account_locks,
-        accounts::{AccountAddressFilter, Accounts, PubkeyAccountSlot},
+        account_locks::{validate_account_locks, AccountLocks},
+        accounts::{
+            AccountAddressFilter, Accounts, PubkeyAccountSlot, TransactionAccountLocksIterator,
+        },
         accounts_db::{AccountStorageEntry, AccountsDb, AccountsDbConfig},
         accounts_hash::AccountsLtHash,
         accounts_index::{IndexKey, ScanConfig, ScanResult},

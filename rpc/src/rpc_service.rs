@@ -21,10 +21,7 @@ use {
     },
     regex::Regex,
     solana_cli_output::display::build_balance_message,
-    solana_client::{
-        client_option::ClientOption,
-        connection_cache::{ConnectionCache, Protocol},
-    },
+    solana_client::{client_option::ClientOption, connection_cache::ConnectionCache},
     solana_genesis_config::DEFAULT_GENESIS_DOWNLOAD_PATH,
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
@@ -352,7 +349,6 @@ impl RequestMiddleware for RpcRequestMiddleware {
                 let full_snapshot_archive_info =
                     snapshot_paths::get_highest_full_snapshot_archive_info(
                         &snapshot_config.full_snapshot_archives_dir,
-                        None,
                     );
                 let snapshot_archive_info =
                     if let Some(full_snapshot_archive_info) = full_snapshot_archive_info {
@@ -362,7 +358,6 @@ impl RequestMiddleware for RpcRequestMiddleware {
                             snapshot_paths::get_highest_incremental_snapshot_archive_info(
                                 &snapshot_config.incremental_snapshot_archives_dir,
                                 full_snapshot_archive_info.slot(),
-                                None,
                             )
                             .map(|incremental_snapshot_archive_info| {
                                 incremental_snapshot_archive_info

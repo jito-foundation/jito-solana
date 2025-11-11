@@ -37,6 +37,7 @@ use {
     },
 };
 
+mod bundle;
 pub mod bundle_account_locker;
 mod bundle_consumer;
 mod bundle_packet_deserializer;

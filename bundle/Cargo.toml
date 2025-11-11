@@ -22,7 +22,6 @@ serde = { workspace = true }
 sha2 = { workspace = true }
 solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
-solana-ledger = { workspace = true }
 solana-measure = { workspace = true }
 solana-poh = { workspace = true }
 solana-program-runtime = { workspace = true }

@@ -16,10 +16,10 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
-    solana_bundle::{
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
-        BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
-    },
+    // solana_bundle::{
+    //     bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+    //     BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
+    // },
     solana_clock::{Slot, MAX_PROCESSING_AGE},
     solana_cost_model::transaction_cost::TransactionCost,
     solana_entry::entry::hash_transactions,

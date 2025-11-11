@@ -98,7 +98,6 @@ pub fn load(
         entry_notification_sender,
         accounts_update_notifier,
         exit,
-        true,
     )?;
     blockstore_processor::process_blockstore_from_root(
         blockstore,
@@ -125,12 +124,9 @@ pub fn load_bank_forks(
     entry_notification_sender: Option<&EntryNotifierSender>,
     accounts_update_notifier: Option<AccountsUpdateNotifier>,
     exit: Arc<AtomicBool>,
-    ignore_halt_at_slot_for_snapshot_loading: bool,
 ) -> LoadResult {
     fn get_snapshots_to_load(
         snapshot_config: &SnapshotConfig,
-        halt_at_slot: Option<Slot>,
-        ignore_halt_at_slot_for_snapshot_loading: bool,
     ) -> Option<(
         FullSnapshotArchiveInfo,
         Option<IncrementalSnapshotArchiveInfo>,
@@ -140,16 +136,9 @@ pub fn load_bank_forks(
             return None;
         };
 
-        let halt_at_slot = if ignore_halt_at_slot_for_snapshot_loading {
-            None
-        } else {
-            halt_at_slot
-        };
-
         let Some(full_snapshot_archive_info) =
             snapshot_paths::get_highest_full_snapshot_archive_info(
                 &snapshot_config.full_snapshot_archives_dir,
-                halt_at_slot,
             )
         else {
             warn!(
@@ -163,7 +152,6 @@ pub fn load_bank_forks(
             snapshot_paths::get_highest_incremental_snapshot_archive_info(
                 &snapshot_config.incremental_snapshot_archives_dir,
                 full_snapshot_archive_info.slot(),
-                halt_at_slot,
             );
 
         Some((
@@ -174,11 +162,7 @@ pub fn load_bank_forks(
 
     let (bank_forks, starting_snapshot_hashes) =
         if let Some((full_snapshot_archive_info, incremental_snapshot_archive_info)) =
-            get_snapshots_to_load(
-                snapshot_config,
-                process_options.halt_at_slot,
-                ignore_halt_at_slot_for_snapshot_loading,
-            )
+            get_snapshots_to_load(snapshot_config)
         {
             info!(
                 "Initializing bank snapshots dir: {}",

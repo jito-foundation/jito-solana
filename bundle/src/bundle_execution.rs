@@ -327,6 +327,8 @@ pub fn load_and_execute_bundle<'a>(
                     recording_config: ExecutionRecordingConfig::new_single_setting(
                         transaction_status_sender_enabled
                     ),
+                    drop_on_failure: false,
+                    all_or_nothing: false,
                 },
             ));
         debug!(

@@ -23,7 +23,7 @@ reqwest-middleware = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 solana-account-decoder-client-types = { workspace = true }
-solana-bundle = { workspace = true }
+# solana-bundle = { workspace = true }
 solana-clock = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-rpc-client-types = { workspace = true }

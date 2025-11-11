@@ -2279,7 +2279,6 @@ fn load_blockstore(
                 .map(|service| service.sender()),
             accounts_update_notifier,
             exit,
-            true,
         )
         .map_err(|err| err.to_string())?;
 
