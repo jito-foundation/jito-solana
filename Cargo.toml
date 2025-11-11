@@ -300,7 +300,7 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
 jito-protos = { path = "jito-protos", version = "=3.1.0" }
 jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
 jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
-js-sys = "0.3.77"
+js-sys = "0.3.82"
 json5 = "0.4.1"
 jsonrpc-core = "18.0.0"
 jsonrpc-core-client = "18.0.0"
