@@ -5,9 +5,9 @@ sidebar_label: Sysvar Cluster Data
 ---
 
 Solana exposes a variety of cluster state data to programs via
-[`sysvar`](https://solana.com/docs/terminology#sysvar) accounts. These accounts
+[`sysvar`](https://solana.com/docs/references/terminology#sysvar) accounts. These accounts
 are populated at known addresses published along with the account layouts in the
-[`solana-program` crate](https://docs.rs/solana-program/VERSION_FOR_DOCS_RS/solana_program/sysvar/index.html),
+[`solana-program` crate](https://docs.rs/solana-program/latest/solana_program/sysvar/index.html),
 and outlined below.
 
 There are two ways for a program to access a sysvar.
@@ -46,7 +46,7 @@ epoch, and estimated wall-clock Unix timestamp. It is updated every slot.
 
 - Address: `SysvarC1ock11111111111111111111111111111111`
 - Layout:
-  [Clock](https://docs.rs/solana-program/VERSION_FOR_DOCS_RS/solana_program/clock/struct.Clock.html)
+  [Clock](https://docs.rs/solana-program/latest/solana_program/sysvar/clock/index.html)
 - Fields:
 
   - `slot`: the current slot
@@ -83,7 +83,7 @@ for a given slot, etc. (Note: the epoch schedule is distinct from the
 
 - Address: `SysvarEpochSchedu1e111111111111111111111111`
 - Layout:
-  [EpochSchedule](https://docs.rs/solana-program/VERSION_FOR_DOCS_RS/solana_program/epoch_schedule/struct.EpochSchedule.html)
+  [EpochSchedule](https://docs.rs/solana-program/latest/solana_program/epoch_schedule/struct.EpochSchedule.html)
 
 ## Fees
 
