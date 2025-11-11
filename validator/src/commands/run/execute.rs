@@ -1371,7 +1371,9 @@ fn tip_manager_config_from_matches(
         tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
             || {
                 if !voting_disabled {
-                    panic!("--tip-payment-program-pubkey argument required when validator is voting");
+                    panic!(
+                        "--tip-payment-program-pubkey argument required when validator is voting"
+                    );
                 }
                 Pubkey::new_unique()
             },
@@ -1379,7 +1381,10 @@ fn tip_manager_config_from_matches(
         tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
             .unwrap_or_else(|| {
                 if !voting_disabled {
-                    panic!("--tip-distribution-program-pubkey argument required when validator is voting");
+                    panic!(
+                        "--tip-distribution-program-pubkey argument required when validator is \
+                         voting"
+                    );
                 }
                 Pubkey::new_unique()
             }),
@@ -1387,7 +1392,10 @@ fn tip_manager_config_from_matches(
             merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
                 .unwrap_or_else(|| {
                     if !voting_disabled {
-                        panic!("--merkle-root-upload-authority argument required when validator is voting");
+                        panic!(
+                            "--merkle-root-upload-authority argument required when validator is \
+                             voting"
+                        );
                     }
                     Pubkey::new_unique()
                 }),

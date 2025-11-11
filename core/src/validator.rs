@@ -2,7 +2,6 @@
 
 use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
-
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},

@@ -514,10 +514,19 @@ impl TipManager {
                     bank.get_minimum_balance_for_rent_exemption(account_data.data().len());
                 // NOTE: don't unwrap here in case bug in on-chain program, don't want all validators to crash
                 // if program gets stuck in bad state
-                (account, balance.checked_sub(rent_exempt).unwrap_or_else(|| {
-                    warn!("balance is below rent exempt amount. balance: {} rent_exempt: {} acc size: {}", balance, rent_exempt, TipPaymentAccount::SIZE);
-                    0
-                }))
+                (
+                    account,
+                    balance.checked_sub(rent_exempt).unwrap_or_else(|| {
+                        warn!(
+                            "balance is below rent exempt amount. balance: {} rent_exempt: {} acc \
+                             size: {}",
+                            balance,
+                            rent_exempt,
+                            TipPaymentAccount::SIZE
+                        );
+                        0
+                    }),
+                )
             })
             .collect()
     }

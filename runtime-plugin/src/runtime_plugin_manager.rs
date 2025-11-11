@@ -239,7 +239,8 @@ fn load_plugin_from_config(
         Ok(value) => value,
         Err(err) => {
             return Err(RuntimePluginManagerError::InvalidConfigFileFormat(format!(
-                "The config file {plugin_config_path:?} is not in a valid Json5 format, error: {err:?}"
+                "The config file {plugin_config_path:?} is not in a valid Json5 format, error: \
+                 {err:?}"
             )));
         }
     };

@@ -13,7 +13,7 @@ pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
                 .long("relayer-url")
                 .help("Relayer url. Set to empty string to disable relayer connection.")
                 .takes_value(true)
-                .required(true)
+                .required(true),
         )
         .arg(
             Arg::with_name("relayer_expected_heartbeat_interval_ms")
@@ -21,15 +21,18 @@ pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
                 .takes_value(true)
                 .help("Interval at which the Relayer is expected to send heartbeat messages.")
                 .required(false)
-                .default_value(&default_args.relayer_expected_heartbeat_interval_ms)
+                .default_value(&default_args.relayer_expected_heartbeat_interval_ms),
         )
         .arg(
             Arg::with_name("relayer_max_failed_heartbeats")
                 .long("relayer-max-failed-heartbeats")
                 .takes_value(true)
-                .help("Maximum number of heartbeats the Relayer can miss before falling back to the normal TPU pipeline.")
+                .help(
+                    "Maximum number of heartbeats the Relayer can miss before falling back to the \
+                     normal TPU pipeline.",
+                )
                 .required(false)
-                .default_value(&default_args.relayer_max_failed_heartbeats)
+                .default_value(&default_args.relayer_max_failed_heartbeats),
         )
 }
 

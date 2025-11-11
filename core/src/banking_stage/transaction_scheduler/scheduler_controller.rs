@@ -452,7 +452,6 @@ impl CostPacer {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use {
         super::*,
         crate::banking_stage::{
@@ -481,7 +480,10 @@ mod tests {
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
         solana_transaction::Transaction,
-        std::sync::{Arc, RwLock},
+        std::{
+            collections::HashSet,
+            sync::{Arc, RwLock},
+        },
     };
 
     fn create_channels<T>(num: usize) -> (Vec<Sender<T>>, Vec<Receiver<T>>) {

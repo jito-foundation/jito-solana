@@ -164,7 +164,10 @@ impl RelayerStage {
                     // This error is frequent on hot spares, and the parsed string does not work
                     // with datapoints (incorrect escaping).
                     ProxyError::AuthenticationPermissionDenied => {
-                        warn!("relayer permission denied. not on leader schedule. ignore if hot-spare.")
+                        warn!(
+                            "relayer permission denied. not on leader schedule. ignore if \
+                             hot-spare."
+                        )
                     }
                     e => {
                         error_count += 1;

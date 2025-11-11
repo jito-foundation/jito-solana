@@ -203,7 +203,10 @@ impl BlockEngineStage {
                 match e {
                     // This error is frequent on hot spares, and the parsed string does not work
                     // with datapoints (incorrect escaping).
-                    ProxyError::AuthenticationPermissionDenied => warn!("block engine permission denied. not on leader schedule. ignore if hot-spare."),
+                    ProxyError::AuthenticationPermissionDenied => warn!(
+                        "block engine permission denied. not on leader schedule. ignore if \
+                         hot-spare."
+                    ),
                     e => {
                         error_count += 1;
                         datapoint_warn!(
@@ -316,7 +319,9 @@ impl BlockEngineStage {
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
         {
             if block_engine_url != local_block_engine_config.block_engine_url {
-                info!("Selected best Block Engine url: {block_engine_url}, Shredstream socket: {maybe_shredstream_socket:?}, ping: ({:?})",
+                info!(
+                    "Selected best Block Engine url: {block_engine_url}, Shredstream socket: \
+                     {maybe_shredstream_socket:?}, ping: ({:?})",
                     Duration::from_micros(latency_us)
                 );
                 backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
@@ -355,7 +360,8 @@ impl BlockEngineStage {
                         // This error is frequent on hot spares, and the parsed string does not work
                         // with datapoints (incorrect escaping).
                         ProxyError::AuthenticationPermissionDenied => warn!(
-                            "block engine permission denied. not on leader schedule. ignore if hot-spare."
+                            "block engine permission denied. not on leader schedule. ignore if \
+                             hot-spare."
                         ),
                         other => {
                             datapoint_warn!(

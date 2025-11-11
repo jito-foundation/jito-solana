@@ -1,7 +1,5 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-use solana_pubkey::Pubkey;
-use std::collections::HashSet;
 use {
     super::{
         transaction_priority_id::TransactionPriorityId,
@@ -28,6 +26,7 @@ use {
     solana_cost_model::cost_model::CostModel,
     solana_fee_structure::FeeBudgetLimits,
     solana_message::v0::LoadedAddresses,
+    solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
@@ -38,6 +37,7 @@ use {
     solana_transaction::sanitized::MessageHash,
     solana_transaction_error::TransactionError,
     std::{
+        collections::HashSet,
         sync::{Arc, RwLock},
         time::Instant,
     },
