@@ -10,7 +10,7 @@ use {
             BankingStage, BankingStageHandle,
         },
         banking_trace::{Channels, TracerThread},
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        // bundle_stage::bundle_account_locker::BundleAccountLocker,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoteSender, VoteTracker,
@@ -27,7 +27,7 @@ use {
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
-        tip_manager::{TipManager, TipManagerConfig},
+        // tip_manager::{TipManager, TipManagerConfig},
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig},
         vortexor_receiver_adapter::VortexorReceiverAdapter,
@@ -144,7 +144,7 @@ pub struct Tpu {
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
-    bundle_stage: BundleStage,
+    // bundle_stage: BundleStage,
 }
 
 impl Tpu {
@@ -330,8 +330,8 @@ impl Tpu {
             let adapter = VortexorReceiverAdapter::new(
                 sockets,
                 Duration::from_millis(5),
-                non_vote_sender,
-                banking_stage_sender.clone(),
+                fetch_stage_manager_sender.clone(),
+                forward_stage_sender.clone(),
                 enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
                 exit.clone(),
             );
@@ -413,7 +413,7 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
-        let tip_manager = TipManager::new(tip_manager_config);
+        // let tip_manager = TipManager::new(tip_manager_config);
 
         let bundle_account_locker = BundleAccountLocker::default();
 
@@ -428,7 +428,7 @@ impl Tpu {
             .saturating_div(10);
 
         let mut blacklisted_accounts = HashSet::new();
-        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
+        // blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
@@ -446,7 +446,7 @@ impl Tpu {
             bank_forks.clone(),
             prioritization_fee_cache.clone(),
             blacklisted_accounts,
-            bundle_account_locker.clone(),
+            // bundle_account_locker.clone(),
             move |bank| {
                 calculate_block_cost_limit_reservation(
                     bank,
@@ -468,20 +468,20 @@ impl Tpu {
             DataBudget::default(),
         );
 
-        let bundle_stage = BundleStage::new(
-            cluster_info,
-            poh_recorder,
-            transaction_recorder,
-            bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            exit.clone(),
-            tip_manager,
-            bundle_account_locker,
-            &block_builder_fee_info,
-            prioritization_fee_cache,
-        );
+        // let bundle_stage = BundleStage::new(
+        //     cluster_info,
+        //     poh_recorder,
+        //     transaction_recorder,
+        //     bundle_receiver,
+        //     transaction_status_sender,
+        //     replay_vote_sender,
+        //     log_messages_bytes_limit,
+        //     exit.clone(),
+        //     tip_manager,
+        //     bundle_account_locker,
+        //     &block_builder_fee_info,
+        //     prioritization_fee_cache,
+        // );
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
@@ -540,7 +540,7 @@ impl Tpu {
             block_engine_stage,
             relayer_stage,
             fetch_stage_manager,
-            bundle_stage,
+            // bundle_stage,
         }
     }
 
@@ -556,7 +556,7 @@ impl Tpu {
             self.tpu_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_forwards_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_vote_quic_t.join(),
-            self.bundle_stage.join(),
+            // self.bundle_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),

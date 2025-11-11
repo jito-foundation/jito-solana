@@ -33,7 +33,7 @@ use {
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
         tpu::{ForwardingClientOption, Tpu, TpuSockets},
-        tip_manager::TipManagerConfig,
+        // tip_manager::TipManagerConfig,
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
     agave_snapshots::{
