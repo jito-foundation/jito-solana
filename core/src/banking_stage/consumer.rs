@@ -205,7 +205,13 @@ impl Consumer {
 
             Ok(())
         });
-        self.process_and_record_transactions_with_pre_results(bank, txs, pre_results, flags, reservation_cb)
+        self.process_and_record_transactions_with_pre_results(
+            bank,
+            txs,
+            pre_results,
+            flags,
+            reservation_cb,
+        )
     }
 
     fn process_and_record_transactions_with_pre_results(

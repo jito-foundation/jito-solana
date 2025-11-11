@@ -411,8 +411,7 @@ where
             count_metrics.num_dropped_on_receive_fee_payer += *num_dropped_on_fee_payer;
             count_metrics.num_dropped_on_capacity += *num_dropped_on_capacity;
             count_metrics.num_buffered += *num_buffered;
-            count_metrics.num_dropped_on_blacklisted_account +=
-                *num_dropped_on_blacklisted_account;
+            count_metrics.num_dropped_on_blacklisted_account += *num_dropped_on_blacklisted_account;
         });
 
         self.timing_metrics.update(|timing_metrics| {
