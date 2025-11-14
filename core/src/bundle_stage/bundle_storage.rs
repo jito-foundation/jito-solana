@@ -403,6 +403,14 @@ mod tests {
         let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert_matches!(result, Err(BundleStorageError::DuplicateTransaction));
+        assert!(
+            bundle_storage
+                .transaction_view_state_container
+                .buffer_size()
+                == 0
+        );
+        assert!(bundle_storage.unprocessed_bundles.is_empty());
+        assert!(bundle_storage.cost_model_buffered_bundles.is_empty());
     }
 
     #[test]
@@ -451,23 +459,116 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn test_retry_bundle_ordering_preserved() {
-    //     panic!("not implemented");
-    // }
+    #[test]
+    fn test_retry_bundle_ordering_preserved() {
+        let mut bundle_storage = BundleStorage::with_capacity(100);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
 
-    // #[test]
-    // fn test_destroy_bundle() {
-    //     panic!("not implemented");
-    // }
+        let tx_1 = test_tx();
+        let tx_2 = test_tx();
+        let tx_3 = test_tx();
+        let tx_4 = test_tx();
 
-    // #[test]
-    // fn test_pop_bundle() {
-    //     panic!("not implemented");
-    // }
+        let packet_batch_1 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_1).unwrap()]),
+            "".to_string(),
+        );
+        let packet_batch_2 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_2).unwrap()]),
+            "".to_string(),
+        );
+        let packet_batch_3 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_3).unwrap()]),
+            "".to_string(),
+        );
+        let packet_batch_4 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_4).unwrap()]),
+            "".to_string(),
+        );
 
-    // #[test]
-    // fn test_insert_bundle() {
-    //     panic!("not implemented");
-    // }
+        bundle_storage
+            .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
+            .unwrap();
+        bundle_storage
+            .insert_bundle(packet_batch_2, &bank, &bank, &HashSet::new())
+            .unwrap();
+        bundle_storage
+            .insert_bundle(packet_batch_3, &bank, &bank, &HashSet::new())
+            .unwrap();
+        bundle_storage
+            .insert_bundle(packet_batch_4, &bank, &bank, &HashSet::new())
+            .unwrap();
+
+        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        assert_eq!(
+            bundle_storage_entry_1.transactions[0].signatures()[0],
+            tx_1.signatures[0]
+        );
+        let bundle_storage_entry_2 = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        assert_eq!(
+            bundle_storage_entry_2.transactions[0].signatures()[0],
+            tx_2.signatures[0]
+        );
+
+        bundle_storage.retry_bundle(bundle_storage_entry_1);
+        bundle_storage.destroy_bundle(bundle_storage_entry_2);
+
+        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
+        assert_eq!(
+            bundle_storage_entry_1.transactions[0].signatures()[0],
+            tx_1.signatures[0]
+        );
+        let bundle_storage_entry_3 = bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
+        assert_eq!(
+            bundle_storage_entry_3.transactions[0].signatures()[0],
+            tx_3.signatures[0]
+        );
+        let bundle_storage_entry_4 = bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
+        assert_eq!(
+            bundle_storage_entry_4.transactions[0].signatures()[0],
+            tx_4.signatures[0]
+        );
+    }
+
+    #[test]
+    fn test_destroy_bundle() {
+        let mut bundle_storage = BundleStorage::with_capacity(100);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+
+        let tx_1 = test_tx();
+        let tx_2 = test_tx();
+
+        let packet_batch_1 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_1).unwrap()]),
+            "".to_string(),
+        );
+        let packet_batch_2 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_2).unwrap()]),
+            "".to_string(),
+        );
+
+        bundle_storage
+            .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
+            .unwrap();
+        bundle_storage
+            .insert_bundle(packet_batch_2, &bank, &bank, &HashSet::new())
+            .unwrap();
+
+        let bundle_storage_entry_1 = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        bundle_storage.destroy_bundle(bundle_storage_entry_1);
+        assert!(
+            bundle_storage
+                .transaction_view_state_container
+                .buffer_size()
+                == 1
+        );
+        let bundle_storage_entry_2 = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        bundle_storage.destroy_bundle(bundle_storage_entry_2);
+        assert!(
+            bundle_storage
+                .transaction_view_state_container
+                .buffer_size()
+                == 0
+        );
+    }
 }
