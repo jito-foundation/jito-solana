@@ -7,6 +7,7 @@ use {
     crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex},
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
+    solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_time_utils::AtomicInterval,
@@ -67,7 +68,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    pub fn run(self) -> Result<(), ConsumeWorkerError<Tx>> {
+    pub fn run(self, reservation_cb: impl Fn(&Bank) -> u64) -> Result<(), ConsumeWorkerError<Tx>> {
         let mut did_work = false;
         let mut last_empty_time = Instant::now();
         let mut sleep_duration = STARTING_SLEEP_DURATION;
@@ -76,7 +77,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             match self.consume_receiver.try_recv() {
                 Ok(work) => {
                     did_work = true;
-                    match self.consume(work)? {
+                    match self.consume(work, &reservation_cb)? {
                         ProcessingStatus::Processed => {}
                         ProcessingStatus::CouldNotProcess(work) => {
                             self.retry_drain(work)?;
@@ -105,6 +106,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     fn consume(
         &self,
         work: ConsumeWork<Tx>,
+        reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Result<ProcessingStatus<Tx>, ConsumeWorkerError<Tx>> {
         let Some(leader_state) = active_leader_state_with_timeout(&self.shared_leader_state) else {
             return Ok(ProcessingStatus::CouldNotProcess(work));
@@ -122,6 +124,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             &work.transactions,
             &work.max_ages,
             ExecutionFlags::default(),
+            reservation_cb,
         );
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
@@ -409,6 +412,7 @@ pub(crate) mod external {
                     &transactions,
                     &max_ages,
                     execution_flags,
+                    &|_| 0,
                 );
 
                 self.metrics.update_for_consume(&output);
@@ -2179,7 +2183,13 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            // BundleAccountLocker::default(),
+        );
         let shared_leader_state = SharedLeaderState::new(0, None, None);
 
         let (consume_sender, consume_receiver) = unbounded();
@@ -2220,7 +2230,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
 
         let pubkey1 = Pubkey::new_unique();
 
@@ -2269,7 +2279,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),
@@ -2323,7 +2333,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),
@@ -2388,7 +2398,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),
@@ -2467,7 +2477,7 @@ mod tests {
             consumed_receiver,
             ..
         } = &mut test_frame;
-        let worker_thread = std::thread::spawn(move || worker.run());
+        let worker_thread = std::thread::spawn(move || worker.run(|_| 0));
         shared_leader_state.store(Arc::new(LeaderState::new(
             Some(bank.clone()),
             bank.tick_height(),

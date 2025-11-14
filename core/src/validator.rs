@@ -1,5 +1,6 @@
 //! The `validator` module hosts all the validator microservices.
 
+use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
 use {
     crate::{
@@ -15,6 +16,7 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
             ExternalRootSource, Tower,
         },
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self,
             quic_endpoint::{RepairQuicAsyncSenders, RepairQuicSenders, RepairQuicSockets},
@@ -32,6 +34,7 @@ use {
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
         tpu::{ForwardingClientOption, Tpu, TpuSockets},
+        // tip_manager::TipManagerConfig,
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
     agave_snapshots::{
@@ -39,6 +42,7 @@ use {
         snapshot_hash::StartingSnapshotHashes, SnapshotInterval,
     },
     anyhow::{anyhow, Context, Result},
+    arc_swap::ArcSwap,
     crossbeam_channel::{bounded, unbounded, Receiver},
     quinn::Endpoint,
     serde::{Deserialize, Serialize},
@@ -131,6 +135,10 @@ use {
         snapshot_controller::SnapshotController,
         snapshot_utils::{self, clean_orphaned_account_snapshot_dirs},
     },
+    solana_runtime_plugin::{
+        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
+        runtime_plugin_service::RuntimePluginService,
+    },
     solana_send_transaction_service::send_transaction_service::Config as SendTransactionServiceConfig,
     solana_shred_version::compute_shred_version,
     solana_signer::Signer,
@@ -214,6 +222,7 @@ impl BlockVerificationMethod {
     Deserialize,
     PartialEq,
     Eq,
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -245,6 +254,7 @@ impl BlockProductionMethod {
     Deserialize,
     PartialEq,
     Eq,
+    EnumIter,
 )]
 #[strum(serialize_all = "kebab-case")]
 #[serde(rename_all = "kebab-case")]
@@ -382,6 +392,13 @@ pub struct ValidatorConfig {
     pub use_tpu_client_next: bool,
     pub retransmit_xdp: Option<XdpConfig>,
     pub repair_handler_type: RepairHandlerType,
+    // jito configuration
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub tip_manager_config: TipManagerConfig,
+    pub preallocated_bundle_cost: u64,
 }
 
 impl ValidatorConfig {
@@ -464,6 +481,12 @@ impl ValidatorConfig {
             use_tpu_client_next: true,
             retransmit_xdp: None,
             repair_handler_type: RepairHandlerType::default(),
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            tip_manager_config: TipManagerConfig::default(),
+            preallocated_bundle_cost: 0,
         }
     }
 
@@ -670,6 +693,10 @@ impl Validator {
         socket_addr_space: SocketAddrSpace,
         tpu_config: ValidatorTpuConfig,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+        runtime_plugin_configs_and_request_rx: Option<(
+            Vec<PathBuf>,
+            Receiver<RuntimePluginManagerRpcRequest>,
+        )>,
     ) -> Result<Self> {
         #[cfg(debug_assertions)]
         const DEBUG_ASSERTION_STATUS: &str = "enabled";
@@ -1124,6 +1151,19 @@ impl Validator {
 
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
+
+        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
+            RuntimePluginService::start(
+                &runtime_plugin_configs,
+                request_rx,
+                bank_forks.clone(),
+                block_commitment_cache.clone(),
+                exit.clone(),
+            )
+            .map_err(|e| {
+                ValidatorError::Other(format!("Failed to start runtime plugin service: {e:?}"))
+            })?;
+        }
 
         let max_slots = Arc::new(MaxSlots::default());
 
@@ -1658,6 +1698,7 @@ impl Validator {
             wen_restart_repair_slots.clone(),
             slot_status_notifier,
             vote_connection_cache,
+            config.shred_retransmit_receiver_address.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1752,6 +1793,11 @@ impl Validator {
             key_notifiers.clone(),
             banking_control_reciever,
             cancel,
+            config.block_engine_config.clone(),
+            config.relayer_config.clone(),
+            config.tip_manager_config.clone(),
+            config.shred_receiver_address.clone(),
+            config.preallocated_bundle_cost,
         );
 
         datapoint_info!(
@@ -1787,6 +1833,10 @@ impl Validator {
             cluster_slots,
             node: Some(node_multihoming),
             banking_control_sender,
+            block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
+            shred_receiver_address: config.shred_receiver_address.clone(),
+            shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
         });
 
         Ok(Self {
@@ -2950,6 +3000,7 @@ mod tests {
             SocketAddrSpace::Unspecified,
             ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
             Arc::new(RwLock::new(None)),
+            None,
         )
         .expect("assume successful validator start");
         assert_eq!(
@@ -3164,6 +3215,7 @@ mod tests {
                     SocketAddrSpace::Unspecified,
                     ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
                     Arc::new(RwLock::new(None)),
+                    None,
                 )
                 .expect("assume successful validator start")
             })
