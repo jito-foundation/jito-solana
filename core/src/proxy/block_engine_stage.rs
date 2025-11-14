@@ -885,8 +885,8 @@ impl BlockEngineStage {
             .bundles
             .into_iter()
             .filter_map(|bundle| {
-                Some(PacketBundle {
-                    batch: PacketBatch::from(
+                Some(PacketBundle::new(
+                    PacketBatch::from(
                         bundle
                             .bundle?
                             .packets
@@ -894,8 +894,8 @@ impl BlockEngineStage {
                             .map(proto_packet_to_packet)
                             .collect::<Vec<BytesPacket>>(),
                     ),
-                    bundle_id: bundle.uuid,
-                })
+                    bundle.uuid,
+                ))
             })
             .collect();
         block_engine_stats
@@ -904,7 +904,7 @@ impl BlockEngineStage {
         block_engine_stats.num_bundle_packets.add_assign(
             bundles
                 .iter()
-                .map(|bundle| bundle.batch.len() as u64)
+                .map(|bundle| bundle.batch().len() as u64)
                 .sum::<u64>(),
         );
 

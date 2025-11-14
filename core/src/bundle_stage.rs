@@ -1,82 +1,70 @@
-// //! The `bundle_stage` processes bundles, which are list of transactions to be executed
-// //! sequentially and atomically.
+// // //! The `bundle_stage` processes bundles, which are list of transactions to be executed
+// // //! sequentially and atomically.
 
-pub mod bundle_account_locker;
+// use std::{num::Saturating, sync::RwLock, time::Instant};
 
-// use {
-//     crate::{
-//         banking_stage::{
-//             decision_maker::{BufferedPacketsDecision, DecisionMaker},
-//             qos_service::QosService,
-//         },
-//         bundle_stage::{
-//             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
-//             bundle_packet_receiver::BundleReceiver,
-//             bundle_stage_leader_metrics::BundleStageLeaderMetrics, bundle_storage::BundleStorage,
-//             committer::Committer,
-//         },
-//         packet_bundle::PacketBundle,
-//         proxy::block_engine_stage::BlockBuilderFeeInfo,
-//         tip_manager::TipManager,
-//     },
-//     crossbeam_channel::{Receiver, RecvTimeoutError},
-//     solana_gossip::cluster_info::ClusterInfo,
-//     solana_ledger::blockstore_processor::TransactionStatusSender,
-//     solana_measure::measure_us,
-//     solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
-//     solana_runtime::{
-//         prioritization_fee_cache::PrioritizationFeeCache, vote_sender_types::ReplayVoteSender,
-//     },
-//     solana_time_utils::AtomicInterval,
-//     std::{
-//         ops::Deref,
-//         sync::{
-//             atomic::{AtomicBool, AtomicU64, Ordering},
-//             Arc, Mutex, RwLock,
-//         },
-//         thread::{self, Builder, JoinHandle},
-//         time::{Duration, Instant},
-//     },
+// use solana_poh::poh_recorder::PohRecorder;
+
+// use crate::{
+//     banking_stage::decision_maker::DecisionMaker,
+//     bundle_stage::bundle_stage_leader_metrics::BundleStageLeaderMetrics,
 // };
 
-// // mod bundle;
-// pub mod bundle_account_locker;
+pub mod bundle_account_locker;
 // // mod bundle_consumer;
 // // mod bundle_packet_deserializer;
 // // mod bundle_packet_receiver;
-// // pub(crate) mod bundle_stage_leader_metrics;
-// // mod bundle_storage;
-// // mod committer;
-// const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
-// const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
+// pub(crate) mod bundle_stage_leader_metrics;
+mod bundle_storage;
+// // // mod committer;
+// // const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
+// // const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
 // // Stats emitted periodically
-// #[derive(Default)]
 // pub struct BundleStageLoopMetrics {
-//     last_report: AtomicInterval,
+//     last_report: Instant,
 //     id: u32,
 
 //     // total received
-//     num_bundles_received: AtomicU64,
-//     num_packets_received: AtomicU64,
+//     num_bundles_received: Saturating<u64>,
+//     num_packets_received: Saturating<u64>,
 
 //     // newly buffered
-//     newly_buffered_bundles_count: AtomicU64,
+//     newly_buffered_bundles_count: Saturating<u64>,
 
 //     // currently buffered
-//     current_buffered_bundles_count: AtomicU64,
-//     current_buffered_packets_count: AtomicU64,
+//     current_buffered_bundles_count: Saturating<u64>,
+//     current_buffered_packets_count: Saturating<u64>,
 
 //     // buffered due to cost model
-//     cost_model_buffered_bundles_count: AtomicU64,
-//     cost_model_buffered_packets_count: AtomicU64,
+//     cost_model_buffered_bundles_count: Saturating<u64>,
+//     cost_model_buffered_packets_count: Saturating<u64>,
 
 //     // number of bundles dropped during insertion
-//     num_bundles_dropped: AtomicU64,
+//     num_bundles_dropped: Saturating<u64>,
 
 //     // timings
-//     receive_and_buffer_bundles_elapsed_us: AtomicU64,
-//     process_buffered_bundles_elapsed_us: AtomicU64,
+//     receive_and_buffer_bundles_elapsed_us: Saturating<u64>,
+//     process_buffered_bundles_elapsed_us: Saturating<u64>,
+// }
+
+// impl Default for BundleStageLoopMetrics {
+//     fn default() -> Self {
+//         BundleStageLoopMetrics {
+//             last_report: Instant::now(),
+//             id: 0,
+//             num_bundles_received: Saturating(0),
+//             num_packets_received: Saturating(0),
+//             newly_buffered_bundles_count: Saturating(0),
+//             current_buffered_bundles_count: Saturating(0),
+//             current_buffered_packets_count: Saturating(0),
+//             cost_model_buffered_bundles_count: Saturating(0),
+//             cost_model_buffered_packets_count: Saturating(0),
+//             num_bundles_dropped: Saturating(0),
+//             receive_and_buffer_bundles_elapsed_us: Saturating(0),
+//             process_buffered_bundles_elapsed_us: Saturating(0),
+//         }
+//     }
 // }
 
 // impl BundleStageLoopMetrics {
@@ -88,107 +76,108 @@ pub mod bundle_account_locker;
 //     }
 
 //     pub fn increment_num_bundles_received(&mut self, count: u64) {
-//         self.num_bundles_received
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.num_bundles_received += count;
 //     }
 
 //     pub fn increment_num_packets_received(&mut self, count: u64) {
-//         self.num_packets_received
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.num_packets_received += count;
 //     }
 
 //     pub fn increment_newly_buffered_bundles_count(&mut self, count: u64) {
-//         self.newly_buffered_bundles_count
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.newly_buffered_bundles_count += count;
 //     }
 
 //     pub fn increment_current_buffered_bundles_count(&mut self, count: u64) {
-//         self.current_buffered_bundles_count
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.current_buffered_bundles_count += count;
 //     }
 
 //     pub fn increment_current_buffered_packets_count(&mut self, count: u64) {
-//         self.current_buffered_packets_count
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.current_buffered_packets_count += count;
 //     }
 
 //     pub fn increment_cost_model_buffered_bundles_count(&mut self, count: u64) {
-//         self.cost_model_buffered_bundles_count
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.cost_model_buffered_bundles_count += count;
 //     }
 
 //     pub fn increment_cost_model_buffered_packets_count(&mut self, count: u64) {
-//         self.cost_model_buffered_packets_count
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.cost_model_buffered_packets_count += count;
 //     }
 
 //     pub fn increment_num_bundles_dropped(&mut self, count: u64) {
-//         self.num_bundles_dropped.fetch_add(count, Ordering::Relaxed);
+//         self.num_bundles_dropped += count;
 //     }
 
 //     pub fn increment_receive_and_buffer_bundles_elapsed_us(&mut self, count: u64) {
-//         self.receive_and_buffer_bundles_elapsed_us
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.receive_and_buffer_bundles_elapsed_us += count;
 //     }
 
 //     pub fn increment_process_buffered_bundles_elapsed_us(&mut self, count: u64) {
-//         self.process_buffered_bundles_elapsed_us
-//             .fetch_add(count, Ordering::Relaxed);
+//         self.process_buffered_bundles_elapsed_us += count;
 //     }
-// }
 
-// impl BundleStageLoopMetrics {
 //     fn maybe_report(&mut self, report_interval_ms: u64) {
-//         if self.last_report.should_update(report_interval_ms) {
+//         if self.last_report.elapsed().as_millis() >= report_interval_ms as u128 {
 //             datapoint_info!(
 //                 "bundle_stage-loop_stats",
 //                 ("id", self.id, i64),
 //                 (
 //                     "num_bundles_received",
-//                     self.num_bundles_received.swap(0, Ordering::Acquire) as i64,
+//                     self.num_bundles_received.0 as i64,
 //                     i64
 //                 ),
 //                 (
 //                     "num_packets_received",
-//                     self.num_packets_received.swap(0, Ordering::Acquire) as i64,
+//                     self.num_packets_received.0 as i64,
 //                     i64
 //                 ),
 //                 (
 //                     "newly_buffered_bundles_count",
-//                     self.newly_buffered_bundles_count.swap(0, Ordering::Acquire) as i64,
+//                     self.newly_buffered_bundles_count.0 as i64,
 //                     i64
 //                 ),
 //                 (
 //                     "current_buffered_bundles_count",
-//                     self.current_buffered_bundles_count
-//                         .swap(0, Ordering::Acquire) as i64,
+//                     self.current_buffered_bundles_count.0 as i64,
 //                     i64
 //                 ),
 //                 (
 //                     "current_buffered_packets_count",
-//                     self.current_buffered_packets_count
-//                         .swap(0, Ordering::Acquire) as i64,
+//                     self.current_buffered_packets_count.0 as i64,
 //                     i64
 //                 ),
 //                 (
 //                     "num_bundles_dropped",
-//                     self.num_bundles_dropped.swap(0, Ordering::Acquire) as i64,
+//                     self.num_bundles_dropped.0 as i64,
 //                     i64
 //                 ),
 //                 (
 //                     "receive_and_buffer_bundles_elapsed_us",
-//                     self.receive_and_buffer_bundles_elapsed_us
-//                         .swap(0, Ordering::Acquire) as i64,
+//                     self.receive_and_buffer_bundles_elapsed_us.0 as i64,
 //                     i64
 //                 ),
 //                 (
 //                     "process_buffered_bundles_elapsed_us",
-//                     self.process_buffered_bundles_elapsed_us
-//                         .swap(0, Ordering::Acquire) as i64,
+//                     self.process_buffered_bundles_elapsed_us.0 as i64,
 //                     i64
 //                 ),
 //             );
+
+//             self.last_report = Instant::now();
+//             self.clear();
 //         }
+//     }
+
+//     fn clear(&mut self) {
+//         self.num_bundles_received = Saturating(0);
+//         self.num_packets_received = Saturating(0);
+//         self.newly_buffered_bundles_count = Saturating(0);
+//         self.current_buffered_bundles_count = Saturating(0);
+//         self.current_buffered_packets_count = Saturating(0);
+//         self.cost_model_buffered_bundles_count = Saturating(0);
+//         self.cost_model_buffered_packets_count = Saturating(0);
+//         self.num_bundles_dropped = Saturating(0);
+//         self.receive_and_buffer_bundles_elapsed_us = Saturating(0);
+//         self.process_buffered_bundles_elapsed_us = Saturating(0);
 //     }
 // }
 
@@ -261,7 +250,7 @@ pub mod bundle_account_locker;
 //             replay_vote_sender,
 //             prioritization_fee_cache.clone(),
 //         );
-//         let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
+//         let decision_maker = DecisionMaker::new(poh_recorder.read().unwrap().shared_leader_state());
 
 //         let unprocessed_bundle_storage = BundleStorage::default();
 

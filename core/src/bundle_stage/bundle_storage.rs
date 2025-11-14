@@ -1,348 +1,473 @@
-// use {
-//     crate::{
-//         bundle_stage::bundle_stage_leader_metrics::BundleStageLeaderMetrics,
-//         immutable_deserialized_bundle::ImmutableDeserializedBundle,
-//     },
-//     solana_bundle::{
-//         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
-//     },
-//     solana_clock::Slot,
-//     solana_pubkey::Pubkey,
-//     solana_runtime::bank::Bank,
-//     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-//     std::{
-//         collections::{HashSet, VecDeque},
-//         sync::Arc,
-//         time::Instant,
-//     },
-// };
+use crate::banking_stage::{
+    scheduler_messages::MaxAge,
+    transaction_scheduler::transaction_state_container::RuntimeTransactionView,
+};
+use arrayvec::ArrayVec;
+use solana_runtime_transaction::transaction_meta::StaticMeta;
+use solana_svm_transaction::svm_message::SVMMessage;
 
-// pub struct InsertPacketBundlesSummary {
-//     pub num_bundles_inserted: usize,
-//     pub num_packets_inserted: usize,
-//     pub num_bundles_dropped: usize,
-// }
+use {
+    crate::{
+        banking_stage::transaction_scheduler::{
+            receive_and_buffer::{
+                calculate_max_age, calculate_priority_and_cost, translate_to_runtime_view,
+                PacketHandlingError,
+            },
+            transaction_state::TransactionState,
+            transaction_state_container::{
+                SharedBytes, StateContainer, TransactionViewState, TransactionViewStateContainer,
+            },
+        },
+        packet_bundle::PacketBundle,
+    },
+    ahash::HashSet,
+    solana_accounts_db::account_locks::validate_account_locks,
+    solana_clock::Slot,
+    solana_fee_structure::FeeBudgetLimits,
+    solana_hash::Hash,
+    solana_pubkey::Pubkey,
+    solana_runtime::bank::Bank,
+    std::collections::VecDeque,
+};
 
-// /// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
-// /// the cost model and need to get retried next slot.
-// #[derive(Debug)]
-// pub struct BundleStorage {
-//     last_update_slot: Slot,
-//     unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
-//     // Storage for bundles that exceeded the cost model for the slot they were last attempted
-//     // execution on
-//     cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
-// }
+#[derive(Debug, PartialEq, Eq)]
+pub enum BundleStorageError {
+    EmptyBatch,
+    ContainerFull,
+    PacketMarkedDiscard(usize),
+    PacketFilterError((PacketHandlingError, usize /* packet index */)),
+    BundleTooLarge,
+    DuplicateTransaction,
+}
 
-// impl Default for BundleStorage {
-//     fn default() -> Self {
-//         Self {
-//             last_update_slot: Slot::default(),
-//             unprocessed_bundle_storage: VecDeque::with_capacity(Self::BUNDLE_STORAGE_CAPACITY),
-//             cost_model_buffered_bundle_storage: VecDeque::with_capacity(
-//                 Self::BUNDLE_STORAGE_CAPACITY,
-//             ),
-//         }
-//     }
-// }
+struct BundleTransactionId {
+    container_ids: Vec<usize>,
+}
 
-// impl BundleStorage {
-//     pub const BUNDLE_STORAGE_CAPACITY: usize = 1000;
+struct BundleStorageEntry {
+    container_ids: Vec<usize>,
+    transactions: Vec<RuntimeTransactionView>,
+    max_ages: Vec<MaxAge>,
+}
 
-//     pub fn is_empty(&self) -> bool {
-//         self.unprocessed_bundle_storage.is_empty()
-//             && self.cost_model_buffered_bundle_storage.is_empty()
-//     }
+/// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
+/// the cost model and need to get retried next slot.
+pub struct BundleStorage {
+    last_slot: Slot,
+    transaction_capacity: usize,
+    transaction_view_state_container: TransactionViewStateContainer,
+    unprocessed_bundles: VecDeque<BundleTransactionId>,
+    // Storage for bundles that exceeded the cost model for the slot they were last attempted
+    // execution on
+    cost_model_buffered_bundles: VecDeque<BundleTransactionId>,
+}
 
-//     pub fn len(&self) -> usize {
-//         self.unprocessed_bundles_len() + self.cost_model_buffered_bundles_len()
-//     }
+impl BundleStorage {
+    pub const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
-//     pub fn unprocessed_bundles_len(&self) -> usize {
-//         self.unprocessed_bundle_storage.len()
-//     }
+    #[allow(unused)]
+    pub fn with_capacity(transaction_capacity: usize) -> Self {
+        Self {
+            last_slot: Slot::default(),
+            transaction_capacity,
+            transaction_view_state_container: TransactionViewStateContainer::with_capacity(
+                transaction_capacity,
+            ),
+            unprocessed_bundles: VecDeque::with_capacity(transaction_capacity),
+            cost_model_buffered_bundles: VecDeque::with_capacity(transaction_capacity),
+        }
+    }
 
-//     pub fn unprocessed_packets_len(&self) -> usize {
-//         self.unprocessed_bundle_storage
-//             .iter()
-//             .map(|b| b.len())
-//             .sum::<usize>()
-//     }
+    /// Retries a bundle by inserting the transactions back into the transaction_view_state_container.
+    /// The bundle is then pushed back to the cost_model_buffered_bundles queue.
+    pub fn retry_bundle(&mut self, bundle: BundleStorageEntry) {
+        for (container_id, transaction) in bundle
+            .container_ids
+            .iter()
+            .zip(bundle.transactions.into_iter())
+        {
+            self.transaction_view_state_container
+                .get_mut_transaction_state(*container_id)
+                .unwrap()
+                .retry_transaction(transaction);
+        }
+        self.cost_model_buffered_bundles
+            .push_back(BundleTransactionId {
+                container_ids: bundle.container_ids,
+            });
+    }
 
-//     pub(crate) fn cost_model_buffered_bundles_len(&self) -> usize {
-//         self.cost_model_buffered_bundle_storage.len()
-//     }
+    /// Destroys a bundle by removing the transactions from the transaction_view_state_container.
+    /// It's important that transactions in the BundleStorageEntry are not used after this call
+    /// as it will lead to panic inside the TransactionViewStateContainer.
+    pub fn destroy_bundle(&mut self, bundle: BundleStorageEntry) {
+        for container_id in bundle.container_ids.into_iter() {
+            self.transaction_view_state_container
+                .remove_by_id(container_id);
+        }
+    }
 
-//     pub(crate) fn cost_model_buffered_packets_len(&self) -> usize {
-//         self.cost_model_buffered_bundle_storage
-//             .iter()
-//             .map(|b| b.len())
-//             .sum()
-//     }
+    /// Pops a bundle from the unprocessed_bundles queue and returns it as a BundleStorageEntry.
+    /// Returns None if there are no bundles to pop.
+    pub fn pop_bundle(&mut self, slot: Slot) -> Option<BundleStorageEntry> {
+        if slot != self.last_slot {
+            // the cost_model_buffered_bundles has the oldest bundles at the front of the queue
+            // we need to pop from the back of that queue and insert to the front of the unprocessed_bundles queue so by the time we reach the front,
+            // the oldest bundle is at the front of the unprocessed_bundles queue
+            while let Some(bundle) = self.cost_model_buffered_bundles.pop_back() {
+                self.unprocessed_bundles.push_front(bundle);
+            }
 
-//     pub(crate) fn max_receive_size(&self) -> usize {
-//         self.unprocessed_bundle_storage.capacity() - self.unprocessed_bundle_storage.len()
-//     }
+            self.last_slot = slot;
+        }
 
-//     /// Returns the number of unprocessed bundles + cost model buffered cleared
-//     pub fn reset(&mut self) -> (usize, usize) {
-//         let num_unprocessed_bundles = self.unprocessed_bundle_storage.len();
-//         let num_cost_model_buffered_bundles = self.cost_model_buffered_bundle_storage.len();
-//         self.unprocessed_bundle_storage.clear();
-//         self.cost_model_buffered_bundle_storage.clear();
-//         (num_unprocessed_bundles, num_cost_model_buffered_bundles)
-//     }
+        // only want to pop from the unprocessed bundles queue and wait for slot boundary to refresh from cost_model_buffered_bundles
+        let bundle = match self.unprocessed_bundles.pop_front() {
+            Some(bundle) => bundle,
+            None => return None,
+        };
 
-//     fn insert_bundles(
-//         deque: &mut VecDeque<ImmutableDeserializedBundle>,
-//         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-//         push_back: bool,
-//     ) -> InsertPacketBundlesSummary {
-//         // deque should be initialized with size [Self::BUNDLE_STORAGE_CAPACITY]
-//         let deque_free_space = Self::BUNDLE_STORAGE_CAPACITY
-//             .checked_sub(deque.len())
-//             .unwrap();
-//         let num_bundles_inserted = std::cmp::min(deque_free_space, deserialized_bundles.len());
-//         let num_bundles_dropped = deserialized_bundles
-//             .len()
-//             .checked_sub(num_bundles_inserted)
-//             .unwrap();
-//         let num_packets_inserted = deserialized_bundles
-//             .iter()
-//             .take(num_bundles_inserted)
-//             .map(|b| b.len())
-//             .sum::<usize>();
+        let (bundle_transactions, bundle_max_ages): (Vec<RuntimeTransactionView>, Vec<MaxAge>) =
+            bundle
+                .container_ids
+                .iter()
+                .map(|id| {
+                    self.transaction_view_state_container
+                        .get_mut_transaction_state(*id)
+                        .unwrap()
+                        .take_transaction_for_scheduling()
+                })
+                .collect();
 
-//         let to_insert = deserialized_bundles.into_iter().take(num_bundles_inserted);
-//         if push_back {
-//             deque.extend(to_insert)
-//         } else {
-//             to_insert.for_each(|b| deque.push_front(b));
-//         }
+        Some(BundleStorageEntry {
+            container_ids: bundle.container_ids,
+            transactions: bundle_transactions,
+            max_ages: bundle_max_ages,
+        })
+    }
 
-//         InsertPacketBundlesSummary {
-//             num_bundles_inserted,
-//             num_packets_inserted,
-//             num_bundles_dropped,
-//         }
-//     }
+    pub fn insert_bundle(
+        &mut self,
+        bundle: PacketBundle,
+        root_bank: &Bank,
+        working_bank: &Bank,
+        blacklisted_accounts: &HashSet<Pubkey>,
+    ) -> Result<(), BundleStorageError> {
+        let batch = bundle.take();
 
-//     fn push_front_unprocessed_bundles(
-//         &mut self,
-//         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-//     ) -> InsertPacketBundlesSummary {
-//         Self::insert_bundles(
-//             &mut self.unprocessed_bundle_storage,
-//             deserialized_bundles,
-//             false,
-//         )
-//     }
+        // Packet checks
+        if batch.is_empty() {
+            return Err(BundleStorageError::EmptyBatch);
+        }
+        if batch.len() > Self::MAX_PACKETS_PER_BUNDLE {
+            return Err(BundleStorageError::BundleTooLarge);
+        }
+        if let Some(idx) = batch
+            .iter()
+            .enumerate()
+            .find_map(|(idx, packet)| packet.meta().discard().then_some(idx))
+        {
+            return Err(BundleStorageError::PacketMarkedDiscard(idx));
+        }
 
-//     fn push_back_cost_model_buffered_bundles(
-//         &mut self,
-//         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-//     ) -> InsertPacketBundlesSummary {
-//         Self::insert_bundles(
-//             &mut self.cost_model_buffered_bundle_storage,
-//             deserialized_bundles,
-//             true,
-//         )
-//     }
+        // Container checks
+        if self
+            .transaction_view_state_container
+            .buffer_size()
+            .saturating_add(batch.len())
+            > self.transaction_capacity
+        {
+            return Err(BundleStorageError::ContainerFull);
+        }
 
-//     pub fn insert_unprocessed_bundles(
-//         &mut self,
-//         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-//     ) -> InsertPacketBundlesSummary {
-//         Self::insert_bundles(
-//             &mut self.unprocessed_bundle_storage,
-//             deserialized_bundles,
-//             true,
-//         )
-//     }
+        let mut container_ids: Vec<usize> = Vec::with_capacity(batch.len());
+        let mut maybe_error = Ok(());
 
-//     /// Drains bundles from the queue, sanitizes them to prepare for execution, executes them by
-//     /// calling `processing_function`, then potentially rebuffer them.
-//     pub fn process_bundles<F>(
-//         &mut self,
-//         bank: Arc<Bank>,
-//         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-//         blacklisted_accounts: &HashSet<Pubkey>,
-//         mut processing_function: F,
-//     ) -> bool
-//     where
-//         F: FnMut(
-//             &[(ImmutableDeserializedBundle, SanitizedBundle)],
-//             &mut BundleStageLeaderMetrics,
-//         ) -> Vec<Result<(), BundleExecutionError>>,
-//     {
-//         let sanitized_bundles = self.drain_and_sanitize_bundles(
-//             bank,
-//             bundle_stage_leader_metrics,
-//             blacklisted_accounts,
-//         );
+        for (idx, packet) in batch.iter().enumerate() {
+            // bundles shall contain all valid packets; checked above
+            let packet_data = packet.data(..).unwrap();
 
-//         debug!("processing {} bundles", sanitized_bundles.len());
-//         let bundle_execution_results =
-//             processing_function(&sanitized_bundles, bundle_stage_leader_metrics);
+            // try to insert the packet into the container
+            if let Some(container_id) = self
+                .transaction_view_state_container
+                .try_insert_map_only_with_data(packet_data, |bytes| {
+                    match Self::try_handle_packet(
+                        bytes,
+                        root_bank,
+                        working_bank,
+                        working_bank
+                            .feature_set
+                            .is_active(&agave_feature_set::static_instruction_limit::id()),
+                        working_bank.get_transaction_account_lock_limit(),
+                        &blacklisted_accounts,
+                    ) {
+                        Ok(state) => Ok(state),
+                        Err(e) => {
+                            maybe_error = Err(e);
+                            Err(())
+                        }
+                    }
+                })
+            {
+                container_ids.push(container_id);
+            } else {
+                // any error shall rollback any transactions added to the container
+                for container_id in container_ids.iter() {
+                    self.transaction_view_state_container
+                        .remove_by_id(*container_id);
+                }
+                return Err(BundleStorageError::PacketFilterError((
+                    maybe_error.unwrap_err(),
+                    idx,
+                )));
+            }
+        }
 
-//         let mut is_slot_over = false;
+        let is_duplicate_hashes = self.does_contain_duplicate_hashes(&container_ids);
+        if is_duplicate_hashes {
+            for container_id in container_ids.iter() {
+                self.transaction_view_state_container
+                    .remove_by_id(*container_id);
+            }
+            return Err(BundleStorageError::DuplicateTransaction);
+        }
 
-//         let mut rebuffered_bundles = Vec::new();
+        self.unprocessed_bundles
+            .push_back(BundleTransactionId { container_ids });
 
-//         sanitized_bundles
-//             .into_iter()
-//             .zip(bundle_execution_results)
-//             .for_each(
-//                 |((deserialized_bundle, sanitized_bundle), result)| match result {
-//                     Ok(_) => {
-//                         debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
-//                         // yippee
-//                     }
-//                     Err(BundleExecutionError::PohRecordError(e)) => {
-//                         // buffer the bundle to the front of the queue to be attempted next slot
-//                         debug!(
-//                             "bundle={} poh record error: {e:?}",
-//                             sanitized_bundle.bundle_id
-//                         );
-//                         rebuffered_bundles.push(deserialized_bundle);
-//                         is_slot_over = true;
-//                     }
-//                     Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
-//                         // buffer the bundle to the front of the queue to be attempted next slot
-//                         debug!("bundle={} bank processing done", sanitized_bundle.bundle_id);
-//                         rebuffered_bundles.push(deserialized_bundle);
-//                         is_slot_over = true;
-//                     }
-//                     Err(BundleExecutionError::ExceedsCostModel) => {
-//                         // cost model buffered bundles contain most recent bundles at the front of the queue
-//                         debug!(
-//                             "bundle={} exceeds cost model, rebuffering",
-//                             sanitized_bundle.bundle_id
-//                         );
-//                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
-//                     }
-//                     Err(BundleExecutionError::TransactionFailure(
-//                         LoadAndExecuteBundleError::ProcessingTimeExceeded(_),
-//                     )) => {
-//                         // these are treated the same as exceeds cost model and are rebuferred to be completed
-//                         // at the beginning of the next slot
-//                         debug!(
-//                             "bundle={} processing time exceeded, rebuffering",
-//                             sanitized_bundle.bundle_id
-//                         );
-//                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
-//                     }
-//                     Err(BundleExecutionError::TransactionFailure(e)) => {
-//                         debug!(
-//                             "bundle={} execution error: {:?}",
-//                             sanitized_bundle.bundle_id, e
-//                         );
-//                         // do nothing
-//                     }
-//                     Err(BundleExecutionError::TipError(e)) => {
-//                         debug!("bundle={} tip error: {}", sanitized_bundle.bundle_id, e);
-//                         // Tip errors are _typically_ due to misconfiguration (except for poh record error, bank processing error, exceeds cost model)
-//                         // in order to prevent buffering too many bundles, we'll just drop the bundle
-//                     }
-//                     Err(BundleExecutionError::LockError) => {
-//                         // lock errors are irrecoverable due to malformed transactions
-//                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
-//                     }
-//                 },
-//             );
+        Ok(())
+    }
 
-//         // rebuffered bundles are pushed onto deque in reverse order so the first bundle is at the front
-//         for bundle in rebuffered_bundles.into_iter().rev() {
-//             self.push_front_unprocessed_bundles(vec![bundle]);
-//         }
+    fn does_contain_duplicate_hashes(&self, container_ids: &[usize]) -> bool {
+        let mut transaction_hashes = ArrayVec::<_, { Self::MAX_PACKETS_PER_BUNDLE }>::new();
+        for container_id in container_ids.iter() {
+            let transaction_hash = self
+                .transaction_view_state_container
+                .get_transaction(*container_id)
+                .unwrap()
+                .message_hash();
+            if transaction_hashes.contains(&transaction_hash) {
+                return true;
+            }
+            transaction_hashes.push(transaction_hash);
+        }
+        false
+    }
 
-//         is_slot_over
-//     }
+    fn try_handle_packet(
+        bytes: SharedBytes,
+        root_bank: &Bank,
+        working_bank: &Bank,
+        enable_static_instruction_limit: bool,
+        transaction_account_lock_limit: usize,
+        blacklisted_accounts: &HashSet<Pubkey>,
+    ) -> Result<TransactionViewState, PacketHandlingError> {
+        let (view, deactivation_slot) = translate_to_runtime_view(
+            bytes,
+            root_bank,
+            enable_static_instruction_limit,
+            transaction_account_lock_limit,
+        )?;
+        if validate_account_locks(
+            view.account_keys(),
+            root_bank.get_transaction_account_lock_limit(),
+        )
+        .is_err()
+        {
+            return Err(PacketHandlingError::LockValidation);
+        }
 
-//     /// Drains the unprocessed_bundle_storage, converting bundle packets into SanitizedBundles
-//     fn drain_and_sanitize_bundles(
-//         &mut self,
-//         bank: Arc<Bank>,
-//         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-//         blacklisted_accounts: &HashSet<Pubkey>,
-//     ) -> Vec<(ImmutableDeserializedBundle, SanitizedBundle)> {
-//         let mut error_metrics = TransactionErrorMetrics::default();
+        if view
+            .account_keys()
+            .iter()
+            .any(|account| blacklisted_accounts.contains(account))
+        {
+            return Err(PacketHandlingError::BlacklistedAccount);
+        }
 
-//         let start = Instant::now();
+        let Ok(compute_budget_limits) = view
+            .compute_budget_instruction_details()
+            .sanitize_and_convert_to_compute_budget_limits(&working_bank.feature_set)
+        else {
+            return Err(PacketHandlingError::ComputeBudget);
+        };
 
-//         let mut sanitized_bundles = Vec::new();
+        let max_age = calculate_max_age(root_bank.epoch(), deactivation_slot, root_bank.slot());
+        let fee_budget_limits = FeeBudgetLimits::from(compute_budget_limits);
+        let (priority, cost) = calculate_priority_and_cost(&view, &fee_budget_limits, working_bank);
 
-//         // on new slot, drain anything that was buffered from last slot
-//         if bank.slot() != self.last_update_slot {
-//             sanitized_bundles.extend(
-//                 self.cost_model_buffered_bundle_storage
-//                     .drain(..)
-//                     .filter_map(|packet_bundle| {
-//                         let r = packet_bundle.build_sanitized_bundle(
-//                             &bank,
-//                             blacklisted_accounts,
-//                             &mut error_metrics,
-//                         );
-//                         bundle_stage_leader_metrics
-//                             .bundle_stage_metrics_tracker()
-//                             .increment_sanitize_transaction_result(&r);
+        Ok(TransactionState::new(view, max_age, priority, cost))
+    }
+}
 
-//                         match r {
-//                             Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-//                             Err(e) => {
-//                                 debug!(
-//                                     "bundle id: {} error sanitizing: {}",
-//                                     packet_bundle.bundle_id(),
-//                                     e
-//                                 );
-//                                 None
-//                             }
-//                         }
-//                     }),
-//             );
+#[cfg(test)]
+mod tests {
+    use ahash::{HashSet, HashSetExt};
+    use solana_genesis_config::GenesisConfig;
+    use solana_hash::Hash;
+    use solana_keypair::Keypair;
+    use solana_perf::packet::{BytesPacket, PacketBatch};
+    use solana_runtime::bank::Bank;
+    use solana_signer::Signer;
+    use solana_transaction::Transaction;
 
-//             self.last_update_slot = bank.slot();
-//         }
+    use crate::banking_stage::transaction_scheduler::receive_and_buffer::PacketHandlingError;
+    use crate::banking_stage::transaction_scheduler::transaction_state_container::StateContainer;
+    use crate::bundle_stage::bundle_storage::{BundleStorage, BundleStorageError};
+    use crate::packet_bundle::PacketBundle;
 
-//         sanitized_bundles.extend(self.unprocessed_bundle_storage.drain(..).filter_map(
-//             |packet_bundle| {
-//                 let r = packet_bundle.build_sanitized_bundle(
-//                     &bank,
-//                     blacklisted_accounts,
-//                     &mut error_metrics,
-//                 );
-//                 bundle_stage_leader_metrics
-//                     .bundle_stage_metrics_tracker()
-//                     .increment_sanitize_transaction_result(&r);
-//                 match r {
-//                     Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-//                     Err(e) => {
-//                         debug!(
-//                             "bundle id: {} error sanitizing: {}",
-//                             packet_bundle.bundle_id(),
-//                             e
-//                         );
-//                         None
-//                     }
-//                 }
-//             },
-//         ));
+    pub fn test_tx() -> Transaction {
+        let keypair1 = Keypair::new();
+        let pubkey1 = keypair1.pubkey();
+        solana_system_transaction::transfer(&keypair1, &pubkey1, 42, Hash::default())
+    }
 
-//         let elapsed = start.elapsed().as_micros();
-//         bundle_stage_leader_metrics
-//             .bundle_stage_metrics_tracker()
-//             .increment_sanitize_bundle_elapsed_us(elapsed as u64);
-//         bundle_stage_leader_metrics
-//             .leader_slot_metrics_tracker()
-//             .increment_transactions_from_packets_us(elapsed as u64);
+    #[test]
+    fn test_bundle_too_large() {
+        let mut bundle_storage = BundleStorage::with_capacity(10);
 
-//         bundle_stage_leader_metrics
-//             .leader_slot_metrics_tracker()
-//             .accumulate_transaction_errors(&error_metrics);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let packets: Vec<BytesPacket> = (0..BundleStorage::MAX_PACKETS_PER_BUNDLE + 1)
+            .map(|_| BytesPacket::from_data(None, &test_tx()).unwrap())
+            .collect();
+        let bundle = PacketBundle::new(PacketBatch::from(packets), "".to_string());
+        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
 
-//         sanitized_bundles
-//     }
-// }
+        assert_matches!(result, Err(BundleStorageError::BundleTooLarge));
+        assert_eq!(bundle_storage.unprocessed_bundles.len(), 0);
+        assert_eq!(bundle_storage.cost_model_buffered_bundles.len(), 0);
+        assert!(bundle_storage.transaction_view_state_container.is_empty());
+    }
 
-// #[cfg(test)]
-// mod tests {}
+    #[test]
+    fn test_bundle_marked_discard() {
+        let mut bundle_storage = BundleStorage::with_capacity(10);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let packet_1 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let mut packet_2 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        packet_2.meta_mut().set_discard(true);
+        let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
+        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
+        assert_matches!(result, Err(BundleStorageError::PacketMarkedDiscard(1)));
+    }
+
+    #[test]
+    fn test_bundle_storage_exceeds_capacity() {
+        let mut bundle_storage = BundleStorage::with_capacity(10);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+
+        for i in 0..10 {
+            let packet = BytesPacket::from_data(None, &test_tx()).unwrap();
+            let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
+            bundle_storage
+                .insert_bundle(bundle, &bank, &bank, &HashSet::new())
+                .unwrap();
+            assert_eq!(bundle_storage.unprocessed_bundles.len(), i + 1);
+            assert_eq!(
+                bundle_storage
+                    .transaction_view_state_container
+                    .buffer_size(),
+                i + 1
+            );
+        }
+
+        let packet = BytesPacket::from_data(None, &test_tx()).unwrap();
+
+        let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
+        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
+        assert_eq!(result, Err(BundleStorageError::ContainerFull));
+        assert_eq!(bundle_storage.unprocessed_bundles.len(), 10);
+        assert_eq!(
+            bundle_storage
+                .transaction_view_state_container
+                .buffer_size(),
+            10
+        );
+    }
+
+    #[test]
+    fn test_bundle_empty() {
+        let mut bundle_storage = BundleStorage::with_capacity(10);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let bundle = PacketBundle::new(PacketBatch::from(vec![]), "".to_string());
+        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
+        assert_matches!(result, Err(BundleStorageError::EmptyBatch));
+    }
+
+    #[test]
+    fn test_bundle_duplicate_hashes() {
+        let mut bundle_storage = BundleStorage::with_capacity(10);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let packet_1 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let packet_2 = packet_1.clone();
+        let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
+        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
+        assert_matches!(result, Err(BundleStorageError::DuplicateTransaction));
+    }
+
+    #[test]
+    fn test_retry_bundle() {
+        let mut bundle_storage = BundleStorage::with_capacity(10);
+
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let packet_1 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let packet_2 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
+        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
+        assert!(result.is_ok());
+
+        let bundle_storage_entry = bundle_storage.pop_bundle(bank.slot()).unwrap();
+        bundle_storage.retry_bundle(bundle_storage_entry);
+
+        assert!(bundle_storage.pop_bundle(bank.slot()).is_none());
+        assert!(bundle_storage.unprocessed_bundles.is_empty());
+        assert_eq!(bundle_storage.cost_model_buffered_bundles.len(), 1);
+        assert_eq!(
+            bundle_storage
+                .transaction_view_state_container
+                .buffer_size(),
+            2
+        );
+
+        bundle_storage.pop_bundle(bank.slot() + 1).unwrap();
+    }
+
+    #[test]
+    fn test_bundle_blacklisted_account() {
+        let mut bundle_storage = BundleStorage::with_capacity(10);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+        let tx = test_tx();
+        let pubkey = tx.message().account_keys[0];
+        let blacklisted_accounts = HashSet::from_iter([pubkey]);
+        let packet = BytesPacket::from_data(None, tx).unwrap();
+        let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
+        let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &blacklisted_accounts);
+        assert_matches!(
+            result,
+            Err(BundleStorageError::PacketFilterError((
+                PacketHandlingError::BlacklistedAccount,
+                0
+            )))
+        );
+    }
+
+    // #[test]
+    // fn test_retry_bundle_ordering_preserved() {
+    //     panic!("not implemented");
+    // }
+
+    // #[test]
+    // fn test_destroy_bundle() {
+    //     panic!("not implemented");
+    // }
+
+    // #[test]
+    // fn test_pop_bundle() {
+    //     panic!("not implemented");
+    // }
+
+    // #[test]
+    // fn test_insert_bundle() {
+    //     panic!("not implemented");
+    // }
+}

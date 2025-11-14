@@ -69,14 +69,13 @@ pub fn bank_fields_from_snapshot_archives(
     accounts_db_config: &AccountsDbConfig,
 ) -> agave_snapshots::Result<BankFieldsToDeserialize> {
     let full_snapshot_archive_info =
-        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir, None).ok_or_else(
-            || SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf()),
-        )?;
+        get_highest_full_snapshot_archive_info(&full_snapshot_archives_dir).ok_or_else(|| {
+            SnapshotError::NoSnapshotArchives(full_snapshot_archives_dir.as_ref().to_path_buf())
+        })?;
 
     let incremental_snapshot_archive_info = get_highest_incremental_snapshot_archive_info(
         &incremental_snapshot_archives_dir,
         full_snapshot_archive_info.slot(),
-        None,
     );
 
     let temp_unpack_dir = TempDir::new()?;

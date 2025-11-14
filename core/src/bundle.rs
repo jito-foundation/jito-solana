@@ -5,6 +5,26 @@ use {
 
 #[derive(Debug)]
 pub struct SanitizedBundle {
-    pub transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
-    pub bundle_id: String,
+    transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
+    bundle_id: String,
+}
+
+impl SanitizedBundle {
+    pub fn new(
+        transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
+        bundle_id: String,
+    ) -> Self {
+        Self {
+            transactions,
+            bundle_id,
+        }
+    }
+
+    pub fn transactions(&self) -> &[RuntimeTransaction<SanitizedTransaction>] {
+        &self.transactions
+    }
+
+    pub fn bundle_id(&self) -> &String {
+        &self.bundle_id
+    }
 }

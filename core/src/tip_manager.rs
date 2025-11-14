@@ -566,10 +566,7 @@ impl TipManager {
             None
         } else {
             let bundle_id = derive_bundle_id(&transactions);
-            Some(SanitizedBundle {
-                transactions,
-                bundle_id,
-            })
+            Some(SanitizedBundle::new(transactions, bundle_id))
         }
     }
 
@@ -623,10 +620,7 @@ impl TipManager {
             Ok(None)
         } else {
             let bundle_id = derive_bundle_id(&transactions);
-            Ok(Some(SanitizedBundle {
-                transactions,
-                bundle_id,
-            }))
+            Ok(Some(SanitizedBundle::new(transactions, bundle_id)))
         }
     }
 }

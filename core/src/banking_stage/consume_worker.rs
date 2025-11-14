@@ -2188,7 +2188,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            BundleAccountLocker::default(),
+            // BundleAccountLocker::default(),
         );
         let shared_leader_state = SharedLeaderState::new(0, None, None);
 

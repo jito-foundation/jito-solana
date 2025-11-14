@@ -11,7 +11,7 @@ use {
             TracerThread, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME,
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
-        validator::{BlockProductionMethod, TransactionStructure},
+        validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
     arc_swap::ArcSwap,
@@ -853,7 +853,7 @@ impl BankingSimulator {
             bank_forks.clone(),
             prioritization_fee_cache.clone(),
             collections::HashSet::default(),
-            BundleAccountLocker::default(),
+            // BundleAccountLocker::default(),
             |_| 0,
         );
 
