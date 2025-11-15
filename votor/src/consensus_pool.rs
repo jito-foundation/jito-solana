@@ -561,6 +561,7 @@ mod tests {
         solana_gossip::contact_info::ContactInfo,
         solana_hash::Hash,
         solana_keypair::Keypair,
+        solana_net_utils::SocketAddrSpace,
         solana_runtime::{
             bank::{Bank, NewBankOptions},
             bank_forks::BankForks,
@@ -569,7 +570,6 @@ mod tests {
             },
         },
         solana_signer::Signer,
-        solana_streamer::socket::SocketAddrSpace,
         std::sync::{Arc, RwLock},
         test_case::test_case,
     };
