@@ -5,9 +5,8 @@ use {
         qos_service::QosService,
         scheduler_messages::MaxAge,
     },
-    // crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     itertools::Itertools,
-
     solana_clock::MAX_PROCESSING_AGE,
     solana_fee::FeeFeatures,
     solana_fee_structure::FeeBudgetLimits,
@@ -118,7 +117,7 @@ pub struct Consumer {
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
-    // bundle_account_locker: BundleAccountLocker,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl Consumer {
@@ -127,14 +126,14 @@ impl Consumer {
         transaction_recorder: TransactionRecorder,
         qos_service: QosService,
         log_messages_bytes_limit: Option<usize>,
-        // bundle_account_locker: BundleAccountLocker,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             committer,
             transaction_recorder,
             qos_service,
             log_messages_bytes_limit,
-            // bundle_account_locker,
+            bundle_account_locker,
         }
     }
 
@@ -236,19 +235,17 @@ impl Consumer {
         // Once accounts are locked, other threads cannot encode transactions that will modify the
         // same account state.
         // BundleAccountLocker is used to prevent race conditions with bundled transactions from bundle stage
-        // let bundle_account_locks = self.bundle_account_locker.account_locks();
+        let bundle_account_locks = self.bundle_account_locker.account_locks();
         let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
             txs,
             transaction_qos_cost_results.iter().map(|r| match r {
                 Ok(_cost) => Ok(()),
                 Err(err) => Err(err.clone()),
             }),
-            // &|pubkey| { bundle_account_locks.read_locks().contains(pubkey) },
-            // &|pubkey| { bundle_account_locks.write_locks().contains(pubkey) }
-            &|_pubkey| { false },
-            &|_pubkey| { false }
+            &|pubkey| { bundle_account_locks.read_locks().contains_key(pubkey) },
+            &|pubkey| { bundle_account_locks.write_locks().contains_key(pubkey) }
         ));
-        // drop(bundle_account_locks);
+        drop(bundle_account_locks);
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
         // WouldExceedMaxAccountCostLimit, WouldExceedMaxVoteCostLimit
@@ -642,7 +639,13 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            BundleAccountLocker::default(),
+        );
         consumer.process_and_record_transactions(&bank, &transactions, &|_| 0)
     }
 
@@ -727,7 +730,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         let process_transactions_batch_output =
@@ -856,7 +859,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         let process_transactions_batch_output =
@@ -921,7 +924,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         let process_transactions_batch_output =
@@ -988,7 +991,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         let get_block_cost = || bank.read_cost_tracker().unwrap().block_cost();
@@ -1163,7 +1166,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         // with simd83 and no duplicate, we take a cross-batch lock on an account to create a conflict
@@ -1398,7 +1401,7 @@ mod tests {
             recorder.clone(),
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         let process_transactions_summary =
@@ -1528,7 +1531,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         let _ = consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
@@ -1658,7 +1661,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
 
         let consumer_output =

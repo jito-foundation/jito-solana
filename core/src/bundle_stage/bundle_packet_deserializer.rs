@@ -1,243 +1,78 @@
-// //! Deserializes PacketBundles
+use ahash::HashSet;
+use solana_fee_structure::FeeBudgetLimits;
+use solana_pubkey::Pubkey;
+use solana_runtime::bank::Bank;
+use solana_runtime_transaction::transaction_meta::StaticMeta;
 
-// use {
-//     crate::{
-//         immutable_deserialized_bundle::{DeserializedBundleError, ImmutableDeserializedBundle},
-//         packet_bundle::PacketBundle,
-//     },
-//     crossbeam_channel::{Receiver, RecvTimeoutError},
-//     std::{
-//         num::Saturating,
-//         ops::AddAssign,
-//         time::{Duration, Instant},
-//     },
-// };
+use crate::banking_stage::transaction_scheduler::{
+    receive_and_buffer::{
+        calculate_max_age, calculate_priority_and_cost, translate_to_runtime_view,
+        PacketHandlingError,
+    },
+    transaction_state::TransactionState,
+    transaction_state_container::{SharedBytes, TransactionViewState},
+};
+use solana_accounts_db::account_locks::validate_account_locks;
+use solana_svm_transaction::svm_message::SVMMessage;
 
-// /// Results from deserializing packet batches.
-// #[derive(Debug)]
-// pub struct ReceiveBundleResults {
-//     /// Deserialized bundles from all received bundle packets
-//     pub deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-//     /// Number of dropped bundles
-//     pub num_dropped_bundles: Saturating<usize>,
-// }
+pub struct BundlePacketDeserializer;
 
-// pub struct BundlePacketDeserializer {
-//     /// Receiver for bundle packets
-//     bundle_packet_receiver: Receiver<Vec<PacketBundle>>,
-//     /// Max packets per bundle
-//     max_packets_per_bundle: Option<usize>,
-// }
+impl BundlePacketDeserializer {
+    /// Tries to deserialize a packet into a transaction state, returning an error if the packet is invalid.
+    ///
+    /// This should match the code in the following method:
+    /// [`crate::banking_stage::transaction_scheduler::receive_and_buffer::TransactionViewReceiveAndBuffer::try_handle_packet`]
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - The bytes of the packet to deserialize.
+    /// * `root_bank` - The root bank to use for the deserialization.
+    /// * `working_bank` - The working bank to use for the deserialization.
+    /// * `enable_static_instruction_limit` - Whether to enable the static instruction limit.
+    /// * `transaction_account_lock_limit` - The transaction account lock limit to use for the deserialization.
+    /// * `blacklisted_accounts` - The blacklisted accounts to use for the deserialization.
+    pub fn try_handle_packet(
+        bytes: SharedBytes,
+        root_bank: &Bank,
+        working_bank: &Bank,
+        enable_static_instruction_limit: bool,
+        transaction_account_lock_limit: usize,
+        blacklisted_accounts: &HashSet<Pubkey>,
+    ) -> Result<TransactionViewState, PacketHandlingError> {
+        let (view, deactivation_slot) = translate_to_runtime_view(
+            bytes,
+            root_bank,
+            enable_static_instruction_limit,
+            transaction_account_lock_limit,
+        )?;
+        if validate_account_locks(
+            view.account_keys(),
+            root_bank.get_transaction_account_lock_limit(),
+        )
+        .is_err()
+        {
+            return Err(PacketHandlingError::LockValidation);
+        }
 
-// pub type ReceiveUntilResult =
-//     Result<(Saturating<usize>, Saturating<usize>, Vec<PacketBundle>), RecvTimeoutError>;
+        if view
+            .account_keys()
+            .iter()
+            .any(|account| blacklisted_accounts.contains(account))
+        {
+            return Err(PacketHandlingError::BlacklistedAccount);
+        }
 
-// impl BundlePacketDeserializer {
-//     pub fn new(
-//         bundle_packet_receiver: Receiver<Vec<PacketBundle>>,
-//         max_packets_per_bundle: Option<usize>,
-//     ) -> Self {
-//         Self {
-//             bundle_packet_receiver,
-//             max_packets_per_bundle,
-//         }
-//     }
+        let Ok(compute_budget_limits) = view
+            .compute_budget_instruction_details()
+            .sanitize_and_convert_to_compute_budget_limits(&working_bank.feature_set)
+        else {
+            return Err(PacketHandlingError::ComputeBudget);
+        };
 
-//     /// Handles receiving bundles and deserializing them
-//     pub fn receive_bundles(
-//         &self,
-//         recv_timeout: Duration,
-//         capacity: usize,
-//     ) -> Result<ReceiveBundleResults, RecvTimeoutError> {
-//         let (bundle_count, _packet_count, mut bundles) =
-//             self.receive_until(recv_timeout, capacity)?;
+        let max_age = calculate_max_age(root_bank.epoch(), deactivation_slot, root_bank.slot());
+        let fee_budget_limits = FeeBudgetLimits::from(compute_budget_limits);
+        let (priority, cost) = calculate_priority_and_cost(&view, &fee_budget_limits, working_bank);
 
-//         Ok(Self::deserialize_and_collect_bundles(
-//             bundle_count,
-//             &mut bundles,
-//             self.max_packets_per_bundle,
-//         ))
-//     }
-
-//     /// Deserialize packet batches, aggregates tracer packet stats, and collect
-//     /// them into ReceivePacketResults
-//     fn deserialize_and_collect_bundles(
-//         bundle_count: Saturating<usize>,
-//         bundles: &mut [PacketBundle],
-//         max_packets_per_bundle: Option<usize>,
-//     ) -> ReceiveBundleResults {
-//         let mut deserialized_bundles = Vec::with_capacity(bundle_count.0);
-//         let mut num_dropped_bundles = Saturating(0);
-
-//         for bundle in bundles.iter_mut() {
-//             match Self::deserialize_bundle(bundle, max_packets_per_bundle) {
-//                 Ok(deserialized_bundle) => {
-//                     deserialized_bundles.push(deserialized_bundle);
-//                 }
-//                 Err(_) => {
-//                     num_dropped_bundles.add_assign(Saturating(1));
-//                 }
-//             }
-//         }
-
-//         ReceiveBundleResults {
-//             deserialized_bundles,
-//             num_dropped_bundles,
-//         }
-//     }
-
-//     /// Receives bundle packets
-//     fn receive_until(
-//         &self,
-//         recv_timeout: Duration,
-//         bundle_count_upperbound: usize,
-//     ) -> ReceiveUntilResult {
-//         let start = Instant::now();
-
-//         let mut bundles = self.bundle_packet_receiver.recv_timeout(recv_timeout)?;
-//         let mut num_packets_received: Saturating<usize> =
-//             Saturating(bundles.iter().map(|pb| pb.batch.len()).sum());
-//         let mut num_bundles_received: Saturating<usize> = Saturating(bundles.len());
-
-//         if num_bundles_received.0 <= bundle_count_upperbound {
-//             while let Ok(bundle_packets) = self.bundle_packet_receiver.try_recv() {
-//                 trace!("got more packet batches in bundle packet deserializer");
-//                 num_packets_received.add_assign(Saturating(
-//                     bundle_packets.iter().map(|pb| pb.batch.len()).sum(),
-//                 ));
-//                 num_bundles_received.add_assign(Saturating(bundle_packets.len()));
-
-//                 bundles.extend(bundle_packets);
-
-//                 if start.elapsed() >= recv_timeout
-//                     || num_bundles_received.0 >= bundle_count_upperbound
-//                 {
-//                     break;
-//                 }
-//             }
-//         }
-
-//         Ok((num_bundles_received, num_packets_received, bundles))
-//     }
-
-//     /// Deserializes the Bundle into DeserializedBundlePackets, returning None if any packet in the
-//     /// bundle failed to deserialize
-//     pub fn deserialize_bundle(
-//         bundle: &mut PacketBundle,
-//         max_packets_per_bundle: Option<usize>,
-//     ) -> Result<ImmutableDeserializedBundle, DeserializedBundleError> {
-//         ImmutableDeserializedBundle::new(bundle, max_packets_per_bundle)
-//     }
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use {
-//         super::*,
-//         crossbeam_channel::unbounded,
-//         solana_ledger::genesis_utils::create_genesis_config,
-//         solana_perf::packet::{BytesPacket, PacketBatch},
-//         solana_runtime::genesis_utils::GenesisConfigInfo,
-//         solana_signer::Signer,
-//         solana_system_transaction::transfer,
-//     };
-
-//     #[test]
-//     fn test_deserialize_and_collect_bundles_empty() {
-//         let results = BundlePacketDeserializer::deserialize_and_collect_bundles(
-//             Saturating(0),
-//             &mut [],
-//             Some(5),
-//         );
-//         assert_eq!(results.deserialized_bundles.len(), 0);
-//         assert_eq!(results.num_dropped_bundles.0, 0);
-//     }
-
-//     #[test]
-//     fn test_receive_bundles_capacity() {
-//         solana_logger::setup();
-
-//         let GenesisConfigInfo {
-//             genesis_config,
-//             mint_keypair,
-//             ..
-//         } = create_genesis_config(10_000);
-//         let (sender, receiver) = unbounded();
-
-//         let deserializer = BundlePacketDeserializer::new(receiver, Some(10));
-
-//         let packet_bundles: Vec<_> = (0..10)
-//             .map(|_| PacketBundle {
-//                 batch: PacketBatch::from(vec![BytesPacket::from_data(
-//                     None,
-//                     transfer(
-//                         &mint_keypair,
-//                         &mint_keypair.pubkey(),
-//                         100,
-//                         genesis_config.hash(),
-//                     ),
-//                 )
-//                 .unwrap()]),
-//                 bundle_id: String::default(),
-//             })
-//             .collect();
-
-//         sender.send(packet_bundles.clone()).unwrap();
-
-//         let bundles = deserializer
-//             .receive_bundles(Duration::from_millis(100), 5)
-//             .unwrap();
-//         // this is confusing, but it's sent as one batch
-//         assert_eq!(bundles.deserialized_bundles.len(), 10);
-//         assert_eq!(bundles.num_dropped_bundles.0, 0);
-
-//         // make sure empty
-//         assert_matches!(
-//             deserializer.receive_bundles(Duration::from_millis(100), 5),
-//             Err(RecvTimeoutError::Timeout)
-//         );
-
-//         // send 2x 10 size batches. capacity is 5, but will return 10 since that's the batch size
-//         sender.send(packet_bundles.clone()).unwrap();
-//         sender.send(packet_bundles).unwrap();
-//         let bundles = deserializer
-//             .receive_bundles(Duration::from_millis(100), 5)
-//             .unwrap();
-//         assert_eq!(bundles.deserialized_bundles.len(), 10);
-//         assert_eq!(bundles.num_dropped_bundles.0, 0);
-
-//         let bundles = deserializer
-//             .receive_bundles(Duration::from_millis(100), 5)
-//             .unwrap();
-//         assert_eq!(bundles.deserialized_bundles.len(), 10);
-//         assert_eq!(bundles.num_dropped_bundles.0, 0);
-
-//         assert_matches!(
-//             deserializer.receive_bundles(Duration::from_millis(100), 5),
-//             Err(RecvTimeoutError::Timeout)
-//         );
-//     }
-
-//     #[test]
-//     fn test_receive_bundles_bad_bundles() {
-//         solana_logger::setup();
-//         let (sender, receiver) = unbounded();
-
-//         let deserializer = BundlePacketDeserializer::new(receiver, Some(10));
-
-//         let packet_bundles: Vec<_> = (0..10)
-//             .map(|_| PacketBundle {
-//                 batch: PacketBatch::from(vec![]),
-//                 bundle_id: String::default(),
-//             })
-//             .collect();
-//         sender.send(packet_bundles).unwrap();
-
-//         let bundles = deserializer
-//             .receive_bundles(Duration::from_millis(100), 5)
-//             .unwrap();
-//         // this is confusing, but it's sent as one batch
-//         assert_eq!(bundles.deserialized_bundles.len(), 0);
-//         assert_eq!(bundles.num_dropped_bundles.0, 10);
-//     }
-// }
+        Ok(TransactionState::new(view, max_age, priority, cost))
+    }
+}

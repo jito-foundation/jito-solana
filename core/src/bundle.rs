@@ -1,26 +1,20 @@
-use {
-    solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
-    solana_transaction::sanitized::SanitizedTransaction,
-};
+use solana_runtime_transaction::transaction_with_meta::TransactionWithMeta;
 
 #[derive(Debug)]
-pub struct SanitizedBundle {
-    transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
+pub struct SanitizedBundle<Tx: TransactionWithMeta> {
+    transactions: Vec<Tx>,
     bundle_id: String,
 }
 
-impl SanitizedBundle {
-    pub fn new(
-        transactions: Vec<RuntimeTransaction<SanitizedTransaction>>,
-        bundle_id: String,
-    ) -> Self {
+impl<Tx: TransactionWithMeta> SanitizedBundle<Tx> {
+    pub fn new(transactions: Vec<Tx>, bundle_id: String) -> Self {
         Self {
             transactions,
             bundle_id,
         }
     }
 
-    pub fn transactions(&self) -> &[RuntimeTransaction<SanitizedTransaction>] {
+    pub fn transactions(&self) -> &[Tx] {
         &self.transactions
     }
 

@@ -48,8 +48,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_turbine::broadcast_stage::{BroadcastStage, BroadcastStageType},
     std::{
-        collections,
-        collections::BTreeMap,
+        collections::{self, BTreeMap},
         fmt::Display,
         fs::File,
         io::{self, BufRead, BufReader},
@@ -853,7 +852,7 @@ impl BankingSimulator {
             bank_forks.clone(),
             prioritization_fee_cache.clone(),
             collections::HashSet::default(),
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
             |_| 0,
         );
 

@@ -1,31 +1,24 @@
-use crate::banking_stage::{
-    scheduler_messages::MaxAge,
-    transaction_scheduler::transaction_state_container::RuntimeTransactionView,
+use crate::{
+    banking_stage::{
+        scheduler_messages::MaxAge,
+        transaction_scheduler::transaction_state_container::RuntimeTransactionView,
+    },
+    bundle_stage::bundle_packet_deserializer::BundlePacketDeserializer,
 };
 use arrayvec::ArrayVec;
+use solana_clock::Slot;
+use solana_pubkey::Pubkey;
 use solana_runtime_transaction::transaction_meta::StaticMeta;
-use solana_svm_transaction::svm_message::SVMMessage;
 
 use {
     crate::{
         banking_stage::transaction_scheduler::{
-            receive_and_buffer::{
-                calculate_max_age, calculate_priority_and_cost, translate_to_runtime_view,
-                PacketHandlingError,
-            },
-            transaction_state::TransactionState,
-            transaction_state_container::{
-                SharedBytes, StateContainer, TransactionViewState, TransactionViewStateContainer,
-            },
+            receive_and_buffer::PacketHandlingError,
+            transaction_state_container::{StateContainer, TransactionViewStateContainer},
         },
         packet_bundle::PacketBundle,
     },
     ahash::HashSet,
-    solana_accounts_db::account_locks::validate_account_locks,
-    solana_clock::Slot,
-    solana_fee_structure::FeeBudgetLimits,
-    solana_hash::Hash,
-    solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     std::collections::VecDeque,
 };
@@ -63,7 +56,7 @@ pub struct BundleStorage {
 }
 
 impl BundleStorage {
-    pub const MAX_PACKETS_PER_BUNDLE: usize = 5;
+    const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
     #[allow(unused)]
     pub fn with_capacity(transaction_capacity: usize) -> Self {
@@ -191,7 +184,7 @@ impl BundleStorage {
             if let Some(container_id) = self
                 .transaction_view_state_container
                 .try_insert_map_only_with_data(packet_data, |bytes| {
-                    match Self::try_handle_packet(
+                    match BundlePacketDeserializer::try_handle_packet(
                         bytes,
                         root_bank,
                         working_bank,
@@ -252,51 +245,6 @@ impl BundleStorage {
             transaction_hashes.push(transaction_hash);
         }
         false
-    }
-
-    fn try_handle_packet(
-        bytes: SharedBytes,
-        root_bank: &Bank,
-        working_bank: &Bank,
-        enable_static_instruction_limit: bool,
-        transaction_account_lock_limit: usize,
-        blacklisted_accounts: &HashSet<Pubkey>,
-    ) -> Result<TransactionViewState, PacketHandlingError> {
-        let (view, deactivation_slot) = translate_to_runtime_view(
-            bytes,
-            root_bank,
-            enable_static_instruction_limit,
-            transaction_account_lock_limit,
-        )?;
-        if validate_account_locks(
-            view.account_keys(),
-            root_bank.get_transaction_account_lock_limit(),
-        )
-        .is_err()
-        {
-            return Err(PacketHandlingError::LockValidation);
-        }
-
-        if view
-            .account_keys()
-            .iter()
-            .any(|account| blacklisted_accounts.contains(account))
-        {
-            return Err(PacketHandlingError::BlacklistedAccount);
-        }
-
-        let Ok(compute_budget_limits) = view
-            .compute_budget_instruction_details()
-            .sanitize_and_convert_to_compute_budget_limits(&working_bank.feature_set)
-        else {
-            return Err(PacketHandlingError::ComputeBudget);
-        };
-
-        let max_age = calculate_max_age(root_bank.epoch(), deactivation_slot, root_bank.slot());
-        let fee_budget_limits = FeeBudgetLimits::from(compute_budget_limits);
-        let (priority, cost) = calculate_priority_and_cost(&view, &fee_budget_limits, working_bank);
-
-        Ok(TransactionState::new(view, max_age, priority, cost))
     }
 }
 

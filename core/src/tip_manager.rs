@@ -538,7 +538,7 @@ impl TipManager {
         &self,
         bank: &Bank,
         keypair: &Keypair,
-    ) -> Option<SanitizedBundle> {
+    ) -> Option<SanitizedBundle<RuntimeTransaction<SanitizedTransaction>>> {
         let maybe_init_tip_payment_config_tx = if self.should_initialize_tip_payment_program(bank) {
             debug!("should_initialize_tip_payment_program=true");
             Some(self.initialize_tip_payment_program_tx(bank, keypair))
@@ -575,7 +575,7 @@ impl TipManager {
         bank: &Bank,
         keypair: &Keypair,
         block_builder_fee_info: &BlockBuilderFeeInfo,
-    ) -> Result<Option<SanitizedBundle>> {
+    ) -> Result<Option<SanitizedBundle<RuntimeTransaction<SanitizedTransaction>>>> {
         let maybe_init_tip_distro_account_tx = if self.should_init_tip_distribution_account(bank) {
             debug!("should_init_tip_distribution_account=true");
             Some(self.initialize_tip_distribution_account_tx(bank, keypair))

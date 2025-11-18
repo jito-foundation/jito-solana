@@ -1,15 +1,16 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     self::{
         committer::Committer, consumer::Consumer, decision_maker::DecisionMaker,
         qos_service::QosService, vote_packet_receiver::VotePacketReceiver,
         vote_storage::VoteStorage,
     },
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     crate::{
         banking_stage::{
             consume_worker::ConsumeWorker,
@@ -21,7 +22,6 @@ use {
                 scheduler_error::SchedulerError,
             },
         },
-        // bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
@@ -398,7 +398,7 @@ impl BankingStage {
         bank_forks: Arc<RwLock<BankForks>>,
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
         blacklisted_accounts: HashSet<Pubkey>,
-        // bundle_account_locker: BundleAccountLocker,
+        bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> BankingStageHandle {
         let committer = Committer::new(
@@ -438,7 +438,7 @@ impl BankingStage {
                         num_workers,
                         config: scheduler_config,
                     },
-                    // bundle_account_locker,
+                    bundle_account_locker,
                     blacklisted_accounts,
                     block_cost_limit_reservation_cb,
                 ))
@@ -454,13 +454,13 @@ impl BankingStage {
     async fn run(
         mut self,
         initial_args: BankingControlMsg,
-        // bundle_account_locker: BundleAccountLocker,
+        bundle_account_locker: BundleAccountLocker,
         blacklisted_accounts: HashSet<Pubkey>,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> std::thread::Result<()> {
         self.spawn_scheduler(
             initial_args,
-            // bundle_account_locker,
+            bundle_account_locker.clone(),
             blacklisted_accounts.clone(),
             block_cost_limit_reservation_cb.clone(),
         );
@@ -470,7 +470,7 @@ impl BankingStage {
                 biased;
 
                 _ = self.banking_shutdown_signal.cancelled() => break,
-                Some(args) = self.banking_control_receiver.recv() => self.cycle_threads(args, blacklisted_accounts.clone(), block_cost_limit_reservation_cb.clone()).await,
+                Some(args) = self.banking_control_receiver.recv() => self.cycle_threads(args, blacklisted_accounts.clone(), bundle_account_locker.clone(), block_cost_limit_reservation_cb.clone()).await,
                 opt = self.threads.next() => {
                     let (name, res) = opt.unwrap();
                     match res.unwrap() {
@@ -482,7 +482,7 @@ impl BankingStage {
                         block_production_method: BlockProductionMethod::default(),
                         num_workers: BankingStage::default_num_workers(),
                         config: SchedulerConfig::default(),
-                    }, blacklisted_accounts.clone(), block_cost_limit_reservation_cb.clone()).await;
+                    }, blacklisted_accounts.clone(), bundle_account_locker.clone(), block_cost_limit_reservation_cb.clone()).await;
                 },
             }
         }
@@ -500,6 +500,7 @@ impl BankingStage {
         &mut self,
         args: BankingControlMsg,
         blacklisted_accounts: HashSet<Pubkey>,
+        bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) {
         // Shutdown all current threads.
@@ -515,13 +516,18 @@ impl BankingStage {
         self.worker_exit_signal.store(false, Ordering::Relaxed);
 
         // Spawn the requested threads.
-        self.spawn_scheduler(args, blacklisted_accounts, block_cost_limit_reservation_cb);
+        self.spawn_scheduler(
+            args,
+            bundle_account_locker,
+            blacklisted_accounts,
+            block_cost_limit_reservation_cb,
+        );
     }
 
     fn spawn_scheduler(
         &mut self,
         args: BankingControlMsg,
-        // bundle_account_locker: BundleAccountLocker,
+        bundle_account_locker: BundleAccountLocker,
         blacklisted_accounts: HashSet<Pubkey>,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) {
@@ -537,12 +543,14 @@ impl BankingStage {
                 ),
                 num_workers,
                 config,
-                // bundle_account_locker,
+                bundle_account_locker,
                 blacklisted_accounts,
                 block_cost_limit_reservation_cb,
             ),
             #[cfg(unix)]
-            BankingControlMsg::External { session } => self.spawn_external(session),
+            BankingControlMsg::External { session } => {
+                self.spawn_external(session, bundle_account_locker)
+            }
         };
 
         self.threads.extend(threads.into_iter().map(|handle| {
@@ -559,7 +567,7 @@ impl BankingStage {
         use_greedy_scheduler: bool,
         num_workers: NonZeroUsize,
         scheduler_config: SchedulerConfig,
-        // bundle_account_locker: BundleAccountLocker,
+        bundle_account_locker: BundleAccountLocker,
         blacklisted_accounts: HashSet<Pubkey>,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> Vec<JoinHandle<()>> {
@@ -578,7 +586,10 @@ impl BankingStage {
 
         // Spawn vote worker.
         let mut threads = Vec::with_capacity(num_workers + 2);
-        threads.push(self.spawn_vote_worker(block_cost_limit_reservation_cb.clone()));
+        threads.push(self.spawn_vote_worker(
+            bundle_account_locker.clone(),
+            block_cost_limit_reservation_cb.clone(),
+        ));
 
         // Create channels for communication between scheduler and workers
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
@@ -599,7 +610,7 @@ impl BankingStage {
                     self.transaction_recorder.clone(),
                     QosService::new(id),
                     self.log_messages_bytes_limit,
-                    // bundle_account_locker.clone(),
+                    bundle_account_locker.clone(),
                 ),
                 finished_work_sender.clone(),
                 self.poh_recorder.read().unwrap().shared_leader_state(),
@@ -674,6 +685,7 @@ impl BankingStage {
 
     fn spawn_vote_worker(
         &self,
+        bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
     ) -> JoinHandle<()> {
         let vote_storage = VoteStorage::new(&self.bank_forks.read().unwrap().working_bank());
@@ -684,7 +696,7 @@ impl BankingStage {
             self.transaction_recorder.clone(),
             QosService::new(0),
             self.log_messages_bytes_limit,
-            // bundle_account_locker.clone(),
+            bundle_account_locker.clone(),
         );
         let decision_maker = DecisionMaker::from(self.poh_recorder.read().unwrap().deref());
 
@@ -741,6 +753,7 @@ mod external {
                 progress_tracker,
                 workers,
             }: AgaveSession,
+            bundle_account_locker: BundleAccountLocker,
         ) -> Vec<JoinHandle<()>> {
             info!("Spawning external scheduler");
             static_assertions::const_assert!(
@@ -758,7 +771,7 @@ mod external {
                     tpu_vote_receiver: Some(self.tpu_vote_receiver.clone()),
                 }
             } else {
-                threads.push(self.spawn_vote_worker(|_| 0));
+                threads.push(self.spawn_vote_worker(bundle_account_locker.clone(), |_| 0));
 
                 BankingPacketReceivers {
                     non_vote_receiver: self.non_vote_receiver.clone(),
@@ -788,6 +801,7 @@ mod external {
                         self.transaction_recorder.clone(),
                         QosService::new(id),
                         self.log_messages_bytes_limit,
+                        bundle_account_locker.clone(),
                     ),
                     worker_to_pack,
                     allocator,
@@ -997,7 +1011,7 @@ mod tests {
             bank_forks,
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
             |_| 0,
         );
         drop(non_vote_sender);
@@ -1064,7 +1078,7 @@ mod tests {
             bank_forks,
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
             |_| 0,
         );
         trace!("sending bank");
@@ -1139,7 +1153,7 @@ mod tests {
             bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
             |_| 0,
         );
 
@@ -1292,7 +1306,7 @@ mod tests {
                 bank_forks,
                 Arc::new(PrioritizationFeeCache::new(0u64)),
                 HashSet::default(),
-                // BundleAccountLocker::default(),
+                BundleAccountLocker::default(),
                 |_| 0,
             );
 
@@ -1448,7 +1462,7 @@ mod tests {
             bank_forks,
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
             |_| 0,
         );
 
@@ -1582,7 +1596,7 @@ mod tests {
                     bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
                     Arc::new(PrioritizationFeeCache::new(0u64)),
                     HashSet::from_iter([blacklisted_keypair.pubkey()]),
-                    // BundleAccountLocker::default(),
+                    BundleAccountLocker::default(),
                     |_| 0,
                 );
 

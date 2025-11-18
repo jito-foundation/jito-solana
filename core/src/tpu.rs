@@ -416,7 +416,7 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
-        let _bundle_account_locker = BundleAccountLocker::default();
+        let bundle_account_locker = BundleAccountLocker::default();
 
         // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
         // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
@@ -448,7 +448,7 @@ impl Tpu {
             bank_forks.clone(),
             prioritization_fee_cache.clone(),
             blacklisted_accounts,
-            // bundle_account_locker.clone(),
+            bundle_account_locker.clone(),
             move |bank| {
                 calculate_block_cost_limit_reservation(
                     bank,

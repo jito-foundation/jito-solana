@@ -2095,11 +2095,14 @@ impl ConsumeWorkerTransactionErrorMetrics {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::{
-            committer::Committer,
-            qos_service::QosService,
-            scheduler_messages::{MaxAge, TransactionBatchId},
-            tests::{create_slow_genesis_config, sanitize_transactions},
+        crate::{
+            banking_stage::{
+                committer::Committer,
+                qos_service::QosService,
+                scheduler_messages::{MaxAge, TransactionBatchId},
+                tests::{create_slow_genesis_config, sanitize_transactions},
+            },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         crossbeam_channel::unbounded,
         solana_clock::{Slot, MAX_PROCESSING_AGE},
@@ -2188,7 +2191,7 @@ mod tests {
             recorder,
             QosService::new(1),
             None,
-            // BundleAccountLocker::default(),
+            BundleAccountLocker::default(),
         );
         let shared_leader_state = SharedLeaderState::new(0, None, None);
 

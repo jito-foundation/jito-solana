@@ -12,7 +12,7 @@
 
 pub mod bundle_account_locker;
 // // mod bundle_consumer;
-// // mod bundle_packet_deserializer;
+mod bundle_packet_deserializer;
 // // mod bundle_packet_receiver;
 // pub(crate) mod bundle_stage_leader_metrics;
 mod bundle_storage;
