@@ -1153,7 +1153,11 @@ mod tests {
         spl_token_2022_interface::state::{
             Account as TokenAccount, AccountState as TokenAccountState, Mint,
         },
-        std::{collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
+        std::{
+            collections::HashSet,
+            fs::remove_dir_all,
+            sync::{atomic::AtomicBool, Mutex},
+        },
         tokio::sync::mpsc,
     };
 

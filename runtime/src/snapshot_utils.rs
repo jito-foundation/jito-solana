@@ -2299,7 +2299,7 @@ mod tests {
         );
 
         assert_eq!(
-            get_highest_full_snapshot_archive_slot(full_snapshot_archives_dir.path(), None),
+            get_highest_full_snapshot_archive_slot(full_snapshot_archives_dir.path()),
             Some(max_slot - 1)
         );
     }
@@ -2326,7 +2326,6 @@ mod tests {
                 get_highest_incremental_snapshot_archive_slot(
                     incremental_snapshot_archives_dir.path(),
                     full_snapshot_slot,
-                    None,
                 ),
                 Some(max_incremental_snapshot_slot - 1)
             );
@@ -2336,7 +2335,6 @@ mod tests {
             get_highest_incremental_snapshot_archive_slot(
                 incremental_snapshot_archives_dir.path(),
                 max_full_snapshot_slot,
-                None,
             ),
             None
         );

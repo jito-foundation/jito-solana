@@ -1556,7 +1556,7 @@ mod tests {
                 let (
                     exit,
                     poh_recorder,
-                    poh_controller,
+                    _poh_controller,
                     transaction_recorder,
                     poh_service,
                     entry_receiver,
