@@ -125,6 +125,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             &work.max_ages,
             ExecutionFlags::default(),
             reservation_cb,
+            None, // bundle account locker checked in scheduler
         );
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
@@ -180,12 +181,15 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
 pub(crate) mod external {
     use {
         super::*,
-        crate::banking_stage::{
-            committer::CommitTransactionDetails,
-            scheduler_messages::MaxAge,
-            transaction_scheduler::receive_and_buffer::{
-                translate_to_runtime_view, PacketHandlingError,
+        crate::{
+            banking_stage::{
+                committer::CommitTransactionDetails,
+                scheduler_messages::MaxAge,
+                transaction_scheduler::receive_and_buffer::{
+                    translate_to_runtime_view, PacketHandlingError,
+                },
             },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         agave_scheduler_bindings::{
             pack_message_flags::{self, check_flags, execution_flags},
@@ -238,6 +242,7 @@ pub(crate) mod external {
         shared_leader_state: SharedLeaderState,
         sharable_banks: SharableBanks,
         metrics: Arc<ConsumeWorkerMetrics>,
+        bundle_account_locker: BundleAccountLocker,
     }
 
     type Tx = RuntimeTransaction<ResolvedTransactionView<TransactionPtr>>;
@@ -253,6 +258,7 @@ pub(crate) mod external {
             allocator: rts_alloc::Allocator,
             shared_leader_state: SharedLeaderState,
             sharable_banks: SharableBanks,
+            bundle_account_locker: BundleAccountLocker,
         ) -> Self {
             Self {
                 exit,
@@ -263,6 +269,7 @@ pub(crate) mod external {
                 shared_leader_state,
                 sharable_banks,
                 metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
+                bundle_account_locker,
             }
         }
 
@@ -413,6 +420,7 @@ pub(crate) mod external {
                     &max_ages,
                     execution_flags,
                     &|_| 0,
+                    Some(&self.bundle_account_locker)
                 );
 
                 self.metrics.update_for_consume(&output);
@@ -2186,13 +2194,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
         let shared_leader_state = SharedLeaderState::new(0, None, None);
 
         let (consume_sender, consume_receiver) = unbounded();

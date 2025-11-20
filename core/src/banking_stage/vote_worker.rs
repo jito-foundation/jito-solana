@@ -10,9 +10,14 @@ use {
         vote_storage::VoteStorage,
         BankingStageStats, SLOT_BOUNDARY_CHECK_PERIOD,
     },
-    crate::banking_stage::{
-        consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
-        transaction_scheduler::transaction_state_container::{RuntimeTransactionView, SharedBytes},
+    crate::{
+        banking_stage::{
+            consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
+            transaction_scheduler::transaction_state_container::{
+                RuntimeTransactionView, SharedBytes,
+            },
+        },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     agave_transaction_view::{
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
@@ -62,6 +67,7 @@ pub struct VoteWorker {
     storage: VoteStorage,
     bank_forks: Arc<RwLock<BankForks>>,
     consumer: Consumer,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl VoteWorker {
@@ -73,6 +79,7 @@ impl VoteWorker {
         storage: VoteStorage,
         bank_forks: Arc<RwLock<BankForks>>,
         consumer: Consumer,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             exit,
@@ -82,6 +89,7 @@ impl VoteWorker {
             storage,
             bank_forks,
             consumer,
+            bundle_account_locker,
         }
     }
 
@@ -407,9 +415,12 @@ impl VoteWorker {
         transactions: &[impl TransactionWithMeta],
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
-        let process_transaction_batch_output =
-            self.consumer
-                .process_and_record_transactions(bank, transactions, reservation_cb);
+        let process_transaction_batch_output = self.consumer.process_and_record_transactions(
+            bank,
+            transactions,
+            reservation_cb,
+            &self.bundle_account_locker,
+        );
 
         let ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,

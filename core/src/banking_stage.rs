@@ -712,6 +712,7 @@ impl BankingStage {
                     vote_storage,
                     bank_forks,
                     consumer,
+                    bundle_account_locker,
                 )
                 .run(block_cost_limit_reservation_cb)
             })
@@ -805,6 +806,7 @@ mod external {
                     allocator,
                     self.poh_recorder.read().unwrap().shared_leader_state(),
                     self.bank_forks.read().unwrap().sharable_banks(),
+                    bundle_account_locker.clone(),
                 );
 
                 worker_metrics.push(consume_worker.metrics_handle());
