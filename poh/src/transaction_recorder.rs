@@ -110,4 +110,18 @@ impl TransactionRecorder {
         self.record_sender
             .try_send(Record::new(mixins, transaction_batches, bank_id))
     }
+
+    pub fn record_bundle(
+        &self,
+        bank_id: BankId,
+        transactions: Vec<VersionedTransaction>,
+    ) -> RecordTransactionsSummary {
+        // self.record_sender
+        //     .try_send(Record::new(mixins, transactions, bank_id))
+        RecordTransactionsSummary {
+            record_transactions_timings: RecordTransactionsTimings::default(),
+            result: Ok(()),
+            starting_transaction_index: None,
+        }
+    }
 }

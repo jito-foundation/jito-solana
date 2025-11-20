@@ -1,3 +1,4 @@
+use solana_bundle::derive_bundle_id;
 use solana_runtime_transaction::transaction_with_meta::TransactionWithMeta;
 
 #[derive(Debug)]
@@ -7,7 +8,8 @@ pub struct SanitizedBundle<Tx: TransactionWithMeta> {
 }
 
 impl<Tx: TransactionWithMeta> SanitizedBundle<Tx> {
-    pub fn new(transactions: Vec<Tx>, bundle_id: String) -> Self {
+    pub fn new(transactions: Vec<Tx>) -> Self {
+        let bundle_id = derive_bundle_id(&transactions);
         Self {
             transactions,
             bundle_id,

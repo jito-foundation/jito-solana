@@ -3,11 +3,10 @@ use {
     anchor_lang::{prelude::Pubkey as AnchorPubkey, AccountDeserialize, InstructionData},
     jito_tip_distribution::state::{Config as TipDistributionConfig, TipDistributionAccount},
     jito_tip_payment::{
-        Config, InitBumps, TipPaymentAccount, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0,
-        TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4,
-        TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
+        Config, InitBumps, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1,
+        TIP_ACCOUNT_SEED_2, TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5,
+        TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
     },
-    log::warn,
     solana_account::ReadableAccount,
     solana_bundle::derive_bundle_id,
     solana_clock::Epoch,
@@ -23,7 +22,7 @@ use {
         versioned::VersionedTransaction,
         Transaction,
     },
-    std::{collections::HashSet, sync::Arc},
+    std::collections::HashSet,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +87,7 @@ pub struct TipManager {
     tip_payment_program_info: TipPaymentProgramInfo,
     tip_distribution_program_info: TipDistributionProgramInfo,
     tip_distribution_account_config: TipDistributionAccountConfig,
+    tip_accounts: HashSet<Pubkey>,
 }
 
 #[derive(Clone)]
@@ -138,6 +138,17 @@ impl TipManager {
         let tip_distribution_config_pubkey_bump =
             derive_tip_distribution_config_account_address(&tip_distribution_program_id);
 
+        let tip_accounts = HashSet::from([
+            tip_pda_0.0,
+            tip_pda_1.0,
+            tip_pda_2.0,
+            tip_pda_3.0,
+            tip_pda_4.0,
+            tip_pda_5.0,
+            tip_pda_6.0,
+            tip_pda_7.0,
+        ]);
+
         TipManager {
             tip_payment_program_info: TipPaymentProgramInfo {
                 program_id: tip_payment_program_id,
@@ -156,6 +167,7 @@ impl TipManager {
                 config_pda_and_bump: tip_distribution_config_pubkey_bump,
             },
             tip_distribution_account_config,
+            tip_accounts,
         }
     }
 
@@ -177,17 +189,8 @@ impl TipManager {
         self.tip_distribution_program_info.config_pda_and_bump.0
     }
 
-    pub fn get_tip_accounts(&self) -> HashSet<Pubkey> {
-        HashSet::from([
-            self.tip_payment_program_info.tip_pda_0.0,
-            self.tip_payment_program_info.tip_pda_1.0,
-            self.tip_payment_program_info.tip_pda_2.0,
-            self.tip_payment_program_info.tip_pda_3.0,
-            self.tip_payment_program_info.tip_pda_4.0,
-            self.tip_payment_program_info.tip_pda_5.0,
-            self.tip_payment_program_info.tip_pda_6.0,
-            self.tip_payment_program_info.tip_pda_7.0,
-        ])
+    pub fn get_tip_accounts(&self) -> &HashSet<Pubkey> {
+        &self.tip_accounts
     }
 
     pub fn get_tip_payment_config_account(&self, bank: &Bank) -> Result<Config> {
@@ -486,51 +489,6 @@ impl TipManager {
         .unwrap()
     }
 
-    /// Returns the balance of all the MEV tip accounts
-    pub fn get_tip_account_balances(&self, bank: &Arc<Bank>) -> Vec<(Pubkey, u64)> {
-        let accounts = self.get_tip_accounts();
-        accounts
-            .into_iter()
-            .map(|account| {
-                let balance = bank.get_balance(&account);
-                (account, balance)
-            })
-            .collect()
-    }
-
-    /// Returns the balance of all the MEV tip accounts above the rent-exempt amount.
-    /// NOTE: the on-chain program has rent_exempt = force
-    pub fn get_tip_account_balances_above_rent_exempt(
-        &self,
-        bank: &Arc<Bank>,
-    ) -> Vec<(Pubkey, u64)> {
-        let accounts = self.get_tip_accounts();
-        accounts
-            .into_iter()
-            .map(|account| {
-                let account_data = bank.get_account(&account).unwrap_or_default();
-                let balance = bank.get_balance(&account);
-                let rent_exempt =
-                    bank.get_minimum_balance_for_rent_exemption(account_data.data().len());
-                // NOTE: don't unwrap here in case bug in on-chain program, don't want all validators to crash
-                // if program gets stuck in bad state
-                (
-                    account,
-                    balance.checked_sub(rent_exempt).unwrap_or_else(|| {
-                        warn!(
-                            "balance is below rent exempt amount. balance: {} rent_exempt: {} acc \
-                             size: {}",
-                            balance,
-                            rent_exempt,
-                            TipPaymentAccount::SIZE
-                        );
-                        0
-                    }),
-                )
-            })
-            .collect()
-    }
-
     /// Return a bundle that is capable of calling the initialize instructions on the two tip payment programs
     /// This is mainly helpful for local development and shouldn't run on testnet and mainnet, assuming the
     /// correct TipManager configuration is set.
@@ -565,8 +523,7 @@ impl TipManager {
         if transactions.is_empty() {
             None
         } else {
-            let bundle_id = derive_bundle_id(&transactions);
-            Some(SanitizedBundle::new(transactions, bundle_id))
+            Some(SanitizedBundle::new(transactions))
         }
     }
 
@@ -620,7 +577,7 @@ impl TipManager {
             Ok(None)
         } else {
             let bundle_id = derive_bundle_id(&transactions);
-            Ok(Some(SanitizedBundle::new(transactions, bundle_id)))
+            Ok(Some(SanitizedBundle::new(transactions)))
         }
     }
 }

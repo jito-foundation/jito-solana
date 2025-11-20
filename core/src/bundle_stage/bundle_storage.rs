@@ -71,6 +71,18 @@ impl BundleStorage {
         }
     }
 
+    pub fn unprocessed_bundles_len(&self) -> usize {
+        self.unprocessed_bundles.len()
+    }
+
+    pub fn cost_model_buffered_bundles_len(&self) -> usize {
+        self.cost_model_buffered_bundles.len()
+    }
+
+    pub fn num_packets_buffered(&self) -> usize {
+        self.transaction_view_state_container.buffer_size()
+    }
+
     /// Retries a bundle by inserting the transactions back into the transaction_view_state_container.
     /// The bundle is then pushed back to the cost_model_buffered_bundles queue.
     pub fn retry_bundle(&mut self, bundle: BundleStorageEntry) {
@@ -245,6 +257,19 @@ impl BundleStorage {
             transaction_hashes.push(transaction_hash);
         }
         false
+    }
+
+    pub fn clear(&mut self) {
+        for bundle in self.unprocessed_bundles.drain(..) {
+            for id in bundle.container_ids.iter() {
+                self.transaction_view_state_container.remove_by_id(*id);
+            }
+        }
+        for bundle in self.cost_model_buffered_bundles.drain(..) {
+            for id in bundle.container_ids.iter() {
+                self.transaction_view_state_container.remove_by_id(*id);
+            }
+        }
     }
 }
 
@@ -518,5 +543,10 @@ mod tests {
                 .buffer_size()
                 == 0
         );
+    }
+
+    #[test]
+    fn test_clear() {
+        panic!("not implemented");
     }
 }
