@@ -5,7 +5,6 @@ use {
         qos_service::QosService,
         scheduler_messages::MaxAge,
     },
-    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     itertools::Itertools,
     solana_clock::MAX_PROCESSING_AGE,
     solana_fee::FeeFeatures,
@@ -117,7 +116,6 @@ pub struct Consumer {
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
-    bundle_account_locker: BundleAccountLocker,
 }
 
 impl Consumer {
@@ -126,14 +124,12 @@ impl Consumer {
         transaction_recorder: TransactionRecorder,
         qos_service: QosService,
         log_messages_bytes_limit: Option<usize>,
-        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             committer,
             transaction_recorder,
             qos_service,
             log_messages_bytes_limit,
-            bundle_account_locker,
         }
     }
 
@@ -234,18 +230,13 @@ impl Consumer {
         // Only lock accounts for those transactions are selected for the block;
         // Once accounts are locked, other threads cannot encode transactions that will modify the
         // same account state.
-        // BundleAccountLocker is used to prevent race conditions with bundled transactions from bundle stage
-        let bundle_account_locks = self.bundle_account_locker.account_locks();
         let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
             txs,
             transaction_qos_cost_results.iter().map(|r| match r {
                 Ok(_cost) => Ok(()),
                 Err(err) => Err(err.clone()),
             }),
-            &|pubkey| { bundle_account_locks.read_locks().contains_key(pubkey) },
-            &|pubkey| { bundle_account_locks.write_locks().contains_key(pubkey) }
         ));
-        drop(bundle_account_locks);
 
         // retryable_txs includes AccountInUse, WouldExceedMaxBlockCostLimit
         // WouldExceedMaxAccountCostLimit, WouldExceedMaxVoteCostLimit
@@ -639,13 +630,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
         consumer.process_and_record_transactions(&bank, &transactions, &|_| 0)
     }
 
@@ -725,13 +710,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
         let process_transactions_batch_output =
             consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
@@ -854,13 +833,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
         let process_transactions_batch_output =
             consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
@@ -919,13 +892,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
         let process_transactions_batch_output =
             consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
@@ -986,13 +953,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
         let get_block_cost = || bank.read_cost_tracker().unwrap().block_cost();
         let get_tx_count = || bank.read_cost_tracker().unwrap().transaction_count();
@@ -1161,13 +1122,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
         // with simd83 and no duplicate, we take a cross-batch lock on an account to create a conflict
         // with a duplicate transaction and simd83 it comes from message hash equality in the batch
@@ -1396,13 +1351,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder.clone(),
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder.clone(), QosService::new(1), None);
 
         let process_transactions_summary =
             consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
@@ -1526,13 +1475,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
         let _ = consumer.process_and_record_transactions(&bank, &transactions, &|_| 0);
 
@@ -1656,13 +1599,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(
-            committer,
-            recorder,
-            QosService::new(1),
-            None,
-            BundleAccountLocker::default(),
-        );
+        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
 
         let consumer_output =
             consumer.process_and_record_transactions(&bank, slice::from_ref(&sanitized_tx), &|_| 0);

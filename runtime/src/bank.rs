@@ -2977,7 +2977,7 @@ impl Bank {
 
     /// Attempt to take locks on the accounts in a transaction batch
     pub fn try_lock_accounts(&self, txs: &[impl TransactionWithMeta]) -> Vec<Result<()>> {
-        self.try_lock_accounts_with_results(txs, txs.iter().map(|_| Ok(())), &|_| false, &|_| false)
+        self.try_lock_accounts_with_results(txs, txs.iter().map(|_| Ok(())))
     }
 
     /// Attempt to take locks on the accounts in a transaction batch, and their cost
@@ -2986,8 +2986,6 @@ impl Bank {
         &self,
         txs: &[impl TransactionWithMeta],
         tx_results: impl Iterator<Item = Result<()>>,
-        is_read_locked_callback: &impl Fn(&Pubkey) -> bool,
-        is_write_locked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> Vec<Result<()>> {
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
         let relax_intrabatch_account_locks = self
@@ -3017,8 +3015,6 @@ impl Bank {
             tx_results,
             tx_account_lock_limit,
             relax_intrabatch_account_locks,
-            is_read_locked_callback,
-            is_write_locked_callback,
         )
     }
 
@@ -3027,12 +3023,7 @@ impl Bank {
         &'a self,
         txs: &'b [Tx],
     ) -> TransactionBatch<'a, 'b, Tx> {
-        self.prepare_sanitized_batch_with_results(
-            txs,
-            txs.iter().map(|_| Ok(())),
-            &|_| false,
-            &|_| false,
-        )
+        self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())))
     }
 
     /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
@@ -3041,17 +3032,10 @@ impl Bank {
         &'a self,
         transactions: &'b [Tx],
         transaction_results: impl Iterator<Item = Result<()>>,
-        is_read_locked_callback: &impl Fn(&Pubkey) -> bool,
-        is_write_locked_callback: &impl Fn(&Pubkey) -> bool,
     ) -> TransactionBatch<'a, 'b, Tx> {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         TransactionBatch::new(
-            self.try_lock_accounts_with_results(
-                transactions,
-                transaction_results,
-                is_read_locked_callback,
-                is_write_locked_callback,
-            ),
+            self.try_lock_accounts_with_results(transactions, transaction_results),
             self,
             OwnedOrBorrowed::Borrowed(transactions),
         )

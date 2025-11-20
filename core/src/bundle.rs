@@ -1,5 +1,7 @@
-use solana_bundle::derive_bundle_id;
-use solana_runtime_transaction::transaction_with_meta::TransactionWithMeta;
+use {
+    solana_bundle::derive_bundle_id,
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
+};
 
 #[derive(Debug)]
 pub struct SanitizedBundle<Tx: TransactionWithMeta> {

@@ -1,5 +1,7 @@
+use crate::bundle_stage::bundle_account_locker::BundleAccountLocker;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -50,6 +52,7 @@ pub struct GreedyScheduler<Tx: TransactionWithMeta> {
     working_account_set: ReadWriteAccountSet,
     unschedulables: Vec<TransactionPriorityId>,
     config: GreedySchedulerConfig,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
@@ -58,6 +61,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: GreedySchedulerConfig,
+        bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
             working_account_set: ReadWriteAccountSet::default(),
@@ -68,6 +72,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
                 config.target_transactions_per_batch,
             ),
             config,
+            bundle_account_locker,
         }
     }
 }
@@ -168,6 +173,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                         self.common.in_flight_tracker.num_in_flight_per_thread(),
                     )
                 },
+                &self.bundle_account_locker,
             ) {
                 Err(TransactionSchedulingError::UnschedulableConflicts) => {
                     num_unschedulable_conflicts += 1;
@@ -255,6 +261,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     account_locks: &mut ThreadAwareAccountLocks,
     schedulable_threads: ThreadSet,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
+    bundle_account_locker: &BundleAccountLocker,
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
     match pre_lock_filter(transaction_state) {
         PreLockFilterAction::AttemptToSchedule => {}
@@ -271,6 +278,22 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         .iter()
         .enumerate()
         .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
+
+    // Check bundle account locks doesn't have it yet
+    let l_account_locks = bundle_account_locker.account_locks();
+    for lock in read_account_locks.clone() {
+        if l_account_locks.read_locks().contains_key(lock) {
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+    }
+    for lock in write_account_locks.clone() {
+        if l_account_locks.write_locks().contains_key(lock)
+            || l_account_locks.read_locks().contains_key(lock)
+        {
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+    }
+    drop(l_account_locks);
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,
@@ -325,6 +348,7 @@ mod test {
     fn create_test_frame(
         num_threads: usize,
         config: GreedySchedulerConfig,
+        bundle_account_locker: BundleAccountLocker,
     ) -> (
         GreedyScheduler<RuntimeTransaction<SanitizedTransaction>>,
         Vec<Receiver<ConsumeWork<RuntimeTransaction<SanitizedTransaction>>>>,
@@ -333,8 +357,12 @@ mod test {
         let (consume_work_senders, consume_work_receivers) =
             (0..num_threads).map(|_| unbounded()).unzip();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
-        let scheduler =
-            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, config);
+        let scheduler = GreedyScheduler::new(
+            consume_work_senders,
+            finished_consume_work_receiver,
+            config,
+            bundle_account_locker,
+        );
         (
             scheduler,
             consume_work_receivers,
@@ -422,8 +450,11 @@ mod test {
 
     #[test]
     fn test_schedule_disconnected_channel() {
-        let (mut scheduler, work_receivers, _finished_work_sender) =
-            create_test_frame(1, GreedySchedulerConfig::default());
+        let (mut scheduler, work_receivers, _finished_work_sender) = create_test_frame(
+            1,
+            GreedySchedulerConfig::default(),
+            BundleAccountLocker::default(),
+        );
         let mut container = create_container([(&Keypair::new(), &[Pubkey::new_unique()], 1, 1)]);
 
         drop(work_receivers); // explicitly drop receivers
@@ -441,8 +472,11 @@ mod test {
 
     #[test]
     fn test_schedule_single_threaded_no_conflicts() {
-        let (mut scheduler, work_receivers, _finished_work_sender) =
-            create_test_frame(1, GreedySchedulerConfig::default());
+        let (mut scheduler, work_receivers, _finished_work_sender) = create_test_frame(
+            1,
+            GreedySchedulerConfig::default(),
+            BundleAccountLocker::default(),
+        );
         let mut container = create_container([
             (&Keypair::new(), &[Pubkey::new_unique()], 1, 1),
             (&Keypair::new(), &[Pubkey::new_unique()], 2, 2),
@@ -464,8 +498,11 @@ mod test {
 
     #[test]
     fn test_schedule_budget() {
-        let (mut scheduler, _work_receivers, _finished_work_sender) =
-            create_test_frame(1, GreedySchedulerConfig::default());
+        let (mut scheduler, _work_receivers, _finished_work_sender) = create_test_frame(
+            1,
+            GreedySchedulerConfig::default(),
+            BundleAccountLocker::default(),
+        );
         let mut container = create_container([
             (&Keypair::new(), &[Pubkey::new_unique()], 1, 1),
             (&Keypair::new(), &[Pubkey::new_unique()], 2, 2),
@@ -492,6 +529,7 @@ mod test {
                 target_scheduled_cus: 1, // only allow 1 transaction scheduled
                 ..GreedySchedulerConfig::default()
             },
+            BundleAccountLocker::default(),
         );
         let mut container = create_container([
             (&Keypair::new(), &[Pubkey::new_unique()], 1, 1),
@@ -520,6 +558,7 @@ mod test {
                 max_scanned_transactions_per_scheduling_pass: 1, // only allow 1 transaction scheduled
                 ..GreedySchedulerConfig::default()
             },
+            BundleAccountLocker::default(),
         );
         let mut container = create_container([
             (&Keypair::new(), &[Pubkey::new_unique()], 1, 1),
@@ -548,6 +587,7 @@ mod test {
                 target_transactions_per_batch: 1, // only allow 1 transaction per batch
                 ..GreedySchedulerConfig::default()
             },
+            BundleAccountLocker::default(),
         );
         let mut container = create_container([
             (&Keypair::new(), &[Pubkey::new_unique()], 1, 1),
@@ -571,8 +611,11 @@ mod test {
     #[test_case(true; "relax_intrabatch_account_locks_true")]
     #[test_case(false; "relax_intrabatch_account_locks_false")]
     fn test_schedule_single_threaded_conflict(relax_intrabatch_account_locks: bool) {
-        let (mut scheduler, work_receivers, _finished_work_sender) =
-            create_test_frame(1, GreedySchedulerConfig::default());
+        let (mut scheduler, work_receivers, _finished_work_sender) = create_test_frame(
+            1,
+            GreedySchedulerConfig::default(),
+            BundleAccountLocker::default(),
+        );
         let pubkey = Pubkey::new_unique();
         let mut container = create_container([
             (&Keypair::new(), &[pubkey], 1, 1),
@@ -599,8 +642,11 @@ mod test {
 
     #[test]
     fn test_schedule_simple_thread_selection() {
-        let (mut scheduler, work_receivers, _finished_work_sender) =
-            create_test_frame(2, GreedySchedulerConfig::default());
+        let (mut scheduler, work_receivers, _finished_work_sender) = create_test_frame(
+            2,
+            GreedySchedulerConfig::default(),
+            BundleAccountLocker::default(),
+        );
         let mut container =
             create_container((0..4).map(|i| (Keypair::new(), [Pubkey::new_unique()], 1, i)));
 
@@ -621,8 +667,11 @@ mod test {
 
     #[test]
     fn test_schedule_scan_past_highest_priority() {
-        let (mut scheduler, work_receivers, _finished_work_sender) =
-            create_test_frame(2, GreedySchedulerConfig::default());
+        let (mut scheduler, work_receivers, _finished_work_sender) = create_test_frame(
+            2,
+            GreedySchedulerConfig::default(),
+            BundleAccountLocker::default(),
+        );
         let pubkey1 = Pubkey::new_unique();
         let pubkey2 = Pubkey::new_unique();
         let pubkey3 = Pubkey::new_unique();
@@ -669,6 +718,7 @@ mod test {
                 target_scheduled_cus: 4 * 5_000, // 2 txs per thread
                 ..GreedySchedulerConfig::default()
             },
+            BundleAccountLocker::default(),
         );
 
         // Low priority transaction that does not conflict with other work.
@@ -697,5 +747,10 @@ mod test {
         assert_eq!(scheduling_summary.num_unschedulable_threads, 3);
         assert_eq!(collect_work(&work_receivers[0]).1, [vec![5], vec![4]]);
         assert_eq!(collect_work(&work_receivers[1]).1, [vec![0]]);
+    }
+
+    #[test]
+    fn test_schedule_bundle_account_locker() {
+        panic!("not implemented");
     }
 }

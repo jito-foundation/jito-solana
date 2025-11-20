@@ -3,14 +3,12 @@
 //! can do its processing in parallel with signature verification on the GPU.
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-
 use {
     self::{
         committer::Committer, consumer::Consumer, decision_maker::DecisionMaker,
         qos_service::QosService, vote_packet_receiver::VotePacketReceiver,
         vote_storage::VoteStorage,
     },
-    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     crate::{
         banking_stage::{
             consume_worker::ConsumeWorker,
@@ -22,6 +20,7 @@ use {
                 scheduler_error::SchedulerError,
             },
         },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
@@ -610,7 +609,6 @@ impl BankingStage {
                     self.transaction_recorder.clone(),
                     QosService::new(id),
                     self.log_messages_bytes_limit,
-                    bundle_account_locker.clone(),
                 ),
                 finished_work_sender.clone(),
                 self.poh_recorder.read().unwrap().shared_leader_state(),
@@ -669,6 +667,7 @@ impl BankingStage {
                 work_senders,
                 finished_work_receiver,
                 GreedySchedulerConfig::default(),
+                bundle_account_locker.clone(),
             );
             spawn_scheduler!(scheduler);
         } else {
@@ -676,6 +675,7 @@ impl BankingStage {
                 work_senders,
                 finished_work_receiver,
                 PrioGraphSchedulerConfig::default(),
+                bundle_account_locker.clone(),
             );
             spawn_scheduler!(scheduler);
         }
@@ -696,7 +696,6 @@ impl BankingStage {
             self.transaction_recorder.clone(),
             QosService::new(0),
             self.log_messages_bytes_limit,
-            bundle_account_locker.clone(),
         );
         let decision_maker = DecisionMaker::from(self.poh_recorder.read().unwrap().deref());
 
@@ -801,7 +800,6 @@ mod external {
                         self.transaction_recorder.clone(),
                         QosService::new(id),
                         self.log_messages_bytes_limit,
-                        bundle_account_locker.clone(),
                     ),
                     worker_to_pack,
                     allocator,

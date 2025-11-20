@@ -109,10 +109,8 @@ impl BundleConsumer {
     //
     // Some corner cases to be aware of when working with BundleStage:
     // A bundle is not allowed to call the Tip Payment program in a bundle (or BankingStage).
-    // - This is to avoid stealing of tips by malicious parties with bundles that crank the tip
+    // This is to avoid stealing of tips by malicious parties with bundles that crank the tip
     // payment program and set the tip receiver to themself.
-    // A bundle is not allowed to touch consensus-related accounts
-    //  - This is to avoid stalling the voting BankingStage threads.
     pub fn process_and_record_transactions(
         &mut self,
         bank: &Bank,
@@ -168,9 +166,6 @@ impl BundleConsumer {
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
         flags: ExecutionFlags,
     ) -> ProcessTransactionBatchOutput {
-        // TODO (LB): handle the tip programs
-        // self.handle_tip_programs(txs, bank);
-
         // Select and accumulate transaction costs. If any transaction inside the bundle can't fit in the block,
         // undo the cost model reservations and return an error.
         let (
@@ -254,7 +249,7 @@ impl BundleConsumer {
         }
     }
 
-    fn handle_tip_programs(
+    fn crank_tip_program(
         &mut self,
         txs: &[impl TransactionWithMeta],
         bank: &Bank,
@@ -262,7 +257,11 @@ impl BundleConsumer {
         if bank.slot() != self.last_tip_update_slot
             && Self::bundle_touches_tip_pdas(txs, &self.tip_manager.get_tip_accounts())
         {
-            // TODO (LB): handle the tip program
+            // let tip_crank_bundle = self.tip_manager.get_tip_programs_crank_bundle(
+            //     bank,
+            //     &self.cluster_info.keypair(),
+            //     &self.block_builder_fee_info.lock().unwrap(),
+            // );
             self.last_tip_update_slot = bank.slot();
         }
         Ok(())
