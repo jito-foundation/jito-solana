@@ -35,10 +35,10 @@ struct BundleTransactionId {
     container_ids: Vec<usize>,
 }
 
-struct BundleStorageEntry {
-    container_ids: Vec<usize>,
-    transactions: Vec<RuntimeTransactionView>,
-    max_ages: Vec<MaxAge>,
+pub struct BundleStorageEntry {
+    pub container_ids: Vec<usize>,
+    pub transactions: Vec<RuntimeTransactionView>,
+    pub max_ages: Vec<MaxAge>,
 }
 
 /// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded

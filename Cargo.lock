@@ -8052,31 +8052,9 @@ dependencies = [
 name = "solana-bundle"
 version = "4.0.0-alpha.0"
 dependencies = [
- "anchor-lang",
- "assert_matches",
  "itertools 0.12.1",
- "log",
- "serde",
  "sha2 0.10.9",
- "solana-account 3.2.0",
- "solana-accounts-db",
- "solana-clock 3.0.0",
- "solana-keypair",
- "solana-measure",
- "solana-poh",
- "solana-program-runtime",
- "solana-pubkey 3.0.0",
- "solana-runtime",
  "solana-runtime-transaction",
- "solana-signature",
- "solana-signer",
- "solana-svm",
- "solana-svm-timings",
- "solana-system-transaction",
- "solana-transaction",
- "solana-transaction-error 3.0.0",
- "solana-transaction-status",
- "thiserror 2.0.17",
 ]
 
 [[package]]

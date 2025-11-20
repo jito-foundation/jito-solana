@@ -12465,3 +12465,11 @@ fn test_parent_block_id() {
     let child_bank = Bank::new_from_parent(parent_bank, &Pubkey::new_unique(), 1);
     assert_eq!(parent_block_id, child_bank.parent_block_id());
 }
+
+#[test]
+fn test_single_transaction_bundle_fail() {
+    panic!("Not implemented");
+}
+
+#[test]
+fn test_multi_transaction_bundle_success() {}

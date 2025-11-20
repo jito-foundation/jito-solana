@@ -11,7 +11,6 @@
 // state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 // replayed improperly and that leader would have produced an invalid block.
 use {
-    crate::bundle::SanitizedBundle,
     ahash::HashMap,
     solana_accounts_db::{
         account_locks::validate_account_locks, accounts::TransactionAccountLocksIterator,
@@ -36,25 +35,21 @@ pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
 
 pub struct LockedBundle<'a, 'b, Tx: TransactionWithMeta> {
     bundle_account_locker: &'a BundleAccountLocker,
-    sanitized_bundle: &'b SanitizedBundle<Tx>,
+    transactions: &'b [Tx],
     bank: Arc<Bank>,
 }
 
 impl<'a, 'b, Tx: TransactionWithMeta> LockedBundle<'a, 'b, Tx> {
     pub fn new(
         bundle_account_locker: &'a BundleAccountLocker,
-        sanitized_bundle: &'b SanitizedBundle<Tx>,
+        transactions: &'b [Tx],
         bank: &Arc<Bank>,
     ) -> Self {
         Self {
             bundle_account_locker,
-            sanitized_bundle,
+            transactions,
             bank: bank.clone(),
         }
-    }
-
-    pub fn sanitized_bundle(&self) -> &SanitizedBundle<Tx> {
-        self.sanitized_bundle
     }
 }
 
@@ -63,7 +58,7 @@ impl<Tx: TransactionWithMeta> Drop for LockedBundle<'_, '_, Tx> {
     fn drop(&mut self) {
         let _ = self
             .bundle_account_locker
-            .unlock_bundle_accounts(self.sanitized_bundle, &self.bank);
+            .unlock_bundle_accounts(self.transactions, &self.bank);
     }
 }
 
@@ -141,25 +136,25 @@ impl BundleAccountLocker {
     /// When a LockedBundle is dropped, the accounts are automatically unlocked
     pub fn prepare_locked_bundle<'a, 'b, Tx: TransactionWithMeta>(
         &'a self,
-        sanitized_bundle: &'b SanitizedBundle<Tx>,
+        transactions: &'b [Tx],
         bank: &Arc<Bank>,
     ) -> BundleAccountLockerResult<LockedBundle<'a, 'b, Tx>> {
-        let transaction_locks = Self::get_transaction_locks(sanitized_bundle, bank)?;
+        let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
 
         self.account_locks
             .lock()
             .unwrap()
             .lock_accounts(transaction_locks);
-        Ok(LockedBundle::new(self, sanitized_bundle, bank))
+        Ok(LockedBundle::new(self, transactions, bank))
     }
 
     /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
     fn unlock_bundle_accounts<Tx: TransactionWithMeta>(
         &self,
-        sanitized_bundle: &SanitizedBundle<Tx>,
+        transactions: &[Tx],
         bank: &Bank,
     ) -> BundleAccountLockerResult<()> {
-        let transaction_locks = Self::get_transaction_locks(sanitized_bundle, bank)?;
+        let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
 
         self.account_locks
             .lock()
@@ -171,11 +166,10 @@ impl BundleAccountLocker {
     /// Returns the read and write locks for this bundle
     /// Each lock type contains a HashMap which maps Pubkey to number of locks held
     fn get_transaction_locks<'a, Tx: TransactionWithMeta>(
-        bundle: &'a SanitizedBundle<Tx>,
+        transactions: &'a [Tx],
         bank: &Bank,
     ) -> BundleAccountLockerResult<Vec<impl Iterator<Item = (&'a Pubkey, bool)>>> {
-        let transaction_locks = bundle
-            .transactions()
+        let transaction_locks = transactions
             .iter()
             .filter_map(|tx| {
                 if validate_account_locks(
@@ -191,7 +185,7 @@ impl BundleAccountLocker {
             })
             .collect::<Vec<_>>();
 
-        if transaction_locks.len() != bundle.transactions().len() {
+        if transaction_locks.len() != transactions.len() {
             return Err(BundleAccountLockerError::LockingError);
         }
 

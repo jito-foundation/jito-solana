@@ -17,27 +17,29 @@ use {
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
         },
+        bundle::SanitizedBundle,
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker,
             bundle_consumer::BundleConsumer,
-            bundle_storage::{BundleStorage, BundleStorageError},
+            bundle_storage::{BundleStorage, BundleStorageEntry, BundleStorageError},
         },
         packet_bundle::PacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
     ahash::HashSet,
-    crossbeam_channel::Receiver,
+    crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure_us,
     solana_poh::{poh_recorder::PohRecorder, transaction_recorder::TransactionRecorder},
     solana_pubkey::Pubkey,
     solana_runtime::{
-        bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
+        bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
     },
     std::{
+        collections::VecDeque,
         num::Saturating,
         ops::Deref,
         sync::{
@@ -52,6 +54,7 @@ use {
 pub mod bundle_account_locker;
 mod bundle_consumer;
 mod bundle_packet_deserializer;
+mod bundle_queue;
 mod bundle_storage;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
@@ -384,7 +387,7 @@ impl BundleStage {
         bank_forks: Arc<RwLock<BankForks>>,
         mut bundle_receiver: Receiver<Vec<PacketBundle>>,
         mut decision_maker: DecisionMaker,
-        consumer: BundleConsumer,
+        mut consumer: BundleConsumer,
         // id: u32,
         exit: Arc<AtomicBool>,
         blacklisted_accounts: HashSet<Pubkey>,
@@ -400,50 +403,32 @@ impl BundleStage {
             if bundle_storage.unprocessed_bundles_len() > 0
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, process_buffered_packets_time_us) =
-                    measure_us!(Self::process_buffered_bundles(
-                        &mut decision_maker,
-                        &mut bundle_storage,
-                        &bundle_account_locker
-                    ));
+                let (_, process_buffered_packets_time_us) = measure_us!(Self::process_buffered_bundles(
+                    &mut decision_maker,
+                    &mut consumer,
+                    &mut bundle_storage,
+                    &bundle_account_locker
+                    &mut bundle_stage_metrics,
+                ));
                 // bundle_stage_leader_metrics
                 //         .leader_slot_metrics_tracker()
                 //         .increment_process_buffered_packets_us(process_buffered_packets_time_us);
                 last_metrics_update = Instant::now();
             }
 
-            // Buffer the rest
-            let (root_bank, working_bank) = {
-                let bank_forks = bank_forks.read().unwrap();
-                let root_bank = bank_forks.root_bank();
-                let working_bank = bank_forks.working_bank();
-                (root_bank, working_bank)
-            };
-
             let start = Instant::now();
-            while let Ok(bundles) = bundle_receiver.try_recv() {
-                for bundle in bundles {
-                    let num_packets = bundle.batch().len();
-
-                    bundle_stage_metrics.increment_num_bundles_received(1);
-                    bundle_stage_metrics.increment_num_packets_received(num_packets as u64);
-
-                    match bundle_storage.insert_bundle(
-                        bundle,
-                        &root_bank,
-                        &working_bank,
-                        &blacklisted_accounts,
-                    ) {
-                        Ok(_) => {
-                            bundle_stage_metrics.increment_newly_buffered_bundles_count(1);
-                        }
-                        Err(e) => {
-                            bundle_stage_metrics.increment_bundle_dropped_error(e);
-                        }
-                    }
-                }
-            }
+            Self::receive_and_buffer_bundles(
+                &bank_forks,
+                &mut bundle_receiver,
+                &mut bundle_storage,
+                &mut decision_maker,
+                &mut consumer,
+                &bundle_account_locker,
+                &blacklisted_accounts,
+                &mut bundle_stage_metrics,
+            );
             let elapsed = start.elapsed();
+
             bundle_stage_metrics
                 .increment_receive_and_buffer_bundles_elapsed_us(elapsed.as_micros() as u64);
 
@@ -460,28 +445,121 @@ impl BundleStage {
         }
     }
 
+    fn receive_and_buffer_bundles(
+        bank_forks: &Arc<RwLock<BankForks>>,
+        bundle_receiver: &mut Receiver<Vec<PacketBundle>>,
+        bundle_storage: &mut BundleStorage,
+        decision_maker: &mut DecisionMaker,
+        consumer: &mut BundleConsumer,
+        bundle_account_locker: &BundleAccountLocker,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        bundle_stage_metrics: &mut BundleStageLoopMetrics,
+    ) -> Result<(), RecvTimeoutError> {
+        let (root_bank, working_bank) = {
+            let bank_forks = bank_forks.read().unwrap();
+            let root_bank = bank_forks.root_bank();
+            let working_bank = bank_forks.working_bank();
+            (root_bank, working_bank)
+        };
+
+        let recv_timeout = if bundle_storage.unprocessed_bundles_len() > 0 {
+            Duration::from_millis(10)
+        } else {
+            Duration::from_millis(0)
+        };
+
+        let bundles = bundle_receiver.recv_timeout(recv_timeout)?;
+        for bundle in bundles {
+            Self::insert_bundle(
+                bundle_storage,
+                bundle,
+                &root_bank,
+                &working_bank,
+                &blacklisted_accounts,
+                bundle_stage_metrics,
+            );
+        }
+
+        while let Ok(bundles) = bundle_receiver.try_recv() {
+            for bundle in bundles {
+                Self::insert_bundle(
+                    bundle_storage,
+                    bundle,
+                    &root_bank,
+                    &working_bank,
+                    &blacklisted_accounts,
+                    bundle_stage_metrics,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn insert_bundle(
+        bundle_storage: &mut BundleStorage,
+        bundle: PacketBundle,
+        root_bank: &Arc<Bank>,
+        working_bank: &Arc<Bank>,
+        blacklisted_accounts: &HashSet<Pubkey>,
+        bundle_stage_metrics: &mut BundleStageLoopMetrics,
+    ) {
+        let num_packets = bundle.batch().len();
+
+        bundle_stage_metrics.increment_num_bundles_received(1);
+        bundle_stage_metrics.increment_num_packets_received(num_packets as u64);
+
+        match bundle_storage.insert_bundle(bundle, &root_bank, &working_bank, &blacklisted_accounts)
+        {
+            Ok(_) => {
+                bundle_stage_metrics.increment_newly_buffered_bundles_count(1);
+            }
+            Err(e) => {
+                bundle_stage_metrics.increment_bundle_dropped_error(e);
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn process_buffered_bundles(
         decision_maker: &mut DecisionMaker,
-        // consumer: &mut BundleConsumer,
+        consumer: &mut BundleConsumer,
         bundle_storage: &mut BundleStorage,
         // bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         bundle_account_locker: &BundleAccountLocker,
+        bundle_stage_metrics: &mut BundleStageLoopMetrics,
     ) {
+        let mut bundle_queue = VecDeque::new();
+
         match decision_maker.make_consume_or_forward_decision() {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
             BufferedPacketsDecision::Consume(bank) => {
-                while !bank.is_complete() {
-                    let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) else {
-                        break;
-                    };
-
-                    // let locked_bundle =
-                    //     bundle_account_locker.prepare_locked_bundle(sanitized_bundle, &bank);
-
-                    bundle_storage.destroy_bundle(bundle);
+                while let Some(BundleStorageEntry {
+                    container_ids,
+                    transactions,
+                    max_ages,
+                }) = bundle_storage.pop_bundle(bank.slot())
+                {
+                    if bundle_account_locker
+                        .lock_bundle(&transactions, &bank)
+                        .is_err()
+                    {
+                        bundle_storage.destroy_bundle(BundleStorageEntry {
+                            container_ids,
+                            transactions,
+                            max_ages,
+                        });
+                        continue;
+                    }
+                    bundle_queue.push_back(BundleStorageEntry {
+                        container_ids,
+                        transactions,
+                        max_ages,
+                    });
                 }
+
+                // NOTE: make sure to unlock bundles
             }
             // BufferedPacketsDecision::Forward means the leader is slot is far away.
             // Bundles aren't forwarded because it breaks atomicity guarantees, so just drop them.
@@ -493,5 +571,20 @@ impl BundleStage {
             // atomicity guarantees
             BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_buffered_bundles() {
+        panic!("Not implemented");
+    }
+
+    #[test]
+    fn test_tip_payment_once_per_slot() {
+        panic!("Not implemented");
     }
 }
