@@ -249,7 +249,7 @@ impl BundleConsumer {
         }
     }
 
-    fn crank_tip_program(
+    pub fn maybe_crank_tip_program(
         &mut self,
         txs: &[impl TransactionWithMeta],
         bank: &Bank,

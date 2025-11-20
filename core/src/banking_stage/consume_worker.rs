@@ -420,7 +420,7 @@ pub(crate) mod external {
                     &max_ages,
                     execution_flags,
                     &|_| 0,
-                    Some(&self.bundle_account_locker)
+                    Some(&self.bundle_account_locker),
                 );
 
                 self.metrics.update_for_consume(&output);

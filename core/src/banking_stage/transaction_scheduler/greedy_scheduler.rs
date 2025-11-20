@@ -1,7 +1,5 @@
-use crate::bundle_stage::bundle_account_locker::BundleAccountLocker;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -13,10 +11,13 @@ use {
         transaction_state::TransactionState,
         transaction_state_container::StateContainer,
     },
-    crate::banking_stage::{
-        consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
-        read_write_account_set::ReadWriteAccountSet,
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork},
+    crate::{
+        banking_stage::{
+            consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
+            read_write_account_set::ReadWriteAccountSet,
+            scheduler_messages::{ConsumeWork, FinishedConsumeWork},
+        },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     agave_scheduling_utils::thread_aware_account_locks::{
         ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError,
