@@ -23,7 +23,7 @@ use {
     solana_svm_transaction::{
         message_address_table_lookup::SVMMessageAddressTableLookup, svm_message::SVMMessage,
     },
-    solana_transaction::{sanitized::SanitizedTransaction, TransactionError},
+    solana_transaction::sanitized::SanitizedTransaction,
     solana_transaction_context::transaction_accounts::KeyedAccountSharedData,
     solana_transaction_error::TransactionResult as Result,
     std::{
@@ -579,54 +579,6 @@ impl Accounts {
     /// Add a slot to root.  Root slots cannot be purged
     pub fn add_root(&self, slot: Slot) -> AccountsAddRootTiming {
         self.accounts_db.add_root(slot)
-    }
-
-    pub fn lock_accounts_sequential_with_results<Tx: SVMMessage>(
-        &self,
-        txs: &[Tx],
-        tx_account_lock_limit: usize,
-    ) -> Vec<Result<()>> {
-        let tx_account_locks_results: Vec<_> = txs
-            .iter()
-            .map(|tx| {
-                validate_account_locks(tx.account_keys(), tx_account_lock_limit)
-                    .map(|_| TransactionAccountLocksIterator::new(tx))
-            })
-            .collect();
-        self.lock_accounts_sequential_inner(tx_account_locks_results)
-    }
-
-    #[must_use]
-    fn lock_accounts_sequential_inner<Tx: SVMMessage>(
-        &self,
-        tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<Tx>>>,
-    ) -> Vec<Result<()>> {
-        let mut l_account_locks = self.account_locks.lock().unwrap();
-        Self::lock_accounts_sequential(&mut l_account_locks, tx_account_locks_results)
-    }
-
-    pub fn lock_accounts_sequential<Tx: SVMMessage>(
-        account_locks: &mut AccountLocks,
-        tx_account_locks_results: Vec<Result<TransactionAccountLocksIterator<Tx>>>,
-    ) -> Vec<Result<()>> {
-        let mut account_in_use_set = false;
-        tx_account_locks_results
-            .into_iter()
-            .map(|tx_account_locks_result| match tx_account_locks_result {
-                Ok(tx_account_locks) => match account_in_use_set {
-                    true => Err(TransactionError::AccountInUse),
-                    false => {
-                        let locked = account_locks
-                            .try_lock_accounts(tx_account_locks.accounts_with_is_writable());
-                        if matches!(locked, Err(TransactionError::AccountInUse)) {
-                            account_in_use_set = true;
-                        }
-                        locked
-                    }
-                },
-                Err(err) => Err(err),
-            })
-            .collect()
     }
 }
 

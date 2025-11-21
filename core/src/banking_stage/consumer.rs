@@ -147,10 +147,13 @@ impl Consumer {
         let check_results =
             bank.check_transactions(txs, &pre_results, MAX_PROCESSING_AGE, &mut error_counters);
 
-        let check_results = check_results.into_iter().map(|result| match result {
-            Ok(_) => Ok(()),
-            Err(err) => Err(err.clone()),
-        });
+        let check_results: Vec<_> = check_results
+            .into_iter()
+            .map(|result| match result {
+                Ok(_) => Ok(()),
+                Err(err) => Err(err),
+            })
+            .collect();
 
         let mut output = self.process_and_record_transactions_with_pre_results(
             bank,
@@ -1729,7 +1732,7 @@ mod tests {
     }
 
     #[test]
-    fn test_process_and_record_transactions_bundle_account_locks() {
+    fn test_process_and_record_transactions_with_pre_results_with_bundle_account_locks() {
         panic!("Not implemented");
     }
 }
