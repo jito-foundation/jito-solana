@@ -66,6 +66,12 @@ impl BundleSigverifyStage {
 #[cfg(test)]
 mod tests {
     use crossbeam_channel::bounded;
+    use solana_keypair::Signature;
+    use solana_perf::{
+        packet::{BytesPacket, PacketBatch},
+        test_tx::test_tx,
+    };
+    use solana_transaction::Transaction;
 
     use super::*;
 
@@ -81,11 +87,99 @@ mod tests {
 
     #[test]
     fn test_bundle_sigverify_stage_many_packets_all_valid() {
-        panic!("not implemented");
+        let (unverified_sender, unverified_receiver) = bounded(1024);
+        let (verified_sender, verified_receiver) = bounded(1024);
+        let exit = Arc::new(AtomicBool::new(false));
+
+        let txs_1 = (0..3).map(|_| test_tx()).collect::<Vec<_>>();
+        let packet_bundle_1 = PacketBundle::new(
+            PacketBatch::from(
+                txs_1
+                    .iter()
+                    .map(|tx| BytesPacket::from_data(None, tx).unwrap())
+                    .collect::<Vec<_>>(),
+            ),
+            "".to_string(),
+        );
+
+        let txs_2 = (0..4).map(|_| test_tx()).collect::<Vec<_>>();
+        let packet_bundle_2 = PacketBundle::new(
+            PacketBatch::from(
+                txs_2
+                    .iter()
+                    .map(|tx| BytesPacket::from_data(None, tx).unwrap())
+                    .collect::<Vec<_>>(),
+            ),
+            "".to_string(),
+        );
+
+        unverified_sender
+            .send(vec![packet_bundle_1, packet_bundle_2])
+            .unwrap();
+
+        let stage = BundleSigverifyStage::new(unverified_receiver, verified_sender, exit.clone());
+
+        let verified_bundle_1 = verified_receiver.recv().unwrap();
+        assert_eq!(verified_bundle_1.batch().len(), 3);
+        assert!(verified_bundle_1
+            .batch()
+            .iter()
+            .all(|packet| !packet.meta().discard()));
+        let txs_1_after: Vec<Transaction> = verified_bundle_1
+            .batch()
+            .iter()
+            .map(|packet| bincode::deserialize(&packet.data(..).unwrap()).unwrap())
+            .collect();
+        assert_eq!(txs_1, txs_1_after);
+
+        let verified_bundle_2 = verified_receiver.recv().unwrap();
+        assert_eq!(verified_bundle_2.batch().len(), 4);
+        assert!(verified_bundle_2
+            .batch()
+            .iter()
+            .all(|packet| !packet.meta().discard()));
+        let txs_2_after: Vec<Transaction> = verified_bundle_2
+            .batch()
+            .iter()
+            .map(|packet| bincode::deserialize(&packet.data(..).unwrap()).unwrap())
+            .collect();
+        assert_eq!(txs_2, txs_2_after);
+
+        exit.store(true, Ordering::Relaxed);
+        stage.join().unwrap();
     }
 
     #[test]
     fn test_bundle_sigverify_stage_many_packets_some_invalid() {
-        panic!("not implemented");
+        let (unverified_sender, unverified_receiver) = bounded(1024);
+        let (verified_sender, verified_receiver) = bounded(1024);
+        let exit = Arc::new(AtomicBool::new(false));
+
+        let mut txs_1 = (0..3).map(|_| test_tx()).collect::<Vec<_>>();
+        txs_1[0].signatures[0] = Signature::default();
+
+        let packet_bundle_1 = PacketBundle::new(
+            PacketBatch::from(
+                txs_1
+                    .iter()
+                    .map(|tx| BytesPacket::from_data(None, tx).unwrap())
+                    .collect::<Vec<_>>(),
+            ),
+            "".to_string(),
+        );
+
+        unverified_sender.send(vec![packet_bundle_1]).unwrap();
+
+        let stage = BundleSigverifyStage::new(unverified_receiver, verified_sender, exit.clone());
+
+        assert_eq!(
+            verified_receiver
+                .recv_timeout(Duration::from_millis(10))
+                .unwrap_err(),
+            RecvTimeoutError::Timeout
+        );
+
+        exit.store(true, Ordering::Relaxed);
+        stage.join().unwrap();
     }
 }

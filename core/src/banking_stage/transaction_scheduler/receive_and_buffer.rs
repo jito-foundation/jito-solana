@@ -1185,8 +1185,31 @@ mod tests {
         verify_container(&mut container, 0);
     }
 
-    // #[test]
-    // fn test_receive_blacklisted_account<R: ReceiveAndBuffer>() {
-    //     panic!("Not implemented");
-    // }
+    #[test]
+    fn test_receive_blacklisted_account() {
+        let keypair = Keypair::new();
+        let blacklisted_accounts = HashSet::from_iter([keypair.pubkey()]);
+
+        let (sender, receiver) = unbounded();
+        let (bank_forks, _mint_keypair) = test_bank_forks();
+        let (mut receive_and_buffer, mut container) = setup_transaction_view_receive_and_buffer(
+            receiver,
+            bank_forks.clone(),
+            blacklisted_accounts,
+        );
+
+        let transaction = transfer(
+            &keypair,
+            &Pubkey::new_unique(),
+            1,
+            bank_forks.read().unwrap().root_bank().last_blockhash(),
+        );
+        let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
+        sender.send(packet_batches).unwrap();
+
+        let r = receive_and_buffer
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+        assert_eq!(r.num_dropped_on_blacklisted_account, 1);
+    }
 }
