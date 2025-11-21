@@ -472,13 +472,16 @@ mod tests {
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
         solana_compute_budget_interface::ComputeBudgetInstruction,
+        solana_genesis_config::GenesisConfig,
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_message::Message,
         solana_pubkey::Pubkey,
+        solana_runtime::bank::Bank,
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
+        solana_system_transaction::transfer,
         solana_transaction::{sanitized::SanitizedTransaction, Transaction},
         std::borrow::Borrow,
     };
@@ -875,6 +878,65 @@ mod tests {
 
     #[test]
     fn test_schedule_with_bundle_account_locker() {
-        panic!("not implemented");
+        let bundle_account_locker = BundleAccountLocker::default();
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+
+        let keypair_1 = Keypair::new();
+        let keypair_2 = Keypair::new();
+        let tx_1_a = transfer(&keypair_1, &keypair_1.pubkey(), 1, Hash::default());
+        let tx_1_b = transfer(&keypair_1, &keypair_1.pubkey(), 2, Hash::default());
+        let tx_2_a = transfer(&keypair_2, &keypair_2.pubkey(), 1, Hash::default());
+        let tx_2_b = transfer(&keypair_2, &keypair_2.pubkey(), 2, Hash::default());
+
+        let runtime_tx_1_a = RuntimeTransaction::from_transaction_for_tests(tx_1_a);
+        let runtime_tx_1_b = RuntimeTransaction::from_transaction_for_tests(tx_1_b);
+        let runtime_tx_1_b = vec![runtime_tx_1_b];
+        let runtime_tx_2_a = RuntimeTransaction::from_transaction_for_tests(tx_2_a);
+        let runtime_tx_2_b = RuntimeTransaction::from_transaction_for_tests(tx_2_b);
+        let runtime_tx_2_b = vec![runtime_tx_2_b];
+
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(1, bundle_account_locker.clone());
+
+        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+        container.insert_new_transaction(runtime_tx_1_a, MaxAge::MAX, 1, 5000);
+        container.insert_new_transaction(runtime_tx_2_a, MaxAge::MAX, 1, 5000);
+
+        bundle_account_locker
+            .lock_bundle(&runtime_tx_1_b, &bank)
+            .unwrap();
+
+        let scheduling_summary = scheduler
+            .schedule(
+                &mut container,
+                u64::MAX, // no budget
+                false,
+                test_pre_graph_filter,
+                test_pre_lock_filter,
+            )
+            .unwrap();
+        assert_eq!(scheduling_summary.num_scheduled, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
+        bundle_account_locker
+            .unlock_bundle(&runtime_tx_1_b, &bank)
+            .unwrap();
+
+        bundle_account_locker
+            .lock_bundle(&runtime_tx_2_b, &bank)
+            .unwrap();
+        let scheduling_summary = scheduler
+            .schedule(
+                &mut container,
+                u64::MAX, // no budget
+                false,
+                test_pre_graph_filter,
+                test_pre_lock_filter,
+            )
+            .unwrap();
+        assert_eq!(scheduling_summary.num_scheduled, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
+        bundle_account_locker
+            .unlock_bundle(&runtime_tx_2_b, &bank)
+            .unwrap();
     }
 }

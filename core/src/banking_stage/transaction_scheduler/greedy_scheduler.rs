@@ -1,4 +1,3 @@
-use itertools::Itertools;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -790,8 +789,6 @@ mod test {
             .lock_bundle(&runtime_tx_1_b, &bank)
             .unwrap();
 
-        // container has tx_1_a and tx_2_a
-
         let scheduling_summary = scheduler
             .schedule(
                 &mut container,
@@ -802,7 +799,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 1);
-        assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
         bundle_account_locker
             .unlock_bundle(&runtime_tx_1_b, &bank)
             .unwrap();
@@ -820,7 +817,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 1);
-        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
         bundle_account_locker
             .unlock_bundle(&runtime_tx_2_b, &bank)
             .unwrap();
