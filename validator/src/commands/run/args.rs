@@ -1350,6 +1350,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .long("shred-receiver-address")
             .value_name("SHRED_RECEIVER_ADDRESS")
             .takes_value(true)
+            .multiple(true)
             .help(
                 "Validator will forward all leader shreds to this address in addition to normal \
                  turbine operation. Set to empty string to disable.",
@@ -1360,6 +1361,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .long("shred-retransmit-receiver-address")
             .value_name("SHRED_RETRANSMIT_RECEIVER_ADDRESS")
             .takes_value(true)
+            .multiple(true)
             .help(
                 "Validator will forward all retransmit shreds to this address in addition to \
                  normal turbine operation. Set to empty string to disable.",

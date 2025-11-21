@@ -303,7 +303,7 @@ fn retransmit(
     slot_status_notifier: Option<&SlotStatusNotifier>,
     shred_buf: &mut Vec<Vec<shred::Payload>>,
     votor_event_sender: Option<&Sender<VotorEvent>>,
-    shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
+    shred_receiver_addresses: &ArcSwap<Vec<SocketAddr>>,
 ) -> Result<(), RecvError> {
     // Try to receive shreds from the channel without blocking. If the channel
     // is empty precompute turbine trees speculatively. If no cache updates are
@@ -390,7 +390,7 @@ fn retransmit(
         entry.record(now, out);
         stats
     };
-    let shred_receiver_address_local = shred_receiver_address.load();
+    let shred_receiver_addresses_local = shred_receiver_addresses.load();
     let retransmit_shred = |shred, socket, stats| {
         retransmit_shred(
             shred,
@@ -402,7 +402,7 @@ fn retransmit(
             socket,
             quic_endpoint_sender,
             stats,
-            &shred_receiver_address_local,
+            &shred_receiver_addresses_local,
         )
     };
 
@@ -466,7 +466,7 @@ fn retransmit_shred(
     socket: RetransmitSocket<'_>,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     stats: &RetransmitStats,
-    shred_receiver_addr: &Option<SocketAddr>,
+    shred_receiver_addrs: &[SocketAddr],
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -498,13 +498,14 @@ fn retransmit_shred(
         Protocol::UDP => match socket {
             RetransmitSocket::Xdp(sender) => {
                 let mut sent = num_addrs;
-                if (num_addrs > 0) || shred_receiver_addr.is_some() {
+                if (num_addrs > 0) || !shred_receiver_addrs.is_empty() {
                     // shred receiver not included in the stats
-                    let mut send_addrs = Vec::with_capacity(num_addrs + 1);
-                    send_addrs.extend(addrs.iter());
-                    if let Some(addr) = shred_receiver_addr {
-                        send_addrs.push(*addr);
-                    }
+                    let send_addrs: Vec<_> = addrs
+                        .iter()
+                        .copied()
+                        .chain(shred_receiver_addrs.iter().copied())
+                        .collect();
+
                     if let Err(e) = sender.try_send(key.index() as usize, send_addrs, shred) {
                         log::warn!("xdp channel full: {e:?}");
                         stats
@@ -517,11 +518,7 @@ fn retransmit_shred(
             }
             RetransmitSocket::Socket(_) | RetransmitSocket::Multihomed { .. } => {
                 let socket = socket.get_socket();
-                let mut send_addrs = Vec::with_capacity(num_addrs + 1);
-                send_addrs.extend(addrs.iter());
-                if let Some(addr) = shred_receiver_addr {
-                    send_addrs.push(*addr);
-                }
+                let send_addrs: Vec<_> = addrs.iter().chain(shred_receiver_addrs).collect();
 
                 match multi_target_send(socket, shred, &send_addrs) {
                     Ok(()) => num_addrs,
@@ -674,7 +671,7 @@ impl RetransmitStage {
         slot_status_notifier: Option<SlotStatusNotifier>,
         xdp_sender: Option<XdpSender>,
         votor_event_sender: Option<Sender<VotorEvent>>,
-        shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addrs: Arc<ArcSwap<Vec<SocketAddr>>>,
     ) -> Self {
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
             CLUSTER_NODES_CACHE_NUM_EPOCH_CAP,
@@ -717,7 +714,7 @@ impl RetransmitStage {
                         slot_status_notifier.as_ref(),
                         &mut shred_buf,
                         votor_event_sender.as_ref(),
-                        &shred_receiver_addr,
+                        &shred_receiver_addrs,
                     )
                     .is_ok()
                     {}

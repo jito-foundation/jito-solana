@@ -128,7 +128,7 @@ impl BroadcastStageType {
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
         xdp_sender: Option<XdpSender>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<Vec<SocketAddr>>>,
     ) -> BroadcastStage {
         match self {
             BroadcastStageType::Standard => BroadcastStage::new(
@@ -143,7 +143,7 @@ impl BroadcastStageType {
                 StandardBroadcastRun::new(shred_version),
                 xdp_sender,
                 shredstream_receiver_address,
-                shred_receiver_address,
+                shred_receiver_addresses,
             ),
 
             BroadcastStageType::FailEntryVerification => BroadcastStage::new(
@@ -158,7 +158,7 @@ impl BroadcastStageType {
                 FailEntryVerificationBroadcastRun::new(shred_version),
                 xdp_sender,
                 shredstream_receiver_address,
-                Arc::new(ArcSwap::from_pointee(None)),
+                Arc::new(ArcSwap::from_pointee(vec![])),
             ),
 
             BroadcastStageType::BroadcastFakeShreds => BroadcastStage::new(
@@ -173,7 +173,7 @@ impl BroadcastStageType {
                 BroadcastFakeShredsRun::new(0, shred_version),
                 xdp_sender,
                 shredstream_receiver_address,
-                Arc::new(ArcSwap::from_pointee(None)),
+                Arc::new(ArcSwap::from_pointee(vec![])),
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -188,7 +188,7 @@ impl BroadcastStageType {
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
                 xdp_sender,
                 shredstream_receiver_address,
-                Arc::new(ArcSwap::from_pointee(None)),
+                Arc::new(ArcSwap::from_pointee(vec![])),
             ),
         }
     }
@@ -211,7 +211,7 @@ trait BroadcastRun {
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
-        shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<Vec<SocketAddr>>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()>;
 }
@@ -310,7 +310,7 @@ impl BroadcastStage {
         mut broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
         xdp_sender: Option<XdpSender>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<Vec<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -371,7 +371,7 @@ impl BroadcastStage {
             let quic_endpoint_sender = quic_endpoint_sender.clone();
             let xdp_sender = xdp_sender.clone();
             let shredstream_receiver_address = shredstream_receiver_address.clone();
-            let shred_receiver_address = shred_receiver_address.clone();
+            let shred_receiver_addresses = shred_receiver_addresses.clone();
 
             let run_transmit = move || loop {
                 let sock_variant = match xdp_sender.as_ref() {
@@ -389,7 +389,7 @@ impl BroadcastStage {
                     &bank_forks,
                     &quic_endpoint_sender,
                     &shredstream_receiver_address,
-                    &shred_receiver_address,
+                    &shred_receiver_addresses,
                 );
                 if let Some(res) = Self::handle_error(res, "solana-broadcaster-transmit") {
                     return res;
@@ -516,7 +516,7 @@ pub fn broadcast_shreds(
     socket_addr_space: &SocketAddrSpace,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     shredstream_receiver_address: &Option<SocketAddr>,
-    shred_receiver_address: &Option<SocketAddr>,
+    shred_receiver_addresses: &[SocketAddr],
 ) -> Result<()> {
     let mut result = Ok(());
     // Compute destinations & transmission protocols for each of the shreds to be sent
@@ -551,21 +551,20 @@ pub fn broadcast_shreds(
         .partition_map(std::convert::identity);
 
     // forward shreds to external receivers, avoid duplicates if addresses match
-    match (shredstream_receiver_address, shred_receiver_address) {
-        (Some(ss_addr), Some(sr_addr)) => {
-            packets.extend(shreds.iter().map(|shred| (shred.payload(), *ss_addr)));
-            if ss_addr != sr_addr {
-                packets.extend(shreds.iter().map(|shred| (shred.payload(), *sr_addr)));
-            }
-        }
-        (Some(ss_addr), None) => {
-            packets.extend(shreds.iter().map(|shred| (shred.payload(), *ss_addr)))
-        }
-        (None, Some(sr_addr)) => {
-            packets.extend(shreds.iter().map(|shred| (shred.payload(), *sr_addr)))
-        }
-        (None, None) => {}
-    }
+    let shred_addrs = shredstream_receiver_address
+        .iter()
+        .chain(
+            shred_receiver_addresses
+                .iter()
+                .filter(|a| Some(*a) != shredstream_receiver_address.as_ref()),
+        )
+        .copied()
+        .collect::<Vec<_>>();
+    packets.extend(
+        shreds
+            .iter()
+            .flat_map(|shred| shred_addrs.iter().map(|addr| (shred.payload(), *addr))),
+    );
 
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
