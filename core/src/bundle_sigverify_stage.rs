@@ -65,11 +65,18 @@ impl BundleSigverifyStage {
 
 #[cfg(test)]
 mod tests {
+    use crossbeam_channel::bounded;
+
     use super::*;
 
     #[test]
     fn test_bundle_sigverify_stage_exit() {
-        panic!("not implemented");
+        let (_unverified_sender, unverified_receiver) = bounded(1024);
+        let (verified_sender, _verified_receiver) = bounded(1024);
+        let exit = Arc::new(AtomicBool::new(false));
+        let stage = BundleSigverifyStage::new(unverified_receiver, verified_sender, exit.clone());
+        exit.store(true, Ordering::Relaxed);
+        stage.join().unwrap();
     }
 
     #[test]

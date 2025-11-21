@@ -467,6 +467,7 @@ mod tests {
             bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         agave_banking_stage_ingress_types::{BankingPacketBatch, BankingPacketReceiver},
+        ahash::HashSet,
         crossbeam_channel::{unbounded, Receiver, Sender},
         itertools::Itertools,
         solana_compute_budget_interface::ComputeBudgetInstruction,
@@ -483,10 +484,7 @@ mod tests {
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
         solana_transaction::Transaction,
-        std::{
-            collections::HashSet,
-            sync::{Arc, RwLock},
-        },
+        std::sync::{Arc, RwLock},
     };
 
     fn create_channels<T>(num: usize) -> (Vec<Sender<T>>, Vec<Receiver<T>>) {

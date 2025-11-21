@@ -1,6 +1,8 @@
 //! The `tpu` module implements the Transaction Processing Unit, a
 //! multi-stage transaction processing pipeline in software.
 
+use ahash::{HashSet, HashSetExt};
+
 pub use crate::forwarding_stage::ForwardingClientOption;
 use crate::{
     bundle_sigverify_stage::BundleSigverifyStage,
@@ -76,7 +78,7 @@ use {
         xdp::XdpSender,
     },
     std::{
-        collections::{HashMap, HashSet},
+        collections::HashMap,
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
         sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
@@ -149,7 +151,8 @@ pub struct Tpu {
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
-    // bundle_stage: BundleStage,
+    bundle_stage: BundleStage,
+    bundle_sigverify_stage: BundleSigverifyStage,
 }
 
 impl Tpu {
@@ -449,12 +452,12 @@ impl Tpu {
             banking_control_receiver,
             block_production_num_workers,
             block_production_scheduler_config,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             log_messages_bytes_limit,
             bank_forks.clone(),
             prioritization_fee_cache.clone(),
-            blacklisted_accounts,
+            blacklisted_accounts.clone(),
             bundle_account_locker.clone(),
             move |bank| {
                 calculate_block_cost_limit_reservation(
@@ -551,7 +554,8 @@ impl Tpu {
             block_engine_stage,
             relayer_stage,
             fetch_stage_manager,
-            // bundle_stage,
+            bundle_stage,
+            bundle_sigverify_stage,
         }
     }
 
@@ -567,7 +571,8 @@ impl Tpu {
             self.tpu_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_forwards_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_vote_quic_t.join(),
-            // self.bundle_stage.join(),
+            self.bundle_stage.join(),
+            self.bundle_sigverify_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),

@@ -1,3 +1,4 @@
+use ahash::HashSet;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -37,7 +38,6 @@ use {
     solana_transaction::sanitized::MessageHash,
     solana_transaction_error::TransactionError,
     std::{
-        collections::HashSet,
         sync::{Arc, RwLock},
         time::Instant,
     },
@@ -599,6 +599,7 @@ mod tests {
     use {
         super::*,
         crate::banking_stage::tests::create_slow_genesis_config,
+        ahash::HashSetExt,
         crossbeam_channel::{unbounded, Receiver},
         solana_hash::Hash,
         solana_keypair::Keypair,

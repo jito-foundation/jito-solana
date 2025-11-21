@@ -24,7 +24,7 @@ use {
             bundle_consumer::BundleConsumer,
             bundle_storage::{BundleStorage, BundleStorageEntry, BundleStorageError},
         },
-        packet_bundle::{PacketBundle, VerifiedPacketBundle},
+        packet_bundle::VerifiedPacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },

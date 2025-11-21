@@ -10,7 +10,7 @@ use {
             },
         },
         bundle_stage::bundle_packet_deserializer::BundlePacketDeserializer,
-        packet_bundle::{PacketBundle, VerifiedPacketBundle},
+        packet_bundle::VerifiedPacketBundle,
     },
     ahash::HashSet,
     arrayvec::ArrayVec,
@@ -277,7 +277,7 @@ mod tests {
                 transaction_state_container::StateContainer,
             },
             bundle_stage::bundle_storage::{BundleStorage, BundleStorageError},
-            packet_bundle::PacketBundle,
+            packet_bundle::VerifiedPacketBundle,
         },
         ahash::{HashSet, HashSetExt},
         solana_genesis_config::GenesisConfig,
@@ -303,7 +303,7 @@ mod tests {
         let packets: Vec<BytesPacket> = (0..BundleStorage::MAX_PACKETS_PER_BUNDLE + 1)
             .map(|_| BytesPacket::from_data(None, test_tx()).unwrap())
             .collect();
-        let bundle = PacketBundle::new(PacketBatch::from(packets), "".to_string());
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(packets));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
 
         assert_matches!(result, Err(BundleStorageError::BundleTooLarge));
@@ -319,7 +319,7 @@ mod tests {
         let packet_1 = BytesPacket::from_data(None, test_tx()).unwrap();
         let mut packet_2 = BytesPacket::from_data(None, test_tx()).unwrap();
         packet_2.meta_mut().set_discard(true);
-        let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert_matches!(result, Err(BundleStorageError::PacketMarkedDiscard(1)));
     }
@@ -331,7 +331,7 @@ mod tests {
 
         for i in 0..10 {
             let packet = BytesPacket::from_data(None, test_tx()).unwrap();
-            let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
+            let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
             bundle_storage
                 .insert_bundle(bundle, &bank, &bank, &HashSet::new())
                 .unwrap();
@@ -346,7 +346,7 @@ mod tests {
 
         let packet = BytesPacket::from_data(None, test_tx()).unwrap();
 
-        let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert_eq!(result, Err(BundleStorageError::ContainerFull));
         assert_eq!(bundle_storage.unprocessed_bundles.len(), 10);
@@ -362,7 +362,7 @@ mod tests {
     fn test_bundle_empty() {
         let mut bundle_storage = BundleStorage::with_capacity(10);
         let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let bundle = PacketBundle::new(PacketBatch::from(vec![]), "".to_string());
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![]));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert_matches!(result, Err(BundleStorageError::EmptyBatch));
     }
@@ -373,7 +373,7 @@ mod tests {
         let bank = Bank::new_for_tests(&GenesisConfig::default());
         let packet_1 = BytesPacket::from_data(None, test_tx()).unwrap();
         let packet_2 = packet_1.clone();
-        let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert_matches!(result, Err(BundleStorageError::DuplicateTransaction));
         assert!(
@@ -393,7 +393,7 @@ mod tests {
         let bank = Bank::new_for_tests(&GenesisConfig::default());
         let packet_1 = BytesPacket::from_data(None, test_tx()).unwrap();
         let packet_2 = BytesPacket::from_data(None, test_tx()).unwrap();
-        let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert!(result.is_ok());
 
@@ -421,7 +421,7 @@ mod tests {
         let pubkey = tx.message().account_keys[0];
         let blacklisted_accounts = HashSet::from_iter([pubkey]);
         let packet = BytesPacket::from_data(None, tx).unwrap();
-        let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
+        let bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![packet]));
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &blacklisted_accounts);
         assert_matches!(
             result,
@@ -442,22 +442,18 @@ mod tests {
         let tx_3 = test_tx();
         let tx_4 = test_tx();
 
-        let packet_batch_1 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_1).unwrap()]),
-            "".to_string(),
-        );
-        let packet_batch_2 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_2).unwrap()]),
-            "".to_string(),
-        );
-        let packet_batch_3 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_3).unwrap()]),
-            "".to_string(),
-        );
-        let packet_batch_4 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_4).unwrap()]),
-            "".to_string(),
-        );
+        let packet_batch_1 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_1).unwrap(),
+        ]));
+        let packet_batch_2 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_2).unwrap(),
+        ]));
+        let packet_batch_3 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_3).unwrap(),
+        ]));
+        let packet_batch_4 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_4).unwrap(),
+        ]));
 
         bundle_storage
             .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
@@ -511,14 +507,12 @@ mod tests {
         let tx_1 = test_tx();
         let tx_2 = test_tx();
 
-        let packet_batch_1 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_1).unwrap()]),
-            "".to_string(),
-        );
-        let packet_batch_2 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_2).unwrap()]),
-            "".to_string(),
-        );
+        let packet_batch_1 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_1).unwrap(),
+        ]));
+        let packet_batch_2 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_2).unwrap(),
+        ]));
 
         bundle_storage
             .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
@@ -553,14 +547,12 @@ mod tests {
         let tx_1 = test_tx();
         let tx_2 = test_tx();
 
-        let packet_batch_1 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_1).unwrap()]),
-            "".to_string(),
-        );
-        let packet_batch_2 = PacketBundle::new(
-            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_2).unwrap()]),
-            "".to_string(),
-        );
+        let packet_batch_1 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_1).unwrap(),
+        ]));
+        let packet_batch_2 = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(None, &tx_2).unwrap(),
+        ]));
 
         bundle_storage
             .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
