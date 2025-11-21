@@ -229,7 +229,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PacketHandlingError {
+pub enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,

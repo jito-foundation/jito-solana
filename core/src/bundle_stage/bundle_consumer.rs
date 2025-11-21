@@ -15,7 +15,6 @@ use {
     solana_poh::transaction_recorder::{
         RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
     },
-    solana_pubkey::Pubkey,
     solana_runtime::{
         bank::{Bank, LoadAndExecuteTransactionsOutput},
         transaction_batch::TransactionBatch,
@@ -28,10 +27,8 @@ use {
     },
     solana_transaction::TransactionError,
     std::{
-        collections::HashSet,
         iter::repeat,
         num::Saturating,
-        sync::{Arc, Mutex},
         thread::sleep,
         time::{Duration, Instant},
         vec,
@@ -286,20 +283,6 @@ impl BundleConsumer {
         }
 
         return Err(TransactionError::AccountInUse);
-    }
-
-    fn bundle_touches_tip_pdas(
-        txs: &[impl TransactionWithMeta],
-        tip_accounts: &HashSet<Pubkey>,
-    ) -> bool {
-        if txs.iter().any(|tx| {
-            tx.account_keys()
-                .iter()
-                .any(|lookup| tip_accounts.contains(lookup))
-        }) {
-            return true;
-        }
-        false
     }
 
     fn execute_and_commit_transactions_locked(

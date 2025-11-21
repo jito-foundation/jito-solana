@@ -108,7 +108,7 @@ impl BundleAccountLocker {
     pub fn lock_bundle<'a, 'b, Tx: TransactionWithMeta>(
         &'a self,
         transactions: &'b [Tx],
-        bank: &Arc<Bank>,
+        bank: &Bank,
     ) -> BundleAccountLockerResult<()> {
         let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
 
@@ -120,7 +120,7 @@ impl BundleAccountLocker {
     }
 
     /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
-    pub fn unlock_bundle_accounts<Tx: TransactionWithMeta>(
+    pub fn unlock_bundle<Tx: TransactionWithMeta>(
         &self,
         transactions: &[Tx],
         bank: &Bank,
@@ -167,13 +167,9 @@ impl BundleAccountLocker {
 #[cfg(test)]
 mod tests {
     use {
-        crate::{
-            banking_stage::transaction_scheduler::transaction_state_container::RuntimeTransactionView,
-            bundle::SanitizedBundle,
-            bundle_stage::{
-                bundle_account_locker::BundleAccountLocker,
-                bundle_packet_deserializer::BundlePacketDeserializer,
-            },
+        crate::bundle_stage::{
+            bundle_account_locker::BundleAccountLocker,
+            bundle_packet_deserializer::BundlePacketDeserializer,
         },
         ahash::HashMap,
         solana_keypair::Keypair,
@@ -239,10 +235,7 @@ mod tests {
             &HashSet::default(),
         )
         .unwrap();
-        let sanitized_bundle0 = SanitizedBundle::<RuntimeTransactionView>::new(
-            vec![tx0.take_transaction_for_scheduling().0],
-            "bundle_id".to_string(),
-        );
+        let tx0 = vec![tx0.take_transaction_for_scheduling().0];
 
         let mut tx1 = BundlePacketDeserializer::try_handle_packet(
             tx1_data,
@@ -253,14 +246,9 @@ mod tests {
             &HashSet::default(),
         )
         .unwrap();
-        let sanitized_bundle1 = SanitizedBundle::<RuntimeTransactionView>::new(
-            vec![tx1.take_transaction_for_scheduling().0],
-            "bundle_id".to_string(),
-        );
+        let tx1 = vec![tx1.take_transaction_for_scheduling().0];
 
-        let locked_bundle0 = bundle_account_locker
-            .lock_bundle(&sanitized_bundle0, &bank)
-            .unwrap();
+        bundle_account_locker.lock_bundle(&tx0, &bank).unwrap();
 
         assert_eq!(
             bundle_account_locker
@@ -281,9 +269,7 @@ mod tests {
             HashSet::from_iter([solana_system_interface::program::id()])
         );
 
-        let locked_bundle1 = bundle_account_locker
-            .lock_bundle(&sanitized_bundle1, &bank)
-            .unwrap();
+        bundle_account_locker.lock_bundle(&tx1, &bank).unwrap();
         assert_eq!(
             bundle_account_locker
                 .account_locks()
@@ -303,7 +289,8 @@ mod tests {
             HashSet::from_iter([solana_system_interface::program::id()])
         );
 
-        drop(locked_bundle0);
+        bundle_account_locker.unlock_bundle(&tx0, &bank).unwrap();
+
         assert_eq!(
             bundle_account_locker
                 .account_locks()
@@ -323,7 +310,8 @@ mod tests {
             HashSet::from_iter([solana_system_interface::program::id()])
         );
 
-        drop(locked_bundle1);
+        bundle_account_locker.unlock_bundle(&tx1, &bank).unwrap();
+
         assert!(bundle_account_locker
             .account_locks()
             .write_locks()
@@ -384,6 +372,7 @@ mod tests {
             &HashSet::default(),
         )
         .unwrap();
+        let tx0 = vec![tx0.take_transaction_for_scheduling().0];
         let mut tx1 = BundlePacketDeserializer::try_handle_packet(
             tx1_data,
             &bank,
@@ -393,18 +382,10 @@ mod tests {
             &HashSet::default(),
         )
         .unwrap();
+        let tx1 = vec![tx1.take_transaction_for_scheduling().0];
 
-        let sanitized_bundle0 = SanitizedBundle::<RuntimeTransactionView>::new(
-            vec![
-                tx0.take_transaction_for_scheduling().0,
-                tx1.take_transaction_for_scheduling().0,
-            ],
-            "bundle_id".to_string(),
-        );
-
-        let bundle = bundle_account_locker
-            .lock_bundle(&sanitized_bundle0, &bank)
-            .unwrap();
+        bundle_account_locker.lock_bundle(&tx0, &bank).unwrap();
+        bundle_account_locker.lock_bundle(&tx1, &bank).unwrap();
         assert_eq!(
             bundle_account_locker.account_locks().write_locks(),
             &HashMap::from_iter([
@@ -417,7 +398,9 @@ mod tests {
             bundle_account_locker.account_locks().read_locks(),
             &HashMap::from_iter([(solana_system_interface::program::id(), 2)])
         );
-        drop(bundle);
+        bundle_account_locker.unlock_bundle(&tx0, &bank).unwrap();
+        bundle_account_locker.unlock_bundle(&tx1, &bank).unwrap();
+
         assert_eq!(
             bundle_account_locker.account_locks().write_locks(),
             &HashMap::default()

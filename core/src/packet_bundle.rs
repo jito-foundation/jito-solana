@@ -3,6 +3,7 @@ use solana_perf::packet::PacketBatch;
 #[derive(Clone, Debug)]
 pub struct PacketBundle {
     batch: PacketBatch,
+    #[allow(unused)]
     bundle_id: String,
 }
 

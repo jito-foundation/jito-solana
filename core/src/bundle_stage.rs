@@ -26,7 +26,7 @@ use {
         },
         packet_bundle::PacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
-        tip_manager::{self, TipManager},
+        tip_manager::TipManager,
     },
     ahash::HashSet,
     anchor_lang::solana_program::clock::Slot,
@@ -318,7 +318,6 @@ impl BundleStage {
             exit,
             tip_manager,
             bundle_account_locker,
-            MAX_BUNDLE_RETRY_DURATION,
             block_builder_fee_info,
             prioritization_fee_cache,
             blacklisted_accounts,
@@ -342,7 +341,6 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
-        max_bundle_retry_duration: Duration,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
         blacklisted_accounts: HashSet<Pubkey>,
@@ -361,6 +359,8 @@ impl BundleStage {
             log_message_bytes_limit,
         );
 
+        let block_builder_fee_info = block_builder_fee_info.clone();
+        let cluster_info = cluster_info.clone();
         let bundle_thread = Builder::new()
             .name("solBundleStgTx".to_string())
             .spawn(move || {
@@ -374,7 +374,7 @@ impl BundleStage {
                     bundle_account_locker,
                     tip_manager,
                     block_builder_fee_info,
-                    &cluster_info,
+                    cluster_info,
                 );
             })
             .unwrap();
@@ -407,7 +407,7 @@ impl BundleStage {
             if bundle_storage.unprocessed_bundles_len() > 0
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, process_buffered_packets_time_us) =
+                let (_, _process_buffered_packets_time_us) =
                     measure_us!(Self::process_buffered_bundles(
                         &mut decision_maker,
                         &mut consumer,
@@ -571,7 +571,7 @@ impl BundleStage {
         bundle_storage: &mut BundleStorage,
         bundle_account_locker: &BundleAccountLocker,
         consumer: &mut BundleConsumer,
-        bundle_stage_metrics: &mut BundleStageLoopMetrics,
+        _bundle_stage_metrics: &mut BundleStageLoopMetrics,
         last_tip_update_slot: &mut Slot,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         tip_manager: &TipManager,
@@ -582,16 +582,43 @@ impl BundleStage {
         let mut bundles = VecDeque::with_capacity(BUNDLE_WINDOW_SIZE.get());
 
         if bank.slot() != *last_tip_update_slot {
-            let output = Self::handle_tip_programs(
+            if let Some(output) = Self::handle_tip_programs(
                 bank,
                 bundle_account_locker,
                 consumer,
                 tip_manager,
                 cluster_info,
                 block_builder_fee_info,
-            );
+            ) {
+                debug!(
+                    "tip programs processed; results: {:?}",
+                    output
+                        .execute_and_commit_transactions_output
+                        .commit_transactions_result
+                );
+                if let Err(e) = output
+                    .execute_and_commit_transactions_output
+                    .commit_transactions_result
+                {
+                    error!("tip programs poh error: {:?}", e);
+                    return;
+                }
 
-            *last_tip_update_slot = bank.slot();
+                if let Some(err) = output
+                    .execute_and_commit_transactions_output
+                    .commit_transactions_result
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .find(|result| matches!(result, CommitTransactionDetails::NotCommitted(_)))
+                {
+                    error!("tip programs commit error: {:?}", err);
+                    return;
+                }
+
+                info!("tip programs processed; slot: {}", bank.slot());
+                *last_tip_update_slot = bank.slot();
+            }
         }
 
         // This loop shall:
@@ -717,7 +744,7 @@ impl BundleStage {
                 &max_ages,
                 MAX_BUNDLE_RETRY_DURATION,
             );
-            let _ = bundle_account_locker.unlock_bundle_accounts(&transactions, &bank);
+            let _ = bundle_account_locker.unlock_bundle(&transactions, &bank);
             return Some(output);
         }
         return None;
@@ -731,7 +758,7 @@ impl BundleStage {
         consumer: &mut BundleConsumer,
     ) -> Option<ProcessTransactionBatchOutput> {
         if bank.is_complete() {
-            let _ = bundle_account_locker.unlock_bundle_accounts(&bundle.transactions, &bank);
+            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, &bank);
             bundle_storage.retry_bundle(bundle);
             return None;
         } else {
@@ -742,7 +769,7 @@ impl BundleStage {
                 MAX_BUNDLE_RETRY_DURATION,
             );
 
-            let _ = bundle_account_locker.unlock_bundle_accounts(&bundle.transactions, &bank);
+            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, &bank);
 
             if Self::is_retryable_error(&output) {
                 bundle_storage.retry_bundle(bundle);
@@ -782,7 +809,6 @@ impl BundleStage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn test_process_buffered_bundles() {
