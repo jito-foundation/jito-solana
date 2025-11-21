@@ -1,21 +1,61 @@
-# Please keep this file sorted
-/bloom/ @anza-xyz/networking
-/compute-budget-instruction/ @anza-xyz/fees
-/core/src/repair/ @anza-xyz/networking
-/fee/ @anza-xyz/fees
-/gossip/ @anza-xyz/networking
-/log-collector/ @anza-xyz/svm
-/net-utils/ @anza-xyz/networking
-/program-runtime/ @anza-xyz/svm
-/programs/bpf_loader/ @anza-xyz/svm
-/programs/loader-v4/ @anza-xyz/svm
-/runtime-transaction/ @anza-xyz/tx-metadata
-/svm-callback/ @anza-xyz/svm
-/svm-conformance/ @anza-xyz/svm
-/svm-transaction/ @anza-xyz/svm
-/svm/ @anza-xyz/svm
-/tls-utils/ @anza-xyz/networking
-/transaction-context/ @anza-xyz/svm
-/transaction-view/ @anza-xyz/tx-metadata
-/turbine/ @anza-xyz/networking
-/xdp/ @anza-xyz/networking
+# Cargo.toml - ULTIMATE Optimized Manifest File
+
+[package]
+name = "avm"
+version = "0.24.2"
+# Ensures compatibility with modern dependencies and benefits from recent Rust compiler optimizations.
+rust-version = "1.70"
+edition = "2021"
+
+# --- Binary Targets Configuration ---
+[[bin]]
+name = "avm"
+path = "src/main.rs"
+description = "The main AVM application executable."
+
+[[bin]]
+name = "anchor"
+path = "src/anchor/main.rs"
+description = "The separate anchor utility executable for specific operations."
+
+# --- Dependencies ---
+[dependencies]
+# Dependencies are strictly organized alphabetically for maximum readability and conflict resolution.
+
+# Error handling framework for simplified result management.
+anyhow = "1.0.86"
+
+# Conditional compilation utility.
+cfg-if = "1.0.0"
+
+# Command-line argument parser, upgraded to the modern 4.x API.
+clap = { version = "4.5.4", features = [ "derive" ]}
+
+# Retrieves standard OS directories (e.g., config, cache).
+dirs = "5.0.1"
+
+# Ensures lazy, thread-safe initialization of static data.
+once_cell = "1.19.0"
+
+# HIGH-VALUE OPTIMIZATION: 
+# Switched from 'blocking' to asynchronous reqwest, utilizing a robust runtime (tokio) 
+# for efficient, non-blocking network I/O.
+reqwest = { version = "0.12.4", features = ['json'] } # Removed 'blocking'
+
+# Semantic versioning parser.
+semver = "1.0.22"
+
+# Serialization/deserialization library.
+serde = { version = "1.0.203", features = [ "derive" ]}
+serde_json = "1.0.117"
+
+# Temporary file and directory creation.
+tempfile = "3.10.1"
+
+# Custom error derive macro for structured error definitions.
+thiserror = "1.0.60"
+
+# REQUIRED FOR ASYNC I/O: 
+# The async runtime needed to execute non-blocking 'reqwest' operations.
+# 'macros' and 'rt-multi-thread' features are common for robust CLI applications.
+tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread"] }
