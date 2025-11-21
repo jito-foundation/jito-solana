@@ -40,7 +40,7 @@ jobs:
             upstream_repo: https://github.com/anza-xyz/agave.git
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ matrix.branch }}
           submodules: recursive
