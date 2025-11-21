@@ -1,14 +1,46 @@
+# codecov.yml - ULTIMATE CLEAN CONFIGURATION
+
+# =======================================================
+# Comment Configuration
+# Controls how Codecov posts comments on Pull Requests.
+# =======================================================
 comment:
+  # behavior: 'default' means update the existing comment or post a new one if none exists.
   behavior: default
+  # layout: 'diff' limits the detailed coverage report only to files changed in the PR.
+  # This keeps the PR comment concise.
   layout: diff
+  # require_changes: false allows the comment to be posted even if no files have changed.
   require_changes: false
+
+# =======================================================
+# Coverage Processing Configuration
+# Controls how coverage numbers are processed and displayed.
+# =======================================================
 coverage:
+  # precision: 1 means coverage percentages will be rounded to 1 decimal place.
   precision: 1
+  # range: Defines the color range for the coverage bar (e.g., below 50% is red).
   range:
-  - 50.0
-  - 100.0
+    - 50.0
+    - 100.0
+  # round: 'down' rounds the percentage down (e.g., 99.99% becomes 99.9%).
   round: down
+  
+  # =======================================================
+  # Status Checks Configuration (Crucial for CI Enforcement)
+  # Controls whether coverage failure blocks merging in GitHub/CI.
+  # =======================================================
   status:
-    patch: false
-    project: false
+    # patch: true - OPTIMIZED: Requires the coverage of the specific code 
+    # changed in the PR to not drop below the target (usually 100%).
+    patch: true
+    # project: true - OPTIMIZED: Requires the overall project coverage percentage 
+    # to not drop below the defined target. This enforces quality.
+    project: true
+
+# =======================================================
+# GitHub Checks Integration
+# Used to enable/disable specific GitHub Checks integration.
+# =======================================================
 github_checks: false
