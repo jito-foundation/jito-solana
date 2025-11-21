@@ -550,6 +550,36 @@ mod tests {
 
     #[test]
     fn test_clear() {
-        panic!("not implemented");
+        let mut bundle_storage = BundleStorage::with_capacity(100);
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+
+        let tx_1 = test_tx();
+        let tx_2 = test_tx();
+
+        let packet_batch_1 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_1).unwrap()]),
+            "".to_string(),
+        );
+        let packet_batch_2 = PacketBundle::new(
+            PacketBatch::from(vec![BytesPacket::from_data(None, &tx_2).unwrap()]),
+            "".to_string(),
+        );
+
+        bundle_storage
+            .insert_bundle(packet_batch_1, &bank, &bank, &HashSet::new())
+            .unwrap();
+        bundle_storage
+            .insert_bundle(packet_batch_2, &bank, &bank, &HashSet::new())
+            .unwrap();
+
+        bundle_storage.clear();
+        assert!(bundle_storage.unprocessed_bundles.is_empty());
+        assert!(bundle_storage.cost_model_buffered_bundles.is_empty());
+        assert!(
+            bundle_storage
+                .transaction_view_state_container
+                .buffer_size()
+                == 0
+        );
     }
 }

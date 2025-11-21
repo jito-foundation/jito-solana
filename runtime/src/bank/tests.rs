@@ -12472,4 +12472,6 @@ fn test_single_transaction_bundle_fail() {
 }
 
 #[test]
-fn test_multi_transaction_bundle_success() {}
+fn test_multi_transaction_bundle_success() {
+    panic!("Not implemented");
+}
