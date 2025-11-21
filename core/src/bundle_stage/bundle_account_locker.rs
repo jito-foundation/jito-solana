@@ -105,9 +105,9 @@ impl BundleAccountLocker {
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
     /// When a LockedBundle is dropped, the accounts are automatically unlocked
-    pub fn lock_bundle<'a, 'b, Tx: TransactionWithMeta>(
-        &'a self,
-        transactions: &'b [Tx],
+    pub fn lock_bundle<Tx: TransactionWithMeta>(
+        &self,
+        transactions: &[Tx],
         bank: &Bank,
     ) -> BundleAccountLockerResult<()> {
         let transaction_locks = Self::get_transaction_locks(transactions, bank)?;

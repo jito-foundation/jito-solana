@@ -125,10 +125,7 @@ impl BundleStorage {
         }
 
         // only want to pop from the unprocessed bundles queue and wait for slot boundary to refresh from cost_model_buffered_bundles
-        let bundle = match self.unprocessed_bundles.pop_front() {
-            Some(bundle) => bundle,
-            None => return None,
-        };
+        let bundle = self.unprocessed_bundles.pop_front()?;
 
         let (bundle_transactions, bundle_max_ages): (Vec<RuntimeTransactionView>, Vec<MaxAge>) =
             bundle
@@ -202,7 +199,7 @@ impl BundleStorage {
                             .feature_set
                             .is_active(&agave_feature_set::static_instruction_limit::id()),
                         working_bank.get_transaction_account_lock_limit(),
-                        &blacklisted_accounts,
+                        blacklisted_accounts,
                     ) {
                         Ok(state) => Ok(state),
                         Err(e) => {
@@ -304,7 +301,7 @@ mod tests {
 
         let bank = Bank::new_for_tests(&GenesisConfig::default());
         let packets: Vec<BytesPacket> = (0..BundleStorage::MAX_PACKETS_PER_BUNDLE + 1)
-            .map(|_| BytesPacket::from_data(None, &test_tx()).unwrap())
+            .map(|_| BytesPacket::from_data(None, test_tx()).unwrap())
             .collect();
         let bundle = PacketBundle::new(PacketBatch::from(packets), "".to_string());
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
@@ -319,8 +316,8 @@ mod tests {
     fn test_bundle_marked_discard() {
         let mut bundle_storage = BundleStorage::with_capacity(10);
         let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let packet_1 = BytesPacket::from_data(None, &test_tx()).unwrap();
-        let mut packet_2 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let packet_1 = BytesPacket::from_data(None, test_tx()).unwrap();
+        let mut packet_2 = BytesPacket::from_data(None, test_tx()).unwrap();
         packet_2.meta_mut().set_discard(true);
         let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
@@ -333,7 +330,7 @@ mod tests {
         let bank = Bank::new_for_tests(&GenesisConfig::default());
 
         for i in 0..10 {
-            let packet = BytesPacket::from_data(None, &test_tx()).unwrap();
+            let packet = BytesPacket::from_data(None, test_tx()).unwrap();
             let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
             bundle_storage
                 .insert_bundle(bundle, &bank, &bank, &HashSet::new())
@@ -347,7 +344,7 @@ mod tests {
             );
         }
 
-        let packet = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let packet = BytesPacket::from_data(None, test_tx()).unwrap();
 
         let bundle = PacketBundle::new(PacketBatch::from(vec![packet]), "".to_string());
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
@@ -374,7 +371,7 @@ mod tests {
     fn test_bundle_duplicate_hashes() {
         let mut bundle_storage = BundleStorage::with_capacity(10);
         let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let packet_1 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let packet_1 = BytesPacket::from_data(None, test_tx()).unwrap();
         let packet_2 = packet_1.clone();
         let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
@@ -394,8 +391,8 @@ mod tests {
         let mut bundle_storage = BundleStorage::with_capacity(10);
 
         let bank = Bank::new_for_tests(&GenesisConfig::default());
-        let packet_1 = BytesPacket::from_data(None, &test_tx()).unwrap();
-        let packet_2 = BytesPacket::from_data(None, &test_tx()).unwrap();
+        let packet_1 = BytesPacket::from_data(None, test_tx()).unwrap();
+        let packet_2 = BytesPacket::from_data(None, test_tx()).unwrap();
         let bundle = PacketBundle::new(PacketBatch::from(vec![packet_1, packet_2]), "".to_string());
         let result = bundle_storage.insert_bundle(bundle, &bank, &bank, &HashSet::new());
         assert!(result.is_ok());

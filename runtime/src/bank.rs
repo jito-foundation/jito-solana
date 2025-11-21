@@ -78,10 +78,8 @@ use {
         AccountSharedData, InheritableAccountFields, ReadableAccount, WritableAccount,
     },
     solana_accounts_db::{
-        account_locks::{validate_account_locks, AccountLocks},
-        accounts::{
-            AccountAddressFilter, Accounts, PubkeyAccountSlot, TransactionAccountLocksIterator,
-        },
+        account_locks::validate_account_locks,
+        accounts::{AccountAddressFilter, Accounts, PubkeyAccountSlot},
         accounts_db::{AccountStorageEntry, AccountsDb, AccountsDbConfig},
         accounts_hash::AccountsLtHash,
         accounts_index::{IndexKey, ScanConfig, ScanResult},
@@ -3070,55 +3068,6 @@ impl Bank {
         )
     }
 
-    /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
-    /// limited packing status, where transactions will be locked sequentially until the first failure
-    pub fn prepare_sequential_sanitized_batch_with_results<'a, 'b, Tx: SVMMessage>(
-        &'a self,
-        transactions: &'b [Tx],
-    ) -> TransactionBatch<'a, 'b, Tx> {
-        // this lock_results could be: Ok, AccountInUse, AccountLoadedTwice, or TooManyAccountLocks
-        let tx_account_lock_limit = self.get_transaction_account_lock_limit();
-        let lock_results = self
-            .rc
-            .accounts
-            .lock_accounts_sequential_with_results(transactions, tx_account_lock_limit);
-        TransactionBatch::new(lock_results, self, OwnedOrBorrowed::Borrowed(transactions))
-    }
-
-    /// Prepare a locked transaction batch from a list of sanitized transactions for simulation.
-    /// This grabs as many sequential account locks that it can without a RW conflict. However,
-    /// it uses a temporary version of AccountLocks and not the Bank's account locks, so one can
-    /// use this during simulation on an unfrozen Bank without worrying about impacting the RW
-    /// lock usage in replay
-    pub fn prepare_sequential_sanitized_batch_with_results_for_simulation<
-        'a,
-        'b,
-        Tx: SVMMessage,
-    >(
-        &'a self,
-        transactions: &'b [Tx],
-    ) -> TransactionBatch<'a, 'b, Tx> {
-        let tx_account_lock_limit = self.get_transaction_account_lock_limit();
-        let tx_account_locks_results: Vec<Result<_>> = transactions
-            .iter()
-            .map(|tx| {
-                validate_account_locks(tx.account_keys(), tx_account_lock_limit)
-                    .map(|_| TransactionAccountLocksIterator::new(tx))
-            })
-            .collect();
-
-        let mut account_locks = AccountLocks::default();
-        let lock_results =
-            Accounts::lock_accounts_sequential(&mut account_locks, tx_account_locks_results);
-        let mut batch =
-            TransactionBatch::new(lock_results, self, OwnedOrBorrowed::Borrowed(transactions));
-        // this is required to ensure that accounts aren't unlocked accidentally, which can be problematic during replay.
-        // more specifically, during process_entries, if the lock counts are accidentally decremented,
-        // one might end up replaying a block incorrectly
-        batch.set_needs_unlock(false);
-        batch
-    }
-
     /// Prepare a transaction batch from a single transaction without locking accounts
     pub fn prepare_unlocked_batch_from_single_tx<'a, Tx: SVMMessage>(
         &'a self,
@@ -3189,7 +3138,8 @@ impl Bank {
         _drop_on_failure: bool,
         _all_or_nothing: bool,
     ) -> Vec<TransactionSimulationResult> {
-        return vec![];
+        // TODO (LB): implement this!
+        vec![]
         // let mut simulation_results = Vec::new();
 
         // let account_overrides = if let Some(tx) = transactions.iter().find(|tx| {

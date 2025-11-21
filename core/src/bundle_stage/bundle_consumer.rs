@@ -282,7 +282,7 @@ impl BundleConsumer {
             }
         }
 
-        return Err(TransactionError::AccountInUse);
+        Err(TransactionError::AccountInUse)
     }
 
     fn execute_and_commit_transactions_locked(

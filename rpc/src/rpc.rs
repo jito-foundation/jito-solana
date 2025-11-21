@@ -4133,12 +4133,9 @@ pub mod rpc_full {
             _rpc_bundle_request: RpcBundleRequest,
             _config: Option<RpcSimulateBundleConfig>,
         ) -> Result<RpcResponse<RpcSimulateBundleResult>> {
+            Err(Error::invalid_params("not implemented fully fix brother"))
+
             // const MAX_BUNDLE_SIMULATION_TIME: Duration = Duration::from_millis(500);
-
-            return Err(Error::invalid_params(format!(
-                "not implemented fully fix brother"
-            )));
-
             // let config = config.unwrap_or_else(|| RpcSimulateBundleConfig {
             //     pre_execution_accounts_configs: vec![
             //         None;

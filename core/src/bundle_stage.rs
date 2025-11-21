@@ -480,7 +480,7 @@ impl BundleStage {
                 bundle,
                 &root_bank,
                 &working_bank,
-                &blacklisted_accounts,
+                blacklisted_accounts,
                 bundle_stage_metrics,
             );
         }
@@ -492,7 +492,7 @@ impl BundleStage {
                     bundle,
                     &root_bank,
                     &working_bank,
-                    &blacklisted_accounts,
+                    blacklisted_accounts,
                     bundle_stage_metrics,
                 );
             }
@@ -514,8 +514,7 @@ impl BundleStage {
         bundle_stage_metrics.increment_num_bundles_received(1);
         bundle_stage_metrics.increment_num_packets_received(num_packets as u64);
 
-        match bundle_storage.insert_bundle(bundle, &root_bank, &working_bank, &blacklisted_accounts)
-        {
+        match bundle_storage.insert_bundle(bundle, root_bank, working_bank, blacklisted_accounts) {
             Ok(_) => {
                 bundle_stage_metrics.increment_newly_buffered_bundles_count(1);
             }
@@ -718,10 +717,10 @@ impl BundleStage {
 
         let mut transactions = Vec::new();
         if let Some(bundle) = bundle {
-            transactions.extend(bundle.into_iter());
+            transactions.extend(bundle);
         }
         if let Some(bundle) = initialize_tip_programs_bundle {
-            transactions.extend(bundle.into_iter());
+            transactions.extend(bundle);
         }
 
         if !transactions.is_empty() {
@@ -739,15 +738,15 @@ impl BundleStage {
             let _ = bundle_account_locker.lock_bundle(&transactions, bank);
 
             let output = consumer.process_and_record_aged_transactions(
-                &bank,
+                bank,
                 &transactions,
                 &max_ages,
                 MAX_BUNDLE_RETRY_DURATION,
             );
-            let _ = bundle_account_locker.unlock_bundle(&transactions, &bank);
+            let _ = bundle_account_locker.unlock_bundle(&transactions, bank);
             return Some(output);
         }
-        return None;
+        None
     }
 
     fn process_bundle(
@@ -758,25 +757,25 @@ impl BundleStage {
         consumer: &mut BundleConsumer,
     ) -> Option<ProcessTransactionBatchOutput> {
         if bank.is_complete() {
-            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, &bank);
+            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
             bundle_storage.retry_bundle(bundle);
-            return None;
+            None
         } else {
             let output = consumer.process_and_record_aged_transactions(
-                &bank,
+                bank,
                 &bundle.transactions,
                 &bundle.max_ages,
                 MAX_BUNDLE_RETRY_DURATION,
             );
 
-            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, &bank);
+            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
 
             if Self::is_retryable_error(&output) {
                 bundle_storage.retry_bundle(bundle);
             } else {
                 bundle_storage.destroy_bundle(bundle);
             }
-            return Some(output);
+            Some(output)
         }
     }
 

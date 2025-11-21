@@ -252,14 +252,13 @@ impl Consumer {
                                 TransactionAccountLocksIterator::new(tx)
                                     .accounts_with_is_writable();
                             for (acc, writable) in transactions_account_locks {
-                                if writable
+                                let is_writable_conflict = writable
                                     && (l_bundle_account_locker.write_locks().contains_key(acc)
-                                        || l_bundle_account_locker.read_locks().contains_key(acc))
-                                {
-                                    return Err(TransactionError::AccountInUse);
-                                } else if !writable
-                                    && l_bundle_account_locker.write_locks().contains_key(acc)
-                                {
+                                        || l_bundle_account_locker.read_locks().contains_key(acc));
+                                let is_read_conflict = !writable
+                                    && l_bundle_account_locker.write_locks().contains_key(acc);
+
+                                if is_writable_conflict || is_read_conflict {
                                     return Err(TransactionError::AccountInUse);
                                 }
                             }

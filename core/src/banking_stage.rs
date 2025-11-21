@@ -78,7 +78,7 @@ pub(crate) mod leader_slot_timing_metrics;
 mod read_write_account_set;
 mod vote_packet_receiver;
 
-pub(crate) mod scheduler_messages;
+pub mod scheduler_messages;
 
 pub mod transaction_scheduler;
 

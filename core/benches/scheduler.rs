@@ -1,5 +1,6 @@
 #[cfg(not(any(target_env = "msvc", target_os = "freebsd")))]
 use jemallocator::Jemalloc;
+use solana_core::bundle_stage::bundle_account_locker::BundleAccountLocker;
 #[path = "receive_and_buffer_utils.rs"]
 mod utils;
 use {
@@ -154,6 +155,7 @@ fn bench_scheduler_impl<T: ReceiveAndBuffer + utils::ReceiveAndBufferCreator>(
                                         bench_env.consume_work_senders.clone(),
                                         bench_env.finished_consume_work_receiver.clone(),
                                         GreedySchedulerConfig::default(),
+                                        BundleAccountLocker::default(),
                                     ),
                                     iters,
                                 )
@@ -165,6 +167,7 @@ fn bench_scheduler_impl<T: ReceiveAndBuffer + utils::ReceiveAndBufferCreator>(
                                         bench_env.consume_work_senders.clone(),
                                         bench_env.finished_consume_work_receiver.clone(),
                                         PrioGraphSchedulerConfig::default(),
+                                        BundleAccountLocker::default(),
                                     ),
                                     iters,
                                 )
