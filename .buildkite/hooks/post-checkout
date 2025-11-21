@@ -1,40 +1,47 @@
 #!/usr/bin/env bash
 
+# Set the starting time for CI build tracking
 CI_BUILD_START=$(date +%s)
 export CI_BUILD_START
 
+# Source environment variables for the build
 source ci/env.sh
 
-#
-# Kill any running docker containers, which are potentially left over from the
-# previous CI job
-#
-(
-  echo "+++ Killing stale docker containers"
-  while read -r line; do
-    read -r id image _ <<<"$line"
+# --- 1. Killing Stale Docker Containers (Optimized) ---
+# Goal: Stop and remove any containers built from the specific CI image 
+# that may have been left running by a previous failed/aborted job.
+# Uses Docker's native filtering for robustness and speed.
 
-    if [[ $image =~ "anzaxyz/ci" ]]; then
-      if docker kill "$id" >/dev/null; then
-        echo "kill $id $image"
-      fi
-    fi
+echo "+++ Killing stale docker containers"
 
-  done < <(docker ps | tail -n +2)
-)
+# Find running containers matching the image pattern (anzaxyz/ci) and output their IDs.
+# xargs then pipes these IDs to 'docker kill' and 'docker rm'.
+docker ps -a \
+    --filter "status=running" \
+    --filter "ancestor=anzaxyz/ci" \
+    --format "{{.ID}}" | xargs -r docker kill | xargs -r docker rm
 
-# Processes from previously aborted CI jobs seem to loiter, unclear why as one
-# would expect the buildkite-agent to clean up all child processes of the
-# aborted CI job.
-# But as a workaround for now manually kill some known loiterers.  These
-# processes will all have the `init` process as their PPID:
-(
-  victims=
-  for name in bash cargo docker solana; do
-    victims="$victims $(pgrep -u "$(id -u)" -P 1 -d \  $name)"
-  done
-  for victim in $victims; do
-    echo "Killing pid $victim"
-    kill -9 "$victim" || true
-  done
-)
+# --- 2. Killing Loitering Processes (Workaround) ---
+# Processes remaining with PPID 1 (init/systemd) that should have been cleaned up by the CI agent.
+# We target processes running under the current user's ID.
+
+echo "+++ Killing loitering child processes (PPID 1 workaround)"
+
+# Optimization: Combine pgrep calls using a single regex or OR operator for known binary names.
+# -u "$(id -u)": Match processes owned by the current user.
+# -P 1: Match processes whose Parent Process ID (PPID) is 1 (init/systemd).
+# -d " ": Output PIDs separated by space for easy loop iteration.
+
+PROCESS_NAMES="bash|cargo|docker|solana|node|rust" # Added 'node' and 'rust' for comprehensive cleanup
+VICTIMS=$(pgrep -u "$(id -u)" -P 1 -d " " -f "$PROCESS_NAMES" 2>/dev/null)
+
+if [ -n "$VICTIMS" ]; then
+    echo "Killing PIDs: $VICTIMS"
+    # Use SIGKILL (-9) to ensure they are terminated immediately,
+    # and use '|| true' to ignore errors if a process died between pgrep and kill.
+    kill -9 $VICTIMS || true
+else
+    echo "No loitering processes found under PPID 1."
+fi
+
+echo "Environment cleanup complete."
