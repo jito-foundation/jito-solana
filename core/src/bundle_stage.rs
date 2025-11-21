@@ -13,11 +13,12 @@
 use {
     crate::{
         banking_stage::{
-            committer::Committer,
+            committer::{CommitTransactionDetails, Committer},
+            consumer::ProcessTransactionBatchOutput,
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
+            scheduler_messages::MaxAge,
         },
-        bundle::SanitizedBundle,
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker,
             bundle_consumer::BundleConsumer,
@@ -25,9 +26,10 @@ use {
         },
         packet_bundle::PacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
-        tip_manager::TipManager,
+        tip_manager::{self, TipManager},
     },
     ahash::HashSet,
+    anchor_lang::solana_program::clock::Slot,
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
@@ -38,9 +40,10 @@ use {
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::ReplayVoteSender,
     },
+    solana_transaction::TransactionError,
     std::{
         collections::VecDeque,
-        num::Saturating,
+        num::{NonZeroUsize, Saturating},
         ops::Deref,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -54,7 +57,6 @@ use {
 pub mod bundle_account_locker;
 mod bundle_consumer;
 mod bundle_packet_deserializer;
-mod bundle_queue;
 mod bundle_storage;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
@@ -357,10 +359,6 @@ impl BundleStage {
             transaction_recorder,
             QosService::new(Self::BUNDLE_STAGE_ID),
             log_message_bytes_limit,
-            tip_manager,
-            block_builder_fee_info.clone(),
-            max_bundle_retry_duration,
-            cluster_info.clone(),
         );
 
         let bundle_thread = Builder::new()
@@ -371,10 +369,12 @@ impl BundleStage {
                     bundle_receiver,
                     decision_maker,
                     consumer,
-                    // BUNDLE_STAGE_ID,
                     exit,
                     blacklisted_accounts,
                     bundle_account_locker,
+                    tip_manager,
+                    block_builder_fee_info,
+                    &cluster_info,
                 );
             })
             .unwrap();
@@ -388,10 +388,12 @@ impl BundleStage {
         mut bundle_receiver: Receiver<Vec<PacketBundle>>,
         mut decision_maker: DecisionMaker,
         mut consumer: BundleConsumer,
-        // id: u32,
         exit: Arc<AtomicBool>,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        tip_manager: TipManager,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        cluster_info: Arc<ClusterInfo>,
     ) {
         let mut last_metrics_update = Instant::now();
         let mut bundle_storage = BundleStorage::with_capacity(2_000);
@@ -399,17 +401,24 @@ impl BundleStage {
         let mut bundle_stage_metrics = BundleStageLoopMetrics::default();
         // let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
 
+        let mut last_tip_update_slot = Slot::MAX;
+
         while !exit.load(Ordering::Relaxed) {
             if bundle_storage.unprocessed_bundles_len() > 0
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, process_buffered_packets_time_us) = measure_us!(Self::process_buffered_bundles(
-                    &mut decision_maker,
-                    &mut consumer,
-                    &mut bundle_storage,
-                    &bundle_account_locker
-                    &mut bundle_stage_metrics,
-                ));
+                let (_, process_buffered_packets_time_us) =
+                    measure_us!(Self::process_buffered_bundles(
+                        &mut decision_maker,
+                        &mut consumer,
+                        &mut bundle_storage,
+                        &bundle_account_locker,
+                        &mut bundle_stage_metrics,
+                        &mut last_tip_update_slot,
+                        &block_builder_fee_info,
+                        &tip_manager,
+                        &cluster_info,
+                    ));
                 // bundle_stage_leader_metrics
                 //         .leader_slot_metrics_tracker()
                 //         .increment_process_buffered_packets_us(process_buffered_packets_time_us);
@@ -417,16 +426,15 @@ impl BundleStage {
             }
 
             let start = Instant::now();
-            Self::receive_and_buffer_bundles(
+            if let Err(RecvTimeoutError::Disconnected) = Self::receive_and_buffer_bundles(
                 &bank_forks,
                 &mut bundle_receiver,
                 &mut bundle_storage,
-                &mut decision_maker,
-                &mut consumer,
-                &bundle_account_locker,
                 &blacklisted_accounts,
                 &mut bundle_stage_metrics,
-            );
+            ) {
+                break;
+            }
             let elapsed = start.elapsed();
 
             bundle_stage_metrics
@@ -449,9 +457,6 @@ impl BundleStage {
         bank_forks: &Arc<RwLock<BankForks>>,
         bundle_receiver: &mut Receiver<Vec<PacketBundle>>,
         bundle_storage: &mut BundleStorage,
-        decision_maker: &mut DecisionMaker,
-        consumer: &mut BundleConsumer,
-        bundle_account_locker: &BundleAccountLocker,
         blacklisted_accounts: &HashSet<Pubkey>,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
     ) -> Result<(), RecvTimeoutError> {
@@ -528,38 +533,26 @@ impl BundleStage {
         // bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         bundle_account_locker: &BundleAccountLocker,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
+        last_tip_update_slot: &mut Slot,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        tip_manager: &TipManager,
+        cluster_info: &Arc<ClusterInfo>,
     ) {
-        let mut bundle_queue = VecDeque::new();
-
         match decision_maker.make_consume_or_forward_decision() {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
             BufferedPacketsDecision::Consume(bank) => {
-                while let Some(BundleStorageEntry {
-                    container_ids,
-                    transactions,
-                    max_ages,
-                }) = bundle_storage.pop_bundle(bank.slot())
-                {
-                    if bundle_account_locker
-                        .lock_bundle(&transactions, &bank)
-                        .is_err()
-                    {
-                        bundle_storage.destroy_bundle(BundleStorageEntry {
-                            container_ids,
-                            transactions,
-                            max_ages,
-                        });
-                        continue;
-                    }
-                    bundle_queue.push_back(BundleStorageEntry {
-                        container_ids,
-                        transactions,
-                        max_ages,
-                    });
-                }
-
-                // NOTE: make sure to unlock bundles
+                Self::consume_bundles(
+                    &bank,
+                    bundle_storage,
+                    bundle_account_locker,
+                    consumer,
+                    bundle_stage_metrics,
+                    last_tip_update_slot,
+                    block_builder_fee_info,
+                    tip_manager,
+                    cluster_info,
+                );
             }
             // BufferedPacketsDecision::Forward means the leader is slot is far away.
             // Bundles aren't forwarded because it breaks atomicity guarantees, so just drop them.
@@ -571,6 +564,219 @@ impl BundleStage {
             // atomicity guarantees
             BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold => {}
         }
+    }
+
+    fn consume_bundles(
+        bank: &Arc<Bank>,
+        bundle_storage: &mut BundleStorage,
+        bundle_account_locker: &BundleAccountLocker,
+        consumer: &mut BundleConsumer,
+        bundle_stage_metrics: &mut BundleStageLoopMetrics,
+        last_tip_update_slot: &mut Slot,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        tip_manager: &TipManager,
+        cluster_info: &Arc<ClusterInfo>,
+    ) {
+        const BUNDLE_WINDOW_SIZE: NonZeroUsize = NonZeroUsize::new(10).unwrap();
+
+        let mut bundles = VecDeque::with_capacity(BUNDLE_WINDOW_SIZE.get());
+
+        if bank.slot() != *last_tip_update_slot {
+            let output = Self::handle_tip_programs(
+                bank,
+                bundle_account_locker,
+                consumer,
+                tip_manager,
+                cluster_info,
+                block_builder_fee_info,
+            );
+
+            *last_tip_update_slot = bank.slot();
+        }
+
+        // This loop shall:
+        // - Pop a bundle from the bundle storage
+        // - Try to pre-lock the bundle with the bundle account locker, destorying the bundle if it fails
+        // - Add the bundle to the back of the bundles deque
+        // - If the bundles deque is full, process the bundle at the front of the deque.
+        // - After processing it, check to see if it's a retryable error.
+        // - If it's a retryable error, add the bundle back to the back of the bundles deque
+        // - If it's not a retryable error, destroy the bundle
+        //
+        // The BUNDLE_WINDOW_SIZE should be chosen such that it's not holding too many bundles pre-locks at once
+        // to prevent BankingStage from being starved of transactions to process.
+        //
+        // Requirements:
+        // - Any bundle that gets popped must be destoryed
+        // - Any bundle that gets locked with the bundle account locker shall be destroyed
+        while let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) {
+            if bundle_account_locker
+                .lock_bundle(&bundle.transactions, bank)
+                .is_err()
+            {
+                bundle_storage.destroy_bundle(bundle);
+                continue;
+            }
+
+            bundles.push_back(bundle);
+            if bundles.len() == BUNDLE_WINDOW_SIZE.get() {
+                // unwrwap safe here because of the length check
+                let bundle = bundles.pop_front().unwrap();
+                let _output = Self::process_bundle(
+                    bank,
+                    bundle,
+                    bundle_storage,
+                    bundle_account_locker,
+                    consumer,
+                );
+            }
+        }
+
+        while let Some(bundle) = bundles.pop_front() {
+            let _output = Self::process_bundle(
+                bank,
+                bundle,
+                bundle_storage,
+                bundle_account_locker,
+                consumer,
+            );
+        }
+
+        debug_assert!(
+            bundle_account_locker
+                .account_locks()
+                .read_locks()
+                .is_empty(),
+            "bundle account read locks should be empty"
+        );
+        debug_assert!(
+            bundle_account_locker
+                .account_locks()
+                .write_locks()
+                .is_empty(),
+            "bundle account write locks should be empty"
+        );
+    }
+
+    fn handle_tip_programs(
+        bank: &Arc<Bank>,
+        bundle_account_locker: &BundleAccountLocker,
+        consumer: &mut BundleConsumer,
+        tip_manager: &TipManager,
+        cluster_info: &Arc<ClusterInfo>,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+    ) -> Option<ProcessTransactionBatchOutput> {
+        let keypair = cluster_info.keypair();
+        let initialize_tip_programs_bundle =
+            tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
+        if initialize_tip_programs_bundle.is_some() {
+            info!("initialize tip program bundle to process");
+        }
+
+        let bundle = match tip_manager.get_tip_programs_crank_bundle(
+            bank,
+            &keypair,
+            &block_builder_fee_info.lock().unwrap(),
+        ) {
+            Ok(maybe_bundle) => maybe_bundle,
+            Err(e) => {
+                // Only returns an error if there's an issue parsing the Configuration account, which should never happen.
+                error!("error getting tip programs crank bundle: {:?}", e);
+                return None;
+            }
+        };
+        if bundle.is_some() {
+            info!("tip program bundle to process");
+        }
+
+        let mut transactions = Vec::new();
+        if let Some(bundle) = bundle {
+            transactions.extend(bundle.into_iter());
+        }
+        if let Some(bundle) = initialize_tip_programs_bundle {
+            transactions.extend(bundle.into_iter());
+        }
+
+        if !transactions.is_empty() {
+            info!(
+                "cranking tip programs with {} transactions",
+                transactions.len()
+            );
+            let max_ages = vec![
+                MaxAge {
+                    sanitized_epoch: bank.epoch(),
+                    alt_invalidation_slot: bank.slot(),
+                };
+                transactions.len()
+            ];
+            let _ = bundle_account_locker.lock_bundle(&transactions, bank);
+
+            let output = consumer.process_and_record_aged_transactions(
+                &bank,
+                &transactions,
+                &max_ages,
+                MAX_BUNDLE_RETRY_DURATION,
+            );
+            let _ = bundle_account_locker.unlock_bundle_accounts(&transactions, &bank);
+            return Some(output);
+        }
+        return None;
+    }
+
+    fn process_bundle(
+        bank: &Arc<Bank>,
+        bundle: BundleStorageEntry,
+        bundle_storage: &mut BundleStorage,
+        bundle_account_locker: &BundleAccountLocker,
+        consumer: &mut BundleConsumer,
+    ) -> Option<ProcessTransactionBatchOutput> {
+        if bank.is_complete() {
+            let _ = bundle_account_locker.unlock_bundle_accounts(&bundle.transactions, &bank);
+            bundle_storage.retry_bundle(bundle);
+            return None;
+        } else {
+            let output = consumer.process_and_record_aged_transactions(
+                &bank,
+                &bundle.transactions,
+                &bundle.max_ages,
+                MAX_BUNDLE_RETRY_DURATION,
+            );
+
+            let _ = bundle_account_locker.unlock_bundle_accounts(&bundle.transactions, &bank);
+
+            if Self::is_retryable_error(&output) {
+                bundle_storage.retry_bundle(bundle);
+            } else {
+                bundle_storage.destroy_bundle(bundle);
+            }
+            return Some(output);
+        }
+    }
+
+    /// A bundle is retryable if:
+    /// - The cost model throttled transactions count is greater than 0
+    /// - The commit transactions result is an error
+    /// - The commit transactions result contains a not committed error
+    /// - The commit transactions result contains a not committed error that is an account in use error
+    fn is_retryable_error(output: &ProcessTransactionBatchOutput) -> bool {
+        output.cost_model_throttled_transactions_count > 0
+            || output
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+                .is_err()
+            || output
+                .execute_and_commit_transactions_output
+                .commit_transactions_result
+                .as_ref()
+                .map(|results| {
+                    results.iter().any(|result| {
+                        matches!(
+                            result,
+                            CommitTransactionDetails::NotCommitted(TransactionError::AccountInUse)
+                        )
+                    })
+                })
+                .unwrap_or(false)
     }
 }
 

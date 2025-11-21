@@ -184,6 +184,7 @@ use {
             Arc, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
         },
         time::{Duration, Instant},
+        vec,
     },
 };
 #[cfg(feature = "dev-context-only-utils")]
@@ -2977,7 +2978,12 @@ impl Bank {
 
     /// Attempt to take locks on the accounts in a transaction batch
     pub fn try_lock_accounts(&self, txs: &[impl TransactionWithMeta]) -> Vec<Result<()>> {
-        self.try_lock_accounts_with_results(txs, txs.iter().map(|_| Ok(())))
+        self.try_lock_accounts_with_results(
+            txs,
+            txs.iter().map(|_| Ok(())),
+            self.feature_set
+                .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+        )
     }
 
     /// Attempt to take locks on the accounts in a transaction batch, and their cost
@@ -2986,11 +2992,9 @@ impl Bank {
         &self,
         txs: &[impl TransactionWithMeta],
         tx_results: impl Iterator<Item = Result<()>>,
+        relax_intrabatch_account_locks: bool,
     ) -> Vec<Result<()>> {
         let tx_account_lock_limit = self.get_transaction_account_lock_limit();
-        let relax_intrabatch_account_locks = self
-            .feature_set
-            .is_active(&feature_set::relax_intrabatch_account_locks::id());
 
         // with simd83 enabled, we must fail transactions that duplicate a prior message hash
         // previously, conflicting account locks would fail such transactions as a side effect
@@ -3026,6 +3030,26 @@ impl Bank {
         self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())))
     }
 
+    /// Override the relax_intrabatch_account_locks feature flag and use the SIMD83 logic for bundle execution
+    pub fn prepare_sanitized_batch_relax_intrabatch_account_locks<
+        'a,
+        'b,
+        Tx: TransactionWithMeta,
+    >(
+        &'a self,
+        transactions: &'b [Tx],
+    ) -> TransactionBatch<'a, 'b, Tx> {
+        TransactionBatch::new(
+            self.try_lock_accounts_with_results(
+                transactions,
+                transactions.iter().map(|_| Ok(())),
+                true,
+            ),
+            self,
+            OwnedOrBorrowed::Borrowed(transactions),
+        )
+    }
+
     /// Prepare a locked transaction batch from a list of sanitized transactions, and their cost
     /// limited packing status
     pub fn prepare_sanitized_batch_with_results<'a, 'b, Tx: TransactionWithMeta>(
@@ -3035,7 +3059,12 @@ impl Bank {
     ) -> TransactionBatch<'a, 'b, Tx> {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         TransactionBatch::new(
-            self.try_lock_accounts_with_results(transactions, transaction_results),
+            self.try_lock_accounts_with_results(
+                transactions,
+                transaction_results,
+                self.feature_set
+                    .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+            ),
             self,
             OwnedOrBorrowed::Borrowed(transactions),
         )
@@ -3106,6 +3135,21 @@ impl Bank {
         batch
     }
 
+    pub fn prepare_unlocked_batch_from_multiple_txs<'a, Tx: SVMMessage>(
+        &'a self,
+        transactions: &'a [Tx],
+    ) -> TransactionBatch<'a, 'a, Tx> {
+        let tx_account_lock_limit = self.get_transaction_account_lock_limit();
+        let lock_results = transactions
+            .iter()
+            .map(|tx| validate_account_locks(tx.account_keys(), tx_account_lock_limit))
+            .collect();
+        let mut batch =
+            TransactionBatch::new(lock_results, self, OwnedOrBorrowed::Borrowed(transactions));
+        batch.set_needs_unlock(false);
+        batch
+    }
+
     /// Prepare a transaction batch from a single transaction after locking accounts
     pub fn prepare_locked_batch_from_single_tx<'a, Tx: TransactionWithMeta>(
         &'a self,
@@ -3123,6 +3167,116 @@ impl Bank {
         assert!(self.is_frozen(), "simulation bank must be frozen");
 
         self.simulate_transaction_unchecked(transaction, enable_cpi_recording)
+    }
+
+    /// Simulate multiple transactions unchecked
+    ///
+    /// # Arguments
+    ///
+    /// * `transactions` - The transactions to simulate
+    /// * `enable_cpi_recording` - Whether to enable CPI recording
+    /// * `drop_on_failure` - Whether to drop failing transactions
+    /// * `all_or_nothing` - Whether to abort the entire batch if any transaction fails
+    /// * `preload_accounts` - Whether to preload all the accounts before simulating the transactions or do it on the fly
+    ///
+    /// # Returns
+    ///
+    /// A vector of transaction simulation results
+    pub fn simulate_transactions_unchecked(
+        &self,
+        _transactions: &[impl TransactionWithMeta],
+        _enable_cpi_recording: bool,
+        _drop_on_failure: bool,
+        _all_or_nothing: bool,
+    ) -> Vec<TransactionSimulationResult> {
+        return vec![];
+        // let mut simulation_results = Vec::new();
+
+        // let account_overrides = if let Some(tx) = transactions.iter().find(|tx| {
+        //     tx.account_keys()
+        //         .iter()
+        //         .contains(&sysvar::slot_history::id())
+        // }) {
+        //     self.get_account_overrides_for_simulation(&tx.account_keys())
+        // } else {
+        //     AccountOverrides::default()
+        // };
+
+        // let batch = self.prepare_unlocked_batch_from_multiple_txs(transactions);
+        // let mut timings = ExecuteTimings::default();
+
+        // let LoadAndExecuteTransactionsOutput {
+        //     mut processing_results,
+        //     balance_collector,
+        //     ..
+        // } = self.load_and_execute_transactions(
+        //     &batch,
+        //     // After simulation, transactions will need to be forwarded to the leader
+        //     // for processing. During forwarding, the transaction could expire if the
+        //     // delay is not accounted for.
+        //     MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+        //     &mut timings,
+        //     &mut TransactionErrorMetrics::default(),
+        //     TransactionProcessingConfig {
+        //         account_overrides: Some(&account_overrides),
+        //         check_program_modification_slot: self.check_program_modification_slot,
+        //         log_messages_bytes_limit: None,
+        //         limit_to_load_programs: true,
+        //         recording_config: ExecutionRecordingConfig {
+        //             enable_cpi_recording,
+        //             enable_log_recording: true,
+        //             enable_return_data_recording: true,
+        //             enable_transaction_balance_recording: true,
+        //         },
+        //         drop_on_failure,
+        //         all_or_nothing,
+        //     },
+        // );
+
+        // for (tx, processing_result) in transactions.iter().zip(processing_results) {
+        //     let number_of_accounts = tx.account_keys().len();
+
+        //     match processing_result {
+        //         Ok(processed_tx) => match processed_tx {
+        //             ProcessedTransaction::Executed(executed_tx) => {
+        //                 let details = executed_tx.execution_details;
+        //                 let post_simulation_accounts = executed_tx
+        //                     .loaded_transaction
+        //                     .accounts
+        //                     .into_iter()
+        //                     .take(number_of_accounts)
+        //                     .collect::<Vec<_>>();
+
+        //                 simulation_results.push(TransactionSimulationResult {
+        //                     result: details.status,
+        //                     logs: details.log_messages.unwrap_or_default(),
+        //                     post_simulation_accounts,
+        //                     units_consumed: details.executed_units,
+        //                     loaded_accounts_data_size: executed_tx
+        //                         .loaded_transaction
+        //                         .loaded_accounts_data_size,
+        //                     return_data: details.return_data,
+        //                     inner_instructions: details.inner_instructions,
+        //                     fee: Some(executed_tx.loaded_transaction.fee_details.total_fee()),
+        //                     pre_balances: None,
+        //                     post_balances: None,
+        //                     pre_token_balances: None,
+        //                     post_token_balances: None,
+        //                 });
+        //             }
+        //             ProcessedTransaction::FeesOnly(fees_only_tx) => {
+        //                 simulation_results.push(TransactionSimulationResult::new_error(
+        //                     fees_only_tx.load_error,
+        //                 ));
+        //             }
+        //         },
+        //         Err(error) => {
+        //             simulation_results.push(TransactionSimulationResult::new_error(error));
+        //         }
+        //     }
+        // }
+
+        // simulation_results
     }
 
     /// Run transactions against a bank without committing the results; does not check if the bank

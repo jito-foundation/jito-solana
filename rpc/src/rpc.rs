@@ -4133,13 +4133,11 @@ pub mod rpc_full {
             _rpc_bundle_request: RpcBundleRequest,
             _config: Option<RpcSimulateBundleConfig>,
         ) -> Result<RpcResponse<RpcSimulateBundleResult>> {
-            Err(Error::invalid_params(
-                "simulate_bundle is deprecated; please use simulate_bundle_v2 instead",
-            ))
-
             // const MAX_BUNDLE_SIMULATION_TIME: Duration = Duration::from_millis(500);
 
-            // debug!("simulate_bundle rpc request received");
+            return Err(Error::invalid_params(format!(
+                "not implemented fully fix brother"
+            )));
 
             // let config = config.unwrap_or_else(|| RpcSimulateBundleConfig {
             //     pre_execution_accounts_configs: vec![
@@ -4153,10 +4151,19 @@ pub mod rpc_full {
             //     ..RpcSimulateBundleConfig::default()
             // });
 
+            // let RpcSimulateBundleConfig {
+            //     skip_sig_verify,
+            //     replace_recent_blockhash,
+            //     pre_execution_accounts_configs,
+            //     post_execution_accounts_configs,
+            //     transaction_encoding,
+            //     simulation_bank,
+            // } = config;
+
             // // Run some request validations
-            // if !(config.pre_execution_accounts_configs.len()
+            // if !(pre_execution_accounts_configs.len()
             //     == rpc_bundle_request.encoded_transactions.len()
-            //     && config.post_execution_accounts_configs.len()
+            //     && post_execution_accounts_configs.len()
             //         == rpc_bundle_request.encoded_transactions.len())
             // {
             //     return Err(Error::invalid_params(
@@ -4164,24 +4171,16 @@ pub mod rpc_full {
             //     ));
             // }
 
-            // let bank = match config.simulation_bank.unwrap_or_default() {
-            //     SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
-            //     SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
-            //         Error::invalid_params(format!("bank not found for the provided slot: {}", slot))
-            //     }),
-            //     SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
-            // }?;
-
-            // let tx_encoding = config
-            //     .transaction_encoding
-            //     .unwrap_or(UiTransactionEncoding::Base64);
-            // let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
+            // let transaction_encoding =
+            //     transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
+            // let binary_encoding = transaction_encoding.into_binary_encoding().ok_or_else(|| {
             //     Error::invalid_params(format!(
             //         "Unsupported encoding: {}. Supported encodings are: base58 & base64",
-            //         tx_encoding
+            //         transaction_encoding
             //     ))
             // })?;
-            // let mut decoded_transactions = rpc_bundle_request
+
+            // let mut unsanitized_txs = rpc_bundle_request
             //     .encoded_transactions
             //     .into_iter()
             //     .map(|encoded_tx| {
@@ -4190,42 +4189,51 @@ pub mod rpc_full {
             //     })
             //     .collect::<Result<Vec<VersionedTransaction>>>()?;
 
-            // if config.replace_recent_blockhash {
-            //     if !config.skip_sig_verify {
+            // let bank = match simulation_bank.unwrap_or_default() {
+            //     SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
+            //     SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
+            //         Error::invalid_params(format!("bank not found for the provided slot: {}", slot))
+            //     }),
+            //     SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
+            // }?;
+
+            // let mut blockhash: Option<RpcBlockhash> = None;
+            // if replace_recent_blockhash {
+            //     if !skip_sig_verify {
             //         return Err(Error::invalid_params(
-            //             "sigVerify may not be used with replaceRecentBlockhash",
+            //             "skipSigVerify may not be used with replaceRecentBlockhash",
             //         ));
             //     }
-            //     decoded_transactions.iter_mut().for_each(|tx| {
-            //         tx.message.set_recent_blockhash(bank.last_blockhash());
-            //     });
-            // }
 
-            // // if one can't derive bundle id and we're not skipping signature verification then it's an error
-            // let bundle_id = derive_bundle_id(&decoded_transactions);
-            // if let Err(missing_signature_index) = &bundle_id {
-            //     if !config.skip_sig_verify {
-            //         return Err(Error::invalid_params(format!(
-            //             "Transaction index {} missing signature",
-            //             missing_signature_index
-            //         )));
+            //     let recent_blockhash = bank.last_blockhash();
+            //     for tx in &mut unsanitized_txs {
+            //         tx.message.set_recent_blockhash(recent_blockhash);
             //     }
             // }
 
-            // let runtime_txs = decoded_transactions
+            // let sanitized_transactions = unsanitized_txs
             //     .into_iter()
-            //     .map(|tx| sanitize_transaction(tx, bank.as_ref(), bank.get_reserved_account_keys()))
+            //     .map(|unsanitized_tx| {
+            //         sanitize_transaction(
+            //             unsanitized_tx,
+            //             bank.as_ref(),
+            //             bank.get_reserved_account_keys(),
+            //             bank.feature_set
+            //                 .is_active(&agave_feature_set::static_instruction_limit::id()),
+            //         )
+            //     })
             //     .collect::<Result<Vec<RuntimeTransaction<SanitizedTransaction>>>>()?;
-            // let sanitized_bundle = SanitizedBundle {
-            //     transactions: runtime_txs,
-            //     bundle_id: bundle_id.unwrap_or("unknown".to_string()),
-            // };
 
-            // if !config.skip_sig_verify {
-            //     for tx in &sanitized_bundle.transactions {
-            //         verify_transaction(tx)?;
+            // if !skip_sig_verify {
+            //     for tx in &sanitized_transactions {
+            //         tx.verify().map_err(|err| {
+            //             Error::invalid_params(format!("transaction verification failed: {err}"))
+            //         })?;
             //     }
             // }
+
+            // let simulation_result =
+            //     bank.simulate_transactions(&sanitized_transactions, ExecutionFlags::default());
 
             // let pre_execution_accounts =
             //     account_configs_to_accounts(&config.pre_execution_accounts_configs)?;

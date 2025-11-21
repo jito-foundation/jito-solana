@@ -1,5 +1,5 @@
 use {
-    crate::{bundle::SanitizedBundle, proxy::block_engine_stage::BlockBuilderFeeInfo},
+    crate::proxy::block_engine_stage::BlockBuilderFeeInfo,
     anchor_lang::{prelude::Pubkey as AnchorPubkey, AccountDeserialize, InstructionData},
     jito_tip_distribution::state::{Config as TipDistributionConfig, TipDistributionAccount},
     jito_tip_payment::{
@@ -8,7 +8,6 @@ use {
         TIP_ACCOUNT_SEED_6, TIP_ACCOUNT_SEED_7,
     },
     solana_account::ReadableAccount,
-    solana_bundle::derive_bundle_id,
     solana_clock::Epoch,
     solana_instruction::{AccountMeta, Instruction},
     solana_keypair::Keypair,
@@ -407,17 +406,17 @@ impl TipManager {
         keypair: &Keypair,
         block_builder: &Pubkey,
         block_builder_commission: u64,
-    ) -> Result<RuntimeTransaction<SanitizedTransaction>> {
-        let config = self.get_tip_payment_config_account(bank)?;
-        Ok(self.build_change_tip_receiver_and_block_builder_tx(
-            &Pubkey::from(*config.tip_receiver.as_array()),
+        tip_payment_config: &Config,
+    ) -> RuntimeTransaction<SanitizedTransaction> {
+        self.build_change_tip_receiver_and_block_builder_tx(
+            &Pubkey::from(*tip_payment_config.tip_receiver.as_array()),
             new_tip_receiver,
             bank,
             keypair,
-            &Pubkey::from(*config.block_builder.as_array()),
+            &Pubkey::from(*tip_payment_config.block_builder.as_array()),
             block_builder,
             block_builder_commission,
-        ))
+        )
     }
 
     pub fn build_change_tip_receiver_and_block_builder_tx(
@@ -496,7 +495,7 @@ impl TipManager {
         &self,
         bank: &Bank,
         keypair: &Keypair,
-    ) -> Option<SanitizedBundle<RuntimeTransaction<SanitizedTransaction>>> {
+    ) -> Option<Vec<RuntimeTransaction<SanitizedTransaction>>> {
         let maybe_init_tip_payment_config_tx = if self.should_initialize_tip_payment_program(bank) {
             debug!("should_initialize_tip_payment_program=true");
             Some(self.initialize_tip_payment_program_tx(bank, keypair))
@@ -523,7 +522,7 @@ impl TipManager {
         if transactions.is_empty() {
             None
         } else {
-            Some(SanitizedBundle::new(transactions))
+            Some(transactions)
         }
     }
 
@@ -532,7 +531,7 @@ impl TipManager {
         bank: &Bank,
         keypair: &Keypair,
         block_builder_fee_info: &BlockBuilderFeeInfo,
-    ) -> Result<Option<SanitizedBundle<RuntimeTransaction<SanitizedTransaction>>>> {
+    ) -> Result<Option<Vec<RuntimeTransaction<SanitizedTransaction>>>> {
         let maybe_init_tip_distro_account_tx = if self.should_init_tip_distribution_account(bank) {
             debug!("should_init_tip_distribution_account=true");
             Some(self.initialize_tip_distribution_account_tx(bank, keypair))
@@ -556,7 +555,8 @@ impl TipManager {
                     keypair,
                     &block_builder_fee_info.block_builder,
                     block_builder_fee_info.block_builder_commission,
-                )?)
+                    &tip_payment_config,
+                ))
             } else {
                 None
             };
@@ -576,8 +576,7 @@ impl TipManager {
         if transactions.is_empty() {
             Ok(None)
         } else {
-            let bundle_id = derive_bundle_id(&transactions);
-            Ok(Some(SanitizedBundle::new(transactions)))
+            Ok(Some(transactions))
         }
     }
 }

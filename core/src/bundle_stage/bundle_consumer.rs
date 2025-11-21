@@ -1,21 +1,16 @@
 use {
-    crate::{
-        banking_stage::{
-            committer::{CommitTransactionDetails, Committer},
-            consumer::{
-                ExecuteAndCommitTransactionsOutput, ExecutionFlags,
-                LeaderProcessedTransactionCounts, ProcessTransactionBatchOutput, RetryableIndex,
-            },
-            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
-            qos_service::QosService,
-            scheduler_messages::MaxAge,
+    crate::banking_stage::{
+        committer::{CommitTransactionDetails, Committer},
+        consumer::{
+            ExecuteAndCommitTransactionsOutput, ExecutionFlags, LeaderProcessedTransactionCounts,
+            ProcessTransactionBatchOutput, RetryableIndex,
         },
-        proxy::block_engine_stage::BlockBuilderFeeInfo,
-        tip_manager::TipManager,
+        leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
+        qos_service::QosService,
+        scheduler_messages::MaxAge,
     },
     itertools::Itertools,
-    solana_clock::{Slot, MAX_PROCESSING_AGE},
-    solana_gossip::cluster_info::ClusterInfo,
+    solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
     solana_poh::transaction_recorder::{
         RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
@@ -37,38 +32,17 @@ use {
         iter::repeat,
         num::Saturating,
         sync::{Arc, Mutex},
-        time::Duration,
+        thread::sleep,
+        time::{Duration, Instant},
         vec,
     },
 };
-
-// type ReserveBundleBlockspaceResult<'a> = BundleExecutionResult<(
-//     Vec<TransactionResult<TransactionCost<'a, RuntimeTransaction<SanitizedTransaction>>>>,
-//     u64,
-// )>;
-
-// pub struct ExecuteRecordCommitResult {
-//     commit_transaction_details: Vec<CommitTransactionDetails>,
-//     result: BundleExecutionResult<()>,
-//     execution_metrics: BundleExecutionMetrics,
-//     execute_and_commit_timings: LeaderExecuteAndCommitTimings,
-//     transaction_error_counter: TransactionErrorMetrics,
-// }
 
 pub struct BundleConsumer {
     committer: Committer,
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
-
-    tip_manager: TipManager,
-    last_tip_update_slot: Slot,
-
-    block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
-
-    max_bundle_retry_duration: Duration,
-
-    cluster_info: Arc<ClusterInfo>,
 }
 
 impl BundleConsumer {
@@ -78,22 +52,12 @@ impl BundleConsumer {
         transaction_recorder: TransactionRecorder,
         qos_service: QosService,
         log_messages_bytes_limit: Option<usize>,
-        tip_manager: TipManager,
-        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
-        max_bundle_retry_duration: Duration,
-        cluster_info: Arc<ClusterInfo>,
     ) -> Self {
         Self {
             committer,
             transaction_recorder,
             qos_service,
             log_messages_bytes_limit,
-            tip_manager,
-            // MAX because sending tips during slot 0 in tests doesn't work
-            last_tip_update_slot: u64::MAX,
-            block_builder_fee_info,
-            max_bundle_retry_duration,
-            cluster_info,
         }
     }
 
@@ -117,6 +81,7 @@ impl BundleConsumer {
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
+        max_bundle_duration: Duration,
     ) -> ProcessTransactionBatchOutput {
         // Need to filter out transactions since they were sanitized earlier.
         // This means that the transaction may cross and epoch boundary (not allowed),
@@ -171,115 +136,156 @@ impl BundleConsumer {
             };
         }
 
-        self.process_and_record_transactions_with_pre_results(bank, txs)
+        self.process_and_record_transactions_with_pre_results(bank, txs, max_bundle_duration)
     }
 
     fn process_and_record_transactions_with_pre_results(
         &mut self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
+        max_bundle_duration: Duration,
     ) -> ProcessTransactionBatchOutput {
-        todo!();
-        // // Select and accumulate transaction costs. If any transaction inside the bundle can't fit in the block,
-        // // undo the cost model reservations and return an error.
-        // let (
-        //     (transaction_qos_cost_results, cost_model_throttled_transactions_count),
-        //     cost_model_us,
-        // ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
-        //     bank,
-        //     txs,
-        //     repeat(Ok(())),
-        //     &|_| 0,
-        // ));
-        // if let Some(err) = transaction_qos_cost_results.iter().find(|r| r.is_err()) {
-        //     let err = err.clone().unwrap_err();
+        // Select and accumulate transaction costs. If any transaction inside the bundle can't fit in the block,
+        // undo the cost model reservations and return an error.
+        let (
+            (transaction_qos_cost_results, cost_model_throttled_transactions_count),
+            cost_model_us,
+        ) = measure_us!(self.qos_service.select_and_accumulate_transaction_costs(
+            bank,
+            txs,
+            repeat(Ok(())),
+            &|_| 0,
+        ));
+        if let Some(err) = transaction_qos_cost_results.iter().find(|r| r.is_err()) {
+            let err = err.as_ref().unwrap_err().clone();
 
-        //     QosService::remove_or_update_costs(transaction_qos_cost_results.iter(), None, bank);
+            QosService::remove_or_update_costs(transaction_qos_cost_results.iter(), None, bank);
 
-        //     return ProcessTransactionBatchOutput {
-        //         cost_model_throttled_transactions_count,
-        //         cost_model_us,
-        //         execute_and_commit_transactions_output: ExecuteAndCommitTransactionsOutput {
-        //             transaction_counts: LeaderProcessedTransactionCounts::default(),
-        //             // everything is retryable, but not immediately because the QoS isn't reset until the next slot
-        //             retryable_transaction_indexes: (0..txs.len())
-        //                 .map(|index| RetryableIndex {
-        //                     index,
-        //                     immediately_retryable: false,
-        //                 })
-        //                 .collect(),
-        //             commit_transactions_result: Ok(vec![
-        //                 CommitTransactionDetails::NotCommitted(
-        //                     err.clone()
-        //                 );
-        //                 txs.len()
-        //             ]),
-        //             execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
-        //             error_counters: TransactionErrorMetrics::default(),
-        //             min_prioritization_fees: 0,
-        //             max_prioritization_fees: 0,
-        //         },
-        //     };
-        // }
+            return ProcessTransactionBatchOutput {
+                cost_model_throttled_transactions_count,
+                cost_model_us,
+                execute_and_commit_transactions_output: ExecuteAndCommitTransactionsOutput {
+                    transaction_counts: LeaderProcessedTransactionCounts::default(),
+                    // everything is retryable, but not immediately because the QoS isn't reset until the next slot
+                    retryable_transaction_indexes: (0..txs.len())
+                        .map(|index| RetryableIndex {
+                            index,
+                            immediately_retryable: false,
+                        })
+                        .collect(),
+                    commit_transactions_result: Ok(vec![
+                        CommitTransactionDetails::NotCommitted(err);
+                        txs.len()
+                    ]),
+                    execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
+                    error_counters: TransactionErrorMetrics::default(),
+                    min_prioritization_fees: 0,
+                    max_prioritization_fees: 0,
+                },
+            };
+        }
 
-        // TODO (LB): need to try locking these a few times until it fails
-        // bank.prepare_sanitized_batch(transactions, transaction_results, is_read_locked_callback, is_write_locked_callback)
+        // Try to lock the batch for the maximum amount of time allowed
+        // The bundle account locker should handle pre-locking in BankingStage.
+        let (batch, lock_us) = measure_us!(Self::try_lock_batch(bank, txs, max_bundle_duration));
+        if let Err(err) = batch {
+            return ProcessTransactionBatchOutput {
+                cost_model_throttled_transactions_count: 0,
+                cost_model_us,
+                execute_and_commit_transactions_output: ExecuteAndCommitTransactionsOutput {
+                    transaction_counts: LeaderProcessedTransactionCounts {
+                        attempted_processing_count: 0,
+                        processed_count: 0,
+                        processed_with_successful_result_count: 0,
+                    },
+                    retryable_transaction_indexes: if err == TransactionError::AccountInUse {
+                        (0..txs.len())
+                            .map(|index| RetryableIndex {
+                                index,
+                                immediately_retryable: true,
+                            })
+                            .collect()
+                    } else {
+                        vec![]
+                    },
+                    commit_transactions_result: Ok(vec![
+                        CommitTransactionDetails::NotCommitted(err);
+                        txs.len()
+                    ]),
+                    execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
+                    error_counters: TransactionErrorMetrics::default(),
+                    min_prioritization_fees: 0,
+                    max_prioritization_fees: 0,
+                },
+            };
+        }
+        let batch = batch.unwrap();
 
-        // let execute_and_commit_transactions_output =
-        //     self.execute_and_commit_transactions_locked(bank, &batch, flags);
+        let execute_and_commit_transactions_output = self.execute_and_commit_transactions_locked(
+            bank,
+            &batch,
+            ExecutionFlags {
+                drop_on_failure: true,
+                all_or_nothing: true,
+            },
+        );
 
         // // Once the accounts are new transactions can enter the pipeline to process them
-        // let (_, unlock_us) = measure_us!(drop(batch));
+        let (_, unlock_us) = measure_us!(drop(batch));
 
-        // let ExecuteAndCommitTransactionsOutput {
-        //     ref commit_transactions_result,
-        //     ..
-        // } = execute_and_commit_transactions_output;
+        let ExecuteAndCommitTransactionsOutput {
+            ref commit_transactions_result,
+            ..
+        } = execute_and_commit_transactions_output;
 
         // Costs of all transactions are added to the cost_tracker before processing.
         // To ensure accurate tracking of compute units, transactions that ultimately
         // were not included in the block should have their cost removed, the rest
         // should update with their actually consumed units.
-        // QosService::remove_or_update_costs(
-        //     transaction_qos_cost_results.iter(),
-        //     commit_transactions_result.as_ref().ok(),
-        //     bank,
-        // );
+        QosService::remove_or_update_costs(
+            transaction_qos_cost_results.iter(),
+            commit_transactions_result.as_ref().ok(),
+            bank,
+        );
 
-        // // reports qos service stats for this batch
-        // self.qos_service.report_metrics(bank.slot());
+        // reports qos service stats for this batch
+        self.qos_service.report_metrics(bank.slot());
 
-        // // debug!(
-        // //     "bank: {} lock: {}us unlock: {}us txs_len: {}",
-        // //     bank.slot(),
-        // //     lock_us,
-        // //     unlock_us,
-        // //     txs.len(),
-        // // );
+        debug!(
+            "bank: {} lock: {}us unlock: {}us txs_len: {}",
+            bank.slot(),
+            lock_us,
+            unlock_us,
+            txs.len(),
+        );
 
-        // ProcessTransactionBatchOutput {
-        //     cost_model_throttled_transactions_count,
-        //     cost_model_us,
-        //     execute_and_commit_transactions_output,
-        // }
+        ProcessTransactionBatchOutput {
+            cost_model_throttled_transactions_count,
+            cost_model_us,
+            execute_and_commit_transactions_output,
+        }
     }
 
-    pub fn maybe_crank_tip_program(
-        &mut self,
-        txs: &[impl TransactionWithMeta],
-        bank: &Bank,
-    ) -> Result<(), TransactionError> {
-        if bank.slot() != self.last_tip_update_slot
-            && Self::bundle_touches_tip_pdas(txs, &self.tip_manager.get_tip_accounts())
-        {
-            // let tip_crank_bundle = self.tip_manager.get_tip_programs_crank_bundle(
-            //     bank,
-            //     &self.cluster_info.keypair(),
-            //     &self.block_builder_fee_info.lock().unwrap(),
-            // );
-            self.last_tip_update_slot = bank.slot();
+    fn try_lock_batch<'a, 'b>(
+        bank: &'a Bank,
+        txs: &'b [impl TransactionWithMeta],
+        max_bundle_duration: Duration,
+    ) -> Result<TransactionBatch<'a, 'b, impl TransactionWithMeta>, TransactionError> {
+        let start = Instant::now();
+        while start.elapsed() < max_bundle_duration {
+            let batch = bank.prepare_sanitized_batch_relax_intrabatch_account_locks(txs);
+            if let Some(err) = batch.lock_results().iter().find(|x| x.is_err()) {
+                if err.as_ref().unwrap_err() == &TransactionError::AccountInUse {
+                    sleep(Duration::from_millis(1));
+                } else {
+                    return Err(err.as_ref().unwrap_err().clone());
+                }
+            } else {
+                return Ok(batch);
+            }
         }
-        Ok(())
+
+        return Err(TransactionError::AccountInUse);
     }
 
     fn bundle_touches_tip_pdas(

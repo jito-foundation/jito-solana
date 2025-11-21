@@ -33,35 +33,6 @@ pub enum BundleAccountLockerError {
 
 pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
 
-pub struct LockedBundle<'a, 'b, Tx: TransactionWithMeta> {
-    bundle_account_locker: &'a BundleAccountLocker,
-    transactions: &'b [Tx],
-    bank: Arc<Bank>,
-}
-
-impl<'a, 'b, Tx: TransactionWithMeta> LockedBundle<'a, 'b, Tx> {
-    pub fn new(
-        bundle_account_locker: &'a BundleAccountLocker,
-        transactions: &'b [Tx],
-        bank: &Arc<Bank>,
-    ) -> Self {
-        Self {
-            bundle_account_locker,
-            transactions,
-            bank: bank.clone(),
-        }
-    }
-}
-
-// Automatically unlock bundle accounts when destructed
-impl<Tx: TransactionWithMeta> Drop for LockedBundle<'_, '_, Tx> {
-    fn drop(&mut self) {
-        let _ = self
-            .bundle_account_locker
-            .unlock_bundle_accounts(self.transactions, &self.bank);
-    }
-}
-
 #[derive(Default, Clone)]
 pub struct BundleAccountLocks {
     read_locks: HashMap<Pubkey, u64>,
@@ -134,22 +105,22 @@ impl BundleAccountLocker {
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
     /// When a LockedBundle is dropped, the accounts are automatically unlocked
-    pub fn prepare_locked_bundle<'a, 'b, Tx: TransactionWithMeta>(
+    pub fn lock_bundle<'a, 'b, Tx: TransactionWithMeta>(
         &'a self,
         transactions: &'b [Tx],
         bank: &Arc<Bank>,
-    ) -> BundleAccountLockerResult<LockedBundle<'a, 'b, Tx>> {
+    ) -> BundleAccountLockerResult<()> {
         let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
 
         self.account_locks
             .lock()
             .unwrap()
             .lock_accounts(transaction_locks);
-        Ok(LockedBundle::new(self, transactions, bank))
+        Ok(())
     }
 
     /// Unlocks bundle accounts. Note that LockedBundle::drop will auto-drop the bundle account locks
-    fn unlock_bundle_accounts<Tx: TransactionWithMeta>(
+    pub fn unlock_bundle_accounts<Tx: TransactionWithMeta>(
         &self,
         transactions: &[Tx],
         bank: &Bank,
@@ -288,7 +259,7 @@ mod tests {
         );
 
         let locked_bundle0 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle0, &bank)
+            .lock_bundle(&sanitized_bundle0, &bank)
             .unwrap();
 
         assert_eq!(
@@ -311,7 +282,7 @@ mod tests {
         );
 
         let locked_bundle1 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle1, &bank)
+            .lock_bundle(&sanitized_bundle1, &bank)
             .unwrap();
         assert_eq!(
             bundle_account_locker
@@ -432,7 +403,7 @@ mod tests {
         );
 
         let bundle = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle0, &bank)
+            .lock_bundle(&sanitized_bundle0, &bank)
             .unwrap();
         assert_eq!(
             bundle_account_locker.account_locks().write_locks(),

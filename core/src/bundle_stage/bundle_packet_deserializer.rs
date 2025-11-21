@@ -42,7 +42,7 @@ impl BundlePacketDeserializer {
     ) -> Result<TransactionViewState, PacketHandlingError> {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
-            root_bank,
+            working_bank, // TODO (LB): Nov 20, 2025 - Anza slack
             enable_static_instruction_limit,
             transaction_account_lock_limit,
         )?;
