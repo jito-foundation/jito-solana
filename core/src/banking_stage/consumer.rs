@@ -1,5 +1,6 @@
 use {
     super::{
+        arbitrage_integration::ArbitrageIntegration,
         committer::{CommitTransactionDetails, Committer},
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
@@ -78,6 +79,7 @@ pub struct Consumer {
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
     bundle_account_locker: BundleAccountLocker,
+    arbitrage_integration: ArbitrageIntegration,
 }
 
 impl Consumer {
@@ -87,6 +89,7 @@ impl Consumer {
         qos_service: QosService,
         log_messages_bytes_limit: Option<usize>,
         bundle_account_locker: BundleAccountLocker,
+        arbitrage_integration: ArbitrageIntegration,
     ) -> Self {
         Self {
             committer,
@@ -94,6 +97,7 @@ impl Consumer {
             qos_service,
             log_messages_bytes_limit,
             bundle_account_locker,
+            arbitrage_integration,
         }
     }
 
@@ -327,6 +331,17 @@ impl Consumer {
             processed_counts,
             balance_collector,
         } = load_and_execute_transactions_output;
+
+        // Process transactions for arbitrage detection (if enabled)
+        if self.arbitrage_integration.is_enabled() {
+            let slot = bank.slot();
+            for (processing_result, tx) in processing_results.iter().zip(batch.sanitized_transactions()) {
+                // Only process successfully executed transactions
+                if processing_result.was_processed_with_successful_result() {
+                    self.arbitrage_integration.process_transaction(bank, tx, slot);
+                }
+            }
+        }
 
         let actual_execute_time = execute_and_commit_timings
             .execute_timings

@@ -189,6 +189,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
+        arbitrage_config: Option<String>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -441,6 +442,7 @@ impl Tpu {
                     preallocated_bundle_cost,
                 )
             },
+            arbitrage_config,
         );
 
         let SpawnForwardingStageResult {

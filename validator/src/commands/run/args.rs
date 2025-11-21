@@ -1747,6 +1747,13 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
         .help("Specify the configuration file for a Runtime plugin.")
     )
     .arg(
+        Arg::with_name("arbitrage_config")
+            .long("arbitrage-config")
+            .value_name("FILE")
+            .takes_value(true)
+            .help("Enable arbitrage integration with configuration file (requires arbitrage-integration feature)")
+    )
+    .arg(
         Arg::with_name("retransmit_xdp_interface")
             .hidden(hidden_unless_forced())
             .long("experimental-retransmit-xdp-interface")

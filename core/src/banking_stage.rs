@@ -6,6 +6,7 @@
 use qualifier_attr::qualifiers;
 use {
     self::{
+        arbitrage_integration::ArbitrageIntegration,
         committer::Committer, consumer::Consumer, decision_maker::DecisionMaker,
         packet_receiver::PacketReceiver, qos_service::QosService, vote_storage::VoteStorage,
     },
@@ -58,6 +59,7 @@ use {
 };
 
 // Below modules are pub to allow use by banking_stage bench
+pub mod arbitrage_integration;
 pub mod committer;
 pub mod consumer;
 pub mod leader_slot_metrics;
@@ -379,7 +381,13 @@ impl BankingStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        arbitrage_config: Option<String>,
     ) -> Self {
+        // Initialize arbitrage integration (if config provided)
+        let arb_integration = ArbitrageIntegration::new(
+            arbitrage_config.as_ref().map(|s| s.as_str())
+        );
+        
         let committer = Committer::new(
             transaction_status_sender,
             replay_vote_sender,
@@ -419,6 +427,7 @@ impl BankingStage {
             bundle_account_locker.clone(),
             block_cost_limit_reservation_cb.clone(),
             blacklisted_accounts,
+            arb_integration.clone(),
         );
 
         Self {
@@ -437,6 +446,7 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
         blacklisted_accounts: HashSet<Pubkey>,
+        arb_integration: ArbitrageIntegration,
     ) -> Vec<JoinHandle<()>> {
         match transaction_struct {
             TransactionStructure::Sdk => {
@@ -452,6 +462,7 @@ impl BankingStage {
                     context,
                     bundle_account_locker,
                     block_cost_limit_reservation_cb,
+                    arb_integration.clone(),
                 )
             }
             TransactionStructure::View => {
@@ -467,6 +478,7 @@ impl BankingStage {
                     context,
                     bundle_account_locker,
                     block_cost_limit_reservation_cb,
+                    arb_integration.clone(),
                 )
             }
         }
@@ -480,6 +492,7 @@ impl BankingStage {
         context: BankingStageNonVoteContext,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        arb_integration: ArbitrageIntegration,
     ) -> Vec<JoinHandle<()>> {
         assert!(num_workers <= BankingStage::max_num_workers());
         let num_workers = num_workers.get();
@@ -509,6 +522,7 @@ impl BankingStage {
                     QosService::new(id),
                     context.log_messages_bytes_limit,
                     bundle_account_locker.clone(),
+                    arb_integration.clone(),
                 ),
                 finished_work_sender.clone(),
                 context.poh_recorder.read().unwrap().shared_working_bank(),
@@ -599,6 +613,7 @@ impl BankingStage {
             QosService::new(0),
             log_messages_bytes_limit,
             bundle_account_locker.clone(),
+            ArbitrageIntegration::default(), // Vote worker doesn't need arbitrage
         );
         let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
 
@@ -754,6 +769,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            None, // arbitrage config
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -813,6 +829,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            None, // arbitrage config
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -881,6 +898,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            None, // arbitrage config
         );
 
         // good tx, and no verify
@@ -1035,6 +1053,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
+            None, // arbitrage config
             );
 
             // wait for banking_stage to eat the packets
@@ -1225,6 +1244,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            None, // arbitrage config
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1355,6 +1375,7 @@ mod tests {
                         HashSet::from_iter([blacklisted_keypair.pubkey()]),
                         BundleAccountLocker::default(),
                         |_| 0,
+            None, // arbitrage config
                     );
 
                     // bad tx

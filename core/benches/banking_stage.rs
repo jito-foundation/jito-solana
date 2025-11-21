@@ -256,6 +256,7 @@ fn bench_banking(
         HashSet::default(),
         BundleAccountLocker::default(),
         |_| 0,
+            None, // arbitrage config
     );
 
     let chunk_len = verified.len() / CHUNKS;

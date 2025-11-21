@@ -201,6 +201,7 @@ ahash = "0.8.11"
 anchor-lang = { path = "anchor/lang" }
 anyhow = "1.0.99"
 aquamarine = "0.6.0"
+arbitrage = { path = "../shred-streamer/arbitrage", default-features = false }
 arbitrary = "1.4.1"
 arc-swap = "1.7.1"
 ark-bn254 = "0.4.0"

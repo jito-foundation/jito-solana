@@ -1160,6 +1160,7 @@ impl TestValidator {
             ValidatorTpuConfig::new_for_tests(config.tpu_enable_udp),
             config.admin_rpc_service_post_init.clone(),
             None,
+            None, // arbitrage_config
         )?);
 
         let test_validator = TestValidator {

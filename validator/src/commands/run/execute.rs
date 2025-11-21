@@ -1099,7 +1099,8 @@ pub fn execute(
             vote_quic_server_config,
         },
         admin_service_post_init,
-        None, // TODO (LB): fix
+        None, // TODO (LB): fix - runtime plugin
+        matches.value_of("arbitrage_config").map(|s| s.to_string()),
     ) {
         Ok(validator) => Ok(validator),
         Err(err) => {

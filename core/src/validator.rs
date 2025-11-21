@@ -603,6 +603,7 @@ impl Validator {
             Vec<PathBuf>,
             Receiver<RuntimePluginManagerRpcRequest>,
         )>,
+        arbitrage_config: Option<String>,
     ) -> Result<Self> {
         let ValidatorTpuConfig {
             use_quic,
@@ -1690,6 +1691,7 @@ impl Validator {
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
+            arbitrage_config,
         );
 
         datapoint_info!(

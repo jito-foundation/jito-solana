@@ -1,0 +1,7 @@
+---
+alwaysApply: true
+---
+
+In this project we have two repositories: jito-solana (validator fork) and shred-streamer (our arbitrage logic). The purpose of the project is to use the jito-solana validator as our real-time data processor which leverages the shred-streamer for identification and execution of arbitrage opportunities.
+
+We have two environments: in development, our shred-streamer gets data through yellowstone grpc. in production, it recieves data from the validator locally. This is an important distinction because we cannot handle the valdiator load locally and need to continue to test logic.
