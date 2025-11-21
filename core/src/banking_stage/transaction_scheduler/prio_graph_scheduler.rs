@@ -420,7 +420,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     // Check bundle account locks doesn't have it yet
     let l_account_locks = bundle_account_locker.account_locks();
     for lock in read_account_locks.clone() {
-        if l_account_locks.read_locks().contains_key(lock) {
+        if l_account_locks.write_locks().contains_key(lock) {
             return Err(TransactionSchedulingError::UnschedulableConflicts);
         }
     }

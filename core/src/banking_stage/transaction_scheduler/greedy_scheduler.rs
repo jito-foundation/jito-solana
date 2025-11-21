@@ -1,3 +1,4 @@
+use itertools::Itertools;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -283,7 +284,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     // Check bundle account locks doesn't have it yet
     let l_account_locks = bundle_account_locker.account_locks();
     for lock in read_account_locks.clone() {
-        if l_account_locks.read_locks().contains_key(lock) {
+        if l_account_locks.write_locks().contains_key(lock) {
             return Err(TransactionSchedulingError::UnschedulableConflicts);
         }
     }
@@ -802,14 +803,13 @@ mod test {
             .unwrap();
         assert_eq!(scheduling_summary.num_scheduled, 1);
         assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
-
         bundle_account_locker
             .unlock_bundle(&runtime_tx_1_b, &bank)
             .unwrap();
+
         bundle_account_locker
             .lock_bundle(&runtime_tx_2_b, &bank)
             .unwrap();
-
         let scheduling_summary = scheduler
             .schedule(
                 &mut container,
