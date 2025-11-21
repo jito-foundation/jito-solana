@@ -10,7 +10,7 @@ use {
             },
         },
         bundle_stage::bundle_packet_deserializer::BundlePacketDeserializer,
-        packet_bundle::PacketBundle,
+        packet_bundle::{PacketBundle, VerifiedPacketBundle},
     },
     ahash::HashSet,
     arrayvec::ArrayVec,
@@ -148,7 +148,7 @@ impl BundleStorage {
 
     pub fn insert_bundle(
         &mut self,
-        bundle: PacketBundle,
+        bundle: VerifiedPacketBundle,
         root_bank: &Bank,
         working_bank: &Bank,
         blacklisted_accounts: &HashSet<Pubkey>,

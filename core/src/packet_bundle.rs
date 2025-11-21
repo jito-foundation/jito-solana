@@ -34,4 +34,8 @@ impl VerifiedPacketBundle {
     pub fn take(self) -> PacketBatch {
         self.batch
     }
+
+    pub fn batch(&self) -> &PacketBatch {
+        &self.batch
+    }
 }

@@ -3,7 +3,8 @@
 
 pub use crate::forwarding_stage::ForwardingClientOption;
 use crate::{
-    bundle_stage::bundle_account_locker::BundleAccountLocker,
+    bundle_sigverify_stage::BundleSigverifyStage,
+    bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
     tip_manager::{TipManager, TipManagerConfig},
 };
 use {
@@ -372,16 +373,22 @@ impl Tpu {
         }));
 
         let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
-        let (bundle_sender, _bundle_receiver) = unbounded();
+        let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
-            bundle_sender,
+            unverified_bundle_sender,
             cluster_info.clone(),
             sigverify_stage_sender.clone(),
             banking_stage_sender.clone(),
             exit.clone(),
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
+        );
+        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let bundle_sigverify_stage = BundleSigverifyStage::new(
+            unverified_bundle_receiver,
+            verified_bundle_sender,
+            exit.clone(),
         );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
@@ -470,20 +477,22 @@ impl Tpu {
             DataBudget::default(),
         );
 
-        // let bundle_stage = BundleStage::new(
-        //     cluster_info,
-        //     poh_recorder,
-        //     transaction_recorder,
-        //     bundle_receiver,
-        //     transaction_status_sender,
-        //     replay_vote_sender,
-        //     log_messages_bytes_limit,
-        //     exit.clone(),
-        //     tip_manager,
-        //     bundle_account_locker,
-        //     &block_builder_fee_info,
-        //     prioritization_fee_cache,
-        // );
+        let bundle_stage = BundleStage::new(
+            cluster_info,
+            bank_forks.clone(),
+            poh_recorder,
+            transaction_recorder,
+            verified_bundle_receiver,
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            exit.clone(),
+            tip_manager,
+            bundle_account_locker,
+            &block_builder_fee_info,
+            prioritization_fee_cache,
+            blacklisted_accounts,
+        );
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {

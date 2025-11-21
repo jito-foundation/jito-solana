@@ -24,7 +24,7 @@ use {
             bundle_consumer::BundleConsumer,
             bundle_storage::{BundleStorage, BundleStorageEntry, BundleStorageError},
         },
-        packet_bundle::PacketBundle,
+        packet_bundle::{PacketBundle, VerifiedPacketBundle},
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
@@ -295,7 +295,7 @@ impl BundleStage {
         bank_forks: Arc<RwLock<BankForks>>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
         transaction_recorder: TransactionRecorder,
-        bundle_receiver: Receiver<Vec<PacketBundle>>,
+        bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_messages_bytes_limit: Option<usize>,
@@ -334,7 +334,7 @@ impl BundleStage {
         bank_forks: Arc<RwLock<BankForks>>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
         transaction_recorder: TransactionRecorder,
-        bundle_receiver: Receiver<Vec<PacketBundle>>,
+        bundle_receiver: Receiver<VerifiedPacketBundle>,
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_message_bytes_limit: Option<usize>,
@@ -385,7 +385,7 @@ impl BundleStage {
     #[allow(clippy::too_many_arguments)]
     fn process_loop(
         bank_forks: Arc<RwLock<BankForks>>,
-        mut bundle_receiver: Receiver<Vec<PacketBundle>>,
+        mut bundle_receiver: Receiver<VerifiedPacketBundle>,
         mut decision_maker: DecisionMaker,
         mut consumer: BundleConsumer,
         exit: Arc<AtomicBool>,
@@ -455,7 +455,7 @@ impl BundleStage {
 
     fn receive_and_buffer_bundles(
         bank_forks: &Arc<RwLock<BankForks>>,
-        bundle_receiver: &mut Receiver<Vec<PacketBundle>>,
+        bundle_receiver: &mut Receiver<VerifiedPacketBundle>,
         bundle_storage: &mut BundleStorage,
         blacklisted_accounts: &HashSet<Pubkey>,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
@@ -473,8 +473,17 @@ impl BundleStage {
             Duration::from_millis(0)
         };
 
-        let bundles = bundle_receiver.recv_timeout(recv_timeout)?;
-        for bundle in bundles {
+        let bundle = bundle_receiver.recv_timeout(recv_timeout)?;
+        Self::insert_bundle(
+            bundle_storage,
+            bundle,
+            &root_bank,
+            &working_bank,
+            blacklisted_accounts,
+            bundle_stage_metrics,
+        );
+
+        while let Ok(bundle) = bundle_receiver.try_recv() {
             Self::insert_bundle(
                 bundle_storage,
                 bundle,
@@ -485,25 +494,12 @@ impl BundleStage {
             );
         }
 
-        while let Ok(bundles) = bundle_receiver.try_recv() {
-            for bundle in bundles {
-                Self::insert_bundle(
-                    bundle_storage,
-                    bundle,
-                    &root_bank,
-                    &working_bank,
-                    blacklisted_accounts,
-                    bundle_stage_metrics,
-                );
-            }
-        }
-
         Ok(())
     }
 
     fn insert_bundle(
         bundle_storage: &mut BundleStorage,
-        bundle: PacketBundle,
+        bundle: VerifiedPacketBundle,
         root_bank: &Arc<Bank>,
         working_bank: &Arc<Bank>,
         blacklisted_accounts: &HashSet<Pubkey>,
