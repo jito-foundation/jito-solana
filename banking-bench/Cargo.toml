@@ -1,3 +1,4 @@
+# Cargo.toml for solana-banking-bench
 [package]
 name = "solana-banking-bench"
 publish = false
@@ -11,37 +12,46 @@ edition = { workspace = true }
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
+# Feature used to enable internal utilities only necessary for development or benchmarking contexts.
 [features]
 dev-context-only-utils = []
 
 [dependencies]
-agave-banking-stage-ingress-types = { workspace = true }
+# Standard Rust utility crates
 assert_matches = { workspace = true }
-clap = { version = "3.1.8", features = ["derive", "cargo"] }
+clap = { workspace = true, features = ["derive", "cargo"] } # Prefer workspace version for consistency
 crossbeam-channel = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
-solana-client = { workspace = true }
-solana-compute-budget-interface = { workspace = true }
-solana-core = { workspace = true, features = ["dev-context-only-utils"] }
-solana-gossip = { workspace = true }
-solana-hash = { workspace = true }
-solana-keypair = { workspace = true }
-solana-ledger = { workspace = true }
 solana-logger = { workspace = true }
 solana-measure = { workspace = true }
-solana-message = { workspace = true }
 solana-perf = { workspace = true }
-solana-poh = { workspace = true, features = ["dev-context-only-utils"] }
-solana-pubkey = { workspace = true }
-solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
-solana-signature = { workspace = true }
-solana-signer = { workspace = true }
-solana-streamer = { workspace = true }
-solana-system-interface = { workspace = true }
-solana-system-transaction = { workspace = true }
-solana-time-utils = { workspace = true }
-solana-tpu-client = { workspace = true }
-solana-transaction = { workspace = true }
 solana-version = { workspace = true }
+agave-banking-stage-ingress-types = { workspace = true } # Agave-specific banking types
+
+# --- Solana Core Dependencies (with dev-context-only features enabled) ---
+# These features are necessary for accessing internal utilities used specifically for benchmarking.
+solana-core = { workspace = true, features = ["dev-context-only-utils"] }
+solana-poh = { workspace = true, features = ["dev-context-only-utils"] }
+solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+
+# --- Solana Protocol / Data Structure Crates ---
+solana-compute-budget-interface = { workspace = true }
+solana-gossip = { workspace = true }
+solana-hash = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-signature = { workspace = true }
+solana-system-interface = { workspace = true }
+solana-transaction = { workspace = true }
+solana-message = { workspace = true }
+solana-keypair = { workspace = true }
+solana-signer = { workspace = true }
+solana-time-utils = { workspace = true }
+solana-system-transaction = { workspace = true }
+
+# --- Solana Client / Networking / Ledger Crates ---
+solana-client = { workspace = true }
+solana-ledger = { workspace = true }
+solana-streamer = { workspace = true }
+solana-tpu-client = { workspace = true }
