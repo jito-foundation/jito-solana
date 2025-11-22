@@ -4296,7 +4296,7 @@ pub mod rpc_full {
                 for tx in &transactions {
                     if let Err(e) = tx.verify() {
                         return Err(Error::invalid_params(format!(
-                            "transaction signature is invalid"
+                            "transaction signature is invalid: {e}",
                         )));
                     }
                 }
@@ -4697,7 +4697,9 @@ pub fn account_configs_to_accounts(
         if let Some(account_config) = account_config {
             for address in &account_config.addresses {
                 accounts.push(Pubkey::from_str(address).map_err(|_| {
-                    Error::invalid_params(format!("invalid pubkey for pre/post accounts provided: {address}"))
+                    Error::invalid_params(format!(
+                        "invalid pubkey for pre/post accounts provided: {address}"
+                    ))
                 })?);
             }
         }

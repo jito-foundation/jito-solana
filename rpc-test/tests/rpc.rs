@@ -1014,7 +1014,10 @@ fn test_bad_signature(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     else {
         panic!("unexpected error");
     };
-    assert_eq!(message, "transaction signature is invalid");
+    assert_eq!(
+        message,
+        "transaction signature is invalid: Transaction did not pass signature verification"
+    );
     assert_eq!(*code, -32602);
     assert_matches!(data, &RpcResponseErrorData::Empty);
 }
