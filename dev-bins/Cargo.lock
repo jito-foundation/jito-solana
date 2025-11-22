@@ -3619,12 +3619,9 @@ dependencies = [
  "futures 0.3.31",
  "jsonrpc-core",
  "jsonrpc-pubsub",
- "jsonrpc-server-utils",
  "log",
- "parity-tokio-ipc",
  "serde",
  "serde_json",
- "tokio",
  "url 1.7.2",
 ]
 
@@ -3679,21 +3676,6 @@ dependencies = [
  "net2",
  "parking_lot 0.11.2",
  "unicase",
-]
-
-[[package]]
-name = "jsonrpc-ipc-server"
-version = "18.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "382bb0206323ca7cda3dcd7e245cea86d37d02457a02a975e3378fb149a48845"
-dependencies = [
- "futures 0.3.31",
- "jsonrpc-core",
- "jsonrpc-server-utils",
- "log",
- "parity-tokio-ipc",
- "parking_lot 0.11.2",
- "tower-service",
 ]
 
 [[package]]
@@ -4446,20 +4428,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81fec4625e73cf41ef4bb6846cafa6d44736525f442ba45e407c4a000a13996f"
 dependencies = [
  "group",
-]
-
-[[package]]
-name = "parity-tokio-ipc"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9981e32fb75e004cc148f5fb70342f393830e0a4aa62e3cc93b50976218d42b6"
-dependencies = [
- "futures 0.3.31",
- "libc",
- "log",
- "rand 0.7.3",
- "tokio",
- "winapi 0.3.9",
 ]
 
 [[package]]
@@ -6933,7 +6901,6 @@ dependencies = [
  "solana-rpc",
  "solana-rpc-client-api",
  "solana-runtime",
- "solana-runtime-plugin",
  "solana-runtime-transaction",
  "solana-sanitize",
  "solana-sdk-ids",
@@ -8704,24 +8671,6 @@ dependencies = [
  "strum_macros",
  "symlink",
  "tempfile",
- "thiserror 2.0.17",
-]
-
-[[package]]
-name = "solana-runtime-plugin"
-version = "4.0.0-alpha.0"
-dependencies = [
- "crossbeam-channel",
- "json5",
- "jsonrpc-core",
- "jsonrpc-core-client",
- "jsonrpc-derive",
- "jsonrpc-ipc-server",
- "jsonrpc-server-utils",
- "libloading",
- "log",
- "solana-runtime",
- "solana-validator-exit",
  "thiserror 2.0.17",
 ]
 

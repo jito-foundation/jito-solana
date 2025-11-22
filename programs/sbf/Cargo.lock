@@ -317,7 +317,6 @@ dependencies = [
  "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-runtime",
- "solana-runtime-plugin",
  "solana-sdk-ids",
  "solana-send-transaction-service",
  "solana-signer",
@@ -6781,7 +6780,6 @@ dependencies = [
  "solana-rpc",
  "solana-rpc-client-api",
  "solana-runtime",
- "solana-runtime-plugin",
  "solana-runtime-transaction",
  "solana-sanitize",
  "solana-sdk-ids",
@@ -8473,24 +8471,6 @@ dependencies = [
  "strum_macros",
  "symlink",
  "tempfile",
- "thiserror 2.0.17",
-]
-
-[[package]]
-name = "solana-runtime-plugin"
-version = "4.0.0-alpha.0"
-dependencies = [
- "crossbeam-channel",
- "json5",
- "jsonrpc-core",
- "jsonrpc-core-client",
- "jsonrpc-derive",
- "jsonrpc-ipc-server",
- "jsonrpc-server-utils",
- "libloading",
- "log",
- "solana-runtime",
- "solana-validator-exit",
  "thiserror 2.0.17",
 ]
 
