@@ -4177,6 +4177,31 @@ pub mod rpc_full {
                 ));
             }
 
+            // base58 is slow
+            if let Some(transaction_encoding) = transaction_encoding {
+                if transaction_encoding != UiTransactionEncoding::Base64 {
+                    return Err(Error::invalid_params("only base64 encoding is supported"));
+                }
+            }
+            for config in pre_execution_accounts_configs.iter() {
+                if let Some(config) = config {
+                    if config.encoding.unwrap_or(UiAccountEncoding::Base64)
+                        != UiAccountEncoding::Base64
+                    {
+                        return Err(Error::invalid_params("only base64 encoding is supported"));
+                    }
+                }
+            }
+            for config in post_execution_accounts_configs.iter() {
+                if let Some(config) = config {
+                    if config.encoding.unwrap_or(UiAccountEncoding::Base64)
+                        != UiAccountEncoding::Base64
+                    {
+                        return Err(Error::invalid_params("only base64 encoding is supported"));
+                    }
+                }
+            }
+
             let tx_encoding = transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
             let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
                 Error::invalid_params(format!(
