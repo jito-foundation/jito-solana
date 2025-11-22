@@ -1,14 +1,7 @@
 //! The `tpu` module implements the Transaction Processing Unit, a
 //! multi-stage transaction processing pipeline in software.
 
-use ahash::{HashSet, HashSetExt};
-
 pub use crate::forwarding_stage::ForwardingClientOption;
-use crate::{
-    bundle_sigverify_stage::BundleSigverifyStage,
-    bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
-    tip_manager::{TipManager, TipManagerConfig},
-};
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
@@ -87,6 +80,14 @@ use {
     },
     tokio::sync::{mpsc, mpsc::Sender as AsyncSender},
     tokio_util::sync::CancellationToken,
+};
+use {
+    crate::{
+        bundle_sigverify_stage::BundleSigverifyStage,
+        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        tip_manager::{TipManager, TipManagerConfig},
+    },
+    ahash::{HashSet, HashSetExt},
 };
 
 pub struct TpuSockets {

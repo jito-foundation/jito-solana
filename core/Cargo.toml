@@ -50,7 +50,6 @@ agave-transaction-view = { workspace = true }
 agave-verified-packet-receiver = { workspace = true }
 agave-votor = { workspace = true, features = ["agave-unstable-api"] }
 ahash = { workspace = true }
-anchor-lang = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 arrayvec = { workspace = true }
@@ -58,6 +57,7 @@ assert_matches = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
+borsh = { workspace = true }
 bs58 = { workspace = true }
 bytemuck = { workspace = true }
 bytes = { workspace = true }
@@ -69,8 +69,6 @@ futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
-jito-tip-distribution = { workspace = true }
-jito-tip-payment = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }

@@ -24,10 +24,10 @@ mod spl_memo_3_0 {
     solana_pubkey::declare_id!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 }
 
-mod jito_tip_payment {
+pub mod jito_tip_payment {
     solana_pubkey::declare_id!("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt");
 }
-mod jito_tip_distribution {
+pub mod jito_tip_distribution {
     solana_pubkey::declare_id!("4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7");
 }
 
@@ -60,12 +60,17 @@ static SPL_PROGRAMS: &[(Pubkey, Pubkey, &[u8])] = &[
     (
         jito_tip_distribution::ID,
         solana_sdk_ids::bpf_loader::ID,
-        include_bytes!("programs/spl-jito_tip_distribution-0.1.4.so"),
+        include_bytes!(
+            "/Users/lucasbruder/jito/jito-programs/mev-programs/target/deploy/\
+             jito_tip_distribution.so"
+        ),
     ),
     (
         jito_tip_payment::ID,
         solana_sdk_ids::bpf_loader::ID,
-        include_bytes!("programs/spl-jito_tip_payment-0.1.4.so"),
+        include_bytes!(
+            "/Users/lucasbruder/jito/jito-programs/mev-programs/target/deploy/jito_tip_payment.so"
+        ),
     ),
 ];
 

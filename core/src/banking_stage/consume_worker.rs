@@ -1562,7 +1562,7 @@ fn backoff(idle_duration: Duration, sleep_duration: &Duration) -> Duration {
 /// These are atomic, and intended to be reported by the scheduling thread
 /// since the consume worker thread is sleeping unless there is work to be
 /// done.
-pub(crate) struct ConsumeWorkerMetrics {
+pub struct ConsumeWorkerMetrics {
     id: String,
     interval: AtomicInterval,
     has_data: AtomicBool,
@@ -1585,7 +1585,7 @@ impl ConsumeWorkerMetrics {
         }
     }
 
-    fn new(id: u32) -> Self {
+    pub(crate) fn new(id: u32) -> Self {
         Self {
             id: id.to_string(),
             interval: AtomicInterval::default(),
@@ -1596,7 +1596,7 @@ impl ConsumeWorkerMetrics {
         }
     }
 
-    fn update_for_consume(
+    pub(crate) fn update_for_consume(
         &self,
         ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,

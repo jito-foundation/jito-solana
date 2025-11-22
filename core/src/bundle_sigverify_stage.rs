@@ -1,16 +1,16 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
+use {
+    crate::packet_bundle::{PacketBundle, VerifiedPacketBundle},
+    crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
+    solana_perf::sigverify::ed25519_verify_cpu,
+    std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread::{self, spawn, JoinHandle},
+        time::Duration,
     },
-    thread::{self, spawn, JoinHandle},
-    time::Duration,
 };
-
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
-use solana_perf::sigverify::ed25519_verify_cpu;
-
-use crate::packet_bundle::{PacketBundle, VerifiedPacketBundle};
 
 pub struct BundleSigverifyStage {
     thread: JoinHandle<()>,
@@ -52,11 +52,11 @@ impl BundleSigverifyStage {
 
             for bundle in workspace.drain(..) {
                 // all the transactions in the bundle need to be verified to be valid
-                if bundle.iter().all(|packet| !packet.meta().discard()) {
-                    if sender.send(VerifiedPacketBundle::new(bundle)).is_err() {
-                        warn!("failed to send verified packet bundle");
-                        break;
-                    }
+                if bundle.iter().all(|packet| !packet.meta().discard())
+                    && sender.send(VerifiedPacketBundle::new(bundle)).is_err()
+                {
+                    warn!("failed to send verified packet bundle");
+                    break;
                 }
             }
         }
@@ -65,15 +65,16 @@ impl BundleSigverifyStage {
 
 #[cfg(test)]
 mod tests {
-    use crossbeam_channel::bounded;
-    use solana_keypair::Signature;
-    use solana_perf::{
-        packet::{BytesPacket, PacketBatch},
-        test_tx::test_tx,
+    use {
+        super::*,
+        crossbeam_channel::bounded,
+        solana_keypair::Signature,
+        solana_perf::{
+            packet::{BytesPacket, PacketBatch},
+            test_tx::test_tx,
+        },
+        solana_transaction::Transaction,
     };
-    use solana_transaction::Transaction;
-
-    use super::*;
 
     #[test]
     fn test_bundle_sigverify_stage_exit() {
@@ -128,7 +129,7 @@ mod tests {
         let txs_1_after: Vec<Transaction> = verified_bundle_1
             .batch()
             .iter()
-            .map(|packet| bincode::deserialize(&packet.data(..).unwrap()).unwrap())
+            .map(|packet| bincode::deserialize(packet.data(..).unwrap()).unwrap())
             .collect();
         assert_eq!(txs_1, txs_1_after);
 
@@ -141,7 +142,7 @@ mod tests {
         let txs_2_after: Vec<Transaction> = verified_bundle_2
             .batch()
             .iter()
-            .map(|packet| bincode::deserialize(&packet.data(..).unwrap()).unwrap())
+            .map(|packet| bincode::deserialize(packet.data(..).unwrap()).unwrap())
             .collect();
         assert_eq!(txs_2, txs_2_after);
 

@@ -22,6 +22,7 @@ pub mod banking_simulation;
 pub mod banking_stage;
 pub mod banking_trace;
 pub mod bundle;
+mod bundle_sigverify_stage;
 pub mod bundle_stage;
 pub mod cluster_info_vote_listener;
 pub mod cluster_slots_service;
@@ -64,7 +65,6 @@ pub mod vote_simulator;
 pub mod voting_service;
 pub mod warm_quic_cache_service;
 pub mod window_service;
-mod bundle_sigverify_stage;
 
 #[macro_use]
 extern crate log;

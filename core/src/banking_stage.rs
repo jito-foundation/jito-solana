@@ -1,7 +1,6 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
-use ahash::HashSet;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -25,6 +24,7 @@ use {
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
+    ahash::HashSet,
     crossbeam_channel::{unbounded, Receiver, Sender},
     futures::{stream::FuturesUnordered, StreamExt},
     histogram::Histogram,
@@ -68,7 +68,7 @@ pub mod leader_slot_metrics;
 pub mod qos_service;
 pub mod vote_storage;
 
-mod consume_worker;
+pub(crate) mod consume_worker;
 mod vote_worker;
 
 pub mod decision_maker;

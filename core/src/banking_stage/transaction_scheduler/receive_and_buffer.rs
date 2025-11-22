@@ -1,4 +1,3 @@
-use ahash::HashSet;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -18,6 +17,7 @@ use {
         resolved_transaction_view::ResolvedTransactionView, transaction_data::TransactionData,
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
+    ahash::HashSet,
     arrayvec::ArrayVec,
     core::time::Duration,
     crossbeam_channel::{RecvTimeoutError, TryRecvError},

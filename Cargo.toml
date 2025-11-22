@@ -143,14 +143,12 @@ members = [
 ]
 
 exclude = [
-    "anchor",
     # solana-dos depends on bench-tps. ignore bench-tps here to avoid confusing cargo's
     # workspace resolution logic, which expects it in the top-level worspace rather than
     # dev-bins
     "bench-tps",
     "ci/xtask",
     "dev-bins",
-    "jito-programs",
     "programs/sbf",
     "svm/tests/example-programs",
 ]
@@ -207,7 +205,6 @@ agave-votor-messages = { path = "votor-messages", version = "=4.0.0-alpha.0", fe
 agave-xdp = { path = "xdp", version = "=4.0.0-alpha.0", features = ["agave-unstable-api"] }
 agave-xdp-ebpf = { path = "xdp-ebpf", version = "=4.0.0-alpha.0", features = ["agave-unstable-api"] }
 ahash = "0.8.11"
-anchor-lang = { path = "anchor/lang" }
 anyhow = "1.0.100"
 aquamarine = "0.6.0"
 arbitrary = "1.4.2"
@@ -303,8 +300,6 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
 ] }
 jito-protos = { path = "jito-protos", version = "=4.0.0-alpha.0" }
-jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
-jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
 js-sys = "0.3.81"
 json5 = "0.4.1"
 jsonrpc-core = "18.0.0"
