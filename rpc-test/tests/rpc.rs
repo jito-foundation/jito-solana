@@ -677,7 +677,7 @@ fn test_wrong_number_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair
         .simulate_bundle_with_config(
             &transactions,
             RpcSimulateBundleConfig {
-                pre_execution_accounts_configs: vec![None; transactions.len() + 1],
+                pre_execution_accounts_configs: vec![None; transactions.len().saturating_add(1)],
                 post_execution_accounts_configs: vec![None; transactions.len()],
                 transaction_encoding: Some(UiTransactionEncoding::Base64),
                 simulation_bank: Some(SimulationSlotConfig::Tip),
@@ -722,7 +722,7 @@ fn test_wrong_number_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypai
             &transactions,
             RpcSimulateBundleConfig {
                 pre_execution_accounts_configs: vec![None; transactions.len()],
-                post_execution_accounts_configs: vec![None; transactions.len() + 1],
+                post_execution_accounts_configs: vec![None; transactions.len().saturating_add(1)],
                 transaction_encoding: Some(UiTransactionEncoding::Base64),
                 simulation_bank: Some(SimulationSlotConfig::Tip),
                 skip_sig_verify: false,
@@ -1173,7 +1173,10 @@ fn test_single_tx_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     // mint keypair covers cost of rent for bob
     let post_execution_accounts = result.post_execution_accounts.as_ref().unwrap();
     assert_eq!(post_execution_accounts.len(), 2);
-    assert_eq!(post_execution_accounts[0].lamports, mint_balance - rent);
+    assert_eq!(
+        post_execution_accounts[0].lamports,
+        mint_balance.saturating_sub(rent)
+    );
     assert_eq!(post_execution_accounts[1].lamports, rent);
 }
 
@@ -1187,7 +1190,12 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     let bob = Keypair::new();
     let alice = Keypair::new();
     let transactions = vec![
-        system_transaction::transfer(mint_keypair, &bob.pubkey(), rent * 2, latest_blockhash),
+        system_transaction::transfer(
+            mint_keypair,
+            &bob.pubkey(),
+            rent.saturating_mul(2),
+            latest_blockhash,
+        ),
         system_transaction::transfer(&bob, &alice.pubkey(), rent, latest_blockhash),
     ];
 
@@ -1251,9 +1259,9 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     assert_eq!(post_execution_accounts.len(), 2);
     assert_eq!(
         post_execution_accounts[0].lamports,
-        mint_balance - (2 * rent)
+        mint_balance.saturating_sub(rent.saturating_mul(2))
     );
-    assert_eq!(post_execution_accounts[1].lamports, 2 * rent); // bob now has 2x rent
+    assert_eq!(post_execution_accounts[1].lamports, rent.saturating_mul(2)); // bob now has 2x rent
 
     let result = simulate_result.transaction_results.get(1).unwrap();
     assert_eq!(result.err, None);
@@ -1261,15 +1269,15 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     assert_eq!(pre_execution_accounts.len(), 2);
     assert_eq!(
         pre_execution_accounts[0].lamports,
-        mint_balance - (2 * rent)
+        mint_balance.saturating_sub(rent.saturating_mul(2))
     ); // mint
-    assert_eq!(pre_execution_accounts[1].lamports, 2 * rent); // bob
+    assert_eq!(pre_execution_accounts[1].lamports, rent.saturating_mul(2)); // bob
 
     let post_execution_accounts = result.post_execution_accounts.as_ref().unwrap();
     assert_eq!(post_execution_accounts.len(), 3);
     assert_eq!(
         post_execution_accounts[0].lamports,
-        mint_balance - (2 * rent)
+        mint_balance.saturating_sub(rent.saturating_mul(2))
     ); // mint
     assert_eq!(post_execution_accounts[1].lamports, rent); // bob sent rent to alice
     assert_eq!(post_execution_accounts[2].lamports, rent); // alice
@@ -1285,7 +1293,7 @@ fn test_single_bad_tx(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     let account_not_found_tx = system_transaction::transfer(
         &Keypair::new(),
         &mint_keypair.pubkey(),
-        rent * 2,
+        rent.saturating_mul(2),
         latest_blockhash,
     );
 
