@@ -1585,6 +1585,10 @@ impl ConsumeWorkerMetrics {
         }
     }
 
+    pub(crate) fn set_has_data(&self, has_data: bool) {
+        self.has_data.store(has_data, Ordering::Relaxed);
+    }
+
     pub(crate) fn new(id: u32) -> Self {
         Self {
             id: id.to_string(),

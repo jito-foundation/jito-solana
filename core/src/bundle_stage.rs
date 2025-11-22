@@ -662,8 +662,11 @@ impl BundleStage {
                     consume_worker_metrics,
                 ) {
                     consume_worker_metrics.update_for_consume(&output);
+                    consume_worker_metrics.set_has_data(true);
                 }
             }
+
+            consume_worker_metrics.maybe_report_and_reset();
         }
 
         while let Some(bundle) = bundles.pop_front() {
@@ -676,7 +679,9 @@ impl BundleStage {
                 consume_worker_metrics,
             ) {
                 consume_worker_metrics.update_for_consume(&output);
+                consume_worker_metrics.set_has_data(true);
             }
+            consume_worker_metrics.maybe_report_and_reset();
         }
 
         debug_assert!(
@@ -763,6 +768,7 @@ impl BundleStage {
         let _ = bundle_account_locker.unlock_bundle(&initialize_tip_program_transactions, bank);
 
         consume_worker_metrics.update_for_consume(&output);
+        consume_worker_metrics.set_has_data(true);
 
         let bundle_result = Self::to_bundle_result(&output);
 
@@ -814,6 +820,7 @@ impl BundleStage {
         let _ = bundle_account_locker.unlock_bundle(&crank_tip_program_transactions, bank);
 
         consume_worker_metrics.update_for_consume(&output);
+        consume_worker_metrics.set_has_data(true);
         let bundle_result = Self::to_bundle_result(&output);
         debug!(
             "crank tip program output: {:?}",
