@@ -636,8 +636,7 @@ impl AdminRpc for AdminRpcImpl {
         } else {
             Some(SocketAddr::from_str(&addr).map_err(|_| {
                 jsonrpc_core::error::Error::invalid_params(format!(
-                    "invalid shred receiver address: {}",
-                    addr
+                    "invalid shred receiver address: {addr}",
                 ))
             })?)
         };
@@ -660,8 +659,7 @@ impl AdminRpc for AdminRpcImpl {
         } else {
             Some(SocketAddr::from_str(&addr).map_err(|_| {
                 jsonrpc_core::error::Error::invalid_params(format!(
-                    "invalid shred receiver address: {}",
-                    addr
+                    "invalid shred receiver address: {addr}",
                 ))
             })?)
         };
@@ -677,10 +675,7 @@ impl AdminRpc for AdminRpcImpl {
     fn set_staked_nodes_overrides(&self, meta: Self::Metadata, path: String) -> Result<()> {
         let loaded_config = load_staked_nodes_overrides(&path)
             .map_err(|err| {
-                error!(
-                    "Failed to load staked nodes overrides from {}: {}",
-                    &path, err
-                );
+                error!("Failed to load staked nodes overrides from {path}: {err}");
                 jsonrpc_core::error::Error::internal_error()
             })?
             .staked_map_id;

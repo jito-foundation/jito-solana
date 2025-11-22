@@ -54,23 +54,23 @@ impl InitializeTipDistributionConfigInstruction {
         let mut data = Vec::with_capacity(Self::DISCRIMINATOR.len() + 75);
         data.extend_from_slice(Self::DISCRIMINATOR);
         data.extend(borsh::to_vec(&authority).map_err(|e| {
-            error!("Error serializing authority: {}", e);
+            error!("Error serializing authority: {e}");
             TipDistributionError::SerializationError
         })?);
         data.extend(borsh::to_vec(&expired_funds_account).map_err(|e| {
-            error!("Error serializing expired funds account: {}", e);
+            error!("Error serializing expired funds account: {e}");
             TipDistributionError::SerializationError
         })?);
         data.extend(borsh::to_vec(&num_epochs_valid).map_err(|e| {
-            error!("Error serializing num epochs valid: {}", e);
+            error!("Error serializing num epochs valid: {e}");
             TipDistributionError::SerializationError
         })?);
         data.extend(borsh::to_vec(&max_validator_commission_bps).map_err(|e| {
-            error!("Error serializing max validator commission bps: {}", e);
+            error!("Error serializing max validator commission bps: {e}");
             TipDistributionError::SerializationError
         })?);
         data.extend(borsh::to_vec(&bump).map_err(|e| {
-            error!("Error serializing bump: {}", e);
+            error!("Error serializing bump: {e}");
             TipDistributionError::SerializationError
         })?);
         Ok(data)
@@ -90,15 +90,15 @@ impl InitializeTipDistributionAccountInstruction {
         let mut data = Vec::with_capacity(Self::DISCRIMINATOR.len() + 35);
         data.extend_from_slice(Self::DISCRIMINATOR);
         data.extend(borsh::to_vec(&merkle_root_upload_authority).map_err(|e| {
-            error!("Error serializing merkle root upload authority: {}", e);
+            error!("Error serializing merkle root upload authority: {e}");
             TipDistributionError::SerializationError
         })?);
         data.extend(borsh::to_vec(&validator_commission_bps).map_err(|e| {
-            error!("Error serializing validator commission bps: {}", e);
+            error!("Error serializing validator commission bps: {e}");
             TipDistributionError::SerializationError
         })?);
         data.extend(borsh::to_vec(&bump).map_err(|e| {
-            error!("Error serializing bump: {}", e);
+            error!("Error serializing bump: {e}");
             TipDistributionError::SerializationError
         })?);
 
@@ -143,7 +143,7 @@ impl JitoTipDistributionConfig {
         }
 
         JitoTipDistributionConfig::try_from_slice(&account_shared_data.data()[8..83]).map_err(|e| {
-            error!("Error deserializing tip distribution config account: {}", e);
+            error!("Error deserializing tip distribution config account: {e}");
             TipDistributionError::DeserializationError
         })
     }

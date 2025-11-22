@@ -486,10 +486,7 @@ impl RelayerStage {
             return false;
         }
         if let Err(e) = Endpoint::from_str(&config.relayer_url) {
-            error!(
-                "can't connect to relayer. error creating relayer endpoint - {}",
-                e
-            );
+            error!("can't connect to relayer. error creating relayer endpoint - {e}");
             return false;
         }
         true

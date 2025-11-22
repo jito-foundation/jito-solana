@@ -961,10 +961,7 @@ impl BlockEngineStage {
             return false;
         }
         if let Err(e) = Endpoint::from_str(&config.block_engine_url) {
-            error!(
-                "can't connect to block engine. error creating block engine endpoint - {}",
-                e
-            );
+            error!("can't connect to block engine. error creating block engine endpoint - {e}");
             return false;
         }
         true

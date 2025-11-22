@@ -51,7 +51,7 @@ impl JitoTipPaymentConfig {
         }
 
         JitoTipPaymentConfig::try_from_slice(&account_shared_data.data()[8..]).map_err(|e| {
-            error!("Error deserializing tip payment config account: {}", e);
+            error!("Error deserializing tip payment config account: {e}");
             TipPaymentError::DeserializationError
         })
     }
@@ -148,7 +148,7 @@ impl InitializeTipPaymentInstruction {
                 tip_payment_account_7: tip_payment_account_7_bump,
             })
             .map_err(|e| {
-                error!("Error serializing init bumps: {}", e);
+                error!("Error serializing init bumps: {e}");
                 TipPaymentError::SerializationError
             })?,
         );
@@ -177,7 +177,7 @@ impl ChangeBlockBuilderInstruction {
         let mut data = Vec::with_capacity(Self::DISCRIMINATOR.len() + 8);
         data.extend_from_slice(Self::DISCRIMINATOR);
         data.extend(borsh::to_vec(&block_builder_commission).map_err(|e| {
-            error!("Error serializing block builder commission: {}", e);
+            error!("Error serializing block builder commission: {e}");
             TipPaymentError::SerializationError
         })?);
         Ok(data)

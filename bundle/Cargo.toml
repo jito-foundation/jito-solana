@@ -14,6 +14,9 @@ edition = { workspace = true }
 crate-type = ["lib"]
 name = "solana_bundle"
 
+[features]
+agave-unstable-api = []
+
 [dependencies]
 itertools = { workspace = true }
 sha2 = { workspace = true }

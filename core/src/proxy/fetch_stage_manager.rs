@@ -131,7 +131,7 @@ impl FetchStageManager {
                                 fetch_connected = false;
                                 pending_disconnect = false;
                                 if let Err(e) = Self::set_tpu_addresses(&cluster_info, tpu_addr, tpu_forward_addr) {
-                                    error!("error setting tpu or tpu_fwd to ({:?}, {:?}), error: {:?}", tpu_addr, tpu_forward_addr, e);
+                                    error!("error setting tpu or tpu_fwd to ({tpu_addr:?}, {tpu_forward_addr:?}), error: {e:?}");
                                 }
                             }
                         } else {

@@ -342,7 +342,7 @@ impl JsonRpcRequestProcessor {
     }
 
     fn bank_from_slot(&self, slot: Slot) -> Option<Arc<Bank>> {
-        debug!("Slot: {:?}", slot);
+        debug!("bank_from_slot: {slot}");
 
         let r_bank_forks = self.bank_forks.read().unwrap();
         r_bank_forks.get(slot)
@@ -4184,29 +4184,30 @@ pub mod rpc_full {
                 }
             }
             for config in pre_execution_accounts_configs.iter() {
-                if let Some(config) = config {
-                    if config.encoding.unwrap_or(UiAccountEncoding::Base64)
-                        != UiAccountEncoding::Base64
-                    {
-                        return Err(Error::invalid_params("only base64 encoding is supported"));
-                    }
+                if config
+                    .as_ref()
+                    .and_then(|c| c.encoding)
+                    .unwrap_or(UiAccountEncoding::Base64)
+                    != UiAccountEncoding::Base64
+                {
+                    return Err(Error::invalid_params("only base64 encoding is supported"));
                 }
             }
             for config in post_execution_accounts_configs.iter() {
-                if let Some(config) = config {
-                    if config.encoding.unwrap_or(UiAccountEncoding::Base64)
-                        != UiAccountEncoding::Base64
-                    {
-                        return Err(Error::invalid_params("only base64 encoding is supported"));
-                    }
+                if config
+                    .as_ref()
+                    .and_then(|c| c.encoding)
+                    .unwrap_or(UiAccountEncoding::Base64)
+                    != UiAccountEncoding::Base64
+                {
+                    return Err(Error::invalid_params("only base64 encoding is supported"));
                 }
             }
 
             let tx_encoding = transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
             let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
                 Error::invalid_params(format!(
-                    "Unsupported encoding: {}. Supported encodings are: base58 & base64",
-                    tx_encoding
+                    "Unsupported encoding: {tx_encoding:?}. Supported encodings are: base58 & base64",
                 ))
             })?;
             let mut unsanitized_txs = rpc_bundle_request
@@ -4221,7 +4222,7 @@ pub mod rpc_full {
             let bank = match simulation_bank.unwrap_or_default() {
                 SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
                 SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
-                    Error::invalid_params(format!("bank not found for the provided slot: {}", slot))
+                    Error::invalid_params(format!("bank not found for the provided slot: {slot}"))
                 }),
                 SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
             }?;
@@ -4691,7 +4692,7 @@ pub fn account_configs_to_accounts(
         if let Some(account_config) = account_config {
             for address in &account_config.addresses {
                 accounts.push(Pubkey::from_str(address).map_err(|_| {
-                    Error::invalid_params(format!("invalid pubkey provided: {}", address))
+                    Error::invalid_params(format!("invalid pubkey provided: {address}"))
                 })?);
             }
         }

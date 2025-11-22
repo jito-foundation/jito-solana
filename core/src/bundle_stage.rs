@@ -774,7 +774,7 @@ impl BundleStage {
         let initialize_tip_program_transactions = tip_manager
             .get_initialize_tip_programs_bundle(bank, keypair)
             .map_err(|e| {
-                warn!("tip programs initialize error: {:?}", e);
+                warn!("tip programs initialize error: {e:?}");
                 BundleExecutionError::TipError
             })?;
         if initialize_tip_program_transactions.is_empty() {
@@ -808,7 +808,7 @@ impl BundleStage {
                 .execute_and_commit_transactions_output
                 .commit_transactions_result
         );
-        info!("initialize tip program output: {:?}", bundle_result);
+        info!("initialize tip program output: {bundle_result:?}");
 
         bundle_result
     }
@@ -825,7 +825,7 @@ impl BundleStage {
         let crank_tip_program_transactions = tip_manager
             .get_tip_programs_crank_bundle(bank, keypair, &block_builder_fee_info.lock().unwrap())
             .map_err(|e| {
-                warn!("tip programs crank error: {:?}", e);
+                warn!("tip programs crank error: {e:?}");
                 BundleExecutionError::TipError
             })?;
 
@@ -858,7 +858,7 @@ impl BundleStage {
                 .execute_and_commit_transactions_output
                 .commit_transactions_result
         );
-        info!("crank tip program output: {:?}", bundle_result);
+        info!("crank tip program output: {bundle_result:?}");
         bundle_result
     }
 
@@ -1121,7 +1121,7 @@ mod tests {
             {
                 tx_count += entry.transactions.len();
             }
-            assert!(tx_count <= NUM_TXS_EXPECTED, "tx_count: {}", tx_count);
+            assert!(tx_count <= NUM_TXS_EXPECTED, "tx_count: {tx_count}");
         }
 
         let tip_payment_config_account = bank
@@ -1262,7 +1262,7 @@ mod tests {
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
-                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
@@ -1375,7 +1375,7 @@ mod tests {
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
-                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
@@ -1510,7 +1510,7 @@ mod tests {
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
-                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
@@ -1612,7 +1612,7 @@ mod tests {
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
-                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {tx_count}");
             }
         }
 
@@ -1644,7 +1644,7 @@ mod tests {
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
-                assert_eq!(tx_count, 0, "tx_count: {}", tx_count);
+                assert_eq!(tx_count, 0, "tx_count: {tx_count}");
             }
         }
 

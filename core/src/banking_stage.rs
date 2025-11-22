@@ -1646,8 +1646,7 @@ mod tests {
                 assert_eq!(
                     bank.get_balance(&blacklisted_keypair.pubkey()),
                     0,
-                    "test failed with config: {}",
-                    block_production_method,
+                    "test failed with config: {block_production_method}",
                 );
                 assert!(!bank.has_signature(&blacklisted_tx.signatures[0]));
             }

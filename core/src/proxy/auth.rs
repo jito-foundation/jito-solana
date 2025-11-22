@@ -76,12 +76,8 @@ pub async fn generate_auth_tokens(
         .as_ref()
         .to_vec();
 
-    debug!(
-        "formatted_challenge: {} signed_challenge: {:?}",
-        formatted_challenge, signed_challenge
-    );
+    debug!("formatted_challenge: {formatted_challenge} signed_challenge: {signed_challenge:?}",);
 
-    debug!("generate_auth_tokens");
     let auth_tokens = auth_service_client
         .generate_auth_tokens(GenerateAuthTokensRequest {
             challenge: formatted_challenge,
