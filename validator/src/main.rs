@@ -87,9 +87,6 @@ pub fn main() {
         ("set-shred-retransmit-receiver-address", Some(subcommand_matches)) => {
             commands::shred::set_shred_retransmit_receiver_execute(subcommand_matches, &ledger_path)
         }
-        ("runtime-plugin", Some(plugin_subcommand_matches)) => {
-            commands::runtime_plugin::execute(plugin_subcommand_matches, &ledger_path)
-        }
         _ => unreachable!(),
     }
     .unwrap_or_else(|err| {

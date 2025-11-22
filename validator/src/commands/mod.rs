@@ -9,7 +9,6 @@ pub mod relayer;
 pub mod repair_shred_from_peer;
 pub mod repair_whitelist;
 pub mod run;
-pub mod runtime_plugin;
 pub mod set_identity;
 pub mod set_log_filter;
 pub mod set_public_address;

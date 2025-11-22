@@ -1090,7 +1090,6 @@ pub fn execute(
             vote_quic_server_config,
         },
         admin_service_post_init,
-        None, // TODO (LB): fix
     ) {
         Ok(validator) => Ok(validator),
         Err(err) => {

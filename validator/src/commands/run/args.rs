@@ -1429,14 +1429,6 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
-        Arg::with_name("runtime_plugin_config")
-            .long("runtime-plugin-config")
-            .value_name("FILE")
-            .takes_value(true)
-            .multiple(true)
-            .help("Specify the configuration file for a Runtime plugin."),
-    )
-    .arg(
         Arg::with_name("retransmit_xdp_interface")
             .hidden(hidden_unless_forced())
             .long("experimental-retransmit-xdp-interface")

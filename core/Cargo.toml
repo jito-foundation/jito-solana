@@ -145,7 +145,6 @@ solana-rent = { workspace = true }
 solana-rpc = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-runtime = { workspace = true }
-solana-runtime-plugin = { workspace = true }
 solana-runtime-transaction = { workspace = true }
 solana-sanitize = { workspace = true }
 solana-sdk-ids = { workspace = true }

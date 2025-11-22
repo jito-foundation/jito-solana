@@ -88,8 +88,7 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(commands::shred::shred_receiver_command(default_args))
         .subcommand(commands::shred::shred_retransmit_receiver_command(
             default_args,
-        ))
-        .subcommand(commands::runtime_plugin::command(default_args));
+        ));
 
     commands::run::add_args(app, default_args)
         .args(&thread_args(&default_args.thread_args))
@@ -893,14 +892,6 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                 .takes_value(true)
                 .multiple(true)
                 .help("Specify the configuration file for the Geyser plugin."),
-        )
-        .arg(
-            Arg::with_name("runtime_plugin_config")
-                .long("runtime-plugin-config")
-                .value_name("FILE")
-                .takes_value(true)
-                .multiple(true)
-                .help("Specify the configuration file for a Runtime plugin."),
         )
         .arg(
             Arg::with_name("deactivate_feature")

@@ -135,10 +135,6 @@ use {
         snapshot_controller::SnapshotController,
         snapshot_utils::{self, clean_orphaned_account_snapshot_dirs},
     },
-    solana_runtime_plugin::{
-        runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
-        runtime_plugin_service::RuntimePluginService,
-    },
     solana_send_transaction_service::send_transaction_service::Config as SendTransactionServiceConfig,
     solana_shred_version::compute_shred_version,
     solana_signer::Signer,
@@ -693,10 +689,6 @@ impl Validator {
         socket_addr_space: SocketAddrSpace,
         tpu_config: ValidatorTpuConfig,
         admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
-        runtime_plugin_configs_and_request_rx: Option<(
-            Vec<PathBuf>,
-            Receiver<RuntimePluginManagerRpcRequest>,
-        )>,
     ) -> Result<Self> {
         #[cfg(debug_assertions)]
         const DEBUG_ASSERTION_STATUS: &str = "enabled";
@@ -1151,19 +1143,6 @@ impl Validator {
 
         let optimistically_confirmed_bank =
             OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
-
-        if let Some((runtime_plugin_configs, request_rx)) = runtime_plugin_configs_and_request_rx {
-            RuntimePluginService::start(
-                &runtime_plugin_configs,
-                request_rx,
-                bank_forks.clone(),
-                block_commitment_cache.clone(),
-                exit.clone(),
-            )
-            .map_err(|e| {
-                ValidatorError::Other(format!("Failed to start runtime plugin service: {e:?}"))
-            })?;
-        }
 
         let max_slots = Arc::new(MaxSlots::default());
 
@@ -3000,7 +2979,6 @@ mod tests {
             SocketAddrSpace::Unspecified,
             ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
             Arc::new(RwLock::new(None)),
-            None,
         )
         .expect("assume successful validator start");
         assert_eq!(
@@ -3215,7 +3193,6 @@ mod tests {
                     SocketAddrSpace::Unspecified,
                     ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
                     Arc::new(RwLock::new(None)),
-                    None,
                 )
                 .expect("assume successful validator start")
             })

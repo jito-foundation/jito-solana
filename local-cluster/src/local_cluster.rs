@@ -425,7 +425,6 @@ impl LocalCluster {
                 // to use the same QUIC ports due to SO_REUSEPORT.
                 ValidatorTpuConfig::new_for_tests(true),
                 Arc::new(RwLock::new(None)),
-                None, // runtime_plugin_configs_and_request_rx
             )
             .expect("assume successful validator start");
 
@@ -637,7 +636,6 @@ impl LocalCluster {
             socket_addr_space,
             ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
             Arc::new(RwLock::new(None)),
-            None, // runtime_plugin_configs_and_request_rx
         )
         .expect("assume successful validator start");
 
@@ -704,7 +702,6 @@ impl LocalCluster {
                 socket_addr_space,
                 ValidatorTpuConfig::new_for_tests(true),
                 Arc::new(RwLock::new(None)),
-                None,
             )
             .unwrap_or_else(|e| panic!("Cluster leader failed to start: {e:?}"));
 
@@ -771,7 +768,6 @@ impl LocalCluster {
                     socket_addr_space,
                     ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
                     Arc::new(RwLock::new(None)),
-                    None,
                 )
                 .unwrap_or_else(|e| panic!("Validator {i} failed to start: {e:?}"));
 
@@ -1332,7 +1328,6 @@ impl Cluster for LocalCluster {
             socket_addr_space,
             ValidatorTpuConfig::new_for_tests(DEFAULT_TPU_ENABLE_UDP),
             Arc::new(RwLock::new(None)),
-            None,
         )
         .expect("assume successful validator start");
         cluster_validator_info.validator = Some(restarted_node);

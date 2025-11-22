@@ -146,10 +146,6 @@ impl BundleStageLoopMetrics {
         self.cost_model_buffered_bundles_count = Saturating(count);
     }
 
-    pub fn increment_num_bundles_dropped(&mut self, count: u64) {
-        self.num_bundles_dropped += count;
-    }
-
     pub fn increment_bundle_dropped_error(&mut self, error: BundleStorageError) {
         self.num_bundles_dropped += 1;
         match error {
@@ -436,7 +432,7 @@ impl BundleStage {
             if bundle_storage.unprocessed_bundles_len() > 0
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, _process_buffered_packets_time_us) =
+                let (_, process_buffered_packets_time_us) =
                     measure_us!(Self::process_buffered_bundles(
                         &mut decision_maker,
                         &mut consumer,
@@ -449,6 +445,9 @@ impl BundleStage {
                         &cluster_info,
                         &consume_worker_metrics
                     ));
+                bundle_stage_metrics.increment_process_buffered_bundles_elapsed_us(
+                    process_buffered_packets_time_us,
+                );
                 last_metrics_update = Instant::now();
             }
 

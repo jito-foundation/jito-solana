@@ -77,7 +77,6 @@ solana-rpc = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-runtime = { workspace = true }
-solana-runtime-plugin = { workspace = true }
 solana-sdk-ids = { workspace = true }
 solana-send-transaction-service = { workspace = true }
 solana-signer = { workspace = true }
