@@ -584,3 +584,6 @@ fn deserialize_rpc_error() -> ClientResult<()> {
         }
     }
 }
+
+#[test]
+fn test_simulate_bundle() {}

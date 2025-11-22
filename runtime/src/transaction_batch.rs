@@ -114,10 +114,13 @@ impl<Tx: SVMMessage> Drop for TransactionBatch<'_, '_, Tx> {
 mod tests {
     use {
         super::*,
-        crate::genesis_utils::{create_genesis_config_with_leader, GenesisConfigInfo},
+        crate::genesis_utils::{
+            create_genesis_config, create_genesis_config_with_leader, GenesisConfigInfo,
+        },
         solana_keypair::Keypair,
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
-        solana_system_transaction as system_transaction,
+        solana_signer::Signer,
+        solana_system_transaction::{self as system_transaction, transfer},
         solana_transaction::sanitized::SanitizedTransaction,
         solana_transaction_error::TransactionError,
         test_case::test_case,
@@ -226,5 +229,65 @@ mod tests {
         ));
 
         (bank, txs)
+    }
+
+    #[test]
+    fn test_prepare_sanitized_batch_relax_intrabatch_account_locks() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(500);
+        let bank = Bank::new_for_tests(&genesis_config);
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+        let kp3 = Keypair::new();
+
+        let tx_batch_1 = vec![
+            RuntimeTransaction::from_transaction_for_tests(transfer(
+                &mint_keypair,
+                &kp1.pubkey(),
+                1,
+                genesis_config.hash(),
+            )),
+            RuntimeTransaction::from_transaction_for_tests(transfer(
+                &kp1,
+                &kp2.pubkey(),
+                1,
+                genesis_config.hash(),
+            )),
+        ];
+
+        let tx_batch_2 = vec![RuntimeTransaction::from_transaction_for_tests(transfer(
+            &kp2,
+            &kp3.pubkey(),
+            1,
+            genesis_config.hash(),
+        ))];
+
+        // overlapping batch should lock ok
+        let batch_1 = bank.prepare_sanitized_batch_relax_intrabatch_account_locks(&tx_batch_1);
+        assert!(batch_1.lock_results().iter().all(|x| x.is_ok()));
+
+        // trying to lock another batch with overlapping accounts should fail
+        let batch_2 = bank.prepare_sanitized_batch(&tx_batch_2);
+        assert_eq!(
+            batch_2.lock_results()[0],
+            Err(TransactionError::AccountInUse)
+        );
+        drop(batch_1);
+        drop(batch_2);
+
+        // locking in one batch then trying to lock overlapping accounts in another batch should fail
+        let batch_2 = bank.prepare_sanitized_batch(&tx_batch_2);
+        assert!(batch_2.lock_results().iter().all(|x| x.is_ok()));
+        let batch_1 = bank.prepare_sanitized_batch_relax_intrabatch_account_locks(&tx_batch_1);
+        assert_eq!(
+            batch_1.lock_results()[1],
+            Err(TransactionError::AccountInUse)
+        );
+        drop(batch_1);
+        drop(batch_2);
     }
 }

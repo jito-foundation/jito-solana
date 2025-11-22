@@ -57,6 +57,7 @@ assert_matches = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
+borsh = { workspace = true }
 bs58 = { workspace = true }
 bytemuck = { workspace = true }
 bytes = { workspace = true }
@@ -67,6 +68,8 @@ derive_more = { workspace = true }
 futures = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
+jito-protos = { workspace = true }
+lazy_static = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
@@ -74,6 +77,8 @@ min-max-heap = { workspace = true }
 num_cpus = { workspace = true }
 num_enum = { workspace = true }
 prio-graph = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 qualifier_attr = { workspace = true }
 quinn = { workspace = true }
 rand = { workspace = true }
@@ -90,6 +95,8 @@ solana-address-lookup-table-interface = { workspace = true }
 solana-bincode = { workspace = true }
 solana-bloom = { workspace = true }
 solana-builtins-default-costs = { workspace = true }
+solana-bundle = { workspace = true }
+# solana-bundle-sdk = { workspace = true }
 solana-client = { workspace = true }
 solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }
@@ -179,6 +186,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
+tonic = { workspace = true }
 trees = { workspace = true }
 
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dependencies]
@@ -188,6 +196,9 @@ jemallocator = { workspace = true }
 rts-alloc = { workspace = true }
 shaq = { workspace = true }
 sysctl = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 agave-logger = { workspace = true }
@@ -201,6 +212,7 @@ serial_test = { workspace = true }
 solana-account = { workspace = true, features = ["dev-context-only-utils"] }
 solana-bpf-loader-program = { workspace = true }
 solana-client = { workspace = true, features = ["dev-context-only-utils"] }
+# solana-bundle = { workspace = true }
 solana-compute-budget-interface = { workspace = true }
 solana-compute-budget-program = { workspace = true }
 # See order-crates-for-publishing.py for using this unusual `path = "."`
@@ -212,12 +224,16 @@ solana-net-utils = { workspace = true, features = ["dev-context-only-utils"] }
 solana-poh = { workspace = true, features = ["dev-context-only-utils"] }
 solana-program-binaries = { workspace = true }
 solana-program-runtime = { workspace = true, features = ["metrics"] }
+solana-program-test = { workspace = true }
 solana-rpc = { workspace = true, features = ["dev-context-only-utils"] }
+solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-runtime-transaction = { workspace = true }
 solana-system-program = { workspace = true }
 solana-unified-scheduler-pool = { workspace = true, features = [
     "dev-context-only-utils",
 ] }
 solana-vote = { workspace = true, features = ["dev-context-only-utils"] }
+solana-vote-interface = { workspace = true }
 spl-memo-interface = { workspace = true }
 static_assertions = { workspace = true }
 test-case = { workspace = true }

@@ -10,6 +10,7 @@ use {
             BankingStage, BankingStageHandle,
         },
         banking_trace::{Channels, TracerThread},
+        // bundle_stage::bundle_account_locker::BundleAccountLocker,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoteSender, VoteTracker,
@@ -18,13 +19,20 @@ use {
         forwarding_stage::{
             spawn_forwarding_stage, ForwardAddressGetter, SpawnForwardingStageResult,
         },
+        proxy::{
+            block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
+            fetch_stage_manager::FetchStageManager,
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
+        // tip_manager::{TipManager, TipManagerConfig},
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig},
         vortexor_receiver_adapter::VortexorReceiverAdapter,
     },
+    arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{bounded, unbounded, Receiver},
     solana_clock::Slot,
@@ -45,10 +53,12 @@ use {
         rpc_subscriptions::RpcSubscriptions,
     },
     solana_runtime::{
+        bank::Bank,
         bank_forks::BankForks,
         prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
+    solana_signer::Signer,
     solana_streamer::{
         quic::{
             spawn_simple_qos_server, spawn_stake_wighted_qos_server, SimpleQosQuicStreamerConfig,
@@ -64,12 +74,20 @@ use {
         collections::HashMap,
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
-        sync::{atomic::AtomicBool, Arc, RwLock},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread::{self, JoinHandle},
         time::Duration,
     },
     tokio::sync::{mpsc, mpsc::Sender as AsyncSender},
     tokio_util::sync::CancellationToken,
+};
+use {
+    crate::{
+        bundle_sigverify_stage::BundleSigverifyStage,
+        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        tip_manager::{TipManager, TipManagerConfig},
+    },
+    ahash::{HashSet, HashSetExt},
 };
 
 pub struct TpuSockets {
@@ -103,6 +121,20 @@ impl SigVerifier {
 // Conservatively allow 20 TPS per validator.
 pub const MAX_VOTES_PER_SECOND: u64 = 20;
 
+/// For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
+/// from the Bank's block cost limit.
+fn calculate_block_cost_limit_reservation(
+    bank: &Bank,
+    reserved_ticks: u64,
+    preallocated_bundle_cost: u64,
+) -> u64 {
+    if bank.tick_height() % bank.ticks_per_slot() < reserved_ticks {
+        preallocated_bundle_cost
+    } else {
+        0
+    }
+}
+
 pub struct Tpu {
     fetch_stage: FetchStage,
     sig_verifier: SigVerifier,
@@ -117,6 +149,11 @@ pub struct Tpu {
     staked_nodes_updater_service: StakedNodesUpdaterService,
     tracer_thread_hdl: TracerThread,
     tpu_vote_quic_t: thread::JoinHandle<()>,
+    relayer_stage: RelayerStage,
+    block_engine_stage: BlockEngineStage,
+    fetch_stage_manager: FetchStageManager,
+    bundle_stage: BundleStage,
+    bundle_sigverify_stage: BundleSigverifyStage,
 }
 
 impl Tpu {
@@ -165,6 +202,11 @@ impl Tpu {
         key_notifiers: Arc<RwLock<KeyUpdaters>>,
         banking_control_receiver: mpsc::Receiver<BankingControlMsg>,
         cancel: CancellationToken,
+        block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+        relayer_config: Arc<Mutex<RelayerConfig>>,
+        tip_manager_config: TipManagerConfig,
+        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        preallocated_bundle_cost: u64,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -178,7 +220,21 @@ impl Tpu {
             vortexor_receivers,
         } = sockets;
 
-        let (packet_sender, packet_receiver) = unbounded();
+        // [----------]
+        // [-- QUIC --] \
+        // [----------]  \____     [-----------------------]     [--------------------]     [------------------]
+        //                    ---- [-- FetchStageManager --] --> [-- SigverifyStage --] --> [-- BankingStage --]
+        // [--------------]  /     [-----------------------]     [--------------------]     [------------------]
+        // [-- Vortexor --] /
+        // [--------------]
+        //
+        //             fetch_stage_manager_*                packet_receiver
+
+        // Packets from fetch stage and quic server are intercepted and sent through fetch_stage_manager
+        // If relayer is connected, packets are dropped. If not, packets are forwarded on to packet_sender
+        let (fetch_stage_manager_sender, fetch_stage_manager_receiver) = unbounded();
+        let (sigverify_stage_sender, sigverify_stage_receiver) = unbounded();
+
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let (forwarded_packet_sender, forwarded_packet_receiver) = unbounded();
         let fetch_stage = FetchStage::new_with_sender(
@@ -186,7 +242,7 @@ impl Tpu {
             tpu_forwards_sockets,
             tpu_vote_sockets,
             exit.clone(),
-            &packet_sender,
+            &fetch_stage_manager_sender,
             &vote_packet_sender,
             &forwarded_packet_sender,
             forwarded_packet_receiver,
@@ -204,8 +260,8 @@ impl Tpu {
         );
 
         let Channels {
-            non_vote_sender,
-            non_vote_receiver,
+            non_vote_sender: banking_stage_sender,
+            non_vote_receiver: banking_stage_receiver,
             tpu_vote_sender,
             tpu_vote_receiver,
             gossip_vote_sender,
@@ -241,7 +297,7 @@ impl Tpu {
                 "quic_streamer_tpu",
                 transactions_quic_sockets,
                 keypair,
-                packet_sender,
+                fetch_stage_manager_sender.clone(),
                 staked_nodes.clone(),
                 tpu_quic_server_config.quic_streamer_config,
                 tpu_quic_server_config.qos_config,
@@ -283,7 +339,7 @@ impl Tpu {
             let adapter = VortexorReceiverAdapter::new(
                 sockets,
                 Duration::from_millis(5),
-                non_vote_sender,
+                banking_stage_sender.clone(),
                 enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
                 exit.clone(),
             );
@@ -291,11 +347,11 @@ impl Tpu {
         } else {
             info!("starting regular sigverify stage");
             let verifier = TransactionSigVerifier::new(
-                non_vote_sender,
+                banking_stage_sender.clone(),
                 enable_block_production_forwarding.then(|| forward_stage_sender.clone()),
             );
             SigVerifier::Local(SigVerifyStage::new(
-                packet_receiver,
+                sigverify_stage_receiver,
                 verifier,
                 "solSigVerTpu",
                 "tpu-verifier",
@@ -315,6 +371,47 @@ impl Tpu {
             )
         };
 
+        let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: cluster_info.keypair().pubkey(),
+            block_builder_commission: 0,
+        }));
+
+        let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
+        let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
+        let block_engine_stage = BlockEngineStage::new(
+            block_engine_config,
+            unverified_bundle_sender,
+            cluster_info.clone(),
+            sigverify_stage_sender.clone(),
+            banking_stage_sender.clone(),
+            exit.clone(),
+            &block_builder_fee_info,
+            shredstream_receiver_address.clone(),
+        );
+        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let bundle_sigverify_stage = BundleSigverifyStage::new(
+            unverified_bundle_receiver,
+            verified_bundle_sender,
+            exit.clone(),
+        );
+
+        let (heartbeat_tx, heartbeat_rx) = unbounded();
+        let fetch_stage_manager = FetchStageManager::new(
+            cluster_info.clone(),
+            heartbeat_rx,
+            fetch_stage_manager_receiver,
+            sigverify_stage_sender.clone(),
+            exit.clone(),
+        );
+
+        let relayer_stage = RelayerStage::new(
+            relayer_config,
+            cluster_info.clone(),
+            heartbeat_tx,
+            sigverify_stage_sender,
+            exit.clone(),
+        );
+
         let cluster_info_vote_listener = ClusterInfoVoteListener::new(
             exit.clone(),
             cluster_info.clone(),
@@ -330,21 +427,46 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
+        let bundle_account_locker = BundleAccountLocker::default();
+
+        // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
+        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
+        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
+        let reserved_ticks = poh_recorder
+            .read()
+            .unwrap()
+            .ticks_per_slot()
+            .saturating_mul(8)
+            .saturating_div(10);
+
+        let tip_manager = TipManager::new(tip_manager_config);
+        let mut blacklisted_accounts = HashSet::new();
+        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
+
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
             poh_recorder.clone(),
-            transaction_recorder,
-            non_vote_receiver,
+            transaction_recorder.clone(),
+            banking_stage_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
             banking_control_receiver,
             block_production_num_workers,
             block_production_scheduler_config,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             log_messages_bytes_limit,
             bank_forks.clone(),
             prioritization_fee_cache.clone(),
+            blacklisted_accounts.clone(),
+            bundle_account_locker.clone(),
+            move |bank| {
+                calculate_block_cost_limit_reservation(
+                    bank,
+                    reserved_ticks,
+                    preallocated_bundle_cost,
+                )
+            },
         );
 
         let SpawnForwardingStageResult {
@@ -357,6 +479,23 @@ impl Tpu {
             bank_forks.read().unwrap().sharable_banks(),
             ForwardAddressGetter::new(cluster_info.clone(), poh_recorder.clone()),
             DataBudget::default(),
+        );
+
+        let bundle_stage = BundleStage::new(
+            cluster_info,
+            bank_forks.clone(),
+            poh_recorder,
+            transaction_recorder,
+            verified_bundle_receiver,
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            exit.clone(),
+            tip_manager,
+            bundle_account_locker,
+            &block_builder_fee_info,
+            prioritization_fee_cache,
+            blacklisted_accounts,
         );
 
         let (entry_receiver, tpu_entry_notifier) =
@@ -384,6 +523,8 @@ impl Tpu {
             shred_version,
             turbine_quic_endpoint_sender,
             xdp_sender,
+            shredstream_receiver_address,
+            shred_receiver_address,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();
@@ -411,6 +552,11 @@ impl Tpu {
             staked_nodes_updater_service,
             tracer_thread_hdl,
             tpu_vote_quic_t,
+            block_engine_stage,
+            relayer_stage,
+            fetch_stage_manager,
+            bundle_stage,
+            bundle_sigverify_stage,
         }
     }
 
@@ -426,6 +572,11 @@ impl Tpu {
             self.tpu_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_forwards_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_vote_quic_t.join(),
+            self.bundle_stage.join(),
+            self.bundle_sigverify_stage.join(),
+            self.relayer_stage.join(),
+            self.block_engine_stage.join(),
+            self.fetch_stage_manager.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
@@ -444,5 +595,50 @@ impl Tpu {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use {
+        super::calculate_block_cost_limit_reservation,
+        solana_ledger::genesis_utils::create_genesis_config, solana_pubkey::Pubkey,
+        solana_runtime::bank::Bank, std::sync::Arc,
+    };
+
+    #[test]
+    fn test_calculate_block_cost_limit_reservation() {
+        const BUNDLE_BLOCK_COST_LIMITS_RESERVATION: u64 = 100;
+        const RESERVED_TICKS: u64 = 5;
+        let genesis_config_info = create_genesis_config(100);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config_info.genesis_config));
+
+        for _ in 0..genesis_config_info.genesis_config.ticks_per_slot {
+            bank.register_default_tick_for_test();
+        }
+        assert!(bank.is_complete());
+        bank.freeze();
+        let bank1 = Arc::new(Bank::new_from_parent(bank.clone(), &Pubkey::default(), 1));
+
+        // wait for reservation to be over
+        (0..RESERVED_TICKS).for_each(|_| {
+            assert_eq!(
+                calculate_block_cost_limit_reservation(
+                    &bank1,
+                    RESERVED_TICKS,
+                    BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
+                ),
+                BUNDLE_BLOCK_COST_LIMITS_RESERVATION
+            );
+            bank1.register_default_tick_for_test();
+        });
+        assert_eq!(
+            calculate_block_cost_limit_reservation(
+                &bank1,
+                RESERVED_TICKS,
+                BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
+            ),
+            0
+        );
     }
 }
