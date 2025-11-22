@@ -9,24 +9,39 @@ homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
+# -----------------------------------------------------------------------------
+# Build Configuration
+# -----------------------------------------------------------------------------
+# Optimization for docs.rs to ensure documentation is built on a stable target.
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
-[lib]
-crate-type = ["lib"]
-name = "solana_banks_interface"
+# NOTE: The '[lib]' section was removed because it contained redundant defaults.
+# Cargo automatically handles the crate name (dashes to underscores) and type.
 
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
 [dependencies]
+# Serialization
 serde = { workspace = true }
 serde_derive = { workspace = true }
-solana-account = { workspace = true, features = [ "serde" ] }
+
+# Solana Ecosystem (Inherited from Workspace)
+# We explicitly enable 'serde' features for RPC compatibility.
+solana-account = { workspace = true, features = ["serde"] }
 solana-clock = { workspace = true }
-solana-commitment-config = { workspace = true, features = [ "serde" ] }
+solana-commitment-config = { workspace = true, features = ["serde"] }
 solana-hash = { workspace = true }
-solana-message = { workspace = true, features = [ "serde" ] }
+solana-message = { workspace = true, features = ["serde"] }
 solana-pubkey = { workspace = true }
-solana-signature = { workspace = true, features = [ "serde" ] }
-solana-transaction = { workspace = true, features = [ "serde" ] }
-solana-transaction-context = { workspace = true, features = [ "serde" ] }
-solana-transaction-error = { workspace = true, features = [ "serde" ] }
+solana-signature = { workspace = true, features = ["serde"] }
+solana-transaction = { workspace = true, features = ["serde"] }
+solana-transaction-context = { workspace = true, features = ["serde"] }
+solana-transaction-error = { workspace = true, features = ["serde"] }
+
+# RPC Framework
+# WARNING: 'full' feature might be overkill for an interface crate. 
+# Consider reducing to only required features (e.g., 'serde-transport', 'macros')
+# to improve compile times if the full runtime isn't needed here.
 tarpc = { workspace = true, features = ["full"] }
