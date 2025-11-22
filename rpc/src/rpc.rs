@@ -4173,7 +4173,8 @@ pub mod rpc_full {
                     == rpc_bundle_request.encoded_transactions.len())
             {
                 return Err(Error::invalid_params(
-                    "pre/post_execution_accounts_configs must be equal in length to the number of transactions",
+                    "pre/post_execution_accounts_configs must be equal in length to the number of \
+                     transactions",
                 ));
             }
 
