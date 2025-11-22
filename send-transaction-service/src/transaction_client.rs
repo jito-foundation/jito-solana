@@ -115,10 +115,7 @@ where
         let result = conn.send_data_batch_async(wire_transactions);
 
         if let Err(err) = result {
-            warn!(
-                "Failed to send transaction transaction to {}: {:?}",
-                peer, err
-            );
+            warn!("Failed to send transaction transaction to {peer}: {err:?}",);
             stats.send_failure_count.fetch_add(1, Ordering::Relaxed);
         }
 
