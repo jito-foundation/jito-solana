@@ -114,8 +114,19 @@ impl BundleConsumer {
         let mut error_counters = TransactionErrorMetrics::default();
         let check_results =
             bank.check_transactions(txs, &pre_results, MAX_PROCESSING_AGE, &mut error_counters);
-        if let Some(err) = check_results.iter().find(|result| result.is_err()) {
+        if let Some((index, err)) = check_results
+            .iter()
+            .enumerate()
+            .find(|(_, result)| result.is_err())
+        {
             let err = err.clone().unwrap_err();
+            let mut commit_transactions_result =
+                vec![
+                    CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled);
+                    txs.len()
+                ];
+            commit_transactions_result[index] = CommitTransactionDetails::NotCommitted(err.clone());
+
             return ProcessTransactionBatchOutput {
                 cost_model_throttled_transactions_count: 0,
                 cost_model_us: 0,
@@ -125,10 +136,8 @@ impl BundleConsumer {
                     min_prioritization_fees: 0,
                     max_prioritization_fees: 0,
                     transaction_counts: LeaderProcessedTransactionCounts::default(),
-                    retryable_transaction_indexes: vec![], // nothing is retryable
-                    commit_transactions_result: Ok(vec![CommitTransactionDetails::NotCommitted(
-                        err.clone(),
-                    )]),
+                    retryable_transaction_indexes: vec![],
+                    commit_transactions_result: Ok(commit_transactions_result),
                 },
             };
         }
@@ -153,8 +162,18 @@ impl BundleConsumer {
             repeat(Ok(())),
             &|_| 0,
         ));
-        if let Some(err) = transaction_qos_cost_results.iter().find(|r| r.is_err()) {
+        if let Some((index, err)) = transaction_qos_cost_results
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.is_err())
+        {
             let err = err.as_ref().unwrap_err().clone();
+            let mut commit_transactions_results =
+                vec![
+                    CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled);
+                    txs.len()
+                ];
+            commit_transactions_results[index] = CommitTransactionDetails::NotCommitted(err);
 
             QosService::remove_or_update_costs(transaction_qos_cost_results.iter(), None, bank);
 
@@ -170,10 +189,7 @@ impl BundleConsumer {
                             immediately_retryable: false,
                         })
                         .collect(),
-                    commit_transactions_result: Ok(vec![
-                        CommitTransactionDetails::NotCommitted(err);
-                        txs.len()
-                    ]),
+                    commit_transactions_result: Ok(commit_transactions_results),
                     execute_and_commit_timings: LeaderExecuteAndCommitTimings::default(),
                     error_counters: TransactionErrorMetrics::default(),
                     min_prioritization_fees: 0,
@@ -185,7 +201,11 @@ impl BundleConsumer {
         // Try to lock the batch for the maximum amount of time allowed
         // The bundle account locker should handle pre-locking in BankingStage.
         let (batch, lock_us) = measure_us!(Self::try_lock_batch(bank, txs, max_bundle_duration));
-        if let Err(err) = batch {
+        if let Some(err) = batch.lock_results().iter().find(|x| x.is_err()) {
+            let err = err.as_ref().unwrap_err().clone();
+
+            QosService::remove_or_update_costs(transaction_qos_cost_results.iter(), None, bank);
+
             return ProcessTransactionBatchOutput {
                 cost_model_throttled_transactions_count: 0,
                 cost_model_us,
@@ -216,7 +236,6 @@ impl BundleConsumer {
                 },
             };
         }
-        let batch = batch.unwrap();
 
         let execute_and_commit_transactions_output = self.execute_and_commit_transactions_locked(
             bank,
@@ -267,7 +286,7 @@ impl BundleConsumer {
         bank: &'a Bank,
         txs: &'b [impl TransactionWithMeta],
         max_bundle_duration: Duration,
-    ) -> Result<TransactionBatch<'a, 'b, impl TransactionWithMeta>, TransactionError> {
+    ) -> TransactionBatch<'a, 'b, impl TransactionWithMeta> {
         let start = Instant::now();
         while start.elapsed() < max_bundle_duration {
             let batch = bank.prepare_sanitized_batch_relax_intrabatch_account_locks(txs);
@@ -275,14 +294,14 @@ impl BundleConsumer {
                 if err.as_ref().unwrap_err() == &TransactionError::AccountInUse {
                     sleep(Duration::from_millis(1));
                 } else {
-                    return Err(err.as_ref().unwrap_err().clone());
+                    return batch;
                 }
             } else {
-                return Ok(batch);
+                return batch;
             }
         }
 
-        Err(TransactionError::AccountInUse)
+        return bank.prepare_sanitized_batch_relax_intrabatch_account_locks(txs);
     }
 
     fn execute_and_commit_transactions_locked(
@@ -337,8 +356,16 @@ impl BundleConsumer {
         } = load_and_execute_transactions_output;
 
         // BundleStage: all transactions must execute successfully to be committed
-        if let Some(err) = processing_results.iter().find(|result| result.is_err()) {
-            let err = err.clone().unwrap_err();
+        if processing_results.iter().any(|result| result.is_err()) {
+            let commit_transactions_result = processing_results
+                .iter()
+                .map(|r| match r {
+                    Ok(_) => {
+                        CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+                    }
+                    Err(err) => CommitTransactionDetails::NotCommitted(err.clone()),
+                })
+                .collect();
 
             return ExecuteAndCommitTransactionsOutput {
                 transaction_counts: LeaderProcessedTransactionCounts {
@@ -348,10 +375,7 @@ impl BundleConsumer {
                 },
                 // nothing is retryable because the transactions didn't execute successfully
                 retryable_transaction_indexes: vec![],
-                commit_transactions_result: Ok(vec![
-                    CommitTransactionDetails::NotCommitted(err);
-                    batch.sanitized_transactions().len()
-                ]),
+                commit_transactions_result: Ok(commit_transactions_result),
                 execute_and_commit_timings,
                 error_counters,
                 min_prioritization_fees,
@@ -498,60 +522,545 @@ impl BundleConsumer {
 
 #[cfg(test)]
 mod tests {
+    use {
+        crate::{
+            banking_stage::{
+                committer::{CommitTransactionDetails, Committer},
+                consumer::{ExecuteAndCommitTransactionsOutput, ProcessTransactionBatchOutput},
+                qos_service::QosService,
+                scheduler_messages::MaxAge,
+            },
+            bundle_stage::bundle_consumer::BundleConsumer,
+        },
+        crossbeam_channel::unbounded,
+        solana_cost_model::cost_model::CostModel,
+        solana_genesis_config::create_genesis_config,
+        solana_keypair::Keypair,
+        solana_ledger::genesis_utils::{
+            bootstrap_validator_stake_lamports, create_genesis_config_with_leader,
+            GenesisConfigInfo,
+        },
+        solana_poh::{record_channels::record_channels, transaction_recorder::TransactionRecorder},
+        solana_pubkey::{new_rand, Pubkey},
+        solana_runtime::{bank::Bank, prioritization_fee_cache::PrioritizationFeeCache},
+        solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+        solana_signer::Signer,
+        solana_system_transaction::transfer,
+        solana_transaction::{sanitized::SanitizedTransaction, Transaction, TransactionError},
+        std::{sync::Arc, time::Duration},
+    };
 
-    // #[test]
-    // fn test_single_tx_ok_bundle_committed() {
-    //     panic!("Not implemented");
-    // }
+    fn sanitize_transactions(
+        txs: Vec<Transaction>,
+    ) -> Vec<RuntimeTransaction<SanitizedTransaction>> {
+        txs.into_iter()
+            .map(RuntimeTransaction::from_transaction_for_tests)
+            .collect()
+    }
 
-    // #[test]
-    // fn test_single_tx_bad_not_committed() {
-    //     // ensure QoS is rolled back
-    //     panic!("Not implemented");
-    // }
+    #[test]
+    fn test_try_lock_timeout() {
+        let bank = Bank::new_for_tests(&create_genesis_config(100).0);
+        let kp1 = Keypair::new();
+        let tx = transfer(&kp1, &new_rand(), 1, bank.last_blockhash());
+        let tx = vec![RuntimeTransaction::from_transaction_for_tests(tx)];
 
-    // #[test]
-    // fn test_multi_bundle_seed_fee_payer_ok() {
-    //     panic!("Not implemented");
-    // }
+        let batch_1 = bank.prepare_sanitized_batch(&tx);
+        assert!(batch_1.lock_results().iter().all(|x| x.is_ok()));
 
-    // #[test]
-    // fn test_last_tx_bad_not_committed() {
-    //     panic!("Not implemented");
-    // }
+        let tx2 = transfer(&kp1, &new_rand(), 1, bank.last_blockhash());
+        let tx2 = vec![RuntimeTransaction::from_transaction_for_tests(tx2)];
 
-    // #[test]
-    // fn test_tx_compute_reservation_exceeds_drops_bundle() {
-    //     panic!("Not implemented");
-    // }
+        let batch_2_error = BundleConsumer::try_lock_batch(&bank, &tx2, Duration::from_secs(1));
+        assert_eq!(
+            batch_2_error
+                .lock_results()
+                .iter()
+                .find(|x| x.is_err())
+                .unwrap()
+                .as_ref()
+                .unwrap_err(),
+            &TransactionError::AccountInUse
+        );
 
-    // #[test]
-    // fn test_transaction_already_processed_fails() {
-    //     panic!("Not implemented");
-    // }
+        drop(batch_1);
 
-    // #[test]
-    // fn test_bundle_fails_qos_rolls_back_qos() {
-    //     panic!("Not implemented");
-    // }
+        let batch_2 = BundleConsumer::try_lock_batch(&bank, &tx2, Duration::from_secs(1));
+        assert!(batch_2.lock_results().iter().all(|x| x.is_ok()));
+    }
 
-    // #[test]
-    // fn test_bundle_fails_commit_rolls_back_qos() {
-    //     panic!("Not implemented");
-    // }
+    #[test]
+    fn test_single_tx_ok_bundle_committed() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+        let pubkey = solana_pubkey::new_rand();
 
-    // #[test]
-    // fn test_bundle_fails_recorder_rolls_back_qos() {
-    //     panic!("Not implemented");
-    // }
+        let transactions = sanitize_transactions(vec![transfer(
+            &mint_keypair,
+            &pubkey,
+            1,
+            genesis_config.hash(),
+        )]);
 
-    // #[test]
-    // fn test_bundle_account_in_use_rolls_back_qos() {
-    //     panic!("Not implemented");
-    // }
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
 
-    // #[test]
-    // fn test_overlapping_bundle_accounts_in_different_entries() {
-    //     panic!("Not implemented");
-    // }
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 1);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::Committed { result: Ok(_), .. }
+        );
+    }
+
+    #[test]
+    fn test_single_tx_bad_not_committed() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair: _,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let transactions = sanitize_transactions(vec![transfer(
+            &Keypair::new(),
+            &new_rand(),
+            1,
+            genesis_config.hash(),
+        )]);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 1);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::AccountNotFound)
+        );
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+    }
+
+    #[test]
+    fn test_multi_tx_bundle_last_tx_bad_not_committed() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let transactions = sanitize_transactions(vec![
+            transfer(&mint_keypair, &new_rand(), 1, genesis_config.hash()),
+            transfer(&mint_keypair, &new_rand(), 1, genesis_config.hash()),
+            transfer(&mint_keypair, &new_rand(), 1, genesis_config.hash()),
+            transfer(&Keypair::new(), &new_rand(), 1, genesis_config.hash()), // bad tx
+        ]);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 4);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+        );
+        assert_matches!(
+            commit_transactions_result[1],
+            CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+        );
+        assert_matches!(
+            commit_transactions_result[2],
+            CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+        );
+        assert_matches!(
+            commit_transactions_result[3],
+            CommitTransactionDetails::NotCommitted(TransactionError::AccountNotFound)
+        );
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+    }
+
+    #[test]
+    fn test_multi_bundle_seed_fee_payer_ok() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+        let transactions = sanitize_transactions(vec![
+            transfer(&mint_keypair, &kp1.pubkey(), 1, genesis_config.hash()),
+            transfer(&kp1, &kp2.pubkey(), 1, genesis_config.hash()),
+            transfer(&kp2, &new_rand(), 1, genesis_config.hash()),
+        ]);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 3);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::Committed { result: Ok(_), .. }
+        );
+        assert_matches!(
+            commit_transactions_result[1],
+            CommitTransactionDetails::Committed { result: Ok(_), .. }
+        );
+        assert_matches!(
+            commit_transactions_result[2],
+            CommitTransactionDetails::Committed { result: Ok(_), .. }
+        );
+    }
+
+    #[test]
+    fn test_tx_compute_reservation_exceeds_drops_bundle() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+        let transactions = sanitize_transactions(vec![
+            transfer(&mint_keypair, &kp1.pubkey(), 1, genesis_config.hash()),
+            transfer(&kp1, &kp2.pubkey(), 1, genesis_config.hash()),
+            transfer(&kp2, &new_rand(), 1, genesis_config.hash()),
+        ]);
+
+        let txs_costs: Vec<_> = transactions
+            .iter()
+            .map(|tx| CostModel::calculate_cost(tx, &bank.feature_set))
+            .collect();
+        let total_cost: u64 = txs_costs.iter().map(|cost| cost.sum()).sum();
+        bank.write_cost_tracker()
+            .unwrap()
+            .set_limits(u64::MAX, total_cost - 1, u64::MAX);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 1);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 3);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+        );
+        assert_matches!(
+            commit_transactions_result[1],
+            CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+        );
+        assert_matches!(
+            commit_transactions_result[2],
+            CommitTransactionDetails::NotCommitted(TransactionError::WouldExceedMaxBlockCostLimit)
+        );
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+    }
+
+    #[test]
+    fn test_transaction_already_processed_fails() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let transactions = sanitize_transactions(vec![transfer(
+            &mint_keypair,
+            &new_rand(),
+            1,
+            genesis_config.hash(),
+        )]);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 1);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::Committed { result: Ok(_), .. }
+        );
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 1);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::AlreadyProcessed)
+        );
+    }
+
+    #[test]
+    fn test_bundle_account_in_use_rolls_back_qos() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let tx = sanitize_transactions(vec![transfer(
+            &mint_keypair,
+            &new_rand(),
+            1,
+            genesis_config.hash(),
+        )]);
+        let batch = bank.prepare_sanitized_batch(&tx);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &tx,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        drop(batch);
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 1);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::AccountInUse)
+        );
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+    }
 }

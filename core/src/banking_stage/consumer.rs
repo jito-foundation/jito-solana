@@ -1732,6 +1732,67 @@ mod tests {
 
     #[test]
     fn test_process_and_record_transactions_with_pre_results_with_bundle_account_locks() {
-        panic!("Not implemented");
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_slow_genesis_config(10_000);
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let pubkey = solana_pubkey::new_rand();
+
+        let transactions = sanitize_transactions(vec![system_transaction::transfer(
+            &mint_keypair,
+            &pubkey,
+            1,
+            genesis_config.hash(),
+        )]);
+
+        let bundle_account_locker = BundleAccountLocker::default();
+
+        bundle_account_locker
+            .lock_bundle(&transactions, &bank)
+            .unwrap();
+
+        // Poh Recorder has no working bank, so should throw MaxHeightReached error on
+        // record
+        let (record_sender, _record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let consumer = Consumer::new(committer, recorder.clone(), QosService::new(1), None);
+
+        let process_transactions_summary = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &|_| 0,
+            &bundle_account_locker,
+        );
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output,
+            ..
+        } = process_transactions_summary;
+
+        bundle_account_locker
+            .unlock_bundle(&transactions, &bank)
+            .unwrap();
+
+        let result = execute_and_commit_transactions_output
+            .commit_transactions_result
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::AccountInUse)
+        );
+        assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
     }
 }

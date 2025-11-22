@@ -95,6 +95,10 @@ pub struct BundleStageLoopMetrics {
     num_bundles_dropped_packet_filter_error: Saturating<u64>,
     num_bundles_dropped_bundle_too_large: Saturating<u64>,
     num_bundles_dropped_duplicate_transaction: Saturating<u64>,
+
+    tip_programs_error: Saturating<u64>,
+    bundle_lock_errors: Saturating<u64>,
+    bundles_processed: Saturating<u64>,
 }
 
 impl Default for BundleStageLoopMetrics {
@@ -117,6 +121,9 @@ impl Default for BundleStageLoopMetrics {
             num_bundles_dropped_packet_filter_error: Saturating(0),
             num_bundles_dropped_bundle_too_large: Saturating(0),
             num_bundles_dropped_duplicate_transaction: Saturating(0),
+            tip_programs_error: Saturating(0),
+            bundle_lock_errors: Saturating(0),
+            bundles_processed: Saturating(0),
         }
     }
 }
@@ -144,6 +151,18 @@ impl BundleStageLoopMetrics {
 
     pub fn set_cost_model_buffered_bundles_count(&mut self, count: u64) {
         self.cost_model_buffered_bundles_count = Saturating(count);
+    }
+
+    pub fn increment_tip_programs_error(&mut self, count: u64) {
+        self.tip_programs_error += count;
+    }
+
+    pub fn increment_bundle_lock_errors(&mut self, count: u64) {
+        self.bundle_lock_errors += count;
+    }
+
+    pub fn increment_bundles_processed(&mut self, count: u64) {
+        self.bundles_processed += count;
     }
 
     pub fn increment_bundle_dropped_error(&mut self, error: BundleStorageError) {
@@ -253,6 +272,9 @@ impl BundleStageLoopMetrics {
                     self.num_bundles_dropped_duplicate_transaction.0 as i64,
                     i64
                 ),
+                ("tip_programs_error", self.tip_programs_error.0 as i64, i64),
+                ("bundle_lock_errors", self.bundle_lock_errors.0 as i64, i64),
+                ("bundles_processed", self.bundles_processed.0 as i64, i64),
             );
 
             self.last_report = Instant::now();
@@ -276,6 +298,9 @@ impl BundleStageLoopMetrics {
         self.num_bundles_dropped_packet_filter_error = Saturating(0);
         self.num_bundles_dropped_bundle_too_large = Saturating(0);
         self.num_bundles_dropped_duplicate_transaction = Saturating(0);
+        self.tip_programs_error = Saturating(0);
+        self.bundle_lock_errors = Saturating(0);
+        self.bundles_processed = Saturating(0);
     }
 
     pub fn has_data(&self) -> bool {
@@ -286,14 +311,15 @@ impl BundleStageLoopMetrics {
             || self.current_buffered_packets_count.0 > 0
             || self.cost_model_buffered_bundles_count.0 > 0
             || self.num_bundles_dropped.0 > 0
-            || self.receive_and_buffer_bundles_elapsed_us.0 > 0
-            || self.process_buffered_bundles_elapsed_us.0 > 0
             || self.num_bundles_dropped_empty_batch.0 > 0
             || self.num_bundles_dropped_container_full.0 > 0
             || self.num_bundles_dropped_packet_marked_discard.0 > 0
             || self.num_bundles_dropped_packet_filter_error.0 > 0
             || self.num_bundles_dropped_bundle_too_large.0 > 0
             || self.num_bundles_dropped_duplicate_transaction.0 > 0
+            || self.tip_programs_error.0 > 0
+            || self.bundle_lock_errors.0 > 0
+            || self.bundles_processed.0 > 0
     }
 }
 
@@ -594,7 +620,7 @@ impl BundleStage {
         bundle_storage: &mut BundleStorage,
         bundle_account_locker: &BundleAccountLocker,
         consumer: &mut BundleConsumer,
-        _bundle_stage_metrics: &mut BundleStageLoopMetrics,
+        bundle_stage_metrics: &mut BundleStageLoopMetrics,
         last_tip_update_slot: &mut Slot,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         tip_manager: &TipManager,
@@ -617,6 +643,7 @@ impl BundleStage {
             )
             .is_err()
             {
+                bundle_stage_metrics.increment_tip_programs_error(1);
                 error!("tip programs error, not processing bundles");
                 return;
             }
@@ -644,6 +671,8 @@ impl BundleStage {
                 .lock_bundle(&bundle.transactions, bank)
                 .is_err()
             {
+                bundle_stage_metrics.increment_bundle_lock_errors(1);
+
                 bundle_storage.destroy_bundle(bundle);
                 continue;
             }
@@ -662,6 +691,7 @@ impl BundleStage {
                 ) {
                     consume_worker_metrics.update_for_consume(&output);
                     consume_worker_metrics.set_has_data(true);
+                    bundle_stage_metrics.increment_bundles_processed(1);
                 }
             }
 
@@ -679,6 +709,7 @@ impl BundleStage {
             ) {
                 consume_worker_metrics.update_for_consume(&output);
                 consume_worker_metrics.set_has_data(true);
+                bundle_stage_metrics.increment_bundles_processed(1);
             }
             consume_worker_metrics.maybe_report_and_reset();
         }
@@ -847,9 +878,8 @@ impl BundleStage {
         {
             return Ok(());
         }
-
         // If there were any cost model throttled transactions, account in use, or PoH record error, it's retryable
-        if output.cost_model_throttled_transactions_count > 0
+        else if output.cost_model_throttled_transactions_count > 0
             || output
                 .execute_and_commit_transactions_output
                 .commit_transactions_result
@@ -897,7 +927,27 @@ impl BundleStage {
             let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
             consume_worker_metrics.update_for_consume(&output);
 
-            match Self::to_bundle_result(&output) {
+            let result = Self::to_bundle_result(&output);
+
+            if log::log_enabled!(log::Level::Debug) {
+                let signatures: Vec<_> = bundle
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.signatures())
+                    .collect();
+                debug!(
+                    "execution results: bundle signatures: {:?}, result: {:?} \
+                     cost_model_throttled_transactions_count: {:?} output: {:?}",
+                    signatures,
+                    result,
+                    output.cost_model_throttled_transactions_count,
+                    output
+                        .execute_and_commit_transactions_output
+                        .commit_transactions_result
+                );
+            }
+
+            match result {
                 Ok(_) | Err(BundleExecutionError::ErrorNonRetryable) => {
                     bundle_storage.destroy_bundle(bundle);
                 }
@@ -933,12 +983,17 @@ mod tests {
             get_tmp_ledger_path_auto_delete,
         },
         solana_native_token::LAMPORTS_PER_SOL,
+        solana_perf::{
+            packet::{BytesPacket, PacketBatch},
+            test_tx::test_tx,
+        },
         solana_poh::poh_recorder::create_test_recorder,
         solana_program_binaries::{jito_tip_distribution, jito_tip_payment, spl_programs},
         solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
         solana_signer::Signer,
         solana_streamer::socket::SocketAddrSpace,
+        solana_system_transaction::transfer,
         solana_time_utils::timestamp,
         solana_vote_interface::state::vote_state_v4::VoteStateV4,
     };
@@ -1055,19 +1110,18 @@ mod tests {
 
         // initialize tip distribution config
         // initialize tip payment config
+        // initialize tip distribution account
         // change tip receiver and block builder
-        const NUM_TXS_EXPECTED: usize = 3;
+        const NUM_TXS_EXPECTED: usize = 4;
         let mut tx_count = 0;
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(1) {
+        while start.elapsed() < Duration::from_secs(2) {
             if let Ok((_bank, (entry, _tick_height))) =
                 entry_receiever.recv_timeout(Duration::from_millis(1))
             {
                 tx_count += entry.transactions.len();
             }
-            if tx_count >= NUM_TXS_EXPECTED {
-                break;
-            }
+            assert!(tx_count <= NUM_TXS_EXPECTED, "tx_count: {}", tx_count);
         }
 
         let tip_payment_config_account = bank
@@ -1125,56 +1179,488 @@ mod tests {
         bundle_stage.join().unwrap();
     }
 
-    // #[test]
-    // fn test_change_tip_receiver_and_block_builder_ok() {
-    //     panic!("Not implemented");
-    // }
+    #[test]
+    fn test_process_bad_bundle() {
+        agave_logger::setup();
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config(2);
+        let (bank, bank_forks) =
+            Bank::new_no_wallclock_throttle_for_tests(&genesis_config_info.genesis_config);
 
-    // #[test]
-    // fn test_process_buffered_bundles() {
-    //     panic!("Not implemented");
-    // }
+        let bank = Bank::new_from_parent(bank, &Pubkey::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
 
-    // #[test]
-    // fn test_tip_payment_once_per_slot() {
-    //     panic!("Not implemented");
-    // }
+        let bank = bank_forks.read().unwrap().working_bank();
+        assert_eq!(bank.slot(), 1);
 
-    // #[test]
-    // fn test_rebuffered_bundles_processed_next_slot() {
-    //     panic!("Not implemented");
-    // }
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Arc::new(
+            Blockstore::open(ledger_path.path())
+                .expect("Expected to be able to open database ledger"),
+        );
 
-    // #[test]
-    // fn test_back_completed_buffers_bundles_to_next_slot() {
-    //     // make sure they're in the same order as the original bundles
-    //     panic!("Not implemented");
-    // }
+        let (
+            exit,
+            poh_recorder,
+            _poh_controller,
+            transaction_recorder,
+            poh_service,
+            entry_receiever,
+        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
-    // #[test]
-    // fn test_blacklisted_account_bundles_dropped() {
-    //     panic!("Not implemented");
-    // }
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
+            Arc::new(leader_keypair.insecure_clone()),
+            SocketAddrSpace::Unspecified,
+        ));
 
-    // #[test]
-    // fn test_bundle_too_large_dropped() {
-    //     panic!("Not implemented");
-    // }
+        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let bundle_stage = BundleStage::new(
+            &cluster_info,
+            bank_forks,
+            &poh_recorder,
+            transaction_recorder,
+            verified_bundle_receiver,
+            None,
+            replay_vote_sender,
+            None,
+            exit.clone(),
+            TipManager::new(TipManagerConfig {
+                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    commission_bps: 10,
+                },
+            }),
+            BundleAccountLocker::default(),
+            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+                block_builder: genesis_config_info.validator_pubkey,
+                block_builder_commission: 10,
+            })),
+            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+        );
 
-    // #[test]
-    // fn test_duplicate_transaction_dropped() {
-    //     panic!("Not implemented");
-    // }
+        let verified_bundle =
+            VerifiedPacketBundle::new(PacketBatch::from(vec![BytesPacket::from_data(
+                None,
+                test_tx(),
+            )
+            .unwrap()]));
+        verified_bundle_sender.send(verified_bundle).unwrap();
+
+        let start = Instant::now();
+        const MAX_EXPECTED_TXS: usize = 4;
+        let mut tx_count = 0;
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Ok((_bank, (entry, _tick_height))) =
+                entry_receiever.recv_timeout(Duration::from_millis(1))
+            {
+                tx_count += entry.transactions.len();
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+            }
+        }
+
+        exit.store(true, Ordering::Relaxed);
+        bundle_stage.join().unwrap();
+        poh_service.join().unwrap();
+        drop(verified_bundle_sender);
+    }
 
     #[test]
-    fn test_bundle_result_qos_exceeded() {}
+    fn test_process_sequential_bundles() {
+        agave_logger::setup();
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config(2);
+        let (bank, bank_forks) =
+            Bank::new_no_wallclock_throttle_for_tests(&genesis_config_info.genesis_config);
+
+        let bank = Bank::new_from_parent(bank, &Pubkey::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+
+        let bank = bank_forks.read().unwrap().working_bank();
+        assert_eq!(bank.slot(), 1);
+
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Arc::new(
+            Blockstore::open(ledger_path.path())
+                .expect("Expected to be able to open database ledger"),
+        );
+
+        let (
+            exit,
+            poh_recorder,
+            _poh_controller,
+            transaction_recorder,
+            poh_service,
+            entry_receiever,
+        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
+            Arc::new(leader_keypair.insecure_clone()),
+            SocketAddrSpace::Unspecified,
+        ));
+
+        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let bundle_stage = BundleStage::new(
+            &cluster_info,
+            bank_forks,
+            &poh_recorder,
+            transaction_recorder,
+            verified_bundle_receiver,
+            None,
+            replay_vote_sender,
+            None,
+            exit.clone(),
+            TipManager::new(TipManagerConfig {
+                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    commission_bps: 10,
+                },
+            }),
+            BundleAccountLocker::default(),
+            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+                block_builder: genesis_config_info.validator_pubkey,
+                block_builder_commission: 10,
+            })),
+            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+        );
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+
+        // mint seeds kp1 which transfers to kp2
+        let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(
+                None,
+                transfer(
+                    &genesis_config_info.mint_keypair,
+                    &kp1.pubkey(),
+                    (genesis_config_info.genesis_config.rent.minimum_balance(0) * 2) + 5_000,
+                    bank.last_blockhash(),
+                ),
+            )
+            .unwrap(),
+            BytesPacket::from_data(
+                None,
+                transfer(
+                    &kp1,
+                    &kp2.pubkey(),
+                    genesis_config_info.genesis_config.rent.minimum_balance(0),
+                    bank.last_blockhash(),
+                ),
+            )
+            .unwrap(),
+        ]));
+        verified_bundle_sender.send(verified_bundle).unwrap();
+
+        let start = Instant::now();
+        const MAX_EXPECTED_TXS: usize = 6; // 4 initial for tips + 2 transfers
+        let mut tx_count = 0;
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Ok((_bank, (entry, _tick_height))) =
+                entry_receiever.recv_timeout(Duration::from_millis(1))
+            {
+                tx_count += entry.transactions.len();
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+            }
+        }
+
+        let balance = bank.get_balance(&kp1.pubkey());
+        assert_eq!(
+            balance,
+            genesis_config_info.genesis_config.rent.minimum_balance(0)
+        );
+        let balance = bank.get_balance(&kp2.pubkey());
+        assert_eq!(
+            balance,
+            genesis_config_info.genesis_config.rent.minimum_balance(0)
+        );
+
+        exit.store(true, Ordering::Relaxed);
+        bundle_stage.join().unwrap();
+        poh_service.join().unwrap();
+        drop(verified_bundle_sender);
+    }
 
     #[test]
-    fn test_bundle_result_account_in_use() {}
+    fn test_partial_revert_bundle() {
+        agave_logger::setup();
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config(2);
+        let (bank, bank_forks) =
+            Bank::new_no_wallclock_throttle_for_tests(&genesis_config_info.genesis_config);
+
+        let bank = Bank::new_from_parent(bank, &Pubkey::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+
+        let bank = bank_forks.read().unwrap().working_bank();
+        assert_eq!(bank.slot(), 1);
+
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Arc::new(
+            Blockstore::open(ledger_path.path())
+                .expect("Expected to be able to open database ledger"),
+        );
+
+        let (
+            exit,
+            poh_recorder,
+            _poh_controller,
+            transaction_recorder,
+            poh_service,
+            entry_receiever,
+        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
+            Arc::new(leader_keypair.insecure_clone()),
+            SocketAddrSpace::Unspecified,
+        ));
+
+        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let bundle_stage = BundleStage::new(
+            &cluster_info,
+            bank_forks,
+            &poh_recorder,
+            transaction_recorder,
+            verified_bundle_receiver,
+            None,
+            replay_vote_sender,
+            None,
+            exit.clone(),
+            TipManager::new(TipManagerConfig {
+                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    commission_bps: 10,
+                },
+            }),
+            BundleAccountLocker::default(),
+            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+                block_builder: genesis_config_info.validator_pubkey,
+                block_builder_commission: 10,
+            })),
+            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+        );
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+
+        // mint seeds kp1 which transfers to kp2
+        let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(
+                None,
+                transfer(
+                    &genesis_config_info.mint_keypair,
+                    &kp1.pubkey(),
+                    (genesis_config_info.genesis_config.rent.minimum_balance(0) * 2) + 5_000,
+                    bank.last_blockhash(),
+                ),
+            )
+            .unwrap(),
+            BytesPacket::from_data(
+                None,
+                transfer(
+                    &kp1,
+                    &kp2.pubkey(),
+                    genesis_config_info.genesis_config.rent.minimum_balance(0),
+                    bank.last_blockhash(),
+                ),
+            )
+            .unwrap(),
+            BytesPacket::from_data(
+                None,
+                transfer(
+                    &Keypair::new(), // no funds
+                    &kp1.pubkey(),
+                    genesis_config_info.genesis_config.rent.minimum_balance(0),
+                    bank.last_blockhash(),
+                ),
+            )
+            .unwrap(),
+        ]));
+
+        verified_bundle_sender.send(verified_bundle).unwrap();
+
+        let start = Instant::now();
+        const MAX_EXPECTED_TXS: usize = 4; // 4 initial for tips
+        let mut tx_count = 0;
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Ok((_bank, (entry, _tick_height))) =
+                entry_receiever.recv_timeout(Duration::from_millis(1))
+            {
+                tx_count += entry.transactions.len();
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+            }
+        }
+
+        exit.store(true, Ordering::Relaxed);
+        bundle_stage.join().unwrap();
+        poh_service.join().unwrap();
+        drop(verified_bundle_sender);
+    }
 
     #[test]
-    fn test_bundle_result_poh_error() {}
+    fn test_already_processed_tx_drops_bundle() {
+        agave_logger::setup();
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+        } = create_genesis_config(2);
+        let (bank, bank_forks) =
+            Bank::new_no_wallclock_throttle_for_tests(&genesis_config_info.genesis_config);
+
+        let bank = Bank::new_from_parent(bank, &Pubkey::new_unique(), 1);
+        bank_forks.write().unwrap().insert(bank);
+
+        let bank = bank_forks.read().unwrap().working_bank();
+        assert_eq!(bank.slot(), 1);
+
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Arc::new(
+            Blockstore::open(ledger_path.path())
+                .expect("Expected to be able to open database ledger"),
+        );
+
+        let (
+            exit,
+            poh_recorder,
+            _poh_controller,
+            transaction_recorder,
+            poh_service,
+            entry_receiever,
+        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&leader_keypair.pubkey(), timestamp()),
+            Arc::new(leader_keypair.insecure_clone()),
+            SocketAddrSpace::Unspecified,
+        ));
+
+        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let bundle_stage = BundleStage::new(
+            &cluster_info,
+            bank_forks,
+            &poh_recorder,
+            transaction_recorder,
+            verified_bundle_receiver,
+            None,
+            replay_vote_sender,
+            None,
+            exit.clone(),
+            TipManager::new(TipManagerConfig {
+                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: genesis_config_info.voting_keypair.pubkey(),
+                    commission_bps: 10,
+                },
+            }),
+            BundleAccountLocker::default(),
+            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+                block_builder: genesis_config_info.validator_pubkey,
+                block_builder_commission: 10,
+            })),
+            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            HashSet::default(),
+        );
+
+        let kp = Keypair::new();
+        let tx = transfer(
+            &genesis_config_info.mint_keypair,
+            &kp.pubkey(),
+            genesis_config_info.genesis_config.rent.minimum_balance(0) * 10,
+            bank.last_blockhash(),
+        );
+
+        let verified_bundle =
+            VerifiedPacketBundle::new(PacketBatch::from(vec![BytesPacket::from_data(
+                None,
+                tx.clone(),
+            )
+            .unwrap()]));
+
+        verified_bundle_sender.send(verified_bundle).unwrap();
+
+        let start = Instant::now();
+        const MAX_EXPECTED_TXS: usize = 5; // 4 initial for tips
+        let mut tx_count = 0;
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Ok((_bank, (entry, _tick_height))) =
+                entry_receiever.recv_timeout(Duration::from_millis(1))
+            {
+                tx_count += entry.transactions.len();
+                assert!(tx_count <= MAX_EXPECTED_TXS, "tx_count: {}", tx_count);
+            }
+        }
+
+        assert_eq!(
+            bank.get_balance(&kp.pubkey()),
+            (genesis_config_info.genesis_config.rent.minimum_balance(0) * 10)
+        );
+
+        // stick it second in a valid bundle
+        let verified_bundle = VerifiedPacketBundle::new(PacketBatch::from(vec![
+            BytesPacket::from_data(
+                None,
+                transfer(
+                    &genesis_config_info.mint_keypair,
+                    &kp.pubkey(),
+                    genesis_config_info.genesis_config.rent.minimum_balance(0),
+                    bank.last_blockhash(),
+                ),
+            )
+            .unwrap(),
+            BytesPacket::from_data(None, tx).unwrap(),
+        ]));
+        verified_bundle_sender.send(verified_bundle).unwrap();
+
+        let start = Instant::now();
+        let mut tx_count = 0;
+        while start.elapsed() < Duration::from_secs(2) {
+            if let Ok((_bank, (entry, _tick_height))) =
+                entry_receiever.recv_timeout(Duration::from_millis(1))
+            {
+                tx_count += entry.transactions.len();
+                assert_eq!(tx_count, 0, "tx_count: {}", tx_count);
+            }
+        }
+
+        assert_eq!(
+            bank.get_balance(&kp.pubkey()),
+            genesis_config_info.genesis_config.rent.minimum_balance(0) * 10
+        );
+
+        exit.store(true, Ordering::Relaxed);
+        bundle_stage.join().unwrap();
+        poh_service.join().unwrap();
+        drop(verified_bundle_sender);
+    }
 
     #[test]
-    fn test_bundle_result_commit_error() {}
+    fn test_retryable_bundle() {
+        panic!("not implemented");
+    }
 }
