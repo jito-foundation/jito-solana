@@ -60,17 +60,12 @@ static SPL_PROGRAMS: &[(Pubkey, Pubkey, &[u8])] = &[
     (
         jito_tip_distribution::ID,
         solana_sdk_ids::bpf_loader::ID,
-        include_bytes!(
-            "/Users/lucasbruder/jito/jito-programs/mev-programs/target/deploy/\
-             jito_tip_distribution.so"
-        ),
+        include_bytes!("programs/spl-jito_tip_distribution-0.1.7.so"),
     ),
     (
         jito_tip_payment::ID,
         solana_sdk_ids::bpf_loader::ID,
-        include_bytes!(
-            "/Users/lucasbruder/jito/jito-programs/mev-programs/target/deploy/jito_tip_payment.so"
-        ),
+        include_bytes!("programs/spl-jito_tip_payment-0.1.7.so"),
     ),
 ];
 
