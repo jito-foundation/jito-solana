@@ -634,7 +634,7 @@ fn test_too_many_bundles(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     let transactions: Vec<_> = (0..21)
         .map(|_| {
             system_transaction::transfer(
-                &mint_keypair,
+                mint_keypair,
                 &Pubkey::new_unique(),
                 rent,
                 latest_blockhash,
@@ -667,7 +667,7 @@ fn test_wrong_number_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -711,7 +711,7 @@ fn test_wrong_number_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypai
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -754,7 +754,7 @@ fn test_invalid_transaction_encoding(rpc_client: &RpcClient, mint_keypair: &Keyp
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -797,7 +797,7 @@ fn test_wrong_pre_account_encoding(rpc_client: &RpcClient, mint_keypair: &Keypai
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -843,7 +843,7 @@ fn test_wrong_post_account_encoding(rpc_client: &RpcClient, mint_keypair: &Keypa
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -893,8 +893,8 @@ fn test_duplicate_transactions(rpc_client: &RpcClient, mint_keypair: &Keypair) {
 
     let pubkey = Pubkey::new_unique();
     let transactions = vec![
-        system_transaction::transfer(&mint_keypair, &pubkey, rent, latest_blockhash),
-        system_transaction::transfer(&mint_keypair, &pubkey, rent, latest_blockhash),
+        system_transaction::transfer(mint_keypair, &pubkey, rent, latest_blockhash),
+        system_transaction::transfer(mint_keypair, &pubkey, rent, latest_blockhash),
     ];
 
     let simulate_result = rpc_client
@@ -931,7 +931,7 @@ fn test_replace_recent_blockhash_with_sig_verify(rpc_client: &RpcClient, mint_ke
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -980,7 +980,7 @@ fn test_bad_signature(rpc_client: &RpcClient, mint_keypair: &Keypair) {
         .unwrap();
 
     let mut transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -1030,7 +1030,7 @@ fn test_bad_pubkey_pre_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair) 
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -1079,7 +1079,7 @@ fn test_bad_pubkey_post_accounts(rpc_client: &RpcClient, mint_keypair: &Keypair)
         .unwrap();
 
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &Pubkey::new_unique(),
         rent,
         latest_blockhash,
@@ -1129,7 +1129,7 @@ fn test_single_tx_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
 
     let bob = Keypair::new();
     let transactions = vec![system_transaction::transfer(
-        &mint_keypair,
+        mint_keypair,
         &bob.pubkey(),
         rent,
         latest_blockhash,
@@ -1162,7 +1162,7 @@ fn test_single_tx_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
         RpcBundleSimulationSummary::Succeeded
     );
     assert_eq!(simulate_result.transaction_results.len(), 1);
-    let result = simulate_result.transaction_results.get(0).unwrap();
+    let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, None);
 
     let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
@@ -1187,7 +1187,7 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     let bob = Keypair::new();
     let alice = Keypair::new();
     let transactions = vec![
-        system_transaction::transfer(&mint_keypair, &bob.pubkey(), rent * 2, latest_blockhash),
+        system_transaction::transfer(mint_keypair, &bob.pubkey(), rent * 2, latest_blockhash),
         system_transaction::transfer(&bob, &alice.pubkey(), rent, latest_blockhash),
     ];
 
@@ -1242,7 +1242,7 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     );
     assert_eq!(simulate_result.transaction_results.len(), 2);
 
-    let result = simulate_result.transaction_results.get(0).unwrap();
+    let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, None);
     let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
     assert_eq!(pre_execution_accounts.len(), 1);
@@ -1316,7 +1316,7 @@ fn test_single_bad_tx(rpc_client: &RpcClient, mint_keypair: &Keypair) {
         }
     );
     assert_eq!(simulate_result.transaction_results.len(), 1);
-    let result = simulate_result.transaction_results.get(0).unwrap();
+    let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, Some(TransactionError::AccountNotFound));
 }
 
@@ -1328,23 +1328,17 @@ fn test_last_tx_fails(rpc_client: &RpcClient, mint_keypair: &Keypair) {
         .unwrap();
 
     let transactions = vec![
-        system_transaction::transfer(&mint_keypair, &Pubkey::new_unique(), rent, latest_blockhash),
+        system_transaction::transfer(mint_keypair, &Pubkey::new_unique(), rent, latest_blockhash),
         system_transaction::transfer(
             &Keypair::new(),
             &mint_keypair.pubkey(),
             rent,
             latest_blockhash,
         ),
-        system_transaction::transfer(&mint_keypair, &Pubkey::new_unique(), rent, latest_blockhash),
+        system_transaction::transfer(mint_keypair, &Pubkey::new_unique(), rent, latest_blockhash),
     ];
 
-    let bad_tx_signature = transactions
-        .get(1)
-        .unwrap()
-        .signatures
-        .get(0)
-        .unwrap()
-        .clone();
+    let bad_tx_signature = *transactions.get(1).unwrap().signatures.first().unwrap();
 
     let simulate_result = rpc_client
         .simulate_bundle_with_config(
@@ -1373,7 +1367,7 @@ fn test_last_tx_fails(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     );
     // should get results back for only the first and secon one
     assert_eq!(simulate_result.transaction_results.len(), 2);
-    let result = simulate_result.transaction_results.get(0).unwrap();
+    let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, None);
 
     let result = simulate_result.transaction_results.get(1).unwrap();
