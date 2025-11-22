@@ -69,6 +69,7 @@ use {
     },
     ahash::AHashSet,
     dashmap::DashMap,
+    itertools::izip,
     log::*,
     partitioned_epoch_rewards::PartitionedRewardsCalculation,
     rayon::{ThreadPool, ThreadPoolBuilder},
@@ -136,6 +137,7 @@ use {
         account_loader::LoadedTransaction,
         account_overrides::AccountOverrides,
         program_loader::load_program_with_pubkey,
+        rollback_accounts::RollbackAccounts,
         transaction_balances::{BalanceCollector, SvmTokenInfo},
         transaction_commit_result::{CommittedTransaction, TransactionCommitResult},
         transaction_error_metrics::TransactionErrorMetrics,
@@ -3084,21 +3086,6 @@ impl Bank {
         batch
     }
 
-    pub fn prepare_unlocked_batch_from_multiple_txs<'a, Tx: SVMMessage>(
-        &'a self,
-        transactions: &'a [Tx],
-    ) -> TransactionBatch<'a, 'a, Tx> {
-        let tx_account_lock_limit = self.get_transaction_account_lock_limit();
-        let lock_results = transactions
-            .iter()
-            .map(|tx| validate_account_locks(tx.account_keys(), tx_account_lock_limit))
-            .collect();
-        let mut batch =
-            TransactionBatch::new(lock_results, self, OwnedOrBorrowed::Borrowed(transactions));
-        batch.set_needs_unlock(false);
-        batch
-    }
-
     /// Prepare a transaction batch from a single transaction after locking accounts
     pub fn prepare_locked_batch_from_single_tx<'a, Tx: TransactionWithMeta>(
         &'a self,
@@ -3116,117 +3103,6 @@ impl Bank {
         assert!(self.is_frozen(), "simulation bank must be frozen");
 
         self.simulate_transaction_unchecked(transaction, enable_cpi_recording)
-    }
-
-    /// Simulate multiple transactions unchecked
-    ///
-    /// # Arguments
-    ///
-    /// * `transactions` - The transactions to simulate
-    /// * `enable_cpi_recording` - Whether to enable CPI recording
-    /// * `drop_on_failure` - Whether to drop failing transactions
-    /// * `all_or_nothing` - Whether to abort the entire batch if any transaction fails
-    /// * `preload_accounts` - Whether to preload all the accounts before simulating the transactions or do it on the fly
-    ///
-    /// # Returns
-    ///
-    /// A vector of transaction simulation results
-    pub fn simulate_transactions_unchecked(
-        &self,
-        _transactions: &[impl TransactionWithMeta],
-        _enable_cpi_recording: bool,
-        _drop_on_failure: bool,
-        _all_or_nothing: bool,
-    ) -> Vec<TransactionSimulationResult> {
-        // TODO (LB): implement this!
-        vec![]
-        // let mut simulation_results = Vec::new();
-
-        // let account_overrides = if let Some(tx) = transactions.iter().find(|tx| {
-        //     tx.account_keys()
-        //         .iter()
-        //         .contains(&sysvar::slot_history::id())
-        // }) {
-        //     self.get_account_overrides_for_simulation(&tx.account_keys())
-        // } else {
-        //     AccountOverrides::default()
-        // };
-
-        // let batch = self.prepare_unlocked_batch_from_multiple_txs(transactions);
-        // let mut timings = ExecuteTimings::default();
-
-        // let LoadAndExecuteTransactionsOutput {
-        //     mut processing_results,
-        //     balance_collector,
-        //     ..
-        // } = self.load_and_execute_transactions(
-        //     &batch,
-        //     // After simulation, transactions will need to be forwarded to the leader
-        //     // for processing. During forwarding, the transaction could expire if the
-        //     // delay is not accounted for.
-        //     MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
-        //     &mut timings,
-        //     &mut TransactionErrorMetrics::default(),
-        //     TransactionProcessingConfig {
-        //         account_overrides: Some(&account_overrides),
-        //         check_program_modification_slot: self.check_program_modification_slot,
-        //         log_messages_bytes_limit: None,
-        //         limit_to_load_programs: true,
-        //         recording_config: ExecutionRecordingConfig {
-        //             enable_cpi_recording,
-        //             enable_log_recording: true,
-        //             enable_return_data_recording: true,
-        //             enable_transaction_balance_recording: true,
-        //         },
-        //         drop_on_failure,
-        //         all_or_nothing,
-        //     },
-        // );
-
-        // for (tx, processing_result) in transactions.iter().zip(processing_results) {
-        //     let number_of_accounts = tx.account_keys().len();
-
-        //     match processing_result {
-        //         Ok(processed_tx) => match processed_tx {
-        //             ProcessedTransaction::Executed(executed_tx) => {
-        //                 let details = executed_tx.execution_details;
-        //                 let post_simulation_accounts = executed_tx
-        //                     .loaded_transaction
-        //                     .accounts
-        //                     .into_iter()
-        //                     .take(number_of_accounts)
-        //                     .collect::<Vec<_>>();
-
-        //                 simulation_results.push(TransactionSimulationResult {
-        //                     result: details.status,
-        //                     logs: details.log_messages.unwrap_or_default(),
-        //                     post_simulation_accounts,
-        //                     units_consumed: details.executed_units,
-        //                     loaded_accounts_data_size: executed_tx
-        //                         .loaded_transaction
-        //                         .loaded_accounts_data_size,
-        //                     return_data: details.return_data,
-        //                     inner_instructions: details.inner_instructions,
-        //                     fee: Some(executed_tx.loaded_transaction.fee_details.total_fee()),
-        //                     pre_balances: None,
-        //                     post_balances: None,
-        //                     pre_token_balances: None,
-        //                     post_token_balances: None,
-        //                 });
-        //             }
-        //             ProcessedTransaction::FeesOnly(fees_only_tx) => {
-        //                 simulation_results.push(TransactionSimulationResult::new_error(
-        //                     fees_only_tx.load_error,
-        //                 ));
-        //             }
-        //         },
-        //         Err(error) => {
-        //             simulation_results.push(TransactionSimulationResult::new_error(error));
-        //         }
-        //     }
-        // }
-
-        // simulation_results
     }
 
     /// Run transactions against a bank without committing the results; does not check if the bank
@@ -3355,6 +3231,225 @@ impl Bank {
             pre_token_balances,
             post_token_balances,
         }
+    }
+
+    /// Simulates transactions against a potentially unfrozen bank with pre-execution accounts
+    pub fn simulate_transactions_unchecked_with_pre_accounts<Tx: TransactionWithMeta>(
+        &self,
+        transactions: &[Tx],
+        pre_accounts: &Vec<Vec<Pubkey>>,
+        post_accounts: &Vec<Vec<Pubkey>>,
+        log_messages_bytes_limit: Option<usize>,
+    ) -> Vec<(
+        Vec<KeyedAccountSharedData>, /* pre-accounts */
+        TransactionSimulationResult, /* post-simulation result, which also contains the accounts */
+        Vec<KeyedAccountSharedData>, /* post-accounts; results are stored in the simulation result, but there's no requirement for the tx being present*/
+    )> {
+        if transactions.is_empty() {
+            return vec![];
+        }
+        let mut simulation_results = Vec::new();
+
+        let mut account_overrides = AccountOverrides::default();
+
+        // Pre-load all the account state into account overrides
+        for transaction in transactions {
+            let account_keys = transaction.account_keys();
+            account_overrides.merge(self.get_account_overrides_for_simulation(&account_keys));
+            for account in transaction.account_keys().iter() {
+                if !account_overrides.accounts().contains_key(account) {
+                    if let Some((account_shared_data, _slot)) =
+                        self.get_account_shared_data(account)
+                    {
+                        account_overrides.set_account(account, Some(account_shared_data));
+                    }
+                }
+            }
+        }
+
+        // execute each transaction (this could be faster, but the dumb pre-execution accounts logic makes it difficult)
+        for (transaction, pre_accounts, post_accounts) in
+            izip!(transactions, pre_accounts, post_accounts)
+        {
+            let mut accounts_pre_loaded: Vec<KeyedAccountSharedData> = Vec::new();
+
+            // fill out the pre-accounts from the account overrides or bank
+            // shouldn't need to hit the bank unless pre_account isn't in transaction keys
+            for pubkey in pre_accounts {
+                if let Some(account) = account_overrides.get(pubkey) {
+                    accounts_pre_loaded.push((*pubkey, account.clone()));
+                } else if let Some((account_shared_data, _slot)) =
+                    self.get_account_shared_data(pubkey)
+                {
+                    accounts_pre_loaded.push((*pubkey, account_shared_data));
+                } else {
+                    accounts_pre_loaded.push((*pubkey, AccountSharedData::default()));
+                }
+            }
+
+            let number_of_accounts = transaction.account_keys().len();
+
+            let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
+
+            let LoadAndExecuteTransactionsOutput {
+                mut processing_results,
+                balance_collector,
+                ..
+            } = self.load_and_execute_transactions(
+                &batch,
+                MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
+                &mut ExecuteTimings::default(),
+                &mut TransactionErrorMetrics::default(),
+                TransactionProcessingConfig {
+                    account_overrides: Some(&account_overrides),
+                    check_program_modification_slot: self.check_program_modification_slot,
+                    log_messages_bytes_limit,
+                    limit_to_load_programs: true,
+                    recording_config: ExecutionRecordingConfig {
+                        enable_cpi_recording: false,
+                        enable_log_recording: true,
+                        enable_return_data_recording: true,
+                        enable_transaction_balance_recording: true,
+                    },
+                    drop_on_failure: true,
+                    all_or_nothing: true,
+                },
+            );
+
+            let processing_result = processing_results
+                .pop()
+                .unwrap_or(Err(TransactionError::InvalidProgramForExecution));
+            let (
+                post_simulation_accounts,
+                result,
+                fee,
+                logs,
+                return_data,
+                inner_instructions,
+                units_consumed,
+                loaded_accounts_data_size,
+            ) = match processing_result {
+                Ok(processed_tx) => {
+                    let executed_units = processed_tx.executed_units();
+                    let loaded_accounts_data_size = processed_tx.loaded_accounts_data_size();
+
+                    match processed_tx {
+                        ProcessedTransaction::Executed(executed_tx) => {
+                            // write accounts into the account overrides
+                            for (pubkey, account) in executed_tx.loaded_transaction.accounts.iter()
+                            {
+                                account_overrides.set_account(pubkey, Some(account.clone()));
+                            }
+
+                            let details = executed_tx.execution_details;
+                            let post_simulation_accounts = executed_tx
+                                .loaded_transaction
+                                .accounts
+                                .into_iter()
+                                .take(number_of_accounts)
+                                .collect::<Vec<_>>();
+                            (
+                                post_simulation_accounts,
+                                details.status,
+                                Some(executed_tx.loaded_transaction.fee_details.total_fee()),
+                                details.log_messages,
+                                details.return_data,
+                                details.inner_instructions,
+                                executed_units,
+                                loaded_accounts_data_size,
+                            )
+                        }
+                        ProcessedTransaction::FeesOnly(fees_only_tx) => {
+                            // write accounts into the account overrides
+                            match fees_only_tx.rollback_accounts {
+                                RollbackAccounts::FeePayerOnly { fee_payer } => {
+                                    account_overrides
+                                        .set_account(&fee_payer.0, Some(fee_payer.1.clone()));
+                                }
+                                RollbackAccounts::SameNonceAndFeePayer { nonce } => {
+                                    account_overrides.set_account(&nonce.0, Some(nonce.1.clone()));
+                                }
+                                RollbackAccounts::SeparateNonceAndFeePayer { nonce, fee_payer } => {
+                                    account_overrides.set_account(&nonce.0, Some(nonce.1.clone()));
+                                    account_overrides
+                                        .set_account(&fee_payer.0, Some(fee_payer.1.clone()));
+                                }
+                            }
+
+                            (
+                                vec![],
+                                Err(fees_only_tx.load_error),
+                                Some(fees_only_tx.fee_details.total_fee()),
+                                None,
+                                None,
+                                None,
+                                executed_units,
+                                loaded_accounts_data_size,
+                            )
+                        }
+                    }
+                }
+                Err(error) => (vec![], Err(error), None, None, None, None, 0, 0),
+            };
+            let logs = logs.unwrap_or_default();
+
+            let (pre_balances, post_balances, pre_token_balances, post_token_balances) =
+                match balance_collector {
+                    Some(balance_collector) => {
+                        let (mut native_pre, mut native_post, mut token_pre, mut token_post) =
+                            balance_collector.into_vecs();
+
+                        (
+                            native_pre.pop(),
+                            native_post.pop(),
+                            token_pre.pop(),
+                            token_post.pop(),
+                        )
+                    }
+                    None => (None, None, None, None),
+                };
+
+            let execution_result = result.clone();
+
+            let mut accounts_post_loaded: Vec<KeyedAccountSharedData> = Vec::new();
+            for pubkey in post_accounts {
+                if let Some(account) = account_overrides.get(pubkey) {
+                    accounts_post_loaded.push((*pubkey, account.clone()));
+                } else if let Some((account_shared_data, _slot)) =
+                    self.get_account_shared_data(pubkey)
+                {
+                    accounts_post_loaded.push((*pubkey, account_shared_data));
+                } else {
+                    accounts_post_loaded.push((*pubkey, AccountSharedData::default()));
+                }
+            }
+
+            simulation_results.push((
+                accounts_pre_loaded,
+                TransactionSimulationResult {
+                    result,
+                    logs,
+                    post_simulation_accounts,
+                    units_consumed,
+                    loaded_accounts_data_size,
+                    return_data,
+                    inner_instructions,
+                    fee,
+                    pre_balances,
+                    post_balances,
+                    pre_token_balances,
+                    post_token_balances,
+                },
+                accounts_post_loaded,
+            ));
+
+            // bail out early if the execution result is an error
+            if execution_result.is_err() {
+                break;
+            }
+        }
+
+        simulation_results
     }
 
     pub fn get_account_overrides_for_simulation(

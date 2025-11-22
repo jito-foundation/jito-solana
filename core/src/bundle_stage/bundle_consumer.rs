@@ -301,7 +301,7 @@ impl BundleConsumer {
             }
         }
 
-        return bank.prepare_sanitized_batch_relax_intrabatch_account_locks(txs);
+        bank.prepare_sanitized_batch_relax_intrabatch_account_locks(txs)
     }
 
     fn execute_and_commit_transactions_locked(

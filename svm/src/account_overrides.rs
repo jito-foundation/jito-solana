@@ -12,10 +12,6 @@ pub struct AccountOverrides {
 }
 
 impl AccountOverrides {
-    pub fn upsert_account_overrides(&mut self, other: AccountOverrides) {
-        self.accounts.extend(other.accounts);
-    }
-
     /// Insert or remove an account with a given pubkey to/from the list of overrides.
     pub fn set_account(&mut self, pubkey: &Pubkey, account: Option<AccountSharedData>) {
         match account {
@@ -46,6 +42,10 @@ impl AccountOverrides {
 
     pub fn accounts(&self) -> &HashMap<Pubkey, AccountSharedData> {
         &self.accounts
+    }
+
+    pub fn merge(&mut self, other: AccountOverrides) {
+        self.accounts.extend(other.accounts);
     }
 }
 

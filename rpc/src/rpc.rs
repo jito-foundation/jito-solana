@@ -3456,7 +3456,9 @@ pub mod rpc_full {
         super::*,
         solana_message::{SanitizedVersionedMessage, VersionedMessage},
         solana_rpc_client_api::bundles::{
-            RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
+            RpcBundleExecutionError, RpcBundleRequest, RpcBundleSimulationSummary,
+            RpcSimulateBundleConfig, RpcSimulateBundleResult, RpcSimulateBundleTransactionResult,
+            SimulationSlotConfig,
         },
         solana_transaction_status::{parse_ui_inner_instructions, UiLoadedAddresses},
     };
@@ -4129,156 +4131,214 @@ pub mod rpc_full {
 
         fn simulate_bundle(
             &self,
-            _meta: Self::Metadata,
-            _rpc_bundle_request: RpcBundleRequest,
-            _config: Option<RpcSimulateBundleConfig>,
+            meta: Self::Metadata,
+            rpc_bundle_request: RpcBundleRequest,
+            config: Option<RpcSimulateBundleConfig>,
         ) -> Result<RpcResponse<RpcSimulateBundleResult>> {
-            Err(Error::invalid_params("not implemented fully fix brother"))
+            const MAX_BUNDLES_SIMULATED: usize = 20;
 
-            // const MAX_BUNDLE_SIMULATION_TIME: Duration = Duration::from_millis(500);
-            // let config = config.unwrap_or_else(|| RpcSimulateBundleConfig {
-            //     pre_execution_accounts_configs: vec![
-            //         None;
-            //         rpc_bundle_request.encoded_transactions.len()
-            //     ],
-            //     post_execution_accounts_configs: vec![
-            //         None;
-            //         rpc_bundle_request.encoded_transactions.len()
-            //     ],
-            //     ..RpcSimulateBundleConfig::default()
-            // });
+            if rpc_bundle_request.encoded_transactions.len() > MAX_BUNDLES_SIMULATED {
+                return Err(Error::invalid_params(
+                    "bundle size too large, max 20 transactions",
+                ));
+            }
 
-            // let RpcSimulateBundleConfig {
-            //     skip_sig_verify,
-            //     replace_recent_blockhash,
-            //     pre_execution_accounts_configs,
-            //     post_execution_accounts_configs,
-            //     transaction_encoding,
-            //     simulation_bank,
-            // } = config;
+            debug!("simulate_bundle rpc request received");
 
-            // // Run some request validations
-            // if !(pre_execution_accounts_configs.len()
-            //     == rpc_bundle_request.encoded_transactions.len()
-            //     && post_execution_accounts_configs.len()
-            //         == rpc_bundle_request.encoded_transactions.len())
-            // {
-            //     return Err(Error::invalid_params(
-            //         "pre/post_execution_accounts_configs must be equal in length to the number of transactions",
-            //     ));
-            // }
+            let config = config.unwrap_or_else(|| RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![
+                    None;
+                    rpc_bundle_request.encoded_transactions.len()
+                ],
+                post_execution_accounts_configs: vec![
+                    None;
+                    rpc_bundle_request.encoded_transactions.len()
+                ],
+                ..RpcSimulateBundleConfig::default()
+            });
 
-            // let transaction_encoding =
-            //     transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
-            // let binary_encoding = transaction_encoding.into_binary_encoding().ok_or_else(|| {
-            //     Error::invalid_params(format!(
-            //         "Unsupported encoding: {}. Supported encodings are: base58 & base64",
-            //         transaction_encoding
-            //     ))
-            // })?;
+            let RpcSimulateBundleConfig {
+                pre_execution_accounts_configs,
+                post_execution_accounts_configs,
+                transaction_encoding,
+                simulation_bank,
+                skip_sig_verify,
+                replace_recent_blockhash,
+            } = config;
 
-            // let mut unsanitized_txs = rpc_bundle_request
-            //     .encoded_transactions
-            //     .into_iter()
-            //     .map(|encoded_tx| {
-            //         decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)
-            //             .map(|de| de.1)
-            //     })
-            //     .collect::<Result<Vec<VersionedTransaction>>>()?;
+            // Run some request validations
+            if !(pre_execution_accounts_configs.len()
+                == rpc_bundle_request.encoded_transactions.len()
+                && post_execution_accounts_configs.len()
+                    == rpc_bundle_request.encoded_transactions.len())
+            {
+                return Err(Error::invalid_params(
+                    "pre/post_execution_accounts_configs must be equal in length to the number of transactions",
+                ));
+            }
 
-            // let bank = match simulation_bank.unwrap_or_default() {
-            //     SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
-            //     SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
-            //         Error::invalid_params(format!("bank not found for the provided slot: {}", slot))
-            //     }),
-            //     SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
-            // }?;
+            let tx_encoding = transaction_encoding.unwrap_or(UiTransactionEncoding::Base64);
+            let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
+                Error::invalid_params(format!(
+                    "Unsupported encoding: {}. Supported encodings are: base58 & base64",
+                    tx_encoding
+                ))
+            })?;
+            let mut unsanitized_txs = rpc_bundle_request
+                .encoded_transactions
+                .into_iter()
+                .map(|encoded_tx| {
+                    decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)
+                        .map(|de| de.1)
+                })
+                .collect::<Result<Vec<VersionedTransaction>>>()?;
 
-            // let mut blockhash: Option<RpcBlockhash> = None;
-            // if replace_recent_blockhash {
-            //     if !skip_sig_verify {
-            //         return Err(Error::invalid_params(
-            //             "skipSigVerify may not be used with replaceRecentBlockhash",
-            //         ));
-            //     }
+            let bank = match simulation_bank.unwrap_or_default() {
+                SimulationSlotConfig::Commitment(commitment) => Ok(meta.bank(Some(commitment))),
+                SimulationSlotConfig::Slot(slot) => meta.bank_from_slot(slot).ok_or_else(|| {
+                    Error::invalid_params(format!("bank not found for the provided slot: {}", slot))
+                }),
+                SimulationSlotConfig::Tip => Ok(meta.bank_forks.read().unwrap().working_bank()),
+            }?;
 
-            //     let recent_blockhash = bank.last_blockhash();
-            //     for tx in &mut unsanitized_txs {
-            //         tx.message.set_recent_blockhash(recent_blockhash);
-            //     }
-            // }
+            // Ensure an excessive amount of accounts are not requested per transaction
+            let max_accounts = bank.get_transaction_account_lock_limit();
+            if pre_execution_accounts_configs.iter().any(|config| {
+                if let Some(config) = config {
+                    config.addresses.len() > max_accounts
+                } else {
+                    false
+                }
+            }) {
+                return Err(Error::invalid_params(format!(
+                    "Too many accounts provided; max {max_accounts}"
+                )));
+            }
+            if post_execution_accounts_configs.iter().any(|config| {
+                if let Some(config) = config {
+                    config.addresses.len() > max_accounts
+                } else {
+                    false
+                }
+            }) {
+                return Err(Error::invalid_params(format!(
+                    "Too many accounts provided; max {max_accounts}"
+                )));
+            }
 
-            // let sanitized_transactions = unsanitized_txs
-            //     .into_iter()
-            //     .map(|unsanitized_tx| {
-            //         sanitize_transaction(
-            //             unsanitized_tx,
-            //             bank.as_ref(),
-            //             bank.get_reserved_account_keys(),
-            //             bank.feature_set
-            //                 .is_active(&agave_feature_set::static_instruction_limit::id()),
-            //         )
-            //     })
-            //     .collect::<Result<Vec<RuntimeTransaction<SanitizedTransaction>>>>()?;
+            if replace_recent_blockhash {
+                if !skip_sig_verify {
+                    return Err(Error::invalid_params(
+                        "sigVerify may not be used with replaceRecentBlockhash",
+                    ));
+                }
+                let recent_blockhash = bank.last_blockhash();
+                unsanitized_txs.iter_mut().for_each(|tx| {
+                    tx.message.set_recent_blockhash(recent_blockhash);
+                });
+            }
 
-            // if !skip_sig_verify {
-            //     for tx in &sanitized_transactions {
-            //         tx.verify().map_err(|err| {
-            //             Error::invalid_params(format!("transaction verification failed: {err}"))
-            //         })?;
-            //     }
-            // }
+            let transactions = unsanitized_txs
+                .into_iter()
+                .map(|unsanitized_tx| {
+                    sanitize_transaction(
+                        unsanitized_tx,
+                        bank.as_ref(),
+                        bank.get_reserved_account_keys(),
+                        bank.feature_set
+                            .is_active(&agave_feature_set::static_instruction_limit::id()),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-            // let simulation_result =
-            //     bank.simulate_transactions(&sanitized_transactions, ExecutionFlags::default());
+            if !config.skip_sig_verify {
+                for tx in &transactions {
+                    if let Err(e) = tx.verify() {
+                        return Ok(new_response(
+                            &bank,
+                            RpcSimulateBundleResult {
+                                summary: RpcBundleSimulationSummary::Failed {
+                                    error: RpcBundleExecutionError::TransactionFailure(
+                                        *tx.signature(),
+                                        e.to_string(),
+                                    ),
+                                    tx_signature: Some(tx.signature().to_string()),
+                                },
+                                transaction_results: vec![],
+                            },
+                        ));
+                    }
+                }
+            }
 
-            // let pre_execution_accounts =
-            //     account_configs_to_accounts(&config.pre_execution_accounts_configs)?;
-            // let post_execution_accounts =
-            //     account_configs_to_accounts(&config.post_execution_accounts_configs)?;
-            // let bundle_execution_result = load_and_execute_bundle(
-            //     &bank,
-            //     &sanitized_bundle,
-            //     MAX_PROCESSING_AGE,
-            //     &MAX_BUNDLE_SIMULATION_TIME,
-            //     true,
-            //     &None,
-            //     true,
-            //     None,
-            //     &pre_execution_accounts,
-            //     &post_execution_accounts,
-            // );
+            let pre_execution_accounts =
+                account_configs_to_accounts(&pre_execution_accounts_configs)?;
+            let post_execution_accounts =
+                account_configs_to_accounts(&post_execution_accounts_configs)?;
 
-            // // only return error if irrecoverable (timeout or tx malformed)
-            // // bundle execution failures w/ context are returned to client
-            // match bundle_execution_result.result {
-            //     Ok(()) | Err(LoadAndExecuteBundleError::TransactionError { .. }) => {}
-            //     Err(LoadAndExecuteBundleError::ProcessingTimeExceeded(elapsed)) => {
-            //         let mut error = Error::new(ErrorCode::ServerError(10_000));
-            //         error.message = format!(
-            //             "simulation time exceeded max allowed time: {:?}ms",
-            //             elapsed.as_millis()
-            //         );
-            //         return Err(error);
-            //     }
-            //     Err(LoadAndExecuteBundleError::InvalidPreOrPostAccounts) => {
-            //         return Err(Error::invalid_params("invalid pre or post account data"));
-            //     }
-            //     Err(LoadAndExecuteBundleError::LockError {
-            //         signature,
-            //         transaction_error,
-            //     }) => {
-            //         return Err(Error::invalid_params(format!(
-            //             "error locking transaction with signature: {}, error: {:?}",
-            //             signature, transaction_error
-            //         )));
-            //     }
-            // }
-
-            // let rpc_bundle_result =
-            //     rpc_bundle_result_from_bank_result(bundle_execution_result, config)?;
-
-            // Ok(new_response(&bank, rpc_bundle_result))
+            let results = bank.simulate_transactions_unchecked_with_pre_accounts(
+                &transactions,
+                &pre_execution_accounts,
+                &post_execution_accounts,
+                Some(1_000),
+            );
+            let result = RpcSimulateBundleResult {
+                // if any of them errored out, return the first one that did
+                summary: if let Some((tx, (_pre_accounts, result, _post_accounts))) = transactions
+                    .iter()
+                    .zip(results.iter())
+                    .find(|(_tx, (_pre_accounts, result, _post_accounts))| result.result.is_err())
+                {
+                    RpcBundleSimulationSummary::Failed {
+                        error: RpcBundleExecutionError::TransactionFailure(
+                            *tx.signature(),
+                            result.result.as_ref().err().unwrap().to_string(),
+                        ),
+                        tx_signature: Some(tx.signature().to_string()),
+                    }
+                } else {
+                    RpcBundleSimulationSummary::Succeeded
+                },
+                transaction_results: transactions
+                    .into_iter()
+                    .zip(results.into_iter())
+                    .map(|(_tx, (pre_accounts, result, post_accounts))| {
+                        Ok(RpcSimulateBundleTransactionResult {
+                            err: result.result.err(),
+                            logs: Some(result.logs),
+                            pre_execution_accounts: Some(
+                                pre_accounts
+                                    .iter()
+                                    .map(|(address, data)| {
+                                        encode_account(
+                                            data,
+                                            address,
+                                            UiAccountEncoding::Base64,
+                                            None,
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>>>()?,
+                            ),
+                            post_execution_accounts: Some(
+                                post_accounts
+                                    .iter()
+                                    .map(|(address, data)| {
+                                        encode_account(
+                                            data,
+                                            address,
+                                            UiAccountEncoding::Base64,
+                                            None,
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>>>()?,
+                            ),
+                            units_consumed: Some(result.units_consumed),
+                            return_data: result.return_data.map(|return_data| return_data.into()),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            };
+            Ok(new_response(&bank, result))
         }
 
         fn minimum_ledger_slot(&self, meta: Self::Metadata) -> Result<Slot> {
@@ -4594,6 +4654,25 @@ fn sanitize_transaction(
         enable_static_instruction_limit,
     )
     .map_err(|err| Error::invalid_params(format!("invalid transaction: {err}")))
+}
+
+/// Outer vector is for each transaction, inner vector is for each account
+pub fn account_configs_to_accounts(
+    accounts_config: &[Option<RpcSimulateTransactionAccountsConfig>],
+) -> Result<Vec<Vec<Pubkey>>> {
+    let mut execution_accounts = Vec::new();
+    for account_config in accounts_config {
+        let mut accounts = Vec::new();
+        if let Some(account_config) = account_config {
+            for address in &account_config.addresses {
+                accounts.push(Pubkey::from_str(address).map_err(|_| {
+                    Error::invalid_params(format!("invalid pubkey provided: {}", address))
+                })?);
+            }
+        }
+        execution_accounts.push(accounts);
+    }
+    Ok(execution_accounts)
 }
 
 pub fn create_validator_exit(exit: Arc<AtomicBool>) -> Arc<RwLock<Exit>> {

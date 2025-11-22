@@ -12465,3 +12465,6 @@ fn test_parent_block_id() {
     let child_bank = Bank::new_from_parent(parent_bank, &Pubkey::new_unique(), 1);
     assert_eq!(parent_block_id, child_bank.parent_block_id());
 }
+
+#[test]
+fn test_simulate_transactions_unchecked_with_pre_accounts() {}
