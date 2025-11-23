@@ -52,7 +52,6 @@ impl QosService {
         bank: &Bank,
         transactions: &'a [Tx],
         pre_results: impl Iterator<Item = transaction::Result<()>>,
-        block_cost_limit_reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> (Vec<transaction::Result<TransactionCost<'a, Tx>>>, u64) {
         let transaction_costs =
             self.compute_transaction_costs(&bank.feature_set, transactions.iter(), pre_results);
@@ -60,7 +59,6 @@ impl QosService {
             transactions.iter(),
             transaction_costs.into_iter(),
             bank,
-            block_cost_limit_reservation_cb,
         );
         self.accumulate_estimated_transaction_costs(&Self::accumulate_batched_transaction_costs(
             transactions_qos_cost_results.iter(),
@@ -107,16 +105,14 @@ impl QosService {
         transactions: impl Iterator<Item = &'a Tx>,
         transactions_costs: impl Iterator<Item = transaction::Result<TransactionCost<'a, Tx>>>,
         bank: &Bank,
-        block_cost_limit_reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> (Vec<transaction::Result<TransactionCost<'a, Tx>>>, usize) {
         let mut cost_tracking_time = Measure::start("cost_tracking_time");
         let mut cost_tracker = bank.write_cost_tracker().unwrap();
-        let reservation_amount = block_cost_limit_reservation_cb(bank);
         let mut num_included = 0;
         let select_results = transactions
             .zip(transactions_costs)
             .map(|(tx, cost)| match cost {
-                Ok(cost) => match cost_tracker.try_add(&cost, reservation_amount) {
+                Ok(cost) => match cost_tracker.try_add(&cost) {
                     Ok(UpdatedCosts {
                         updated_block_cost,
                         updated_costliest_account_cost,
@@ -692,7 +688,6 @@ mod tests {
             txs.iter(),
             txs_costs.into_iter(),
             &bank,
-            &|_| 0,
         );
         assert_eq!(num_selected, 2);
 
@@ -750,7 +745,6 @@ mod tests {
                 txs.iter(),
                 txs_costs.into_iter(),
                 &bank,
-                &|_| 0,
             );
             assert_eq!(
                 total_txs_cost,
@@ -825,7 +819,6 @@ mod tests {
                 txs.iter(),
                 txs_costs.into_iter(),
                 &bank,
-                &|_| 0,
             );
             assert_eq!(
                 total_txs_cost,
@@ -883,7 +876,6 @@ mod tests {
                 txs.iter(),
                 txs_costs.into_iter(),
                 &bank,
-                &|_| 0,
             );
             assert_eq!(
                 total_txs_cost,

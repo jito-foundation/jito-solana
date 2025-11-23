@@ -706,8 +706,6 @@ pub fn execute(
         shred_receiver_address,
         shred_retransmit_receiver_address,
         tip_manager_config,
-        preallocated_bundle_cost: value_of(matches, "preallocated_bundle_cost")
-            .expect("preallocated_bundle_cost set as default"),
     };
 
     let reserved = validator_config

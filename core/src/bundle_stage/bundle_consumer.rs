@@ -160,7 +160,6 @@ impl BundleConsumer {
             bank,
             txs,
             repeat(Ok(())),
-            &|_| 0,
         ));
         if let Some((index, err)) = transaction_qos_cost_results
             .iter()
