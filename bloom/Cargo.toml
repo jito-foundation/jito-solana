@@ -1,6 +1,10 @@
+# =============================================================================
+# PACKAGE METADATA
+# Defines the core identity and build settings for the solana-bloom library.
+# =============================================================================
 [package]
 name = "solana-bloom"
-description = "Solana bloom filter"
+description = "Solana bloom filter implementation, optimized for performance and space efficiency."
 documentation = "https://docs.rs/solana-bloom"
 version = { workspace = true }
 authors = { workspace = true }
@@ -9,46 +13,99 @@ homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
+# Override documentation build targets for CI systems like docs.rs.
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
+# Library configuration.
 [lib]
 crate-type = ["lib"]
 name = "solana_bloom"
 
+
+# =============================================================================
+# FEATURES
+# Conditional compilation flags to include optional dependencies or change behavior.
+# =============================================================================
 [features]
+# Feature flag for enabling API that may change in future versions (unstable).
 agave-unstable-api = []
+
+# Enables binary interface stability checks for long-term compatibility.
 frozen-abi = [
     "dep:solana-frozen-abi",
     "dep:solana-frozen-abi-macro",
-    "solana-hash/frozen-abi",
+    "solana-hash/frozen-abi", # Propagates the feature to solana-hash dependency
 ]
 
+
+# =============================================================================
+# DEPENDENCIES
+# Core runtime dependencies for the bloom filter implementation.
+# =============================================================================
 [dependencies]
+# Bit vector implementation; including 'serde' feature for serialization support.
 bv = { workspace = true, features = ["serde"] }
+
+# FNV hash map implementation for fast, non-cryptographic hashing.
 fnv = { workspace = true }
+
+# Random number generation utilities.
 rand = { workspace = true }
+
+# Serialization/deserialization framework. 
+# 'rc' feature supports serializing Ref-Counted types, if needed in the structure.
 serde = { workspace = true, features = ["rc"] }
-solana-frozen-abi = { workspace = true, optional = true, features = [
-    "frozen-abi",
-] }
-solana-frozen-abi-macro = { workspace = true, optional = true, features = [
-    "frozen-abi",
-] }
+
+# Dependency required for frozen-abi checks (optional).
+solana-frozen-abi = { workspace = true, optional = true, features = ["frozen-abi"] }
+
+# Macro required for frozen-abi checks (optional).
+solana-frozen-abi-macro = { workspace = true, optional = true, features = ["frozen-abi"] }
+
+# Sanitization utilities (e.g., input validation).
 solana-sanitize = { workspace = true }
+
+# Time and clock related utilities (often requires 'std' or specific features).
 solana-time-utils = { workspace = true }
 
+
+# =============================================================================
+# DEVELOPMENT AND TEST DEPENDENCIES
+# Dependencies only used during testing, benchmarking, or development.
+# =============================================================================
 [dev-dependencies]
+# Benchmarking harness.
 bencher = { workspace = true }
+
+# Rayon for parallel iteration and concurrent processing in benchmarks/tests.
 rayon = { workspace = true }
+
+# Self-dependency required to enable unstable features during testing.
 solana-bloom = { path = ".", features = ["agave-unstable-api"] }
+
+# Hashing utilities (e.g., Sha256).
 solana-hash = { workspace = true }
+
+# Specific SHA256 hashing implementation.
 solana-sha256-hasher = { workspace = true }
+
+# Signature verification utilities, enabling 'std' features for standard environment support.
 solana-signature = { workspace = true, features = ["std"] }
 
+
+# =============================================================================
+# BENCHMARKS
+# Defines the benchmark target configuration.
+# =============================================================================
 [[bench]]
 name = "bloom"
+# Disables the default criterion harness, allowing custom benchmarking tools like 'bencher'.
 harness = false
 
+# =============================================================================
+# LINTERS
+# Inherits linting rules from the workspace root Cargo.toml.
+# =============================================================================
 [lints]
 workspace = true
