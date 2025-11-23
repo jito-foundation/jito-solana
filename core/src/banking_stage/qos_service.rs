@@ -684,11 +684,8 @@ mod tests {
         bank.write_cost_tracker()
             .unwrap()
             .set_limits(cost_limit, cost_limit, cost_limit);
-        let (results, num_selected) = qos_service.select_transactions_per_cost(
-            txs.iter(),
-            txs_costs.into_iter(),
-            &bank,
-        );
+        let (results, num_selected) =
+            qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
         assert_eq!(num_selected, 2);
 
         // verify that first transfer tx and first vote are allowed
@@ -741,11 +738,8 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
-                txs.iter(),
-                txs_costs.into_iter(),
-                &bank,
-            );
+            let (qos_cost_results, _num_included) =
+                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -815,11 +809,8 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
-                txs.iter(),
-                txs_costs.into_iter(),
-                &bank,
-            );
+            let (qos_cost_results, _num_included) =
+                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()
@@ -872,11 +863,8 @@ mod tests {
                 .iter()
                 .map(|cost| cost.as_ref().unwrap().sum())
                 .sum();
-            let (qos_cost_results, _num_included) = qos_service.select_transactions_per_cost(
-                txs.iter(),
-                txs_costs.into_iter(),
-                &bank,
-            );
+            let (qos_cost_results, _num_included) =
+                qos_service.select_transactions_per_cost(txs.iter(), txs_costs.into_iter(), &bank);
             assert_eq!(
                 total_txs_cost,
                 bank.read_cost_tracker().unwrap().block_cost()

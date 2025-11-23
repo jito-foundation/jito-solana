@@ -660,11 +660,7 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
         let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
-        consumer.process_and_record_transactions(
-            &bank,
-            &transactions,
-            &bundle_account_locker,
-        )
+        consumer.process_and_record_transactions(&bank, &transactions, &bundle_account_locker)
     }
 
     fn generate_new_address_lookup_table(
@@ -1751,11 +1747,8 @@ mod tests {
         );
         let consumer = Consumer::new(committer, recorder.clone(), QosService::new(1), None);
 
-        let process_transactions_summary = consumer.process_and_record_transactions(
-            &bank,
-            &transactions,
-            &bundle_account_locker,
-        );
+        let process_transactions_summary =
+            consumer.process_and_record_transactions(&bank, &transactions, &bundle_account_locker);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output,
