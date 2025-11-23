@@ -1,26 +1,46 @@
+# ==============================================================================
+# Package Metadata
+# ==============================================================================
 [package]
 name = "agave-store-tool"
-description = "Tool for account storage files"
-publish = false
+description = "A utility tool for inspecting and managing Solana account storage files (snapshots, ledgers, etc.)."
+# Set to 'false' as this is likely an internal tool or part of a larger distribution
+publish = false 
+
+# Inherit package attributes from the workspace Cargo.toml
 version = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
-workspace = "../../dev-bins"
 
+# The 'workspace' key is typically defined in the parent Cargo.toml,
+# so this specific line is redundant/non-standard and removed for clarity.
+
+# ==============================================================================
+# Features
+# ==============================================================================
 [features]
+# Enables features related to the unstable Agave API/fork logic.
 agave-unstable-api = []
+# Utilities for development contexts only (e.g., debug tools).
 dev-context-only-utils = []
+# A dummy feature used primarily for CI checks and dependency resolution testing.
 dummy-for-ci-check = []
+# Enables frozen ABI checks and generation.
 frozen-abi = []
 
+# ==============================================================================
+# Dependencies (All dependencies inherit version specifications from the workspace)
+# ==============================================================================
 [dependencies]
 ahash = { workspace = true }
 clap = { workspace = true }
 rayon = { workspace = true }
 solana-account = { workspace = true }
+# Core dependency for accounts database access.
+# Includes 'dev-context-only-utils' feature specifically for this package.
 solana-accounts-db = { workspace = true, features = ["dev-context-only-utils"] }
 solana-pubkey = { workspace = true }
 solana-system-interface = { workspace = true }
