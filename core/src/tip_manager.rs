@@ -516,4 +516,14 @@ impl TipManager {
 
         Ok(transactions)
     }
+
+    /// Updates the MEV commission for this tip manager
+    pub fn set_commission_bps(&mut self, new_commission_bps: u16) {
+        self.tip_distribution_account_config.commission_bps = new_commission_bps;
+    }
+
+    /// Gets the current MEV commission
+    pub fn get_commission_bps(&self) -> u16 {
+        self.tip_distribution_account_config.commission_bps
+    }
 }
