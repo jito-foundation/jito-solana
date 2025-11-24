@@ -1598,9 +1598,17 @@ mod tests {
                     .send(BankingPacketBatch::new(packet_batches))
                     .unwrap();
 
-                // wait for 512 ticks or 8 leader slots to pass before checking state
-                while let Ok((_bank, (_entry, tick))) = entry_receiver.recv() {
-                    if tick == 511 {
+                let start = Instant::now();
+
+                let mut num_txs = 0;
+                const EXPECTED_TXS: usize = 1;
+                while start.elapsed() < Duration::from_secs(5) {
+                    if let Ok((_bank, (entry, _tick))) =
+                        entry_receiver.recv_timeout(Duration::from_millis(10))
+                    {
+                        num_txs += entry.transactions.len();
+                    }
+                    if num_txs >= EXPECTED_TXS {
                         break;
                     }
                 }
