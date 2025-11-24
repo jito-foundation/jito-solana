@@ -1,7 +1,10 @@
+# --- CARGO PACKAGE DEFINITION ---
+
 [package]
 name = "solana-banks-client"
-description = "Solana banks client"
+description = "Solana banks client: Provides a client interface to interact directly with the Solana runtime 'banks' layer, primarily used for testing and simulation."
 documentation = "https://docs.rs/solana-banks-client"
+# Use workspace inheritance for versioning and metadata to ensure monorepo consistency
 version = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
@@ -9,23 +12,33 @@ homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
+# --- METADATA AND TARGETS ---
+
 [package.metadata.docs.rs]
+# Generate documentation only for the standard Linux target for efficiency
 targets = ["x86_64-unknown-linux-gnu"]
 
 [lib]
+# This crate builds a standard Rust library
 crate-type = ["lib"]
 name = "solana_banks_client"
 
+# --- FEATURES ---
+
 [features]
+# Feature flag for enabling unstable/experimental APIs related to the Agave validator client.
 agave-unstable-api = []
 
+# --- DEPENDENCIES ---
+
 [dependencies]
+# Utilities and serialization
 borsh = { workspace = true }
 futures = { workspace = true }
+thiserror = { workspace = true }
+
+# Solana Core Primitives
 solana-account = { workspace = true, features = ["bincode"] }
-solana-banks-interface = { workspace = true }
-solana-clock = { workspace = true }
-solana-commitment-config = { workspace = true }
 solana-hash = { workspace = true }
 solana-message = { workspace = true }
 solana-program-pack = { workspace = true }
@@ -36,12 +49,22 @@ solana-sysvar = { workspace = true, features = ["bincode"] }
 solana-transaction = { workspace = true }
 solana-transaction-context = { workspace = true }
 solana-transaction-error = { workspace = true }
+
+# Banks Layer Communication Interfaces
+solana-banks-interface = { workspace = true }
+solana-clock = { workspace = true }
+solana-commitment-config = { workspace = true }
+
+# Asynchronous Networking and IPC (Inter-Process Communication)
 tarpc = { workspace = true, features = ["full"] }
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full"] } # 'full' often necessary for comprehensive asynchronous testing
 tokio-serde = { workspace = true, features = ["bincode"] }
 
+
+# --- DEVELOPMENT DEPENDENCIES (For Testing) ---
+
 [dev-dependencies]
+# Required to run a local banks server instance for end-to-end testing
 solana-banks-server = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
