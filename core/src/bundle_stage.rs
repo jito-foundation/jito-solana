@@ -974,6 +974,7 @@ mod tests {
             get_tmp_ledger_path_auto_delete,
         },
         solana_native_token::LAMPORTS_PER_SOL,
+        solana_net_utils::SocketAddrSpace,
         solana_perf::{
             packet::{BytesPacket, PacketBatch},
             test_tx::test_tx,
@@ -983,7 +984,6 @@ mod tests {
         solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
         solana_signer::Signer,
-        solana_streamer::socket::SocketAddrSpace,
         solana_system_transaction::transfer,
         solana_time_utils::timestamp,
         solana_vote_interface::state::vote_state_v4::VoteStateV4,

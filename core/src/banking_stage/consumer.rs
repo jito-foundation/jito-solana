@@ -750,8 +750,11 @@ mod tests {
             bank.confirmed_last_blockhash(),
         )]);
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
             commit_transactions_result,
@@ -860,8 +863,11 @@ mod tests {
             bank.register_default_tick_for_test();
         }
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
             commit_transactions_result,
@@ -907,8 +913,11 @@ mod tests {
             sanitize_transactions(vec![tx])
         };
 
-        let process_transactions_batch_output =
-            consumer.process_and_record_transactions(&bank, &transactions);
+        let process_transactions_batch_output = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
 
         let ExecuteAndCommitTransactionsOutput {
             transaction_counts,
@@ -1422,7 +1431,11 @@ mod tests {
         bank.transfer(rent_exempt_amount, &mint_keypair, &keypair1.pubkey())
             .unwrap();
 
-        let _ = consumer.process_and_record_transactions(&bank, &transactions);
+        let _ = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+        );
         drop(consumer); // drop/disconnect transaction_status_sender
 
         let status_messages = transaction_status_receiver.into_iter().collect::<Vec<_>>();
@@ -1514,7 +1527,11 @@ mod tests {
 
         bank.transfer(1, &mint_keypair, &keypair.pubkey()).unwrap();
 
-        let _ = consumer.process_and_record_transactions(&bank, slice::from_ref(&sanitized_tx));
+        let _ = consumer.process_and_record_transactions(
+            &bank,
+            slice::from_ref(&sanitized_tx),
+            &BundleAccountLocker::default(),
+        );
         drop(consumer); // drop/disconnect transaction_status_sender
 
         let status_messages = transaction_status_receiver.into_iter().collect::<Vec<_>>();

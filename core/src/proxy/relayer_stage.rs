@@ -367,7 +367,7 @@ impl RelayerStage {
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
-                    let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+                    let resp = maybe_msg.map_err(|e| ProxyError::GrpcError(Box::new(e)))?.ok_or(ProxyError::GrpcStreamDisconnected)?;
                     Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, &mut relayer_stats)?;
                 }
                 _ = heartbeat_check_interval.tick() => {

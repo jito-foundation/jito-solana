@@ -30,7 +30,7 @@ type HeartbeatEvent = (SocketAddr, SocketAddr);
 #[derive(Error, Debug)]
 pub enum ProxyError {
     #[error("grpc error: {0}")]
-    GrpcError(#[from] Status),
+    GrpcError(Box<Status>),
 
     #[error("stream disconnected")]
     GrpcStreamDisconnected,
@@ -54,7 +54,7 @@ pub enum ProxyError {
     InvalidData(String),
 
     #[error("timeout: {0:?}")]
-    ConnectionError(#[from] tonic::transport::Error),
+    ConnectionError(Box<tonic::transport::Error>),
 
     #[error("AuthenticationConnectionTimeout")]
     AuthenticationConnectionTimeout,
@@ -78,10 +78,10 @@ pub enum ProxyError {
     BlockEngineEndpointError(String),
 
     #[error("BlockEngineConnectionError: {0:?}")]
-    BlockEngineConnectionError(tonic::transport::Error),
+    BlockEngineConnectionError(Box<tonic::transport::Error>),
 
     #[error("BlockEngineRequestError: {0:?}")]
-    BlockEngineRequestError(tonic::Status),
+    BlockEngineRequestError(Box<tonic::Status>),
 
     #[error("RelayerConnectionTimeout")]
     RelayerConnectionTimeout,

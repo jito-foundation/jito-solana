@@ -540,10 +540,10 @@ mod test {
         solana_genesis_config::create_genesis_config,
         solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo, socketaddr},
         solana_keypair::Keypair,
+        solana_net_utils::SocketAddrSpace,
         solana_nonce::{self as nonce, state::DurableNonce},
         solana_pubkey::Pubkey,
         solana_signer::Signer,
-        solana_streamer::socket::SocketAddrSpace,
         solana_system_interface::program as system_program,
         solana_system_transaction as system_transaction,
         solana_time_utils::timestamp,
@@ -557,18 +557,14 @@ mod test {
         let bank_forks = BankForks::new_rw_arc(bank);
         let (sender, receiver) = unbounded();
 
-let node_keypair = Arc::new(Keypair::new());
+        let node_keypair = Arc::new(Keypair::new());
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&node_keypair.pubkey(), timestamp()),
             node_keypair,
             SocketAddrSpace::Unspecified,
         ));
-        let client = TpuClientNextClient::create_client(
-            Some(Handle::current()),
-            cluster_info,
-            None,
-            1,
-        );
+        let client =
+            TpuClientNextClient::create_client(Some(Handle::current()), cluster_info, None, 1);
 
         let send_transaction_service = SendTransactionService::new(
             &bank_forks,
@@ -614,12 +610,8 @@ let node_keypair = Arc::new(Keypair::new());
         });
 
         let exit = Arc::new(AtomicBool::new(false));
-        let client = TpuClientNextClient::create_client(
-            Some(Handle::current()),
-            cluster_info,
-            None,
-            1,
-        );
+        let client =
+            TpuClientNextClient::create_client(Some(Handle::current()), cluster_info, None, 1);
         let _send_transaction_service = SendTransactionService::new(
             &bank_forks,
             receiver,
@@ -730,14 +722,14 @@ let node_keypair = Arc::new(Keypair::new());
             ),
         );
 
-let cluster_info = Arc::new({
-    let keypair = Arc::new(Keypair::new());
-    let contact_info = ContactInfo::new_with_socketaddr(
-        &keypair.pubkey(),
-        &socketaddr!(Ipv4Addr::LOCALHOST, 1234),
-    );
-    ClusterInfo::new(contact_info, keypair, SocketAddrSpace::Unspecified)
-});
+        let cluster_info = Arc::new({
+            let keypair = Arc::new(Keypair::new());
+            let contact_info = ContactInfo::new_with_socketaddr(
+                &keypair.pubkey(),
+                &socketaddr!(Ipv4Addr::LOCALHOST, 1234),
+            );
+            ClusterInfo::new(contact_info, keypair, SocketAddrSpace::Unspecified)
+        });
         let client = TpuClientNextClient::create_client(
             Some(Handle::current()),
             cluster_info,
@@ -1027,11 +1019,12 @@ let cluster_info = Arc::new({
             ),
         );
         let stats = SendTransactionServiceStats::default();
-let cluster_info = Arc::new(ClusterInfo::new(
-    ContactInfo::new_localhost(&node_keypair.pubkey(), timestamp()),
-    node_keypair,
-    SocketAddrSpace::Unspecified,
-));
+        let node_keypair = Arc::new(Keypair::new());
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_localhost(&node_keypair.pubkey(), timestamp()),
+            node_keypair,
+            SocketAddrSpace::Unspecified,
+        ));
         let client = TpuClientNextClient::create_client(
             Some(Handle::current()),
             cluster_info,

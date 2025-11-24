@@ -405,11 +405,11 @@ impl BlockEngineStage {
     > {
         let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
             .await
-            .map_err(ProxyError::BlockEngineConnectionError)?;
+            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?;
         let endpoints = endpoint_discovery
             .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
             .await
-            .map_err(ProxyError::BlockEngineRequestError)?
+            .map_err(|e| ProxyError::BlockEngineRequestError(Box::new(e)))?
             .into_inner();
         datapoint_info!(
             "block_engine_stage-autoconfig",
@@ -491,7 +491,7 @@ impl BlockEngineStage {
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
-            .map_err(ProxyError::BlockEngineConnectionError)?;
+            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
@@ -802,7 +802,7 @@ impl BlockEngineStage {
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
-                    let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+                    let resp = maybe_msg.map_err(|e| ProxyError::GrpcError(Box::new(e)))?.ok_or(ProxyError::GrpcStreamDisconnected)?;
                     Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
@@ -880,7 +880,9 @@ impl BlockEngineStage {
         bundle_sender: &Sender<Vec<PacketBundle>>,
         block_engine_stats: &mut BlockEngineStageStats,
     ) -> crate::proxy::Result<()> {
-        let bundles_response = maybe_bundles_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+        let bundles_response = maybe_bundles_response
+            .map_err(|e| ProxyError::GrpcError(Box::new(e)))?
+            .ok_or(ProxyError::GrpcStreamDisconnected)?;
         let bundles: Vec<PacketBundle> = bundles_response
             .bundles
             .into_iter()
