@@ -1,17 +1,26 @@
 use {
-    crate::accounts_db::AccountsDb, solana_account::AccountSharedData, solana_clock::Slot,
-    solana_pubkey::Pubkey, solana_transaction::sanitized::SanitizedTransaction,
+    // Importing necessary components from the current crate and Solana libraries
+    crate::accounts_db::AccountsDb, 
+    solana_account::AccountSharedData, 
+    solana_clock::Slot,
+    solana_pubkey::Pubkey, 
+    solana_transaction::sanitized::SanitizedTransaction,
 };
 
+// Implementation block for methods attached to the AccountsDb struct
 impl AccountsDb {
+    /// Notifies the registered AccountsUpdateNotifier (Geyser Plugin) about an account update
+    /// triggered by transaction activity at a specific slot.
     pub fn notify_account_at_accounts_update(
         &self,
         slot: Slot,
         account: &AccountSharedData,
-        txn: &Option<&SanitizedTransaction>,
+        // Optional transaction context. Using &Option<&SanitizedTransaction> avoids cloning the txn.
+        txn: &Option<&SanitizedTransaction>, 
         pubkey: &Pubkey,
         write_version: u64,
     ) {
+        // Only notify if a Geyser plugin has been initialized and set up
         if let Some(accounts_update_notifier) = &self.accounts_update_notifier {
             accounts_update_notifier.notify_account_update(
                 slot,
@@ -24,8 +33,12 @@ impl AccountsDb {
     }
 }
 
+// --- Test Module ---
+
 #[cfg(test)]
 pub mod tests {
+    // Import all external dependencies required for testing.
+    // Using explicit use statements for clarity in a test module.
     use {
         super::*,
         crate::{
@@ -44,15 +57,20 @@ pub mod tests {
         test_case::test_case,
     };
 
+    // Helper function for tests to set the geyser plugin
     impl AccountsDb {
         pub fn set_geyser_plugin_notifier(&mut self, notifier: Option<AccountsUpdateNotifier>) {
             self.accounts_update_notifier = notifier;
         }
     }
 
+    /// A mock implementation of the AccountsUpdateNotifierInterface for testing purposes.
+    /// Uses a DashMap to safely collect concurrent account notifications.
     #[derive(Debug, Default)]
     struct GeyserTestPlugin {
+        // Map: Pubkey -> Vector of (Slot, WriteVersion, AccountData)
         pub accounts_notified: DashMap<Pubkey, Vec<(Slot, u64, AccountSharedData)>>,
+        // Flag to track the end of snapshot restoration
         pub is_startup_done: AtomicBool,
     }
 
@@ -61,7 +79,7 @@ pub mod tests {
             true
         }
 
-        /// Notified when an account is updated at runtime, due to transaction activities
+        /// Handles account updates due to runtime transaction execution.
         fn notify_account_update(
             &self,
             slot: Slot,
@@ -70,15 +88,16 @@ pub mod tests {
             pubkey: &Pubkey,
             write_version: u64,
         ) {
+            // Use entry().or_default() to safely insert/update the vector for the Pubkey
             self.accounts_notified.entry(*pubkey).or_default().push((
                 slot,
                 write_version,
+                // Must clone the AccountSharedData as the reference is temporary
                 account.clone(),
             ));
         }
 
-        /// Notified when the AccountsDb is initialized at start when restored
-        /// from a snapshot.
+        /// Handles account restores during startup from a snapshot.
         fn notify_account_restore_from_snapshot(
             &self,
             slot: Slot,
@@ -91,11 +110,14 @@ pub mod tests {
                 .push((slot, write_version, create_account_shared_data(account)));
         }
 
+        /// Signals that the snapshot restoration process is complete.
         fn notify_end_of_restore_from_snapshot(&self) {
             self.is_startup_done.store(true, Ordering::Relaxed);
         }
     }
 
+    /// Tests account notification during the initial database restoration phase.
+    /// Covers both MarkObsoleteAccounts configurations.
     #[test_case(MarkObsoleteAccounts::Enabled)]
     #[test_case(MarkObsoleteAccounts::Disabled)]
     fn test_notify_account_restore_from_snapshot(mark_obsolete_accounts: MarkObsoleteAccounts) {
@@ -112,134 +134,131 @@ pub mod tests {
         let key2 = Pubkey::new_unique();
         let account = AccountSharedData::new(1, 0, &Pubkey::default());
 
-        // Account with key1 is updated twice in two different slots, should get notified twice
-        // Need to add root and flush write cache for each slot to ensure accounts are written
-        // to correct slots. Cache flush can skip writes if accounts have already been written to
-        // a newer slot
+        // --- Setup Data (Creating stores simulates writing accounts to disk) ---
+
+        // key1 update 1 (slot 0)
         let slot0 = 0;
-        let storage0 = accounts_db.create_and_insert_store(slot0, /*size*/ 4_096, "");
+        let storage0 = accounts_db.create_and_insert_store(slot0, 4_096, "");
         storage0
             .accounts
-            .write_accounts(&(slot0, [(&key1, &account)].as_slice()), /*skip*/ 0);
+            .write_accounts(&(slot0, [(&key1, &account)].as_slice()), 0);
 
+        // key1 update 2 (slot 1)
         let slot1 = 1;
-        let storage1 = accounts_db.create_and_insert_store(slot1, /*size*/ 4_096, "");
+        let storage1 = accounts_db.create_and_insert_store(slot1, 4_096, "");
         storage1
             .accounts
-            .write_accounts(&(slot1, [(&key1, &account)].as_slice()), /*skip*/ 0);
+            .write_accounts(&(slot1, [(&key1, &account)].as_slice()), 0);
 
-        // Account with key2 is updated in a single slot, should get notified once
+        // key2 update 1 (slot 2)
         let slot2 = 2;
-        let storage2 = accounts_db.create_and_insert_store(slot2, /*size*/ 4_096, "");
+        let storage2 = accounts_db.create_and_insert_store(slot2, 4_096, "");
         storage2
             .accounts
-            .write_accounts(&(slot2, [(&key2, &account)].as_slice()), /*skip*/ 0);
+            .write_accounts(&(slot2, [(&key2, &account)].as_slice()), 0);
 
-        // Do the notification
-        let notifier = GeyserTestPlugin::default();
-        let notifier = Arc::new(notifier);
+        // --- Execution ---
+
+        let notifier = Arc::new(GeyserTestPlugin::default());
         accounts_db.set_geyser_plugin_notifier(Some(notifier.clone()));
-        accounts_db.generate_index(None, false);
+        
+        // This triggers the iteration over all accounts for notification
+        accounts_db.generate_index(None, false); 
 
-        // Ensure key1 was notified twice in different slots
+        // --- Assertions ---
+
+        // Assert key1 was notified twice (once per slot it was written to)
         {
-            let notified_key1 = notifier.accounts_notified.get(&key1).unwrap();
-            assert_eq!(notified_key1.len(), 2);
+            let notified_key1 = notifier.accounts_notified.get(&key1).expect("key1 should be notified");
+            assert_eq!(notified_key1.len(), 2, "key1 should have 2 notifications");
 
-            // Since index generation goes through storages in parallel, there's not a
-            // deterministic order for which slots will notify first.
-            // So, we sort the accounts_notified values to ensure we can assert correctly.
+            // Sort by slot due to non-deterministic parallel processing order
             let mut notified_key1_values = notified_key1.value().clone();
-            notified_key1_values.sort_unstable_by_key(|k| k.0);
+            notified_key1_values.sort_unstable_by_key(|k| k.0); // k.0 is the slot
 
+            // Check slot 0 notification
             let (slot, write_version, _account) = &notified_key1_values[0];
-            assert_eq!(*slot, slot0);
-            assert_eq!(*write_version, 0);
+            assert_eq!(*slot, slot0, "First notification slot should be 0");
+            assert_eq!(*write_version, 0); 
+            
+            // Check slot 1 notification
             let (slot, write_version, _account) = &notified_key1_values[1];
-            assert_eq!(*slot, slot1);
+            assert_eq!(*slot, slot1, "Second notification slot should be 1");
             assert_eq!(*write_version, 0);
         }
 
-        // Ensure key2 was notified once
+        // Assert key2 was notified once
         {
-            let notified_key2 = notifier.accounts_notified.get(&key2).unwrap();
-            assert_eq!(notified_key2.len(), 1);
+            let notified_key2 = notifier.accounts_notified.get(&key2).expect("key2 should be notified");
+            assert_eq!(notified_key2.len(), 1, "key2 should have 1 notification");
+            
             let (slot, write_version, _account) = &notified_key2[0];
-            assert_eq!(*slot, slot2);
+            assert_eq!(*slot, slot2, "key2 notification slot should be 2");
             assert_eq!(*write_version, 0);
         }
 
-        // Ensure we were notified that startup is done
-        assert!(notifier.is_startup_done.load(Ordering::Relaxed));
+        // Assert startup done flag was set
+        assert!(notifier.is_startup_done.load(Ordering::Relaxed), "Startup done flag should be true");
     }
 
+    /// Tests notification during runtime account updates via store_for_tests.
     #[test]
     fn test_notify_account_at_accounts_update() {
         let mut accounts = AccountsDb::new_single_for_tests();
 
-        let notifier = GeyserTestPlugin::default();
-
-        let notifier = Arc::new(notifier);
+        let notifier = Arc::new(GeyserTestPlugin::default());
         accounts.set_geyser_plugin_notifier(Some(notifier.clone()));
 
-        // Account with key1 is updated twice in two different slots -- should only get notified twice.
-        // Account with key2 is updated slot0, should get notified once
-        // Account with key3 is updated in slot1, should get notified once
+        // Create keys and initial accounts
         let key1 = solana_pubkey::new_rand();
         let account1_lamports1: u64 = 1;
-        let account1 =
-            AccountSharedData::new(account1_lamports1, 1, AccountSharedData::default().owner());
-        let slot0 = 0;
-        accounts.store_for_tests((slot0, &[(&key1, &account1)][..]));
-
+        let account1 = AccountSharedData::new(account1_lamports1, 1, AccountSharedData::default().owner());
+        
         let key2 = solana_pubkey::new_rand();
         let account2_lamports: u64 = 200;
-        let account2 =
-            AccountSharedData::new(account2_lamports, 1, AccountSharedData::default().owner());
-        accounts.store_for_tests((slot0, &[(&key2, &account2)][..]));
-
-        let account1_lamports2 = 2;
-        let slot1 = 1;
-        let account1 = AccountSharedData::new(account1_lamports2, 1, account1.owner());
-        accounts.store_for_tests((slot1, &[(&key1, &account1)][..]));
-
+        let account2 = AccountSharedData::new(account2_lamports, 1, AccountSharedData::default().owner());
+        
         let key3 = solana_pubkey::new_rand();
         let account3_lamports: u64 = 300;
-        let account3 =
-            AccountSharedData::new(account3_lamports, 1, AccountSharedData::default().owner());
+        let account3 = AccountSharedData::new(account3_lamports, 1, AccountSharedData::default().owner());
+        
+        // --- Store Updates ---
+
+        let slot0 = 0;
+        // key1 first update
+        accounts.store_for_tests((slot0, &[(&key1, &account1)][..]));
+        // key2 update
+        accounts.store_for_tests((slot0, &[(&key2, &account2)][..]));
+
+        // key1 second update (new lamports)
+        let account1_lamports2 = 2;
+        let slot1 = 1;
+        let account1_v2 = AccountSharedData::new(account1_lamports2, 1, account1.owner());
+        accounts.store_for_tests((slot1, &[(&key1, &account1_v2)][..]));
+
+        // key3 update
         accounts.store_for_tests((slot1, &[(&key3, &account3)][..]));
 
-        assert_eq!(notifier.accounts_notified.get(&key1).unwrap().len(), 2);
-        assert_eq!(
-            notifier.accounts_notified.get(&key1).unwrap()[0]
-                .2
-                .lamports(),
-            account1_lamports1
-        );
-        assert_eq!(notifier.accounts_notified.get(&key1).unwrap()[0].0, slot0);
-        assert_eq!(
-            notifier.accounts_notified.get(&key1).unwrap()[1]
-                .2
-                .lamports(),
-            account1_lamports2
-        );
-        assert_eq!(notifier.accounts_notified.get(&key1).unwrap()[1].0, slot1);
+        // --- Assertions ---
 
-        assert_eq!(notifier.accounts_notified.get(&key2).unwrap().len(), 1);
-        assert_eq!(
-            notifier.accounts_notified.get(&key2).unwrap()[0]
-                .2
-                .lamports(),
-            account2_lamports
-        );
-        assert_eq!(notifier.accounts_notified.get(&key2).unwrap()[0].0, slot0);
-        assert_eq!(notifier.accounts_notified.get(&key3).unwrap().len(), 1);
-        assert_eq!(
-            notifier.accounts_notified.get(&key3).unwrap()[0]
-                .2
-                .lamports(),
-            account3_lamports
-        );
-        assert_eq!(notifier.accounts_notified.get(&key3).unwrap()[0].0, slot1);
+        // key1 updated twice (slot 0 and slot 1)
+        let notified_key1 = notifier.accounts_notified.get(&key1).expect("key1 notified");
+        assert_eq!(notified_key1.len(), 2);
+        assert_eq!(notified_key1[0].2.lamports(), account1_lamports1);
+        assert_eq!(notified_key1[0].0, slot0);
+        assert_eq!(notified_key1[1].2.lamports(), account1_lamports2);
+        assert_eq!(notified_key1[1].0, slot1);
+
+        // key2 updated once (slot 0)
+        let notified_key2 = notifier.accounts_notified.get(&key2).expect("key2 notified");
+        assert_eq!(notified_key2.len(), 1);
+        assert_eq!(notified_key2[0].2.lamports(), account2_lamports);
+        assert_eq!(notified_key2[0].0, slot0);
+        
+        // key3 updated once (slot 1)
+        let notified_key3 = notifier.accounts_notified.get(&key3).expect("key3 notified");
+        assert_eq!(notified_key3.len(), 1);
+        assert_eq!(notified_key3[0].2.lamports(), account3_lamports);
+        assert_eq!(notified_key3[0].0, slot1);
     }
 }
