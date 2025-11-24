@@ -27,7 +27,7 @@ use {
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
-        // tip_manager::{TipManager, TipManagerConfig},
+        tip_manager::TipManager,
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig},
         vortexor_receiver_adapter::VortexorReceiverAdapter,
@@ -204,7 +204,7 @@ impl Tpu {
         cancel: CancellationToken,
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
-        tip_manager_config: TipManagerConfig,
+        tip_manager: Arc<Mutex<TipManager>>,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
     ) -> Self {
@@ -439,9 +439,9 @@ impl Tpu {
             .saturating_mul(8)
             .saturating_div(10);
 
-        let tip_manager = TipManager::new(tip_manager_config);
         let mut blacklisted_accounts = HashSet::new();
-        blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
+        let tip_manager_guard = tip_manager.lock().expect("TipManager mutex should not be poisoned during TPU initialization");
+        blacklisted_accounts.insert(tip_manager_guard.tip_payment_program_id());
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
@@ -491,7 +491,7 @@ impl Tpu {
             replay_vote_sender,
             log_messages_bytes_limit,
             exit.clone(),
-            tip_manager,
+            tip_manager.lock().expect("TipManager mutex should not be poisoned during TPU initialization").clone(),
             bundle_account_locker,
             &block_builder_fee_info,
             prioritization_fee_cache,
