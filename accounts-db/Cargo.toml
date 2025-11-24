@@ -1,4 +1,5 @@
 [package]
+# Package metadata
 name = "solana-accounts-db"
 description = "Solana accounts db"
 documentation = "https://docs.rs/solana-accounts-db"
@@ -10,14 +11,19 @@ license = { workspace = true }
 edition = { workspace = true }
 
 [package.metadata.docs.rs]
+# Build documentation only for a specific target to speed up docs.rs builds
 targets = ["x86_64-unknown-linux-gnu"]
 
 [lib]
+# Define the library target and its crate name (Rust convention uses underscores)
 crate-type = ["lib"]
 name = "solana_accounts_db"
 
 [features]
+# Feature to expose unstable Agave API elements
 agave-unstable-api = []
+
+# Development-only utilities feature for testing and context creation (e.g., signing)
 dev-context-only-utils = [
     "dep:qualifier_attr",
     "dep:solana-keypair",
@@ -28,6 +34,8 @@ dev-context-only-utils = [
     "solana-account/dev-context-only-utils",
     "solana-transaction/dev-context-only-utils",
 ]
+
+# Feature for enabling the frozen ABI (Application Binary Interface) integrity checks
 frozen-abi = [
     "dep:solana-frozen-abi",
     "dep:solana-frozen-abi-macro",
@@ -36,6 +44,7 @@ frozen-abi = [
 ]
 
 [dependencies]
+# Dependencies using the workspace version/settings for monorepo consistency
 agave-fs = { workspace = true }
 ahash = { workspace = true }
 bincode = { workspace = true }
@@ -44,6 +53,7 @@ bv = { workspace = true, features = ["serde"] }
 bytemuck = { workspace = true }
 bytemuck_derive = { workspace = true }
 crossbeam-channel = { workspace = true }
+# Enable rayon and raw-api features for high-performance concurrent map access
 dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 indexmap = { workspace = true }
 itertools = { workspace = true }
@@ -53,13 +63,18 @@ memmap2 = { workspace = true }
 modular-bitfield = { workspace = true }
 num_cpus = { workspace = true }
 num_enum = { workspace = true }
+# Optional dependency only used when 'dev-context-only-utils' is enabled
 qualifier_attr = { workspace = true, optional = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 seqlock = { workspace = true }
+# Enable serde with 'rc' feature for shared-ownership serialization
 serde = { workspace = true, features = ["rc"] }
 smallvec = { workspace = true, features = ["const_generics"] }
+
+# Solana Crates
 solana-account = { workspace = true, features = ["serde"] }
+# Explicit features for address lookup table serialization/data types
 solana-address-lookup-table-interface = { workspace = true, features = [
     "bincode",
     "bytemuck",
@@ -68,14 +83,14 @@ solana-bucket-map = { workspace = true }
 solana-clock = { workspace = true }
 solana-epoch-schedule = { workspace = true }
 solana-fee-calculator = { workspace = true }
-solana-frozen-abi = { workspace = true, optional = true, features = [
-    "frozen-abi",
-] }
-solana-frozen-abi-macro = { workspace = true, optional = true, features = [
-    "frozen-abi",
-] }
+
+# Frozen ABI dependencies are optional and enabled via the 'frozen-abi' feature
+solana-frozen-abi = { workspace = true, optional = true }
+solana-frozen-abi-macro = { workspace = true, optional = true }
+
 solana-genesis-config = { workspace = true, features = ["serde"] }
 solana-hash = { workspace = true, features = ["serde"] }
+# These dependencies are optional and enabled by features like 'dev-context-only-utils'
 solana-keypair = { workspace = true, optional = true }
 solana-lattice-hash = { workspace = true }
 solana-measure = { workspace = true }
@@ -98,12 +113,14 @@ solana-transaction = { workspace = true }
 solana-transaction-context = { workspace = true }
 solana-transaction-error = { workspace = true }
 solana-vote-program = { workspace = true, optional = true }
+
 spl-generic-token = { workspace = true }
 static_assertions = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Development and testing dependencies
 agave-logger = { workspace = true }
 agave-reserved-account-keys = { workspace = true }
 assert_matches = { workspace = true }
@@ -112,7 +129,7 @@ libsecp256k1 = { workspace = true }
 memoffset = { workspace = true }
 rand_chacha = { workspace = true }
 serde_bytes = { workspace = true }
-# See order-crates-for-publishing.py for using this unusual `path = "."`
+# Self-reference for testing/benchmarking with required features enabled
 solana-accounts-db = { path = ".", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-compute-budget = { workspace = true }
 solana-instruction = { workspace = true }
@@ -126,9 +143,11 @@ strum_macros = { workspace = true }
 test-case = { workspace = true }
 
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dev-dependencies]
+# Conditional dependency for memory allocation optimization on non-Windows/FreeBSD systems
 jemallocator = { workspace = true }
 
 [[bench]]
+# Define all benchmark targets (using the criterion framework)
 name = "bench_accounts_file"
 harness = false
 
@@ -149,4 +168,5 @@ name = "bench_lock_accounts"
 harness = false
 
 [lints]
+# Use lints defined in the workspace Cargo.toml
 workspace = true
