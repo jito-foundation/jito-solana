@@ -1390,14 +1390,6 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .help("The commission validator takes from tips expressed in basis points."),
     )
     .arg(
-        Arg::with_name("preallocated_bundle_cost")
-            .long("preallocated-bundle-cost")
-            .value_name("PREALLOCATED_BUNDLE_COST")
-            .takes_value(true)
-            .default_value(&default_args.preallocated_bundle_cost)
-            .help("Number of CUs to allocate for bundles at beginning of slot."),
-    )
-    .arg(
         Arg::with_name("disable_block_engine_autoconfig")
             .long("disable-block-engine-autoconfig")
             .value_name("DISABLE_BLOCK_ENGINE_AUTOCONFIG")

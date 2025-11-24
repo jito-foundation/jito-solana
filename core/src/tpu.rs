@@ -53,7 +53,6 @@ use {
         rpc_subscriptions::RpcSubscriptions,
     },
     solana_runtime::{
-        bank::Bank,
         bank_forks::BankForks,
         prioritization_fee_cache::PrioritizationFeeCache,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
@@ -120,20 +119,6 @@ impl SigVerifier {
 
 // Conservatively allow 20 TPS per validator.
 pub const MAX_VOTES_PER_SECOND: u64 = 20;
-
-/// For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
-/// from the Bank's block cost limit.
-fn calculate_block_cost_limit_reservation(
-    bank: &Bank,
-    reserved_ticks: u64,
-    preallocated_bundle_cost: u64,
-) -> u64 {
-    if bank.tick_height() % bank.ticks_per_slot() < reserved_ticks {
-        preallocated_bundle_cost
-    } else {
-        0
-    }
-}
 
 pub struct Tpu {
     fetch_stage: FetchStage,
@@ -206,7 +191,6 @@ impl Tpu {
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        preallocated_bundle_cost: u64,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -429,16 +413,6 @@ impl Tpu {
 
         let bundle_account_locker = BundleAccountLocker::default();
 
-        // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
-        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
-        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
-        let reserved_ticks = poh_recorder
-            .read()
-            .unwrap()
-            .ticks_per_slot()
-            .saturating_mul(8)
-            .saturating_div(10);
-
         let tip_manager = TipManager::new(tip_manager_config);
         let mut blacklisted_accounts = HashSet::new();
         blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
@@ -460,13 +434,6 @@ impl Tpu {
             prioritization_fee_cache.clone(),
             blacklisted_accounts.clone(),
             bundle_account_locker.clone(),
-            move |bank| {
-                calculate_block_cost_limit_reservation(
-                    bank,
-                    reserved_ticks,
-                    preallocated_bundle_cost,
-                )
-            },
         );
 
         let SpawnForwardingStageResult {
@@ -595,50 +562,5 @@ impl Tpu {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use {
-        super::calculate_block_cost_limit_reservation,
-        solana_ledger::genesis_utils::create_genesis_config, solana_pubkey::Pubkey,
-        solana_runtime::bank::Bank, std::sync::Arc,
-    };
-
-    #[test]
-    fn test_calculate_block_cost_limit_reservation() {
-        const BUNDLE_BLOCK_COST_LIMITS_RESERVATION: u64 = 100;
-        const RESERVED_TICKS: u64 = 5;
-        let genesis_config_info = create_genesis_config(100);
-        let bank = Arc::new(Bank::new_for_tests(&genesis_config_info.genesis_config));
-
-        for _ in 0..genesis_config_info.genesis_config.ticks_per_slot {
-            bank.register_default_tick_for_test();
-        }
-        assert!(bank.is_complete());
-        bank.freeze();
-        let bank1 = Arc::new(Bank::new_from_parent(bank.clone(), &Pubkey::default(), 1));
-
-        // wait for reservation to be over
-        (0..RESERVED_TICKS).for_each(|_| {
-            assert_eq!(
-                calculate_block_cost_limit_reservation(
-                    &bank1,
-                    RESERVED_TICKS,
-                    BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
-                ),
-                BUNDLE_BLOCK_COST_LIMITS_RESERVATION
-            );
-            bank1.register_default_tick_for_test();
-        });
-        assert_eq!(
-            calculate_block_cost_limit_reservation(
-                &bank1,
-                RESERVED_TICKS,
-                BUNDLE_BLOCK_COST_LIMITS_RESERVATION,
-            ),
-            0
-        );
     }
 }

@@ -139,7 +139,6 @@ impl Consumer {
         &self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
-        reservation_cb: &impl Fn(&Bank) -> u64,
         bundle_account_locker: &BundleAccountLocker,
     ) -> ProcessTransactionBatchOutput {
         let mut error_counters = TransactionErrorMetrics::default();
@@ -160,7 +159,6 @@ impl Consumer {
             txs,
             check_results.into_iter(),
             ExecutionFlags::default(),
-            reservation_cb,
             Some(bundle_account_locker),
         );
 
@@ -178,7 +176,6 @@ impl Consumer {
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
         flags: ExecutionFlags,
-        reservation_cb: &impl Fn(&Bank) -> u64,
         bundle_account_locker: Option<&BundleAccountLocker>,
     ) -> ProcessTransactionBatchOutput {
         // Need to filter out transactions since they were sanitized earlier.
@@ -212,7 +209,6 @@ impl Consumer {
             txs,
             pre_results,
             flags,
-            reservation_cb,
             bundle_account_locker,
         )
     }
@@ -223,7 +219,6 @@ impl Consumer {
         txs: &[impl TransactionWithMeta],
         pre_results: impl Iterator<Item = Result<(), TransactionError>>,
         flags: ExecutionFlags,
-        reservation_cb: &impl Fn(&Bank) -> u64,
         bundle_account_locker: Option<&BundleAccountLocker>,
     ) -> ProcessTransactionBatchOutput {
         let (
@@ -233,7 +228,6 @@ impl Consumer {
             bank,
             txs,
             pre_results,
-            reservation_cb
         ));
 
         // Only lock accounts for those transactions are selected for the block;
@@ -666,12 +660,7 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
         let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
-        consumer.process_and_record_transactions(
-            &bank,
-            &transactions,
-            &|_| 0,
-            &bundle_account_locker,
-        )
+        consumer.process_and_record_transactions(&bank, &transactions, &bundle_account_locker)
     }
 
     fn generate_new_address_lookup_table(
@@ -755,7 +744,6 @@ mod tests {
         let process_transactions_batch_output = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -794,7 +782,6 @@ mod tests {
         let process_transactions_batch_output = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -886,7 +873,6 @@ mod tests {
         let process_transactions_batch_output = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
         let ExecuteAndCommitTransactionsOutput {
@@ -949,7 +935,6 @@ mod tests {
         let process_transactions_batch_output = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -1030,7 +1015,6 @@ mod tests {
         let process_transactions_batch_output = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -1072,7 +1056,6 @@ mod tests {
         let process_transactions_batch_output = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -1205,7 +1188,6 @@ mod tests {
         let process_transactions_batch_output = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -1424,7 +1406,6 @@ mod tests {
         let process_transactions_summary = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -1552,7 +1533,6 @@ mod tests {
         let _ = consumer.process_and_record_transactions(
             &bank,
             &transactions,
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
 
@@ -1681,7 +1661,6 @@ mod tests {
         let consumer_output = consumer.process_and_record_transactions(
             &bank,
             slice::from_ref(&sanitized_tx),
-            &|_| 0,
             &BundleAccountLocker::default(),
         );
         let CommitTransactionDetails::Committed {
@@ -1768,12 +1747,8 @@ mod tests {
         );
         let consumer = Consumer::new(committer, recorder.clone(), QosService::new(1), None);
 
-        let process_transactions_summary = consumer.process_and_record_transactions(
-            &bank,
-            &transactions,
-            &|_| 0,
-            &bundle_account_locker,
-        );
+        let process_transactions_summary =
+            consumer.process_and_record_transactions(&bank, &transactions, &bundle_account_locker);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output,

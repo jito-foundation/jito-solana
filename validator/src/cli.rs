@@ -53,7 +53,6 @@ const MAX_SNAPSHOT_DOWNLOAD_ABORT: u32 = 5;
 // with less than 2 ticks per slot.
 const MINIMUM_TICKS_PER_SLOT: u64 = 2;
 
-const DEFAULT_PREALLOCATED_BUNDLE_COST: u64 = 3000000;
 const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: u64 = 500;
 const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: u64 = 3;
 
@@ -343,7 +342,6 @@ pub struct DefaultArgs {
 
     pub thread_args: DefaultThreadArgs,
 
-    pub preallocated_bundle_cost: String,
     pub relayer_expected_heartbeat_interval_ms: String,
     pub relayer_max_failed_heartbeats: String,
 }
@@ -402,7 +400,6 @@ impl DefaultArgs {
                 .to_string(),
             wen_restart_path: "wen_restart_progress.proto".to_string(),
             thread_args: DefaultThreadArgs::default(),
-            preallocated_bundle_cost: DEFAULT_PREALLOCATED_BUNDLE_COST.to_string(),
             relayer_expected_heartbeat_interval_ms: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS
                 .to_string(),
             relayer_max_failed_heartbeats: DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS.to_string(),
