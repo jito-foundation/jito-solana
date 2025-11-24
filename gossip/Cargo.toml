@@ -81,7 +81,7 @@ solana-native-token = "=3.0.0"
 solana-net-utils = { workspace = true, features = ["agave-unstable-api"] }
 solana-packet = "=3.0.0"
 solana-perf = { workspace = true }
-solana-pubkey = { version = "=3.0.0", features = ["rand"] }
+solana-pubkey = { version = "=4.0.0", features = ["rand"] }
 solana-quic-definitions = "=3.0.0"
 solana-rayon-threadlimit = { workspace = true }
 solana-rpc-client = { workspace = true }
