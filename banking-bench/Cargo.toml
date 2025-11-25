@@ -1,34 +1,60 @@
 [package]
 name = "solana-banking-bench"
-publish = false
+# Prevents accidental publishing to crates.io as this is an internal tool.
+publish = false 
+
+# Metadata inherited from the workspace Cargo.toml
 version = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
+
+# Explicitly defines the workspace containing this crate (relative path to the parent workspace root).
 workspace = "../dev-bins"
 
 [package.metadata.docs.rs]
+# Specifies the target architecture for documentation builds.
 targets = ["x86_64-unknown-linux-gnu"]
 
+# --- Feature Flags ---
 [features]
+# Feature flag to enable unstable API usage within the Agave/Solana ecosystem.
 agave-unstable-api = []
+# Feature flag to enable utilities used only in development or testing contexts.
 dev-context-only-utils = []
+# Dummy feature used for internal CI checks.
 dummy-for-ci-check = []
+# Feature to handle frozen/stable binary interfaces (often for ABI stability).
 frozen-abi = []
 
+# --- Dependencies ---
 [dependencies]
+# Agave (Solana fork) specific dependency for banking stage types
 agave-banking-stage-ingress-types = { workspace = true }
+# Agave/Solana logging utility
 agave-logger = { workspace = true }
+# Assertion utility for pattern matching
 assert_matches = { workspace = true }
+
+# Command-line argument parser (Explicit version set, should ideally use workspace version for consistency)
 clap = { version = "3.1.8", features = ["derive", "cargo"] }
+
+# Concurrency utility for message passing
 crossbeam-channel = { workspace = true }
+# Standard logging facade
 log = { workspace = true }
+# Random number generation
 rand = { workspace = true }
+# Data parallelism library
 rayon = { workspace = true }
+
+# Solana component dependencies, primarily pulled from the workspace:
+
 solana-client = { workspace = true }
 solana-compute-budget-interface = { workspace = true }
+# Core runtime logic, enabling dev utilities for testing
 solana-core = { workspace = true, features = ["dev-context-only-utils"] }
 solana-gossip = { workspace = true }
 solana-hash = { workspace = true }
@@ -37,8 +63,10 @@ solana-ledger = { workspace = true }
 solana-measure = { workspace = true }
 solana-message = { workspace = true }
 solana-perf = { workspace = true }
+# Proof-of-History, enabling dev utilities for benchmarking
 solana-poh = { workspace = true, features = ["dev-context-only-utils"] }
 solana-pubkey = { workspace = true }
+# Runtime module, enabling dev utilities for testing
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
 solana-signature = { workspace = true }
 solana-signer = { workspace = true }
@@ -48,4 +76,6 @@ solana-time-utils = { workspace = true }
 solana-tpu-client = { workspace = true }
 solana-transaction = { workspace = true }
 solana-version = { workspace = true }
+
+# Asynchronous runtime, specifically enabling the 'sync' feature
 tokio = { workspace = true, features = ["sync"] }
