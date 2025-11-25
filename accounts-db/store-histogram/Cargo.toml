@@ -1,7 +1,11 @@
 [package]
-name = "agave-store-histogram"
+# Project Name: Tool to calculate account storage histogram, likely for the Agave/Solana network.
+name = "agave-store-histogram" 
 description = "Tool to calculate account storage histogram"
-publish = false
+# Prevents accidental publishing to crates.io as this is likely an internal tool.
+publish = false 
+
+# Metadata inherited from the workspace Cargo.toml
 version = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
@@ -9,10 +13,18 @@ homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
+---
+
 [features]
+# Feature flag to enable unstable API usage within the Solana ecosystem.
 agave-unstable-api = []
+# Feature flag to enable utilities used only in development or testing contexts.
 dev-context-only-utils = []
 
+---
+
 [dependencies]
+# Command-line argument parser. Used to handle tool inputs.
 clap = { workspace = true }
+# Library for managing and specifying the Solana version.
 solana-version = { workspace = true }
