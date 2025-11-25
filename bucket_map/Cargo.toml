@@ -1,3 +1,6 @@
+# Cargo configuration file for the high-performance solana-bucket-map library.
+# Utilizes workspace inheritance for consistency across the monorepo.
+
 [package]
 name = "solana-bucket-map"
 description = "solana-bucket-map"
@@ -14,8 +17,12 @@ crate-type = ["lib"]
 name = "solana_bucket_map"
 
 [features]
+# Feature to enable unstable APIs specific to the Agave validator.
 agave-unstable-api = []
+# Feature to enable utilities only intended for developer context usage.
 dev-context-only-utils = []
+
+# --- Production Dependencies (Inherited from Workspace) ---
 
 [dependencies]
 ahash = { workspace = true }
@@ -31,9 +38,12 @@ solana-measure = { workspace = true }
 solana-pubkey = { workspace = true }
 tempfile = { workspace = true }
 
+# --- Development and Testing Dependencies ---
+
 [dev-dependencies]
 agave-logger = { workspace = true }
 fs_extra = { workspace = true }
 rayon = { workspace = true }
+# Local dependency used for internal testing with development features enabled
 solana-bucket-map = { path = ".", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-pubkey = { workspace = true, features = ["rand"] }
