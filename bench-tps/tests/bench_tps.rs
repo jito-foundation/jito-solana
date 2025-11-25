@@ -1,6 +1,7 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use {
+    // --- IMPORTS ---
     serial_test::serial,
     solana_account::{Account, AccountSharedData},
     solana_bench_tps::{
@@ -9,7 +10,6 @@ use {
         send_batch::generate_durable_nonce_accounts,
     },
     solana_commitment_config::CommitmentConfig,
-    solana_connection_cache::connection_cache::NewConnectionConfig,
     solana_core::validator::ValidatorConfig,
     solana_faucet::faucet::run_local_faucet_for_tests,
     solana_fee_calculator::FeeRateGovernor,
@@ -20,7 +20,7 @@ use {
         validator_configs::make_identical_validator_configs,
     },
     solana_net_utils::SocketAddrSpace,
-    solana_quic_client::{QuicConfig, QuicConnectionManager},
+    solana_quic_client::{QuicConnectionManager, QuicConfig},
     solana_rent::Rent,
     solana_rpc::rpc::JsonRpcConfig,
     solana_rpc_client::rpc_client::RpcClient,
@@ -30,8 +30,13 @@ use {
     std::{sync::Arc, time::Duration},
 };
 
+// --- HELPER FUNCTIONS ---
+
+/// Creates an executable AccountSharedData structure for a BPF program.
 fn program_account(program_data: &[u8]) -> AccountSharedData {
     AccountSharedData::from(Account {
+        // Ensure the program account has enough lamports to cover rent for its data size.
+        // It should have at least 1 lamport to be considered existing.
         lamports: Rent::default().minimum_balance(program_data.len()).min(1),
         data: program_data.to_vec(),
         owner: solana_sdk_ids::bpf_loader::id(),
@@ -40,10 +45,13 @@ fn program_account(program_data: &[u8]) -> AccountSharedData {
     })
 }
 
+/// Runs TPS benchmark tests within a simulated single-node LocalCluster environment.
 fn test_bench_tps_local_cluster(config: Config) {
+    // 1. Setup Environment
+    let program_data = include_bytes!("fixtures/spl_instruction_padding.so");
     let additional_accounts = vec![(
         spl_instruction_padding_interface::ID,
-        program_account(include_bytes!("fixtures/spl_instruction_padding.so")),
+        program_account(program_data),
     )];
 
     agave_logger::setup();
@@ -56,6 +64,7 @@ fn test_bench_tps_local_cluster(config: Config) {
         0,    /* port */
     );
 
+    // 2. Initialize LocalCluster
     const NUM_NODES: usize = 1;
     let cluster = LocalCluster::new(
         &mut ClusterConfig {
@@ -77,18 +86,20 @@ fn test_bench_tps_local_cluster(config: Config) {
         SocketAddrSpace::Unspecified,
     );
 
+    // Fund the faucet for test accounts.
     cluster.transfer(&cluster.funding_keypair, &faucet_pubkey, 100_000_000);
 
+    // 3. Create TPU Client (QUIC preferred for performance)
     let client = Arc::new(
         cluster
             .build_validator_tpu_quic_client(cluster.entry_point_info.pubkey())
             .unwrap_or_else(|err| {
-                panic!("Could not create TpuClient with Quic Cache {err:?}");
+                panic!("Failed to create TpuClient with Quic Cache: {:?}", err);
             }),
     );
 
+    // 4. Generate & Fund Keypairs
     let lamports_per_account = 100;
-
     let keypair_count = config.tx_count * config.keypair_multiplier;
     let keypairs = generate_and_fund_keypairs(
         client.clone(),
@@ -98,17 +109,21 @@ fn test_bench_tps_local_cluster(config: Config) {
         false,
         false,
     )
-    .unwrap();
+    .expect("Failed to generate and fund keypairs");
 
+    // 5. Run Benchmark
     let _total = do_bench_tps(client, config, keypairs, None);
 
+    // Assertion for non-debug builds
     #[cfg(not(debug_assertions))]
     assert!(_total > 100);
 }
 
+/// Runs TPS benchmark tests within a single TestValidator instance.
 fn test_bench_tps_test_validator(config: Config) {
     agave_logger::setup();
 
+    // 1. Setup Faucet
     let mint_keypair = Keypair::new();
     let mint_pubkey = mint_keypair.pubkey();
     let faucet_addr = run_local_faucet_for_tests(
@@ -117,21 +132,25 @@ fn test_bench_tps_test_validator(config: Config) {
         0,    /* port */
     );
 
+    // 2. Initialize TestValidator
     let test_validator = TestValidatorGenesis::default()
         .fee_rate_governor(FeeRateGovernor::new(0, 0))
         .rent(Rent {
+            // Configure simple rent for predictable test environment
             lamports_per_byte_year: 1,
             exemption_threshold: 1.0,
             ..Rent::default()
         })
         .faucet_addr(Some(faucet_addr))
+        // Add the Instruction Padding program required for some tests
         .add_program(
             "spl_instruction_padding",
             spl_instruction_padding_interface::ID,
         )
         .start_with_mint_address(mint_pubkey, SocketAddrSpace::Unspecified)
-        .expect("validator start failed");
+        .expect("Test Validator failed to start");
 
+    // 3. Create Tpu Client
     let rpc_client = Arc::new(RpcClient::new_with_commitment(
         test_validator.rpc_url(),
         CommitmentConfig::processed(),
@@ -146,11 +165,11 @@ fn test_bench_tps_test_validator(config: Config) {
             TpuClientConfig::default(),
             QuicConnectionManager::new_with_connection_config(QuicConfig::new().unwrap()),
         )
-        .expect("Should build Quic Tpu Client."),
+        .expect("Failed to build Quic Tpu Client"),
     );
 
+    // 4. Generate & Fund Keypairs
     let lamports_per_account = 1000;
-
     let keypair_count = config.tx_count * config.keypair_multiplier;
     let keypairs = generate_and_fund_keypairs(
         client.clone(),
@@ -160,18 +179,24 @@ fn test_bench_tps_test_validator(config: Config) {
         false,
         false,
     )
-    .unwrap();
+    .expect("Failed to generate and fund keypairs");
+    
+    // Generate Nonce accounts if required by the configuration
     let nonce_keypairs = if config.use_durable_nonce {
         Some(generate_durable_nonce_accounts(client.clone(), &keypairs))
     } else {
         None
     };
 
+    // 5. Run Benchmark
     let _total = do_bench_tps(client, config, keypairs, nonce_keypairs);
 
+    // Assertion for non-debug builds
     #[cfg(not(debug_assertions))]
     assert!(_total > 100);
 }
+
+// --- TEST CASES ---
 
 #[test]
 #[serial]
@@ -199,7 +224,7 @@ fn test_bench_tps_tpu_client_nonce() {
     test_bench_tps_test_validator(Config {
         tx_count: 100,
         duration: Duration::from_secs(10),
-        use_durable_nonce: true,
+        use_durable_nonce: true, // Enables Durable Nonce transactions
         ..Config::default()
     });
 }
@@ -212,7 +237,7 @@ fn test_bench_tps_local_cluster_with_padding() {
         duration: Duration::from_secs(10),
         instruction_padding_config: Some(InstructionPaddingConfig {
             program_id: spl_instruction_padding_interface::ID,
-            data_size: 0,
+            data_size: 0, // Padding instruction data size
         }),
         ..Config::default()
     });
@@ -226,7 +251,7 @@ fn test_bench_tps_tpu_client_with_padding() {
         duration: Duration::from_secs(10),
         instruction_padding_config: Some(InstructionPaddingConfig {
             program_id: spl_instruction_padding_interface::ID,
-            data_size: 0,
+            data_size: 0, // Padding instruction data size
         }),
         ..Config::default()
     });
