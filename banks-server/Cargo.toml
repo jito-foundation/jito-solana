@@ -1,7 +1,11 @@
+# Cargo.toml for the Solana Banks Server library.
+# This component handles RPC requests against the Bank State.
+
 [package]
 name = "solana-banks-server"
 description = "Solana banks server"
 documentation = "https://docs.rs/solana-banks-server"
+# Inherit package metadata from the workspace root.
 version = { workspace = true }
 authors = { workspace = true }
 repository = { workspace = true }
@@ -9,23 +13,24 @@ homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
+# Configuration for documentation generation (docs.rs).
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
+# Explicit library definition. Can often be omitted if src/lib.rs is used.
 [lib]
 crate-type = ["lib"]
 name = "solana_banks_server"
 
 [features]
+# Enables access to unstable or experimental Agave APIs.
 agave-unstable-api = []
 
 [dependencies]
+# --- Core Solana Components ---
 agave-feature-set = { workspace = true }
-bincode = { workspace = true }
-crossbeam-channel = { workspace = true }
-futures = { workspace = true }
 solana-account = { workspace = true }
-solana-banks-interface = { workspace = true }
+solana-banks-interface = { workspace = true } # RPC interface definition
 solana-client = { workspace = true }
 solana-clock = { workspace = true }
 solana-commitment-config = { workspace = true }
@@ -34,14 +39,27 @@ solana-hash = { workspace = true }
 solana-message = { workspace = true }
 solana-net-utils = { workspace = true }
 solana-pubkey = { workspace = true }
-solana-runtime = { workspace = true }
+solana-runtime = { workspace = true }         # Core runtime environment
 solana-runtime-transaction = { workspace = true }
 solana-send-transaction-service = { workspace = true }
 solana-signature = { workspace = true }
-solana-svm = { workspace = true }
+solana-svm = { workspace = true }             # Solana Virtual Machine
 solana-transaction = { workspace = true }
 solana-transaction-error = { workspace = true }
-tarpc = { workspace = true, features = ["full"] }
-tokio = { workspace = true, features = ["full"] }
-tokio-serde = { workspace = true, features = ["bincode"] }
+
+# --- Utility and RPC Frameworks ---
+bincode = { workspace = true }
+crossbeam-channel = { workspace = true }
+futures = { workspace = true }
 tokio-util = { workspace = true }
+
+# Remote Procedure Call (RPC) framework.
+# NOTE: Consider reducing 'full' features for faster compilation if possible.
+tarpc = { workspace = true, features = ["full"] }
+
+# Asynchronous runtime environment.
+# NOTE: Prefer specifying needed features (e.g., "macros", "rt-multi-thread") over "full".
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization/deserialization for Tokio streams.
+tokio-serde = { workspace = true, features = ["bincode"] }
