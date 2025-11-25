@@ -168,11 +168,3 @@ impl FetchStageManager {
         self.t_hdl.join()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_set_tpu_addresses() {
-        panic!("not implemented");
-    }
-}
