@@ -1,5 +1,9 @@
+# Cargo.toml for Solana Bench Streamer component.
+# This package is part of a larger Solana monorepo workspace.
+
 [package]
 name = "solana-bench-streamer"
+# Prevents accidental publishing to crates.io as this is an internal component.
 publish = false
 version = { workspace = true }
 authors = { workspace = true }
@@ -8,18 +12,28 @@ homepage = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 
+# Configuration for documentation generation (docs.rs).
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
+# Enables access to unstable or experimental Agave APIs for testing purposes.
 agave-unstable-api = []
 
 [dependencies]
-clap = { version = "3.1.5", features = ["cargo"] }
+# Command Line Argument Parser. Assuming version is defined in the workspace root.
+clap = { workspace = true, features = ["cargo"] }
+# Multi-producer, multi-consumer channels for concurrency.
 crossbeam-channel = { workspace = true }
+# Utilities for Solana network operations.
 solana-net-utils = { workspace = true }
+# Core Solana streaming and network utilities.
 solana-streamer = { workspace = true }
+# Solana version handling.
 solana-version = { workspace = true }
 
+
+# === PLATFORM-SPECIFIC DEPENDENCIES ===
+# Use jemallocator for performance optimization on all targets EXCEPT Windows (msvc) and FreeBSD.
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dependencies]
 jemallocator = { workspace = true }
