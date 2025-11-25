@@ -77,6 +77,9 @@ use {
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
+#[cfg(feature = "arbitrage-integration")]
+use arbitrage::shared::config::Config as ArbitrageConfig;
+
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
     pub transaction_forwards: Vec<UdpSocket>,
@@ -137,6 +140,8 @@ pub struct Tpu {
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
     bundle_stage: BundleStage,
+    arbitrage_packet_tee: Option<thread::JoinHandle<()>>,
+    arbitrage_interceptor: Option<crate::arbitrage_interceptor::TransactionInterceptor>,
 }
 
 impl Tpu {
@@ -217,6 +222,15 @@ impl Tpu {
         // If relayer is connected, packets are dropped. If not, packets are forwarded on to packet_sender
         let (fetch_stage_manager_sender, fetch_stage_manager_receiver) = unbounded();
         let (sigverify_stage_sender, sigverify_stage_receiver) = unbounded();
+        
+        // Create channels for raw transaction interception
+        // This gives us 200-400ms head start for MEV detection
+        let (quic_packets_sender, quic_packets_receiver) = unbounded();
+        let (arbitrage_intercept_sender, arbitrage_intercept_receiver) = unbounded();
+        let arbitrage_raw_tx_enabled = raw_tx_enabled_from_config(&arbitrage_config);
+        let mut intercepted_tx_receiver_opt: Option<
+            Receiver<crate::arbitrage_interceptor::InterceptedTransaction>,
+        > = None;
 
         let (vote_packet_sender, vote_packet_receiver) = unbounded();
         let (forwarded_packet_sender, forwarded_packet_receiver) = unbounded();
@@ -268,26 +282,64 @@ impl Tpu {
         )
         .unwrap();
 
-        let (tpu_quic_t, key_updater) = if vortexor_receivers.is_none() {
-            // Streamer for TPU
-            let SpawnServerResult {
-                endpoints: _,
-                thread: tpu_quic_t,
-                key_updater,
-            } = spawn_server(
-                "solQuicTpu",
-                "quic_streamer_tpu",
-                transactions_quic_sockets,
-                keypair,
-                fetch_stage_manager_sender.clone(),
-                exit.clone(),
-                staked_nodes.clone(),
-                tpu_quic_server_config,
-            )
-            .unwrap();
-            (Some(tpu_quic_t), Some(key_updater))
+        // Set up packet interception for MEV detection if enabled
+        let (tpu_quic_t, key_updater, arbitrage_packet_tee) = if vortexor_receivers.is_none() {
+            // Determine if we should intercept transactions for MEV
+            let should_intercept = arbitrage_raw_tx_enabled;
+            
+            if should_intercept {
+                info!("MEV INTERCEPTION ENABLED: Raw transactions will be intercepted for arbitrage detection");
+                
+                // QUIC sends to quic_packets_sender
+                // Packet tee duplicates them:
+                //   - One copy to arbitrage_intercept_sender (for MEV detection)
+                //   - One copy to fetch_stage_manager_sender (normal processing)
+                let SpawnServerResult {
+                    endpoints: _,
+                    thread: tpu_quic_t,
+                    key_updater,
+                } = spawn_server(
+                    "solQuicTpu",
+                    "quic_streamer_tpu",
+                    transactions_quic_sockets,
+                    keypair,
+                    quic_packets_sender.clone(),  // Send to tee input
+                    exit.clone(),
+                    staked_nodes.clone(),
+                    tpu_quic_server_config,
+                )
+                .unwrap();
+                
+                // Create packet tee to duplicate packets for interception
+                let tee_handle = crate::arbitrage_interceptor::create_packet_tee(
+                    quic_packets_receiver,
+                    fetch_stage_manager_sender.clone(),
+                    arbitrage_intercept_sender.clone(),
+                    exit.clone(),
+                );
+                
+                (Some(tpu_quic_t), Some(key_updater), Some(tee_handle))
+            } else {
+                // No interception - direct connection
+                let SpawnServerResult {
+                    endpoints: _,
+                    thread: tpu_quic_t,
+                    key_updater,
+                } = spawn_server(
+                    "solQuicTpu",
+                    "quic_streamer_tpu",
+                    transactions_quic_sockets,
+                    keypair,
+                    fetch_stage_manager_sender.clone(),
+                    exit.clone(),
+                    staked_nodes.clone(),
+                    tpu_quic_server_config,
+                )
+                .unwrap();
+                (Some(tpu_quic_t), Some(key_updater), None)
+            }
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         let (tpu_forwards_quic_t, forwards_key_updater) = if vortexor_receivers.is_none() {
@@ -443,6 +495,7 @@ impl Tpu {
                 )
             },
             arbitrage_config,
+            arbitrage_raw_tx_enabled,
         );
 
         let SpawnForwardingStageResult {
@@ -491,7 +544,7 @@ impl Tpu {
             cluster_info.clone(),
             entry_receiver,
             retransmit_slots_receiver,
-            exit,
+            exit.clone(),
             blockstore,
             bank_forks,
             shred_version,
@@ -512,6 +565,49 @@ impl Tpu {
 
         key_notifiers.add(KeyUpdaterType::Forward, client_updater);
 
+        // Initialize arbitrage interceptor if enabled
+        let arbitrage_interceptor = if arbitrage_packet_tee.is_some() {
+            use crate::arbitrage_interceptor::{InterceptorConfig, TransactionInterceptor};
+            use std::str::FromStr;
+            
+            // DEX program IDs to track for MEV
+            const METEORA_DLMM_PROGRAM_ID: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+            const PUMP_PROGRAM_ID: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+            
+            // Configure interceptor with tracked DEX programs
+            let tracked_programs = vec![
+                solana_pubkey::Pubkey::from_str(METEORA_DLMM_PROGRAM_ID)
+                    .expect("Invalid Meteora program ID"),
+                solana_pubkey::Pubkey::from_str(PUMP_PROGRAM_ID)
+                    .expect("Invalid Pumpfun program ID"),
+            ];
+            
+            info!("Initializing MEV interceptor for {} DEX programs", tracked_programs.len());
+            
+            let config = InterceptorConfig {
+                tracked_programs,
+                intercept_all: false,  // Only intercept DEX transactions
+                max_queue_size: 10000,
+                verbose: false,
+            };
+            
+            let (mut interceptor, intercepted_tx_receiver) = TransactionInterceptor::new(config);
+            interceptor.start(arbitrage_intercept_receiver, exit.clone());
+            
+            info!("Transaction interceptor started - MEV detection active");
+            
+            // Preserve receiver so the banking stage can process raw transactions
+            intercepted_tx_receiver_opt = Some(intercepted_tx_receiver);
+            
+            Some(interceptor)
+        } else {
+            None
+        };
+
+        if let Some(raw_receiver) = intercepted_tx_receiver_opt.take() {
+            banking_stage.start_arbitrage_raw_transaction_processor(raw_receiver, exit.clone());
+        }
+        
         Self {
             fetch_stage,
             sig_verifier,
@@ -530,6 +626,8 @@ impl Tpu {
             relayer_stage,
             fetch_stage_manager,
             bundle_stage,
+            arbitrage_packet_tee,
+            arbitrage_interceptor,
         }
     }
 
@@ -549,6 +647,7 @@ impl Tpu {
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
+            self.arbitrage_packet_tee.map_or(Ok(()), |t| t.join()),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
@@ -556,6 +655,10 @@ impl Tpu {
         }
         if let Some(tpu_entry_notifier) = self.tpu_entry_notifier {
             tpu_entry_notifier.join()?;
+        }
+        if let Some(interceptor) = self.arbitrage_interceptor {
+            info!("Shutting down arbitrage interceptor");
+            interceptor.join()?;
         }
         let _ = broadcast_result?;
         if let Some(tracer_thread_hdl) = self.tracer_thread_hdl {
@@ -568,6 +671,29 @@ impl Tpu {
         }
         Ok(())
     }
+}
+
+#[cfg(feature = "arbitrage-integration")]
+fn raw_tx_enabled_from_config(arbitrage_config: &Option<String>) -> bool {
+    if let Some(path) = arbitrage_config {
+        match ArbitrageConfig::load_from_file(path) {
+            Ok(cfg) => cfg.enable_raw_tx_processing,
+            Err(err) => {
+                warn!(
+                    "Failed to read arbitrage config {}: {}; disabling raw transaction interception",
+                    path, err
+                );
+                false
+            }
+        }
+    } else {
+        false
+    }
+}
+
+#[cfg(not(feature = "arbitrage-integration"))]
+fn raw_tx_enabled_from_config(_: &Option<String>) -> bool {
+    false
 }
 
 #[cfg(test)]

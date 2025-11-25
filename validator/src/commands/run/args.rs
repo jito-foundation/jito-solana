@@ -771,6 +771,19 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("wait_for_vote_to_start_leader_timeout")
+            .long("wait-for-vote-to-start-leader-timeout")
+            .value_name("MILLISECS")
+            .takes_value(true)
+            .validator(is_parsable::<u64>)
+            .default_value(&default_args.wait_for_vote_to_start_leader_timeout)
+            .help(
+                "If the validator starts up with no ledger, it will wait to start block \
+                 production until it sees a vote land in a rooted slot. This timeout specifies \
+                 how long to wait for that vote.",
+            ),
+    )
+    .arg(
         Arg::with_name("hard_forks")
             .long("hard-fork")
             .value_name("SLOT")

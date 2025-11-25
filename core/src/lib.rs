@@ -9,6 +9,7 @@
 //!
 
 pub mod admin_rpc_post_init;
+pub mod arbitrage_interceptor;
 pub mod banking_simulation;
 pub mod banking_stage;
 pub mod banking_trace;

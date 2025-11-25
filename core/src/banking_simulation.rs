@@ -843,6 +843,7 @@ impl BankingSimulator {
             BundleAccountLocker::default(),
             |_| 0,
             None, // arbitrage config
+            false,
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot

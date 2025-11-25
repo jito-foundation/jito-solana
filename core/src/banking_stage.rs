@@ -145,6 +145,8 @@ impl BankingStageStats {
         }
     }
 
+
+
     fn is_empty(&self) -> bool {
         self.gossip_counts.is_empty()
             && self.tpu_counts.is_empty()
@@ -344,6 +346,10 @@ pub struct BankingStage {
     // Only None during final join of BankingStage.
     non_vote_context: Option<BankingStageNonVoteContext>,
     non_vote_thread_hdls: Vec<JoinHandle<()>>,
+    #[cfg(feature = "arbitrage-integration")]
+    arbitrage_integration: Option<ArbitrageIntegration>,
+    #[cfg(feature = "arbitrage-integration")]
+    raw_tx_processor: Mutex<Option<arbitrage_integration::RawTransactionProcessor>>,
 }
 
 pub trait LikeClusterInfo: Send + Sync + 'static + Clone {
@@ -382,10 +388,13 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
         arbitrage_config: Option<String>,
+        arbitrage_enable_raw_tx: bool,
     ) -> Self {
-        // Initialize arbitrage integration (if config provided)
-        let arb_integration = ArbitrageIntegration::new(
-            arbitrage_config.as_ref().map(|s| s.as_str())
+        // Initialize arbitrage integration with bank_forks for transaction simulation
+        let arb_integration = ArbitrageIntegration::new_with_bank_forks(
+            arbitrage_config.as_ref().map(|s| s.as_str()),
+            arbitrage_enable_raw_tx,
+            Some(bank_forks.clone()), // bank_forks for simulation
         );
         
         let committer = Committer::new(
@@ -434,6 +443,10 @@ impl BankingStage {
             vote_thread_hdl,
             non_vote_context: Some(non_vote_context),
             non_vote_thread_hdls,
+            #[cfg(feature = "arbitrage-integration")]
+            arbitrage_integration: Some(arb_integration),
+            #[cfg(feature = "arbitrage-integration")]
+            raw_tx_processor: Mutex::new(None),
         }
     }
 
@@ -654,6 +667,49 @@ impl BankingStage {
         }
         Ok(())
     }
+    #[cfg(feature = "arbitrage-integration")]
+    pub fn start_arbitrage_raw_transaction_processor(
+        &self,
+        raw_tx_receiver: Receiver<crate::arbitrage_interceptor::InterceptedTransaction>,
+        exit: Arc<AtomicBool>,
+    ) {
+        if !self.arbitrage_raw_tx_enabled() {
+            return;
+        }
+
+        if let Some(integration) = &self.arbitrage_integration {
+            let mut guard = self
+                .raw_tx_processor
+                .lock()
+                .expect("Raw transaction processor mutex poisoned");
+            if guard.is_some() {
+                return;
+            }
+            let processor = integration.start_raw_transaction_processor(raw_tx_receiver, exit);
+            *guard = Some(processor);
+        }
+    }
+
+    #[cfg(not(feature = "arbitrage-integration"))]
+    pub fn start_arbitrage_raw_transaction_processor(
+        &self,
+        _raw_tx_receiver: Receiver<crate::arbitrage_interceptor::InterceptedTransaction>,
+        _exit: Arc<AtomicBool>,
+    ) {
+    }
+
+    #[cfg(feature = "arbitrage-integration")]
+    pub fn arbitrage_raw_tx_enabled(&self) -> bool {
+        self.arbitrage_integration
+            .as_ref()
+            .map(|arb| arb.raw_tx_enabled())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(feature = "arbitrage-integration"))]
+    pub fn arbitrage_raw_tx_enabled(&self) -> bool {
+        false
+    }
 }
 
 // Context for spawning non-vote threads in the banking stage.
@@ -770,6 +826,7 @@ mod tests {
             BundleAccountLocker::default(),
             |_| 0,
             None, // arbitrage config
+            false,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -830,6 +887,7 @@ mod tests {
             BundleAccountLocker::default(),
             |_| 0,
             None, // arbitrage config
+            false,
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -899,6 +957,7 @@ mod tests {
             BundleAccountLocker::default(),
             |_| 0,
             None, // arbitrage config
+            false,
         );
 
         // good tx, and no verify
@@ -1053,7 +1112,8 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
-            None, // arbitrage config
+                None, // arbitrage config
+                false,
             );
 
             // wait for banking_stage to eat the packets
@@ -1245,6 +1305,7 @@ mod tests {
             BundleAccountLocker::default(),
             |_| 0,
             None, // arbitrage config
+            false,
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1375,7 +1436,8 @@ mod tests {
                         HashSet::from_iter([blacklisted_keypair.pubkey()]),
                         BundleAccountLocker::default(),
                         |_| 0,
-            None, // arbitrage config
+                        None, // arbitrage config
+                        false,
                     );
 
                     // bad tx
