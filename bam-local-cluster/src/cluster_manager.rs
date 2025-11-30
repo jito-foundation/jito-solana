@@ -328,6 +328,7 @@ impl BamValidator {
 
 pub struct BamLocalCluster {
     validators: Arc<Mutex<Vec<BamValidator>>>,
+    skip_last_validator: bool,
     runtime: Runtime,
 }
 
@@ -335,6 +336,7 @@ impl BamLocalCluster {
     pub fn new(
         config: LocalClusterConfig,
         quiet: bool,
+        skip_last_validator: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         const BOOTSTRAP_GOSSIP: &str = "127.0.0.1:8001";
         const BOOTSTRAP_GOSSIP_PORT: u16 = 8001;
@@ -377,6 +379,11 @@ impl BamLocalCluster {
 
         // Process all validators
         for (i, validator_config) in config.validators.iter().enumerate() {
+            if skip_last_validator && (i == config.validators.len().saturating_sub(1)) {
+                info!("Skip flag set; not starting validator-{} process, but it remains in genesis", i+1);
+                continue;
+            }
+
             let is_bootstrap = i == 0; // First validator is always bootstrap
             let ledger_path = validator_config.ledger_path.clone();
             if !ledger_path.exists() {
@@ -450,6 +457,7 @@ impl BamLocalCluster {
 
         Ok(Self {
             validators,
+            skip_last_validator,
             runtime,
         })
     }
@@ -565,8 +573,9 @@ impl BamLocalCluster {
         let validators_ptr = self.validators.clone();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
 
+        let skip_last_validator = self.skip_last_validator;
         self.runtime.spawn(async move {
-            Self::monitor_validators(validators_ptr, tx).await;
+            Self::monitor_validators(validators_ptr, skip_last_validator, tx).await;
         });
 
         // Wait for Ctrl+C or validator death
@@ -586,6 +595,7 @@ impl BamLocalCluster {
 
     async fn monitor_validators(
         validators: std::sync::Arc<std::sync::Mutex<Vec<BamValidator>>>,
+        skip_last_validator: bool,
         exit_tx: tokio::sync::oneshot::Sender<()>,
     ) {
         loop {
@@ -599,8 +609,10 @@ impl BamLocalCluster {
                             i, validator.node_name
                         );
                         // Signal exit and return
-                        let _ = exit_tx.send(());
-                        return;
+                        if !skip_last_validator {
+                            let _ = exit_tx.send(());
+                            return;
+                        }
                     } else {
                         debug!(
                             "Validator process {} ({}) is running",

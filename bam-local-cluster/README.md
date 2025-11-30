@@ -59,6 +59,7 @@ The tool spawns `agave-validator` processes as subprocesses, automatically handl
 
 The cluster runs until you press Ctrl+C or a validator process fails. All validator output is streamed to the console for debugging.
 
+Use `--skip-last-validator` to omit starting the final validator (useful when running an alternate validator for testing purposes); the validator still receives stake/airdrop in genesis and remains in the leader schedule.
 
 
 ## Troubleshooting
