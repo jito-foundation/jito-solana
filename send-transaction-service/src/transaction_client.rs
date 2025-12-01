@@ -4,7 +4,6 @@ use {
     log::warn,
     solana_client::connection_cache::{ConnectionCache, Protocol},
     solana_connection_cache::client_connection::ClientConnection as TpuConnection,
-    solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
     solana_quic_definitions::NotifyKeyUpdate,
@@ -52,7 +51,7 @@ pub trait TransactionClient {
 
 pub struct ConnectionCacheClient<T: TpuInfoWithSendStatic> {
     connection_cache: Arc<ConnectionCache>,
-    cluster_info: Arc<ClusterInfo>,
+    tpu_address: SocketAddr,
     tpu_peers: Option<Vec<SocketAddr>>,
     leader_info_provider: Arc<Mutex<CurrentLeaderInfo<T>>>,
     leader_forward_count: u64,
@@ -66,7 +65,7 @@ where
     fn clone(&self) -> Self {
         Self {
             connection_cache: Arc::clone(&self.connection_cache),
-            cluster_info: self.cluster_info.clone(),
+            tpu_address: self.tpu_address,
             tpu_peers: self.tpu_peers.clone(),
             leader_info_provider: Arc::clone(&self.leader_info_provider),
             leader_forward_count: self.leader_forward_count,
@@ -80,7 +79,7 @@ where
 {
     pub fn new(
         connection_cache: Arc<ConnectionCache>,
-        cluster_info: Arc<ClusterInfo>,
+        tpu_address: SocketAddr,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_info: Option<T>,
         leader_forward_count: u64,
@@ -88,20 +87,21 @@ where
         let leader_info_provider = Arc::new(Mutex::new(CurrentLeaderInfo::new(leader_info)));
         Self {
             connection_cache,
-            cluster_info,
+            tpu_address,
             tpu_peers,
             leader_info_provider,
             leader_forward_count,
         }
     }
 
-    fn get_tpu_addresses<'a>(&'a self, leader_info: Option<&'a T>) -> Option<Vec<&'a SocketAddr>> {
+    fn get_tpu_addresses<'a>(&'a self, leader_info: Option<&'a T>) -> Vec<&'a SocketAddr> {
         leader_info
             .map(|leader_info| {
                 leader_info
                     .get_leader_tpus(self.leader_forward_count, self.connection_cache.protocol())
             })
             .filter(|addresses| !addresses.is_empty())
+            .unwrap_or_else(|| vec![&self.tpu_address])
     }
 
     fn send_transactions(
@@ -115,7 +115,10 @@ where
         let result = conn.send_data_batch_async(wire_transactions);
 
         if let Err(err) = result {
-            warn!("Failed to send transaction transaction to {peer}: {err:?}",);
+            warn!(
+                "Failed to send transaction transaction to {}: {:?}",
+                self.tpu_address, err
+            );
             stats.send_failure_count.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -142,17 +145,8 @@ where
             .unwrap_or_default();
         let mut leader_info_provider = self.leader_info_provider.lock().unwrap();
         let leader_info = leader_info_provider.get_leader_info();
-
-        let my_addr = self
-            .cluster_info
-            .my_contact_info()
-            .tpu(self.connection_cache.protocol())
-            .unwrap();
-        if let Some(leader_addresses) = self.get_tpu_addresses(leader_info) {
-            addresses.extend(leader_addresses);
-        } else {
-            addresses.push(&my_addr);
-        }
+        let leader_addresses = self.get_tpu_addresses(leader_info);
+        addresses.extend(leader_addresses);
 
         for address in &addresses {
             self.send_transactions(address, wire_transactions.clone(), stats);
@@ -246,7 +240,7 @@ const METRICS_REPORTING_INTERVAL: Duration = Duration::from_secs(3);
 impl TpuClientNextClient {
     pub fn new<T>(
         runtime_handle: Handle,
-        cluster_info: Arc<ClusterInfo>,
+        my_tpu_address: SocketAddr,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_info: Option<T>,
         leader_forward_count: u64,
@@ -267,7 +261,7 @@ impl TpuClientNextClient {
         let leader_updater: SendTransactionServiceLeaderUpdater<T> =
             SendTransactionServiceLeaderUpdater {
                 leader_info_provider,
-                cluster_info,
+                my_tpu_address,
                 tpu_peers,
             };
         let config = Self::create_config(bind_socket, identity, leader_forward_count as usize);
@@ -361,7 +355,7 @@ impl TransactionClient for TpuClientNextClient {
 #[derive(Clone)]
 pub struct SendTransactionServiceLeaderUpdater<T: TpuInfoWithSendStatic> {
     leader_info_provider: CurrentLeaderInfo<T>,
-    cluster_info: Arc<ClusterInfo>,
+    my_tpu_address: SocketAddr,
     tpu_peers: Option<Vec<SocketAddr>>,
 }
 
@@ -377,18 +371,10 @@ where
             .map(|leader_info| {
                 leader_info.get_not_unique_leader_tpus(lookahead_leaders as u64, Protocol::QUIC)
             })
-            .filter(|addresses| !addresses.is_empty());
+            .filter(|addresses| !addresses.is_empty())
+            .unwrap_or_else(|| vec![&self.my_tpu_address]);
         let mut all_peers = self.tpu_peers.clone().unwrap_or_default();
-        if let Some(discovered_peers) = discovered_peers {
-            all_peers.extend(discovered_peers.into_iter().cloned());
-        } else {
-            all_peers.push(
-                self.cluster_info
-                    .my_contact_info()
-                    .tpu(Protocol::QUIC)
-                    .unwrap(),
-            );
-        }
+        all_peers.extend(discovered_peers.into_iter().cloned());
         all_peers
     }
     async fn stop(&mut self) {}
