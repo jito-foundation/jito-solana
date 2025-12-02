@@ -655,23 +655,31 @@ impl BundleStage {
         // to prevent BankingStage from being starved of transactions to process.
         //
         // Requirements:
-        // - Any bundle that gets popped must be destoryed
+        // - Any bundle that gets popped must be destroyed
         // - Any bundle that gets locked with the bundle account locker shall be destroyed
-        while let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) {
-            if bundle_account_locker
-                .lock_bundle(&bundle.transactions, bank)
-                .is_err()
-            {
-                bundle_stage_metrics.increment_bundle_lock_errors(1);
+        loop {
+            // Pop from storage until our window is full or storage is empty.
+            while bundles.len() < BUNDLE_WINDOW_SIZE.get() {
+                let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) else {
+                    break;
+                };
 
-                bundle_storage.destroy_bundle(bundle);
-                continue;
+                if bundle_account_locker
+                    .lock_bundle(&bundle.transactions, bank)
+                    .is_err()
+                {
+                    bundle_stage_metrics.increment_bundle_lock_errors(1);
+
+                    bundle_storage.destroy_bundle(bundle);
+                    continue;
+                }
+
+                bundles.push_back(bundle);
             }
 
-            bundles.push_back(bundle);
-            if bundles.len() == BUNDLE_WINDOW_SIZE.get() {
-                // unwrwap safe here because of the length check
-                let bundle = bundles.pop_front().unwrap();
+            // NB: We pop at most 1 bundle to ensure our bundle window always maintains 9-10 bundles
+            //     of locks (unless of course the bundle storage is empty).
+            if let Some(bundle) = bundles.pop_front() {
                 if let Some(output) = Self::process_bundle(
                     bank,
                     bundle,
@@ -684,25 +692,13 @@ impl BundleStage {
                     consume_worker_metrics.set_has_data(true);
                     bundle_stage_metrics.increment_bundles_processed(1);
                 }
+
+                consume_worker_metrics.maybe_report_and_reset();
             }
 
-            consume_worker_metrics.maybe_report_and_reset();
-        }
-
-        while let Some(bundle) = bundles.pop_front() {
-            if let Some(output) = Self::process_bundle(
-                bank,
-                bundle,
-                bundle_storage,
-                bundle_account_locker,
-                consumer,
-                consume_worker_metrics,
-            ) {
-                consume_worker_metrics.update_for_consume(&output);
-                consume_worker_metrics.set_has_data(true);
-                bundle_stage_metrics.increment_bundles_processed(1);
+            if bundles.is_empty() {
+                break;
             }
-            consume_worker_metrics.maybe_report_and_reset();
         }
 
         debug_assert!(
