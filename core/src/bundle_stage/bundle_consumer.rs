@@ -537,7 +537,9 @@ mod tests {
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_transaction::transfer,
-        solana_transaction::{sanitized::SanitizedTransaction, Transaction, TransactionError},
+        solana_transaction::{
+            sanitized::SanitizedTransaction, InstructionError, Transaction, TransactionError,
+        },
         std::{sync::Arc, time::Duration},
     };
 
@@ -1053,5 +1055,70 @@ mod tests {
             CommitTransactionDetails::NotCommitted(TransactionError::AccountInUse)
         );
         assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+    }
+
+    #[test]
+    fn test_non_fee_payer_failure_tx_reverts() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+        let transactions = sanitize_transactions(vec![
+            transfer(&mint_keypair, &kp1.pubkey(), 1, genesis_config.hash()),
+            transfer(&kp1, &kp2.pubkey(), 10, genesis_config.hash()),
+        ]);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 2);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+        );
+        assert_matches!(
+            commit_transactions_result[1],
+            CommitTransactionDetails::NotCommitted(TransactionError::InstructionError(
+                0,
+                InstructionError::Custom(1)
+            ))
+        );
     }
 }
