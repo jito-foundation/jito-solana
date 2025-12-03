@@ -1391,8 +1391,13 @@ fn test_program_execution_error(rpc_client: &RpcClient, mint_keypair: &Keypair) 
 
     let kp = Keypair::new();
     let transactions = vec![
-        system_transaction::transfer(mint_keypair, &kp.pubkey(), rent * 2, latest_blockhash),
-        system_transaction::transfer(&kp, &new_rand(), rent + 1, latest_blockhash),
+        system_transaction::transfer(
+            mint_keypair,
+            &kp.pubkey(),
+            rent.saturating_mul(2),
+            latest_blockhash,
+        ),
+        system_transaction::transfer(&kp, &new_rand(), rent.saturating_add(1), latest_blockhash),
     ];
 
     let bad_tx_signature = *transactions.get(1).unwrap().signatures.first().unwrap();
