@@ -347,12 +347,21 @@ impl BundleConsumer {
         } = load_and_execute_transactions_output;
 
         // BundleStage: all transactions must execute successfully to be committed
-        if processing_results.iter().any(|result| result.is_err()) {
+        // If any pre-filter check is an error or there's any tx that executed but failed
+        if processing_results.iter().any(|result| {
+            result.is_err() || (result.is_ok() && result.as_ref().unwrap().status().is_err())
+        }) {
             let commit_transactions_result = processing_results
                 .iter()
                 .map(|r| match r {
-                    Ok(_) => {
-                        CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+                    Ok(executed_tx) => {
+                        if let Err(e) = executed_tx.status() {
+                            CommitTransactionDetails::NotCommitted(e)
+                        } else {
+                            CommitTransactionDetails::NotCommitted(
+                                TransactionError::CommitCancelled,
+                            )
+                        }
                     }
                     Err(err) => CommitTransactionDetails::NotCommitted(err.clone()),
                 })
