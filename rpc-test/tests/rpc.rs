@@ -15,7 +15,7 @@ use {
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_net_utils::{sockets::bind_to_localhost_unique, SocketAddrSpace},
-    solana_pubkey::Pubkey,
+    solana_pubkey::{new_rand, Pubkey},
     solana_pubsub_client::nonblocking::pubsub_client::PubsubClient,
     solana_rent::Rent,
     solana_rpc_client::rpc_client::RpcClient,
@@ -621,6 +621,7 @@ fn test_simulate_bundle() {
     test_single_bad_tx(&rpc_client, &mint_keypair);
     test_last_tx_fails(&rpc_client, &mint_keypair);
     test_duplicate_transactions(&rpc_client, &mint_keypair);
+    test_program_execution_error(&rpc_client, &mint_keypair);
 }
 
 fn test_too_many_bundles(rpc_client: &RpcClient, mint_keypair: &Keypair) {
@@ -1372,11 +1373,69 @@ fn test_last_tx_fails(rpc_client: &RpcClient, mint_keypair: &Keypair) {
             tx_signature: Some(bad_tx_signature.to_string())
         }
     );
-    // should get results back for only the first and secon one
+    // should get results back for only the first and second one
     assert_eq!(simulate_result.transaction_results.len(), 2);
     let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, None);
 
     let result = simulate_result.transaction_results.get(1).unwrap();
     assert_eq!(result.err, Some(TransactionError::AccountNotFound));
+}
+
+fn test_program_execution_error(rpc_client: &RpcClient, mint_keypair: &Keypair) {
+    let latest_blockhash = rpc_client.get_latest_blockhash().unwrap();
+
+    let rent = rpc_client
+        .get_minimum_balance_for_rent_exemption(0)
+        .unwrap();
+
+    let kp = Keypair::new();
+    let transactions = vec![
+        system_transaction::transfer(
+            mint_keypair,
+            &kp.pubkey(),
+            rent.saturating_mul(2),
+            latest_blockhash,
+        ),
+        system_transaction::transfer(&kp, &new_rand(), rent.saturating_add(1), latest_blockhash),
+    ];
+
+    let bad_tx_signature = *transactions.get(1).unwrap().signatures.first().unwrap();
+
+    let simulate_result = rpc_client
+        .simulate_bundle_with_config(
+            &transactions,
+            RpcSimulateBundleConfig {
+                pre_execution_accounts_configs: vec![None; transactions.len()],
+                post_execution_accounts_configs: vec![None; transactions.len()],
+                transaction_encoding: Some(UiTransactionEncoding::Base64),
+                simulation_bank: Some(SimulationSlotConfig::Tip),
+                skip_sig_verify: false,
+                replace_recent_blockhash: false,
+            },
+        )
+        .unwrap()
+        .value;
+
+    assert_eq!(
+        simulate_result.summary,
+        RpcBundleSimulationSummary::Failed {
+            error: RpcBundleExecutionError::TransactionFailure(
+                bad_tx_signature,
+                "Transaction results in an account (0) with insufficient funds for rent"
+                    .to_string()
+            ),
+            tx_signature: Some(bad_tx_signature.to_string())
+        }
+    );
+    // should get results back for only the first and second one
+    assert_eq!(simulate_result.transaction_results.len(), 2);
+    let result = simulate_result.transaction_results.first().unwrap();
+    assert_eq!(result.err, None);
+
+    let result = simulate_result.transaction_results.get(1).unwrap();
+    assert_eq!(
+        result.err,
+        Some(TransactionError::InsufficientFundsForRent { account_index: 0 })
+    );
 }
