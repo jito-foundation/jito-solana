@@ -680,7 +680,10 @@ fn process_extend_lookup_table(
         Some(&config.signers[0].pubkey()),
     ));
 
-    tx.try_sign(&[config.signers[0], authority_signer], blockhash)?;
+    tx.try_sign(
+        &[config.signers[0], authority_signer, payer_signer],
+        blockhash,
+    )?;
     let result = rpc_client.send_and_confirm_transaction_with_spinner_and_config(
         &tx,
         config.commitment,
