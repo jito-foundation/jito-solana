@@ -50,52 +50,6 @@ pub enum RpcBundleExecutionError {
     TransactionFailure(Signature, String),
 }
 
-// impl From<BundleExecutionError> for RpcBundleExecutionError {
-//     fn from(bundle_execution_error: BundleExecutionError) -> Self {
-//         match bundle_execution_error {
-//             BundleExecutionError::BankProcessingTimeLimitReached => {
-//                 Self::BankProcessingTimeLimitReached
-//             }
-//             BundleExecutionError::ExceedsCostModel => Self::ExceedsCostModel,
-//             BundleExecutionError::TransactionFailure(load_and_execute_bundle_error) => {
-//                 match load_and_execute_bundle_error {
-//                     LoadAndExecuteBundleError::ProcessingTimeExceeded(_) => {
-//                         Self::BundleExecutionTimeout
-//                     }
-//                     LoadAndExecuteBundleError::LockError {
-//                         signature,
-//                         transaction_error,
-//                     } => Self::TransactionFailure(signature, transaction_error.to_string()),
-//                     LoadAndExecuteBundleError::TransactionError {
-//                         signature,
-//                         execution_result,
-//                     } => match *execution_result {
-//                         Ok(ProcessedTransaction::Executed(executed_transaction)) => {
-//                             let err_msg =
-//                                 if let Err(e) = executed_transaction.execution_details.status {
-//                                     e.to_string()
-//                                 } else {
-//                                     "Unknown error".to_string()
-//                                 };
-//                             Self::TransactionFailure(signature, err_msg)
-//                         }
-//                         Ok(ProcessedTransaction::FeesOnly(fees_only)) => {
-//                             Self::TransactionFailure(signature, fees_only.load_error.to_string())
-//                         }
-//                         Err(e) => Self::TransactionFailure(signature, e.to_string()),
-//                     },
-//                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
-//                         Self::InvalidPreOrPostAccounts
-//                     }
-//                 }
-//             }
-//             BundleExecutionError::LockError => Self::BundleLockError,
-//             BundleExecutionError::PohRecordError(e) => Self::PohRecordError(e.to_string()),
-//             BundleExecutionError::TipError(e) => Self::TipError(e.to_string()),
-//         }
-//     }
-// }
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateBundleResult {
