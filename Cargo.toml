@@ -316,7 +316,7 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6.0", features = [
 ] }
 jito-protos = { path = "jito-protos", version = "=4.0.0-alpha.0" }
 js-sys = "0.3.82"
-json5 = "0.4.1"
+json5 = "1.0.0"
 jsonrpc-core = "18.0.0"
 jsonrpc-core-client = "18.0.0"
 jsonrpc-derive = "18.0.0"
