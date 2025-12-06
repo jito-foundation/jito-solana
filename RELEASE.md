@@ -112,7 +112,7 @@ Alternatively use the Github UI.
 
 ### Update the Changelog
 
-Create a PR that makes the following updates to [CHANGELOG.md](https://github.com/anza-xyz/agave/blob/master/CHANGELOG.md) in master:
+Create a PR that makes the following updates to [CHANGELOG.md](https://github.com/jito-labs/bam-client/blob/master/CHANGELOG.md) in master:
 * Advance the channel links with the newly created branch becoming beta.
 * Add a new section `X.Y.0-Unreleased` for the new master version.
 * Remove the `Unreleased` annotation for the section that has now become beta.
@@ -120,10 +120,10 @@ Create a PR that makes the following updates to [CHANGELOG.md](https://github.co
 ### Miscellaneous Clean up
 
 1. Pin the spl-token-cli version in the newly promoted stable branch by setting `splTokenCliVersion` in scripts/spl-token-cli-version.sh to the latest release that depends on the stable branch (usually this will be the latest spl-token-cli release).
-1. Update [CHANGELOG.md](https://github.com/jito-foundation/jito-solana/blob/master/CHANGELOG.md) to remove the channel links on the new branch. Additionally, remove any wording about the new branch being unreleased.
-1. Update [CODEOWNERS](https://github.com/jito-foundation/jito-solana/blob/master/.github/CODEOWNERS) to `* @anza-xyz/backport-reviewers` on the new branch.
-1. Update [mergify.yml](https://github.com/jito-foundation/jito-solana/blob/master/.mergify.yml) to add backport actions for the new branch and remove actions for the obsolete branch.
-1. Adjust the [Github backport labels](https://github.com/anza-xyz/agave/labels) to add the new branch label and remove the label for the obsolete branch.
+1. Update [CHANGELOG.md](https://github.com/jito-labs/bam-client/blob/master/CHANGELOG.md) to remove the channel links on the new branch. Additionally, remove any wording about the new branch being unreleased.
+1. Update [CODEOWNERS](https://github.com/jito-labs/bam-client/blob/master/.github/CODEOWNERS) to `* @anza-xyz/backport-reviewers` on the new branch.
+1. Update [mergify.yml](https://github.com/jito-labs/bam-client/blob/master/.mergify.yml) to add backport actions for the new branch and remove actions for the obsolete branch.
+1. Adjust the [Github backport labels](https://github.com/jito-labs/bam-client/labels) to add the new branch label and remove the label for the obsolete branch.
 1. Announce on Discord #development that the release branch exists so people know to use the new backport labels.
 
 ## Steps to Create a Release
@@ -175,13 +175,13 @@ release.
 Build artifacts can take up to 60 minutes after creating the tag before
 appearing. To check for progress:
 
-* The `agave-secondary` Buildkite pipeline handles creating the Linux and macOS release artifacts and updated crates.
+* The `bam-secondary` Buildkite pipeline handles creating the Linux and macOS release artifacts and updated crates.
   Look for a job under the tag name of the release: https://buildkite.com/jito-labs/bam-client-secondary.
 * The Windows release artifacts are produced by GitHub Actions. Look for a job under the tag name of the
   release: https://github.com/jito-labs/bam-client/actions.
 
 [Crates.io agave-validator](https://crates.io/crates/agave-validator) should have an updated agave-validator version.
-This can take 2-3 hours, and sometimes fails in the `agave-secondary` job.
+This can take 2-3 hours, and sometimes fails in the `bam-secondary` job.
 If this happens and the error is non-fatal, click "Retry" on the "publish crate" job
 
 ### Update software on testnet.solana.com
