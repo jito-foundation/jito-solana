@@ -971,8 +971,7 @@ pub enum BankingControlMsg {
     },
 }
 
-#[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
-pub(crate) fn update_bank_forks_and_poh_recorder_for_new_tpu_bank(
+pub fn update_bank_forks_and_poh_recorder_for_new_tpu_bank(
     bank_forks: &RwLock<BankForks>,
     poh_controller: &mut PohController,
     tpu_bank: Bank,

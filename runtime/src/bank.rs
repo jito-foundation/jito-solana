@@ -81,7 +81,9 @@ use {
     solana_accounts_db::{
         account_locks::validate_account_locks,
         accounts::{AccountAddressFilter, Accounts, PubkeyAccountSlot},
-        accounts_db::{AccountStorageEntry, AccountsDb, AccountsDbConfig},
+        accounts_db::{
+            AccountStorageEntry, AccountsDb, AccountsDbConfig, ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
+        },
         accounts_hash::AccountsLtHash,
         accounts_index::{IndexKey, ScanConfig, ScanResult},
         accounts_update_notifier_interface::AccountsUpdateNotifier,
@@ -190,9 +192,6 @@ use {
 use {
     dashmap::DashSet,
     rayon::iter::{IntoParallelRefIterator, ParallelIterator},
-    solana_accounts_db::accounts_db::{
-        ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
-    },
     solana_nonce as nonce,
     solana_nonce_account::{get_system_account_kind, SystemAccountKind},
     solana_program_runtime::sysvar_cache::SysvarCache,
@@ -966,6 +965,8 @@ pub struct BankTestConfig {
 #[cfg(feature = "dev-context-only-utils")]
 impl Default for BankTestConfig {
     fn default() -> Self {
+        use solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING;
+
         Self {
             accounts_db_config: ACCOUNTS_DB_CONFIG_FOR_TESTING,
         }
@@ -6095,6 +6096,27 @@ impl Bank {
     pub fn priority_fee_total(&self) -> u64 {
         self.collector_fee_details.read().unwrap().priority_fee
     }
+
+    pub fn new_for_benches(genesis_config: &GenesisConfig) -> Self {
+        Self::new_with_paths_for_benches(genesis_config, Vec::new())
+    }
+
+    /// Intended for use by benches only.
+    /// create new bank with the given config and paths.
+    pub fn new_with_paths_for_benches(genesis_config: &GenesisConfig, paths: Vec<PathBuf>) -> Self {
+        Self::new_from_genesis(
+            genesis_config,
+            Arc::<RuntimeConfig>::default(),
+            paths,
+            None,
+            ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
+            None,
+            Some(Pubkey::new_unique()),
+            Arc::default(),
+            None,
+            None,
+        )
+    }
 }
 
 impl InvokeContextCallback for Bank {
@@ -6224,27 +6246,6 @@ impl Bank {
             paths,
             None,
             test_config.accounts_db_config,
-            None,
-            Some(Pubkey::new_unique()),
-            Arc::default(),
-            None,
-            None,
-        )
-    }
-
-    pub fn new_for_benches(genesis_config: &GenesisConfig) -> Self {
-        Self::new_with_paths_for_benches(genesis_config, Vec::new())
-    }
-
-    /// Intended for use by benches only.
-    /// create new bank with the given config and paths.
-    pub fn new_with_paths_for_benches(genesis_config: &GenesisConfig, paths: Vec<PathBuf>) -> Self {
-        Self::new_from_genesis(
-            genesis_config,
-            Arc::<RuntimeConfig>::default(),
-            paths,
-            None,
-            ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
             None,
             Some(Pubkey::new_unique()),
             Arc::default(),

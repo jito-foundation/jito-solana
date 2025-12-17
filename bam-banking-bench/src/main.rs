@@ -263,6 +263,11 @@ fn bank_setting_loop(
                 new_bank,
             );
             bank = bank_forks.read().unwrap().working_bank_with_scheduler();
+
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(1)
+                && poh_recorder.read().unwrap().bank().is_none()
+            {}
             assert_matches!(poh_recorder.read().unwrap().bank(), Some(_));
 
             last_bank_time = Instant::now();
