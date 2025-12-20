@@ -44,6 +44,7 @@ use {
         packet::{BytesPacket, BytesPacketBatch},
         sigverify::ed25519_verify,
     },
+    solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
     solana_runtime::bank_forks::BankForks,
     solana_runtime_transaction::{
@@ -95,6 +96,7 @@ impl BamReceiveAndBuffer {
         bundle_receiver: crossbeam_channel::Receiver<AtomicTxnBatch>,
         response_sender: Sender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
+        shared_leader_state: Option<SharedLeaderState>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         let (parsed_batch_sender, parsed_batch_receiver) =
@@ -111,6 +113,7 @@ impl BamReceiveAndBuffer {
                 recv_stats_sender,
                 response_sender_clone,
                 bank_forks,
+                shared_leader_state,
                 blacklisted_accounts,
             )
         });
@@ -131,6 +134,7 @@ impl BamReceiveAndBuffer {
         recv_stats_sender: crossbeam_channel::Sender<ReceivingStats>,
         response_sender: Sender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
+        shared_leader_state: Option<SharedLeaderState>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) {
         let mut last_metrics_report = Instant::now();
@@ -168,12 +172,13 @@ impl BamReceiveAndBuffer {
                 }
             }
 
+            let current_slot = shared_leader_state
+                .as_ref()
+                .and_then(|leader_state| leader_state.load().working_bank().map(|b| b.slot()))
+                .unwrap_or_else(|| bank_forks.read().unwrap().working_bank().slot());
+
             let ((verify_results, deserialize_stats), duration_us) =
-                measure_us!(Self::batch_verify(
-                    &recv_buffer,
-                    bank_forks.read().unwrap().working_bank().slot(),
-                    &mut metrics
-                ));
+                measure_us!(Self::batch_verify(&recv_buffer, current_slot, &mut metrics));
             stats.accumulate(deserialize_stats);
             metrics.increment_total_us(duration_us);
             recv_buffer.clear();
@@ -1128,6 +1133,7 @@ mod tests {
             receiver,
             response_sender,
             bank_forks,
+            None,
             blacklisted_accounts,
         );
         let container = TransactionStateContainer::with_capacity(100);

@@ -741,6 +741,7 @@ impl BankingStage {
             // Spawn the BAM scheduler thread
             let bam_scheduler_exit = exit.clone();
             let bam_scheduler_bank_forks = self.bank_forks.clone();
+            let bam_shared_leader_state = self.poh_recorder.read().unwrap().shared_leader_state();
             threads.push(
                 Builder::new()
                     .name("solBamSched".to_string())
@@ -757,6 +758,7 @@ impl BankingStage {
                             bam_dependencies.batch_receiver.clone(),
                             bam_dependencies.outbound_sender.clone(),
                             bam_scheduler_bank_forks.clone(),
+                            Some(bam_shared_leader_state),
                             blacklisted_accounts.clone(),
                         );
 
