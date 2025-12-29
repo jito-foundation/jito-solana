@@ -310,6 +310,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         }
     };
 
+    // Avoid time of check time of use race condition between bundle account locker and account locks
     drop(l_account_locks);
 
     let (transaction, max_age) = transaction_state.take_transaction_for_scheduling();
