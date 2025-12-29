@@ -24,14 +24,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .takes_value(false)
                 .required(false),
         )
+        .arg(
+            Arg::with_name("skip-last-validator")
+                .long("skip-last-validator")
+                .help("Skip starting the last validator in the configuration")
+                .takes_value(false)
+                .required(false),
+        )
         .get_matches();
 
     let is_quiet = matches.is_present("quiet");
+    let skip_last_validator = matches.is_present("skip-last-validator");
     let config_path = matches.value_of("config").unwrap();
     let config = LocalClusterConfig::from_file(config_path).expect("Failed to parse TOML");
-
     info!("Starting cluster with config: {config:?}");
-    let cluster = match BamLocalCluster::new(config.clone(), is_quiet) {
+    if skip_last_validator {
+        if config.validators.len() <= 1 {
+            error!("Cannot skip the last validator when only one validator is configured");
+            return Err("Skipping the last validator requires at least two validators".into());
+        }
+        info!("Skipping startup of the last validator process");
+    }
+
+    let cluster = match BamLocalCluster::new(config.clone(), is_quiet, skip_last_validator) {
         Ok(cluster) => cluster,
         Err(e) => {
             error!("Failed to start cluster: {e}");
