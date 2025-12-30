@@ -48,7 +48,7 @@ edge|beta)
   DOWNLOAD_URL=https://release.jito.wtf/"$TAG"/solana-release-$TARGET.tar.bz2
   ;;
 *)
-  DOWNLOAD_URL=https://github.com/jito-labs/bam-client/releases/download/"$TAG"/solana-release-$TARGET.tar.bz2
+  DOWNLOAD_URL=https://github.com/jito-foundation/jito-solana/releases/download/"$TAG"/solana-release-$TARGET.tar.bz2
   ;;
 esac
 
