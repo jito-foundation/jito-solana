@@ -659,6 +659,7 @@ impl BundleStage {
                         consume_worker_metrics.update_for_consume(&output);
                         consume_worker_metrics.set_has_data(true);
                         bundle_stage_metrics.increment_bundles_processed(1);
+                        bundle_storage.destroy_bundle(bundle);
                     }
                     Err(BundleExecutionError::ErrorRetryable) => {
                         bundle_storage.retry_bundle(bundle);
@@ -685,6 +686,7 @@ impl BundleStage {
                     consume_worker_metrics.update_for_consume(&output);
                     consume_worker_metrics.set_has_data(true);
                     bundle_stage_metrics.increment_bundles_processed(1);
+                    bundle_storage.destroy_bundle(bundle);
                 }
                 Err(BundleExecutionError::ErrorRetryable) => {
                     bundle_storage.retry_bundle(bundle);
