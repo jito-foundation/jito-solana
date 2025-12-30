@@ -498,7 +498,7 @@ fn retransmit_shred(
         Protocol::UDP => match socket {
             RetransmitSocket::Xdp(sender) => {
                 let mut sent = num_addrs;
-                if num_addrs > 0 {
+                if (num_addrs > 0) || shred_receiver_addr.is_some() {
                     // shred receiver not included in the stats
                     let mut send_addrs = Vec::with_capacity(num_addrs + 1);
                     send_addrs.extend(addrs.iter());
