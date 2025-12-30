@@ -13,13 +13,13 @@ to reproduce our TPS metrics, run the enhanced multinode demo.
 For all four variations, you'd need the latest Rust toolchain and the Solana source code:
 
 First, setup Rust, Cargo and system packages as described in the
-Solana [README](https://github.com/jito-labs/bam-client#1-install-rustc-cargo-and-rustfmt)
+Solana [README](https://github.com/jito-foundation/jito-solana#1-install-rustc-cargo-and-rustfmt)
 
 Now checkout the code from github:
 
 ```bash
-git clone https://github.com/jito-labs/bam-client.git
-cd bam-client
+git clone https://github.com/jito-foundation/jito-solana.git
+cd jito-solana
 ```
 
 The demo code is sometimes broken between releases as we add new low-level features, so if this is your first time

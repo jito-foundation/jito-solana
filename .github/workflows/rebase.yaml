@@ -16,7 +16,7 @@
 # It will also run CI and wait for it to pass before performing the force push to v1.17.
 # In the event there's a failure in the process, it's reported to slack and the job stops.
 
-name: "Rebase bam-client from upstream jito-foundation/jito-solana"
+name: "Rebase jito-solana from upstream anza-xyz/agave"
 
 on:
   #  push:
@@ -31,13 +31,13 @@ jobs:
         include:
           - branch: master
             upstream_branch: master
-            upstream_repo: https://github.com/jito-foundation/jito-solana.git
+            upstream_repo: https://github.com/anza-xyz/agave.git
+          - branch: v2.2
+            upstream_branch: v2.2
+            upstream_repo: https://github.com/anza-xyz/agave.git
           - branch: v2.3
             upstream_branch: v2.3
-            upstream_repo: https://github.com/jito-foundation/jito-solana.git
-          - branch: v3.0
-            upstream_branch: v3.0
-            upstream_repo: https://github.com/jito-foundation/jito-solana.git
+            upstream_repo: https://github.com/anza-xyz/agave.git
       fail-fast: false
     steps:
       - uses: actions/checkout@v4

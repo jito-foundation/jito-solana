@@ -6,25 +6,30 @@ on:
       - "*"
 
 jobs:
-  draft-release:
-    if: github.repository == 'jito-labs/bam-client'
+  trigger-buildkite-pipeline:
+    if: github.repository == 'jito-foundation/jito-solana'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code with submodules
-        uses: actions/checkout@v4
+      - name: Trigger a Buildkite Build
+        uses: "buildkite/trigger-pipeline-action@v2.3.0"
         with:
-          # Fetch full history so tags and submodule commits are available
-          fetch-depth: 0
-          # Initialize and update submodules recursively
-          submodules: recursive
+          buildkite_api_access_token: ${{ secrets.TRIGGER_BK_BUILD_TOKEN }}
+          pipeline: "jito/agave-secondary"
+          branch: "${{ github.ref_name }}"
+          build_env_vars: '{"TRIGGERED_BUILDKITE_TAG": "${{ github.ref_name }}"}'
+          commit: "HEAD"
+          message: ":github: Triggered from a GitHub Action"
 
-      - name: Create release
-        id: create
+  draft-release:
+    if: github.repository == 'jito-foundation/jito-solana'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Release
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const release = await github.rest.repos.createRelease({
+            github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: '${{ github.ref_name }}',
@@ -32,24 +37,7 @@ jobs:
               body: '🚧',
               draft: false,
               prerelease: true
-            });
-            core.setOutput('upload_url', release.data.upload_url);
-
-      - name: Create tarball with submodules
-        run: |
-          RELEASE_NAME="bam-client-${{ github.ref_name }}.tar.gz"
-          tar --exclude-vcs -C . -czf "/tmp/$RELEASE_NAME" .
-          mv "/tmp/$RELEASE_NAME" .
-
-      - name: Upload source-with-submodules tarball
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create.outputs.upload_url }}
-          asset_path: ./bam-client-${{ github.ref_name }}.tar.gz
-          asset_name: bam-client-${{ github.ref_name }}.tar.gz
-          asset_content_type: application/gzip
+            })
 
   # version-bump:
   #   if: github.repository == 'anza-xyz/agave'

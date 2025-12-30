@@ -16,7 +16,7 @@ updates is managed using an on-chain update manifest program.
 The easiest install method for supported platforms:
 
 ```bash
-$ curl -sSf https://raw.githubusercontent.com/jito-labs/bam-client/v1.0.0/install/agave-install-init.sh | sh
+$ curl -sSf https://raw.githubusercontent.com/jito-foundation/jito-solana/v1.0.0/install/agave-install-init.sh | sh
 ```
 
 This script will check github for the latest tagged release and download and run the `agave-install-init` binary from
@@ -26,7 +26,7 @@ If additional arguments need to be specified during the installation, the follow
 
 ```bash
 $ init_args=.... # arguments for `agave-install-init ...`
-$ curl -sSf https://raw.githubusercontent.com/jito-labs/bam-client/v1.0.0/install/agave-install-init.sh | sh -s - ${init_args}
+$ curl -sSf https://raw.githubusercontent.com/jito-foundation/jito-solana/v1.0.0/install/agave-install-init.sh | sh -s - ${init_args}
 ```
 
 ### Fetch and run a pre-built installer from a Github release
@@ -34,7 +34,7 @@ $ curl -sSf https://raw.githubusercontent.com/jito-labs/bam-client/v1.0.0/instal
 With a well-known release URL, a pre-built binary can be obtained for supported platforms:
 
 ```bash
-$ curl -o agave-install-init https://github.com/jito-labs/bam-client/releases/download/v1.0.0/agave-install-init-x86_64-apple-darwin
+$ curl -o agave-install-init https://github.com/jito-foundation/jito-solana/releases/download/v1.0.0/agave-install-init-x86_64-apple-darwin
 $ chmod +x ./agave-install-init
 $ ./agave-install-init --help
 ```
@@ -44,8 +44,8 @@ $ ./agave-install-init --help
 If a pre-built binary is not available for a given platform, building the installer from source is always an option:
 
 ```bash
-$ git clone https://github.com/jito-labs/bam-client.git
-$ cd bam-client/install
+$ git clone https://github.com/jito-foundation/jito-solana.git
+$ cd jito-solana/install
 $ cargo run -- --help
 ```
 

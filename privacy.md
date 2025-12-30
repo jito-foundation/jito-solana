@@ -2,7 +2,7 @@ Last Updated: October 9, 2025
 
 **Privacy Policy**
 
-This Privacy Policy (the “Policy”) sets out how your information may be collected, used, processed or disclosed by Jito Labs, Inc. (“Jito Labs”, “we”, “us,” or “our”) in connection with your access and/or use of the website available at www.bam.dev (the “Site”) and attendant tools or services (together with the Site, the “Services”) for the Block Assembly Marketplace (“BAM”), including those available at the GitHub repo [here](https://github.com/jito-labs/bam-client).  
+This Privacy Policy (the “Policy”) sets out how your information may be collected, used, processed or disclosed by Jito Labs, Inc. (“Jito Labs”, “we”, “us,” or “our”) in connection with your access and/or use of the website available at www.bam.dev (the “Site”) and attendant tools or services (together with the Site, the “Services”) for the Block Assembly Marketplace (“BAM”), including those available at the GitHub repo [here](https://github.com/jito-foundation/jito-solana).  
 
 By accessing any Services, you agree to this Policy as governing your use of the Services. This Policy applies to use of the Services, regardless of where or how they are accessed (including outside of or other than via the Site), and regardless of which device is used for access.  
 
