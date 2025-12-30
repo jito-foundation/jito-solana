@@ -46,7 +46,7 @@ itertools = { workspace = true }
 log = { workspace = true }
 lru = { workspace = true }
 num-traits = { workspace = true }
-rand = "0.8.5"
+rand = "0.9.2"
 rand_chacha = "0.3.1"
 rayon = { workspace = true }
 serde = { workspace = true }

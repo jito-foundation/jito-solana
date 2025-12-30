@@ -82,7 +82,7 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 qualifier_attr = { workspace = true }
 quinn = { workspace = true }
-rand = "0.8.5"
+rand = "0.9.2"
 rand_chacha = "0.3.1"
 rayon = { workspace = true }
 rolling-file = { workspace = true }
