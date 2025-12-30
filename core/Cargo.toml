@@ -98,7 +98,6 @@ solana-bincode = { workspace = true }
 solana-bloom = { workspace = true }
 solana-builtins-default-costs = { workspace = true }
 solana-bundle = { workspace = true }
-# solana-bundle-sdk = { workspace = true }
 solana-client = { workspace = true }
 solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }
