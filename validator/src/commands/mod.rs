@@ -1,4 +1,5 @@
 pub mod authorized_voter;
+pub mod bam;
 pub mod block_engine;
 pub mod contact_info;
 pub mod exit;

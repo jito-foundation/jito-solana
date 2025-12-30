@@ -481,6 +481,8 @@ fn main() {
         prioritization_fee_cache,
         HashSet::default(),
         BundleAccountLocker::default(),
+        None,
+        None,
     );
 
     // This is so that the signal_receiver does not go out of scope after the closure.

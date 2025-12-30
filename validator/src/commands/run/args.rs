@@ -2,7 +2,7 @@ use {
     crate::{
         bootstrap::RpcBootstrapConfig,
         cli::{hash_validator, port_range_validator, port_validator, DefaultArgs},
-        commands::{FromClapArgMatches, Result},
+        commands::{bam, FromClapArgMatches, Result},
     },
     agave_snapshots::{SnapshotVersion, SUPPORTED_ARCHIVE_COMPRESSION},
     clap::{values_t, App, Arg, ArgMatches},
@@ -1263,6 +1263,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
                  leader used is different from others.",
             ),
     )
+    .arg(bam::argument())
     .arg(
         Arg::with_name("block_engine_url")
             .long("block-engine-url")

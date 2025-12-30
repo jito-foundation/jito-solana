@@ -5,6 +5,9 @@ pub use crate::forwarding_stage::ForwardingClientOption;
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
+        bam_dependencies::BamDependencies,
+        bam_manager::BamManager,
+        banking_stage::consumer::TipProcessingDependencies,
         banking_stage::{
             transaction_scheduler::scheduler_controller::SchedulerConfig, BankingControlMsg,
             BankingStage, BankingStageHandle,
@@ -140,6 +143,7 @@ pub struct Tpu {
     fetch_stage_manager: FetchStageManager,
     bundle_stage: BundleStage,
     bundle_sigverify_stage: BundleSigverifyStage,
+    bam_manager: BamManager,
 }
 
 impl Tpu {
@@ -193,6 +197,7 @@ impl Tpu {
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        bam_url: Arc<Mutex<Option<String>>>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -364,6 +369,8 @@ impl Tpu {
 
         let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
         let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
+        let bam_enabled = Arc::new(AtomicBool::new(false));
+
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
             unverified_bundle_sender,
@@ -373,6 +380,7 @@ impl Tpu {
             exit.clone(),
             &block_builder_fee_info,
             shredstream_receiver_address.clone(),
+            bam_enabled.clone(),
         );
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_sigverify_stage = BundleSigverifyStage::new(
@@ -388,6 +396,8 @@ impl Tpu {
             fetch_stage_manager_receiver,
             sigverify_stage_sender.clone(),
             exit.clone(),
+            bam_enabled.clone(),
+            cluster_info.my_contact_info().clone(),
         );
 
         let relayer_stage = RelayerStage::new(
@@ -416,6 +426,20 @@ impl Tpu {
         let bundle_account_locker = BundleAccountLocker::default();
 
         let tip_manager = TipManager::new(tip_manager_config);
+        let (bam_batch_sender, bam_batch_receiver) = bounded(100_000);
+        let (bam_outbound_sender, bam_outbound_receiver) = bounded(100_000);
+        let bam_dependencies = BamDependencies {
+            bam_enabled: bam_enabled.clone(),
+            batch_sender: bam_batch_sender,
+            batch_receiver: bam_batch_receiver,
+            outbound_sender: bam_outbound_sender,
+            outbound_receiver: bam_outbound_receiver,
+            cluster_info: cluster_info.clone(),
+            block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
+            bam_node_pubkey: Arc::new(Mutex::new(Pubkey::default())),
+            bank_forks: bank_forks.clone(),
+        };
+
         let mut blacklisted_accounts = HashSet::new();
         blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
 
@@ -436,6 +460,14 @@ impl Tpu {
             prioritization_fee_cache.clone(),
             blacklisted_accounts.clone(),
             bundle_account_locker.clone(),
+            Some(TipProcessingDependencies {
+                tip_manager: tip_manager.clone(),
+                last_tip_updated_slot: Arc::new(Mutex::new(0)),
+                block_builder_fee_info: bam_dependencies.block_builder_fee_info.clone(),
+                cluster_info: cluster_info.clone(),
+                bundle_account_locker: bundle_account_locker.clone(),
+            }),
+            Some(bam_dependencies.clone()),
         );
 
         #[cfg(unix)]
@@ -472,6 +504,14 @@ impl Tpu {
             &block_builder_fee_info,
             prioritization_fee_cache,
             blacklisted_accounts,
+        );
+
+        let bam_manager = BamManager::new(
+            exit.clone(),
+            bam_url,
+            bam_dependencies,
+            poh_recorder.clone(),
+            key_notifiers.clone(),
         );
 
         let (entry_receiver, tpu_entry_notifier) =
@@ -533,6 +573,7 @@ impl Tpu {
             fetch_stage_manager,
             bundle_stage,
             bundle_sigverify_stage,
+            bam_manager,
         }
     }
 
@@ -553,6 +594,7 @@ impl Tpu {
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
+            self.bam_manager.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

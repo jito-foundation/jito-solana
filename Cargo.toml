@@ -5,6 +5,8 @@ members = [
     "accounts-cluster-bench",
     "accounts-db",
     "accounts-db/store-histogram",
+    "bam-banking-bench",
+    "bam-local-cluster",
     "banking-stage-ingress-types",
     "banks-client",
     "banks-interface",

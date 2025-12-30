@@ -22,6 +22,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: 'recursive'
+          token: ${{ secrets.ACCESS_TOKEN }}
 
       - name: Get commit range (push)
         if: ${{ github.event_name == 'push' }}

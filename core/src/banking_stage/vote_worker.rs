@@ -409,6 +409,7 @@ impl VoteWorker {
             bank,
             transactions,
             &self.bundle_account_locker,
+            false,
         );
 
         let ProcessTransactionBatchOutput {

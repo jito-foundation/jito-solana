@@ -22,4 +22,12 @@ pub mod proto {
     pub mod shared {
         tonic::include_proto!("shared");
     }
+
+    pub mod bam_api {
+        tonic::include_proto!("bam_api");
+    }
+
+    pub mod bam_types {
+        tonic::include_proto!("bam_types");
+    }
 }
