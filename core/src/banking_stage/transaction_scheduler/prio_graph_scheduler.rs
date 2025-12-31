@@ -465,6 +465,7 @@ mod tests {
     use {
         super::*,
         crate::banking_stage::{
+            decision_maker::BufferedPacketsDecision,
             scheduler_messages::{MaxAge, TransactionId},
             transaction_scheduler::transaction_state_container::TransactionStateContainer,
         },
@@ -803,9 +804,12 @@ mod tests {
             .send(FinishedConsumeWork {
                 work: thread_0_work.into_iter().next().unwrap(),
                 retryable_indexes: vec![],
+                extra_info: None,
             })
             .unwrap();
-        scheduler.receive_completed(&mut container).unwrap();
+        scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
         let scheduling_summary = scheduler
             .schedule(
                 &mut container,

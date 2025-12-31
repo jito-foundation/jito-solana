@@ -81,6 +81,9 @@ pub fn main() {
         ("set-relayer-config", Some(subcommand_matches)) => {
             commands::relayer::execute(subcommand_matches, &ledger_path)
         }
+        ("set-bam-config", Some(subcommand_matches)) => {
+            commands::bam::execute(subcommand_matches, &ledger_path)
+        }
         ("set-shred-receiver-address", Some(subcommand_matches)) => {
             commands::shred::set_shred_receiver_execute(subcommand_matches, &ledger_path)
         }

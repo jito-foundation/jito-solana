@@ -420,6 +420,7 @@ impl VoteWorker {
             transactions,
             reservation_cb,
             &self.bundle_account_locker,
+            false,
         );
 
         let ProcessTransactionBatchOutput {
