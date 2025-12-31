@@ -393,9 +393,12 @@ impl VoteWorker {
         transactions: &[impl TransactionWithMeta],
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> ProcessTransactionsSummary {
-        let process_transaction_batch_output =
-            self.consumer
-                .process_and_record_transactions(bank, transactions, reservation_cb);
+        let process_transaction_batch_output = self.consumer.process_and_record_transactions(
+            bank,
+            transactions,
+            reservation_cb,
+            false,
+        );
 
         let ProcessTransactionBatchOutput {
             cost_model_throttled_transactions_count,

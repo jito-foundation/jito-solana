@@ -198,6 +198,9 @@ impl<Tx> SchedulingCommon<Tx> {
             ids,
             transactions,
             max_ages,
+            revert_on_error: false,
+            respond_with_extra_info: false,
+            max_schedule_slot: None,
         };
         self.consume_work_senders[thread_index]
             .send(work)
@@ -230,8 +233,12 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                         ids,
                         transactions,
                         max_ages: _,
+                        revert_on_error: _,
+                        respond_with_extra_info: _,
+                        max_schedule_slot: _,
                     },
                 retryable_indexes,
+                extra_info: _,
             }) => {
                 let num_transactions = ids.len();
                 let num_retryable = retryable_indexes.len();
@@ -504,6 +511,7 @@ mod tests {
         let finished_work = FinishedConsumeWork {
             work,
             retryable_indexes,
+            extra_info: None,
         };
 
         finished_work_sender.send(finished_work).unwrap();
@@ -525,6 +533,7 @@ mod tests {
         let finished_work = FinishedConsumeWork {
             work,
             retryable_indexes: retryable_indexes.clone(),
+            extra_info: None,
         };
         finished_work_sender.send(finished_work).unwrap();
         let (num_transactions, num_retryable) =
@@ -554,6 +563,7 @@ mod tests {
         let finished_work = FinishedConsumeWork {
             work,
             retryable_indexes: retryable_indexes.clone(),
+            extra_info: None,
         };
         finished_work_sender.send(finished_work).unwrap();
 

@@ -6,6 +6,7 @@ use {
     criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput},
     crossbeam_channel::{unbounded, Receiver, Sender},
     solana_core::banking_stage::{
+        decision_maker::BufferedPacketsDecision,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork},
         transaction_scheduler::{
             greedy_scheduler::{GreedyScheduler, GreedySchedulerConfig},
@@ -63,6 +64,7 @@ impl PingPong {
                 .send(FinishedConsumeWork {
                     work,
                     retryable_indexes: vec![],
+                    extra_info: None,
                 })
                 .is_err()
             {
@@ -206,12 +208,13 @@ fn timing_scheduler<T: ReceiveAndBuffer, S: Scheduler<T::Transaction>>(
         assert_eq!(res.num_received, num_txs);
         assert!(!container.is_empty());
 
+        let ignored_decision = BufferedPacketsDecision::ForwardAndHold;
         let elapsed = {
             let start = Instant::now();
             {
                 while !container.is_empty() {
                     scheduler
-                        .receive_completed(black_box(&mut container))
+                        .receive_completed(black_box(&mut container), &ignored_decision)
                         .unwrap();
 
                     scheduler

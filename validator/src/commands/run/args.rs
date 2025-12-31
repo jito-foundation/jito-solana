@@ -2,7 +2,7 @@ use {
     crate::{
         bootstrap::RpcBootstrapConfig,
         cli::{hash_validator, port_range_validator, port_validator, DefaultArgs},
-        commands::{FromClapArgMatches, Result},
+        commands::{bam, FromClapArgMatches, Result},
     },
     clap::{values_t, App, Arg, ArgMatches},
     solana_clap_utils::{
@@ -1649,7 +1649,11 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
                 "Specifies the pubkey of the leader used in wen restart. May get stuck if the \
                  leader used is different from others.",
             ),
-    ).arg(
+    )
+    .arg(
+        bam::argument()
+    )
+    .arg(
         Arg::with_name("block_engine_url")
             .long("block-engine-url")
             .help("URL entrypoint to the Block Engine. Connected Block Engine will be autoconfigured unless `--disable-block-engine-autoconfig` is used. Set to empty string to disable block engine connection.")

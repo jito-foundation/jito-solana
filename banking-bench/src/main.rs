@@ -475,6 +475,8 @@ fn main() {
         HashSet::default(),
         BundleAccountLocker::default(),
         |_| 0,
+        None,
+        None,
     );
 
     // This is so that the signal_receiver does not go out of scope after the closure.

@@ -615,7 +615,7 @@ impl PohRecorder {
     }
 
     /// Return the slot that PoH is currently ticking through.
-    fn current_poh_slot(&self) -> Slot {
+    pub fn current_poh_slot(&self) -> Slot {
         // The tick_height field is initialized to the last tick of the start
         // bank and generally indicates what tick height has already been
         // reached so use the next tick height to determine which slot poh is
@@ -887,6 +887,10 @@ impl PohRecorder {
     #[cfg(feature = "dev-context-only-utils")]
     pub fn clear_bank_for_test(&mut self) {
         self.clear_bank();
+    }
+
+    pub fn get_blockstore(&self) -> Arc<Blockstore> {
+        self.blockstore.clone()
     }
 }
 

@@ -4,9 +4,11 @@ use {
     super::{transaction_priority_id::TransactionPriorityId, transaction_state::TransactionState},
     crate::banking_stage::scheduler_messages::{MaxAge, TransactionId},
     agave_transaction_view::resolved_transaction_view::ResolvedTransactionView,
+    ahash::{HashMap, HashMapExt},
     itertools::MinMaxResult,
     min_max_heap::MinMaxHeap,
     slab::{Slab, VacantEntry},
+    smallvec::SmallVec,
     solana_packet::PACKET_DATA_SIZE,
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
@@ -43,7 +45,19 @@ use {
 pub(crate) struct TransactionStateContainer<Tx: TransactionWithMeta> {
     capacity: usize,
     priority_queue: MinMaxHeap<TransactionPriorityId>,
-    id_to_transaction_state: Slab<TransactionState<Tx>>,
+    id_to_transaction_state: Slab<BatchIdOrTransactionState<Tx>>,
+    batch_id_to_transaction_ids: HashMap<usize, SmallVec<[TransactionId; 5]>>,
+}
+
+struct BatchInfo {
+    batch_id: usize,
+    revert_on_error: bool,
+    max_schedule_slot: u64,
+}
+
+enum BatchIdOrTransactionState<Tx: TransactionWithMeta> {
+    Batch(BatchInfo),
+    TransactionState(TransactionState<Tx>),
 }
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -69,7 +83,10 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
     /// Panics if the transaction does not exist.
     fn get_transaction(&self, id: TransactionId) -> Option<&Tx>;
 
-    /// Retries a transaction - inserts transaction back into map.
+    /// Get the batch id and revert_on_error flag for a transaction.
+    fn get_batch(&self, id: TransactionId) -> Option<(&SmallVec<[TransactionId; 5]>, bool, u64)>;
+
+    /// Retries a transaction - inserts transaction back into map (but not packet).
     /// This transitions the transaction to `Unprocessed` state.
     fn retry_transaction(&mut self, transaction_id: TransactionId, transaction: Tx) {
         let transaction_state = self
@@ -110,6 +127,7 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
             capacity,
             priority_queue: MinMaxHeap::with_capacity(capacity + EXTRA_CAPACITY),
             id_to_transaction_state: Slab::with_capacity(capacity + EXTRA_CAPACITY),
+            batch_id_to_transaction_ids: HashMap::with_capacity(capacity + EXTRA_CAPACITY),
         }
     }
 
@@ -133,13 +151,32 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
         &mut self,
         id: TransactionId,
     ) -> Option<&mut TransactionState<Tx>> {
-        self.id_to_transaction_state.get_mut(id)
+        match self.id_to_transaction_state.get_mut(id) {
+            Some(BatchIdOrTransactionState::Batch { .. }) => None,
+            Some(BatchIdOrTransactionState::TransactionState(state)) => Some(state),
+            None => None,
+        }
     }
 
     fn get_transaction(&self, id: TransactionId) -> Option<&Tx> {
-        self.id_to_transaction_state
-            .get(id)
-            .map(|state| state.transaction())
+        let batch_or_txn = self.id_to_transaction_state.get(id)?;
+        match batch_or_txn {
+            BatchIdOrTransactionState::Batch { .. } => None,
+            BatchIdOrTransactionState::TransactionState(state) => Some(state.transaction()),
+        }
+    }
+
+    fn get_batch(&self, id: TransactionId) -> Option<(&SmallVec<[TransactionId; 5]>, bool, u64)> {
+        let Some(BatchIdOrTransactionState::Batch(batch_info)) =
+            self.id_to_transaction_state.get(id)
+        else {
+            return None;
+        };
+        Some((
+            self.batch_id_to_transaction_ids.get(&batch_info.batch_id)?,
+            batch_info.revert_on_error,
+            batch_info.max_schedule_slot,
+        ))
     }
 
     fn push_ids_into_queue(
@@ -168,7 +205,19 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
     }
 
     fn remove_by_id(&mut self, id: TransactionId) {
-        self.id_to_transaction_state.remove(id);
+        let BatchIdOrTransactionState::Batch(batch_info) = self.id_to_transaction_state.remove(id)
+        else {
+            return;
+        };
+        let Some(batch) = self
+            .batch_id_to_transaction_ids
+            .remove(&batch_info.batch_id)
+        else {
+            return;
+        };
+        for transaction_id in batch {
+            self.id_to_transaction_state.remove(transaction_id);
+        }
     }
 
     fn get_min_max_priority(&self) -> MinMaxResult<u64> {
@@ -200,16 +249,65 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
         cost: u64,
     ) -> bool {
         let priority_id = {
-            let entry = self.get_vacant_map_entry();
+            let entry: VacantEntry<'_, BatchIdOrTransactionState<Tx>> = self.get_vacant_map_entry();
             let transaction_id = entry.key();
-            entry.insert(TransactionState::new(transaction, max_age, priority, cost));
+            entry.insert(BatchIdOrTransactionState::TransactionState(
+                TransactionState::new(transaction, max_age, priority, cost),
+            ));
             TransactionPriorityId::new(priority, transaction_id)
         };
 
         self.push_ids_into_queue(std::iter::once(priority_id)) > 0
     }
 
-    fn get_vacant_map_entry(&mut self) -> VacantEntry<TransactionState<Tx>> {
+    /// Will try to insert a new batch of transactions if there is enough
+    /// capacity in the container. If successful, returns the batch id.
+    /// If there is not enough capacity, returns `None`.
+    /// Note: will not evict existing transactions to make room for the batch (unlike `insert_new_transaction`).
+    pub(crate) fn insert_new_batch(
+        &mut self,
+        txns_max_age: Vec<(Tx, MaxAge)>,
+        priority: u64,
+        cost: u64,
+        revert_on_error: bool,
+        max_schedule_slot: u64,
+    ) -> Option<usize> {
+        let capacity_required = self.id_to_transaction_state.len() + txns_max_age.len() + 1;
+        if capacity_required >= self.id_to_transaction_state.capacity() {
+            return None;
+        }
+
+        let entry = self.get_vacant_map_entry();
+        let batch_id = entry.key();
+        entry.insert(BatchIdOrTransactionState::Batch(BatchInfo {
+            batch_id,
+            revert_on_error,
+            max_schedule_slot,
+        }));
+
+        let mut transaction_ids = SmallVec::with_capacity(txns_max_age.len());
+        for (txn, max_age) in txns_max_age {
+            let transaction_id = {
+                let entry = self.get_vacant_map_entry();
+                let transaction_id: usize = entry.key();
+                entry.insert(BatchIdOrTransactionState::TransactionState(
+                    TransactionState::new(txn, max_age, priority, cost),
+                ));
+                transaction_id
+            };
+            transaction_ids.push(transaction_id);
+        }
+
+        self.batch_id_to_transaction_ids
+            .insert(batch_id, transaction_ids);
+
+        self.priority_queue
+            .push(TransactionPriorityId::new(priority, batch_id));
+
+        Some(batch_id)
+    }
+
+    fn get_vacant_map_entry(&mut self) -> VacantEntry<BatchIdOrTransactionState<Tx>> {
         assert!(self.id_to_transaction_state.len() < self.id_to_transaction_state.capacity());
         self.id_to_transaction_state.vacant_entry()
     }
@@ -261,7 +359,7 @@ impl TransactionViewStateContainer {
 
         // Attempt to insert the transaction.
         if let Ok(state) = f(Arc::clone(bytes_entry)) {
-            vacant_entry.insert(state);
+            vacant_entry.insert(BatchIdOrTransactionState::TransactionState(state));
             Some(transaction_id)
         } else {
             None
@@ -321,6 +419,11 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
         priority_ids: impl Iterator<Item = TransactionPriorityId>,
     ) -> usize {
         self.inner.push_ids_into_queue(priority_ids)
+    }
+
+    #[inline]
+    fn get_batch(&self, _: TransactionId) -> Option<(&SmallVec<[TransactionId; 5]>, bool, u64)> {
+        unimplemented!("get_batch not implemented for TransactionViewStateContainer");
     }
 
     #[inline]
@@ -410,7 +513,10 @@ mod tests {
             container
                 .id_to_transaction_state
                 .iter()
-                .map(|ts| ts.1.priority())
+                .map(|ts| match ts.1 {
+                    BatchIdOrTransactionState::Batch(_) => panic!("unexpected batch id"),
+                    BatchIdOrTransactionState::TransactionState(ref state) => state.priority(),
+                })
                 .next()
                 .unwrap(),
             4
@@ -505,5 +611,36 @@ mod tests {
             1
         );
         assert!(container.pop().is_none());
+    }
+
+    #[test]
+    fn test_batch() {
+        let mut container = TransactionStateContainer::with_capacity(5);
+        let mut transaction_max_ages = Vec::with_capacity(5);
+        for priority in 0..5 {
+            let (transaction, max_age, _, _) = test_transaction(priority);
+            transaction_max_ages.push((transaction, max_age));
+        }
+
+        // Insert a batch of transactions.
+        let batch_id = container.insert_new_batch(transaction_max_ages, 10, 100, true, 0);
+        assert!(batch_id.is_some());
+        assert_eq!(container.priority_queue.len(), 1);
+        assert_eq!(container.id_to_transaction_state.len(), 6);
+        assert_eq!(container.batch_id_to_transaction_ids.len(), 1);
+
+        // Get the batch id and revert_on_error flag.
+        let batch_id = batch_id.unwrap();
+        let (batch, revert_on_error, slot) = container.get_batch(batch_id).unwrap();
+        assert_eq!(batch.len(), 5);
+        assert!(revert_on_error);
+        assert_eq!(slot, 0);
+
+        // Remove a batch of transactions.
+        let batch_id = container.pop().unwrap();
+        container.remove_by_id(batch_id.id);
+        assert_eq!(container.priority_queue.len(), 0);
+        assert_eq!(container.id_to_transaction_state.len(), 0);
+        assert!(container.batch_id_to_transaction_ids.is_empty());
     }
 }

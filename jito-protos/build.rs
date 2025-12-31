@@ -23,6 +23,14 @@ fn main() -> Result<(), std::io::Error> {
         protos.push(proto);
     }
 
+    let proto_base_path_jds = std::path::PathBuf::from("bam-protos");
+    let proto_files = ["bam_api.proto", "bam_types.proto"];
+    for proto_file in &proto_files {
+        let proto = proto_base_path_jds.join(proto_file);
+        println!("cargo:rerun-if-changed={}", proto.display());
+        protos.push(proto);
+    }
+
     configure()
         .build_client(true)
         .build_server(false)
@@ -34,5 +42,5 @@ fn main() -> Result<(), std::io::Error> {
             "InstructionErrorType",
             "#[cfg_attr(test, derive(enum_iterator::Sequence))]",
         )
-        .compile(&protos, &[proto_base_path])
+        .compile(&protos, &[proto_base_path, proto_base_path_jds])
 }

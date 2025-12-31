@@ -77,6 +77,7 @@ impl BlockEngineStageStats {
     }
 }
 
+#[derive(Clone, Default)]
 pub struct BlockBuilderFeeInfo {
     pub block_builder: Pubkey,
     pub block_builder_commission: u64,
@@ -130,6 +131,7 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        bam_enabled: Arc<AtomicBool>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -149,6 +151,7 @@ impl BlockEngineStage {
                     exit,
                     block_builder_fee_info,
                     shredstream_receiver_address,
+                    bam_enabled,
                 ));
             })
             .unwrap();
@@ -175,6 +178,7 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        bam_enabled: Arc<AtomicBool>,
     ) {
         let mut error_count: u64 = 0;
 
@@ -199,6 +203,7 @@ impl BlockEngineStage {
                 &block_builder_fee_info,
                 &shredstream_receiver_address,
                 &local_block_engine_config,
+                &bam_enabled,
             )
             .await
             {
@@ -231,7 +236,13 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         _shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
+        bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
+        if bam_enabled.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            return Ok(());
+        }
+
         let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
         // if !local_block_engine_config.disable_block_engine_autoconfig {
         //     datapoint_info!(
@@ -279,6 +290,7 @@ impl BlockEngineStage {
             exit,
             block_builder_fee_info,
             &Self::CONNECTION_TIMEOUT,
+            bam_enabled,
         )
         .await
         .inspect(|_| {
@@ -304,6 +316,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
+        bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
@@ -335,6 +348,7 @@ impl BlockEngineStage {
                 exit,
                 block_builder_fee_info,
                 &Self::CONNECTION_TIMEOUT,
+                bam_enabled,
             )
             .await
             {
@@ -458,6 +472,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
+        bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -519,6 +534,7 @@ impl BlockEngineStage {
             keypair,
             cluster_info,
             &backend_url,
+            bam_enabled,
         )
         .await
     }
@@ -706,6 +722,7 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
+        bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -764,6 +781,7 @@ impl BlockEngineStage {
             cluster_info,
             connection_timeout,
             block_engine_url,
+            bam_enabled,
         )
         .await
     }
@@ -789,6 +807,7 @@ impl BlockEngineStage {
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
         block_engine_url: &str,
+        bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -803,6 +822,11 @@ impl BlockEngineStage {
         info!("connected to packet and bundle stream");
 
         while !exit.load(Ordering::Relaxed) {
+            if bam_enabled.load(Ordering::Relaxed) {
+                info!("bam enabled, exiting block engine stage");
+                return Ok(());
+            }
+
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
                     let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
