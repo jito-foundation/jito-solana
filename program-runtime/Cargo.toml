@@ -83,6 +83,11 @@ solana-transaction-context = { workspace = true, features = [
     "dev-context-only-utils",
 ] }
 test-case = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "sysvar_cache_bench"
+harness = false
 
 [lints]
 workspace = true

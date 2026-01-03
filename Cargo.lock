@@ -9853,6 +9853,7 @@ dependencies = [
  "assert_matches",
  "base64 0.22.1",
  "bincode",
+ "criterion",
  "itertools 0.14.0",
  "log",
  "percentage",
