@@ -1,5 +1,6 @@
 #[allow(deprecated)]
 use solana_sysvar::{fees::Fees, recent_blockhashes::RecentBlockhashes};
+use std::sync::OnceLock;
 use {
     crate::invoke_context::InvokeContext,
     serde::de::DeserializeOwned,
@@ -27,7 +28,7 @@ impl ::solana_frozen_abi::abi_example::AbiExample for SysvarCache {
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug)]
 pub struct SysvarCache {
     // full account data as provided by bank, including any trailing zero bytes
     clock: Option<Vec<u8>>,
@@ -44,11 +45,35 @@ pub struct SysvarCache {
     slot_hashes_obj: Option<Arc<SlotHashes>>,
     stake_history_obj: Option<Arc<StakeHistory>>,
 
+    // Caches for frequently accessed sysvars (HFT optimization)
+    clock_cache: OnceLock<Arc<Clock>>,
+    rent_cache: OnceLock<Arc<Rent>>,
+
     // deprecated sysvars, these should be removed once practical
     #[allow(deprecated)]
     fees: Option<Fees>,
     #[allow(deprecated)]
     recent_blockhashes: Option<RecentBlockhashes>,
+}
+
+impl Clone for SysvarCache {
+    fn clone(&self) -> Self {
+        Self {
+            clock: self.clock.clone(),
+            epoch_schedule: self.epoch_schedule.clone(),
+            epoch_rewards: self.epoch_rewards.clone(),
+            rent: self.rent.clone(),
+            slot_hashes: self.slot_hashes.clone(),
+            stake_history: self.stake_history.clone(),
+            last_restart_slot: self.last_restart_slot.clone(),
+            slot_hashes_obj: self.slot_hashes_obj.clone(),
+            stake_history_obj: self.stake_history_obj.clone(),
+            clock_cache: OnceLock::new(), // Do not clone cache, let it re-populate
+            rent_cache: OnceLock::new(),
+            fees: self.fees.clone(),
+            recent_blockhashes: self.recent_blockhashes.clone(),
+        }
+    }
 }
 
 // declare_deprecated_sysvar_id doesn't support const.
@@ -66,6 +91,7 @@ impl SysvarCache {
         match sysvar_id {
             sysvar::clock::ID => {
                 self.clock = Some(data);
+                self.clock_cache.take(); // Clear cache on update
             }
             sysvar::epoch_rewards::ID => {
                 self.epoch_rewards = Some(data);
@@ -88,6 +114,7 @@ impl SysvarCache {
             }
             sysvar::rent::ID => {
                 self.rent = Some(data);
+                self.rent_cache.take(); // Clear cache on update
             }
             sysvar::slot_hashes::ID => {
                 let slot_hashes: SlotHashes =
@@ -142,7 +169,12 @@ impl SysvarCache {
     }
 
     pub fn get_clock(&self) -> Result<Arc<Clock>, InstructionError> {
-        self.get_sysvar_obj(&Clock::id())
+        if let Some(clock) = self.clock_cache.get() {
+            return Ok(clock.clone());
+        }
+        let clock = self.get_sysvar_obj::<Clock>(&Clock::id())?;
+        let _ = self.clock_cache.set(clock.clone());
+        Ok(clock)
     }
 
     pub fn get_epoch_schedule(&self) -> Result<Arc<EpochSchedule>, InstructionError> {
@@ -154,7 +186,12 @@ impl SysvarCache {
     }
 
     pub fn get_rent(&self) -> Result<Arc<Rent>, InstructionError> {
-        self.get_sysvar_obj(&Rent::id())
+        if let Some(rent) = self.rent_cache.get() {
+            return Ok(rent.clone());
+        }
+        let rent = self.get_sysvar_obj::<Rent>(&Rent::id())?;
+        let _ = self.rent_cache.set(rent.clone());
+        Ok(rent)
     }
 
     pub fn get_last_restart_slot(&self) -> Result<Arc<LastRestartSlot>, InstructionError> {
