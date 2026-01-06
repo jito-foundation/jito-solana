@@ -8,7 +8,7 @@ ledger_tool_build_path = "/path/to/jito-solana/dev-bins/target/release/"
 
 [[validators]]
 geyser_config = "/path/to/validator-1/geyser1.json"
-node_keypair = /path/to/validator-1/node-keypair.json"
+node_keypair = "/path/to/validator-1/node-keypair.json"
 node_pubkey = "9uFHWmQQHX2Bgz9EKmDJcHGEwGvPywkuWoLH4oaKCj7A"
 vote_keypair = "/path/to/validator-1/vote-keypair.json"
 vote_pubkey = "2vGoCmcm1eeMmjFiw5vkEMBe9nBTwZdiL6FTVvEvekMW"
