@@ -202,24 +202,26 @@ impl BamReceiveAndBuffer {
                         stats.accumulate(parse_stats);
                         metrics.increment_total_us(duration_us);
 
-                        if let Err(reason) = parse_result {
-                            let _ =
-                                response_sender.try_send(BamOutboundMessage::AtomicTxnBatchResult(
-                                    jito_protos::proto::bam_types::AtomicTxnBatchResult {
-                                        seq_id,
-                                        result: Some(
-                                            atomic_txn_batch_result::Result::NotCommitted(
-                                                jito_protos::proto::bam_types::NotCommitted {
-                                                    reason: Some(reason),
-                                                },
+                        let parsed_batch = match parse_result {
+                            Ok(batch) => batch,
+                            Err(reason) => {
+                                let _ =
+                                    response_sender
+                                        .try_send(BamOutboundMessage::AtomicTxnBatchResult(
+                                        jito_protos::proto::bam_types::AtomicTxnBatchResult {
+                                            seq_id,
+                                            result: Some(
+                                                atomic_txn_batch_result::Result::NotCommitted(
+                                                    jito_protos::proto::bam_types::NotCommitted {
+                                                        reason: Some(reason),
+                                                    },
+                                                ),
                                             ),
-                                        ),
-                                    },
-                                ));
-                            continue;
-                        }
-
-                        let parsed_batch = parse_result.unwrap();
+                                        },
+                                    ));
+                                continue;
+                            }
+                        };
 
                         stats.num_buffered = stats
                             .num_buffered
