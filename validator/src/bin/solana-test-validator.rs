@@ -1,7 +1,9 @@
 use {
     agave_logger::redirect_stderr_to_file,
     agave_validator::{
-        admin_rpc_service, cli, commands::FromClapArgMatches, dashboard::Dashboard,
+        admin_rpc_service, cli,
+        commands::{self, FromClapArgMatches},
+        dashboard::Dashboard,
         ledger_lockfile, lock_ledger, println_name_value,
     },
     clap::{crate_name, value_t, value_t_or_exit, values_t_or_exit},
@@ -418,6 +420,13 @@ fn main() {
         } else {
             (None, None)
         };
+
+    genesis.bam_url = Arc::new(Mutex::new(
+        commands::bam::extract_bam_url(&matches).unwrap_or_else(|err| {
+            println!("Error: BAM URL invalid: {err}");
+            exit(1);
+        }),
+    ));
     admin_rpc_service::run(
         &ledger_path,
         admin_rpc_service::AdminRpcRequestMetadata {
@@ -431,6 +440,7 @@ fn main() {
             post_init: admin_service_post_init,
             tower_storage: tower_storage.clone(),
             rpc_to_plugin_manager_sender,
+            bam_url: genesis.bam_url.clone(),
         },
     );
     let dashboard = if output == Output::Dashboard {

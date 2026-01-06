@@ -335,6 +335,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tonic",
+ "url 2.5.7",
 ]
 
 [[package]]
@@ -637,7 +638,7 @@ dependencies = [
  "ark-std 0.5.0",
  "educe 0.6.0",
  "fnv",
- "hashbrown 0.15.1",
+ "hashbrown 0.15.2",
  "itertools 0.13.0",
  "num-bigint 0.4.6",
  "num-integer",
@@ -756,7 +757,7 @@ dependencies = [
  "ark-std 0.5.0",
  "educe 0.6.0",
  "fnv",
- "hashbrown 0.15.1",
+ "hashbrown 0.15.2",
 ]
 
 [[package]]
@@ -1088,7 +1089,7 @@ checksum = "c51b96c5a8ed8705b40d655273bc4212cbbf38d4e3be2788f36306f154523ec7"
 dependencies = [
  "bytes",
  "core-error",
- "hashbrown 0.15.1",
+ "hashbrown 0.15.2",
  "log",
  "object",
  "thiserror 1.0.69",
@@ -2837,14 +2838,20 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.15.1"
+version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a9bfc1af68b1726ea47d3d5109de126281def866b33970e10fbab11b5dafab3"
+checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
 dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "headers"
@@ -3370,7 +3377,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
- "hashbrown 0.15.1",
+ "hashbrown 0.16.1",
  "rayon",
 ]
 
@@ -4356,7 +4363,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
 dependencies = [
  "crc32fast",
- "hashbrown 0.15.1",
+ "hashbrown 0.15.2",
  "indexmap 2.11.4",
  "memchr",
 ]
@@ -6850,6 +6857,7 @@ dependencies = [
  "serde_bytes",
  "shaq",
  "slab",
+ "smallvec",
  "solana-account",
  "solana-accounts-db",
  "solana-address-lookup-table-interface",
@@ -6860,6 +6868,7 @@ dependencies = [
  "solana-client",
  "solana-clock",
  "solana-cluster-type",
+ "solana-commitment-config",
  "solana-compute-budget",
  "solana-compute-budget-instruction",
  "solana-compute-budget-interface",
@@ -6932,6 +6941,7 @@ dependencies = [
  "solana-vote",
  "solana-vote-program",
  "solana-wen-restart",
+ "spl-memo-interface",
  "static_assertions",
  "strum",
  "strum_macros",
@@ -6941,6 +6951,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tikv-jemallocator",
  "tokio",
+ "tokio-stream",
  "tokio-util 0.7.16",
  "tonic",
  "tonic-build",
@@ -7902,6 +7913,7 @@ dependencies = [
  "solana-poh-config",
  "solana-pubkey",
  "solana-runtime",
+ "solana-runtime-transaction",
  "solana-time-utils",
  "solana-transaction",
  "thiserror 2.0.17",

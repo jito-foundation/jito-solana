@@ -5,6 +5,7 @@ use {
         scheduler_common::SchedulingCommon, scheduler_error::SchedulerError,
         transaction_state::TransactionState, transaction_state_container::StateContainer,
     },
+    crate::banking_stage::decision_maker::BufferedPacketsDecision,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     std::num::Saturating,
 };
@@ -27,6 +28,7 @@ pub(crate) trait Scheduler<Tx: TransactionWithMeta> {
     fn receive_completed(
         &mut self,
         container: &mut impl StateContainer<Tx>,
+        _decision: &BufferedPacketsDecision,
     ) -> Result<(usize, usize), SchedulerError> {
         let mut total_num_transactions = Saturating::<usize>(0);
         let mut total_num_retryable = Saturating::<usize>(0);
