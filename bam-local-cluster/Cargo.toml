@@ -1,0 +1,47 @@
+[package]
+name = "bam-local-cluster"
+description = "BAM LocalCluster bootstrapper for Solana testing"
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+
+[features]
+dev-context-only-utils = []
+
+[dependencies]
+agave-feature-set = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+solana-account  = { workspace = true }
+solana-cluster-type = { workspace = true }
+solana-commitment-config = { workspace = true }
+solana-core = { workspace = true }
+solana-faucet = { workspace = true }
+solana-feature-gate-interface = { workspace = true }
+solana-fee-calculator = { workspace = true }
+solana-genesis-config = { workspace = true }
+solana-keypair = { workspace = true }
+solana-ledger = { workspace = true }
+solana-local-cluster = { workspace = true }
+solana-logger = { workspace = true }
+solana-native-token = { workspace = true }
+solana-program-test = { workspace = true }
+solana-rent = { workspace = true }
+solana-rpc = { workspace = true }
+solana-rpc-client = { workspace = true }
+solana-runtime = { workspace = true }
+solana-shred-version = { workspace = true }
+solana-signer = { workspace = true }
+solana-stake-program = { workspace = true }
+solana-streamer = { workspace = true } 
+solana-system-interface = { workspace = true }
+solana-vote-program = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+toml = { workspace = true }

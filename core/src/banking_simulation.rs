@@ -842,6 +842,8 @@ impl BankingSimulator {
             collections::HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            None,
+            None,
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot

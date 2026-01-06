@@ -11548,6 +11548,46 @@ fn test_filter_program_errors_and_collect_fee_details() {
 }
 
 #[test]
+fn test_priority_fee_total() {
+    // Test that priority_fee_total() correctly returns the accumulated priority fees
+    let (genesis_config, _mint_keypair) = create_genesis_config(1_000_000);
+    let mut bank = Bank::new_for_tests(&genesis_config);
+
+    // Initially, priority_fee_total should be 0
+    assert_eq!(bank.priority_fee_total(), 0);
+
+    // Set some priority fees in collector_fee_details
+    let transaction_fee = 5000;
+    let priority_fee = 10000;
+    bank.collector_fee_details = RwLock::new(CollectorFeeDetails {
+        transaction_fee,
+        priority_fee,
+    });
+
+    // Now priority_fee_total should return the priority fee amount
+    assert_eq!(bank.priority_fee_total(), priority_fee);
+
+    // Test with different values
+    let new_priority_fee = 25000;
+    bank.collector_fee_details = RwLock::new(CollectorFeeDetails {
+        transaction_fee: 1000,
+        priority_fee: new_priority_fee,
+    });
+    assert_eq!(bank.priority_fee_total(), new_priority_fee);
+
+    // Test accumulation by modifying the existing collector_fee_details
+    {
+        let mut fee_details = bank.collector_fee_details.write().unwrap();
+        fee_details.accumulate(&FeeDetails::new(2000, 3000));
+    }
+    assert_eq!(bank.priority_fee_total(), new_priority_fee + 3000);
+
+    // Test after freezing the bank (should still work)
+    bank.freeze();
+    assert_eq!(bank.priority_fee_total(), new_priority_fee + 3000);
+}
+
+#[test]
 fn test_deploy_last_epoch_slot() {
     solana_logger::setup();
 
