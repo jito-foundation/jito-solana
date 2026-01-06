@@ -141,7 +141,7 @@ pub struct Tpu {
     staked_nodes_updater_service: StakedNodesUpdaterService,
     tracer_thread_hdl: TracerThread,
     tpu_vote_quic_t: thread::JoinHandle<()>,
-    relayer_stage: RelayerStage,
+    relayer_stage: Option<RelayerStage>,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
     bundle_stage: BundleStage,
@@ -403,13 +403,17 @@ impl Tpu {
             cluster_info.my_contact_info().clone(),
         );
 
-        let relayer_stage = RelayerStage::new(
-            relayer_config,
-            cluster_info.clone(),
-            heartbeat_tx,
-            sigverify_stage_sender,
-            exit.clone(),
-        );
+        let relayer_stage = if relayer_config.lock().unwrap().relayer_url.is_empty() {
+            None
+        } else {
+            Some(RelayerStage::new(
+                relayer_config,
+                cluster_info.clone(),
+                heartbeat_tx,
+                sigverify_stage_sender,
+                exit.clone(),
+            ))
+        };
 
         let cluster_info_vote_listener = ClusterInfoVoteListener::new(
             exit.clone(),
@@ -594,7 +598,7 @@ impl Tpu {
             self.tpu_vote_quic_t.join(),
             self.bundle_stage.join(),
             self.bundle_sigverify_stage.join(),
-            self.relayer_stage.join(),
+            self.relayer_stage.map(|s| s.join()).unwrap_or(Ok(())),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
             self.bam_manager.join(),
