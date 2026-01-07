@@ -37,6 +37,7 @@ use {
         time::{Duration, Instant},
     },
     tokio::{
+        sync::watch::Receiver,
         task,
         time::{interval, sleep, timeout},
     },
@@ -86,7 +87,7 @@ pub struct RelayerStage {
 
 impl RelayerStage {
     pub fn new(
-        relayer_config: Arc<Mutex<RelayerConfig>>,
+        relayer_config_rx: Receiver<RelayerConfig>,
         // The keypair stored here is used to sign auth challenges.
         cluster_info: Arc<ClusterInfo>,
         // Channel that server-sent heartbeats are piped through.
@@ -104,7 +105,7 @@ impl RelayerStage {
                     .unwrap();
 
                 rt.block_on(Self::start(
-                    relayer_config,
+                    relayer_config_rx,
                     cluster_info,
                     heartbeat_tx,
                     packet_tx,
@@ -127,7 +128,7 @@ impl RelayerStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn start(
-        relayer_config: Arc<Mutex<RelayerConfig>>,
+        mut relayer_config_rx: Receiver<RelayerConfig>,
         cluster_info: Arc<ClusterInfo>,
         heartbeat_tx: Sender<HeartbeatEvent>,
         packet_tx: Sender<PacketBatch>,
@@ -140,18 +141,19 @@ impl RelayerStage {
 
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
-            // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            let local_relayer_config = {
-                let relayer_config = relayer_config.clone();
-                task::spawn_blocking(move || relayer_config.lock().unwrap().clone())
-                    .await
-                    .expect("Failed to get execute tokio task.")
+            let local_relayer_config = loop {
+                let config = relayer_config_rx.borrow_and_update().clone();
+                if Self::is_valid_relayer_config(&config) {
+                    break config;
+                }
+                // Wait for config change notification
+                if relayer_config_rx.changed().await.is_err() {
+                    return;
+                }
             };
-            if !Self::is_valid_relayer_config(&local_relayer_config) {
-                sleep(CONNECTION_BACKOFF).await;
-            } else if let Err(e) = Self::connect_auth_and_stream(
+            if let Err(e) = Self::connect_auth_and_stream(
                 &local_relayer_config,
-                &relayer_config,
+                &mut relayer_config_rx,
                 &cluster_info,
                 &heartbeat_tx,
                 &packet_tx,
@@ -185,7 +187,7 @@ impl RelayerStage {
 
     async fn connect_auth_and_stream(
         local_relayer_config: &RelayerConfig,
-        global_relayer_config: &Arc<Mutex<RelayerConfig>>,
+        relayer_config_rx: &mut Receiver<RelayerConfig>,
         cluster_info: &Arc<ClusterInfo>,
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
@@ -255,7 +257,7 @@ impl RelayerStage {
             heartbeat_tx,
             packet_tx,
             local_relayer_config,
-            global_relayer_config,
+            relayer_config_rx,
             exit,
             auth_client,
             access_token,
@@ -273,7 +275,7 @@ impl RelayerStage {
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &RelayerConfig, // local copy of config with current connections
-        global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
+        relayer_config_rx: &mut Receiver<RelayerConfig>, // for detecting run-time updates
         exit: &Arc<AtomicBool>,
         auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
@@ -322,7 +324,7 @@ impl RelayerStage {
             packet_stream,
             packet_tx,
             local_config,
-            global_config,
+            relayer_config_rx,
             exit,
             auth_client,
             access_token,
@@ -341,7 +343,7 @@ impl RelayerStage {
         mut packet_stream: Streaming<relayer::SubscribePacketsResponse>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &RelayerConfig, // local copy of config with current connections
-        global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
+        relayer_config_rx: &mut Receiver<RelayerConfig>, // for detecting run-time updates
         exit: &Arc<AtomicBool>,
         mut auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
@@ -383,10 +385,8 @@ impl RelayerStage {
                         return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
-                    let global_config = global_config.clone();
-                    if *local_config != task::spawn_blocking(move || global_config.lock().unwrap().clone())
-                        .await
-                        .unwrap() {
+                    // Check if config changed
+                    if *local_config != *relayer_config_rx.borrow_and_update() {
                         return Err(ProxyError::AuthenticationConnectionError("relayer config changed".to_string()));
                     }
 
@@ -474,7 +474,7 @@ impl RelayerStage {
 
     pub fn is_valid_relayer_config(config: &RelayerConfig) -> bool {
         if config.relayer_url.is_empty() {
-            warn!("can't connect to relayer. missing relayer_url.");
+            debug!("relayer not configured. set via Admin RPC or CLI flag.");
             return false;
         }
         if config.oldest_allowed_heartbeat.is_zero() {

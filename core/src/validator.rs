@@ -168,7 +168,7 @@ use {
     strum::VariantNames,
     strum_macros::{Display, EnumCount, EnumIter, EnumString, EnumVariantNames, IntoStaticStr},
     thiserror::Error,
-    tokio::{runtime::Runtime as TokioRuntime, sync::mpsc},
+    tokio::{runtime::Runtime as TokioRuntime, sync::{mpsc, watch}},
     tokio_util::sync::CancellationToken,
 };
 
@@ -385,7 +385,7 @@ pub struct ValidatorConfig {
     pub retransmit_xdp: Option<XdpConfig>,
     pub repair_handler_type: RepairHandlerType,
     // jito configuration
-    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub relayer_config: RelayerConfig,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
     pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
@@ -474,7 +474,7 @@ impl ValidatorConfig {
             delay_leader_block_for_pending_fork: false,
             retransmit_xdp: None,
             repair_handler_type: RepairHandlerType::default(),
-            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            relayer_config: RelayerConfig::default(),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
             shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
@@ -1667,6 +1667,7 @@ impl Validator {
             ))
         };
         let (banking_control_sender, banking_control_reciever) = mpsc::channel(1);
+        let (relayer_config_tx, relayer_config_rx) = watch::channel(config.relayer_config.clone());
         let tpu = Tpu::new_with_client(
             &cluster_info,
             &poh_recorder,
@@ -1728,7 +1729,7 @@ impl Validator {
             }),
             cancel,
             config.block_engine_config.clone(),
-            config.relayer_config.clone(),
+            relayer_config_rx,
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.bam_url.clone(),
@@ -1764,7 +1765,7 @@ impl Validator {
             node: Some(node_multihoming),
             banking_control_sender,
             block_engine_config: config.block_engine_config.clone(),
-            relayer_config: config.relayer_config.clone(),
+            relayer_config_tx,
             shred_receiver_address: config.shred_receiver_address.clone(),
             shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
         });
