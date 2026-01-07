@@ -661,13 +661,14 @@ impl AdminRpc for AdminRpcImpl {
         // Detailed log messages are printed inside validate function
         if RelayerStage::is_valid_relayer_config(&config) {
             meta.with_post_init(|post_init| {
-                post_init.relayer_config_tx.send(config).map_err(|_| {
-                    jsonrpc_core::error::Error {
+                post_init
+                    .relayer_config_tx
+                    .send(config)
+                    .map_err(|_| jsonrpc_core::error::Error {
                         code: jsonrpc_core::error::ErrorCode::InternalError,
                         message: "failed to update relayer config: receiver dropped".into(),
                         data: None,
-                    }
-                })
+                    })
             })
         } else {
             Err(jsonrpc_core::error::Error::invalid_params(

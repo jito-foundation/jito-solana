@@ -474,7 +474,7 @@ impl RelayerStage {
 
     pub fn is_valid_relayer_config(config: &RelayerConfig) -> bool {
         if config.relayer_url.is_empty() {
-            debug!("relayer not configured. set via Admin RPC or CLI flag.");
+            debug!("can't connect to relayer. missing relayer_url.");
             return false;
         }
         if config.oldest_allowed_heartbeat.is_zero() {

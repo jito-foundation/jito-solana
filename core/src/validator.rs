@@ -168,7 +168,10 @@ use {
     strum::VariantNames,
     strum_macros::{Display, EnumCount, EnumIter, EnumString, EnumVariantNames, IntoStaticStr},
     thiserror::Error,
-    tokio::{runtime::Runtime as TokioRuntime, sync::{mpsc, watch}},
+    tokio::{
+        runtime::Runtime as TokioRuntime,
+        sync::{mpsc, watch},
+    },
     tokio_util::sync::CancellationToken,
 };
 
