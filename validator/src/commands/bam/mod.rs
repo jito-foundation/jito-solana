@@ -25,7 +25,7 @@ const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 /// Normalize and validate BAM URL from a string input.
 ///
 /// Takes a potentially incomplete URL and normalizes it by adding default
-/// scheme and port if missing.
+/// scheme and port if missing. Empty input is handled by `extract_bam_url`.
 ///
 /// # Default values
 /// - HTTP URLs default to port 50055
@@ -35,11 +35,6 @@ const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 /// # Errors
 /// Returns an error if the URL is invalid or uses an unsupported scheme.
 fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
-    // If empty, return empty string to disable BAM
-    if url_str.trim().is_empty() {
-        return Ok(String::new());
-    }
-
     let url_str_to_parse = if url_str.contains("://") {
         url_str.into()
     } else {
@@ -117,7 +112,12 @@ fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
 /// ```
 pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlError> {
     match matches.value_of("bam_url") {
-        Some(url) => normalize_bam_url(url).map(Some),
+        Some(url) => {
+            if url.trim().is_empty() {
+                return Ok(None);
+            }
+            normalize_bam_url(url).map(Some)
+        }
         None => Ok(None),
     }
 }
@@ -138,6 +138,10 @@ pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
 }
 
 pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> crate::commands::Result<()> {
+    if !subcommand_matches.is_present("bam_url") {
+        return Ok(());
+    }
+
     let bam_url = extract_bam_url(subcommand_matches)
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
     let admin_client = admin_rpc_service::connect(ledger_path);
@@ -245,16 +249,15 @@ mod tests {
     }
 
     // Empty inputs
-    #[test_case("", ""; "empty string")]
-    #[test_case("   ", ""; "spaces only")]
-    #[test_case("\t\n ", "" ; "whitespace only")]
-    fn test_extract_bam_url_empty_inputs(input: &str, expected: &str) {
+    #[test_case("", "empty string")]
+    #[test_case("   ", "spaces only")]
+    #[test_case("\t\n ", "whitespace only")]
+    fn test_extract_bam_url_empty_inputs(input: &str, _case: &str) {
         let matches = create_test_matches(Some(input));
         let result = extract_bam_url(&matches);
-        assert_eq!(
-            result.unwrap(),
-            expected.to_string().into(),
-            "Failed for input: '{input}', expected: '{expected}'"
+        assert!(
+            result.unwrap().is_none(),
+            "Expected None for input: '{input}'"
         );
     }
 
