@@ -492,6 +492,7 @@ impl BamLocalCluster {
             cluster_type,
             vec![],
         );
+        genesis_config.poh_config.hashes_per_tick = Some(62_500);
 
         // copy features from mainnet-beta
         let rpc_client = RpcClient::new_with_commitment(
