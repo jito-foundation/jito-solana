@@ -278,7 +278,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 };
             }
 
-            // Schedulit
+            // Schedule it
             let mut work = self.get_or_create_work_object();
             let batch_id = self.get_next_schedule_id();
             *num_scheduled += batch_ids.len();
@@ -355,7 +355,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 .iter()
                 .filter_map(|priority_id| container.get_batch(priority_id.id))
                 .flat_map(|(batch_ids, _, _)| batch_ids.into_iter())
-                .cloned(),
+                .copied(),
         );
 
         output.transactions.clear();

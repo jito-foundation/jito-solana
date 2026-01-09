@@ -135,7 +135,7 @@ impl BamManager {
                 let url = bam_url.lock().unwrap().clone();
                 if let Some(url) = url {
                     let result = runtime.block_on(BamConnection::try_init(
-                        url,
+                        url.clone(),
                         dependencies.cluster_info.clone(),
                         dependencies.batch_sender.clone(),
                         dependencies.outbound_receiver.clone(),
@@ -165,7 +165,7 @@ impl BamManager {
                             }
                         }
                         Err(e) => {
-                            error!("Failed to connect to BAM: {e}");
+                            error!("Failed to connect to BAM with url: {url}: {e}");
                         }
                     }
                 }
