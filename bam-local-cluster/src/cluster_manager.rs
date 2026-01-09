@@ -362,8 +362,10 @@ impl BamLocalCluster {
             solana_local_cluster::local_cluster::DEFAULT_MINT_LAMPORTS,
             &vote_keypairs,
             stakes,
-            ClusterType::Development, // don't use mainnet, since we de-dupe local tvu ip addresses
-            // see: https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
+            ClusterType::Development, // don't use mainnet, since we de-dupe local tvu ip
+                                      // addresses, every validator has TVU IP of 127.0.0.1
+
+                                      // see: https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
         );
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
