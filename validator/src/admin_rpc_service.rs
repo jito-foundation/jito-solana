@@ -1095,7 +1095,7 @@ mod tests {
         serde_json::Value,
         solana_account::{Account, AccountSharedData},
         solana_accounts_db::{
-            accounts_db::{AccountsDbConfig, ACCOUNTS_DB_CONFIG_FOR_TESTING},
+            accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDbConfig},
             accounts_index::AccountSecondaryIndexes,
         },
         solana_core::{
@@ -1107,7 +1107,7 @@ mod tests {
         solana_ledger::{
             create_new_tmp_ledger,
             genesis_utils::{
-                create_genesis_config, create_genesis_config_with_leader, GenesisConfigInfo,
+                GenesisConfigInfo, create_genesis_config, create_genesis_config_with_leader
             },
         },
         solana_net_utils::sockets::bind_to_localhost_unique,
@@ -1129,7 +1129,7 @@ mod tests {
         std::{
             collections::HashSet,
             fs::remove_dir_all,
-            sync::{atomic::AtomicBool, Mutex},
+            sync::{Mutex, atomic::AtomicBool}, thread::sleep,
         },
     };
 
@@ -1649,6 +1649,7 @@ mod tests {
                 *start_progress.read().unwrap(),
                 ValidatorStartProgress::Running
             );
+            sleep(Duration::from_secs(1)); // wait for KeyUpdaterType::BamConnection to come up
             let post_init = post_init.read().unwrap();
 
             assert!(post_init.is_some());
@@ -1663,7 +1664,8 @@ mod tests {
                     KeyUpdaterType::TpuForwards,
                     KeyUpdaterType::TpuVote,
                     KeyUpdaterType::Forward,
-                    KeyUpdaterType::RpcService
+                    KeyUpdaterType::RpcService,
+                    KeyUpdaterType::BamConnection
                 ])
             );
             let mut io = MetaIoHandler::default();
