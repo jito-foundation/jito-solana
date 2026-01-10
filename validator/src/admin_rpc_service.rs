@@ -1095,7 +1095,7 @@ mod tests {
         serde_json::Value,
         solana_account::{Account, AccountSharedData},
         solana_accounts_db::{
-            accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDbConfig},
+            accounts_db::{AccountsDbConfig, ACCOUNTS_DB_CONFIG_FOR_TESTING},
             accounts_index::AccountSecondaryIndexes,
         },
         solana_core::{
@@ -1107,7 +1107,7 @@ mod tests {
         solana_ledger::{
             create_new_tmp_ledger,
             genesis_utils::{
-                GenesisConfigInfo, create_genesis_config, create_genesis_config_with_leader
+                create_genesis_config, create_genesis_config_with_leader, GenesisConfigInfo,
             },
         },
         solana_net_utils::sockets::bind_to_localhost_unique,
@@ -1129,7 +1129,8 @@ mod tests {
         std::{
             collections::HashSet,
             fs::remove_dir_all,
-            sync::{Mutex, atomic::AtomicBool}, thread::sleep,
+            sync::{atomic::AtomicBool, Mutex},
+            thread::sleep,
         },
     };
 
