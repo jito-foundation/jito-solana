@@ -279,6 +279,10 @@ impl BlockEngineStage {
             }
         }
 
+        if bam_enabled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         datapoint_info!(
             "block_engine_stage-connect",
             "type" => "direct",
@@ -324,6 +328,10 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint).await?;
 
+        if bam_enabled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         // try connecting to best block engine
         let mut attempted = false;
         let mut backend_endpoint = endpoint.clone();
@@ -332,6 +340,9 @@ impl BlockEngineStage {
             .into_iter()
             .sorted_unstable_by_key(|(_endpoint, (_shredstream_socket, latency_us))| *latency_us)
         {
+            if bam_enabled.load(Ordering::Relaxed) {
+                return Ok(());
+            }
             if block_engine_url != local_block_engine_config.block_engine_url {
                 info!(
                     "Selected best Block Engine url: {block_engine_url}, Shredstream socket: \
@@ -477,6 +488,10 @@ impl BlockEngineStage {
         connection_timeout: &Duration,
         bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
+        if bam_enabled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
 
@@ -503,11 +518,19 @@ impl BlockEngineStage {
             ("count", 1, i64),
         );
 
+        if bam_enabled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         debug!("connecting to block engine: {}", backend_endpoint.uri());
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
             .map_err(ProxyError::BlockEngineConnectionError)?;
+
+        if bam_enabled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
 
         let access_token = Arc::new(Mutex::new(access_token));
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
@@ -722,6 +745,10 @@ impl BlockEngineStage {
         block_engine_url: &str,
         bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
+        if bam_enabled.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
         let subscribe_packets_stream = timeout(
             *connection_timeout,
             client.subscribe_packets(block_engine::SubscribePacketsRequest {}),
