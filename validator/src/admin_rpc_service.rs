@@ -574,23 +574,26 @@ impl AdminRpc for AdminRpcImpl {
 
     fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
         let old_bam_url = meta.bam_url.lock().unwrap().clone();
+        let (bam_url, manual_disconnect) = match bam_url {
+            Some(url) if url.trim().is_empty() => (None, true),
+            Some(url) => (Some(url), false),
+            None => (None, false),
+        };
         let new_bam_url = bam_url.as_ref().map(|url| url.to_string());
         debug!("set_bam_url old= {old_bam_url:?}, new={new_bam_url:?}");
 
         if let Some(new_bam_url) = &new_bam_url {
-            if !new_bam_url.is_empty() {
-                if let Err(e) = Endpoint::from_str(new_bam_url) {
-                    return Err(jsonrpc_core::error::Error::invalid_params(format!(
-                        "Could not create endpoint: {e}"
-                    )));
-                }
-            } else {
-                datapoint_info!(
-                    "bam_manually_disconnected",
-                    ("count", 1, i64),
-                    ("previous_bam_url", old_bam_url.unwrap_or_default(), String)
-                );
+            if let Err(e) = Endpoint::from_str(new_bam_url) {
+                return Err(jsonrpc_core::error::Error::invalid_params(format!(
+                    "Could not create endpoint: {e}"
+                )));
             }
+        } else if manual_disconnect {
+            datapoint_info!(
+                "bam_manually_disconnected",
+                ("count", 1, i64),
+                ("previous_bam_url", old_bam_url.unwrap_or_default(), String)
+            );
         }
 
         *meta.bam_url.lock().unwrap() = bam_url;
