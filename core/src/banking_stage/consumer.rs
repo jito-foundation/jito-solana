@@ -120,12 +120,16 @@ pub struct Consumer {
 struct SeqNotConflictBatchReusables {
     aggregate_write_locks: AHashSet<Pubkey>,
     aggregate_read_locks: AHashSet<Pubkey>,
+    transaction_write_locks: Vec<Pubkey>,
+    transaction_read_locks: Vec<Pubkey>,
 }
 
 impl SeqNotConflictBatchReusables {
     pub fn clear(&mut self) {
         self.aggregate_write_locks.clear();
         self.aggregate_read_locks.clear();
+        self.transaction_write_locks.clear();
+        self.transaction_read_locks.clear();
     }
 }
 
@@ -517,7 +521,7 @@ impl Consumer {
                 .zip(batch.sanitized_transactions())
                 .filter_map(|(processing_result, tx)| {
                     if processing_result.was_processed() {
-                        Some(tx.to_versioned_transaction())
+                        Some((tx.to_versioned_transaction(), tx))
                     } else {
                         None
                     }
@@ -530,14 +534,13 @@ impl Consumer {
         let mut reusables = self.seq_not_conflict_batch_reusables.take();
 
         // Entries do **not** yet support conflicting transactions. To get around this we create
-        // a lists of transactions that are non-conflicting to shred out into entries. If we don't do
-        // this then blocks are rejected by consensus/replay.
+        // lists of transactions that are non-conflicting to shred out into entries. If we don't do
+        // this, then blocks are rejected by consensus/replay.
         let batches = Self::create_sequential_non_conflicting_batches(
             &mut reusables,
-            processed_transactions
-                .into_iter()
-                .zip(batch.sanitized_transactions().iter()),
+            processed_transactions.into_iter(),
         );
+        self.seq_not_conflict_batch_reusables.set(reusables);
         let hashes = batches
             .iter()
             .map(|batch| hash_transactions(batch))
@@ -641,9 +644,9 @@ impl Consumer {
         }
     }
 
-    fn create_sequential_non_conflicting_batches<'a>(
+    fn create_sequential_non_conflicting_batches<'a, T: TransactionWithMeta + 'a>(
         reusables: &mut SeqNotConflictBatchReusables,
-        transactions: impl Iterator<Item = (VersionedTransaction, &'a (impl TransactionWithMeta + 'a))>,
+        processed_transactions: impl Iterator<Item = (VersionedTransaction, &'a T)>,
     ) -> Vec<Vec<VersionedTransaction>> {
         let mut result = vec![];
         let mut current_batch = vec![];
@@ -651,31 +654,39 @@ impl Consumer {
         let SeqNotConflictBatchReusables {
             aggregate_write_locks,
             aggregate_read_locks,
+            transaction_write_locks,
+            transaction_read_locks,
         } = reusables;
 
-        for (transaction, transaction_info) in transactions {
-            let account_keys = transaction_info.account_keys();
-            let write_account_locks = account_keys
-                .iter()
-                .enumerate()
-                .filter_map(|(index, key)| transaction_info.is_writable(index).then_some(key));
-            let read_account_locks = account_keys
-                .iter()
-                .enumerate()
-                .filter_map(|(index, key)| (!transaction_info.is_writable(index)).then_some(key));
-            let has_contention = write_account_locks.clone().any(|key| {
-                aggregate_write_locks.contains(key) || aggregate_read_locks.contains(key)
-            }) || read_account_locks
-                .clone()
-                .any(|key| aggregate_write_locks.contains(key));
+        for (transaction, transaction_info) in processed_transactions {
+            transaction_write_locks.clear();
+            transaction_read_locks.clear();
+            let mut has_contention = false;
+            for (key, writable) in
+                TransactionAccountLocksIterator::new(transaction_info).accounts_with_is_writable()
+            {
+                if writable {
+                    transaction_write_locks.push(*key);
+                } else {
+                    transaction_read_locks.push(*key);
+                }
+
+                if !has_contention
+                    && (aggregate_write_locks.contains(key)
+                        || (writable && aggregate_read_locks.contains(key)))
+                {
+                    has_contention = true;
+                }
+            }
+
             if has_contention {
                 result.push(std::mem::take(&mut current_batch));
                 aggregate_write_locks.clear();
                 aggregate_read_locks.clear();
             }
             current_batch.push(transaction);
-            aggregate_write_locks.extend(write_account_locks.cloned());
-            aggregate_read_locks.extend(read_account_locks.cloned());
+            aggregate_write_locks.extend(transaction_write_locks.drain(..));
+            aggregate_read_locks.extend(transaction_read_locks.drain(..));
         }
 
         if !current_batch.is_empty() {

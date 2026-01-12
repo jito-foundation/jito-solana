@@ -300,7 +300,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return FinishedConsumeWorkExtraInfo {
                 processed_results: vec![
                     TransactionResult::NotCommitted(
-                        NotCommittedReason::PohTimeout,
+                        NotCommittedReason::PohTimeout, // Note: ChannelFull, ChannelDisconnected, MaxHeightReached are misreported as PohTimeout
                     );
                     work.transactions.len()
                 ],
