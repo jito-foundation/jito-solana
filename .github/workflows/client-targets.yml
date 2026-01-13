@@ -34,7 +34,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: 'recursive'
-          token: ${{ secrets.ACCESS_TOKEN }}
 
 
       # This can be removed once cargo-ndk >= 3.5.4 is used.
@@ -68,7 +67,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: 'recursive'
-          token: ${{ secrets.ACCESS_TOKEN }}
 
       - name: Setup Rust
         run: |

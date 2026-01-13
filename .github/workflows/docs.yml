@@ -24,7 +24,6 @@ jobs:
         with:
           fetch-depth: 0
           submodules: 'recursive'
-          token: ${{ secrets.ACCESS_TOKEN }}
 
       - name: Get commit range (push)
         if: ${{ github.event_name == 'push' }}
@@ -80,7 +79,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: 'recursive'
-          token: ${{ secrets.ACCESS_TOKEN }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
