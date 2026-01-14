@@ -33,7 +33,7 @@ fn main() -> Result<(), std::io::Error> {
 
     configure()
         .build_client(true)
-        .build_server(false)
+        .build_server(true)
         .type_attribute(
             "TransactionErrorType",
             "#[cfg_attr(test, derive(enum_iterator::Sequence))]",
