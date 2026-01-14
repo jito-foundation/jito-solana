@@ -100,6 +100,55 @@ impl TransactionRecorder {
         }
     }
 
+    pub fn record_batch(
+        &self,
+        bank_id: BankId,
+        mixins: Vec<Hash>,
+        transaction_batches: Vec<Vec<VersionedTransaction>>,
+    ) -> RecordTransactionsSummary {
+        let mut record_transactions_timings = RecordTransactionsTimings::default();
+        let mut starting_transaction_index = None;
+
+        if !transaction_batches.is_empty() {
+            let (res, poh_record_us) =
+                measure_us!(self.record(bank_id, mixins, transaction_batches));
+            record_transactions_timings.poh_record_us = Saturating(poh_record_us);
+
+            match res {
+                Ok(starting_index) => {
+                    starting_transaction_index = starting_index;
+                }
+                Err(RecordSenderError::InactiveBankId | RecordSenderError::Shutdown) => {
+                    return RecordTransactionsSummary {
+                        record_transactions_timings,
+                        result: Err(PohRecorderError::MaxHeightReached),
+                        starting_transaction_index: None,
+                    }
+                }
+                Err(RecordSenderError::Full) => {
+                    return RecordTransactionsSummary {
+                        record_transactions_timings,
+                        result: Err(PohRecorderError::ChannelFull),
+                        starting_transaction_index: None,
+                    };
+                }
+                Err(RecordSenderError::Disconnected) => {
+                    return RecordTransactionsSummary {
+                        record_transactions_timings,
+                        result: Err(PohRecorderError::ChannelDisconnected),
+                        starting_transaction_index: None,
+                    };
+                }
+            }
+        }
+
+        RecordTransactionsSummary {
+            record_transactions_timings,
+            result: Ok(()),
+            starting_transaction_index,
+        }
+    }
+
     // Returns the index of `transactions.first()` in the slot, if being tracked by WorkingBank
     pub fn record(
         &self,

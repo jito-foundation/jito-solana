@@ -390,6 +390,7 @@ pub struct ValidatorConfig {
     pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
+    pub bam_url: Arc<Mutex<Option<String>>>,
 }
 
 impl ValidatorConfig {
@@ -478,6 +479,7 @@ impl ValidatorConfig {
             shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
+            bam_url: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1729,6 +1731,7 @@ impl Validator {
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
+            config.bam_url.clone(),
         );
 
         datapoint_info!(
