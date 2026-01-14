@@ -68,11 +68,11 @@ pub enum ProxyError {
     #[error("BlockEngineConfigChanged")]
     BlockEngineConfigChanged,
 
+    #[error("BamEnabled")]
+    BamEnabled,
+
     #[error("BlockEngineConnectionTimeout")]
     BlockEngineConnectionTimeout,
-
-    #[error("BlockEngineTimeout")]
-    BlockEngineTimeout,
 
     #[error("BlockEngineEndpointError: {0:?}")]
     BlockEngineEndpointError(String),

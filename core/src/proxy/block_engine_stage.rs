@@ -50,7 +50,7 @@ use {
     tonic::{
         codegen::InterceptedService,
         transport::{Channel, Endpoint, Uri},
-        Status, Streaming,
+        Streaming,
     },
 };
 
@@ -206,6 +206,9 @@ impl BlockEngineStage {
             .await
             {
                 match e {
+                    ProxyError::BamEnabled => {
+                        continue;
+                    }
                     // This error is frequent on hot spares, and the parsed string does not work
                     // with datapoints (incorrect escaping).
                     ProxyError::AuthenticationPermissionDenied => warn!(
@@ -264,12 +267,14 @@ impl BlockEngineStage {
                 shredstream_receiver_address,
                 bam_enabled,
             )
-            .await;
+            .await
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err));
         }
 
         if let Some((_best_url, (best_socket, _best_latency_us))) =
             Self::get_ranked_endpoints(&endpoint)
-                .await?
+                .await
+                .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
                 .into_iter()
                 .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
         {
@@ -298,6 +303,7 @@ impl BlockEngineStage {
             bam_enabled,
         )
         .await
+        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))
         .inspect(|_| {
             datapoint_info!(
                 "block_engine_stage-connect",
@@ -322,7 +328,9 @@ impl BlockEngineStage {
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: &Arc<AtomicBool>,
     ) -> crate::proxy::Result<()> {
-        let candidates = Self::get_ranked_endpoints(&endpoint).await?;
+        let candidates = Self::get_ranked_endpoints(&endpoint)
+            .await
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
 
         // try connecting to best block engine
         let mut attempted = false;
@@ -359,6 +367,7 @@ impl BlockEngineStage {
                 bam_enabled,
             )
             .await
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))
             {
                 Ok(()) => {
                     datapoint_info!(
@@ -367,6 +376,9 @@ impl BlockEngineStage {
                         ("url", backend_endpoint.uri().to_string(), String),
                         ("count", 1, i64),
                     );
+                    return Ok(());
+                }
+                Err(ProxyError::BamEnabled) => {
                     return Ok(());
                 }
                 Err(e) => {
@@ -407,13 +419,21 @@ impl BlockEngineStage {
 
     /// Discover candidate endpoints either ranked via ping or using global fallback.
     /// Use u64::MAX for latency value to indicate global fallback (no ping data).
+    fn map_bam_enabled(bam_enabled: &Arc<AtomicBool>, err: ProxyError) -> ProxyError {
+        if bam_enabled.load(Ordering::Relaxed) {
+            ProxyError::BamEnabled
+        } else {
+            err
+        }
+    }
+
     async fn get_ranked_endpoints(
         backend_endpoint: &Endpoint,
     ) -> crate::proxy::Result<
         ahash::HashMap<
             String, /* block engine url */
             (
-                Option<SocketAddr>, /* shredstream receiver, fallable when DNS can't resolve */
+                Option<SocketAddr>, /* shredstream receiver, fallible when DNS can't resolve */
                 u64,                /* latency us */
             ),
         >,
@@ -484,7 +504,8 @@ impl BlockEngineStage {
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -494,7 +515,8 @@ impl BlockEngineStage {
             generate_auth_tokens(&mut auth_client, &keypair),
         )
         .await
-        .map_err(|_| ProxyError::AuthenticationTimeout)??;
+        .map_err(|_| ProxyError::AuthenticationTimeout)
+        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))??;
 
         let backend_url = backend_endpoint.uri().to_string();
         datapoint_info!(
@@ -507,7 +529,8 @@ impl BlockEngineStage {
         let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
-            .map_err(ProxyError::BlockEngineConnectionError)?;
+            .map_err(ProxyError::BlockEngineConnectionError)
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let block_engine_client = BlockEngineValidatorClient::with_interceptor(
@@ -728,7 +751,8 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
+        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
 
         let subscribe_bundles_stream = timeout(
@@ -737,7 +761,8 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
+        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
 
         let block_builder_info = timeout(
@@ -746,20 +771,15 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
+        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
-
         {
-            let block_builder_fee_info = block_builder_fee_info.clone();
-            task::spawn_blocking(move || {
-                let mut bb_fee = block_builder_fee_info.lock().unwrap();
-                bb_fee.block_builder_commission = block_builder_info.commission;
-                if let Ok(pk) = Pubkey::from_str(&block_builder_info.pubkey) {
-                    bb_fee.block_builder = pk
-                }
-            })
-            .await
-            .unwrap();
+            let mut bb_fee = block_builder_fee_info.lock().unwrap();
+            bb_fee.block_builder_commission = block_builder_info.commission;
+            if let Ok(pk) = Pubkey::from_str(&block_builder_info.pubkey) {
+                bb_fee.block_builder = pk
+            }
         }
 
         Self::consume_bundle_and_packet_stream(
@@ -826,12 +846,19 @@ impl BlockEngineStage {
             }
 
             tokio::select! {
-                maybe_msg = packet_stream.message() => {
-                    let resp = maybe_msg?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+                maybe_packet = packet_stream.message() => {
+                    let resp = maybe_packet
+                        .map_err(ProxyError::GrpcError)?
+                        .ok_or(ProxyError::GrpcStreamDisconnected)
+                        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
                     Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
-                    Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                    let resp = maybe_bundles
+                        .map_err(ProxyError::GrpcError)?
+                        .ok_or(ProxyError::GrpcStreamDisconnected)
+                        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+                    Self::handle_block_engine_bundles(resp, bundle_tx, &mut block_engine_stats)?;
                 }
                 _ = metrics_and_auth_tick.tick() => {
                     block_engine_stats.report();
@@ -851,7 +878,8 @@ impl BlockEngineStage {
                         cluster_info,
                         connection_timeout,
                         refresh_within_s,
-                    ).await?;
+                    ).await
+                    .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
 
                     if let Some(new_token) = maybe_new_access {
                         num_refresh_access_token += 1;
@@ -880,19 +908,16 @@ impl BlockEngineStage {
                     )
                     .await
                     .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-                    .map_err(|e| ProxyError::MethodError(e.to_string()))?
+                    .map_err(|e| ProxyError::MethodError(e.to_string()))
+                    .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
                     .into_inner();
-
-                    let block_builder_fee_info = block_builder_fee_info.clone();
-                    task::spawn_blocking(move || {
+                    {
                         let mut bb_fee = block_builder_fee_info.lock().unwrap();
                         bb_fee.block_builder_commission = block_builder_info.commission;
                         if let Ok(pk) = Pubkey::from_str(&block_builder_info.pubkey) {
                             bb_fee.block_builder = pk
                         }
-                    })
-                    .await
-                    .unwrap();
+                    }
                 }
             }
         }
@@ -900,12 +925,11 @@ impl BlockEngineStage {
         Ok(())
     }
 
-    fn handle_block_engine_maybe_bundles(
-        maybe_bundles_response: Result<Option<block_engine::SubscribeBundlesResponse>, Status>,
+    fn handle_block_engine_bundles(
+        bundles_response: block_engine::SubscribeBundlesResponse,
         bundle_sender: &Sender<Vec<PacketBundle>>,
         block_engine_stats: &mut BlockEngineStageStats,
     ) -> crate::proxy::Result<()> {
-        let bundles_response = maybe_bundles_response?.ok_or(ProxyError::GrpcStreamDisconnected)?;
         let bundles: Vec<PacketBundle> = bundles_response
             .bundles
             .into_iter()
