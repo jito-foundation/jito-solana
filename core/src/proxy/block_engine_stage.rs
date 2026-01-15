@@ -206,15 +206,13 @@ impl BlockEngineStage {
             .await
             {
                 match e {
-                    ProxyError::BamEnabled => {
-                        continue;
-                    }
                     // This error is frequent on hot spares, and the parsed string does not work
                     // with datapoints (incorrect escaping).
                     ProxyError::AuthenticationPermissionDenied => warn!(
                         "block engine permission denied. not on leader schedule. ignore if \
                          hot-spare."
                     ),
+                    ProxyError::BamEnabled => {}
                     e => {
                         error_count += 1;
                         datapoint_warn!(
@@ -378,9 +376,6 @@ impl BlockEngineStage {
                     );
                     return Ok(());
                 }
-                Err(ProxyError::BamEnabled) => {
-                    return Ok(());
-                }
                 Err(e) => {
                     // log each connection error
                     match &e {
@@ -390,6 +385,7 @@ impl BlockEngineStage {
                             "block engine permission denied. not on leader schedule. ignore if \
                              hot-spare."
                         ),
+                        ProxyError::BamEnabled => return Ok(()),
                         other => {
                             datapoint_warn!(
                                 "block_engine_stage-autoconfig_error",
