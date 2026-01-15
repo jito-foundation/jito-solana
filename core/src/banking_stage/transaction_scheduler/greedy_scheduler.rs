@@ -290,7 +290,6 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
             return Err(TransactionSchedulingError::UnschedulableConflicts);
         }
     }
-    drop(l_account_locks);
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,
@@ -306,6 +305,9 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
             return Err(TransactionSchedulingError::UnschedulableThread);
         }
     };
+
+    // Avoid time of check time of use race condition between bundle account locker and account locks
+    drop(l_account_locks);
 
     let (transaction, max_age) = transaction_state.take_transaction_for_scheduling();
     let cost = transaction_state.cost();
