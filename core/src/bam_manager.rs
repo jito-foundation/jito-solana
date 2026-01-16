@@ -21,6 +21,7 @@ use {
         bam_dependencies::BamDependencies,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
     },
+    arc_swap::ArcSwap,
     jito_protos::proto::{
         bam_api::ConfigResponse,
         bam_types::{LeaderState, Socket},
@@ -35,7 +36,7 @@ use {
 
 pub struct BamConnectionIdentityUpdater {
     bam_url: Arc<Mutex<Option<String>>>,
-    new_identity: Arc<Mutex<Option<Pubkey>>>,
+    new_identity: Arc<ArcSwap<Option<Pubkey>>>,
     identity_changed_force_reconnect: Arc<AtomicBool>,
 }
 
@@ -60,7 +61,7 @@ impl NotifyKeyUpdate for BamConnectionIdentityUpdater {
             disconnect_url,
             key.pubkey(),
         );
-        *self.new_identity.lock().unwrap() = Some(key.pubkey());
+        self.new_identity.store(Arc::new(Some(key.pubkey())));
         self.identity_changed_force_reconnect
             .store(true, Ordering::Relaxed);
         Ok(())
@@ -110,7 +111,7 @@ impl BamManager {
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let identity_changed = Arc::new(AtomicBool::new(false));
-        let new_identity = Arc::new(Mutex::new(None));
+        let new_identity = Arc::new(ArcSwap::from_pointee(None));
 
         let identity_updater = Arc::new(BamConnectionIdentityUpdater {
             bam_url: bam_url.clone(),
@@ -118,9 +119,10 @@ impl BamManager {
             identity_changed_force_reconnect: identity_changed.clone(),
         }) as Arc<dyn NotifyKeyUpdate + Sync + Send>;
 
-        let mut identity_notifiers = identity_notifiers.write().unwrap();
-        identity_notifiers.add(KeyUpdaterType::BamConnection, identity_updater);
-        drop(identity_notifiers);
+        identity_notifiers
+            .write()
+            .unwrap()
+            .add(KeyUpdaterType::BamConnection, identity_updater);
         info!("BAM Manager: Added BAM connection key updater");
 
         while !exit.load(Ordering::Relaxed) {
@@ -184,10 +186,9 @@ impl BamManager {
                 if identity_changed.load(Ordering::Relaxed) {
                     // Wait until the new identity is set in cluster info as to avoid race conditions
                     // with sending an auth proof w/ the old identity
-                    let identity = new_identity.lock().unwrap().take();
                     let timeout = std::time::Duration::from_secs(180);
                     Self::wait_for_identity_in_cluster_info(
-                        identity,
+                        new_identity.load().as_ref().clone(),
                         &dependencies.cluster_info,
                         timeout,
                     );
@@ -198,8 +199,12 @@ impl BamManager {
             }
 
             // Check if url changed; if yes then disconnect
-            let url = bam_url.lock().unwrap().clone();
-            if Some(connection.url().to_string()) != url {
+            if bam_url
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|url| url != connection.url())
+            {
                 current_connection = None;
                 cached_builder_config = None;
                 info!("BAM URL changed");
@@ -223,7 +228,7 @@ impl BamManager {
             }
 
             // Send leader state if we are in a leader slot
-            if let Some(bank) = shared_leader_state.load().working_bank().cloned() {
+            if let Some(bank) = shared_leader_state.load().working_bank() {
                 if !bank.is_frozen() {
                     let leader_state = Self::generate_leader_state(&bank);
                     let _ = dependencies.outbound_sender.try_send(
