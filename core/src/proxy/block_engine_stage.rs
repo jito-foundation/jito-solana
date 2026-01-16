@@ -6,6 +6,7 @@
 
 use {
     crate::{
+        bam_dependencies::BamConnectionState,
         banking_trace::BankingPacketSender,
         packet_bundle::PacketBundle,
         proto_packet_to_packet,
@@ -36,7 +37,7 @@ use {
         ops::AddAssign,
         str::FromStr,
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
             Arc, Mutex,
         },
         thread::{self, Builder, JoinHandle},
@@ -129,7 +130,7 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        bam_enabled: Arc<AtomicBool>,
+        bam_enabled: Arc<AtomicU8>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
 
@@ -176,7 +177,7 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        bam_enabled: Arc<AtomicBool>,
+        bam_enabled: Arc<AtomicU8>,
     ) {
         let mut error_count: u64 = 0;
 
@@ -238,9 +239,11 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
-        bam_enabled: &Arc<AtomicBool>,
+        bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
-        if bam_enabled.load(Ordering::Relaxed) {
+        if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+            == BamConnectionState::Connected
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
             return Ok(());
         }
@@ -324,7 +327,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
-        bam_enabled: &Arc<AtomicBool>,
+        bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
         let candidates = Self::get_ranked_endpoints(&endpoint)
             .await
@@ -415,11 +418,12 @@ impl BlockEngineStage {
 
     /// Discover candidate endpoints either ranked via ping or using global fallback.
     /// Use u64::MAX for latency value to indicate global fallback (no ping data).
-    fn map_bam_enabled(bam_enabled: &Arc<AtomicBool>, err: ProxyError) -> ProxyError {
-        if bam_enabled.load(Ordering::Relaxed) {
-            ProxyError::BamEnabled
-        } else {
-            err
+    fn map_bam_enabled(bam_enabled: &Arc<AtomicU8>, err: ProxyError) -> ProxyError {
+        match BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed)) {
+            BamConnectionState::Disconnected => err,
+            BamConnectionState::Connecting | BamConnectionState::Connected => {
+                ProxyError::BamEnabled
+            }
         }
     }
 
@@ -491,7 +495,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
-        bam_enabled: &Arc<AtomicBool>,
+        bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -739,7 +743,7 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         block_engine_url: &str,
-        bam_enabled: &Arc<AtomicBool>,
+        bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -821,7 +825,7 @@ impl BlockEngineStage {
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
         block_engine_url: &str,
-        bam_enabled: &Arc<AtomicBool>,
+        bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -836,7 +840,9 @@ impl BlockEngineStage {
         info!("connected to packet and bundle stream");
 
         while !exit.load(Ordering::Relaxed) {
-            if bam_enabled.load(Ordering::Relaxed) {
+            if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+                == BamConnectionState::Connected
+            {
                 info!("bam enabled, exiting block engine stage");
                 return Ok(());
             }

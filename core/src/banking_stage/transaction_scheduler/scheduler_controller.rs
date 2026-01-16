@@ -9,6 +9,7 @@ use {
         scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
     },
     crate::{
+        bam_dependencies::BamConnectionState,
         banking_stage::{
             consume_worker::ConsumeWorkerMetrics,
             consumer::Consumer,
@@ -28,7 +29,7 @@ use {
     std::{
         num::{NonZeroU64, Saturating},
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
             Arc, RwLock,
         },
         time::{Duration, Instant},
@@ -84,7 +85,7 @@ where
     /// This is the BAM controller.
     bam_controller: bool,
     /// Whether BAM is enabled.
-    bam_enabled: Arc<AtomicBool>,
+    bam_enabled: Arc<AtomicU8>,
 }
 
 impl<R, S> SchedulerController<R, S>
@@ -101,7 +102,7 @@ where
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
         bam_controller: bool,
-        bam_enabled: Arc<AtomicBool>,
+        bam_enabled: Arc<AtomicU8>,
     ) -> Self {
         Self {
             exit,
@@ -447,7 +448,10 @@ where
     }
 
     fn scheduling_enabled(&self) -> bool {
-        self.bam_controller == self.bam_enabled.load(std::sync::atomic::Ordering::Relaxed)
+        let bam_connected =
+            BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+                == BamConnectionState::Connected;
+        self.bam_controller == bam_connected
     }
 }
 

@@ -5,7 +5,7 @@ pub use crate::forwarding_stage::ForwardingClientOption;
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
-        bam_dependencies::BamDependencies,
+        bam_dependencies::{BamConnectionState, BamDependencies},
         bam_manager::BamManager,
         banking_stage::consumer::TipProcessingDependencies,
         banking_stage::{
@@ -75,7 +75,10 @@ use {
         collections::HashMap,
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
-        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        sync::{
+            atomic::{AtomicBool, AtomicU8},
+            Arc, Mutex, RwLock,
+        },
         thread::{self, JoinHandle},
         time::Duration,
     },
@@ -365,7 +368,7 @@ impl Tpu {
 
         let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
         let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
-        let bam_enabled = Arc::new(AtomicBool::new(false));
+        let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8));
 
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,

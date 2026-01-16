@@ -8,6 +8,7 @@ use {
         transaction_state_container::TransactionStateContainer,
     },
     crate::{
+        bam_dependencies::BamConnectionState,
         bam_dependencies::BamOutboundMessage,
         banking_stage::{
             consumer::Consumer,
@@ -52,7 +53,7 @@ use {
     std::{
         cmp::min,
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
             Arc, RwLock,
         },
         time::{Duration, Instant},
@@ -63,7 +64,7 @@ type PrevalidationResult = Result<(usize, bool, u32, u64), (Reason, u32)>;
 type VerifyResult = Result<(Vec<SharedBytes>, bool, u32, u64), (Reason, u32)>;
 
 pub struct BamReceiveAndBuffer {
-    bam_enabled: Arc<AtomicBool>,
+    bam_enabled: Arc<AtomicU8>,
     response_sender: Sender<BamOutboundMessage>,
     parsed_batch_receiver: crossbeam_channel::Receiver<ParsedBatch>,
     recv_stats_receiver: crossbeam_channel::Receiver<ReceivingStats>,
@@ -85,7 +86,7 @@ struct ParsedBatch {
 impl BamReceiveAndBuffer {
     pub fn new(
         exit: Arc<AtomicBool>,
-        bam_enabled: Arc<AtomicBool>,
+        bam_enabled: Arc<AtomicU8>,
         bundle_receiver: crossbeam_channel::Receiver<AtomicTxnBatch>,
         response_sender: Sender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
@@ -787,7 +788,8 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let is_bam_enabled = self.bam_enabled.load(Ordering::Relaxed);
+        let is_bam_enabled = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+            == BamConnectionState::Connected;
 
         // Receive all stats
         let mut stats = ReceivingStats::default();
@@ -1075,6 +1077,7 @@ impl SigverifyMetrics {
 mod tests {
     use {
         super::*,
+        crate::bam_dependencies::BamConnectionState,
         crate::banking_stage::{
             tests::create_slow_genesis_config,
             transaction_scheduler::transaction_state_container::StateContainer,
@@ -1090,6 +1093,7 @@ mod tests {
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{versioned::VersionedTransaction, Transaction},
+        std::sync::atomic::AtomicU8,
         test_case::test_case,
     };
 
@@ -1132,7 +1136,7 @@ mod tests {
             crossbeam_channel::unbounded::<BamOutboundMessage>();
         let receive_and_buffer = BamReceiveAndBuffer::new(
             exit.clone(),
-            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
             receiver,
             response_sender,
             bank_forks,

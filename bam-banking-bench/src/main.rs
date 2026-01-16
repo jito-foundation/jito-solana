@@ -8,7 +8,7 @@ use {
     crossbeam_channel::{unbounded, Receiver},
     log::*,
     solana_core::{
-        bam_dependencies::BamDependencies,
+        bam_dependencies::{BamConnectionState, BamDependencies},
         banking_stage::{
             transaction_scheduler::scheduler_controller::SchedulerConfig,
             update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage,
@@ -41,7 +41,7 @@ use {
     std::{
         collections::HashSet,
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
             Arc, Mutex, RwLock,
         },
         thread::{sleep, spawn},
@@ -110,7 +110,7 @@ fn main() {
     let (outbound_sender, outbound_receiver) = unbounded();
     let keypair = Keypair::new();
     let bam_dependencies = BamDependencies {
-        bam_enabled: Arc::new(AtomicBool::new(true)),
+        bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
         batch_sender: batch_sender.clone(),
         batch_receiver,
         outbound_sender,
