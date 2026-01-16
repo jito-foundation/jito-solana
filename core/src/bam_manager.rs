@@ -126,52 +126,57 @@ impl BamManager {
         info!("BAM Manager: Added BAM connection key updater");
 
         while !exit.load(Ordering::Relaxed) {
-            // If no connection then try to create a new one
-            if current_connection.is_none() {
-                let url = bam_url.lock().unwrap().clone();
-                if let Some(url) = url {
-                    let result = runtime.block_on(BamConnection::try_init(
-                        url.clone(),
-                        dependencies.cluster_info.clone(),
-                        dependencies.batch_sender.clone(),
-                        dependencies.outbound_receiver.clone(),
-                    ));
-                    match result {
-                        Ok(connection) => {
-                            current_connection = Some(connection);
-                            info!("BAM connection established");
+            let current_url = bam_url.lock().unwrap().clone();
 
-                            // Wait until connection is healthy
-                            if !current_connection
-                                .as_ref()
-                                .unwrap()
-                                .wait_until_healthy_and_config_received(
-                                    MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
-                                )
-                            {
-                                warn!(
-                                    "BAM connection not healthy after waiting for \
-                                     {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and \
-                                     will retry",
-                                );
-                                current_connection = None;
-                                cached_builder_config = None;
-                                dependencies.bam_enabled.store(false, Ordering::Relaxed);
-                                std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
-                                continue;
+            let connection = match current_connection.as_mut() {
+                Some(connection) => connection,
+                None => {
+                    if let Some(url) = current_url.clone() {
+                        let result = runtime.block_on(BamConnection::try_init(
+                            url.clone(),
+                            dependencies.cluster_info.clone(),
+                            dependencies.batch_sender.clone(),
+                            dependencies.outbound_receiver.clone(),
+                        ));
+                        match result {
+                            Ok(connection) => {
+                                current_connection = Some(connection);
+                                info!("BAM connection established");
+
+                                // Wait until connection is healthy
+                                if !current_connection
+                                    .as_ref()
+                                    .unwrap()
+                                    .wait_until_healthy_and_config_received(
+                                        MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
+                                    )
+                                {
+                                    warn!(
+                                        "BAM connection not healthy after waiting for \
+                                         {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting \
+                                         and will retry",
+                                    );
+                                    current_connection = None;
+                                    cached_builder_config = None;
+                                    dependencies.bam_enabled.store(false, Ordering::Relaxed);
+                                    std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                                    continue;
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to connect to BAM with url: {url}: {e}");
                             }
                         }
-                        Err(e) => {
-                            error!("Failed to connect to BAM with url: {url}: {e}");
-                        }
                     }
-                }
-            }
 
-            let Some(connection) = current_connection.as_mut() else {
-                dependencies.bam_enabled.store(false, Ordering::Relaxed);
-                std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
-                continue;
+                    let Some(connection) = current_connection.as_mut() else {
+                        dependencies.bam_enabled.store(false, Ordering::Relaxed);
+                        std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                        continue;
+                    };
+
+                    connection
+                }
             };
 
             // Check if connection is healthy or if the identity changed; if no then disconnect
@@ -196,9 +201,7 @@ impl BamManager {
             }
 
             // Check if url changed; if yes then disconnect
-            if bam_url
-                .lock()
-                .unwrap()
+            if current_url
                 .as_ref()
                 .is_some_and(|url| url != connection.url())
             {
