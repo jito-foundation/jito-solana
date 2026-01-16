@@ -1199,6 +1199,10 @@ pub mod replace_spl_token_with_p_token {
         Pubkey::from_str_const("ptokNfvuU7terQ2r2452RzVXB3o4GT33yPWo1fUkkZ2");
 }
 
+pub mod relax_programdata_account_check_migration {
+    solana_pubkey::declare_id!("rexav5eNTUSNT1K2N7cfRjnthwhcP5BC25v2tA4rW4h");
+}
+
 pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::new(|| {
     [
         (secp256k1_program_enabled::id(), "secp256k1 program"),
@@ -2149,6 +2153,10 @@ pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::n
         (
             replace_spl_token_with_p_token::id(),
             "SIMD-0266: Efficient Token program",
+        ),
+        (
+            relax_programdata_account_check_migration::id(),
+            "SIMD-0444: Relax program data account check in migration",
         ),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
