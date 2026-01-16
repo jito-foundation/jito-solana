@@ -126,12 +126,6 @@ impl BamManager {
         info!("BAM Manager: Added BAM connection key updater");
 
         while !exit.load(Ordering::Relaxed) {
-            // Update if bam is enabled
-            dependencies.bam_enabled.store(
-                current_connection.is_some() && cached_builder_config.is_some(),
-                Ordering::Relaxed,
-            );
-
             // If no connection then try to create a new one
             if current_connection.is_none() {
                 let url = bam_url.lock().unwrap().clone();
@@ -162,6 +156,7 @@ impl BamManager {
                                 );
                                 current_connection = None;
                                 cached_builder_config = None;
+                                dependencies.bam_enabled.store(false, Ordering::Relaxed);
                                 std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                                 continue;
                             }
@@ -174,6 +169,7 @@ impl BamManager {
             }
 
             let Some(connection) = current_connection.as_mut() else {
+                dependencies.bam_enabled.store(false, Ordering::Relaxed);
                 std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                 continue;
             };
@@ -183,6 +179,7 @@ impl BamManager {
             if !connection.is_healthy() || identity_changed.load(Ordering::Relaxed) {
                 current_connection = None;
                 cached_builder_config = None;
+                dependencies.bam_enabled.store(false, Ordering::Relaxed);
                 if identity_changed.load(Ordering::Relaxed) {
                     // Wait until the new identity is set in cluster info as to avoid race conditions
                     // with sending an auth proof w/ the old identity
@@ -207,6 +204,7 @@ impl BamManager {
             {
                 current_connection = None;
                 cached_builder_config = None;
+                dependencies.bam_enabled.store(false, Ordering::Relaxed);
                 info!("BAM URL changed");
                 continue;
             }
@@ -226,6 +224,10 @@ impl BamManager {
                     cached_builder_config = Some(builder_config);
                 }
             }
+            dependencies.bam_enabled.store(
+                current_connection.is_some() && cached_builder_config.is_some(),
+                Ordering::Relaxed,
+            );
 
             // Send leader state if we are in a leader slot
             if let Some(bank) = shared_leader_state.load().working_bank() {
