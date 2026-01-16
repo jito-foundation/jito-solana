@@ -7,6 +7,7 @@ use {
     solana_account::Account,
     solana_cluster_type::ClusterType,
     solana_commitment_config::CommitmentConfig,
+    solana_core::banking_stage::BankingStage,
     solana_faucet::faucet::{run_faucet, Faucet},
     solana_feature_gate_interface as feature,
     solana_fee_calculator::FeeRateGovernor,
@@ -47,6 +48,70 @@ pub struct BamValidator {
     node_name: String,
 }
 
+#[derive(Debug, Clone)]
+struct ThreadPoolConfig {
+    per_validator_cpu_budget: usize,
+    accounts_db_background_threads: usize,
+    accounts_db_foreground_threads: usize,
+    accounts_index_flush_threads: usize,
+    block_production_num_workers: usize,
+    ip_echo_server_threads: usize,
+    rayon_global_threads: usize,
+    replay_forks_threads: usize,
+    replay_transactions_threads: usize,
+    rocksdb_compaction_threads: usize,
+    rocksdb_flush_threads: usize,
+    tpu_transaction_forward_receive_threads: usize,
+    tpu_transaction_receive_threads: usize,
+    tpu_vote_transaction_receive_threads: usize,
+    tvu_receive_threads: usize,
+    tvu_retransmit_threads: usize,
+    tvu_shred_sigverify_threads: usize,
+    rpc_threads: usize,
+    rpc_blocking_threads: usize,
+    rpc_pubsub_notification_threads: usize,
+    rpc_pubsub_worker_threads: usize,
+    unified_scheduler_handler_threads: usize,
+}
+
+impl ThreadPoolConfig {
+    fn from_cluster(physical_cores: usize, running_validators: usize) -> Self {
+        let per_validator_cpu_budget = std::cmp::max(1, physical_cores / running_validators);
+        let half = std::cmp::max(1, per_validator_cpu_budget / 2);
+        let quarter = std::cmp::max(1, per_validator_cpu_budget / 4);
+
+        Self {
+            per_validator_cpu_budget,
+            accounts_db_background_threads: quarter,
+            accounts_db_foreground_threads: half,
+            accounts_index_flush_threads: quarter,
+            block_production_num_workers: std::cmp::min(
+                BankingStage::default_num_workers().get(), // 4
+                per_validator_cpu_budget,
+            )
+            .max(1),
+            ip_echo_server_threads: 2,
+            rayon_global_threads: per_validator_cpu_budget,
+            replay_forks_threads: 1,
+            replay_transactions_threads: per_validator_cpu_budget,
+            rocksdb_compaction_threads: half,
+            rocksdb_flush_threads: quarter,
+            tpu_transaction_forward_receive_threads: std::cmp::min(half, 16)
+                .max(1),
+            tpu_transaction_receive_threads: std::cmp::min(half, 8).max(1),
+            tpu_vote_transaction_receive_threads: std::cmp::min(per_validator_cpu_budget, 8).max(1),
+            tvu_receive_threads: 1,
+            tvu_retransmit_threads: std::cmp::min(per_validator_cpu_budget, 12).max(1),
+            tvu_shred_sigverify_threads: half,
+            rpc_threads: half,
+            rpc_blocking_threads: quarter,
+            rpc_pubsub_notification_threads: quarter,
+            rpc_pubsub_worker_threads: std::cmp::min(half, 4).max(1),
+            unified_scheduler_handler_threads: quarter,
+        }
+    }
+}
+
 impl BamValidator {
     #[allow(clippy::too_many_arguments)]
     fn start_process(
@@ -57,6 +122,7 @@ impl BamValidator {
         rpc_port: u16,
         dynamic_port_range_start: u16,
         dynamic_port_range_end: u16,
+        no_wait_for_vote_to_start_leader: bool,
         cluster_config: &LocalClusterConfig,
         genesis_config: &GenesisConfig,
         bootstrap_gossip: Option<&str>,
@@ -65,6 +131,7 @@ impl BamValidator {
         vote_path: &PathBuf,
         runtime: &Runtime,
         config: &CustomValidatorConfig,
+        thread_pool_config: &ThreadPoolConfig,
         quiet: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let validator_binary = format!("{}/agave-validator", cluster_config.validator_build_path);
@@ -88,7 +155,6 @@ impl BamValidator {
             .arg(format!(
                 "{dynamic_port_range_start}-{dynamic_port_range_end}"
             ))
-            .arg("--no-wait-for-vote-to-start-leader")
             .arg("--no-os-network-limits-test")
             .arg("--wait-for-supermajority")
             .arg("0")
@@ -115,7 +181,54 @@ impl BamValidator {
             .arg("--merkle-root-upload-authority")
             .arg("11111111111111111111111111111111")
             .arg("--commission-bps")
-            .arg("100");
+            .arg("100")
+            // thread configuration
+            .arg("--accounts-db-background-threads")
+            .arg(thread_pool_config.accounts_db_background_threads.to_string())
+            .arg("--accounts-db-foreground-threads")
+            .arg(thread_pool_config.accounts_db_foreground_threads.to_string())
+            .arg("--accounts-index-flush-threads")
+            .arg(thread_pool_config.accounts_index_flush_threads.to_string())
+            .arg("--block-production-num-workers")
+            .arg(thread_pool_config.block_production_num_workers.to_string())
+            .arg("--ip-echo-server-threads")
+            .arg(thread_pool_config.ip_echo_server_threads.to_string())
+            .arg("--rayon-global-threads")
+            .arg(thread_pool_config.rayon_global_threads.to_string())
+            .arg("--replay-forks-threads")
+            .arg(thread_pool_config.replay_forks_threads.to_string())
+            .arg("--replay-transactions-threads")
+            .arg(thread_pool_config.replay_transactions_threads.to_string())
+            .arg("--rocksdb-compaction-threads")
+            .arg(thread_pool_config.rocksdb_compaction_threads.to_string())
+            .arg("--rocksdb-flush-threads")
+            .arg(thread_pool_config.rocksdb_flush_threads.to_string())
+            .arg("--rpc-threads")
+            .arg(thread_pool_config.rpc_threads.to_string())
+            .arg("--rpc-blocking-threads")
+            .arg(thread_pool_config.rpc_blocking_threads.to_string())
+            .arg("--rpc-pubsub-notification-threads")
+            .arg(thread_pool_config.rpc_pubsub_notification_threads.to_string())
+            .arg("--rpc-pubsub-worker-threads")
+            .arg(thread_pool_config.rpc_pubsub_worker_threads.to_string())
+            .arg("--tpu-transaction-forward-receive-threads")
+            .arg(thread_pool_config.tpu_transaction_forward_receive_threads.to_string())
+            .arg("--tpu-transaction-receive-threads")
+            .arg(thread_pool_config.tpu_transaction_receive_threads.to_string())
+            .arg("--tpu-vote-transaction-receive-threads")
+            .arg(thread_pool_config.tpu_vote_transaction_receive_threads.to_string())
+            .arg("--tvu-receive-threads")
+            .arg(thread_pool_config.tvu_receive_threads.to_string())
+            .arg("--tvu-retransmit-threads")
+            .arg(thread_pool_config.tvu_retransmit_threads.to_string())
+            .arg("--tvu-shred-sigverify-threads")
+            .arg(thread_pool_config.tvu_shred_sigverify_threads.to_string())
+            .arg("--unified-scheduler-handler-threads")
+            .arg(thread_pool_config.unified_scheduler_handler_threads.to_string());
+
+        if no_wait_for_vote_to_start_leader {
+            cmd.arg("--no-wait-for-vote-to-start-leader");
+        }
 
         if let Some(expected_bank_hash) = expected_bank_hash {
             cmd.arg("--expected-bank-hash").arg(expected_bank_hash);
@@ -362,13 +475,21 @@ impl BamLocalCluster {
             solana_local_cluster::local_cluster::DEFAULT_MINT_LAMPORTS,
             &vote_keypairs,
             stakes,
-            ClusterType::Development, // don't use mainnet, since we de-dupe local tvu ip
-                                      // addresses, every validator has TVU IP of 127.0.0.1
-
-                                      // see: https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
+            ClusterType::Development, // don't use mainnet, since we de-dupe local tvu ip addresses
+            // see: https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
         );
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
+
+        let running_validators = config.validators.len();
+        let total_physical_cpus = num_cpus::get_physical();
+        let thread_pool_config =
+            ThreadPoolConfig::from_cluster(total_physical_cpus, running_validators);
+        info!(
+            "Thread pool sizing: cpu_cores={}, running_validators={}, per_validator_budget={}",
+            total_physical_cpus, running_validators, thread_pool_config.per_validator_cpu_budget
+        );
+        debug!("Thread pool config: {:?}", thread_pool_config);
 
         // Start faucet
         let faucet_address = SocketAddr::from_str(&config.faucet_address)?;
@@ -440,6 +561,7 @@ impl BamLocalCluster {
                 },
                 dynamic_port_range_start,
                 dynamic_port_range_end,
+                is_bootstrap,
                 &config,
                 &genesis_config_info.genesis_config,
                 if !is_bootstrap {
@@ -452,6 +574,7 @@ impl BamLocalCluster {
                 &validator_config.vote_keypair,
                 &runtime,
                 validator_config,
+                &thread_pool_config,
                 quiet,
             )?;
             validators.push(validator);
