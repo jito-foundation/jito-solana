@@ -221,7 +221,7 @@ impl BamManager {
                         // with sending an auth proof w/ the old identity
                         let timeout = std::time::Duration::from_secs(180);
                         Self::wait_for_identity_in_cluster_info(
-                            new_identity.load().as_ref().clone(),
+                            *new_identity.load().as_ref(),
                             &dependencies.cluster_info,
                             timeout,
                         );
@@ -271,7 +271,7 @@ impl BamManager {
                 // Send leader state if we are in a leader slot
                 if let Some(bank) = shared_leader_state.load().working_bank() {
                     if !bank.is_frozen() {
-                        let leader_state = Self::generate_leader_state(&bank);
+                        let leader_state = Self::generate_leader_state(bank);
                         let _ = dependencies.outbound_sender.try_send(
                             crate::bam_dependencies::BamOutboundMessage::LeaderState(leader_state),
                         );

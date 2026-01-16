@@ -8,8 +8,7 @@ use {
         transaction_state_container::TransactionStateContainer,
     },
     crate::{
-        bam_dependencies::BamConnectionState,
-        bam_dependencies::BamOutboundMessage,
+        bam_dependencies::{BamConnectionState, BamOutboundMessage},
         banking_stage::{
             consumer::Consumer,
             decision_maker::BufferedPacketsDecision,
@@ -1077,10 +1076,12 @@ impl SigverifyMetrics {
 mod tests {
     use {
         super::*,
-        crate::bam_dependencies::BamConnectionState,
-        crate::banking_stage::{
-            tests::create_slow_genesis_config,
-            transaction_scheduler::transaction_state_container::StateContainer,
+        crate::{
+            bam_dependencies::BamConnectionState,
+            banking_stage::{
+                tests::create_slow_genesis_config,
+                transaction_scheduler::transaction_state_container::StateContainer,
+            },
         },
         ahash::HashSetExt,
         crossbeam_channel::{unbounded, Receiver},

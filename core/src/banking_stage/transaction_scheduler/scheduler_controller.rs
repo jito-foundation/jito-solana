@@ -448,9 +448,8 @@ where
     }
 
     fn scheduling_enabled(&self) -> bool {
-        let bam_connected =
-            BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
-                == BamConnectionState::Connected;
+        let bam_connected = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+            == BamConnectionState::Connected;
         self.bam_controller == bam_connected
     }
 }
@@ -606,7 +605,7 @@ mod tests {
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
             false,
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
         );
 
         (test_frame, scheduler_controller)
