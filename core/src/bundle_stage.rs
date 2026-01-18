@@ -445,8 +445,21 @@ impl BundleStage {
 
         let mut last_tip_update_slot = Slot::MAX;
 
-        while !exit.load(Ordering::Relaxed) {
-            if bundle_storage.unprocessed_bundles_len() > 0
+                while !exit.load(Ordering::Relaxed) {
+
+                    // SOVEREIGN ADAPTIVE-SLEEP: Prevent CPU over-spin
+
+                    if bundle_storage.unprocessed_bundles_len() == 0 {
+
+                        thread::sleep(Duration::from_micros(100));
+
+                    }
+
+        
+
+                    if bundle_storage.unprocessed_bundles_len() > 0     
+
+        
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
                 let (_, process_buffered_packets_time_us) =
