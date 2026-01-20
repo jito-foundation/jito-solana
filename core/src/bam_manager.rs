@@ -137,10 +137,12 @@ impl BamManager {
 
             // If no connection then try to create a new one
             if current_connection.is_none() {
+                // Set ClientId to 'JitoSolana'
                 if current_client_id != fallback_client_id {
                     Self::set_client_id(&dependencies.cluster_info, fallback_client_id);
                     current_client_id = fallback_client_id;
                 }
+
                 let url = bam_url.lock().unwrap().clone();
                 if let Some(url) = url {
                     let result = runtime.block_on(BamConnection::try_init(
