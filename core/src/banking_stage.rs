@@ -642,7 +642,7 @@ impl BankingStage {
         let bam_enabled = bam_dependencies
             .as_ref()
             .map(|bam| bam.bam_enabled.clone())
-            .unwrap_or(Arc::new(AtomicBool::new(false)));
+            .unwrap_or_default();
         #[allow(unused_macros)]
         macro_rules! spawn_scheduler {
             ($scheduler:ident) => {
