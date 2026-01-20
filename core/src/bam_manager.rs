@@ -373,7 +373,7 @@ impl BamManager {
         if prev_client_id == new_client_id {
             return;
         }
-        current_contact_info.version.client = u16::try_from(new_client_id).unwrap();
+        current_contact_info.version.client = new_client_id;
     }
 
     pub fn join(self) -> std::thread::Result<()> {
