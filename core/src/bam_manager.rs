@@ -31,6 +31,7 @@ use {
     solana_quic_definitions::NotifyKeyUpdate,
     solana_runtime::bank::Bank,
     solana_signer::Signer,
+    solana_version::ClientId,
 };
 
 pub struct BamConnectionIdentityUpdater {
@@ -123,6 +124,10 @@ impl BamManager {
         drop(identity_notifiers);
         info!("BAM Manager: Added BAM connection key updater");
 
+        let fallback_client_id = u16::try_from(ClientId::JitoLabs).unwrap();
+        let mut current_client_id = fallback_client_id;
+        let bam_client_id = u16::try_from(ClientId::AgaveBam).unwrap();
+
         while !exit.load(Ordering::Relaxed) {
             // Update if bam is enabled
             dependencies.bam_enabled.store(
@@ -132,6 +137,10 @@ impl BamManager {
 
             // If no connection then try to create a new one
             if current_connection.is_none() {
+                if current_client_id != fallback_client_id {
+                    Self::set_client_id(&dependencies.cluster_info, fallback_client_id);
+                    current_client_id = fallback_client_id;
+                }
                 let url = bam_url.lock().unwrap().clone();
                 if let Some(url) = url {
                     let result = runtime.block_on(BamConnection::try_init(
@@ -175,6 +184,12 @@ impl BamManager {
                 std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                 continue;
             };
+
+            // Set BAM Client Id
+            if current_client_id != bam_client_id {
+                Self::set_client_id(&dependencies.cluster_info, bam_client_id);
+                current_client_id = bam_client_id;
+            }
 
             // Check if connection is healthy or if the identity changed; if no then disconnect
             // Disconnecting will cause a reconnect attempt, with the new identity if it changed
@@ -348,6 +363,15 @@ impl BamManager {
             ("timeout_secs", timeout.as_secs() as i64, i64)
         );
         false
+    }
+
+    fn set_client_id(cluster_info: &ClusterInfo, new_client_id: u16) {
+        let mut current_contact_info = cluster_info.my_contact_info();
+        let prev_client_id = current_contact_info.version.client;
+        if prev_client_id == new_client_id {
+            return;
+        }
+        current_contact_info.version.client = u16::try_from(new_client_id).unwrap();
     }
 
     pub fn join(self) -> std::thread::Result<()> {
