@@ -124,9 +124,9 @@ impl BamManager {
         drop(identity_notifiers);
         info!("BAM Manager: Added BAM connection key updater");
 
-        let fallback_client_id = u16::try_from(ClientId::JitoLabs).unwrap();
+        let fallback_client_id = ClientId::JitoLabs;
         let mut current_client_id = fallback_client_id;
-        let bam_client_id = u16::try_from(ClientId::AgaveBam).unwrap();
+        let bam_client_id = ClientId::AgaveBam;
 
         while !exit.load(Ordering::Relaxed) {
             // Update if bam is enabled
@@ -367,13 +367,12 @@ impl BamManager {
         false
     }
 
-    fn set_client_id(cluster_info: &ClusterInfo, new_client_id: u16) {
-        let mut current_contact_info = cluster_info.my_contact_info();
-        let prev_client_id = current_contact_info.version.client;
-        if prev_client_id == new_client_id {
+    fn set_client_id(cluster_info: &ClusterInfo, new_client_id: ClientId) {
+        let current_client_id = cluster_info.get_client_id();
+        if current_client_id == new_client_id {
             return;
         }
-        current_contact_info.version.client = new_client_id;
+        cluster_info.set_client_id(new_client_id);
     }
 
     pub fn join(self) -> std::thread::Result<()> {
