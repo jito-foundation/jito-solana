@@ -1,3 +1,4 @@
+use agave_feature_set::FeatureSet;
 #[allow(deprecated)]
 use {
     crate::config::{CustomValidatorConfig, LocalClusterConfig},
@@ -501,6 +502,7 @@ impl BamLocalCluster {
             FeeRateGovernor::default(),
             Rent::default(),
             cluster_type,
+            &FeatureSet::default(),
             vec![],
         );
 

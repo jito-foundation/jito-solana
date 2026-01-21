@@ -964,6 +964,7 @@ mod tests {
             tip_payment::JitoTipPaymentConfig,
             TipDistributionAccountConfig, TipManagerConfig,
         },
+        agave_feature_set::FeatureSet,
         crossbeam_channel::{bounded, unbounded},
         solana_cluster_type::ClusterType,
         solana_fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
@@ -1017,6 +1018,7 @@ mod tests {
             },
             rent.clone(), // most tests don't expect rent
             ClusterType::Development,
+            &FeatureSet::all_enabled(),
             spl_programs(&rent),
         );
         genesis_config.ticks_per_slot *= 8;
