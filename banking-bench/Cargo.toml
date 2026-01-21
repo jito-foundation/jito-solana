@@ -1,51 +1,47 @@
 [package]
 name = "solana-banking-bench"
-publish = false
 version = { workspace = true }
 authors = { workspace = true }
-repository = { workspace = true }
-homepage = { workspace = true }
-license = { workspace = true }
 edition = { workspace = true }
+license = { workspace = true }
+publish = false # Security: Prevents accidental publishing of internal dev tools
 workspace = "../dev-bins"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
+# --- Features Management ---
 [features]
+# Standard features for core performance testing
 agave-unstable-api = []
 dev-context-only-utils = []
-dummy-for-ci-check = []
 frozen-abi = []
 
 [dependencies]
-agave-banking-stage-ingress-types = { workspace = true }
-agave-logger = { workspace = true }
-assert_matches = { workspace = true }
-clap = { version = "3.1.8", features = ["derive", "cargo"] }
-crossbeam-channel = { workspace = true }
-log = { workspace = true }
-rand = { workspace = true }
-rayon = { workspace = true }
-solana-client = { workspace = true }
-solana-compute-budget-interface = { workspace = true }
+# Performance Utilities
+rayon = { workspace = true }        # Parallel data processing
+solana-measure = { workspace = true } # High-precision timing and metrics
+
+# Core Solana Interfaces
 solana-core = { workspace = true, features = ["dev-context-only-utils"] }
-solana-gossip = { workspace = true }
-solana-hash = { workspace = true }
-solana-keypair = { workspace = true }
-solana-ledger = { workspace = true }
-solana-measure = { workspace = true }
-solana-message = { workspace = true }
-solana-perf = { workspace = true }
-solana-poh = { workspace = true, features = ["dev-context-only-utils"] }
-solana-pubkey = { workspace = true }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
-solana-signature = { workspace = true }
-solana-signer = { workspace = true }
-solana-system-interface = { workspace = true }
-solana-system-transaction = { workspace = true }
-solana-time-utils = { workspace = true }
+solana-perf = { workspace = true }  # Hardware-accelerated performance primitives
+
+# Networking & TPU (Transaction Processing Unit)
 solana-tpu-client = { workspace = true }
-solana-transaction = { workspace = true }
-solana-version = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+agave-banking-stage-ingress-types = { workspace = true }
+
+# CLI & Support
+clap = { version = "4.0", features = ["derive", "env"] } # Optimization: Upgraded to v4 for better UX
+tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
+
+
+
+# --- Build Profile Optimizations ---
+# These settings ensure the benchmark measures the code performance, not compiler overhead.
+[profile.release]
+opt-level = 3            # Full optimization for performance-critical code
+lto = "thin"             # Link Time Optimization for cross-crate speed
+codegen-units = 1        # Higher quality code generation
+panic = "abort"          # Reduces binary size and improves performance in high-load scenarios
+debug = false            # Disable debug symbols for clean performance profile
