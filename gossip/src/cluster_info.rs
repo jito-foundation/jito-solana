@@ -2371,6 +2371,7 @@ impl ClusterInfo {
 
     pub fn set_client_id(&self, client_id: ClientId) {
         self.my_contact_info.write().unwrap().version.client = u16::try_from(client_id).unwrap();
+        self.refresh_my_gossip_contact_info();
     }
 
     pub fn get_client_id(&self) -> ClientId {
