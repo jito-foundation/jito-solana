@@ -461,14 +461,16 @@ mod bam_manager_tests {
     use {
         super::*,
         solana_core::{
-            admin_rpc_post_init::KeyUpdaters, bam_dependencies::BamDependencies,
-            bam_manager::BamManager, proxy::block_engine_stage::BlockBuilderFeeInfo,
+            admin_rpc_post_init::KeyUpdaters,
+            bam_dependencies::{BamConnectionState, BamDependencies},
+            bam_manager::BamManager,
+            proxy::block_engine_stage::BlockBuilderFeeInfo,
         },
         solana_ledger::{blockstore::Blockstore, genesis_utils::create_genesis_config},
         solana_poh::poh_recorder::create_test_recorder,
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
-        std::sync::RwLock,
+        std::sync::{atomic::AtomicU8, RwLock},
     };
 
     fn create_test_bam_dependencies(
@@ -479,7 +481,7 @@ mod bam_manager_tests {
         let (outbound_tx, outbound_rx) = crossbeam_channel::unbounded();
 
         BamDependencies {
-            bam_enabled: Arc::new(AtomicBool::new(false)),
+            bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             batch_sender: batch_tx,
             batch_receiver: batch_rx,
             outbound_sender: outbound_tx,
@@ -489,6 +491,11 @@ mod bam_manager_tests {
             bank_forks,
             bam_node_pubkey: Arc::new(Mutex::new(Pubkey::default())),
         }
+    }
+
+    fn bam_is_connected(bam_enabled: &Arc<AtomicU8>) -> bool {
+        BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+            == BamConnectionState::Connected
     }
 
     #[allow(clippy::type_complexity)]
@@ -536,16 +543,13 @@ mod bam_manager_tests {
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(15) {
-            if bam_enabled.load(Ordering::Relaxed) {
+            if bam_is_connected(&bam_enabled) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        assert!(
-            bam_enabled.load(Ordering::Relaxed),
-            "bam_enabled should be true"
-        );
+        assert!(bam_is_connected(&bam_enabled), "bam_enabled should be true");
 
         exit.store(true, Ordering::Relaxed);
         poh_service.join().unwrap();
@@ -575,25 +579,25 @@ mod bam_manager_tests {
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(15) {
-            if bam_enabled.load(Ordering::Relaxed) {
+            if bam_is_connected(&bam_enabled) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(bam_enabled.load(Ordering::Relaxed));
+        assert!(bam_is_connected(&bam_enabled));
 
         server.send_heartbeats.store(false, Ordering::Relaxed);
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(15) {
-            if !bam_enabled.load(Ordering::Relaxed) {
+            if !bam_is_connected(&bam_enabled) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         assert!(
-            !bam_enabled.load(Ordering::Relaxed),
+            !bam_is_connected(&bam_enabled),
             "bam_enabled should be false"
         );
 
@@ -623,7 +627,7 @@ mod bam_manager_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         assert!(
-            !bam_enabled.load(Ordering::Relaxed),
+            !bam_is_connected(&bam_enabled),
             "bam_enabled should remain false"
         );
 
@@ -656,19 +660,19 @@ mod bam_manager_tests {
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(15) {
-            if bam_enabled.load(Ordering::Relaxed) {
+            if bam_is_connected(&bam_enabled) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(bam_enabled.load(Ordering::Relaxed));
+        assert!(bam_is_connected(&bam_enabled));
 
         *bam_url.lock().unwrap() = Some(format!("http://{}", server2.addr));
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         assert!(
-            bam_enabled.load(Ordering::Relaxed),
+            bam_is_connected(&bam_enabled),
             "bam_enabled should be true after URL change"
         );
 
@@ -701,7 +705,7 @@ mod bam_manager_tests {
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(15) {
-            if bam_enabled.load(Ordering::Relaxed) {
+            if bam_is_connected(&bam_enabled) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
