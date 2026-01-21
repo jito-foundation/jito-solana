@@ -1,5 +1,8 @@
 use {
-    crate::proxy::{HeartbeatEvent, ProxyError},
+    crate::{
+        bam_dependencies::BamConnectionState,
+        proxy::{HeartbeatEvent, ProxyError},
+    },
     crossbeam_channel::{select, tick, Receiver, Sender},
     solana_client::connection_cache::Protocol,
     solana_gossip::{cluster_info::ClusterInfo, contact_info},
@@ -7,7 +10,7 @@ use {
     std::{
         net::SocketAddr,
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
             Arc,
         },
         thread::{self, Builder, JoinHandle},
@@ -86,7 +89,7 @@ impl FetchStageManager {
         // Intercepted packets get piped through here.
         packet_tx: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
-        bam_enabled: Arc<AtomicBool>,
+        bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
     ) -> Self {
         let t_hdl = Self::start(
@@ -120,7 +123,7 @@ impl FetchStageManager {
         packet_intercept_rx: Receiver<PacketBatch>,
         packet_tx: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
-        bam_enabled: Arc<AtomicBool>,
+        bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
     ) -> JoinHandle<()> {
         Builder::new().name("fetch-stage-manager".into()).spawn(move || {
@@ -136,7 +139,9 @@ impl FetchStageManager {
             let mut heartbeats_received = 0;
             while !exit.load(Ordering::Relaxed) {
                 // BAM override: When BAM is enabled, bypass all normal operation
-                if bam_enabled.load(Ordering::Relaxed) {
+                if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+                    == BamConnectionState::Connected
+                {
                     state.reset_to_bam_state();
                     // Drain any queued packets to prevent buildup
                     while packet_intercept_rx.try_recv().is_ok() {}
@@ -170,7 +175,9 @@ impl FetchStageManager {
                         }
                         // If no heartbeat received and we're in a state that needs fallback
                         if state.needs_fallback_reconnect() {
-                            if bam_enabled.load(Ordering::Relaxed) {
+                            if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+                                == BamConnectionState::Connected
+                            {
                                 state.reset_to_bam_state();
                                 continue;
                             }
@@ -199,7 +206,9 @@ impl FetchStageManager {
                                 state.set_to_pending_disconnect();
                             }
                             if state.should_disconnect_to_relayer(&pending_disconnect_ts) {
-                                if bam_enabled.load(Ordering::Relaxed) {
+                                if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+                                    == BamConnectionState::Connected
+                                {
                                     state.reset_to_bam_state();
                                     continue;
                                 }

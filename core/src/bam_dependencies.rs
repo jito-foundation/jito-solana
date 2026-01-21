@@ -1,6 +1,6 @@
 /// Dependencies that are needed for the BAM (Jito Scheduler Service) to function.
 /// All-in-one for convenience.
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{atomic::AtomicU8, Arc, Mutex};
 use {
     crate::proxy::block_engine_stage::BlockBuilderFeeInfo,
     jito_protos::proto::{
@@ -19,9 +19,28 @@ pub enum BamOutboundMessage {
     LeaderState(bam_types::LeaderState),
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BamConnectionState {
+    Disconnected = 0,
+    Connecting = 1,
+    Connected = 2,
+}
+
+impl BamConnectionState {
+    pub fn from_u8(state: u8) -> Self {
+        match state {
+            1 => Self::Connecting,
+            2 => Self::Connected,
+            _ => Self::Disconnected,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BamDependencies {
-    pub bam_enabled: Arc<AtomicBool>,
+    /// 0 = disconnected, 1 = connecting, 2 = connected
+    pub bam_enabled: Arc<AtomicU8>,
 
     pub batch_sender: crossbeam_channel::Sender<bam_types::AtomicTxnBatch>,
     pub batch_receiver: crossbeam_channel::Receiver<bam_types::AtomicTxnBatch>,
