@@ -131,14 +131,8 @@ Validator operators are required to [build from source](../cli/install.md#build-
 
 It manages the following files and directories in the user's home directory:
 
-<<<<<<< HEAD
 - `~/.config/solana/install/config.yml` - user configuration and information about the currently installed software version
 - `~/.local/share/solana/install/bin` - a symlink to the current release. eg, `~/.local/share/solana-update/<update-pubkey>-<manifest_signature>/bin`
-=======
-- `~/.config/solana/install/config.yml` - user configuration and information about currently installed software version
-- `~/.local/share/solana/install/bin` - a symlink to the current release.
-  eg, `~/.local/share/solana-update/<update-pubkey>-<manifest_signature>/bin`
->>>>>>> 042f9c17ab (Jito Patch)
 - `~/.local/share/solana/install/releases/<download_sha256>/` - contents of a release
 
 ### Command-line Interface
