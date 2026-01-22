@@ -3,9 +3,11 @@ use {
         bam_dependencies::BamConnectionState,
         proxy::{HeartbeatEvent, ProxyError},
     },
-    crossbeam_channel::{select, tick, Receiver, Sender},
-    solana_client::connection_cache::Protocol,
-    solana_gossip::{cluster_info::ClusterInfo, contact_info},
+    crossbeam_channel::{select, tick, Receiver, RecvError, Sender},
+    solana_gossip::{
+        cluster_info::ClusterInfo,
+        contact_info::{self, Protocol},
+    },
     solana_perf::packet::PacketBatch,
     std::{
         net::SocketAddr,
@@ -18,59 +20,14 @@ use {
     },
 };
 
+/// How often to check for heartbeat timeouts
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(1500); // Empirically determined from load testing
-const DISCONNECT_DELAY: Duration = Duration::from_secs(60);
+
+/// How long to delay before switching to relayer TPU after first heartbeat
+const RELAYER_SETUP_DELAY: Duration = Duration::from_secs(60);
+
+/// How often to log metrics
 const METRICS_CADENCE: Duration = Duration::from_secs(1);
-
-struct FetchStageState {
-    fetch_connected: bool,
-    heartbeat_received: bool,
-    pending_disconnect: bool,
-}
-
-impl FetchStageState {
-    fn new() -> Self {
-        Self {
-            fetch_connected: true,
-            heartbeat_received: false,
-            pending_disconnect: false,
-        }
-    }
-
-    fn reset_to_bam_state(&mut self) {
-        self.fetch_connected = false;
-        self.heartbeat_received = false;
-        self.pending_disconnect = true;
-    }
-
-    fn switch_to_connected_mode(&mut self) {
-        self.fetch_connected = true;
-        self.pending_disconnect = false;
-    }
-
-    fn switch_to_disconnected_mode(&mut self) {
-        self.fetch_connected = false;
-        self.pending_disconnect = false;
-    }
-
-    fn set_to_pending_disconnect(&mut self) {
-        self.pending_disconnect = true;
-    }
-
-    fn needs_fallback_reconnect(&self) -> bool {
-        !self.heartbeat_received && (!self.fetch_connected || self.pending_disconnect)
-    }
-
-    fn should_start_pending_disconnect(&self) -> bool {
-        self.fetch_connected && !self.pending_disconnect
-    }
-
-    fn should_disconnect_to_relayer(&self, pending_disconnect_ts: &std::time::Instant) -> bool {
-        self.fetch_connected
-            && self.pending_disconnect
-            && pending_disconnect_ts.elapsed() > DISCONNECT_DELAY
-    }
-}
 
 /// Manages switching between the validator's tpu ports and that of the proxy's.
 /// Switch-overs are triggered by late and missed heartbeats.
@@ -80,7 +37,6 @@ pub struct FetchStageManager {
 
 impl FetchStageManager {
     pub fn new(
-        // ClusterInfo is used to switch between advertising the proxy's TPU ports and that of this validator's.
         cluster_info: Arc<ClusterInfo>,
         // Channel that heartbeats are received from. Entirely responsible for triggering switch-overs.
         heartbeat_rx: Receiver<HeartbeatEvent>,
@@ -105,18 +61,6 @@ impl FetchStageManager {
         Self { t_hdl }
     }
 
-    /// Disconnect fetch behaviour
-    /// Starts connected
-    /// When connected and a packet is received, forward it
-    /// When disconnected, packet is dropped
-    /// When receiving heartbeat while connected and not pending disconnect
-    ///      Sets pending_disconnect to true and records time
-    /// When receiving heartbeat while connected, and pending for > DISCONNECT_DELAY_SEC
-    ///      Sets fetch_connected to false, pending_disconnect to false
-    ///      Advertises TPU ports sent in heartbeat
-    /// When tick is received without heartbeat_received
-    ///      Sets fetch_connected to true, pending_disconnect to false
-    ///      Advertises saved contact info
     fn start(
         cluster_info: Arc<ClusterInfo>,
         heartbeat_rx: Receiver<HeartbeatEvent>,
@@ -126,129 +70,281 @@ impl FetchStageManager {
         bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
     ) -> JoinHandle<()> {
-        Builder::new().name("fetch-stage-manager".into()).spawn(move || {
-            // Save validator's original TPU addresses for fallback
+        Builder::new()
+            .name("fetch-stage-manager".into())
+            .spawn(move || {
+                // Save original TPU info
+                let original_tpu_info = (
+                    my_fallback_contact_info.tpu(Protocol::UDP).unwrap(),
+                    my_fallback_contact_info
+                        .tpu_forwards(Protocol::UDP)
+                        .unwrap(),
+                );
 
-            let mut state = FetchStageState::new();
+                // Initialize the 'brain of the operation'
+                let mut brain = FetchStageBrain::new(
+                    packet_tx,
+                    bam_enabled.clone(),
+                    TpuAddresses {
+                        tpu_addr: original_tpu_info.0,
+                        tpu_forward_addr: original_tpu_info.1,
+                    },
+                    cluster_info,
+                );
 
-            let mut pending_disconnect_ts = Instant::now();
+                // Setup ticks for periodic evaluation and metrics
+                let heartbeat_tick = tick(HEARTBEAT_TIMEOUT);
+                let metrics_tick = tick(METRICS_CADENCE);
 
-            let heartbeat_tick = tick(HEARTBEAT_TIMEOUT);
-            let metrics_tick = tick(METRICS_CADENCE);
-            let mut packets_forwarded = 0;
-            let mut heartbeats_received = 0;
-            while !exit.load(Ordering::Relaxed) {
-                // BAM override: When BAM is enabled, bypass all normal operation
-                if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
-                    == BamConnectionState::Connected
-                {
-                    state.reset_to_bam_state();
-                    // Drain any queued packets to prevent buildup
-                    while packet_intercept_rx.try_recv().is_ok() {}
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-
-                select! {
-                    recv(packet_intercept_rx) -> pkt => {
-                        match pkt {
-                            Ok(pkt) => {
-                                // Only forward packets when fetch stage is "connected"
-                                if state.fetch_connected {
-                                    if packet_tx.send(pkt).is_err() {
-                                        error!("{:?}", ProxyError::PacketForwardError);
-                                        return;
-                                    }
-                                    packets_forwarded += 1;
-                                }
-                                // When fetch_connected=false, packets are dropped (not forwarded)
-                            }
-                            Err(_) => {
-                                warn!("packet intercept receiver disconnected, shutting down");
-                                return;
-                            }
-                        }
-                    }
-                    recv(heartbeat_tick) -> _ => {
-                        if exit.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        // If no heartbeat received and we're in a state that needs fallback
-                        if state.needs_fallback_reconnect() {
-                            if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
-                                == BamConnectionState::Connected
-                            {
-                                state.reset_to_bam_state();
-                                continue;
-                            }
-                            warn!("heartbeat late, reconnecting fetch stage");
-                            // Switch to "connected" mode (forward packets) and use validator's TPU
-                            state.switch_to_connected_mode();
-
-                            // Set TPU addresses back to validator's original addresses
-                            // yes, using UDP here is extremely confusing for the validator
-                            // since the entire network is running QUIC. However, it's correct.
-                            if let Err(e) = Self::set_tpu_addresses(&cluster_info, my_fallback_contact_info.tpu(Protocol::UDP).unwrap(), my_fallback_contact_info.tpu_forwards(Protocol::UDP).unwrap()) {
-                                error!("error setting tpu or tpu_fwd to ({:?}, {:?}), error: {:?}", my_fallback_contact_info.tpu(Protocol::UDP).unwrap(), my_fallback_contact_info.tpu_forwards(Protocol::UDP).unwrap(), e);
-                            }
-                            heartbeats_received = 0;
-                        }
-                        // Reset heartbeat flag for next timeout cycle
-                        state.heartbeat_received = false;
-                    }
-                    recv(heartbeat_rx) -> tpu_info => {
-                        if let Ok((tpu_addr, tpu_forward_addr)) = tpu_info {
-                            heartbeats_received += 1;
-                            state.heartbeat_received = true;
-                            if state.should_start_pending_disconnect() {
-                                info!("received heartbeat while fetch stage connected, pending disconnect after delay");
-                                pending_disconnect_ts = Instant::now();
-                                state.set_to_pending_disconnect();
-                            }
-                            if state.should_disconnect_to_relayer(&pending_disconnect_ts) {
-                                if BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
-                                    == BamConnectionState::Connected
-                                {
-                                    state.reset_to_bam_state();
-                                    continue;
-                                }
-                                info!("disconnecting fetch stage");
-                                state.switch_to_disconnected_mode();
-                                if let Err(e) = Self::set_tpu_addresses(&cluster_info, tpu_addr, tpu_forward_addr) {
-                                    error!("error setting tpu or tpu_fwd to ({tpu_addr:?}, {tpu_forward_addr:?}), error: {e:?}");
-                                }
-                            }
-                        } else {
-                            {
-                                warn!("relayer heartbeat receiver disconnected, shutting down");
-                                return;
-                            }
-                        }
-                    }
-                    recv(metrics_tick) -> _ => {
-                        datapoint_info!(
-                            "relayer-heartbeat",
-                            ("fetch_stage_packets_forwarded", packets_forwarded, i64),
-                            ("heartbeats_received", heartbeats_received, i64),
-                        );
-
+                // Run the semi-eternal loop
+                while !exit.load(Ordering::Relaxed) {
+                    let should_disconnect = select! {
+                        recv(packet_intercept_rx) -> pkt => !brain.handle_packet_batch(pkt),
+                        recv(heartbeat_tick) -> _ => !brain.handle_evaluation_tick(),
+                        recv(heartbeat_rx) -> tpu_info => !brain.handle_relayer_message(tpu_info),
+                        recv(metrics_tick) -> _ => !brain.handle_metrics_tick(),
+                    };
+                    if should_disconnect {
+                        break;
                     }
                 }
-            }
-        }).unwrap()
-    }
-
-    fn set_tpu_addresses(
-        cluster_info: &Arc<ClusterInfo>,
-        tpu_address: SocketAddr,
-        tpu_forward_address: SocketAddr,
-    ) -> Result<(), contact_info::Error> {
-        cluster_info.set_tpu_quic(tpu_address)?;
-        cluster_info.set_tpu_forwards_quic(tpu_forward_address)?;
-        Ok(())
+            })
+            .unwrap()
     }
 
     pub fn join(self) -> thread::Result<()> {
         self.t_hdl.join()
+    }
+}
+
+/// Metrics collected by FetchStageManager
+struct FetchStageMetrics {
+    packets_forwarded: u64,
+    heartbeats_received: u64,
+}
+
+/// TPU addresses container
+struct TpuAddresses {
+    /// Standard TPU address for public traffic
+    tpu_addr: SocketAddr,
+
+    /// TPU forward address for other validators
+    tpu_forward_addr: SocketAddr,
+}
+
+/// Information about a relayer that is heartbeating
+struct HeartbeatingRelayerInfo {
+    /// TPU addresses received from relayer heartbeats
+    tpu_addresses: TpuAddresses,
+
+    /// When the first heartbeat was received
+    first_heartbeat: Instant,
+
+    /// When the last heartbeat was received
+    last_heartbeat: Instant,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+enum TpuState {
+    OriginalTpu,
+    RelayerTpu,
+    BamTpu,
+}
+
+struct FetchStageBrain {
+    /// Which Tpu is being used
+    current_tpu_state: TpuState,
+
+    /// Channel to forward packets to FetchStage
+    packet_tx: Sender<PacketBatch>,
+
+    /// Whether BAM is enabled and connected
+    bam_enabled: Arc<AtomicU8>,
+
+    /// Fallback TPU addresses
+    original_tpu_info: TpuAddresses,
+
+    /// Relayer heartbeat tracking
+    relayer_tpu_info: Option<HeartbeatingRelayerInfo>,
+
+    /// ClusterInfo to update TPU addresses
+    cluster_info: Arc<ClusterInfo>,
+
+    /// Metrics collected
+    metrics: FetchStageMetrics,
+}
+
+impl FetchStageBrain {
+    fn new(
+        packet_tx: Sender<PacketBatch>,
+        bam_enabled: Arc<AtomicU8>,
+        original_tpu_info: TpuAddresses,
+        cluster_info: Arc<ClusterInfo>,
+    ) -> Self {
+        Self {
+            packet_tx,
+            bam_enabled,
+            current_tpu_state: TpuState::OriginalTpu,
+            metrics: FetchStageMetrics {
+                packets_forwarded: 0,
+                heartbeats_received: 0,
+            },
+            original_tpu_info,
+            relayer_tpu_info: None,
+            cluster_info,
+        }
+    }
+
+    fn is_bam_connected(&self) -> bool {
+        BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+            == BamConnectionState::Connected
+    }
+
+    fn get_next_tpu_state(&self) -> TpuState {
+        if self.is_bam_connected() {
+            return TpuState::BamTpu;
+        }
+
+        if self.relayer_tpu_info.as_ref().map_or(false, |info| {
+            let now = Instant::now();
+            now.duration_since(info.last_heartbeat) < HEARTBEAT_TIMEOUT
+                && now.duration_since(info.first_heartbeat) > RELAYER_SETUP_DELAY
+        }) {
+            return TpuState::RelayerTpu;
+        }
+
+        TpuState::OriginalTpu
+    }
+
+    fn handle_evaluation_tick(&mut self) -> bool {
+        // Increment the state machine using latest gathered data
+        let prev_state = self.current_tpu_state;
+        self.current_tpu_state = self.get_next_tpu_state();
+
+        // Reset relayer info if we switched away from it
+        if self.current_tpu_state != TpuState::RelayerTpu {
+            self.relayer_tpu_info = None;
+        }
+
+        // Update gossip if the state changed
+        if prev_state != self.current_tpu_state {
+            info!(
+                "Switching TPU state from {:?} to {:?}",
+                prev_state, self.current_tpu_state
+            );
+            self.update_gossip_based_on_state()
+        } else {
+            true
+        }
+    }
+
+    /// Log metrics and reset counters
+    fn handle_metrics_tick(&mut self) -> bool {
+        datapoint_info!(
+            "relayer-heartbeat",
+            (
+                "fetch_stage_packets_forwarded",
+                self.metrics.packets_forwarded,
+                i64
+            ),
+            ("heartbeats_received", self.metrics.heartbeats_received, i64),
+        );
+        self.metrics.packets_forwarded = 0;
+        self.metrics.heartbeats_received = 0;
+        true
+    }
+
+    /// Process a relayer heartbeat message
+    fn handle_relayer_message(
+        &mut self,
+        tpu_info: Result<(SocketAddr, SocketAddr), RecvError>,
+    ) -> bool {
+        let Ok((tpu_addr, tpu_forward_addr)) = tpu_info else {
+            warn!("relayer heartbeat receiver disconnected, shutting down");
+            return false;
+        };
+
+        self.metrics.heartbeats_received += 1;
+        if let Some(relayer_info) = self.relayer_tpu_info.as_mut() {
+            relayer_info.last_heartbeat = Instant::now();
+            relayer_info.tpu_addresses.tpu_addr = tpu_addr;
+            relayer_info.tpu_addresses.tpu_forward_addr = tpu_forward_addr;
+        } else {
+            self.relayer_tpu_info = Some(HeartbeatingRelayerInfo {
+                tpu_addresses: TpuAddresses {
+                    tpu_addr,
+                    tpu_forward_addr,
+                },
+                first_heartbeat: Instant::now(),
+                last_heartbeat: Instant::now(),
+            });
+        }
+        true
+    }
+
+    /// Process a batch of packets from FetchStage
+    fn handle_packet_batch(&mut self, pkt: Result<PacketBatch, RecvError>) -> bool {
+        match pkt {
+            Ok(pkt) => {
+                // Only forward packets when fetch stage is "connected"
+                if self.should_forward_packets() {
+                    if self.packet_tx.send(pkt).is_err() {
+                        error!("{:?}", ProxyError::PacketForwardError);
+                        return false;
+                    }
+                    self.metrics.packets_forwarded += 1;
+                }
+                true
+            }
+            Err(_) => {
+                warn!("packet intercept receiver disconnected, shutting down");
+                return false;
+            }
+        }
+    }
+
+    /// Determine if packets should be forwarded to FetchStage
+    fn should_forward_packets(&self) -> bool {
+        matches!(self.current_tpu_state, TpuState::OriginalTpu)
+    }
+
+    /// Update gossip TPU addresses based on current state
+    fn update_gossip_based_on_state(&self) -> bool {
+        match self.current_tpu_state {
+            TpuState::OriginalTpu => self
+                .set_tpu_addresses(
+                    self.original_tpu_info.tpu_addr,
+                    self.original_tpu_info.tpu_forward_addr,
+                )
+                .is_ok(),
+            TpuState::RelayerTpu => {
+                if let Some(relayer_info) = &self.relayer_tpu_info {
+                    self.set_tpu_addresses(
+                        relayer_info.tpu_addresses.tpu_addr,
+                        relayer_info.tpu_addresses.tpu_forward_addr,
+                    )
+                    .is_ok()
+                } else {
+                    false // This should never happen
+                }
+            }
+            TpuState::BamTpu => true,
+        }
+    }
+
+    /// Set the TPU addresses in gossip
+    fn set_tpu_addresses(
+        &self,
+        tpu_address: SocketAddr,
+        tpu_forward_address: SocketAddr,
+    ) -> Result<(), contact_info::Error> {
+        info!(
+            "Updating TPU addresses to {}, {}",
+            tpu_address, tpu_forward_address
+        );
+        self.cluster_info.set_tpu_quic(tpu_address)?;
+        self.cluster_info
+            .set_tpu_forwards_quic(tpu_forward_address)?;
+        Ok(())
     }
 }
