@@ -491,6 +491,7 @@ mod bam_manager_tests {
             block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
             bank_forks,
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
+            bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
         }
     }
 
