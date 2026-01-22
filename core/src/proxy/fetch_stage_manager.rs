@@ -21,13 +21,13 @@ use {
 };
 
 /// How often to check for heartbeat timeouts
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(1500); // Empirically determined from load testing
+const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_millis(1500); // Empirically determined from load testing
 
 /// How long to delay before switching to relayer TPU after first heartbeat
 const RELAYER_SETUP_DELAY: Duration = Duration::from_secs(60);
 
 /// How often to log metrics
-const METRICS_CADENCE: Duration = Duration::from_secs(1);
+const METRICS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Manages switching between the validator's tpu ports and that of the proxy's.
 /// Switch-overs are triggered by late and missed heartbeats.
@@ -38,9 +38,7 @@ pub struct FetchStageManager {
 impl FetchStageManager {
     pub fn new(
         cluster_info: Arc<ClusterInfo>,
-        // Channel that heartbeats are received from. Entirely responsible for triggering switch-overs.
-        heartbeat_rx: Receiver<HeartbeatEvent>,
-        // Channel that packets from FetchStage are intercepted from.
+        relayer_heartbeat_rx: Receiver<HeartbeatEvent>,
         packet_intercept_rx: Receiver<PacketBatch>,
         // Intercepted packets get piped through here.
         packet_tx: Sender<PacketBatch>,
@@ -50,7 +48,7 @@ impl FetchStageManager {
     ) -> Self {
         let t_hdl = Self::start(
             cluster_info,
-            heartbeat_rx,
+            relayer_heartbeat_rx,
             packet_intercept_rx,
             packet_tx,
             exit,
@@ -63,7 +61,7 @@ impl FetchStageManager {
 
     fn start(
         cluster_info: Arc<ClusterInfo>,
-        heartbeat_rx: Receiver<HeartbeatEvent>,
+        relayer_heartbeat_rx: Receiver<HeartbeatEvent>,
         packet_intercept_rx: Receiver<PacketBatch>,
         packet_tx: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
@@ -93,18 +91,18 @@ impl FetchStageManager {
                 );
 
                 // Setup ticks for periodic evaluation and metrics
-                let heartbeat_tick = tick(HEARTBEAT_TIMEOUT);
-                let metrics_tick = tick(METRICS_CADENCE);
+                let heartbeat_tick = tick(HEARTBEAT_CHECK_INTERVAL);
+                let metrics_tick = tick(METRICS_INTERVAL);
 
                 // Run the semi-eternal loop
                 while !exit.load(Ordering::Relaxed) {
-                    let should_disconnect = select! {
-                        recv(packet_intercept_rx) -> pkt => !brain.handle_packet_batch(pkt),
-                        recv(heartbeat_tick) -> _ => !brain.handle_evaluation_tick(),
-                        recv(heartbeat_rx) -> tpu_info => !brain.handle_relayer_message(tpu_info),
-                        recv(metrics_tick) -> _ => !brain.handle_metrics_tick(),
+                    let all_good = select! {
+                        recv(packet_intercept_rx) -> pkt => brain.handle_packet_batch(pkt),
+                        recv(heartbeat_tick) -> _ => brain.handle_evaluation_tick(),
+                        recv(relayer_heartbeat_rx) -> tpu_info => brain.handle_relayer_message(tpu_info),
+                        recv(metrics_tick) -> _ => brain.handle_metrics_tick(),
                     };
-                    if should_disconnect {
+                    if !all_good {
                         break;
                     }
                 }
@@ -207,7 +205,7 @@ impl FetchStageBrain {
 
         if self.relayer_tpu_info.as_ref().map_or(false, |info| {
             let now = Instant::now();
-            now.duration_since(info.last_heartbeat) < HEARTBEAT_TIMEOUT
+            now.duration_since(info.last_heartbeat) < HEARTBEAT_CHECK_INTERVAL
                 && now.duration_since(info.first_heartbeat) > RELAYER_SETUP_DELAY
         }) {
             return TpuState::RelayerTpu;
@@ -216,6 +214,7 @@ impl FetchStageBrain {
         TpuState::OriginalTpu
     }
 
+    /// Evaluate the current state and make transitions as needed; returns false if we should shut down
     fn handle_evaluation_tick(&mut self) -> bool {
         // Increment the state machine using latest gathered data
         let prev_state = self.current_tpu_state;
@@ -238,7 +237,7 @@ impl FetchStageBrain {
         }
     }
 
-    /// Log metrics and reset counters
+    /// Log metrics and reset counters; returns false if we should shut down
     fn handle_metrics_tick(&mut self) -> bool {
         datapoint_info!(
             "relayer-heartbeat",
@@ -254,7 +253,7 @@ impl FetchStageBrain {
         true
     }
 
-    /// Process a relayer heartbeat message
+    /// Process a relayer heartbeat message; returns false if we should shut down
     fn handle_relayer_message(
         &mut self,
         tpu_info: Result<(SocketAddr, SocketAddr), RecvError>,
@@ -282,7 +281,7 @@ impl FetchStageBrain {
         true
     }
 
-    /// Process a batch of packets from FetchStage
+    /// Process a batch of packets from FetchStage; returns false if we should shut down
     fn handle_packet_batch(&mut self, pkt: Result<PacketBatch, RecvError>) -> bool {
         match pkt {
             Ok(pkt) => {
