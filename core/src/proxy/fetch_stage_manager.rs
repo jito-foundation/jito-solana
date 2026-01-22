@@ -14,6 +14,7 @@ use {
         sync::{
             atomic::{AtomicBool, AtomicU8, Ordering},
             Arc,
+            RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -45,6 +46,7 @@ impl FetchStageManager {
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
+        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
     ) -> Self {
         let t_hdl = Self::start(
             cluster_info,
@@ -54,6 +56,7 @@ impl FetchStageManager {
             exit,
             bam_enabled,
             my_fallback_contact_info,
+            bam_tpu_info,
         );
 
         Self { t_hdl }
@@ -67,6 +70,7 @@ impl FetchStageManager {
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
+        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
     ) -> JoinHandle<()> {
         Builder::new()
             .name("fetch-stage-manager".into())
@@ -87,6 +91,7 @@ impl FetchStageManager {
                         tpu_addr: original_tpu_info.0,
                         tpu_forward_addr: original_tpu_info.1,
                     },
+                    bam_tpu_info,
                     cluster_info,
                 );
 
@@ -143,10 +148,17 @@ struct HeartbeatingRelayerInfo {
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
-enum TpuState {
-    OriginalTpu,
-    RelayerTpu,
-    BamTpu,
+struct TpuState {
+    tpu_type: TpuConnectionType,
+    addr: SocketAddr,
+    fwd_addr: SocketAddr,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+enum TpuConnectionType {
+    Original,
+    Relayer,
+    Bam,
 }
 
 struct FetchStageBrain {
@@ -165,6 +177,9 @@ struct FetchStageBrain {
     /// Relayer heartbeat tracking
     relayer_tpu_info: Option<HeartbeatingRelayerInfo>,
 
+    /// BAM TPU addresses
+    bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
+
     /// ClusterInfo to update TPU addresses
     cluster_info: Arc<ClusterInfo>,
 
@@ -177,18 +192,24 @@ impl FetchStageBrain {
         packet_tx: Sender<PacketBatch>,
         bam_enabled: Arc<AtomicU8>,
         original_tpu_info: TpuAddresses,
+        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
         cluster_info: Arc<ClusterInfo>,
     ) -> Self {
         Self {
             packet_tx,
             bam_enabled,
-            current_tpu_state: TpuState::OriginalTpu,
+            current_tpu_state: TpuState {
+                tpu_type: TpuConnectionType::Original,
+                addr: original_tpu_info.tpu_addr,
+                fwd_addr: original_tpu_info.tpu_forward_addr,
+            },
             metrics: FetchStageMetrics {
                 packets_forwarded: 0,
                 heartbeats_received: 0,
             },
             original_tpu_info,
             relayer_tpu_info: None,
+            bam_tpu_info,
             cluster_info,
         }
     }
@@ -199,8 +220,12 @@ impl FetchStageBrain {
     }
 
     fn get_next_tpu_state(&self) -> TpuState {
-        if self.is_bam_connected() {
-            return TpuState::BamTpu;
+        if self.is_bam_connected() && self.bam_tpu_info.read().unwrap().is_some() {
+            return TpuState{
+                tpu_type: TpuConnectionType::Bam,
+                addr: self.bam_tpu_info.read().unwrap().unwrap().0,
+                fwd_addr: self.bam_tpu_info.read().unwrap().unwrap().1,
+            };
         }
 
         if self.relayer_tpu_info.as_ref().map_or(false, |info| {
@@ -208,10 +233,18 @@ impl FetchStageBrain {
             now.duration_since(info.last_heartbeat) < HEARTBEAT_CHECK_INTERVAL
                 && now.duration_since(info.first_heartbeat) > RELAYER_SETUP_DELAY
         }) {
-            return TpuState::RelayerTpu;
+            return TpuState{
+                tpu_type: TpuConnectionType::Relayer,
+                addr: self.relayer_tpu_info.as_ref().unwrap().tpu_addresses.tpu_addr,
+                fwd_addr: self.relayer_tpu_info.as_ref().unwrap().tpu_addresses.tpu_forward_addr,
+            };
         }
 
-        TpuState::OriginalTpu
+        TpuState{
+            tpu_type: TpuConnectionType::Original,
+            addr: self.original_tpu_info.tpu_addr,
+            fwd_addr: self.original_tpu_info.tpu_forward_addr,
+        }
     }
 
     /// Evaluate the current state and make transitions as needed; returns false if we should shut down
@@ -221,7 +254,7 @@ impl FetchStageBrain {
         self.current_tpu_state = self.get_next_tpu_state();
 
         // Reset relayer info if we switched away from it
-        if self.current_tpu_state != TpuState::RelayerTpu {
+        if self.current_tpu_state.tpu_type != TpuConnectionType::Relayer {
             self.relayer_tpu_info = None;
         }
 
@@ -304,31 +337,16 @@ impl FetchStageBrain {
 
     /// Determine if packets should be forwarded to FetchStage
     fn should_forward_packets(&self) -> bool {
-        matches!(self.current_tpu_state, TpuState::OriginalTpu)
+        matches!(self.current_tpu_state.tpu_type, TpuConnectionType::Original)
     }
 
     /// Update gossip TPU addresses based on current state
     fn update_gossip_based_on_state(&self) -> bool {
-        match self.current_tpu_state {
-            TpuState::OriginalTpu => self
-                .set_tpu_addresses(
-                    self.original_tpu_info.tpu_addr,
-                    self.original_tpu_info.tpu_forward_addr,
-                )
-                .is_ok(),
-            TpuState::RelayerTpu => {
-                if let Some(relayer_info) = &self.relayer_tpu_info {
-                    self.set_tpu_addresses(
-                        relayer_info.tpu_addresses.tpu_addr,
-                        relayer_info.tpu_addresses.tpu_forward_addr,
-                    )
-                    .is_ok()
-                } else {
-                    false // This should never happen
-                }
-            }
-            TpuState::BamTpu => true,
-        }
+        self.set_tpu_addresses(
+            self.current_tpu_state.addr,
+            self.current_tpu_state.fwd_addr,
+        )
+        .is_ok()
     }
 
     /// Set the TPU addresses in gossip

@@ -124,6 +124,7 @@ fn main() {
         block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
         bank_forks: bank_forks.clone(),
         bam_node_pubkey: Arc::new(Mutex::new(Pubkey::new_unique())),
+        bam_tpu_info: Arc::new(RwLock::new(None)),
     };
 
     let keypairs = (0..matches.value_of_t::<usize>("num_keypairs").unwrap())

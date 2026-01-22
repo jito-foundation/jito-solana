@@ -52,6 +52,7 @@ pub struct BamDependencies {
     pub block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
     pub bank_forks: Arc<RwLock<BankForks>>,
     pub bam_node_pubkey: Arc<Mutex<Pubkey>>,
+    pub bam_tpu_info: Arc<RwLock<Option<(std::net::SocketAddr, std::net::SocketAddr)>>>,
 }
 
 pub fn v0_to_versioned_proto(v0: SchedulerMessageV0) -> SchedulerMessage {

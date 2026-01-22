@@ -490,6 +490,7 @@ mod bam_manager_tests {
             block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
             bank_forks,
             bam_node_pubkey: Arc::new(Mutex::new(Pubkey::default())),
+            bam_tpu_info: Arc::new(RwLock::new(None)),
         }
     }
 
