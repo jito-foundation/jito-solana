@@ -1,3 +1,4 @@
+svm/tests/example-programs/*/Cargo.lock
 farf/
 target/
 /solana-release/

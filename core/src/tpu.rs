@@ -388,6 +388,7 @@ impl Tpu {
             exit.clone(),
         );
 
+        let bam_tpu_info = Arc::new(ArcSwap::new(Arc::new(None)));
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
             cluster_info.clone(),
@@ -397,6 +398,7 @@ impl Tpu {
             exit.clone(),
             bam_enabled.clone(),
             cluster_info.my_contact_info().clone(),
+            bam_tpu_info.clone(),
         );
 
         let relayer_stage = RelayerStage::new(
@@ -437,6 +439,7 @@ impl Tpu {
             block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bank_forks: bank_forks.clone(),
+            bam_tpu_info,
         };
 
         let mut blacklisted_accounts = HashSet::new();

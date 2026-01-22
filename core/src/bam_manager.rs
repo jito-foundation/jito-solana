@@ -176,10 +176,7 @@ impl BamManager {
                                 }
 
                                 if let Some(builder_config) = connection.get_latest_config() {
-                                    Self::update_tpu_config(
-                                        Some(&builder_config),
-                                        &dependencies.cluster_info,
-                                    );
+                                    Self::update_tpu_config(Some(&builder_config), &dependencies);
                                     Self::update_block_engine_key_and_commission(
                                         Some(&builder_config),
                                         &dependencies.block_builder_fee_info,
@@ -259,7 +256,7 @@ impl BamManager {
                 // Check if block builder info has changed
                 if let Some(builder_config) = connection.get_latest_config() {
                     if Some(&builder_config) != cached_builder_config.as_ref() {
-                        Self::update_tpu_config(Some(&builder_config), &dependencies.cluster_info);
+                        Self::update_tpu_config(Some(&builder_config), &dependencies);
                         Self::update_block_engine_key_and_commission(
                             Some(&builder_config),
                             &dependencies.block_builder_fee_info,
@@ -324,19 +321,21 @@ impl BamManager {
         )))
     }
 
-    fn update_tpu_config(config: Option<&ConfigResponse>, cluster_info: &Arc<ClusterInfo>) {
+    fn update_tpu_config(config: Option<&ConfigResponse>, dependencies: &BamDependencies) {
         let Some(tpu_info) = config.and_then(|c| c.bam_config.as_ref()) else {
             return;
         };
-
-        if let Some(tpu) = Self::get_sockaddr(tpu_info.tpu_sock.as_ref()) {
-            info!("Setting TPU: {tpu:?}");
-            let _ = cluster_info.set_tpu(tpu);
-        }
-        if let Some(tpu_fwd) = Self::get_sockaddr(tpu_info.tpu_fwd_sock.as_ref()) {
-            info!("Setting TPU forward: {tpu_fwd:?}");
-            let _ = cluster_info.set_tpu_forwards(tpu_fwd);
-        }
+        
+        let Some(tpu) = Self::get_sockaddr(tpu_info.tpu_sock.as_ref()) else {
+            return;
+        };
+        let Some(tpu_fwd) = Self::get_sockaddr(tpu_info.tpu_fwd_sock.as_ref()) else {
+            return;
+        };
+        info!("Setting TPU={tpu}, TPU Forward={tpu_fwd} from BAM config");
+        dependencies
+            .bam_tpu_info
+            .store(Arc::new(Some((tpu, tpu_fwd))));
     }
 
     fn update_block_engine_key_and_commission(
