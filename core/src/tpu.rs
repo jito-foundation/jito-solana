@@ -391,7 +391,7 @@ impl Tpu {
             verified_bundle_sender,
             exit.clone(),
         );
-        
+
         let bam_tpu_info = Arc::new(RwLock::new(None));
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(

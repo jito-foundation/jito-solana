@@ -13,8 +13,7 @@ use {
         net::SocketAddr,
         sync::{
             atomic::{AtomicBool, AtomicU8, Ordering},
-            Arc,
-            RwLock,
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -25,7 +24,7 @@ use {
 const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_millis(1500); // Empirically determined from load testing
 
 /// How long to delay before switching to relayer TPU after first heartbeat
-const RELAYER_SETUP_DELAY: Duration = Duration::from_secs(60);
+const RELAYER_TPU_ENABLE_DELAY: Duration = Duration::from_secs(60);
 
 /// How often to log metrics
 const METRICS_INTERVAL: Duration = Duration::from_secs(1);
@@ -93,6 +92,8 @@ impl FetchStageManager {
                     },
                     bam_tpu_info,
                     cluster_info,
+                    HEARTBEAT_CHECK_INTERVAL,
+                    RELAYER_TPU_ENABLE_DELAY,
                 );
 
                 // Setup ticks for periodic evaluation and metrics
@@ -127,6 +128,7 @@ struct FetchStageMetrics {
 }
 
 /// TPU addresses container
+#[derive(Clone, Copy)]
 struct TpuAddresses {
     /// Standard TPU address for public traffic
     tpu_addr: SocketAddr,
@@ -185,6 +187,12 @@ struct FetchStageBrain {
 
     /// Metrics collected
     metrics: FetchStageMetrics,
+
+    /// Heartbeat check interval
+    heartbeat_check_interval: Duration,
+
+    /// Relayer TPU enable delay
+    relayer_tpu_enable_delay: Duration,
 }
 
 impl FetchStageBrain {
@@ -194,6 +202,8 @@ impl FetchStageBrain {
         original_tpu_info: TpuAddresses,
         bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
         cluster_info: Arc<ClusterInfo>,
+        heartbeat_check_interval: Duration,
+        relayer_tpu_enable_delay: Duration,
     ) -> Self {
         Self {
             packet_tx,
@@ -211,6 +221,8 @@ impl FetchStageBrain {
             relayer_tpu_info: None,
             bam_tpu_info,
             cluster_info,
+            heartbeat_check_interval,
+            relayer_tpu_enable_delay,
         }
     }
 
@@ -221,7 +233,7 @@ impl FetchStageBrain {
 
     fn get_next_tpu_state(&self) -> TpuState {
         if self.is_bam_connected() && self.bam_tpu_info.read().unwrap().is_some() {
-            return TpuState{
+            return TpuState {
                 tpu_type: TpuConnectionType::Bam,
                 addr: self.bam_tpu_info.read().unwrap().unwrap().0,
                 fwd_addr: self.bam_tpu_info.read().unwrap().unwrap().1,
@@ -230,17 +242,27 @@ impl FetchStageBrain {
 
         if self.relayer_tpu_info.as_ref().map_or(false, |info| {
             let now = Instant::now();
-            now.duration_since(info.last_heartbeat) < HEARTBEAT_CHECK_INTERVAL
-                && now.duration_since(info.first_heartbeat) > RELAYER_SETUP_DELAY
+            now.duration_since(info.last_heartbeat) < self.heartbeat_check_interval
+                && now.duration_since(info.first_heartbeat) > self.relayer_tpu_enable_delay
         }) {
-            return TpuState{
+            return TpuState {
                 tpu_type: TpuConnectionType::Relayer,
-                addr: self.relayer_tpu_info.as_ref().unwrap().tpu_addresses.tpu_addr,
-                fwd_addr: self.relayer_tpu_info.as_ref().unwrap().tpu_addresses.tpu_forward_addr,
+                addr: self
+                    .relayer_tpu_info
+                    .as_ref()
+                    .unwrap()
+                    .tpu_addresses
+                    .tpu_addr,
+                fwd_addr: self
+                    .relayer_tpu_info
+                    .as_ref()
+                    .unwrap()
+                    .tpu_addresses
+                    .tpu_forward_addr,
             };
         }
 
-        TpuState{
+        TpuState {
             tpu_type: TpuConnectionType::Original,
             addr: self.original_tpu_info.tpu_addr,
             fwd_addr: self.original_tpu_info.tpu_forward_addr,
@@ -253,8 +275,10 @@ impl FetchStageBrain {
         let prev_state = self.current_tpu_state;
         self.current_tpu_state = self.get_next_tpu_state();
 
-        // Reset relayer info if we switched away from it
-        if self.current_tpu_state.tpu_type != TpuConnectionType::Relayer {
+        // Reset relayer info if we switched away from it;
+        if prev_state.tpu_type == TpuConnectionType::Relayer
+            && self.current_tpu_state.tpu_type != TpuConnectionType::Relayer
+        {
             self.relayer_tpu_info = None;
         }
 
@@ -342,11 +366,8 @@ impl FetchStageBrain {
 
     /// Update gossip TPU addresses based on current state
     fn update_gossip_based_on_state(&self) -> bool {
-        self.set_tpu_addresses(
-            self.current_tpu_state.addr,
-            self.current_tpu_state.fwd_addr,
-        )
-        .is_ok()
+        self.set_tpu_addresses(self.current_tpu_state.addr, self.current_tpu_state.fwd_addr)
+            .is_ok()
     }
 
     /// Set the TPU addresses in gossip
@@ -363,5 +384,265 @@ impl FetchStageBrain {
         self.cluster_info
             .set_tpu_forwards_quic(tpu_forward_address)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*, solana_gossip::contact_info::ContactInfo, solana_keypair::Keypair,
+        solana_net_utils::SocketAddrSpace, solana_perf::packet::BytesPacket, solana_signer::Signer,
+        solana_time_utils::timestamp,
+    };
+
+    fn new_test_cluster_info() -> Arc<ClusterInfo> {
+        let keypair = Arc::new(Keypair::new());
+        let contact_info = ContactInfo::new_localhost(&keypair.pubkey(), timestamp());
+        Arc::new(ClusterInfo::new(
+            contact_info,
+            keypair,
+            SocketAddrSpace::Unspecified,
+        ))
+    }
+
+    fn check_brain(
+        brain: &FetchStageBrain,
+        expected_tpu_type: TpuConnectionType,
+        expected_addr: &SocketAddr,
+        expected_fwd_addr: &SocketAddr,
+    ) {
+        assert_eq!(brain.current_tpu_state.tpu_type, expected_tpu_type);
+        assert_eq!(brain.current_tpu_state.addr, *expected_addr);
+        assert_eq!(brain.current_tpu_state.fwd_addr, *expected_fwd_addr);
+    }
+
+    fn check_cluster_info(
+        cluster_info: &ClusterInfo,
+        expected_addr: &SocketAddr,
+        expected_fwd_addr: &SocketAddr,
+    ) {
+        assert_eq!(
+            cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap(),
+            *expected_addr
+        );
+        assert_eq!(
+            cluster_info
+                .my_contact_info()
+                .tpu_forwards(Protocol::QUIC)
+                .unwrap(),
+            *expected_fwd_addr
+        );
+    }
+
+    fn check_sending_packet(
+        brain: &mut FetchStageBrain,
+        packet_rx: &Receiver<PacketBatch>,
+        should_send: bool,
+    ) {
+        let pkt = PacketBatch::Single(BytesPacket::empty());
+        assert!(brain.handle_packet_batch(Ok(pkt.clone())));
+        if should_send {
+            let received_pkt = packet_rx.recv().unwrap();
+            assert_eq!(received_pkt, pkt);
+        } else {
+            assert!(packet_rx.try_recv().is_err());
+        }
+    }
+
+    struct TestContext {
+        cluster_info: Arc<ClusterInfo>,
+        bam_enabled: Arc<AtomicU8>,
+        original_tpu_info: TpuAddresses,
+        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
+        heartbeat_check_interval: Duration,
+        relayer_tpu_enable_delay: Duration,
+        _packet_tx: Sender<PacketBatch>,
+        packet_rx: Receiver<PacketBatch>,
+        brain: FetchStageBrain,
+    }
+
+    fn setup_test() -> TestContext {
+        let cluster_info = new_test_cluster_info();
+        let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8));
+        let original_tpu_info = TpuAddresses {
+            tpu_addr: cluster_info.my_contact_info().tpu(Protocol::QUIC).unwrap(),
+            tpu_forward_addr: cluster_info
+                .my_contact_info()
+                .tpu_forwards(Protocol::QUIC)
+                .unwrap(),
+        };
+        let bam_tpu_info = Arc::new(RwLock::new(None));
+        let heartbeat_check_interval = Duration::from_secs(1);
+        let relayer_tpu_enable_delay = Duration::from_secs(1);
+        let (packet_tx, packet_rx) = crossbeam_channel::unbounded();
+
+        let brain = FetchStageBrain::new(
+            packet_tx.clone(),
+            bam_enabled.clone(),
+            original_tpu_info,
+            bam_tpu_info.clone(),
+            cluster_info.clone(),
+            heartbeat_check_interval,
+            relayer_tpu_enable_delay,
+        );
+
+        TestContext {
+            cluster_info,
+            bam_enabled: bam_enabled,
+            original_tpu_info,
+            bam_tpu_info: bam_tpu_info,
+            heartbeat_check_interval,
+            relayer_tpu_enable_delay,
+            _packet_tx: packet_tx,
+            packet_rx,
+            brain,
+        }
+    }
+
+    #[test]
+    fn test_original_to_relayer_and_back_switch() {
+        let TestContext {
+            cluster_info,
+            bam_enabled: _,
+            original_tpu_info,
+            bam_tpu_info: _,
+            heartbeat_check_interval,
+            relayer_tpu_enable_delay,
+            _packet_tx,
+            packet_rx,
+            mut brain,
+        } = setup_test();
+
+        // Initially should be original and packets should be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Original,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_cluster_info(
+            &cluster_info,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_sending_packet(&mut brain, &packet_rx, true);
+
+        // Simulate relayer heartbeat
+        let relayer_tpu_addr: SocketAddr = "127.0.0.1:6000".parse().unwrap();
+        let relayer_tpu_fwd_addr: SocketAddr = "127.0.0.1:6001".parse().unwrap();
+        let relayer_heartbeat = Ok((relayer_tpu_addr, relayer_tpu_fwd_addr));
+        assert!(brain.handle_relayer_message(relayer_heartbeat));
+
+        // Should not switch yet (however we should start tracking it and packets should still be forwarded
+        assert!(brain.handle_evaluation_tick());
+        assert!(brain.relayer_tpu_info.is_some());
+        check_brain(
+            &brain,
+            TpuConnectionType::Original,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_cluster_info(
+            &cluster_info,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_sending_packet(&mut brain, &packet_rx, true);
+
+        // Wait enough time to exceed relayer_tpu_enable_delay
+        std::thread::sleep(relayer_tpu_enable_delay.saturating_mul(2));
+        assert!(brain.handle_relayer_message(relayer_heartbeat));
+        assert!(brain.handle_evaluation_tick());
+
+        // Should have switched to relayer and packets should NOT be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Relayer,
+            &relayer_tpu_addr,
+            &relayer_tpu_fwd_addr,
+        );
+        check_cluster_info(&cluster_info, &relayer_tpu_addr, &relayer_tpu_fwd_addr);
+        check_sending_packet(&mut brain, &packet_rx, false);
+
+        // Simulate relayer heartbeat timeout by waiting longer than heartbeat_check_interval
+        std::thread::sleep(heartbeat_check_interval.saturating_mul(2));
+        assert!(brain.handle_evaluation_tick());
+        // Should have switched back to original and packets should be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Original,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_cluster_info(
+            &cluster_info,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_sending_packet(&mut brain, &packet_rx, true);
+    }
+
+    #[test]
+    fn test_original_to_bam_and_back_switch() {
+        let TestContext {
+            cluster_info,
+            bam_enabled,
+            original_tpu_info,
+            bam_tpu_info,
+            heartbeat_check_interval: _,
+            relayer_tpu_enable_delay: _,
+            _packet_tx,
+            packet_rx,
+            mut brain,
+        } = setup_test();
+
+        // Initially should be original and packets should be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Original,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_cluster_info(
+            &cluster_info,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_sending_packet(&mut brain, &packet_rx, true);
+
+        // Enable BAM and set BAM TPU info
+        bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
+        let bam_tpu_addr: SocketAddr = "127.0.0.1:7000".parse().unwrap();
+        let bam_tpu_fwd_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        *bam_tpu_info.write().unwrap() = Some((bam_tpu_addr, bam_tpu_fwd_addr));
+        assert!(brain.handle_evaluation_tick());
+
+        // Should have switched to BAM and packets should NOT be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Bam,
+            &bam_tpu_addr,
+            &bam_tpu_fwd_addr,
+        );
+        check_cluster_info(&cluster_info, &bam_tpu_addr, &bam_tpu_fwd_addr);
+        check_sending_packet(&mut brain, &packet_rx, false);
+
+        // Disable BAM
+        bam_enabled.store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+        assert!(brain.handle_evaluation_tick());
+
+        // Should have switched back to original and packets should be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Original,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_cluster_info(
+            &cluster_info,
+            &original_tpu_info.tpu_addr,
+            &original_tpu_info.tpu_forward_addr,
+        );
+        check_sending_packet(&mut brain, &packet_rx, true);
     }
 }

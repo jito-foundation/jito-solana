@@ -164,10 +164,7 @@ impl BamManager {
                                 }
 
                                 if let Some(builder_config) = connection.get_latest_config() {
-                                    Self::update_tpu_config(
-                                        Some(&builder_config),
-                                        &dependencies,
-                                    );
+                                    Self::update_tpu_config(Some(&builder_config), &dependencies);
                                     Self::update_block_engine_key_and_commission(
                                         Some(&builder_config),
                                         &dependencies.block_builder_fee_info,
@@ -318,7 +315,11 @@ impl BamManager {
             return;
         };
         info!("Setting TPU={tpu}, TPU Forward={tpu_fwd} from BAM config");
-        dependencies.bam_tpu_info.write().unwrap().replace((tpu, tpu_fwd));
+        dependencies
+            .bam_tpu_info
+            .write()
+            .unwrap()
+            .replace((tpu, tpu_fwd));
     }
 
     fn update_block_engine_key_and_commission(
