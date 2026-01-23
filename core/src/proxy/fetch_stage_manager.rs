@@ -247,7 +247,7 @@ impl FetchStageBrain {
         }
 
         // Relayer has second priority
-        if self.relayer_info.as_ref().map_or(false, |info| {
+        if self.relayer_info.as_ref().is_some_and(|info| {
             let now = Instant::now();
             now.duration_since(info.last_heartbeat) < self.max_time_between_relayer_heartbeats
                 && now.duration_since(info.first_heartbeat) > self.relayer_tpu_enable_delay
@@ -357,7 +357,7 @@ impl FetchStageBrain {
             }
             Err(_) => {
                 warn!("packet intercept receiver disconnected, shutting down");
-                return false;
+                false
             }
         }
     }
@@ -379,10 +379,7 @@ impl FetchStageBrain {
         tpu_address: SocketAddr,
         tpu_forward_address: SocketAddr,
     ) -> Result<(), contact_info::Error> {
-        info!(
-            "Updating TPU addresses to {}, {}",
-            tpu_address, tpu_forward_address
-        );
+        info!("Updating TPU addresses to {tpu_address}, {tpu_forward_address}");
         self.cluster_info.set_tpu_quic(tpu_address)?;
         self.cluster_info
             .set_tpu_forwards_quic(tpu_forward_address)?;
