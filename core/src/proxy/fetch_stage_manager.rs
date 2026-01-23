@@ -78,6 +78,8 @@ impl FetchStageManager {
             .name("fetch-stage-manager".into())
             .spawn(move || {
                 // Save original TPU info
+                // yes, using UDP here is extremely confusing for the validator
+                // since the entire network is running QUIC. However, it's correct.
                 let original_tpu_info = (
                     my_fallback_contact_info.tpu(Protocol::UDP).unwrap(),
                     my_fallback_contact_info
@@ -86,7 +88,7 @@ impl FetchStageManager {
                 );
 
                 // Initialize the 'brain of the operation'
-                let mut brain = FetchStageBrain::new(
+                let mut brain = FetchStageTpuStateMachine::new(
                     packet_tx,
                     bam_enabled.clone(),
                     TpuAddresses {
@@ -166,7 +168,7 @@ enum TpuConnectionType {
     Bam,
 }
 
-struct FetchStageBrain {
+struct FetchStageTpuStateMachine {
     /// Which Tpu is being used
     current_tpu_state: TpuState,
 
@@ -198,7 +200,7 @@ struct FetchStageBrain {
     relayer_tpu_enable_delay: Duration,
 }
 
-impl FetchStageBrain {
+impl FetchStageTpuStateMachine {
     fn new(
         packet_tx: Sender<PacketBatch>,
         bam_enabled: Arc<AtomicU8>,
@@ -323,9 +325,10 @@ impl FetchStageBrain {
             return false;
         };
 
+        let now = Instant::now();
         self.metrics.heartbeats_received += 1;
         if let Some(relayer_info) = self.relayer_info.as_mut() {
-            relayer_info.last_heartbeat = Instant::now();
+            relayer_info.last_heartbeat = now;
             relayer_info.tpu_addresses.tpu_addr = tpu_addr;
             relayer_info.tpu_addresses.tpu_forward_addr = tpu_forward_addr;
         } else {
@@ -334,8 +337,8 @@ impl FetchStageBrain {
                     tpu_addr,
                     tpu_forward_addr,
                 },
-                first_heartbeat: Instant::now(),
-                last_heartbeat: Instant::now(),
+                first_heartbeat: now,
+                last_heartbeat: now,
             });
         }
         true
@@ -406,7 +409,7 @@ mod tests {
     }
 
     fn check_brain(
-        brain: &FetchStageBrain,
+        brain: &FetchStageTpuStateMachine,
         expected_tpu_type: TpuConnectionType,
         expected_addr: &SocketAddr,
         expected_fwd_addr: &SocketAddr,
@@ -435,7 +438,7 @@ mod tests {
     }
 
     fn check_sending_packet(
-        brain: &mut FetchStageBrain,
+        brain: &mut FetchStageTpuStateMachine,
         packet_rx: &Receiver<PacketBatch>,
         should_send: bool,
     ) {
@@ -458,7 +461,7 @@ mod tests {
         relayer_tpu_enable_delay: Duration,
         _packet_tx: Sender<PacketBatch>,
         packet_rx: Receiver<PacketBatch>,
-        brain: FetchStageBrain,
+        brain: FetchStageTpuStateMachine,
     }
 
     fn setup_test() -> TestContext {
@@ -476,7 +479,7 @@ mod tests {
         let relayer_tpu_enable_delay = Duration::from_secs(1);
         let (packet_tx, packet_rx) = crossbeam_channel::unbounded();
 
-        let brain = FetchStageBrain::new(
+        let brain = FetchStageTpuStateMachine::new(
             packet_tx.clone(),
             bam_enabled.clone(),
             original_tpu_info,
