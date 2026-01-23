@@ -309,6 +309,17 @@ impl BamConnection {
                                     Self::send_batch_results(&mut outbound_sender, std::mem::take(&mut waiting_results), metrics.as_ref());
                                 }
                             }
+                            BamOutboundMessage::Ping(id) => {
+                                metrics.ping_sent.fetch_add(1, Relaxed);
+                                let outbound = SchedulerMessageV0 {
+                                    msg: Some(Msg::Pong(id)),
+                                };
+                                if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
+                                    metrics.outbound_ping_fail.fetch_add(1, Relaxed);
+                                } else {
+                                    metrics.outbound_ping_sent.fetch_add(1, Relaxed);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -406,6 +417,10 @@ struct BamConnectionMetrics {
     heartbeat_sent: AtomicU64,
     outbound_sent: AtomicU64,
     outbound_fail: AtomicU64,
+
+    ping_sent: AtomicU64,
+    outbound_ping_sent: AtomicU64,
+    outbound_ping_fail: AtomicU64,
 }
 
 impl BamConnectionMetrics {
@@ -420,6 +435,9 @@ impl BamConnectionMetrics {
             || self.heartbeat_sent.load(Relaxed) > 0
             || self.outbound_sent.load(Relaxed) > 0
             || self.outbound_fail.load(Relaxed) > 0
+            || self.ping_sent.load(Relaxed) > 0
+            || self.outbound_ping_fail.load(Relaxed) > 0
+            || self.outbound_ping_sent.load(Relaxed) > 0
     }
 
     pub fn report(&self) {
@@ -478,6 +496,17 @@ impl BamConnectionMetrics {
                 self.outbound_fail.swap(0, Relaxed) as i64,
                 i64
             ),
+            ("ping_sent", self.ping_sent.swap(0, Relaxed) as i64, i64),
+            (
+                "outbound_ping_sent",
+                self.outbound_ping_sent.swap(0, Relaxed) as i64,
+                i64
+            ),
+            (
+                "outbound_ping_fail",
+                self.outbound_ping_fail.swap(0, Relaxed) as i64,
+                i64
+            )
         );
     }
 }
