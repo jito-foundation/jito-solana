@@ -177,7 +177,7 @@ struct FetchStageBrain {
     original_tpu_info: TpuAddresses,
 
     /// Relayer heartbeat tracking
-    relayer_tpu_info: Option<HeartbeatingRelayerInfo>,
+    relayer_info: Option<HeartbeatingRelayerInfo>,
 
     /// BAM TPU addresses
     bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
@@ -218,7 +218,7 @@ impl FetchStageBrain {
                 heartbeats_received: 0,
             },
             original_tpu_info,
-            relayer_tpu_info: None,
+            relayer_info: None,
             bam_tpu_info,
             cluster_info,
             heartbeat_check_interval,
@@ -240,7 +240,7 @@ impl FetchStageBrain {
             };
         }
 
-        if self.relayer_tpu_info.as_ref().map_or(false, |info| {
+        if self.relayer_info.as_ref().map_or(false, |info| {
             let now = Instant::now();
             now.duration_since(info.last_heartbeat) < self.heartbeat_check_interval
                 && now.duration_since(info.first_heartbeat) > self.relayer_tpu_enable_delay
@@ -248,13 +248,13 @@ impl FetchStageBrain {
             return TpuState {
                 tpu_type: TpuConnectionType::Relayer,
                 addr: self
-                    .relayer_tpu_info
+                    .relayer_info
                     .as_ref()
                     .unwrap()
                     .tpu_addresses
                     .tpu_addr,
                 fwd_addr: self
-                    .relayer_tpu_info
+                    .relayer_info
                     .as_ref()
                     .unwrap()
                     .tpu_addresses
@@ -279,7 +279,7 @@ impl FetchStageBrain {
         if prev_state.tpu_type == TpuConnectionType::Relayer
             && self.current_tpu_state.tpu_type != TpuConnectionType::Relayer
         {
-            self.relayer_tpu_info = None;
+            self.relayer_info = None;
         }
 
         // Update gossip if the state changed
@@ -321,12 +321,12 @@ impl FetchStageBrain {
         };
 
         self.metrics.heartbeats_received += 1;
-        if let Some(relayer_info) = self.relayer_tpu_info.as_mut() {
+        if let Some(relayer_info) = self.relayer_info.as_mut() {
             relayer_info.last_heartbeat = Instant::now();
             relayer_info.tpu_addresses.tpu_addr = tpu_addr;
             relayer_info.tpu_addresses.tpu_forward_addr = tpu_forward_addr;
         } else {
-            self.relayer_tpu_info = Some(HeartbeatingRelayerInfo {
+            self.relayer_info = Some(HeartbeatingRelayerInfo {
                 tpu_addresses: TpuAddresses {
                     tpu_addr,
                     tpu_forward_addr,
@@ -535,7 +535,7 @@ mod tests {
 
         // Should not switch yet (however we should start tracking it and packets should still be forwarded
         assert!(brain.handle_evaluation_tick());
-        assert!(brain.relayer_tpu_info.is_some());
+        assert!(brain.relayer_info.is_some());
         check_brain(
             &brain,
             TpuConnectionType::Original,
