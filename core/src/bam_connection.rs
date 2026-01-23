@@ -310,14 +310,14 @@ impl BamConnection {
                                 }
                             }
                             BamOutboundMessage::Ping(id) => {
-                                metrics.ping_sent.fetch_add(1, Relaxed);
-                                let outbound = SchedulerMessageV0 {
+                                metrics.ping_received.fetch_add(1, Relaxed);
+                                let pong_message_outbound = SchedulerMessageV0 {
                                     msg: Some(Msg::Pong(id)),
                                 };
-                                if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                                    metrics.outbound_ping_fail.fetch_add(1, Relaxed);
+                                if outbound_sender.try_send(v0_to_versioned_proto(pong_message_outbound)).is_err() {
+                                    metrics.outbound_pong_send_fail.fetch_add(1, Relaxed);
                                 } else {
-                                    metrics.outbound_ping_sent.fetch_add(1, Relaxed);
+                                    metrics.outbound_pong_sent.fetch_add(1, Relaxed);
                                 }
                             }
                             _ => {}
@@ -418,9 +418,9 @@ struct BamConnectionMetrics {
     outbound_sent: AtomicU64,
     outbound_fail: AtomicU64,
 
-    ping_sent: AtomicU64,
-    outbound_ping_sent: AtomicU64,
-    outbound_ping_fail: AtomicU64,
+    ping_received: AtomicU64,
+    outbound_pong_sent: AtomicU64,
+    outbound_pong_send_fail: AtomicU64,
 }
 
 impl BamConnectionMetrics {
@@ -435,9 +435,9 @@ impl BamConnectionMetrics {
             || self.heartbeat_sent.load(Relaxed) > 0
             || self.outbound_sent.load(Relaxed) > 0
             || self.outbound_fail.load(Relaxed) > 0
-            || self.ping_sent.load(Relaxed) > 0
-            || self.outbound_ping_fail.load(Relaxed) > 0
-            || self.outbound_ping_sent.load(Relaxed) > 0
+            || self.ping_received.load(Relaxed) > 0
+            || self.outbound_pong_send_fail.load(Relaxed) > 0
+            || self.outbound_pong_sent.load(Relaxed) > 0
     }
 
     pub fn report(&self) {
@@ -496,15 +496,15 @@ impl BamConnectionMetrics {
                 self.outbound_fail.swap(0, Relaxed) as i64,
                 i64
             ),
-            ("ping_sent", self.ping_sent.swap(0, Relaxed) as i64, i64),
+            ("ping_received", self.ping_received.swap(0, Relaxed) as i64, i64),
             (
-                "outbound_ping_sent",
-                self.outbound_ping_sent.swap(0, Relaxed) as i64,
+                "outbound_pong_sent_count",
+                self.outbound_pong_sent.swap(0, Relaxed) as i64,
                 i64
             ),
             (
-                "outbound_ping_fail",
-                self.outbound_ping_fail.swap(0, Relaxed) as i64,
+                "outbound_pong_send_fail_count",
+                self.outbound_pong_send_fail.swap(0, Relaxed) as i64,
                 i64
             )
         );
