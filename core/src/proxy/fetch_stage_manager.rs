@@ -3,6 +3,7 @@ use {
         bam_dependencies::BamConnectionState,
         proxy::{HeartbeatEvent, ProxyError},
     },
+    arc_swap::ArcSwap,
     crossbeam_channel::{select, tick, Receiver, RecvError, Sender},
     solana_gossip::{
         cluster_info::ClusterInfo,
@@ -13,7 +14,7 @@ use {
         net::SocketAddr,
         sync::{
             atomic::{AtomicBool, AtomicU8, Ordering},
-            Arc, RwLock,
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -48,7 +49,7 @@ impl FetchStageManager {
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
-        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
+        bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
     ) -> Self {
         let t_hdl = Self::start(
             cluster_info,
@@ -72,7 +73,7 @@ impl FetchStageManager {
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
         my_fallback_contact_info: contact_info::ContactInfo,
-        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
+        bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
     ) -> JoinHandle<()> {
         Builder::new()
             .name("fetch-stage-manager".into())
@@ -114,6 +115,7 @@ impl FetchStageManager {
                         recv(metrics_tick) -> _ => brain.handle_metrics_tick(),
                     };
                     if !all_good {
+                        
                         break;
                     }
                 }
@@ -185,7 +187,7 @@ struct FetchStageTpuStateMachine {
     relayer_info: Option<HeartbeatingRelayerInfo>,
 
     /// BAM TPU addresses
-    bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
+    bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
 
     /// ClusterInfo to update TPU addresses
     cluster_info: Arc<ClusterInfo>,
@@ -205,7 +207,7 @@ impl FetchStageTpuStateMachine {
         packet_tx: Sender<PacketBatch>,
         bam_enabled: Arc<AtomicU8>,
         original_tpu_info: TpuAddresses,
-        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
+        bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
         cluster_info: Arc<ClusterInfo>,
         max_time_between_relayer_heartbeats: Duration,
         relayer_tpu_enable_delay: Duration,
@@ -239,11 +241,11 @@ impl FetchStageTpuStateMachine {
     fn get_next_tpu_state(&self) -> TpuState {
         // BAM has highest priority (non-sync check is fine because downstream checks `bam_enabled` as well)
         if self.is_bam_connected() {
-            if let Some((addr, fwd_addr)) = *self.bam_tpu_info.read().unwrap() {
+            if let Some((addr, fwd_addr)) = self.bam_tpu_info.load().as_ref() {
                 return TpuState {
                     tpu_type: TpuConnectionType::Bam,
-                    addr,
-                    fwd_addr,
+                    addr: *addr,
+                    fwd_addr: *fwd_addr,
                 };
             }
         }
@@ -456,7 +458,7 @@ mod tests {
         cluster_info: Arc<ClusterInfo>,
         bam_enabled: Arc<AtomicU8>,
         original_tpu_info: TpuAddresses,
-        bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
+        bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
         heartbeat_check_interval: Duration,
         relayer_tpu_enable_delay: Duration,
         _packet_tx: Sender<PacketBatch>,
@@ -474,7 +476,7 @@ mod tests {
                 .tpu_forwards(Protocol::QUIC)
                 .unwrap(),
         };
-        let bam_tpu_info = Arc::new(RwLock::new(None));
+        let bam_tpu_info = Arc::new(ArcSwap::new(Arc::new(None)));
         let heartbeat_check_interval = Duration::from_secs(1);
         let relayer_tpu_enable_delay = Duration::from_secs(1);
         let (packet_tx, packet_rx) = crossbeam_channel::unbounded();

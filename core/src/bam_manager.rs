@@ -317,9 +317,7 @@ impl BamManager {
         info!("Setting TPU={tpu}, TPU Forward={tpu_fwd} from BAM config");
         dependencies
             .bam_tpu_info
-            .write()
-            .unwrap()
-            .replace((tpu, tpu_fwd));
+            .store(Arc::new(Some((tpu, tpu_fwd))));
     }
 
     fn update_block_engine_key_and_commission(

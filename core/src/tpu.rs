@@ -392,7 +392,7 @@ impl Tpu {
             exit.clone(),
         );
 
-        let bam_tpu_info = Arc::new(RwLock::new(None));
+        let bam_tpu_info = Arc::new(ArcSwap::new(Arc::new(None)));
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
             cluster_info.clone(),

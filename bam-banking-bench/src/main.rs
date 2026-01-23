@@ -3,6 +3,7 @@ mod mock_bam_server;
 
 use {
     crate::mock_bam_server::MockBamServer,
+    arc_swap::ArcSwap,
     assert_matches::assert_matches,
     clap::{crate_description, crate_name, Arg, Command},
     crossbeam_channel::{unbounded, Receiver},
@@ -124,7 +125,7 @@ fn main() {
         block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
         bank_forks: bank_forks.clone(),
         bam_node_pubkey: Arc::new(Mutex::new(Pubkey::new_unique())),
-        bam_tpu_info: Arc::new(RwLock::new(None)),
+        bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
     };
 
     let keypairs = (0..matches.value_of_t::<usize>("num_keypairs").unwrap())
