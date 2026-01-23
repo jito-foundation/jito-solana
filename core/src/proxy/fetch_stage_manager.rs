@@ -115,7 +115,7 @@ impl FetchStageManager {
                         recv(metrics_tick) -> _ => brain.handle_metrics_tick(),
                     };
                     if !all_good {
-                        
+                        datapoint_warn!("fetch-stage-manager-shutdown", ("stop", 1, i64));
                         break;
                     }
                 }
