@@ -21,7 +21,10 @@ use {
 };
 
 /// How often to check for heartbeat timeouts
-const HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_millis(1500); // Empirically determined from load testing
+const MAX_TIME_BETWEEN_RELAYER_HEARTBEATS: Duration = Duration::from_millis(1500); // Empirically determined from load testing
+
+/// How often to re-evaluate TPU state
+const EVALUATION_TICK_INTERVAL: Duration = Duration::from_millis(solana_clock::DEFAULT_MS_PER_SLOT);
 
 /// How long to delay before switching to relayer TPU after first heartbeat
 const RELAYER_TPU_ENABLE_DELAY: Duration = Duration::from_secs(60);
@@ -92,19 +95,19 @@ impl FetchStageManager {
                     },
                     bam_tpu_info,
                     cluster_info,
-                    HEARTBEAT_CHECK_INTERVAL,
+                    MAX_TIME_BETWEEN_RELAYER_HEARTBEATS,
                     RELAYER_TPU_ENABLE_DELAY,
                 );
 
                 // Setup ticks for periodic evaluation and metrics
-                let heartbeat_tick = tick(HEARTBEAT_CHECK_INTERVAL);
+                let evaluation_tick = tick(EVALUATION_TICK_INTERVAL);
                 let metrics_tick = tick(METRICS_INTERVAL);
 
                 // Run the semi-eternal loop
                 while !exit.load(Ordering::Relaxed) {
                     let all_good = select! {
                         recv(packet_intercept_rx) -> pkt => brain.handle_packet_batch(pkt),
-                        recv(heartbeat_tick) -> _ => brain.handle_evaluation_tick(),
+                        recv(evaluation_tick) -> _ => brain.handle_evaluation_tick(),
                         recv(relayer_heartbeat_rx) -> tpu_info => brain.handle_relayer_message(tpu_info),
                         recv(metrics_tick) -> _ => brain.handle_metrics_tick(),
                     };
@@ -188,8 +191,8 @@ struct FetchStageBrain {
     /// Metrics collected
     metrics: FetchStageMetrics,
 
-    /// Heartbeat check interval
-    heartbeat_check_interval: Duration,
+    /// How often to check for relayer heartbeat timeouts
+    max_time_between_relayer_heartbeats: Duration,
 
     /// Relayer TPU enable delay
     relayer_tpu_enable_delay: Duration,
@@ -202,7 +205,7 @@ impl FetchStageBrain {
         original_tpu_info: TpuAddresses,
         bam_tpu_info: Arc<RwLock<Option<(SocketAddr, SocketAddr)>>>,
         cluster_info: Arc<ClusterInfo>,
-        heartbeat_check_interval: Duration,
+        max_time_between_relayer_heartbeats: Duration,
         relayer_tpu_enable_delay: Duration,
     ) -> Self {
         Self {
@@ -221,7 +224,7 @@ impl FetchStageBrain {
             relayer_info: None,
             bam_tpu_info,
             cluster_info,
-            heartbeat_check_interval,
+            max_time_between_relayer_heartbeats,
             relayer_tpu_enable_delay,
         }
     }
@@ -232,27 +235,26 @@ impl FetchStageBrain {
     }
 
     fn get_next_tpu_state(&self) -> TpuState {
-        if self.is_bam_connected() && self.bam_tpu_info.read().unwrap().is_some() {
-            return TpuState {
-                tpu_type: TpuConnectionType::Bam,
-                addr: self.bam_tpu_info.read().unwrap().unwrap().0,
-                fwd_addr: self.bam_tpu_info.read().unwrap().unwrap().1,
-            };
+        // BAM has highest priority (non-sync check is fine because downstream checks `bam_enabled` as well)
+        if self.is_bam_connected() {
+            if let Some((addr, fwd_addr)) = *self.bam_tpu_info.read().unwrap() {
+                return TpuState {
+                    tpu_type: TpuConnectionType::Bam,
+                    addr,
+                    fwd_addr,
+                };
+            }
         }
 
+        // Relayer has second priority
         if self.relayer_info.as_ref().map_or(false, |info| {
             let now = Instant::now();
-            now.duration_since(info.last_heartbeat) < self.heartbeat_check_interval
+            now.duration_since(info.last_heartbeat) < self.max_time_between_relayer_heartbeats
                 && now.duration_since(info.first_heartbeat) > self.relayer_tpu_enable_delay
         }) {
             return TpuState {
                 tpu_type: TpuConnectionType::Relayer,
-                addr: self
-                    .relayer_info
-                    .as_ref()
-                    .unwrap()
-                    .tpu_addresses
-                    .tpu_addr,
+                addr: self.relayer_info.as_ref().unwrap().tpu_addresses.tpu_addr,
                 fwd_addr: self
                     .relayer_info
                     .as_ref()
@@ -262,6 +264,7 @@ impl FetchStageBrain {
             };
         }
 
+        // Default to original TPU
         TpuState {
             tpu_type: TpuConnectionType::Original,
             addr: self.original_tpu_info.tpu_addr,
@@ -644,5 +647,70 @@ mod tests {
             &original_tpu_info.tpu_forward_addr,
         );
         check_sending_packet(&mut brain, &packet_rx, true);
+    }
+
+    #[test]
+    fn test_bam_to_relayer_and_back_switch() {
+        let TestContext {
+            cluster_info,
+            bam_enabled,
+            original_tpu_info: _,
+            bam_tpu_info,
+            heartbeat_check_interval: _,
+            relayer_tpu_enable_delay,
+            _packet_tx,
+            packet_rx,
+            mut brain,
+        } = setup_test();
+
+        // Enable BAM and set BAM TPU info
+        bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
+        let bam_tpu_addr: SocketAddr = "127.0.0.1:7000".parse().unwrap();
+        let bam_tpu_fwd_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        *bam_tpu_info.write().unwrap() = Some((bam_tpu_addr, bam_tpu_fwd_addr));
+        assert!(brain.handle_evaluation_tick());
+
+        // Should be BAM and packets should NOT be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Bam,
+            &bam_tpu_addr,
+            &bam_tpu_fwd_addr,
+        );
+        check_cluster_info(&cluster_info, &bam_tpu_addr, &bam_tpu_fwd_addr);
+        check_sending_packet(&mut brain, &packet_rx, false);
+
+        // Simulate relayer heartbeat
+        let relayer_tpu_addr: SocketAddr = "127.0.0.1:7002".parse().unwrap();
+        let relayer_tpu_fwd_addr: SocketAddr = "127.0.0.1:7003".parse().unwrap();
+        let relayer_heartbeat = Ok((relayer_tpu_addr, relayer_tpu_fwd_addr));
+        assert!(brain.handle_relayer_message(relayer_heartbeat));
+
+        // Wait long enough; should still not switch since BAM is connected
+        std::thread::sleep(relayer_tpu_enable_delay.saturating_mul(2));
+        assert!(brain.handle_relayer_message(relayer_heartbeat));
+        assert!(brain.handle_evaluation_tick());
+        check_brain(
+            &brain,
+            TpuConnectionType::Bam,
+            &bam_tpu_addr,
+            &bam_tpu_fwd_addr,
+        );
+        check_cluster_info(&cluster_info, &bam_tpu_addr, &bam_tpu_fwd_addr);
+        check_sending_packet(&mut brain, &packet_rx, false);
+
+        // Disable BAM
+        bam_enabled.store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+        assert!(brain.handle_evaluation_tick());
+
+        // Should have switched to relayer and packets should NOT be forwarded
+        check_brain(
+            &brain,
+            TpuConnectionType::Relayer,
+            &relayer_tpu_addr,
+            &relayer_tpu_fwd_addr,
+        );
+        check_cluster_info(&cluster_info, &relayer_tpu_addr, &relayer_tpu_fwd_addr);
+        check_sending_packet(&mut brain, &packet_rx, false);
     }
 }
