@@ -21,6 +21,7 @@ agave-logger = { workspace = true }
 agave-snapshots = { workspace = true }
 crossbeam-channel = { workspace = true }
 itertools = { workspace = true }
+jito-protos = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
@@ -72,6 +73,7 @@ solana-vote-program = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 tempfile = { workspace = true }
+tokio = { workspace = true }
 trees = { workspace = true }
 
 [dev-dependencies]
