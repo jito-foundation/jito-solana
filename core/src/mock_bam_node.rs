@@ -15,8 +15,8 @@ use {
             MultipleAtomicTxnBatch, Packet, Socket,
         },
     },
-    solana_net_utils::sockets::bind_to,
     solana_keypair::Keypair,
+    solana_net_utils::sockets::bind_to,
     solana_perf::packet::PacketBatch,
     solana_streamer::{
         nonblocking::simple_qos::SimpleQosConfig,
@@ -175,24 +175,27 @@ impl MockBamNodeState {
         let batches: Vec<AtomicTxnBatch> = packet_batches
             .into_iter()
             .flat_map(|batch| {
-                batch.iter().filter_map(|packet| {
-                    let data = packet.data(..)?;
-                    let seq_id = self.next_seq_id.fetch_add(1, Ordering::Relaxed) as u32;
-                    Some(AtomicTxnBatch {
-                        seq_id,
-                        max_schedule_slot,
-                        packets: vec![Packet {
-                            data: data.to_vec(),
-                            meta: Some(jito_protos::proto::bam_types::Meta {
-                                size: data.len() as u64,
-                                flags: Some(jito_protos::proto::bam_types::PacketFlags {
-                                    simple_vote_tx: false,
-                                    revert_on_error: false,
+                batch
+                    .iter()
+                    .filter_map(|packet| {
+                        let data = packet.data(..)?;
+                        let seq_id = self.next_seq_id.fetch_add(1, Ordering::Relaxed) as u32;
+                        Some(AtomicTxnBatch {
+                            seq_id,
+                            max_schedule_slot,
+                            packets: vec![Packet {
+                                data: data.to_vec(),
+                                meta: Some(jito_protos::proto::bam_types::Meta {
+                                    size: data.len() as u64,
+                                    flags: Some(jito_protos::proto::bam_types::PacketFlags {
+                                        simple_vote_tx: false,
+                                        revert_on_error: false,
+                                    }),
                                 }),
-                            }),
-                        }],
+                            }],
+                        })
                     })
-                }).collect::<Vec<_>>()
+                    .collect::<Vec<_>>()
             })
             .collect();
 
@@ -274,10 +277,16 @@ impl BamNodeApi for MockBamNodeService {
 }
 
 fn handle_scheduler_message(state: &MockBamNodeState, msg: SchedulerMessage) {
-    let Some(VersionedMsg::V0(v0)) = msg.versioned_msg else { return };
+    let Some(VersionedMsg::V0(v0)) = msg.versioned_msg else {
+        return;
+    };
 
     if let Some(Msg::AuthProof(proof)) = v0.msg {
-        state.verify_auth_proof(&proof.challenge_to_sign, &proof.validator_pubkey, &proof.signature);
+        state.verify_auth_proof(
+            &proof.challenge_to_sign,
+            &proof.validator_pubkey,
+            &proof.signature,
+        );
     }
 }
 
@@ -352,7 +361,8 @@ impl MockBamNode {
             QuicStreamerConfig::default(),
             SimpleQosConfig::default(),
             cancel.clone(),
-        ).map_err(|e| std::io::Error::other(format!("Failed to spawn TPU server: {e:?}")))?;
+        )
+        .map_err(|e| std::io::Error::other(format!("Failed to spawn TPU server: {e:?}")))?;
 
         let _tpu_fwd_server = spawn_simple_qos_server(
             "mockTpuFwd",
@@ -364,7 +374,8 @@ impl MockBamNode {
             QuicStreamerConfig::default(),
             SimpleQosConfig::default(),
             cancel.clone(),
-        ).map_err(|e| std::io::Error::other(format!("Failed to spawn TPU FWD server: {e:?}")))?;
+        )
+        .map_err(|e| std::io::Error::other(format!("Failed to spawn TPU FWD server: {e:?}")))?;
 
         let queue = transaction_queue.clone();
         let receiver_cancel = cancel.clone();
@@ -408,11 +419,21 @@ impl MockBamNode {
         })
     }
 
-    pub fn grpc_addr(&self) -> SocketAddr { self.grpc_addr }
-    pub fn grpc_url(&self) -> String { format!("http://{}", self.grpc_addr) }
-    pub fn tpu_addr(&self) -> SocketAddr { self.state.tpu_addr }
-    pub fn tpu_fwd_addr(&self) -> SocketAddr { self.state.tpu_fwd_addr }
-    pub fn transaction_queue(&self) -> &Arc<TransactionQueue> { &self.state.transaction_queue }
+    pub fn grpc_addr(&self) -> SocketAddr {
+        self.grpc_addr
+    }
+    pub fn grpc_url(&self) -> String {
+        format!("http://{}", self.grpc_addr)
+    }
+    pub fn tpu_addr(&self) -> SocketAddr {
+        self.state.tpu_addr
+    }
+    pub fn tpu_fwd_addr(&self) -> SocketAddr {
+        self.state.tpu_fwd_addr
+    }
+    pub fn transaction_queue(&self) -> &Arc<TransactionQueue> {
+        &self.state.transaction_queue
+    }
 
     pub fn set_send_heartbeats(&self, send: bool) {
         self.state.send_heartbeats.store(send, Ordering::Relaxed);
@@ -445,7 +466,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_bam_node_starts() {
-        let node = MockBamNode::start(MockBamNodeConfig::default()).await.expect("should start");
+        let node = MockBamNode::start(MockBamNodeConfig::default())
+            .await
+            .expect("should start");
         assert_ne!(node.grpc_addr().port(), 0);
         assert_ne!(node.tpu_addr().port(), 0);
         assert_ne!(node.tpu_fwd_addr().port(), 0);
@@ -470,27 +493,44 @@ mod tests {
     async fn test_grpc_get_config() {
         use jito_protos::proto::bam_api::bam_node_api_client::BamNodeApiClient;
 
-        let node = MockBamNode::start(MockBamNodeConfig::default()).await.expect("should start");
-        let mut client = BamNodeApiClient::connect(node.grpc_url()).await.expect("should connect");
+        let node = MockBamNode::start(MockBamNodeConfig::default())
+            .await
+            .expect("should start");
+        let mut client = BamNodeApiClient::connect(node.grpc_url())
+            .await
+            .expect("should connect");
 
-        let response = client.get_builder_config(ConfigRequest {}).await.expect("should get config");
+        let response = client
+            .get_builder_config(ConfigRequest {})
+            .await
+            .expect("should get config");
         let config = response.into_inner();
 
         assert!(config.bam_config.is_some());
         assert!(config.block_engine_config.is_some());
 
         let bam_config = config.bam_config.unwrap();
-        assert_eq!(bam_config.tpu_sock.unwrap().port, node.tpu_addr().port() as u32);
+        assert_eq!(
+            bam_config.tpu_sock.unwrap().port,
+            node.tpu_addr().port() as u32
+        );
     }
 
     #[tokio::test]
     async fn test_grpc_auth_challenge() {
         use jito_protos::proto::bam_api::bam_node_api_client::BamNodeApiClient;
 
-        let node = MockBamNode::start(MockBamNodeConfig::default()).await.expect("should start");
-        let mut client = BamNodeApiClient::connect(node.grpc_url()).await.expect("should connect");
+        let node = MockBamNode::start(MockBamNodeConfig::default())
+            .await
+            .expect("should start");
+        let mut client = BamNodeApiClient::connect(node.grpc_url())
+            .await
+            .expect("should connect");
 
-        let response = client.get_auth_challenge(AuthChallengeRequest {}).await.expect("should get challenge");
+        let response = client
+            .get_auth_challenge(AuthChallengeRequest {})
+            .await
+            .expect("should get challenge");
         let challenge = response.into_inner().challenge_to_sign;
 
         assert!(challenge.starts_with("challenge-"));
