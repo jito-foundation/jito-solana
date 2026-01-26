@@ -1,15 +1,14 @@
 use {
-    crate::{
-        cluster::Cluster,
-        local_cluster::{ClusterConfig, LocalCluster},
-        validator_configs::make_identical_validator_configs,
-    },
     log::info,
     solana_core::{
         mock_bam_node::{MockBamNode, MockBamNodeConfig},
         validator::ValidatorConfig,
     },
     solana_gossip::gossip_service::discover_validators,
+    solana_local_cluster::{
+        local_cluster::{ClusterConfig, LocalCluster},
+        validator_configs::make_identical_validator_configs,
+    },
     solana_native_token::LAMPORTS_PER_SOL,
     solana_net_utils::SocketAddrSpace,
     std::{
@@ -147,7 +146,11 @@ fn test_block_production_while_connected_to_bam() {
         .block_on(MockBamNode::start(MockBamNodeConfig::default()))
         .expect("Failed to start mock BAM node");
 
-    info!("Mock BAM started - gRPC: {}, TPU: {}", mock_bam.grpc_url(), mock_bam.tpu_addr());
+    info!(
+        "Mock BAM started - gRPC: {}, TPU: {}",
+        mock_bam.grpc_url(),
+        mock_bam.tpu_addr()
+    );
 
     let bam_url = Arc::new(Mutex::new(Some(mock_bam.grpc_url())));
     let mut cluster_config = create_bam_cluster_config(bam_url);
@@ -164,7 +167,11 @@ fn test_block_production_while_connected_to_bam() {
     );
 
     info!("Waiting for cluster to produce blocks while connected to BAM...");
-    cluster.check_for_new_roots(5, "bam_connected_block_production", SocketAddrSpace::Unspecified);
+    cluster.check_for_new_roots(
+        5,
+        "bam_connected_block_production",
+        SocketAddrSpace::Unspecified,
+    );
     info!("Cluster produced blocks while connected to BAM");
 }
 
@@ -182,7 +189,11 @@ fn test_block_production_after_bam_disconnect() {
         .expect("Failed to start mock BAM node");
 
     let bam_tpu = mock_bam.tpu_addr();
-    info!("Mock BAM started - gRPC: {}, TPU: {}", mock_bam.grpc_url(), bam_tpu);
+    info!(
+        "Mock BAM started - gRPC: {}, TPU: {}",
+        mock_bam.grpc_url(),
+        bam_tpu
+    );
 
     let bam_url = Arc::new(Mutex::new(Some(mock_bam.grpc_url())));
     let mut cluster_config = create_bam_cluster_config(bam_url);
@@ -238,14 +249,20 @@ fn test_validator_receives_auth_proof() {
     );
 
     let auth_count = mock_bam.auth_proofs_received();
-    assert!(auth_count >= 1, "Expected at least 1 auth proof, got {}", auth_count);
+    assert!(
+        auth_count >= 1,
+        "Expected at least 1 auth proof, got {}",
+        auth_count
+    );
     info!("Validator authenticated {} time(s)", auth_count);
 }
 
 #[cfg(test)]
 mod unit_tests {
-    use super::*;
-    use jito_protos::proto::bam_api::{bam_node_api_client::BamNodeApiClient, ConfigRequest};
+    use {
+        super::*,
+        jito_protos::proto::bam_api::{bam_node_api_client::BamNodeApiClient, ConfigRequest},
+    };
 
     #[tokio::test]
     async fn test_mock_bam_node_serves_config() {
