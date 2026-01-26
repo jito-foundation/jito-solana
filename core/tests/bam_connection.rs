@@ -459,18 +459,12 @@ mod bam_connection_tests {
 #[cfg(test)]
 mod bam_manager_tests {
     use {
-        super::*,
-        solana_core::{
+        super::*, arc_swap::ArcSwap, solana_core::{
             admin_rpc_post_init::KeyUpdaters,
             bam_dependencies::{BamConnectionState, BamDependencies},
             bam_manager::BamManager,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-        },
-        solana_ledger::{blockstore::Blockstore, genesis_utils::create_genesis_config},
-        solana_poh::poh_recorder::create_test_recorder,
-        solana_pubkey::Pubkey,
-        solana_runtime::bank::Bank,
-        std::sync::{atomic::AtomicU8, RwLock},
+        }, solana_ledger::{blockstore::Blockstore, genesis_utils::create_genesis_config}, solana_poh::poh_recorder::create_test_recorder, solana_pubkey::Pubkey, solana_runtime::bank::Bank, std::sync::{RwLock, atomic::AtomicU8}
     };
 
     fn create_test_bam_dependencies(

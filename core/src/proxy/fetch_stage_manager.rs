@@ -493,9 +493,9 @@ mod tests {
 
         TestContext {
             cluster_info,
-            bam_enabled: bam_enabled,
+            bam_enabled,
             original_tpu_info,
-            bam_tpu_info: bam_tpu_info,
+            bam_tpu_info,
             heartbeat_check_interval,
             relayer_tpu_enable_delay,
             _packet_tx: packet_tx,
@@ -619,7 +619,7 @@ mod tests {
         bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
         let bam_tpu_addr: SocketAddr = "127.0.0.1:7000".parse().unwrap();
         let bam_tpu_fwd_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
-        *bam_tpu_info.write().unwrap() = Some((bam_tpu_addr, bam_tpu_fwd_addr));
+        bam_tpu_info.store(Arc::new(Some((bam_tpu_addr, bam_tpu_fwd_addr))));
         assert!(brain.handle_evaluation_tick());
 
         // Should have switched to BAM and packets should NOT be forwarded
@@ -669,7 +669,7 @@ mod tests {
         bam_enabled.store(BamConnectionState::Connected as u8, Ordering::Relaxed);
         let bam_tpu_addr: SocketAddr = "127.0.0.1:7000".parse().unwrap();
         let bam_tpu_fwd_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
-        *bam_tpu_info.write().unwrap() = Some((bam_tpu_addr, bam_tpu_fwd_addr));
+        bam_tpu_info.store(Arc::new(Some((bam_tpu_addr, bam_tpu_fwd_addr))));
         assert!(brain.handle_evaluation_tick());
 
         // Should be BAM and packets should NOT be forwarded
