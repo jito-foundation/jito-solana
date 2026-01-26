@@ -117,6 +117,7 @@ struct MockBamNodeState {
     auth_proofs_received: AtomicU64,
     send_heartbeats: AtomicBool,
     transaction_queue: Arc<TransactionQueue>,
+    pending_test_batches: Mutex<VecDeque<AtomicTxnBatch>>,
     next_seq_id: AtomicU64,
 }
 
@@ -167,12 +168,15 @@ impl MockBamNodeState {
     }
 
     fn drain_and_build_batches(&self, max_schedule_slot: u64) -> Option<MultipleAtomicTxnBatch> {
-        let packet_batches = self.transaction_queue.drain(10);
-        if packet_batches.is_empty() {
-            return None;
-        }
+        let mut test_batches: Vec<AtomicTxnBatch> = self
+            .pending_test_batches
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect();
 
-        let batches: Vec<AtomicTxnBatch> = packet_batches
+        let packet_batches = self.transaction_queue.drain(10);
+        let packet_derived_batches: Vec<AtomicTxnBatch> = packet_batches
             .into_iter()
             .flat_map(|batch| {
                 batch
@@ -199,11 +203,15 @@ impl MockBamNodeState {
             })
             .collect();
 
-        if batches.is_empty() {
+        test_batches.extend(packet_derived_batches);
+
+        if test_batches.is_empty() {
             return None;
         }
 
-        Some(MultipleAtomicTxnBatch { batches })
+        Some(MultipleAtomicTxnBatch {
+            batches: test_batches,
+        })
     }
 }
 
@@ -344,6 +352,7 @@ impl MockBamNode {
             auth_proofs_received: AtomicU64::new(0),
             send_heartbeats: AtomicBool::new(true),
             transaction_queue: transaction_queue.clone(),
+            pending_test_batches: Mutex::new(VecDeque::new()),
             next_seq_id: AtomicU64::new(0),
         });
 
@@ -422,15 +431,19 @@ impl MockBamNode {
     pub fn grpc_addr(&self) -> SocketAddr {
         self.grpc_addr
     }
+
     pub fn grpc_url(&self) -> String {
         format!("http://{}", self.grpc_addr)
     }
+
     pub fn tpu_addr(&self) -> SocketAddr {
         self.state.tpu_addr
     }
+
     pub fn tpu_fwd_addr(&self) -> SocketAddr {
         self.state.tpu_fwd_addr
     }
+
     pub fn transaction_queue(&self) -> &Arc<TransactionQueue> {
         &self.state.transaction_queue
     }
@@ -441,6 +454,14 @@ impl MockBamNode {
 
     pub fn auth_proofs_received(&self) -> u64 {
         self.state.auth_proofs_received.load(Ordering::Relaxed)
+    }
+
+    pub fn queue_test_batch(&self, batch: AtomicTxnBatch) {
+        self.state
+            .pending_test_batches
+            .lock()
+            .unwrap()
+            .push_back(batch);
     }
 
     pub async fn shutdown(&mut self) {
