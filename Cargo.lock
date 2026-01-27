@@ -567,7 +567,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "thiserror 2.0.17",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
 ]
 
 [[package]]
@@ -1522,7 +1522,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -3559,7 +3559,7 @@ dependencies = [
  "indexmap 2.12.0",
  "slab",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "tracing",
 ]
 
@@ -6233,7 +6233,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls 0.24.1",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "tower-service",
  "url 2.5.7",
  "wasm-bindgen",
@@ -6275,7 +6275,7 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tokio",
  "tokio-rustls 0.26.2",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "tower 0.5.2",
  "tower-http",
  "tower-service",
@@ -7518,7 +7518,7 @@ dependencies = [
  "tarpc",
  "tokio",
  "tokio-serde",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
 ]
 
 [[package]]
@@ -7555,7 +7555,7 @@ dependencies = [
  "solana-version",
  "solana-vote-program",
  "tikv-jemallocator",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
 ]
 
 [[package]]
@@ -8085,7 +8085,7 @@ dependencies = [
  "solana-udp-client",
  "thiserror 2.0.17",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
 ]
 
 [[package]]
@@ -8462,7 +8462,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-stream",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "tonic",
  "tonic-build",
  "trees",
@@ -10138,7 +10138,7 @@ dependencies = [
  "solana-transaction-error",
  "thiserror 2.0.17",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
 ]
 
 [[package]]
@@ -10310,7 +10310,7 @@ dependencies = [
  "test-case",
  "thiserror 2.0.17",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
 ]
 
 [[package]]
@@ -10798,7 +10798,7 @@ dependencies = [
  "solana-time-utils",
  "solana-tpu-client-next",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
 ]
 
 [[package]]
@@ -11107,7 +11107,7 @@ dependencies = [
  "solana-transaction-metrics-tracker",
  "thiserror 2.0.17",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "x509-parser",
 ]
 
@@ -11607,7 +11607,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "tracing",
 ]
 
@@ -11993,7 +11993,7 @@ dependencies = [
  "solana-version",
  "thiserror 2.0.17",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "url 2.5.7",
  "x509-parser",
 ]
@@ -13126,9 +13126,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.17"
+version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2efa149fe76073d6e8fd97ef4f4eca7b67f599660115591483572e406e165594"
+checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
@@ -13264,7 +13264,7 @@ dependencies = [
  "rand 0.8.5",
  "slab",
  "tokio",
- "tokio-util 0.7.17",
+ "tokio-util 0.7.18",
  "tower-layer",
  "tower-service",
  "tracing",
