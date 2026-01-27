@@ -10,14 +10,14 @@ use {
             ConfigRequest, ConfigResponse, SchedulerMessage, SchedulerMessageV0, SchedulerResponse,
             SchedulerResponseV0,
         },
-        bam_types::{AtomicTxnBatch, AuthProof, ValidatorHeartBeat},
+        bam_types::{AtomicTxnBatch, AuthProof, Pong, ValidatorHeartBeat},
     },
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_signer::Signer,
     std::{
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+            atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed},
             Arc, Mutex,
         },
         time::{Duration, Instant, SystemTime},
@@ -311,13 +311,15 @@ impl BamConnection {
                             }
                             BamOutboundMessage::Ping(id) => {
                                 metrics.ping_received.fetch_add(1, Relaxed);
+                                metrics.last_ping_id_received.store(id, Relaxed);
                                 let pong_message_outbound = SchedulerMessageV0 {
-                                    msg: Some(Msg::Pong(id)),
+                                    msg: Some(Msg::Pong(Pong { id })),
                                 };
                                 if outbound_sender.try_send(v0_to_versioned_proto(pong_message_outbound)).is_err() {
                                     metrics.outbound_pong_send_fail.fetch_add(1, Relaxed);
                                 } else {
                                     metrics.outbound_pong_sent.fetch_add(1, Relaxed);
+                                    metrics.last_ping_id_sent.store(id, Relaxed);
                                 }
                             }
                             _ => {}
@@ -419,7 +421,9 @@ struct BamConnectionMetrics {
     outbound_fail: AtomicU64,
 
     ping_received: AtomicU64,
+    last_ping_id_received: AtomicU32,
     outbound_pong_sent: AtomicU64,
+    last_ping_id_sent: AtomicU32,
     outbound_pong_send_fail: AtomicU64,
 }
 
@@ -496,10 +500,24 @@ impl BamConnectionMetrics {
                 self.outbound_fail.swap(0, Relaxed) as i64,
                 i64
             ),
-            ("ping_received", self.ping_received.swap(0, Relaxed) as i64, i64),
+            (
+                "ping_received",
+                self.ping_received.swap(0, Relaxed) as i64,
+                i64
+            ),
+            (
+                "last_ping_id_received",
+                self.last_ping_id_received.load(Relaxed),
+                i64
+            ),
             (
                 "outbound_pong_sent_count",
                 self.outbound_pong_sent.swap(0, Relaxed) as i64,
+                i64
+            ),
+            (
+                "last_ping_id_sent",
+                self.last_ping_id_sent.load(Relaxed),
                 i64
             ),
             (
