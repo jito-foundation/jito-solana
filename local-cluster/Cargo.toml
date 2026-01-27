@@ -87,3 +87,4 @@ solana-genesis-utils = { workspace = true }
 solana-ledger = { workspace = true, features = ["dev-context-only-utils"] }
 solana-local-cluster = { path = ".", features = ["agave-unstable-api", "dev-context-only-utils"] }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-connection-cache = { workspace = true }

@@ -2,13 +2,7 @@ use {
     crossbeam_channel::unbounded,
     jito_protos::proto::{
         bam_api::{
-            bam_node_api_server::{BamNodeApi, BamNodeApiServer},
-            scheduler_message::VersionedMsg,
-            scheduler_message_v0::Msg,
-            scheduler_response::VersionedMsg as ResponseVersionedMsg,
-            scheduler_response_v0::Resp,
-            AuthChallengeRequest, AuthChallengeResponse, ConfigRequest, ConfigResponse,
-            SchedulerMessage, SchedulerResponse, SchedulerResponseV0,
+            AuthChallengeRequest, AuthChallengeResponse, ConfigRequest, ConfigResponse, SchedulerMessage, SchedulerResponse, SchedulerResponseV0, bam_node_api_server::{BamNodeApi, BamNodeApiServer}, scheduler_message::VersionedMsg, scheduler_message_v0::Msg, scheduler_response::VersionedMsg as ResponseVersionedMsg, scheduler_response_v0::Resp
         },
         bam_types::{
             AtomicTxnBatch, BamConfig, BlockEngineBuilderConfig, BuilderHeartBeat,
@@ -19,16 +13,15 @@ use {
     solana_net_utils::sockets::bind_to,
     solana_perf::packet::PacketBatch,
     solana_streamer::{
-        nonblocking::simple_qos::SimpleQosConfig,
-        quic::{spawn_simple_qos_server, QuicStreamerConfig},
+        nonblocking::swqos::SwQosConfig,
+        quic::{QuicStreamerConfig, SpawnServerResult, spawn_stake_wighted_qos_server},
         streamer::StakedNodes,
     },
     std::{
         collections::VecDeque,
         net::SocketAddr,
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, Mutex, RwLock, atomic::{AtomicBool, AtomicU64, Ordering}
         },
         time::{Duration, SystemTime},
     },
@@ -119,6 +112,10 @@ struct MockBamNodeState {
     transaction_queue: Arc<TransactionQueue>,
     pending_test_batches: Mutex<VecDeque<AtomicTxnBatch>>,
     next_seq_id: AtomicU64,
+    transactions_received: AtomicU64,
+    batches_forwarded: AtomicU64,
+    current_slot: AtomicU64,
+    accept_new_streams: AtomicBool,
 }
 
 impl MockBamNodeState {
@@ -223,6 +220,8 @@ impl BamNodeApi for MockBamNodeService {
         &self,
         _request: Request<AuthChallengeRequest>,
     ) -> Result<Response<AuthChallengeResponse>, Status> {
+        info!("Mock BAM received get_auth_challenge request");
+
         Ok(Response::new(AuthChallengeResponse {
             challenge_to_sign: self.0.generate_challenge(),
         }))
@@ -232,6 +231,7 @@ impl BamNodeApi for MockBamNodeService {
         &self,
         _request: Request<ConfigRequest>,
     ) -> Result<Response<ConfigResponse>, Status> {
+        info!("Mock BAM received get_builder_config request");
         Ok(Response::new(self.0.build_config_response()))
     }
 
@@ -259,18 +259,23 @@ impl BamNodeApi for MockBamNodeService {
                     msg = inbound.message() => {
                         match msg {
                             Ok(Some(scheduler_msg)) => {
+                                info!("Mock BAM received scheduler message");
                                 handle_scheduler_message(&state, scheduler_msg);
                             }
                             Ok(None) | Err(_) => break,
                         }
                     }
                     _ = heartbeat_ticker.tick() => {
+                        info!("Mock BAM sending heartbeat");
                         if state.send_heartbeats.load(Ordering::Relaxed) && outbound_tx.send(Ok(heartbeat_response())).await.is_err() {
                             break;
                         }
                     }
                     _ = batch_check_ticker.tick() => {
-                        if let Some(batches) = state.drain_and_build_batches(0) {
+                        if let Some(batches) = state.drain_and_build_batches(state.current_slot.load(Ordering::Relaxed)) {
+                            let batch_count = batches.batches.len();
+                            info!("Mock BAM forwarded {} batches", batch_count);
+                            state.batches_forwarded.fetch_add(batch_count as u64, Ordering::Relaxed);
                             if outbound_tx.send(Ok(batch_response(batches))).await.is_err() {
                                 break;
                             }
@@ -289,12 +294,15 @@ fn handle_scheduler_message(state: &MockBamNodeState, msg: SchedulerMessage) {
         return;
     };
 
-    if let Some(Msg::AuthProof(proof)) = v0.msg {
-        state.verify_auth_proof(
-            &proof.challenge_to_sign,
-            &proof.validator_pubkey,
-            &proof.signature,
-        );
+    match v0.msg {
+        Some(Msg::AuthProof(proof)) => {
+            state.verify_auth_proof(&proof.challenge_to_sign, &proof.validator_pubkey, &proof.signature);
+        }
+        Some(Msg::LeaderState(leader_state)) => {
+            info!("Mock BAM received leader state message: {:?}", leader_state);
+            state.current_slot.store(leader_state.slot, Ordering::Relaxed);
+        }
+        _ => {}
     }
 }
 
@@ -325,6 +333,8 @@ pub struct MockBamNode {
     cancel: CancellationToken,
     grpc_handle: Option<tokio::task::JoinHandle<()>>,
     packet_receiver_handle: Option<tokio::task::JoinHandle<()>>,
+    _tpu_server: SpawnServerResult,
+    _tpu_fwd_server: SpawnServerResult,
 }
 
 impl MockBamNode {
@@ -354,13 +364,27 @@ impl MockBamNode {
             transaction_queue: transaction_queue.clone(),
             pending_test_batches: Mutex::new(VecDeque::new()),
             next_seq_id: AtomicU64::new(0),
+            transactions_received: AtomicU64::new(0),
+            batches_forwarded: AtomicU64::new(0),
+            current_slot: AtomicU64::new(0),
+            accept_new_streams: AtomicBool::new(true),
         });
 
         let (packet_sender, packet_receiver) = unbounded();
         let staked_nodes = Arc::new(RwLock::new(StakedNodes::default()));
         let keypair = Keypair::new();
 
-        let _tpu_server = spawn_simple_qos_server(
+        // QoS config that accepts unstaked connections (like test clients)
+        let qos_config = SwQosConfig {
+            max_unstaked_connections: 100,           // Plenty of room for tests
+            max_connections_per_unstaked_peer: 10,   // Support 5+ simultaneous as requested
+            max_staked_connections: 100,
+            max_connections_per_staked_peer: 10,
+            max_streams_per_ms: 500,
+        };
+
+
+        let _tpu_server = spawn_stake_wighted_qos_server(
             "mockTpu",
             "mock_tpu",
             vec![tpu_socket],
@@ -368,12 +392,12 @@ impl MockBamNode {
             packet_sender.clone(),
             staked_nodes.clone(),
             QuicStreamerConfig::default(),
-            SimpleQosConfig::default(),
+            qos_config.clone(),
             cancel.clone(),
         )
         .map_err(|e| std::io::Error::other(format!("Failed to spawn TPU server: {e:?}")))?;
 
-        let _tpu_fwd_server = spawn_simple_qos_server(
+        let _tpu_fwd_server = spawn_stake_wighted_qos_server(
             "mockTpuFwd",
             "mock_tpu_fwd",
             vec![tpu_fwd_socket],
@@ -381,30 +405,56 @@ impl MockBamNode {
             packet_sender,
             staked_nodes,
             QuicStreamerConfig::default(),
-            SimpleQosConfig::default(),
+            qos_config,
             cancel.clone(),
         )
         .map_err(|e| std::io::Error::other(format!("Failed to spawn TPU FWD server: {e:?}")))?;
 
         let queue = transaction_queue.clone();
         let receiver_cancel = cancel.clone();
+        let recv_state = state.clone();
         let packet_receiver_handle = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = receiver_cancel.cancelled() => break,
-                    result = tokio::task::spawn_blocking({
-                        let packet_receiver = packet_receiver.clone();
-                        move || packet_receiver.recv_timeout(Duration::from_millis(100))
-                    }) => {
-                        if let Ok(Ok(batch)) = result {
-                            queue.push(batch);
+        info!("Mock BAM packet receiver loop STARTED");
+        let mut loop_count = 0u64;
+        loop {
+            loop_count += 1;
+            if loop_count.is_multiple_of(50) {
+                info!("Mock BAM receiver loop iteration {} (no packets yet)", loop_count);
+            }
+            tokio::select! {
+                _ = receiver_cancel.cancelled() => {
+                    info!("Mock BAM packet receiver cancelled");
+                    break;
+                }
+                result = tokio::task::spawn_blocking({
+                    let packet_receiver = packet_receiver.clone();
+                    move || packet_receiver.recv_timeout(Duration::from_millis(100))
+                }) => {
+                    match result {
+                        Ok(Ok(batch)) => {
+                            let packet_count = batch.len();
+                            info!(">>> Mock BAM RECEIVED batch with {} packets! <<<", packet_count);
+                            recv_state.transactions_received.fetch_add(packet_count as u64, Ordering::Relaxed);
+                            if queue.push(batch) {
+                                info!("Packets pushed to queue, queue len: {}", queue.len());
+                            } else {
+                                warn!("Queue full, dropped batch");
+                            }
+                        }
+                        Ok(Err(_)) => {
+                            // Timeout - expected, no logging needed
+                        }
+                        Err(e) => {
+                            warn!("Mock BAM spawn_blocking error: {:?}", e);
                         }
                     }
                 }
             }
-        });
+        }
+        info!("Mock BAM packet receiver loop EXITED");
+    });
 
-        let grpc_state = Arc::clone(&state);
+        let grpc_state = state.clone();
         let grpc_cancel = cancel.clone();
         let grpc_handle = tokio::spawn(async move {
             tokio::select! {
@@ -425,6 +475,8 @@ impl MockBamNode {
             cancel,
             grpc_handle: Some(grpc_handle),
             packet_receiver_handle: Some(packet_receiver_handle),
+            _tpu_server,
+            _tpu_fwd_server,
         })
     }
 
@@ -462,6 +514,22 @@ impl MockBamNode {
             .lock()
             .unwrap()
             .push_back(batch);
+    }
+
+    pub fn transactions_received(&self) -> u64 {
+        self.state.transactions_received.load(Ordering::Relaxed)
+    }
+
+    pub fn batches_forwarded(&self) -> u64 {
+        self.state.batches_forwarded.load(Ordering::Relaxed)
+    }
+
+    pub fn queue_len(&self) -> usize {
+        self.state.transaction_queue.len()
+    }
+
+    pub fn set_accept_new_streams(&self, accept: bool) {
+        self.state.accept_new_streams.store(accept, Ordering::Relaxed);
     }
 
     pub async fn shutdown(&mut self) {
