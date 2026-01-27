@@ -18,9 +18,10 @@ use {
         bam_connection::{
             BamConnection, MAX_DURATION_BETWEEN_NODE_HEARTBEATS, WAIT_TO_RECONNECT_DURATION,
         },
-        bam_dependencies::BamDependencies,
+        bam_dependencies::{BamConnectionState, BamDependencies},
         proxy::block_engine_stage::BlockBuilderFeeInfo,
     },
+    arc_swap::ArcSwap,
     jito_protos::proto::{
         bam_api::ConfigResponse,
         bam_types::{LeaderState, Socket},
@@ -36,7 +37,7 @@ use {
 
 pub struct BamConnectionIdentityUpdater {
     bam_url: Arc<Mutex<Option<String>>>,
-    new_identity: Arc<Mutex<Option<Pubkey>>>,
+    new_identity: Arc<ArcSwap<Option<Pubkey>>>,
     identity_changed_force_reconnect: Arc<AtomicBool>,
 }
 
@@ -61,7 +62,7 @@ impl NotifyKeyUpdate for BamConnectionIdentityUpdater {
             disconnect_url,
             key.pubkey(),
         );
-        *self.new_identity.lock().unwrap() = Some(key.pubkey());
+        self.new_identity.store(Arc::new(Some(key.pubkey())));
         self.identity_changed_force_reconnect
             .store(true, Ordering::Relaxed);
         Ok(())
@@ -111,7 +112,7 @@ impl BamManager {
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let identity_changed = Arc::new(AtomicBool::new(false));
-        let new_identity = Arc::new(Mutex::new(None));
+        let new_identity = Arc::new(ArcSwap::from_pointee(None));
 
         let identity_updater = Arc::new(BamConnectionIdentityUpdater {
             bam_url: bam_url.clone(),
@@ -119,9 +120,10 @@ impl BamManager {
             identity_changed_force_reconnect: identity_changed.clone(),
         }) as Arc<dyn NotifyKeyUpdate + Sync + Send>;
 
-        let mut identity_notifiers = identity_notifiers.write().unwrap();
-        identity_notifiers.add(KeyUpdaterType::BamConnection, identity_updater);
-        drop(identity_notifiers);
+        identity_notifiers
+            .write()
+            .unwrap()
+            .add(KeyUpdaterType::BamConnection, identity_updater);
         info!("BAM Manager: Added BAM connection key updater");
 
         let fallback_client_id = ClientId::JitoLabs;
@@ -129,125 +131,173 @@ impl BamManager {
         let bam_client_id = ClientId::AgaveBam;
 
         while !exit.load(Ordering::Relaxed) {
-            // Update if bam is enabled
-            dependencies.bam_enabled.store(
-                current_connection.is_some() && cached_builder_config.is_some(),
-                Ordering::Relaxed,
-            );
+            let current_url = bam_url.lock().unwrap().clone();
 
-            // If no connection then try to create a new one
-            if current_connection.is_none() {
-                // Set ClientId to 'JitoSolana'
-                if current_client_id != fallback_client_id {
-                    Self::set_client_id(&dependencies.cluster_info, fallback_client_id);
-                    current_client_id = fallback_client_id;
-                }
+            let mut connection = match current_connection.take() {
+                Some(connection) => Some(connection),
+                None => {
+                    // Set ClientId to 'JitoSolana'
+                    if current_client_id != fallback_client_id {
+                        Self::set_client_id(&dependencies.cluster_info, fallback_client_id);
+                        current_client_id = fallback_client_id;
+                    }
 
-                let url = bam_url.lock().unwrap().clone();
-                if let Some(url) = url {
-                    let result = runtime.block_on(BamConnection::try_init(
-                        url.clone(),
-                        dependencies.cluster_info.clone(),
-                        dependencies.batch_sender.clone(),
-                        dependencies.outbound_receiver.clone(),
-                    ));
-                    match result {
-                        Ok(connection) => {
-                            current_connection = Some(connection);
-                            info!("BAM connection established");
+                    // Try to connect to BAM
+                    if let Some(url) = current_url.as_ref() {
+                        dependencies
+                            .bam_enabled
+                            .store(BamConnectionState::Connecting as u8, Ordering::Relaxed);
+                        let result = runtime.block_on(BamConnection::try_init(
+                            url.clone(),
+                            dependencies.cluster_info.clone(),
+                            dependencies.batch_sender.clone(),
+                            dependencies.outbound_receiver.clone(),
+                        ));
+                        match result {
+                            Ok(connection) => {
+                                info!("BAM connection established");
 
-                            // Wait until connection is healthy
-                            if !current_connection
-                                .as_ref()
-                                .unwrap()
-                                .wait_until_healthy_and_config_received(
+                                // Wait until connection is healthy
+                                if !connection.wait_until_healthy_and_config_received(
                                     MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
-                                )
-                            {
-                                warn!(
-                                    "BAM connection not healthy after waiting for \
-                                     {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting and \
-                                     will retry",
+                                ) {
+                                    warn!(
+                                        "BAM connection not healthy after waiting for \
+                                         {MAX_DURATION_BETWEEN_NODE_HEARTBEATS:?}, disconnecting \
+                                         and will retry",
+                                    );
+                                    cached_builder_config = None;
+                                    dependencies.bam_enabled.store(
+                                        BamConnectionState::Disconnected as u8,
+                                        Ordering::Relaxed,
+                                    );
+                                    std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                                    continue;
+                                }
+
+                                if let Some(builder_config) = connection.get_latest_config() {
+                                    Self::update_tpu_config(
+                                        Some(&builder_config),
+                                        &dependencies.cluster_info,
+                                    );
+                                    Self::update_block_engine_key_and_commission(
+                                        Some(&builder_config),
+                                        &dependencies.block_builder_fee_info,
+                                    );
+                                    Self::update_bam_recipient_and_commission(
+                                        &builder_config,
+                                        &dependencies.bam_node_pubkey,
+                                    );
+                                    cached_builder_config = Some(builder_config);
+                                    dependencies.bam_enabled.store(
+                                        BamConnectionState::Connected as u8,
+                                        Ordering::Relaxed,
+                                    );
+                                }
+
+                                Some(connection)
+                            }
+                            Err(e) => {
+                                error!("Failed to connect to BAM with url: {url}: {e}");
+                                dependencies.bam_enabled.store(
+                                    BamConnectionState::Disconnected as u8,
+                                    Ordering::Relaxed,
                                 );
-                                current_connection = None;
-                                cached_builder_config = None;
-                                std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
-                                continue;
+                                None
                             }
                         }
-                        Err(e) => {
-                            error!("Failed to connect to BAM with url: {url}: {e}");
-                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            {
+                let Some(connection) = connection.as_mut() else {
+                    dependencies
+                        .bam_enabled
+                        .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                    std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
+                    continue;
+                };
+
+                // Check if connection is healthy or if the identity changed; if no then disconnect
+                // Disconnecting will cause a reconnect attempt, with the new identity if it changed
+                if !connection.is_healthy() || identity_changed.load(Ordering::Relaxed) {
+                    cached_builder_config = None;
+                    dependencies
+                        .bam_enabled
+                        .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                    if identity_changed.load(Ordering::Relaxed) {
+                        // Wait until the new identity is set in cluster info as to avoid race conditions
+                        // with sending an auth proof w/ the old identity
+                        let timeout = std::time::Duration::from_secs(180);
+                        Self::wait_for_identity_in_cluster_info(
+                            *new_identity.load().as_ref(),
+                            &dependencies.cluster_info,
+                            timeout,
+                        );
+                        identity_changed.store(false, Ordering::Relaxed);
+                    }
+                    warn!("BAM connection lost");
+                    continue;
+                }
+
+                // Check if url changed; if yes then disconnect
+                if current_url
+                    .as_ref()
+                    .is_some_and(|url| url != connection.url())
+                {
+                    cached_builder_config = None;
+                    dependencies
+                        .bam_enabled
+                        .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                    info!("BAM URL changed");
+                    continue;
+                }
+
+                // Check if block builder info has changed
+                if let Some(builder_config) = connection.get_latest_config() {
+                    if Some(&builder_config) != cached_builder_config.as_ref() {
+                        Self::update_tpu_config(Some(&builder_config), &dependencies.cluster_info);
+                        Self::update_block_engine_key_and_commission(
+                            Some(&builder_config),
+                            &dependencies.block_builder_fee_info,
+                        );
+                        Self::update_bam_recipient_and_commission(
+                            &builder_config,
+                            &dependencies.bam_node_pubkey,
+                        );
+                        cached_builder_config = Some(builder_config);
+                    }
+                }
+                let bam_state = if cached_builder_config.is_some() {
+                    BamConnectionState::Connected
+                } else {
+                    BamConnectionState::Connecting
+                };
+                dependencies
+                    .bam_enabled
+                    .store(bam_state as u8, Ordering::Relaxed);
+
+                // Send leader state if we are in a leader slot
+                if let Some(bank) = shared_leader_state.load().working_bank() {
+                    if !bank.is_frozen() {
+                        let leader_state = Self::generate_leader_state(bank);
+                        let _ = dependencies.outbound_sender.try_send(
+                            crate::bam_dependencies::BamOutboundMessage::LeaderState(leader_state),
+                        );
                     }
                 }
             }
 
-            let Some(connection) = current_connection.as_mut() else {
-                std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
-                continue;
-            };
-
-            // Set BAM Client Id
+            // Set BAM Client Id (If not set already)
             if current_client_id != bam_client_id {
                 Self::set_client_id(&dependencies.cluster_info, bam_client_id);
                 current_client_id = bam_client_id;
             }
 
-            // Check if connection is healthy or if the identity changed; if no then disconnect
-            // Disconnecting will cause a reconnect attempt, with the new identity if it changed
-            if !connection.is_healthy() || identity_changed.load(Ordering::Relaxed) {
-                current_connection = None;
-                cached_builder_config = None;
-                if identity_changed.load(Ordering::Relaxed) {
-                    // Wait until the new identity is set in cluster info as to avoid race conditions
-                    // with sending an auth proof w/ the old identity
-                    let identity = new_identity.lock().unwrap().take();
-                    let timeout = std::time::Duration::from_secs(180);
-                    Self::wait_for_identity_in_cluster_info(
-                        identity,
-                        &dependencies.cluster_info,
-                        timeout,
-                    );
-                    identity_changed.store(false, Ordering::Relaxed);
-                }
-                warn!("BAM connection lost");
-                continue;
-            }
-
-            // Check if url changed; if yes then disconnect
-            let url = bam_url.lock().unwrap().clone();
-            if Some(connection.url().to_string()) != url {
-                current_connection = None;
-                cached_builder_config = None;
-                info!("BAM URL changed");
-                continue;
-            }
-
-            // Check if block builder info has changed
-            if let Some(builder_config) = connection.get_latest_config() {
-                if Some(&builder_config) != cached_builder_config.as_ref() {
-                    Self::update_tpu_config(Some(&builder_config), &dependencies.cluster_info);
-                    Self::update_block_engine_key_and_commission(
-                        Some(&builder_config),
-                        &dependencies.block_builder_fee_info,
-                    );
-                    Self::update_bam_recipient_and_commission(
-                        &builder_config,
-                        &dependencies.bam_node_pubkey,
-                    );
-                    cached_builder_config = Some(builder_config);
-                }
-            }
-
-            // Send leader state if we are in a leader slot
-            if let Some(bank) = shared_leader_state.load().working_bank().cloned() {
-                if !bank.is_frozen() {
-                    let leader_state = Self::generate_leader_state(&bank);
-                    let _ = dependencies.outbound_sender.try_send(
-                        crate::bam_dependencies::BamOutboundMessage::LeaderState(leader_state),
-                    );
-                }
-            }
+            current_connection = connection;
 
             // Sleep for a short duration to avoid busy-waiting
             std::thread::sleep(std::time::Duration::from_millis(5));
