@@ -155,7 +155,7 @@ fn send_and_verify_transaction(
             &client,
             &[funding_keypair],
             &mut transaction,
-            10,
+            3,
         )
         .expect("transaction should succeed");
 
