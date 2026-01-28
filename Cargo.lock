@@ -1390,6 +1390,7 @@ version = "4.0.0-alpha.0"
 dependencies = [
  "agave-banking-stage-ingress-types",
  "agave-logger",
+ "arc-swap",
  "assert_matches",
  "clap 3.2.23",
  "crossbeam-channel",
