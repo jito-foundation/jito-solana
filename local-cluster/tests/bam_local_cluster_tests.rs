@@ -11,7 +11,7 @@ use {
     },
     solana_keypair::Keypair,
     solana_local_cluster::{
-        cluster_tests::{new_tpu_quic_client, spend_and_verify_all_nodes},
+        cluster_tests::new_tpu_quic_client,
         local_cluster::{ClusterConfig, LocalCluster},
         validator_configs::make_identical_validator_configs,
     },
@@ -20,7 +20,6 @@ use {
     solana_signer::Signer,
     solana_system_transaction as system_transaction,
     std::{
-        collections::HashSet,
         net::SocketAddr,
         sync::{Arc, Mutex},
         time::{Duration, Instant},
@@ -163,49 +162,6 @@ fn send_and_verify_transaction(
     }
 }
 
-#[test]
-#[serial_test::serial]
-fn test_bam_transactions_use_existing_pattern() {
-    agave_logger::setup_with_default("info");
-    info!("=== BAM Test using cluster_tests pattern ===");
-
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let mock_bam = runtime
-        .block_on(MockBamNode::start(MockBamNodeConfig::default()))
-        .expect("start mock BAM");
-
-    info!(
-        "Mock BAM: gRPC={}, TPU={}",
-        mock_bam.grpc_url(),
-        mock_bam.tpu_addr()
-    );
-
-    let bam_url = Arc::new(Mutex::new(Some(mock_bam.grpc_url())));
-    let mut config = create_bam_cluster_config(bam_url);
-    let cluster = LocalCluster::new(&mut config, SocketAddrSpace::Unspecified);
-
-    assert!(
-        wait_for_bam_auth(&mock_bam, BAM_CONNECTION_TIMEOUT),
-        "BAM auth failed"
-    );
-    assert!(
-        wait_for_gossip_tpu_update(&cluster, mock_bam.tpu_addr(), GOSSIP_PROPAGATION_TIMEOUT),
-        "Gossip TPU not updated"
-    );
-
-    info!("Using cluster_tests::spend_and_verify_all_nodes pattern...");
-    spend_and_verify_all_nodes(
-        &cluster.entry_point_info,
-        &cluster.funding_keypair,
-        1,
-        HashSet::new(),
-        SocketAddrSpace::Unspecified,
-        &cluster.connection_cache,
-    );
-
-    info!("=== BAM Test PASSED ===");
-}
-
 fn create_bam_cluster_config(bam_url: Arc<Mutex<Option<String>>>) -> ClusterConfig {
     let mut validator_config = ValidatorConfig::default_for_test();
     validator_config.bam_url = bam_url;
@@ -225,7 +181,7 @@ fn test_validator_connects_to_bam_and_updates_gossip() {
     agave_logger::setup_with_default("info");
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let mock_bam = runtime
+    let mut mock_bam = runtime
         .block_on(MockBamNode::start(MockBamNodeConfig::default()))
         .expect("Failed to start mock BAM node");
 
@@ -248,6 +204,8 @@ fn test_validator_connects_to_bam_and_updates_gossip() {
         "Gossip TPU was not updated to mock BAM's TPU within {GOSSIP_PROPAGATION_TIMEOUT:?}",
     );
     info!("Gossip TPU updated to mock BAM's TPU address");
+
+    runtime.block_on(mock_bam.shutdown());
 }
 
 #[test]
@@ -256,7 +214,7 @@ fn test_block_production_while_connected_to_bam() {
     agave_logger::setup_with_default("info");
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let mock_bam = runtime
+    let mut mock_bam = runtime
         .block_on(MockBamNode::start(MockBamNodeConfig::default()))
         .expect("Failed to start mock BAM node");
 
@@ -290,6 +248,7 @@ fn test_block_production_while_connected_to_bam() {
         SocketAddrSpace::Unspecified,
     );
     info!("Cluster produced and finalized blocks with transactions while connected to BAM");
+    runtime.block_on(mock_bam.shutdown());
 }
 
 #[test]
@@ -361,7 +320,7 @@ fn test_validator_receives_auth_proof() {
     agave_logger::setup_with_default("info");
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let mock_bam = runtime
+    let mut mock_bam = runtime
         .block_on(MockBamNode::start(MockBamNodeConfig::default()))
         .expect("Failed to start mock BAM node");
 
@@ -380,6 +339,7 @@ fn test_validator_receives_auth_proof() {
         "Expected at least 1 auth proof, got {auth_count}",
     );
     info!("Validator authenticated {auth_count} time(s)");
+    runtime.block_on(mock_bam.shutdown());
 }
 
 #[cfg(test)]
