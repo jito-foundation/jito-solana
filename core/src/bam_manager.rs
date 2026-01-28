@@ -32,6 +32,7 @@ use {
     solana_quic_definitions::NotifyKeyUpdate,
     solana_runtime::bank::Bank,
     solana_signer::Signer,
+    solana_version::ClientId,
 };
 
 pub struct BamConnectionIdentityUpdater {
@@ -125,12 +126,23 @@ impl BamManager {
             .add(KeyUpdaterType::BamConnection, identity_updater);
         info!("BAM Manager: Added BAM connection key updater");
 
+        let fallback_client_id = ClientId::JitoLabs;
+        let mut current_client_id = fallback_client_id;
+        let bam_client_id = ClientId::AgaveBam;
+
         while !exit.load(Ordering::Relaxed) {
             let current_url = bam_url.lock().unwrap().clone();
 
             let mut connection = match current_connection.take() {
                 Some(connection) => Some(connection),
                 None => {
+                    // Set ClientId to 'JitoSolana'
+                    if current_client_id != fallback_client_id {
+                        Self::set_client_id(&dependencies.cluster_info, fallback_client_id);
+                        current_client_id = fallback_client_id;
+                    }
+
+                    // Try to connect to BAM
                     if let Some(url) = current_url.as_ref() {
                         dependencies
                             .bam_enabled
@@ -276,6 +288,12 @@ impl BamManager {
                 }
             }
 
+            // Set BAM Client Id (If not set already)
+            if current_client_id != bam_client_id {
+                Self::set_client_id(&dependencies.cluster_info, bam_client_id);
+                current_client_id = bam_client_id;
+            }
+
             current_connection = connection;
 
             // Sleep for a short duration to avoid busy-waiting
@@ -396,6 +414,14 @@ impl BamManager {
             ("timeout_secs", timeout.as_secs() as i64, i64)
         );
         false
+    }
+
+    fn set_client_id(cluster_info: &ClusterInfo, new_client_id: ClientId) {
+        let current_client_id = cluster_info.get_client_id();
+        if current_client_id == new_client_id {
+            return;
+        }
+        cluster_info.set_client_id(new_client_id);
     }
 
     pub fn join(self) -> std::thread::Result<()> {

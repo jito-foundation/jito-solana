@@ -23,7 +23,7 @@ extern crate solana_frozen_abi_macro;
 
 mod legacy;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub enum ClientId {
     SolanaLabs,
     JitoLabs,
@@ -49,7 +49,7 @@ pub struct Version {
     pub commit: u32,      // first 4 bytes of the sha1 commit hash
     pub feature_set: u32, // first 4 bytes of the FeatureSet identifier
     #[serde(with = "serde_varint")]
-    client: u16,
+    pub client: u16,
 }
 
 impl Version {
@@ -79,7 +79,7 @@ impl Default for Version {
                 .unwrap_or_else(|| rng().random::<u32>()),
             feature_set,
             // Other client implementations need to modify this line.
-            client: u16::try_from(ClientId::AgaveBam).unwrap(),
+            client: u16::try_from(ClientId::JitoLabs).unwrap(),
         }
     }
 }
