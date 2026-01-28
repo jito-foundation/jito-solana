@@ -2,7 +2,13 @@ use {
     crossbeam_channel::unbounded,
     jito_protos::proto::{
         bam_api::{
-            AuthChallengeRequest, AuthChallengeResponse, ConfigRequest, ConfigResponse, SchedulerMessage, SchedulerResponse, SchedulerResponseV0, bam_node_api_server::{BamNodeApi, BamNodeApiServer}, scheduler_message::VersionedMsg, scheduler_message_v0::Msg, scheduler_response::VersionedMsg as ResponseVersionedMsg, scheduler_response_v0::Resp
+            bam_node_api_server::{BamNodeApi, BamNodeApiServer},
+            scheduler_message::VersionedMsg,
+            scheduler_message_v0::Msg,
+            scheduler_response::VersionedMsg as ResponseVersionedMsg,
+            scheduler_response_v0::Resp,
+            AuthChallengeRequest, AuthChallengeResponse, ConfigRequest, ConfigResponse,
+            SchedulerMessage, SchedulerResponse, SchedulerResponseV0,
         },
         bam_types::{
             AtomicTxnBatch, BamConfig, BlockEngineBuilderConfig, BuilderHeartBeat,
@@ -14,15 +20,17 @@ use {
     solana_perf::packet::PacketBatch,
     solana_streamer::{
         nonblocking::swqos::SwQosConfig,
-        quic::{QuicStreamerConfig, SpawnServerResult, spawn_stake_wighted_qos_server},
+        quic::{spawn_stake_wighted_qos_server, QuicStreamerConfig},
         streamer::StakedNodes,
     },
     std::{
         collections::VecDeque,
         net::SocketAddr,
         sync::{
-            Arc, Mutex, RwLock, atomic::{AtomicBool, AtomicU64, Ordering}
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc, Mutex, RwLock,
         },
+        thread,
         time::{Duration, SystemTime},
     },
     tokio::sync::mpsc,
@@ -259,14 +267,12 @@ impl BamNodeApi for MockBamNodeService {
                     msg = inbound.message() => {
                         match msg {
                             Ok(Some(scheduler_msg)) => {
-                                info!("Mock BAM received scheduler message");
                                 handle_scheduler_message(&state, scheduler_msg);
                             }
                             Ok(None) | Err(_) => break,
                         }
                     }
                     _ = heartbeat_ticker.tick() => {
-                        info!("Mock BAM sending heartbeat");
                         if state.send_heartbeats.load(Ordering::Relaxed) && outbound_tx.send(Ok(heartbeat_response())).await.is_err() {
                             break;
                         }
@@ -274,7 +280,6 @@ impl BamNodeApi for MockBamNodeService {
                     _ = batch_check_ticker.tick() => {
                         if let Some(batches) = state.drain_and_build_batches(state.current_slot.load(Ordering::Relaxed)) {
                             let batch_count = batches.batches.len();
-                            info!("Mock BAM forwarded {} batches", batch_count);
                             state.batches_forwarded.fetch_add(batch_count as u64, Ordering::Relaxed);
                             if outbound_tx.send(Ok(batch_response(batches))).await.is_err() {
                                 break;
@@ -296,11 +301,16 @@ fn handle_scheduler_message(state: &MockBamNodeState, msg: SchedulerMessage) {
 
     match v0.msg {
         Some(Msg::AuthProof(proof)) => {
-            state.verify_auth_proof(&proof.challenge_to_sign, &proof.validator_pubkey, &proof.signature);
+            state.verify_auth_proof(
+                &proof.challenge_to_sign,
+                &proof.validator_pubkey,
+                &proof.signature,
+            );
         }
         Some(Msg::LeaderState(leader_state)) => {
-            info!("Mock BAM received leader state message: {:?}", leader_state);
-            state.current_slot.store(leader_state.slot, Ordering::Relaxed);
+            state
+                .current_slot
+                .store(leader_state.slot, Ordering::Relaxed);
         }
         _ => {}
     }
@@ -333,8 +343,8 @@ pub struct MockBamNode {
     cancel: CancellationToken,
     grpc_handle: Option<tokio::task::JoinHandle<()>>,
     packet_receiver_handle: Option<tokio::task::JoinHandle<()>>,
-    _tpu_server: SpawnServerResult,
-    _tpu_fwd_server: SpawnServerResult,
+    tpu_server_handle: Option<thread::JoinHandle<()>>,
+    tpu_fwd_server_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl MockBamNode {
@@ -374,17 +384,15 @@ impl MockBamNode {
         let staked_nodes = Arc::new(RwLock::new(StakedNodes::default()));
         let keypair = Keypair::new();
 
-        // QoS config that accepts unstaked connections (like test clients)
         let qos_config = SwQosConfig {
-            max_unstaked_connections: 100,           // Plenty of room for tests
-            max_connections_per_unstaked_peer: 10,   // Support 5+ simultaneous as requested
+            max_unstaked_connections: 100,
+            max_connections_per_unstaked_peer: 10,
             max_staked_connections: 100,
             max_connections_per_staked_peer: 10,
             max_streams_per_ms: 500,
         };
 
-
-        let _tpu_server = spawn_stake_wighted_qos_server(
+        let tpu_server = spawn_stake_wighted_qos_server(
             "mockTpu",
             "mock_tpu",
             vec![tpu_socket],
@@ -397,7 +405,7 @@ impl MockBamNode {
         )
         .map_err(|e| std::io::Error::other(format!("Failed to spawn TPU server: {e:?}")))?;
 
-        let _tpu_fwd_server = spawn_stake_wighted_qos_server(
+        let tpu_fwd_server = spawn_stake_wighted_qos_server(
             "mockTpuFwd",
             "mock_tpu_fwd",
             vec![tpu_fwd_socket],
@@ -414,45 +422,37 @@ impl MockBamNode {
         let receiver_cancel = cancel.clone();
         let recv_state = state.clone();
         let packet_receiver_handle = tokio::spawn(async move {
-        info!("Mock BAM packet receiver loop STARTED");
-        let mut loop_count = 0u64;
-        loop {
-            loop_count += 1;
-            if loop_count.is_multiple_of(50) {
-                info!("Mock BAM receiver loop iteration {} (no packets yet)", loop_count);
-            }
-            tokio::select! {
-                _ = receiver_cancel.cancelled() => {
-                    info!("Mock BAM packet receiver cancelled");
-                    break;
-                }
-                result = tokio::task::spawn_blocking({
-                    let packet_receiver = packet_receiver.clone();
-                    move || packet_receiver.recv_timeout(Duration::from_millis(100))
-                }) => {
-                    match result {
-                        Ok(Ok(batch)) => {
-                            let packet_count = batch.len();
-                            info!(">>> Mock BAM RECEIVED batch with {} packets! <<<", packet_count);
-                            recv_state.transactions_received.fetch_add(packet_count as u64, Ordering::Relaxed);
-                            if queue.push(batch) {
-                                info!("Packets pushed to queue, queue len: {}", queue.len());
-                            } else {
-                                warn!("Queue full, dropped batch");
+            loop {
+                tokio::select! {
+                    _ = receiver_cancel.cancelled() => {
+                        break;
+                    }
+                    result = tokio::task::spawn_blocking({
+                        let packet_receiver = packet_receiver.clone();
+                        move || packet_receiver.recv_timeout(Duration::from_millis(100))
+                    }) => {
+                        match result {
+                            Ok(Ok(batch)) => {
+                                let packet_count = batch.len();
+                                recv_state.transactions_received.fetch_add(packet_count as u64, Ordering::Relaxed);
+                                if queue.push(batch) {
+                                    info!("Packets pushed to queue, queue len: {}", queue.len());
+                                } else {
+                                    warn!("Queue full, dropped batch");
+                                }
                             }
-                        }
-                        Ok(Err(_)) => {
-                            // Timeout - expected, no logging needed
-                        }
-                        Err(e) => {
-                            warn!("Mock BAM spawn_blocking error: {:?}", e);
+                            Ok(Err(_)) => {
+                                // Timeout - expected, no logging needed
+                            }
+                            Err(e) => {
+                                warn!("Mock BAM spawn_blocking error: {e:?}");
+                            }
                         }
                     }
                 }
             }
-        }
-        info!("Mock BAM packet receiver loop EXITED");
-    });
+            info!("Mock BAM packet receiver loop EXITED");
+        });
 
         let grpc_state = state.clone();
         let grpc_cancel = cancel.clone();
@@ -475,8 +475,8 @@ impl MockBamNode {
             cancel,
             grpc_handle: Some(grpc_handle),
             packet_receiver_handle: Some(packet_receiver_handle),
-            _tpu_server,
-            _tpu_fwd_server,
+            tpu_server_handle: Some(tpu_server.thread),
+            tpu_fwd_server_handle: Some(tpu_fwd_server.thread),
         })
     }
 
@@ -529,7 +529,9 @@ impl MockBamNode {
     }
 
     pub fn set_accept_new_streams(&self, accept: bool) {
-        self.state.accept_new_streams.store(accept, Ordering::Relaxed);
+        self.state
+            .accept_new_streams
+            .store(accept, Ordering::Relaxed);
     }
 
     pub async fn shutdown(&mut self) {
@@ -539,6 +541,12 @@ impl MockBamNode {
         }
         if let Some(handle) = self.packet_receiver_handle.take() {
             let _ = handle.await;
+        }
+        if let Some(handle) = self.tpu_server_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.tpu_fwd_server_handle.take() {
+            let _ = handle.join();
         }
     }
 }

@@ -1,29 +1,24 @@
 use {
-    log::{info, error, warn},
+    log::info,
+    solana_commitment_config::CommitmentConfig,
     solana_core::{
         mock_bam_node::{MockBamNode, MockBamNodeConfig},
         validator::ValidatorConfig,
     },
-    solana_gossip::gossip_service::discover_validators,
+    solana_gossip::{
+        contact_info::{ContactInfo, Protocol},
+        gossip_service::discover_validators,
+    },
     solana_keypair::Keypair,
     solana_local_cluster::{
         cluster_tests::{new_tpu_quic_client, spend_and_verify_all_nodes},
-        cluster::QuicTpuClient,
         local_cluster::{ClusterConfig, LocalCluster},
         validator_configs::make_identical_validator_configs,
     },
     solana_native_token::LAMPORTS_PER_SOL,
     solana_net_utils::SocketAddrSpace,
-    solana_commitment_config::CommitmentConfig,
     solana_signer::Signer,
     solana_system_transaction as system_transaction,
-    solana_transaction_error::TransportError,
-    solana_transaction::{Signature, Transaction, Hash, Signers},
-    solana_gossip::contact_info::Protocol,
-    solana_client::connection_cache::ConnectionCache,
-    solana_gossip::contact_info::ContactInfo,
-    solana_connection_cache::client_connection::ClientConnection,
-    solana_rpc_client::rpc_client::RpcClient,
     std::{
         collections::HashSet,
         net::SocketAddr,
@@ -67,7 +62,7 @@ fn wait_for_gossip_tpu_update(
                     if tpu_quic == expected_tpu {
                         return true;
                     }
-                    info!("Current TPU QUIC: {}, expected: {}", tpu_quic, expected_tpu);
+                    info!("Current TPU QUIC: {tpu_quic}, expected: {expected_tpu}");
                 }
             }
         }
@@ -85,7 +80,7 @@ fn get_fresh_contact_info(cluster: &LocalCluster) -> Option<ContactInfo> {
         SocketAddrSpace::Unspecified,
     )
     .ok()?;
-    
+
     nodes
         .into_iter()
         .find(|n| n.pubkey() == cluster.entry_point_info.pubkey())
@@ -130,13 +125,8 @@ fn send_and_verify_transaction(
     let client = new_tpu_quic_client(&fresh_contact_info, cluster.connection_cache.clone())
         .expect("Failed to create TPU client");
 
-    info!("Leader TPU sockets: {:?}", client.tpu_client().get_leader_tpu_service().leader_tpu_sockets(5));
-    
     let tpu_addr = fresh_contact_info.tpu(Protocol::QUIC);
-    info!(
-        "send_and_verify: {} txns, TPU: {:?}", 
-        num_transactions, tpu_addr
-    );
+    info!("send_and_verify: {num_transactions} txns, TPU: {tpu_addr:?}");
 
     for i in 0..num_transactions {
         let recipient = Keypair::new();
@@ -146,16 +136,30 @@ fn send_and_verify_transaction(
             .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
             .expect("Failed to get blockhash");
 
-        let mut transaction =
-            system_transaction::transfer(funding_keypair, &recipient.pubkey(), LAMPORTS_PER_SOL, blockhash);
+        let mut transaction = system_transaction::transfer(
+            funding_keypair,
+            &recipient.pubkey(),
+            LAMPORTS_PER_SOL,
+            blockhash,
+        );
 
         let signature = transaction.signatures[0];
-        info!("Tx {}/{}: {}", i + 1, num_transactions, signature);
+        info!(
+            "Tx {}/{}: {}",
+            i.saturating_add(1),
+            num_transactions,
+            signature
+        );
 
-        LocalCluster::send_transaction_with_retries(&client, &[funding_keypair], &mut transaction, 10)
-            .expect("transaction should succeed");
+        LocalCluster::send_transaction_with_retries(
+            &client,
+            &[funding_keypair],
+            &mut transaction,
+            10,
+        )
+        .expect("transaction should succeed");
 
-        info!("Tx {}/{} confirmed", i + 1, num_transactions);
+        info!("Tx {}/{} confirmed", i.saturating_add(1), num_transactions);
     }
 }
 
@@ -170,13 +174,20 @@ fn test_bam_transactions_use_existing_pattern() {
         .block_on(MockBamNode::start(MockBamNodeConfig::default()))
         .expect("start mock BAM");
 
-    info!("Mock BAM: gRPC={}, TPU={}", mock_bam.grpc_url(), mock_bam.tpu_addr());
+    info!(
+        "Mock BAM: gRPC={}, TPU={}",
+        mock_bam.grpc_url(),
+        mock_bam.tpu_addr()
+    );
 
     let bam_url = Arc::new(Mutex::new(Some(mock_bam.grpc_url())));
     let mut config = create_bam_cluster_config(bam_url);
     let cluster = LocalCluster::new(&mut config, SocketAddrSpace::Unspecified);
 
-    assert!(wait_for_bam_auth(&mock_bam, BAM_CONNECTION_TIMEOUT), "BAM auth failed");
+    assert!(
+        wait_for_bam_auth(&mock_bam, BAM_CONNECTION_TIMEOUT),
+        "BAM auth failed"
+    );
     assert!(
         wait_for_gossip_tpu_update(&cluster, mock_bam.tpu_addr(), GOSSIP_PROPAGATION_TIMEOUT),
         "Gossip TPU not updated"
@@ -228,15 +239,13 @@ fn test_validator_connects_to_bam_and_updates_gossip() {
 
     assert!(
         wait_for_bam_auth(&mock_bam, BAM_CONNECTION_TIMEOUT),
-        "Validator did not authenticate with BAM within {:?}",
-        BAM_CONNECTION_TIMEOUT
+        "Validator did not authenticate with BAM within {BAM_CONNECTION_TIMEOUT:?}",
     );
     info!("Validator authenticated with BAM");
 
     assert!(
         wait_for_gossip_tpu_update(&cluster, mock_bam.tpu_addr(), GOSSIP_PROPAGATION_TIMEOUT),
-        "Gossip TPU was not updated to mock BAM's TPU within {:?}",
-        GOSSIP_PROPAGATION_TIMEOUT
+        "Gossip TPU was not updated to mock BAM's TPU within {GOSSIP_PROPAGATION_TIMEOUT:?}",
     );
     info!("Gossip TPU updated to mock BAM's TPU address");
 }
@@ -334,14 +343,16 @@ fn test_block_production_after_bam_disconnect() {
         new_tpu.is_some(),
         "Validator did not update gossip TPU after BAM disconnect"
     );
-    info!("Gossip TPU changed from {} to {:?}", bam_tpu, new_tpu);
+    info!("Gossip TPU changed from {bam_tpu} to {new_tpu:?}");
 
     info!("Sending transactions after BAM disconnect...");
     send_and_verify_transaction(&cluster, &cluster.funding_keypair, 2);
 
     info!("Verifying block production continues after disconnect...");
     cluster.check_for_new_roots(5, "bam_disconnected", SocketAddrSpace::Unspecified);
-    info!("Cluster continued producing and finalizing blocks with transactions after BAM disconnect");
+    info!(
+        "Cluster continued producing and finalizing blocks with transactions after BAM disconnect"
+    );
 }
 
 #[test]
@@ -366,10 +377,9 @@ fn test_validator_receives_auth_proof() {
     let auth_count = mock_bam.auth_proofs_received();
     assert!(
         auth_count >= 1,
-        "Expected at least 1 auth proof, got {}",
-        auth_count
+        "Expected at least 1 auth proof, got {auth_count}",
     );
-    info!("Validator authenticated {} time(s)", auth_count);
+    info!("Validator authenticated {auth_count} time(s)");
 }
 
 #[cfg(test)]
