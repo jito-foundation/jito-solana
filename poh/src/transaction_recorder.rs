@@ -13,14 +13,14 @@ use {
 
 #[derive(Default, Debug)]
 pub struct RecordTransactionsTimings {
-    pub processing_results_to_transactions_us: Saturating<u64>,
+    pub prepare_record_transactions_us: Saturating<u64>,
     pub hash_us: Saturating<u64>,
     pub poh_record_us: Saturating<u64>,
 }
 
 impl RecordTransactionsTimings {
     pub fn accumulate(&mut self, other: &RecordTransactionsTimings) {
-        self.processing_results_to_transactions_us += other.processing_results_to_transactions_us;
+        self.prepare_record_transactions_us += other.prepare_record_transactions_us;
         self.hash_us += other.hash_us;
         self.poh_record_us += other.poh_record_us;
     }

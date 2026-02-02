@@ -128,7 +128,7 @@ impl BlockEngineStage {
         // Channel that trusted packets get piped through.
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: Arc<AtomicU8>,
     ) -> Self {
@@ -175,7 +175,7 @@ impl BlockEngineStage {
         packet_tx: Sender<PacketBatch>,
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
-        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: Arc<AtomicU8>,
     ) {
@@ -236,7 +236,7 @@ impl BlockEngineStage {
         packet_tx: &Sender<PacketBatch>,
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         local_block_engine_config: &BlockEngineConfig,
         bam_enabled: &Arc<AtomicU8>,
@@ -325,7 +325,7 @@ impl BlockEngineStage {
         packet_tx: &Sender<PacketBatch>,
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
@@ -493,7 +493,7 @@ impl BlockEngineStage {
         packet_tx: &Sender<PacketBatch>,
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
@@ -735,7 +735,7 @@ impl BlockEngineStage {
         global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
         refresh_token: Token,
@@ -775,11 +775,20 @@ impl BlockEngineStage {
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
         {
-            let mut bb_fee = block_builder_fee_info.lock().unwrap();
-            bb_fee.block_builder_commission = block_builder_info.commission;
-            if let Ok(pk) = Pubkey::from_str(&block_builder_info.pubkey) {
-                bb_fee.block_builder = pk
-            }
+            let block_builder_pubkey =
+                Pubkey::from_str(&block_builder_info.pubkey).unwrap_or_else(|_| {
+                    datapoint_warn!(
+                        "block_engine_stage-block_builder_pubkey_parse_error",
+                        ("url", &block_engine_url, String),
+                        ("pubkey", &block_builder_info.pubkey, String),
+                        ("count", 1, i64),
+                    );
+                    block_builder_fee_info.load().block_builder
+                });
+            block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
+                block_builder: block_builder_pubkey,
+                block_builder_commission: block_builder_info.commission,
+            }));
         }
 
         Self::consume_bundle_and_packet_stream(
@@ -817,7 +826,7 @@ impl BlockEngineStage {
         global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         mut auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
         mut refresh_token: Token,
@@ -917,13 +926,20 @@ impl BlockEngineStage {
                     .map_err(|e| ProxyError::MethodError(e.to_string()))
                     .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
                     .into_inner();
-                    {
-                        let mut bb_fee = block_builder_fee_info.lock().unwrap();
-                        bb_fee.block_builder_commission = block_builder_info.commission;
-                        if let Ok(pk) = Pubkey::from_str(&block_builder_info.pubkey) {
-                            bb_fee.block_builder = pk
-                        }
-                    }
+                    let block_builder_pubkey =
+                        Pubkey::from_str(&block_builder_info.pubkey).unwrap_or_else(|_| {
+                            datapoint_warn!(
+                                "block_engine_stage-block_builder_pubkey_parse_error",
+                                ("url", &block_engine_url, String),
+                                ("pubkey", &block_builder_info.pubkey, String),
+                                ("count", 1, i64),
+                            );
+                            block_builder_fee_info.load().block_builder
+                        });
+                    block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
+                        block_builder: block_builder_pubkey,
+                        block_builder_commission: block_builder_info.commission,
+                    }));
                 }
             }
         }
@@ -936,32 +952,29 @@ impl BlockEngineStage {
         bundle_sender: &Sender<Vec<PacketBundle>>,
         block_engine_stats: &mut BlockEngineStageStats,
     ) -> crate::proxy::Result<()> {
+        let mut bundle_packets = 0u64;
         let bundles: Vec<PacketBundle> = bundles_response
             .bundles
             .into_iter()
             .filter_map(|bundle| {
-                Some(PacketBundle::new(
-                    PacketBatch::from(
-                        bundle
-                            .bundle?
-                            .packets
-                            .into_iter()
-                            .map(proto_packet_to_packet)
-                            .collect::<Vec<BytesPacket>>(),
-                    ),
-                    bundle.uuid,
-                ))
+                let packet_batch = PacketBatch::from(
+                    bundle
+                        .bundle?
+                        .packets
+                        .into_iter()
+                        .map(proto_packet_to_packet)
+                        .collect::<Vec<BytesPacket>>(),
+                );
+                bundle_packets += packet_batch.len() as u64;
+                Some(PacketBundle::new(packet_batch, bundle.uuid))
             })
             .collect();
         block_engine_stats
             .num_bundles
             .add_assign(bundles.len() as u64);
-        block_engine_stats.num_bundle_packets.add_assign(
-            bundles
-                .iter()
-                .map(|bundle| bundle.batch().len() as u64)
-                .sum::<u64>(),
-        );
+        block_engine_stats
+            .num_bundle_packets
+            .add_assign(bundle_packets);
 
         // NOTE: bundles are sanitized in bundle_sanitizer module
         bundle_sender

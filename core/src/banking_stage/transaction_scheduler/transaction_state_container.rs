@@ -293,7 +293,8 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
     /// Note: will not evict existing transactions to make room for the batch (unlike `insert_new_transaction`).
     pub(crate) fn insert_new_batch(
         &mut self,
-        txns_max_age: Vec<(Tx, MaxAge)>,
+        // SmallVec 5: batches align with BundleStorage::MAX_PACKETS_PER_BUNDLE.
+        txns_max_age: SmallVec<[(Tx, MaxAge); 5]>,
         priority: u64,
         cost: u64,
         revert_on_error: bool,
@@ -653,7 +654,7 @@ mod tests {
     #[test]
     fn test_batch() {
         let mut container = TransactionStateContainer::with_capacity(5);
-        let mut transaction_max_ages = Vec::with_capacity(5);
+        let mut transaction_max_ages = SmallVec::with_capacity(5);
         for priority in 0..5 {
             let (transaction, max_age, _, _) = test_transaction(priority);
             transaction_max_ages.push((transaction, max_age));

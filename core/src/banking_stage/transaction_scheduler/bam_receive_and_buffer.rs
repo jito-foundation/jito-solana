@@ -36,6 +36,7 @@ use {
         atomic_txn_batch_result, not_committed::Reason, AtomicTxnBatch, DeserializationErrorReason,
         Packet, SchedulingError, TransactionErrorReason,
     },
+    smallvec::SmallVec,
     solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::{Slot, MAX_PROCESSING_AGE},
     solana_measure::{measure::Measure, measure_us},
@@ -75,10 +76,13 @@ pub struct BamReceiveAndBuffer {
 }
 
 struct ParsedBatch {
-    pub txns_max_age: Vec<(
-        RuntimeTransaction<ResolvedTransactionView<SharedBytes>>,
-        MaxAge,
-    )>,
+    // SmallVec 5: BAM bundles are capped at 5 transactions (BundleStorage::MAX_PACKETS_PER_BUNDLE).
+    pub txns_max_age: SmallVec<
+        [(
+            RuntimeTransaction<ResolvedTransactionView<SharedBytes>>,
+            MaxAge,
+        ); 5],
+    >,
     pub cost: u64,
     priority: u64,
     pub revert_on_error: bool,
@@ -137,16 +141,17 @@ impl BamReceiveAndBuffer {
         let mut last_metrics_report = Instant::now();
         let mut metrics = BamReceiveAndBufferMetrics::default();
         let mut stats = ReceivingStats::default();
-        let mut prevalidated = Vec::new();
-        let mut packet_batches = Vec::new();
-        let mut verify_results = Vec::new();
+        let mut prevalidated = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
+        let mut packet_batches = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
+        let mut verify_results = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
         const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(20);
         let mut recv_buffer = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST * 2);
 
         while !exit.load(Ordering::Relaxed) {
-            if last_metrics_report.elapsed() > METRICS_REPORT_INTERVAL {
+            let loop_start = Instant::now();
+            if loop_start.duration_since(last_metrics_report) > METRICS_REPORT_INTERVAL {
                 metrics.report();
-                last_metrics_report = Instant::now();
+                last_metrics_report = loop_start;
                 let _ = recv_stats_sender.try_send(stats);
                 stats = ReceivingStats::default();
             }
@@ -310,25 +315,24 @@ impl BamReceiveAndBuffer {
         let enable_static_instruction_limit = root_bank
             .feature_set
             .is_active(&agave_feature_set::static_instruction_limit::ID);
-
         let mut cost: u64 = 0;
-        let mut txns_max_age = Vec::with_capacity(verified_batch.len());
+        let mut txns_max_age = SmallVec::with_capacity(verified_batch.len());
+
+        if vote_only {
+            return (
+                Err(Reason::DeserializationError(
+                    jito_protos::proto::bam_types::DeserializationError {
+                        index: 0,
+                        reason: DeserializationErrorReason::SanitizeError as i32,
+                    },
+                )),
+                stats,
+            );
+        }
 
         // Checks are taken from receive_and_buffer.rs:
         // SanitizedTransactionReceiveAndBuffer::buffer_packets
         for (index, verified_packet) in verified_batch.into_iter().enumerate() {
-            if vote_only {
-                return (
-                    Err(Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: index as u32,
-                            reason: DeserializationErrorReason::SanitizeError as i32,
-                        },
-                    )),
-                    stats,
-                );
-            }
-
             // Parsing and basic sanitization checks
             let sanitization_start = Instant::now();
             let Ok(view) = SanitizedTransactionView::try_new_sanitized(

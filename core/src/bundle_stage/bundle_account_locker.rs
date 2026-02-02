@@ -48,9 +48,9 @@ impl BundleAccountLocks {
         &self.write_locks
     }
 
-    pub fn lock_accounts<'a>(
+    pub fn lock_accounts<'a, T: Iterator<Item = (&'a Pubkey, bool)>, I: IntoIterator<Item = T>>(
         &mut self,
-        transaction_locks: Vec<impl Iterator<Item = (&'a Pubkey, bool)>>,
+        transaction_locks: I,
     ) {
         for transaction_lock in transaction_locks {
             for (acc, writable) in transaction_lock {
@@ -63,9 +63,13 @@ impl BundleAccountLocks {
         }
     }
 
-    pub fn unlock_accounts<'a>(
+    pub fn unlock_accounts<
+        'a,
+        T: Iterator<Item = (&'a Pubkey, bool)>,
+        I: IntoIterator<Item = T>,
+    >(
         &mut self,
-        transaction_locks: Vec<impl Iterator<Item = (&'a Pubkey, bool)>>,
+        transaction_locks: I,
     ) {
         for transaction_lock in transaction_locks {
             for (acc, writable) in transaction_lock {
@@ -111,7 +115,6 @@ impl BundleAccountLocker {
         bank: &Bank,
     ) -> BundleAccountLockerResult<()> {
         let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
-
         self.account_locks
             .lock()
             .unwrap()
@@ -126,7 +129,6 @@ impl BundleAccountLocker {
         bank: &Bank,
     ) -> BundleAccountLockerResult<()> {
         let transaction_locks = Self::get_transaction_locks(transactions, bank)?;
-
         self.account_locks
             .lock()
             .unwrap()
@@ -139,29 +141,19 @@ impl BundleAccountLocker {
     fn get_transaction_locks<'a, Tx: TransactionWithMeta>(
         transactions: &'a [Tx],
         bank: &Bank,
-    ) -> BundleAccountLockerResult<Vec<impl Iterator<Item = (&'a Pubkey, bool)> + use<'a, Tx>>>
-    {
-        let transaction_locks = transactions
-            .iter()
-            .filter_map(|tx| {
-                if validate_account_locks(
-                    tx.account_keys(),
-                    bank.get_transaction_account_lock_limit(),
-                )
-                .is_ok()
-                {
-                    Some(TransactionAccountLocksIterator::new(tx).accounts_with_is_writable())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        if transaction_locks.len() != transactions.len() {
-            return Err(BundleAccountLockerError::LockingError);
+    ) -> BundleAccountLockerResult<
+        impl Iterator<Item = impl Iterator<Item = (&'a Pubkey, bool)> + use<'a, Tx>> + use<'a, Tx>,
+    > {
+        let transaction_account_lock_limit = bank.get_transaction_account_lock_limit();
+        for tx in transactions {
+            if validate_account_locks(tx.account_keys(), transaction_account_lock_limit).is_err() {
+                return Err(BundleAccountLockerError::LockingError);
+            }
         }
 
-        Ok(transaction_locks)
+        Ok(transactions
+            .iter()
+            .map(|tx| TransactionAccountLocksIterator::new(tx).accounts_with_is_writable()))
     }
 }
 

@@ -21,7 +21,9 @@ use {
         tip_manager::TipManager,
     },
     ahash::HashSet,
+    arc_swap::ArcSwap,
     crossbeam_channel::{Receiver, RecvTimeoutError},
+    smallvec::SmallVec,
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -40,7 +42,7 @@ use {
         ops::Deref,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -344,7 +346,7 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
@@ -383,7 +385,7 @@ impl BundleStage {
         exit: Arc<AtomicBool>,
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
@@ -434,7 +436,7 @@ impl BundleStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         tip_manager: TipManager,
-        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
         cluster_info: Arc<ClusterInfo>,
     ) {
         let mut last_metrics_update = Instant::now();
@@ -571,7 +573,7 @@ impl BundleStage {
         bundle_account_locker: &BundleAccountLocker,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         last_tip_update_slot: &mut Slot,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
@@ -613,7 +615,7 @@ impl BundleStage {
         consumer: &mut BundleConsumer,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         last_tip_update_slot: &mut Slot,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
@@ -727,7 +729,7 @@ impl BundleStage {
         consumer: &mut BundleConsumer,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
     ) -> BundleExecutionResult<()> {
         let keypair = cluster_info.keypair();
@@ -772,13 +774,13 @@ impl BundleStage {
             return Ok(());
         }
 
-        let max_ages = vec![
-            MaxAge {
-                sanitized_epoch: bank.epoch(),
-                alt_invalidation_slot: bank.slot(),
-            };
-            initialize_tip_program_transactions.len()
-        ];
+        let max_age = MaxAge {
+            sanitized_epoch: bank.epoch(),
+            alt_invalidation_slot: bank.slot(),
+        };
+        // SmallVec 2: tip-manager init bundle is at most payment-program + distribution-config txs.
+        let max_ages: SmallVec<[MaxAge; 2]> =
+            SmallVec::from_elem(max_age, initialize_tip_program_transactions.len());
         let _ = bundle_account_locker.lock_bundle(&initialize_tip_program_transactions, bank);
         let output = consumer.process_and_record_aged_transactions(
             bank,
@@ -809,12 +811,13 @@ impl BundleStage {
         bundle_account_locker: &BundleAccountLocker,
         consumer: &mut BundleConsumer,
         tip_manager: &TipManager,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
         keypair: &Keypair,
     ) -> BundleExecutionResult<()> {
+        let block_builder_fee_info = block_builder_fee_info.load();
         let crank_tip_program_transactions = tip_manager
-            .get_tip_programs_crank_bundle(bank, keypair, &block_builder_fee_info.lock().unwrap())
+            .get_tip_programs_crank_bundle(bank, keypair, &block_builder_fee_info)
             .map_err(|e| {
                 warn!("tip programs crank error: {e:?}");
                 BundleExecutionError::TipError
@@ -824,13 +827,13 @@ impl BundleStage {
             return Ok(());
         }
 
-        let max_ages = vec![
-            MaxAge {
-                sanitized_epoch: bank.epoch(),
-                alt_invalidation_slot: bank.slot(),
-            };
-            crank_tip_program_transactions.len()
-        ];
+        let max_age = MaxAge {
+            sanitized_epoch: bank.epoch(),
+            alt_invalidation_slot: bank.slot(),
+        };
+        // SmallVec 2: tip-manager crank bundle is at most init-distribution + change-receiver txs.
+        let max_ages: SmallVec<[MaxAge; 2]> =
+            SmallVec::from_elem(max_age, crank_tip_program_transactions.len());
         let _ = bundle_account_locker.lock_bundle(&crank_tip_program_transactions, bank);
         let output = consumer.process_and_record_aged_transactions(
             bank,
@@ -1091,7 +1094,7 @@ mod tests {
                 },
             }),
             BundleAccountLocker::default(),
-            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
@@ -1229,7 +1232,7 @@ mod tests {
                 },
             }),
             BundleAccountLocker::default(),
-            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
@@ -1322,7 +1325,7 @@ mod tests {
                 },
             }),
             BundleAccountLocker::default(),
-            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
@@ -1446,7 +1449,7 @@ mod tests {
                 },
             }),
             BundleAccountLocker::default(),
-            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
@@ -1570,7 +1573,7 @@ mod tests {
                 },
             }),
             BundleAccountLocker::default(),
-            &Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            &Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),

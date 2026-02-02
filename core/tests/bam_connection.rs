@@ -460,6 +460,7 @@ mod bam_connection_tests {
 mod bam_manager_tests {
     use {
         super::*,
+        arc_swap::ArcSwap,
         solana_core::{
             admin_rpc_post_init::KeyUpdaters,
             bam_dependencies::{BamConnectionState, BamDependencies},
@@ -487,9 +488,9 @@ mod bam_manager_tests {
             outbound_sender: outbound_tx,
             outbound_receiver: outbound_rx,
             cluster_info,
-            block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
+            block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
             bank_forks,
-            bam_node_pubkey: Arc::new(Mutex::new(Pubkey::default())),
+            bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
         }
     }
 
@@ -713,7 +714,7 @@ mod bam_manager_tests {
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let fee_info = block_builder_fee_info.lock().unwrap();
+        let fee_info = block_builder_fee_info.load();
         assert_eq!(fee_info.block_builder_commission, 10);
 
         exit.store(true, Ordering::Relaxed);
