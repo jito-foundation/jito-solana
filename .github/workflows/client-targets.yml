@@ -35,6 +35,7 @@ jobs:
         with:
           submodules: 'recursive'
 
+
       # This can be removed once cargo-ndk >= 3.5.4 is used.
       - name: Setup environment for Android NDK
         run: |

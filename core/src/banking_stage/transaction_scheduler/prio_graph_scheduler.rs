@@ -431,7 +431,6 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
             return Err(TransactionSchedulingError::UnschedulableConflicts);
         }
     }
-    drop(l_account_locks);
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,
@@ -450,6 +449,9 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         }
     };
 
+    // Avoid time of check time of use race condition between bundle account locker and account locks
+    drop(l_account_locks);
+
     let (transaction, max_age) = transaction_state.take_transaction_for_scheduling();
     let cost = transaction_state.cost();
 
@@ -466,6 +468,7 @@ mod tests {
     use {
         super::*,
         crate::banking_stage::{
+            decision_maker::BufferedPacketsDecision,
             scheduler_messages::{MaxAge, TransactionId},
             transaction_scheduler::transaction_state_container::TransactionStateContainer,
         },
@@ -812,9 +815,12 @@ mod tests {
             .send(FinishedConsumeWork {
                 work: thread_0_work.into_iter().next().unwrap(),
                 retryable_indexes: vec![],
+                extra_info: None,
             })
             .unwrap();
-        scheduler.receive_completed(&mut container).unwrap();
+        scheduler
+            .receive_completed(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
         let scheduling_summary = scheduler
             .schedule(
                 &mut container,

@@ -81,7 +81,9 @@ use {
     solana_accounts_db::{
         account_locks::validate_account_locks,
         accounts::{AccountAddressFilter, Accounts, PubkeyAccountSlot},
-        accounts_db::{AccountStorageEntry, AccountsDb, AccountsDbConfig},
+        accounts_db::{
+            AccountStorageEntry, AccountsDb, AccountsDbConfig, ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
+        },
         accounts_hash::AccountsLtHash,
         accounts_index::{IndexKey, ScanConfig, ScanResult},
         accounts_update_notifier_interface::AccountsUpdateNotifier,
@@ -190,9 +192,6 @@ use {
 use {
     dashmap::DashSet,
     rayon::iter::{IntoParallelRefIterator, ParallelIterator},
-    solana_accounts_db::accounts_db::{
-        ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS, ACCOUNTS_DB_CONFIG_FOR_TESTING,
-    },
     solana_nonce as nonce,
     solana_nonce_account::{get_system_account_kind, SystemAccountKind},
     solana_program_runtime::sysvar_cache::SysvarCache,
@@ -950,6 +949,8 @@ pub struct BankTestConfig {
 #[cfg(feature = "dev-context-only-utils")]
 impl Default for BankTestConfig {
     fn default() -> Self {
+        use solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING;
+
         Self {
             accounts_db_config: ACCOUNTS_DB_CONFIG_FOR_TESTING,
         }
@@ -2973,19 +2974,25 @@ impl Bank {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(TransactionBatch::new(
-            self.try_lock_accounts(&sanitized_txs),
+            self.try_lock_accounts(&sanitized_txs, false),
             self,
             OwnedOrBorrowed::Owned(sanitized_txs),
         ))
     }
 
     /// Attempt to take locks on the accounts in a transaction batch
-    pub fn try_lock_accounts(&self, txs: &[impl TransactionWithMeta]) -> Vec<Result<()>> {
+    pub fn try_lock_accounts(
+        &self,
+        txs: &[impl TransactionWithMeta],
+        batched: bool,
+    ) -> Vec<Result<()>> {
         self.try_lock_accounts_with_results(
             txs,
             txs.iter().map(|_| Ok(())),
-            self.feature_set
-                .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+            batched
+                || self
+                    .feature_set
+                    .is_active(&feature_set::relax_intrabatch_account_locks::id()),
         )
     }
 
@@ -3030,7 +3037,7 @@ impl Bank {
         &'a self,
         txs: &'b [Tx],
     ) -> TransactionBatch<'a, 'b, Tx> {
-        self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())))
+        self.prepare_sanitized_batch_with_results(txs, txs.iter().map(|_| Ok(())), false)
     }
 
     /// Override the relax_intrabatch_account_locks feature flag and use the SIMD83 logic for bundle execution
@@ -3059,14 +3066,17 @@ impl Bank {
         &'a self,
         transactions: &'b [Tx],
         transaction_results: impl Iterator<Item = Result<()>>,
+        batched_locking: bool,
     ) -> TransactionBatch<'a, 'b, Tx> {
         // this lock_results could be: Ok, AccountInUse, WouldExceedBlockMaxLimit or WouldExceedAccountMaxLimit
         TransactionBatch::new(
             self.try_lock_accounts_with_results(
                 transactions,
                 transaction_results,
-                self.feature_set
-                    .is_active(&feature_set::relax_intrabatch_account_locks::id()),
+                batched_locking
+                    || self
+                        .feature_set
+                        .is_active(&feature_set::relax_intrabatch_account_locks::id()),
             ),
             self,
             OwnedOrBorrowed::Borrowed(transactions),
@@ -3512,7 +3522,7 @@ impl Bank {
         &self,
         txs_and_results: impl Iterator<Item = (&'a Tx, &'a Result<()>)> + Clone,
     ) {
-        self.rc.accounts.unlock_accounts(txs_and_results)
+        self.rc.accounts.unlock_accounts(txs_and_results);
     }
 
     pub fn remove_unrooted_slots(&self, slots: &[(Slot, BankId)]) {
@@ -6063,6 +6073,34 @@ impl Bank {
     pub fn get_collector_fee_details(&self) -> CollectorFeeDetails {
         self.collector_fee_details.read().unwrap().clone()
     }
+
+    /// Total priority fees (lamports) that this bank collected
+    /// **Only populated once the bank is Executed. Always call
+    /// it after the bank is rooted.**
+    pub fn priority_fee_total(&self) -> u64 {
+        self.collector_fee_details.read().unwrap().priority_fee
+    }
+
+    pub fn new_for_benches(genesis_config: &GenesisConfig) -> Self {
+        Self::new_with_paths_for_benches(genesis_config, Vec::new())
+    }
+
+    /// Intended for use by benches only.
+    /// create new bank with the given config and paths.
+    pub fn new_with_paths_for_benches(genesis_config: &GenesisConfig, paths: Vec<PathBuf>) -> Self {
+        Self::new_from_genesis(
+            genesis_config,
+            Arc::<RuntimeConfig>::default(),
+            paths,
+            None,
+            ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
+            None,
+            Some(Pubkey::new_unique()),
+            Arc::default(),
+            None,
+            None,
+        )
+    }
 }
 
 impl InvokeContextCallback for Bank {
@@ -6200,27 +6238,6 @@ impl Bank {
         )
     }
 
-    pub fn new_for_benches(genesis_config: &GenesisConfig) -> Self {
-        Self::new_with_paths_for_benches(genesis_config, Vec::new())
-    }
-
-    /// Intended for use by benches only.
-    /// create new bank with the given config and paths.
-    pub fn new_with_paths_for_benches(genesis_config: &GenesisConfig, paths: Vec<PathBuf>) -> Self {
-        Self::new_from_genesis(
-            genesis_config,
-            Arc::<RuntimeConfig>::default(),
-            paths,
-            None,
-            ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS,
-            None,
-            Some(Pubkey::new_unique()),
-            Arc::default(),
-            None,
-            None,
-        )
-    }
-
     pub fn new_from_parent_with_bank_forks(
         bank_forks: &RwLock<BankForks>,
         parent: Arc<Bank>,
@@ -6245,7 +6262,7 @@ impl Bank {
             .map(RuntimeTransaction::from_transaction_for_tests)
             .collect::<Vec<_>>();
         TransactionBatch::new(
-            self.try_lock_accounts(&sanitized_txs),
+            self.try_lock_accounts(&sanitized_txs, false),
             self,
             OwnedOrBorrowed::Owned(sanitized_txs),
         )
