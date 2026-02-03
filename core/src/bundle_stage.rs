@@ -635,52 +635,30 @@ impl BundleStage {
         // Requirements:
         // - Any bundle that gets popped must be destoryed
         // - Any bundle that gets locked with the bundle account locker shall be destroyed
-        while let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) {
-            if bundle_account_locker
-                .lock_bundle(&bundle.transactions, bank)
-                .is_err()
-            {
-                bundle_stage_metrics.increment_bundle_lock_errors(1);
+        loop {
+            // Always ensure the window is filled with bundles, breaking out when the bundle deque is full or no more bundles are available to pop
+            while bundles.len() < BUNDLE_WINDOW_SIZE.get() {
+                let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) else {
+                    break;
+                };
 
-                bundle_storage.destroy_bundle(bundle);
-                continue;
-            }
-
-            bundles.push_back(bundle);
-            if bundles.len() == BUNDLE_WINDOW_SIZE.get() {
-                // unwrwap safe here because of the length check
-                let bundle = bundles.pop_front().unwrap();
-
-                let result = Self::process_bundle(bank, &bundle, consumer, consume_worker_metrics);
-                let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
-
-                match result {
-                    Ok(output) => {
-                        consume_worker_metrics.update_for_consume(&output);
-                        consume_worker_metrics.set_has_data(true);
-                        bundle_stage_metrics.increment_bundles_processed(1);
-                        bundle_storage.destroy_bundle(bundle);
-                    }
-                    Err(BundleExecutionError::ErrorRetryable) => {
-                        bundle_storage.retry_bundle(bundle);
-                    }
-                    Err(BundleExecutionError::ErrorNonRetryable) => {
-                        bundle_storage.destroy_bundle(bundle);
-                    }
-                    Err(BundleExecutionError::TipError) => {
-                        // This error is not possible from this code path as any tip processing directly calls Consumer::process_and_record_aged_transactions
-                        continue;
-                    }
+                if bundle_account_locker
+                    .lock_bundle(&bundle.transactions, bank)
+                    .is_err()
+                {
+                    bundle_stage_metrics.increment_bundle_lock_errors(1);
+                    bundle_storage.destroy_bundle(bundle);
+                    continue;
                 }
+
+                bundles.push_back(bundle);
             }
 
-            consume_worker_metrics.maybe_report_and_reset();
-        }
-
-        while let Some(bundle) = bundles.pop_front() {
+            let Some(bundle) = bundles.pop_front() else {
+                break;
+            };
             let result = Self::process_bundle(bank, &bundle, consumer, consume_worker_metrics);
             let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
-
             match result {
                 Ok(output) => {
                     consume_worker_metrics.update_for_consume(&output);
