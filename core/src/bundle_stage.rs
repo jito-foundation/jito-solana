@@ -517,50 +517,28 @@ impl BundleStage {
         };
 
         let bundle = bundle_receiver.recv_timeout(recv_timeout)?;
-        Self::insert_bundle(
-            bundle_storage,
-            bundle,
-            &root_bank,
-            &working_bank,
-            blacklisted_accounts,
-            bundle_stage_metrics,
-        );
+        for bundle in std::iter::once(bundle).chain(bundle_receiver.try_iter()) {
+            let num_packets = bundle.batch().len();
 
-        while let Ok(bundle) = bundle_receiver.try_recv() {
-            Self::insert_bundle(
-                bundle_storage,
+            bundle_stage_metrics.increment_num_bundles_received(1);
+            bundle_stage_metrics.increment_num_packets_received(num_packets as u64);
+
+            match bundle_storage.insert_bundle(
                 bundle,
                 &root_bank,
                 &working_bank,
                 blacklisted_accounts,
-                bundle_stage_metrics,
-            );
+            ) {
+                Ok(_) => {
+                    bundle_stage_metrics.increment_newly_buffered_bundles_count(1);
+                }
+                Err(e) => {
+                    bundle_stage_metrics.increment_bundle_dropped_error(e);
+                }
+            }
         }
 
         Ok(())
-    }
-
-    fn insert_bundle(
-        bundle_storage: &mut BundleStorage,
-        bundle: VerifiedPacketBundle,
-        root_bank: &Arc<Bank>,
-        working_bank: &Arc<Bank>,
-        blacklisted_accounts: &HashSet<Pubkey>,
-        bundle_stage_metrics: &mut BundleStageLoopMetrics,
-    ) {
-        let num_packets = bundle.batch().len();
-
-        bundle_stage_metrics.increment_num_bundles_received(1);
-        bundle_stage_metrics.increment_num_packets_received(num_packets as u64);
-
-        match bundle_storage.insert_bundle(bundle, root_bank, working_bank, blacklisted_accounts) {
-            Ok(_) => {
-                bundle_stage_metrics.increment_newly_buffered_bundles_count(1);
-            }
-            Err(e) => {
-                bundle_stage_metrics.increment_bundle_dropped_error(e);
-            }
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -657,50 +635,47 @@ impl BundleStage {
         // Requirements:
         // - Any bundle that gets popped must be destoryed
         // - Any bundle that gets locked with the bundle account locker shall be destroyed
-        while let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) {
-            if bundle_account_locker
-                .lock_bundle(&bundle.transactions, bank)
-                .is_err()
-            {
-                bundle_stage_metrics.increment_bundle_lock_errors(1);
+        loop {
+            // Always ensure the window is filled with bundles, breaking out when the bundle deque is full or no more bundles are available to pop
+            while bundles.len() < BUNDLE_WINDOW_SIZE.get() {
+                let Some(bundle) = bundle_storage.pop_bundle(bank.slot()) else {
+                    break;
+                };
 
-                bundle_storage.destroy_bundle(bundle);
-                continue;
+                if bundle_account_locker
+                    .lock_bundle(&bundle.transactions, bank)
+                    .is_err()
+                {
+                    bundle_stage_metrics.increment_bundle_lock_errors(1);
+                    bundle_storage.destroy_bundle(bundle);
+                    continue;
+                }
+
+                bundles.push_back(bundle);
             }
 
-            bundles.push_back(bundle);
-            if bundles.len() == BUNDLE_WINDOW_SIZE.get() {
-                // unwrwap safe here because of the length check
-                let bundle = bundles.pop_front().unwrap();
-                if let Some(output) = Self::process_bundle(
-                    bank,
-                    bundle,
-                    bundle_storage,
-                    bundle_account_locker,
-                    consumer,
-                    consume_worker_metrics,
-                ) {
+            let Some(bundle) = bundles.pop_front() else {
+                break;
+            };
+            let result = Self::process_bundle(bank, &bundle, consumer, consume_worker_metrics);
+            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
+            match result {
+                Ok(output) => {
                     consume_worker_metrics.update_for_consume(&output);
                     consume_worker_metrics.set_has_data(true);
                     bundle_stage_metrics.increment_bundles_processed(1);
+                    bundle_storage.destroy_bundle(bundle);
                 }
-            }
-
-            consume_worker_metrics.maybe_report_and_reset();
-        }
-
-        while let Some(bundle) = bundles.pop_front() {
-            if let Some(output) = Self::process_bundle(
-                bank,
-                bundle,
-                bundle_storage,
-                bundle_account_locker,
-                consumer,
-                consume_worker_metrics,
-            ) {
-                consume_worker_metrics.update_for_consume(&output);
-                consume_worker_metrics.set_has_data(true);
-                bundle_stage_metrics.increment_bundles_processed(1);
+                Err(BundleExecutionError::ErrorRetryable) => {
+                    bundle_storage.retry_bundle(bundle);
+                }
+                Err(BundleExecutionError::ErrorNonRetryable) => {
+                    bundle_storage.destroy_bundle(bundle);
+                }
+                Err(BundleExecutionError::TipError) => {
+                    // This error is not possible from this code path as any tip processing directly calls Consumer::process_and_record_aged_transactions
+                    continue;
+                }
             }
             consume_worker_metrics.maybe_report_and_reset();
         }
@@ -858,14 +833,12 @@ impl BundleStage {
         if output
             .execute_and_commit_transactions_output
             .commit_transactions_result
-            .is_ok()
-            && output
-                .execute_and_commit_transactions_output
-                .commit_transactions_result
-                .as_ref()
-                .unwrap()
-                .iter()
-                .all(|r| matches!(r, CommitTransactionDetails::Committed { result: Ok(_), .. }))
+            .as_ref()
+            .is_ok_and(|results| {
+                results
+                    .iter()
+                    .all(|r| matches!(r, CommitTransactionDetails::Committed { result: Ok(_), .. }))
+            })
         {
             return Ok(());
         }
@@ -897,61 +870,45 @@ impl BundleStage {
 
     fn process_bundle(
         bank: &Arc<Bank>,
-        bundle: BundleStorageEntry,
-        bundle_storage: &mut BundleStorage,
-        bundle_account_locker: &BundleAccountLocker,
+        bundle: &BundleStorageEntry,
         consumer: &mut BundleConsumer,
         consume_worker_metrics: &ConsumeWorkerMetrics,
-    ) -> Option<ProcessTransactionBatchOutput> {
+    ) -> BundleExecutionResult<ProcessTransactionBatchOutput> {
         if bank.is_complete() {
-            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
-            bundle_storage.retry_bundle(bundle);
-            None
-        } else {
-            let output = consumer.process_and_record_aged_transactions(
-                bank,
-                &bundle.transactions,
-                &bundle.max_ages,
-                MAX_BUNDLE_RETRY_DURATION,
-            );
-
-            let _ = bundle_account_locker.unlock_bundle(&bundle.transactions, bank);
-            consume_worker_metrics.update_for_consume(&output);
-
-            let result = Self::to_bundle_result(&output);
-
-            if log::log_enabled!(log::Level::Debug) {
-                let signatures: Vec<_> = bundle
-                    .transactions
-                    .iter()
-                    .map(|tx| tx.signatures())
-                    .collect();
-                debug!(
-                    "execution results: bundle signatures: {:?}, result: {:?} \
-                     cost_model_throttled_transactions_count: {:?} output: {:?}",
-                    signatures,
-                    result,
-                    output.cost_model_throttled_transactions_count,
-                    output
-                        .execute_and_commit_transactions_output
-                        .commit_transactions_result
-                );
-            }
-
-            match result {
-                Ok(_) | Err(BundleExecutionError::ErrorNonRetryable) => {
-                    bundle_storage.destroy_bundle(bundle);
-                }
-                Err(BundleExecutionError::ErrorRetryable) => {
-                    bundle_storage.retry_bundle(bundle);
-                }
-                Err(BundleExecutionError::TipError) => {
-                    return None;
-                }
-            }
-
-            Some(output)
+            return Err(BundleExecutionError::ErrorRetryable);
         }
+
+        let output = consumer.process_and_record_aged_transactions(
+            bank,
+            &bundle.transactions,
+            &bundle.max_ages,
+            MAX_BUNDLE_RETRY_DURATION,
+        );
+
+        consume_worker_metrics.update_for_consume(&output);
+
+        let result = Self::to_bundle_result(&output);
+
+        if log::log_enabled!(log::Level::Debug) {
+            let signatures: Vec<_> = bundle
+                .transactions
+                .iter()
+                .map(|tx| tx.signatures())
+                .collect();
+            debug!(
+                "execution results: bundle signatures: {:?}, result: {:?} \
+                 cost_model_throttled_transactions_count: {:?} output: {:?}",
+                signatures,
+                result,
+                output.cost_model_throttled_transactions_count,
+                output
+                    .execute_and_commit_transactions_output
+                    .commit_transactions_result
+            );
+        }
+        result?;
+
+        Ok(output)
     }
 }
 

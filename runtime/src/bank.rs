@@ -312,22 +312,6 @@ pub struct LoadAndExecuteTransactionsOutput {
     pub balance_collector: Option<BalanceCollector>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct BundleTransactionSimulationResult {
-    pub result: Result<()>,
-    pub logs: TransactionLogMessages,
-    pub pre_execution_accounts: Option<Vec<AccountData>>,
-    pub post_execution_accounts: Option<Vec<AccountData>>,
-    pub return_data: Option<TransactionReturnData>,
-    pub units_consumed: u64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AccountData {
-    pub pubkey: Pubkey,
-    pub data: AccountSharedData,
-}
-
 #[derive(Debug, PartialEq)]
 pub struct TransactionSimulationResult {
     pub result: Result<()>,

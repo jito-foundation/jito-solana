@@ -183,6 +183,10 @@ impl BundleStorage {
         let mut container_ids: Vec<usize> = Vec::with_capacity(batch.len());
         let mut maybe_error = Ok(());
 
+        let enable_static_instruction_limit = working_bank
+            .feature_set
+            .is_active(&agave_feature_set::static_instruction_limit::id());
+
         for (idx, packet) in batch.iter().enumerate() {
             // bundles shall contain all valid packets; checked above
             let packet_data = packet.data(..).unwrap();
@@ -195,9 +199,7 @@ impl BundleStorage {
                         bytes,
                         root_bank,
                         working_bank,
-                        working_bank
-                            .feature_set
-                            .is_active(&agave_feature_set::static_instruction_limit::id()),
+                        enable_static_instruction_limit,
                         working_bank.get_transaction_account_lock_limit(),
                         blacklisted_accounts,
                     ) {
