@@ -271,33 +271,38 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     // Schedule the transaction if it can be.
     let transaction = transaction_state.transaction();
     let account_keys = transaction.account_keys();
-    let write_account_locks = account_keys
+    // Collect account locks into Vecs to avoid redundant iterator cloning.
+    // This is more efficient than cloning filter_map iterators which would
+    // re-evaluate the filter for each clone.
+    let write_account_locks: Vec<_> = account_keys
         .iter()
         .enumerate()
-        .filter_map(|(index, key)| transaction.is_writable(index).then_some(key));
-    let read_account_locks = account_keys
+        .filter_map(|(index, key)| transaction.is_writable(index).then_some(key))
+        .collect();
+    let read_account_locks: Vec<_> = account_keys
         .iter()
         .enumerate()
-        .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
+        .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key))
+        .collect();
 
     // Check bundle account locks doesn't have it yet
     let l_account_locks = bundle_account_locker.account_locks();
-    for lock in read_account_locks.clone() {
-        if l_account_locks.write_locks().contains_key(lock) {
+    for lock in &read_account_locks {
+        if l_account_locks.write_locks().contains_key(*lock) {
             return Err(TransactionSchedulingError::UnschedulableConflicts);
         }
     }
-    for lock in write_account_locks.clone() {
-        if l_account_locks.write_locks().contains_key(lock)
-            || l_account_locks.read_locks().contains_key(lock)
+    for lock in &write_account_locks {
+        if l_account_locks.write_locks().contains_key(*lock)
+            || l_account_locks.read_locks().contains_key(*lock)
         {
             return Err(TransactionSchedulingError::UnschedulableConflicts);
         }
     }
 
     let thread_id = match account_locks.try_lock_accounts(
-        write_account_locks,
-        read_account_locks,
+        write_account_locks.iter().copied(),
+        read_account_locks.iter().copied(),
         schedulable_threads,
         thread_selector,
     ) {
