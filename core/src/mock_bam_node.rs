@@ -15,6 +15,7 @@ use {
             MultipleAtomicTxnBatch, Packet, Socket,
         },
     },
+    log::{info, warn},
     solana_keypair::Keypair,
     solana_net_utils::sockets::bind_to,
     solana_perf::packet::PacketBatch,
@@ -123,7 +124,6 @@ struct MockBamNodeState {
     transactions_received: AtomicU64,
     batches_forwarded: AtomicU64,
     current_slot: AtomicU64,
-    accept_new_streams: AtomicBool,
 }
 
 impl MockBamNodeState {
@@ -140,6 +140,7 @@ impl MockBamNodeState {
         challenge
     }
 
+    /// Althought this takes in pubkey and signature, it doesn't verify them in the mock.
     fn verify_auth_proof(&self, challenge: &str, _pubkey: &str, _signature: &str) -> bool {
         let mut challenges = self.auth_challenges.lock().unwrap();
         if let Some(pos) = challenges.iter().position(|c| c == challenge) {
@@ -322,7 +323,7 @@ fn heartbeat_response() -> SchedulerResponse {
             resp: Some(Resp::HeartBeat(BuilderHeartBeat {
                 time_sent_microseconds: SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_micros() as u64,
             })),
         })),
@@ -377,7 +378,6 @@ impl MockBamNode {
             transactions_received: AtomicU64::new(0),
             batches_forwarded: AtomicU64::new(0),
             current_slot: AtomicU64::new(0),
-            accept_new_streams: AtomicBool::new(true),
         });
 
         let (packet_sender, packet_receiver) = unbounded();
@@ -480,22 +480,27 @@ impl MockBamNode {
         })
     }
 
+    #[must_use]
     pub fn grpc_addr(&self) -> SocketAddr {
         self.grpc_addr
     }
 
+    #[must_use]
     pub fn grpc_url(&self) -> String {
         format!("http://{}", self.grpc_addr)
     }
 
+    #[must_use]
     pub fn tpu_addr(&self) -> SocketAddr {
         self.state.tpu_addr
     }
 
+    #[must_use]
     pub fn tpu_fwd_addr(&self) -> SocketAddr {
         self.state.tpu_fwd_addr
     }
 
+    #[must_use]
     pub fn transaction_queue(&self) -> &Arc<TransactionQueue> {
         &self.state.transaction_queue
     }
@@ -504,6 +509,7 @@ impl MockBamNode {
         self.state.send_heartbeats.store(send, Ordering::Relaxed);
     }
 
+    #[must_use]
     pub fn auth_proofs_received(&self) -> u64 {
         self.state.auth_proofs_received.load(Ordering::Relaxed)
     }
@@ -516,22 +522,19 @@ impl MockBamNode {
             .push_back(batch);
     }
 
+    #[must_use]
     pub fn transactions_received(&self) -> u64 {
         self.state.transactions_received.load(Ordering::Relaxed)
     }
 
+    #[must_use]
     pub fn batches_forwarded(&self) -> u64 {
         self.state.batches_forwarded.load(Ordering::Relaxed)
     }
 
+    #[must_use]
     pub fn queue_len(&self) -> usize {
         self.state.transaction_queue.len()
-    }
-
-    pub fn set_accept_new_streams(&self, accept: bool) {
-        self.state
-            .accept_new_streams
-            .store(accept, Ordering::Relaxed);
     }
 
     pub async fn shutdown(&mut self) {
@@ -631,5 +634,31 @@ mod tests {
         let challenge = response.into_inner().challenge_to_sign;
 
         assert!(challenge.starts_with("challenge-"));
+    }
+
+    #[tokio::test]
+    async fn test_queue_batch_full() {
+        let node = MockBamNode::start(MockBamNodeConfig::default())
+            .await
+            .expect("should start");
+
+        let node_queue = node.transaction_queue();
+
+        for _ in 0..DEFAULT_QUEUE_SIZE {
+            assert!(node_queue.push(PacketBatch::from(vec![])));
+        }
+
+        assert_eq!(node_queue.len(), DEFAULT_QUEUE_SIZE);
+
+        assert!(!node_queue.push(PacketBatch::from(vec![])));
+
+        assert_eq!(node_queue.len(), DEFAULT_QUEUE_SIZE);
+
+        let drained = node_queue.drain(100);
+        assert_eq!(drained.len(), 100);
+        assert_eq!(node_queue.len(), DEFAULT_QUEUE_SIZE - 100);
+
+        assert!(node_queue.push(PacketBatch::from(vec![])));
+        assert_eq!(node_queue.len(), DEFAULT_QUEUE_SIZE - 99);
     }
 }
