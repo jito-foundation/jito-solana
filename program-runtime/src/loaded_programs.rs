@@ -1151,6 +1151,105 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         cooperative_loading_task
     }
 
+    /// Extracts a subset of the programs relevant to a transaction batch without
+    /// participating in cooperative loading.
+    pub fn extract_without_cooperative_loading(
+        &self,
+        search_for: &mut Vec<(Pubkey, ProgramCacheMatchCriteria)>,
+        loaded_programs_for_tx_batch: &mut ProgramCacheForTxBatch,
+        program_runtime_environments_for_execution: &ProgramRuntimeEnvironments,
+        increment_usage_counter: bool,
+        count_hits_and_misses: bool,
+    ) {
+        debug_assert!(self.fork_graph.is_some());
+        let fork_graph = self.fork_graph.as_ref().unwrap().upgrade().unwrap();
+        let locked_fork_graph = fork_graph.read().unwrap();
+        match &self.index {
+            IndexImplementation::V1 { entries, .. } => {
+                search_for.retain(|(key, match_criteria)| {
+                    if let Some(second_level) = entries.get(key) {
+                        let mut filter_by_deployment_slot = None;
+                        for entry in second_level.iter().rev() {
+                            if filter_by_deployment_slot
+                                .map(|slot| slot != entry.deployment_slot)
+                                .unwrap_or(false)
+                            {
+                                continue;
+                            }
+                            if entry.deployment_slot <= self.latest_root_slot
+                                || matches!(
+                                    locked_fork_graph.relationship(
+                                        entry.deployment_slot,
+                                        loaded_programs_for_tx_batch.slot
+                                    ),
+                                    BlockRelation::Equal | BlockRelation::Ancestor
+                                )
+                            {
+                                let entry_to_return = if loaded_programs_for_tx_batch.slot
+                                    >= entry.effective_slot
+                                {
+                                    if !Self::matches_environment(
+                                        entry,
+                                        program_runtime_environments_for_execution,
+                                    ) {
+                                        filter_by_deployment_slot = filter_by_deployment_slot
+                                            .or(Some(entry.deployment_slot));
+                                        continue;
+                                    }
+                                    if !Self::matches_criteria(entry, match_criteria) {
+                                        break;
+                                    }
+                                    if let ProgramCacheEntryType::Unloaded(_environment) =
+                                        &entry.program
+                                    {
+                                        break;
+                                    }
+                                    entry.clone()
+                                } else if entry.is_implicit_delay_visibility_tombstone(
+                                    loaded_programs_for_tx_batch.slot,
+                                ) {
+                                    // Found a program entry on the current fork, but it's not effective
+                                    // yet. It indicates that the program has delayed visibility. Return
+                                    // the tombstone to reflect that.
+                                    Arc::new(ProgramCacheEntry::new_tombstone_with_usage_counter(
+                                        entry.deployment_slot,
+                                        entry.account_owner,
+                                        ProgramCacheEntryType::DelayVisibility,
+                                        entry.tx_usage_counter.clone(),
+                                    ))
+                                } else {
+                                    continue;
+                                };
+                                entry_to_return
+                                    .update_access_slot(loaded_programs_for_tx_batch.slot);
+                                if increment_usage_counter {
+                                    entry_to_return
+                                        .tx_usage_counter
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                                loaded_programs_for_tx_batch
+                                    .entries
+                                    .insert(*key, entry_to_return);
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                });
+            }
+        }
+        drop(locked_fork_graph);
+        if count_hits_and_misses {
+            self.stats
+                .misses
+                .fetch_add(search_for.len() as u64, Ordering::Relaxed);
+            self.stats.hits.fetch_add(
+                loaded_programs_for_tx_batch.entries.len() as u64,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
     /// Called by Bank::replenish_program_cache() for each program that is done loading.
     pub fn finish_cooperative_loading_task(
         &mut self,
