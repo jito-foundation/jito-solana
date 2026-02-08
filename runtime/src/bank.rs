@@ -119,7 +119,7 @@ use {
     solana_precompile_error::PrecompileError,
     solana_program_runtime::{
         invoke_context::BuiltinFunctionWithContext,
-        loaded_programs::{ProgramCacheEntry, ProgramRuntimeEnvironments},
+        loaded_programs::{ProgramCacheEntry, ProgramCacheForTxBatch, ProgramRuntimeEnvironments},
     },
     solana_pubkey::{Pubkey, PubkeyHasherBuilder},
     solana_reward_info::RewardInfo,
@@ -3309,6 +3309,7 @@ impl Bank {
         let mut simulation_results = Vec::with_capacity(transactions.len());
 
         let mut account_overrides = AccountOverrides::default();
+        let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::new(self.slot);
 
         // Pre-load all the account state into account overrides
         for transaction in transactions {
@@ -3348,12 +3349,15 @@ impl Bank {
             let number_of_accounts = transaction.account_keys().len();
 
             let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
+            program_cache_for_tx_batch.hit_max_limit = false;
+            program_cache_for_tx_batch.loaded_missing = false;
+            program_cache_for_tx_batch.merged_modified = false;
 
             let LoadAndExecuteTransactionsOutput {
                 mut processing_results,
                 balance_collector,
                 ..
-            } = self.load_and_execute_transactions(
+            } = self.load_and_execute_transactions_with_program_cache(
                 &batch,
                 MAX_PROCESSING_AGE - MAX_TRANSACTION_FORWARDING_DELAY,
                 &mut ExecuteTimings::default(),
@@ -3372,6 +3376,8 @@ impl Bank {
                     drop_on_failure: true,
                     all_or_nothing: true,
                 },
+                &mut program_cache_for_tx_batch,
+                false,
             );
 
             let processing_result = processing_results
@@ -3578,6 +3584,48 @@ impl Bank {
         error_counters: &mut TransactionErrorMetrics,
         processing_config: TransactionProcessingConfig,
     ) -> LoadAndExecuteTransactionsOutput {
+        self.load_and_execute_transactions_with_program_cache_internal(
+            batch,
+            max_age,
+            timings,
+            error_counters,
+            processing_config,
+            None,
+            true,
+        )
+    }
+
+    pub fn load_and_execute_transactions_with_program_cache(
+        &self,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        max_age: usize,
+        timings: &mut ExecuteTimings,
+        error_counters: &mut TransactionErrorMetrics,
+        processing_config: TransactionProcessingConfig,
+        program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
+        replenish_program_cache: bool,
+    ) -> LoadAndExecuteTransactionsOutput {
+        self.load_and_execute_transactions_with_program_cache_internal(
+            batch,
+            max_age,
+            timings,
+            error_counters,
+            processing_config,
+            Some(program_cache_for_tx_batch),
+            replenish_program_cache,
+        )
+    }
+
+    fn load_and_execute_transactions_with_program_cache_internal(
+        &self,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        max_age: usize,
+        timings: &mut ExecuteTimings,
+        error_counters: &mut TransactionErrorMetrics,
+        processing_config: TransactionProcessingConfig,
+        program_cache_for_tx_batch: Option<&mut ProgramCacheForTxBatch>,
+        replenish_program_cache: bool,
+    ) -> LoadAndExecuteTransactionsOutput {
         let sanitized_txs = batch.sanitized_transactions();
 
         let (check_results, check_us) = measure_us!(self.check_transactions(
@@ -3609,15 +3657,28 @@ impl Bank {
             rent: self.rent_collector.rent.clone(),
         };
 
-        let sanitized_output = self
-            .transaction_processor
-            .load_and_execute_sanitized_transactions(
-                self,
-                sanitized_txs,
-                check_results,
-                &processing_environment,
-                &processing_config,
-            );
+        let sanitized_output = if let Some(program_cache_for_tx_batch) = program_cache_for_tx_batch
+        {
+            self.transaction_processor
+                .load_and_execute_sanitized_transactions_with_program_cache(
+                    self,
+                    sanitized_txs,
+                    check_results,
+                    &processing_environment,
+                    &processing_config,
+                    program_cache_for_tx_batch,
+                    replenish_program_cache,
+                )
+        } else {
+            self.transaction_processor
+                .load_and_execute_sanitized_transactions(
+                    self,
+                    sanitized_txs,
+                    check_results,
+                    &processing_environment,
+                    &processing_config,
+                )
+        };
 
         // Accumulate the errors returned by the batch processor.
         error_counters.accumulate(&sanitized_output.error_metrics);
