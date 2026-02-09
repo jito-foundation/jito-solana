@@ -10,6 +10,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::TipManager,
     },
     ahash::AHashSet,
+    arc_swap::ArcSwap,
     itertools::Itertools,
     solana_accounts_db::accounts::TransactionAccountLocksIterator,
     solana_clock::MAX_PROCESSING_AGE,
@@ -129,7 +130,7 @@ pub struct LeaderProcessedTransactionCounts {
 pub struct TipProcessingDependencies {
     pub tip_manager: TipManager,
     pub last_tip_updated_slot: Arc<Mutex<u64>>,
-    pub block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+    pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,
     pub cluster_info: Arc<ClusterInfo>,
     pub bundle_account_locker: BundleAccountLocker,
 }
@@ -187,18 +188,10 @@ impl Consumer {
         let check_results =
             bank.check_transactions(txs, &pre_results, MAX_PROCESSING_AGE, &mut error_counters);
 
-        let check_results: Vec<_> = check_results
-            .into_iter()
-            .map(|result| match result {
-                Ok(_) => Ok(()),
-                Err(err) => Err(err),
-            })
-            .collect();
-
         let mut output = self.process_and_record_transactions_with_pre_results(
             bank,
             txs,
-            check_results.into_iter(),
+            check_results.into_iter().map(|result| result.map(|_| ())),
             ExecutionFlags::default(),
             Some(bundle_account_locker),
             revert_on_error,
@@ -271,25 +264,23 @@ impl Consumer {
                 .zip(txs.iter())
                 .map(|(r, tx)| match r {
                     Ok(_cost) => {
-                        if let Some(l_bundle_account_locker) = &l_bundle_account_locker {
-                            let transactions_account_locks =
-                                TransactionAccountLocksIterator::new(tx)
-                                    .accounts_with_is_writable();
-                            for (acc, writable) in transactions_account_locks {
-                                let is_writable_conflict = writable
-                                    && (l_bundle_account_locker.write_locks().contains_key(acc)
-                                        || l_bundle_account_locker.read_locks().contains_key(acc));
-                                let is_read_conflict = !writable
-                                    && l_bundle_account_locker.write_locks().contains_key(acc);
+                        let Some(l_bundle_account_locker) = &l_bundle_account_locker else {
+                            return Ok(());
+                        };
+                        let transactions_account_locks =
+                            TransactionAccountLocksIterator::new(tx).accounts_with_is_writable();
+                        for (acc, writable) in transactions_account_locks {
+                            let is_writable_conflict = writable
+                                && (l_bundle_account_locker.write_locks().contains_key(acc)
+                                    || l_bundle_account_locker.read_locks().contains_key(acc));
+                            let is_read_conflict = !writable
+                                && l_bundle_account_locker.write_locks().contains_key(acc);
 
-                                if is_writable_conflict || is_read_conflict {
-                                    return Err(TransactionError::AccountInUse);
-                                }
+                            if is_writable_conflict || is_read_conflict {
+                                return Err(TransactionError::AccountInUse);
                             }
-                            Ok(())
-                        } else {
-                            Ok(())
                         }
+                        Ok(())
                     }
                     Err(err) => Err(err.clone()),
                 }),
@@ -462,11 +453,6 @@ impl Consumer {
         let successful_count = load_and_execute_transactions_output
             .processed_counts
             .processed_with_successful_result_count as usize;
-        let transaction_errors = load_and_execute_transactions_output
-            .processing_results
-            .iter()
-            .map(|result| result.flattened_result().err())
-            .collect_vec();
 
         if revert_on_error && successful_count != batch.sanitized_transactions().len() {
             return ExecuteAndCommitTransactionsOutput {
@@ -475,14 +461,14 @@ impl Consumer {
                     ..Default::default()
                 },
                 retryable_transaction_indexes,
-                commit_transactions_result: Ok((0..batch.sanitized_transactions().len())
-                    .map(|index| {
+                commit_transactions_result: Ok(load_and_execute_transactions_output
+                    .processing_results
+                    .iter()
+                    .map(|result| {
                         CommitTransactionDetails::NotCommitted(
-                            transaction_errors
-                                .get(index)
-                                .map(|error| {
-                                    error.clone().unwrap_or(TransactionError::CommitCancelled)
-                                })
+                            result
+                                .flattened_result()
+                                .err()
                                 .unwrap_or(TransactionError::CommitCancelled),
                         )
                     })
@@ -526,18 +512,16 @@ impl Consumer {
             attempted_processing_count: processing_results.len() as u64,
         };
 
-        let (processed_transactions, processing_results_to_transactions_us) =
-            measure_us!(processing_results
-                .iter()
-                .zip(batch.sanitized_transactions())
-                .filter_map(|(processing_result, tx)| {
-                    if processing_result.was_processed() {
-                        Some((tx.to_versioned_transaction(), tx))
-                    } else {
-                        None
-                    }
-                })
-                .collect_vec());
+        let processed_transactions = processing_results
+            .iter()
+            .zip(batch.sanitized_transactions())
+            .filter_map(|(processing_result, tx)| {
+                if processing_result.was_processed() {
+                    Some((tx.to_versioned_transaction(), tx))
+                } else {
+                    None
+                }
+            });
 
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
@@ -547,9 +531,8 @@ impl Consumer {
         // Entries do **not** yet support conflicting transactions. To get around this we create
         // lists of transactions that are non-conflicting to shred out into entries. If we don't do
         // this, then blocks are rejected by consensus/replay.
-        let batches = Self::create_sequential_non_conflicting_batches(
-            &mut reusables,
-            processed_transactions.into_iter(),
+        let (batches, prepare_record_transactions_us) = measure_us!(
+            Self::create_sequential_non_conflicting_batches(&mut reusables, processed_transactions)
         );
         self.seq_not_conflict_batch_reusables.set(reusables);
         let hashes = batches
@@ -568,9 +551,7 @@ impl Consumer {
             starting_transaction_index,
         } = record_transactions_summary;
         execute_and_commit_timings.record_transactions_timings = RecordTransactionsTimings {
-            processing_results_to_transactions_us: Saturating(
-                processing_results_to_transactions_us,
-            ),
+            prepare_record_transactions_us: Saturating(prepare_record_transactions_us),
             ..record_transactions_timings
         };
 
@@ -691,7 +672,10 @@ impl Consumer {
             }
 
             if has_contention {
-                result.push(std::mem::take(&mut current_batch));
+                result.push(std::mem::replace(
+                    &mut current_batch,
+                    Vec::with_capacity(TARGET_NUM_TRANSACTIONS_PER_BATCH),
+                ));
                 aggregate_write_locks.clear();
                 aggregate_read_locks.clear();
             }

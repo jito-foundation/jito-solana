@@ -3306,7 +3306,7 @@ impl Bank {
         if transactions.is_empty() {
             return vec![];
         }
-        let mut simulation_results = Vec::new();
+        let mut simulation_results = Vec::with_capacity(transactions.len());
 
         let mut account_overrides = AccountOverrides::default();
 
@@ -3314,7 +3314,7 @@ impl Bank {
         for transaction in transactions {
             let account_keys = transaction.account_keys();
             account_overrides.merge(self.get_account_overrides_for_simulation(&account_keys));
-            for account in transaction.account_keys().iter() {
+            for account in account_keys.iter() {
                 if !account_overrides.accounts().contains_key(account) {
                     if let Some((account_shared_data, _slot)) =
                         self.get_account_shared_data(account)
@@ -3329,7 +3329,7 @@ impl Bank {
         for (transaction, pre_accounts, post_accounts) in
             izip!(transactions, pre_accounts, post_accounts)
         {
-            let mut accounts_pre_loaded: Vec<KeyedAccountSharedData> = Vec::new();
+            let mut accounts_pre_loaded = Vec::with_capacity(pre_accounts.len());
 
             // fill out the pre-accounts from the account overrides or bank
             // shouldn't need to hit the bank unless pre_account isn't in transaction keys
@@ -3467,9 +3467,7 @@ impl Bank {
                     None => (None, None, None, None),
                 };
 
-            let execution_result = result.clone();
-
-            let mut accounts_post_loaded: Vec<KeyedAccountSharedData> = Vec::new();
+            let mut accounts_post_loaded = Vec::with_capacity(post_accounts.len());
             for pubkey in post_accounts {
                 if let Some(account) = account_overrides.get(pubkey) {
                     accounts_post_loaded.push((*pubkey, account.clone()));
@@ -3482,6 +3480,7 @@ impl Bank {
                 }
             }
 
+            let is_execution_result_err = result.is_err();
             simulation_results.push((
                 accounts_pre_loaded,
                 TransactionSimulationResult {
@@ -3502,7 +3501,7 @@ impl Bank {
             ));
 
             // bail out early if the execution result is an error
-            if execution_result.is_err() {
+            if is_execution_result_err {
                 break;
             }
         }

@@ -25,7 +25,6 @@ use {
             },
         },
     },
-    ahash::HashMap,
     crossbeam_channel::{Receiver, Sender},
     histogram::Histogram,
     itertools::Itertools,
@@ -33,7 +32,9 @@ use {
         atomic_txn_batch_result, not_committed::Reason, SchedulingError,
     },
     prio_graph::{AccessKind, GraphNode, PrioGraph},
+    smallvec::SmallVec,
     solana_clock::{Slot, MAX_PROCESSING_AGE},
+    solana_nohash_hasher::IntMap,
     solana_pubkey::Pubkey,
     solana_runtime::bank_forks::BankForks,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -62,15 +63,18 @@ fn passthrough_priority(
     *id
 }
 
+pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
+
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
     response_sender: Sender<BamOutboundMessage>,
 
     next_batch_id: u64,
-    inflight_batch_info: HashMap<TransactionBatchId, InflightBatchInfo>,
+    inflight_batch_info: IntMap<TransactionBatchId, InflightBatchInfo>,
     prio_graph: SchedulerPrioGraph,
-    insertion_to_prio_graph_time: HashMap<u32, Instant>,
+    /// seq_id is the key
+    insertion_to_prio_graph_time: IntMap<u32, Instant>,
     time_in_priograph_us: Histogram,
     time_in_worker_us: Histogram,
     time_between_schedule_us: Histogram,
@@ -79,7 +83,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 
     // Reusable objects to avoid allocations
     reusable_consume_work: Vec<ConsumeWork<Tx>>,
-    reusable_priority_ids: Vec<Vec<TransactionPriorityId>>,
+    // SmallVec 1: scheduler work items almost always carry a single batch id.
+    reusable_priority_ids: Vec<SmallVec<[TransactionPriorityId; 1]>>,
 
     extra_checks_enabled: bool,
     bank_forks: Arc<RwLock<BankForks>>,
@@ -90,7 +95,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 // 'non-revert_on_error' batches that are scheduled together.
 struct InflightBatchInfo {
     pub schedule_time: Instant,
-    pub batch_priority_ids: Vec<TransactionPriorityId>,
+    // SmallVec 1: each scheduled work item typically corresponds to one batch id.
+    pub batch_priority_ids: SmallVec<[TransactionPriorityId; 1]>,
     pub slot: Slot,
 }
 
@@ -106,9 +112,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             finished_consume_work_receiver,
             response_sender,
             next_batch_id: 0,
-            inflight_batch_info: HashMap::default(),
+            inflight_batch_info: IntMap::default(),
             prio_graph: PrioGraph::new(passthrough_priority),
-            insertion_to_prio_graph_time: HashMap::default(),
+            insertion_to_prio_graph_time: IntMap::default(),
             time_in_priograph_us: Histogram::new(),
             time_in_worker_us: Histogram::new(),
             time_between_schedule_us: Histogram::new(),
@@ -163,15 +169,15 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             let txns = batch_ids
                 .iter()
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
-                .collect_vec();
+                .collect::<SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]>>();
 
             if self.extra_checks_enabled {
-                let lock_results = (0..txns.len())
-                    .map(|_| Ok(()))
-                    .collect::<Vec<solana_transaction_error::TransactionResult<()>>>();
+                let lock_results: SmallVec<
+                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
+                > = SmallVec::from_elem(Ok(()), txns.len());
                 let check_result = working_bank.check_transactions::<Tx>(
                     &txns,
-                    lock_results.as_slice(),
+                    &lock_results,
                     MAX_PROCESSING_AGE,
                     &mut TransactionErrorMetrics::default(),
                 );
@@ -180,6 +186,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     .find_position(|res| res.is_err())
                     .map(|(i, res)| (i, res.as_ref().err().unwrap().clone()))
                 {
+                    drop(txns);
                     container.remove_by_id(next_batch_id.id);
 
                     let seq_id = priority_to_seq_id(next_batch_id.priority);
@@ -242,17 +249,19 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
             // Filter on check_transactions
             if self.extra_checks_enabled {
-                let sanitized_txs = batch_ids
-                    .iter()
-                    .filter_map(|txn_id| container.get_transaction(*txn_id))
-                    .map(|txn| txn.borrow())
-                    .collect::<Vec<_>>();
-                let lock_results = (0..sanitized_txs.len())
-                    .map(|_| Ok(()))
-                    .collect::<Vec<solana_transaction_error::TransactionResult<()>>>();
+                let mut sanitized_txs: SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]> = SmallVec::new();
+                let mut lock_results: SmallVec<
+                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
+                > = SmallVec::new();
+                for txn_id in batch_ids.iter() {
+                    if let Some(txn) = container.get_transaction(*txn_id) {
+                        sanitized_txs.push(txn.borrow());
+                        lock_results.push(Ok(()));
+                    }
+                }
                 let check_result = working_bank.check_transactions::<Tx>(
                     &sanitized_txs,
-                    lock_results.as_slice(),
+                    &lock_results,
                     MAX_PROCESSING_AGE,
                     &mut TransactionErrorMetrics::default(),
                 );
@@ -261,6 +270,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     .find_position(|res| res.is_err())
                     .map(|(i, res)| (i, res.as_ref().err().unwrap().clone()))
                 {
+                    drop(sanitized_txs);
                     container.remove_by_id(id.id);
                     self.prio_graph.unblock(&id);
 
@@ -283,13 +293,14 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             let batch_id = self.get_next_schedule_id();
             *num_scheduled += batch_ids.len();
             Self::generate_work(&mut work, batch_id, &[id], revert_on_error, container, slot);
-            self.send_to_worker(vec![id], work, slot);
+            self.send_to_worker(SmallVec::from([id]), work, slot);
         }
     }
 
     fn send_to_worker(
         &mut self,
-        priority_ids: Vec<TransactionPriorityId>,
+        // SmallVec 1: scheduler currently sends a single batch id per work item.
+        priority_ids: SmallVec<[TransactionPriorityId; 1]>,
         work: ConsumeWork<Tx>,
         slot: Slot,
     ) {
@@ -319,8 +330,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             ConsumeWork {
                 batch_id: TransactionBatchId::new(0),
                 ids: Vec::with_capacity(1),
-                transactions: Vec::with_capacity(5),
-                max_ages: Vec::with_capacity(5),
+                transactions: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
+                max_ages: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
@@ -336,7 +347,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         self.reusable_consume_work.push(work);
     }
 
-    fn recycle_priority_ids(&mut self, mut priority_ids: Vec<TransactionPriorityId>) {
+    // SmallVec 1: priority id batches are almost always singletons.
+    fn recycle_priority_ids(&mut self, mut priority_ids: SmallVec<[TransactionPriorityId; 1]>) {
         priority_ids.clear();
         self.reusable_priority_ids.push(priority_ids);
     }
@@ -801,7 +813,7 @@ mod tests {
                 tests::create_slow_genesis_config,
                 transaction_scheduler::{
                     bam_receive_and_buffer::seq_id_to_priority,
-                    bam_scheduler::BamScheduler,
+                    bam_scheduler::{BamScheduler, MAX_PACKETS_PER_BUNDLE},
                     scheduler::{PreLockFilterAction, Scheduler},
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
@@ -813,6 +825,7 @@ mod tests {
             atomic_txn_batch_result::Result::{Committed, NotCommitted},
             TransactionCommittedResult,
         },
+        smallvec::SmallVec,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_hash::Hash,
         solana_keypair::Keypair,
@@ -905,8 +918,12 @@ mod tests {
                 compute_unit_price,
             );
             const TEST_TRANSACTION_COST: u64 = 5000;
+            let mut txns_max_age: SmallVec<
+                [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
+            > = SmallVec::new();
+            txns_max_age.push((transaction, MaxAge::MAX));
             container.insert_new_batch(
-                vec![(transaction, MaxAge::MAX)],
+                txns_max_age,
                 compute_unit_price,
                 TEST_TRANSACTION_COST,
                 false,

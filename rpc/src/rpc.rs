@@ -4216,21 +4216,18 @@ pub mod rpc_full {
                      base64",
                 ))
             })?;
-            let mut unsanitized_txs = rpc_bundle_request
-                .encoded_transactions
-                .into_iter()
-                .map(|encoded_tx| {
+            let mut packet_hashes =
+                HashSet::with_capacity(rpc_bundle_request.encoded_transactions.len());
+            let mut unsanitized_txs =
+                Vec::with_capacity(rpc_bundle_request.encoded_transactions.len());
+            for encoded_tx in rpc_bundle_request.encoded_transactions {
+                let tx =
                     decode_and_deserialize::<VersionedTransaction>(encoded_tx, binary_encoding)
-                        .map(|de| de.1)
-                })
-                .collect::<Result<Vec<VersionedTransaction>>>()?;
-
-            // check for duplicate transactions
-            let mut packet_hashes = HashSet::new();
-            for tx in unsanitized_txs.iter() {
+                        .map(|(_bytes, txn)| txn)?;
                 if !packet_hashes.insert(tx.message.hash()) {
                     return Err(Error::invalid_params("duplicate transactions"));
                 }
+                unsanitized_txs.push(tx);
             }
 
             let bank = match simulation_bank.unwrap_or_default() {
@@ -4690,18 +4687,22 @@ fn sanitize_transaction(
 pub fn account_configs_to_accounts(
     accounts_config: &[Option<RpcSimulateTransactionAccountsConfig>],
 ) -> Result<Vec<Vec<Pubkey>>> {
-    let mut execution_accounts = Vec::new();
+    let mut execution_accounts = Vec::with_capacity(accounts_config.len());
     for account_config in accounts_config {
-        let mut accounts = Vec::new();
-        if let Some(account_config) = account_config {
-            for address in &account_config.addresses {
-                accounts.push(Pubkey::from_str(address).map_err(|_| {
-                    Error::invalid_params(format!(
-                        "invalid pubkey for pre/post accounts provided: {address}"
-                    ))
-                })?);
+        let accounts = match account_config {
+            Some(account_config) => {
+                let mut accounts = Vec::with_capacity(account_config.addresses.len());
+                for address in &account_config.addresses {
+                    accounts.push(Pubkey::from_str(address).map_err(|_| {
+                        Error::invalid_params(format!(
+                            "invalid pubkey for pre/post accounts provided: {address}"
+                        ))
+                    })?);
+                }
+                accounts
             }
-        }
+            _ => Vec::new(),
+        };
         execution_accounts.push(accounts);
     }
     Ok(execution_accounts)
