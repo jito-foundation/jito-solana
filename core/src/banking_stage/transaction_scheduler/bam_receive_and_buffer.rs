@@ -14,6 +14,7 @@ use {
             decision_maker::BufferedPacketsDecision,
             scheduler_messages::MaxAge,
             transaction_scheduler::{
+                bam_scheduler::MAX_PACKETS_PER_BUNDLE,
                 bam_utils::convert_txn_error_to_proto,
                 receive_and_buffer::{
                     calculate_max_age, calculate_priority_and_cost, DisconnectedError,
@@ -81,7 +82,7 @@ struct ParsedBatch {
         [(
             RuntimeTransaction<ResolvedTransactionView<SharedBytes>>,
             MaxAge,
-        ); 5],
+        ); MAX_PACKETS_PER_BUNDLE],
     >,
     pub cost: u64,
     priority: u64,

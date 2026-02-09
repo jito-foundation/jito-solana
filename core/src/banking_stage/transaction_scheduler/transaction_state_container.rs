@@ -2,13 +2,16 @@
 use qualifier_attr::qualifiers;
 use {
     super::{transaction_priority_id::TransactionPriorityId, transaction_state::TransactionState},
-    crate::banking_stage::scheduler_messages::{MaxAge, TransactionId},
+    crate::banking_stage::{
+        scheduler_messages::{MaxAge, TransactionId},
+        transaction_scheduler::bam_scheduler::MAX_PACKETS_PER_BUNDLE,
+    },
     agave_transaction_view::resolved_transaction_view::ResolvedTransactionView,
-    ahash::{HashMap, HashMapExt},
     itertools::MinMaxResult,
     min_max_heap::MinMaxHeap,
     slab::{Slab, VacantEntry},
     smallvec::SmallVec,
+    solana_nohash_hasher::IntMap,
     solana_packet::PACKET_DATA_SIZE,
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
@@ -47,7 +50,9 @@ pub(crate) struct TransactionStateContainer<Tx: TransactionWithMeta> {
     priority_queue: MinMaxHeap<TransactionPriorityId>,
     id_to_transaction_state: Slab<BatchIdOrTransactionState<Tx>>,
     held_transactions: Vec<TransactionPriorityId>,
-    batch_id_to_transaction_ids: HashMap<usize, SmallVec<[TransactionId; 5]>>,
+    // In the BAM path this is expected to be <= 5: `BamReceiveAndBuffer::prevalidate_batches`
+    // rejects `AtomicTxnBatch`es with `packets.len() > 5` before calling `insert_new_batch`.
+    batch_id_to_transaction_ids: IntMap<usize, SmallVec<[TransactionId; MAX_PACKETS_PER_BUNDLE]>>,
 }
 
 struct BatchInfo {
@@ -85,7 +90,18 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
     fn get_transaction(&self, id: TransactionId) -> Option<&Tx>;
 
     /// Get the batch id and revert_on_error flag for a transaction.
-    fn get_batch(&self, id: TransactionId) -> Option<(&SmallVec<[TransactionId; 5]>, bool, u64)>;
+    ///
+    /// In the BAM path, the returned `SmallVec` length is bounded to <= 5:
+    /// `BamReceiveAndBuffer::prevalidate_batches` rejects `AtomicTxnBatch`es with
+    /// more than 5 packets before they reach `TransactionStateContainer::insert_new_batch`.
+    fn get_batch(
+        &self,
+        id: TransactionId,
+    ) -> Option<(
+        &SmallVec<[TransactionId; MAX_PACKETS_PER_BUNDLE]>,
+        bool,
+        u64,
+    )>;
 
     /// Retries a transaction - inserts transaction back into map (but not packet).
     /// This transitions the transaction to `Unprocessed` state.
@@ -144,7 +160,10 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
             priority_queue: MinMaxHeap::with_capacity(capacity + EXTRA_CAPACITY),
             id_to_transaction_state: Slab::with_capacity(capacity + EXTRA_CAPACITY),
             held_transactions: Vec::with_capacity(capacity),
-            batch_id_to_transaction_ids: HashMap::with_capacity(capacity + EXTRA_CAPACITY),
+            batch_id_to_transaction_ids: IntMap::with_capacity_and_hasher(
+                capacity + EXTRA_CAPACITY,
+                Default::default(),
+            ),
         }
     }
 
@@ -183,7 +202,16 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
         }
     }
 
-    fn get_batch(&self, id: TransactionId) -> Option<(&SmallVec<[TransactionId; 5]>, bool, u64)> {
+    // In the BAM path, this `SmallVec` is expected to contain <= 5 transaction ids due to
+    // `BamReceiveAndBuffer::prevalidate_batches` dropping `AtomicTxnBatch`es with >5 packets.
+    fn get_batch(
+        &self,
+        id: TransactionId,
+    ) -> Option<(
+        &SmallVec<[TransactionId; MAX_PACKETS_PER_BUNDLE]>,
+        bool,
+        u64,
+    )> {
         let Some(BatchIdOrTransactionState::Batch(batch_info)) =
             self.id_to_transaction_state.get(id)
         else {
@@ -293,8 +321,7 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
     /// Note: will not evict existing transactions to make room for the batch (unlike `insert_new_transaction`).
     pub(crate) fn insert_new_batch(
         &mut self,
-        // SmallVec 5: batches align with BundleStorage::MAX_PACKETS_PER_BUNDLE.
-        txns_max_age: SmallVec<[(Tx, MaxAge); 5]>,
+        txns_max_age: SmallVec<[(Tx, MaxAge); MAX_PACKETS_PER_BUNDLE]>,
         priority: u64,
         cost: u64,
         revert_on_error: bool,
@@ -454,8 +481,16 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
         self.inner.hold_transaction(priority_id);
     }
 
+    // `StateContainer::get_batch` is only used for BAM batches (<= 5 txns due to prevalidation).
     #[inline]
-    fn get_batch(&self, _: TransactionId) -> Option<(&SmallVec<[TransactionId; 5]>, bool, u64)> {
+    fn get_batch(
+        &self,
+        _: TransactionId,
+    ) -> Option<(
+        &SmallVec<[TransactionId; MAX_PACKETS_PER_BUNDLE]>,
+        bool,
+        u64,
+    )> {
         unimplemented!("get_batch not implemented for TransactionViewStateContainer");
     }
 

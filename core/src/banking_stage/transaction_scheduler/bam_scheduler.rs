@@ -63,6 +63,8 @@ fn passthrough_priority(
     *id
 }
 
+pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
+
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
@@ -167,12 +169,12 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             let txns = batch_ids
                 .iter()
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
-                .collect::<SmallVec<[&Tx; 5]>>();
+                .collect::<SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]>>();
 
             if self.extra_checks_enabled {
-                // SmallVec 5: lock results mirror the max-size bundle.
-                let lock_results: SmallVec<[solana_transaction_error::TransactionResult<()>; 5]> =
-                    SmallVec::from_elem(Ok(()), txns.len());
+                let lock_results: SmallVec<
+                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
+                > = SmallVec::from_elem(Ok(()), txns.len());
                 let check_result = working_bank.check_transactions::<Tx>(
                     &txns,
                     &lock_results,
@@ -247,11 +249,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
             // Filter on check_transactions
             if self.extra_checks_enabled {
-                // SmallVec 5: BAM bundles are capped at 5 transactions (BundleStorage::MAX_PACKETS_PER_BUNDLE).
-                let mut sanitized_txs: SmallVec<[&Tx; 5]> = SmallVec::new();
-                // SmallVec 5: one lock result per transaction in the bundle.
+                let mut sanitized_txs: SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]> = SmallVec::new();
                 let mut lock_results: SmallVec<
-                    [solana_transaction_error::TransactionResult<()>; 5],
+                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
                 > = SmallVec::new();
                 for txn_id in batch_ids.iter() {
                     if let Some(txn) = container.get_transaction(*txn_id) {
@@ -919,7 +919,7 @@ mod tests {
             );
             const TEST_TRANSACTION_COST: u64 = 5000;
             let mut txns_max_age: SmallVec<
-                [(RuntimeTransaction<SanitizedTransaction>, MaxAge); 5],
+                [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
             > = SmallVec::new();
             txns_max_age.push((transaction, MaxAge::MAX));
             container.insert_new_batch(
