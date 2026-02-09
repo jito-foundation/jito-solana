@@ -16,7 +16,7 @@ use {
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
     },
-    std::sync::Arc,
+    std::{hash::BuildHasherDefault, sync::Arc},
 };
 
 /// This structure will hold `TransactionState` for the entirety of a
@@ -162,7 +162,7 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
             held_transactions: Vec::with_capacity(capacity),
             batch_id_to_transaction_ids: IntMap::with_capacity_and_hasher(
                 capacity + EXTRA_CAPACITY,
-                Default::default(),
+                BuildHasherDefault::default(),
             ),
         }
     }
