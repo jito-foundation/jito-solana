@@ -134,8 +134,8 @@ solana-measure = { workspace = true }
 solana-message = { workspace = true }
 solana-metrics = { workspace = true }
 solana-native-token = { workspace = true }
-solana-nohash-hasher = { workspace = true }
 solana-net-utils = { workspace = true, features = ["agave-unstable-api"] }
+solana-nohash-hasher = { workspace = true }
 solana-nonce = { workspace = true }
 solana-nonce-account = { workspace = true }
 solana-packet = { workspace = true }
