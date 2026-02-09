@@ -272,17 +272,22 @@ impl BlockEngineStage {
             .map_err(|err| Self::map_bam_enabled(bam_enabled, err));
         }
 
-        if let Some((_best_url, (best_socket, _best_latency_us))) =
-            Self::get_ranked_endpoints(&endpoint)
-                .await
-                .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-                .into_iter()
-                .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
-        {
-            if best_socket.is_some() {
-                // no else branch needed since we'll still send to shred_receiver_address
-                shredstream_receiver_address.store(Arc::new(best_socket));
+        match Self::get_ranked_endpoints(&endpoint).await {
+            Ok(candidates) => {
+                if let Some((_best_url, (best_socket, _best_latency_us))) = candidates
+                    .into_iter()
+                    .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
+                {
+                    if best_socket.is_some() {
+                        // no else branch needed since we'll still send to shred_receiver_address
+                        shredstream_receiver_address.store(Arc::new(best_socket));
+                    }
+                }
             }
+            Err(err) => match Self::map_bam_enabled(bam_enabled, err) {
+                ProxyError::BamEnabled => return Ok(()),
+                _ => {}
+            },
         }
 
         datapoint_info!(
