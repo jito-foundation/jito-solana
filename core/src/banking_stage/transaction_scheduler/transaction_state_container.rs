@@ -299,8 +299,12 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
         revert_on_error: bool,
         max_schedule_slot: u64,
     ) -> Option<usize> {
+        // Batches may fill the slab to capacity; callers must not mix this with
+        // single‑TX inserts because a single‑TX insert may panic if the slab is full.
+        // Currently, insert_new_batch is only called in the BAM scheduler, which
+        // does not call insert_new_transaction, so this is safe.
         let capacity_required = self.id_to_transaction_state.len() + txns_max_age.len() + 1;
-        if capacity_required >= self.id_to_transaction_state.capacity() {
+        if capacity_required > self.id_to_transaction_state.capacity() {
             return None;
         }
 
