@@ -25,7 +25,6 @@ use {
             },
         },
     },
-    ahash::HashMap,
     crossbeam_channel::{Receiver, Sender},
     histogram::Histogram,
     itertools::Itertools,
@@ -35,6 +34,7 @@ use {
     prio_graph::{AccessKind, GraphNode, PrioGraph},
     smallvec::SmallVec,
     solana_clock::{Slot, MAX_PROCESSING_AGE},
+    solana_nohash_hasher::IntMap,
     solana_pubkey::Pubkey,
     solana_runtime::bank_forks::BankForks,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -71,9 +71,10 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
     response_sender: Sender<BamOutboundMessage>,
 
     next_batch_id: u64,
-    inflight_batch_info: HashMap<TransactionBatchId, InflightBatchInfo>,
+    inflight_batch_info: IntMap<TransactionBatchId, InflightBatchInfo>,
     prio_graph: SchedulerPrioGraph,
-    insertion_to_prio_graph_time: HashMap<u32, Instant>,
+    /// seq_id is the key
+    insertion_to_prio_graph_time: IntMap<u32, Instant>,
     time_in_priograph_us: Histogram,
     time_in_worker_us: Histogram,
     time_between_schedule_us: Histogram,
@@ -111,9 +112,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             finished_consume_work_receiver,
             response_sender,
             next_batch_id: 0,
-            inflight_batch_info: HashMap::default(),
+            inflight_batch_info: IntMap::default(),
             prio_graph: PrioGraph::new(passthrough_priority),
-            insertion_to_prio_graph_time: HashMap::default(),
+            insertion_to_prio_graph_time: IntMap::default(),
             time_in_priograph_us: Histogram::new(),
             time_in_worker_us: Histogram::new(),
             time_between_schedule_us: Histogram::new(),
@@ -165,7 +166,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 continue;
             }
 
-            // SmallVec 5: BAM bundles are capped at 5 transactions (BundleStorage::MAX_PACKETS_PER_BUNDLE).
             let txns = batch_ids
                 .iter()
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
@@ -330,8 +330,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             ConsumeWork {
                 batch_id: TransactionBatchId::new(0),
                 ids: Vec::with_capacity(1),
-                transactions: Vec::with_capacity(5),
-                max_ages: Vec::with_capacity(5),
+                transactions: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
+                max_ages: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
@@ -813,7 +813,7 @@ mod tests {
                 tests::create_slow_genesis_config,
                 transaction_scheduler::{
                     bam_receive_and_buffer::seq_id_to_priority,
-                    bam_scheduler::BamScheduler,
+                    bam_scheduler::{BamScheduler, MAX_PACKETS_PER_BUNDLE},
                     scheduler::{PreLockFilterAction, Scheduler},
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },

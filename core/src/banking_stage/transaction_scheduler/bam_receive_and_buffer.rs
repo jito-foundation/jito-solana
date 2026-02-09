@@ -77,7 +77,6 @@ pub struct BamReceiveAndBuffer {
 }
 
 struct ParsedBatch {
-    // SmallVec 5: BAM bundles are capped at 5 transactions (BundleStorage::MAX_PACKETS_PER_BUNDLE).
     pub txns_max_age: SmallVec<
         [(
             RuntimeTransaction<ResolvedTransactionView<SharedBytes>>,
@@ -613,7 +612,7 @@ impl BamReceiveAndBuffer {
                     ));
                 }
 
-                if atomic_txn_batch.packets.len() > 5 {
+                if atomic_txn_batch.packets.len() > MAX_PACKETS_PER_BUNDLE {
                     stats.num_dropped_without_parsing += 1;
                     return Err((
                         Reason::DeserializationError(

@@ -50,8 +50,8 @@ pub(crate) struct TransactionStateContainer<Tx: TransactionWithMeta> {
     priority_queue: MinMaxHeap<TransactionPriorityId>,
     id_to_transaction_state: Slab<BatchIdOrTransactionState<Tx>>,
     held_transactions: Vec<TransactionPriorityId>,
-    // In the BAM path this is expected to be <= 5: `BamReceiveAndBuffer::prevalidate_batches`
-    // rejects `AtomicTxnBatch`es with `packets.len() > 5` before calling `insert_new_batch`.
+    // `BamReceiveAndBuffer::prevalidate_batches` rejects `AtomicTxnBatch`es with
+    // `packets.len() > MAX_PACKETS_PER_BUNDLE` before calling `insert_new_batch`.
     batch_id_to_transaction_ids: IntMap<usize, SmallVec<[TransactionId; MAX_PACKETS_PER_BUNDLE]>>,
 }
 
@@ -91,9 +91,9 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
 
     /// Get the batch id and revert_on_error flag for a transaction.
     ///
-    /// In the BAM path, the returned `SmallVec` length is bounded to <= 5:
     /// `BamReceiveAndBuffer::prevalidate_batches` rejects `AtomicTxnBatch`es with
-    /// more than 5 packets before they reach `TransactionStateContainer::insert_new_batch`.
+    /// more than MAX_PACKETS_PER_BUNDLE packets before they reach
+    /// `TransactionStateContainer::insert_new_batch`.
     fn get_batch(
         &self,
         id: TransactionId,
@@ -202,8 +202,8 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
         }
     }
 
-    // In the BAM path, this `SmallVec` is expected to contain <= 5 transaction ids due to
-    // `BamReceiveAndBuffer::prevalidate_batches` dropping `AtomicTxnBatch`es with >5 packets.
+    // BamReceiveAndBuffer::prevalidate_batches drops `AtomicTxnBatch`es with >
+    // MAX_PACKETS_PER_BUNDLE packets.
     fn get_batch(
         &self,
         id: TransactionId,
@@ -481,7 +481,8 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
         self.inner.hold_transaction(priority_id);
     }
 
-    // `StateContainer::get_batch` is only used for BAM batches (<= 5 txns due to prevalidation).
+    // `StateContainer::get_batch` is only used for BAM batches (<= MAX_PACKETS_PER_BUNDLE txns
+    // due to prevalidation).
     #[inline]
     fn get_batch(
         &self,
