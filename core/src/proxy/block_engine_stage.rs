@@ -248,8 +248,8 @@ impl BlockEngineStage {
             return Ok(());
         }
 
-        let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
         if !local_block_engine_config.disable_block_engine_autoconfig {
+            let endpoint = Self::get_endpoint(&local_block_engine_config.block_engine_url)?;
             datapoint_info!(
                 "block_engine_stage-connect",
                 "type" => "autoconfig",

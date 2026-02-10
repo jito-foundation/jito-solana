@@ -143,10 +143,16 @@ where
                 timing_metrics.decision_time_us += decision_time_us;
             });
             let new_leader_slot = decision.bank().map(|b| b.slot());
+            let scheduling_enabled = self.scheduling_enabled();
+            let slot_for_metrics = if scheduling_enabled {
+                new_leader_slot
+            } else {
+                None
+            };
             self.count_metrics
-                .maybe_report_and_reset_slot(new_leader_slot);
+                .maybe_report_and_reset_slot(slot_for_metrics);
             self.timing_metrics
-                .maybe_report_and_reset_slot(new_leader_slot);
+                .maybe_report_and_reset_slot(slot_for_metrics);
 
             if !self.bam_controller && most_recent_leader_slot != new_leader_slot {
                 self.container.flush_held_transactions();
@@ -190,7 +196,7 @@ where
             }
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
-            let should_report = self.count_metrics.interval_has_data() && self.scheduling_enabled();
+            let should_report = self.count_metrics.interval_has_data() && scheduling_enabled;
             let priority_min_max = self.container.get_min_max_priority();
             self.count_metrics.update(|count_metrics| {
                 count_metrics.update_priority_stats(priority_min_max);
