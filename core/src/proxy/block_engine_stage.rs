@@ -492,11 +492,11 @@ impl BlockEngineStage {
     ) -> crate::proxy::Result<Option<(String, Option<SocketAddr>)>> {
         let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
             .await
-            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?;
+            .map_err(ProxyError::BlockEngineConnectionError)?;
         let endpoints = endpoint_discovery
             .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
             .await
-            .map_err(|e| ProxyError::BlockEngineRequestError(Box::new(e)))?
+            .map_err(ProxyError::BlockEngineRequestError)?
             .into_inner();
 
         let Some(global) = endpoints.global_endpoint else {
