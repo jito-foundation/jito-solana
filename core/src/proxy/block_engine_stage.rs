@@ -394,6 +394,7 @@ impl BlockEngineStage {
                         other => {
                             datapoint_warn!(
                                 "block_engine_stage-autoconfig_error",
+                                "type" => "proxy_err",
                                 ("url", block_engine_url, String),
                                 ("count", 1, i64),
                                 ("error", other.to_string(), String),
@@ -729,7 +730,7 @@ impl BlockEngineStage {
                 Err(e) => {
                     datapoint_warn!(
                         "block_engine_stage-autoconfig_error",
-                        "type" => "grpc_probe_join",
+                        "type" => "probe_join",
                         ("count", 1, i64),
                         ("err", e.to_string(), String),
                     );
@@ -742,7 +743,7 @@ impl BlockEngineStage {
                 Err(e) => {
                     datapoint_warn!(
                         "block_engine_stage-autoconfig_error",
-                        "type" => "grpc_probe",
+                        "type" => "probe",
                         ("url", endpoint.block_engine_url.as_str(), String),
                         ("count", 1, i64),
                         ("err", e.to_string(), String),
@@ -768,10 +769,13 @@ impl BlockEngineStage {
                         .shredstream_receiver_address
                         .to_socket_addrs()
                         .inspect_err(|e| {
-                            warn!(
-                                "Failed to resolve shredstream address {}, error: {e}",
-                                endpoint.shredstream_receiver_address
-                            )
+                            datapoint_warn!(
+                                "block_engine_stage-autoconfig_error",
+                                "type" => "shredstream_resolve",
+                                ("address", endpoint.block_engine_url.as_str(), String),
+                                ("count", 1, i64),
+                                ("err", e.to_string(), String),
+                            );
                         })
                         .ok()
                         .and_then(|mut shredstream_sockets| shredstream_sockets.next());
