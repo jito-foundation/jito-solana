@@ -50,7 +50,7 @@ use {
     },
     tonic::{
         codegen::InterceptedService,
-        transport::{Channel, Endpoint, Uri},
+        transport::{Channel, Endpoint},
         Streaming,
     },
 };
@@ -100,18 +100,21 @@ pub struct BlockEngineStage {
     t_hdls: Vec<JoinHandle<()>>,
 }
 #[derive(Error, Debug)]
-enum PingError<'a> {
-    #[error("Failed to send ping: {0}")]
-    CommandFailure(#[from] std::io::Error),
+enum ProbeError {
+    #[error(transparent)]
+    BuildEndpoint(#[from] ProxyError),
 
-    #[error("Ping command exited with non-zero status: {1:?} for host: {0}")]
-    NonZeroExit(&'a str, Option<i32>),
+    #[error("gRPC connect timeout")]
+    ConnectTimeout,
 
-    #[error("No valid RTT found in ping output")]
-    NoRttFound,
+    #[error("gRPC connect error: {0}")]
+    Connect(#[from] tonic::transport::Error),
 
-    #[error("Failed to parse RTT: {0}")]
-    ParseFloatError(#[from] std::num::ParseFloatError),
+    #[error("gRPC request error: {0}")]
+    Request(#[from] tonic::Status),
+
+    #[error("no successful probe samples")]
+    NoSuccessfulSamples,
 }
 
 impl BlockEngineStage {
@@ -272,17 +275,16 @@ impl BlockEngineStage {
             .map_err(|err| Self::map_bam_enabled(bam_enabled, err));
         }
 
-        if let Some((_best_url, (best_socket, _best_latency_us))) =
-            Self::get_ranked_endpoints(&endpoint)
-                .await
-                .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-                .into_iter()
-                .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
+        let mut backend_endpoint = endpoint.clone();
+        if let Some((global_url, maybe_shredstream_socket)) = Self::get_global_endpoint(&endpoint)
+            .await
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         {
-            if best_socket.is_some() {
+            if maybe_shredstream_socket.is_some() {
                 // no else branch needed since we'll still send to shred_receiver_addresses
-                shredstream_receiver_address.store(Arc::new(best_socket));
+                shredstream_receiver_address.store(Arc::new(maybe_shredstream_socket));
             }
+            backend_endpoint = Self::get_endpoint(global_url.as_str())?;
         }
 
         datapoint_info!(
@@ -291,7 +293,7 @@ impl BlockEngineStage {
             ("count", 1, i64),
         );
         Self::connect_auth_and_stream(
-            &endpoint,
+            &backend_endpoint,
             local_block_engine_config,
             block_engine_config,
             cluster_info,
@@ -344,7 +346,7 @@ impl BlockEngineStage {
             if block_engine_url != local_block_engine_config.block_engine_url {
                 info!(
                     "Selected best Block Engine url: {block_engine_url}, Shredstream socket: \
-                     {maybe_shredstream_socket:?}, ping: ({:?})",
+                     {maybe_shredstream_socket:?}, rtt: ({:?})",
                     Duration::from_micros(latency_us)
                 );
                 backend_endpoint = Self::get_endpoint(block_engine_url.as_str())?;
@@ -392,6 +394,7 @@ impl BlockEngineStage {
                         other => {
                             datapoint_warn!(
                                 "block_engine_stage-autoconfig_error",
+                                "type" => "proxy_err",
                                 ("url", block_engine_url, String),
                                 ("count", 1, i64),
                                 ("error", other.to_string(), String),
@@ -400,7 +403,7 @@ impl BlockEngineStage {
                     }
 
                     if connect_start.elapsed() > Self::CONNECTION_TIMEOUT * 3 {
-                        return Err(e); // run a new round of pings and connect to new best
+                        return Err(e); // run a new round of probes and connect to new best
                     }
                     // Otherwise, try next endpoint without delay; caller handles backoff on overall failure
                 }
@@ -408,7 +411,7 @@ impl BlockEngineStage {
         }
         if !attempted {
             return Err(ProxyError::BlockEngineEndpointError(
-                "autoconfig failed: no endpoints available after ping ranking".to_string(),
+                "autoconfig failed: no endpoints available after gRPC RTT ranking".to_string(),
             ));
         }
         Err(ProxyError::BlockEngineEndpointError(format!(
@@ -416,8 +419,6 @@ impl BlockEngineStage {
         )))
     }
 
-    /// Discover candidate endpoints either ranked via ping or using global fallback.
-    /// Use u64::MAX for latency value to indicate global fallback (no ping data).
     fn map_bam_enabled(bam_enabled: &Arc<AtomicU8>, err: ProxyError) -> ProxyError {
         match BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed)) {
             BamConnectionState::Disconnected => err,
@@ -427,6 +428,8 @@ impl BlockEngineStage {
         }
     }
 
+    /// Discover candidate endpoints either ranked via gRPC RTT probe or using global fallback.
+    /// Use u64::MAX for latency value to indicate global fallback (no RTT probe data).
     async fn get_ranked_endpoints(
         backend_endpoint: &Endpoint,
     ) -> crate::proxy::Result<
@@ -451,7 +454,8 @@ impl BlockEngineStage {
             ("regioned_count", endpoints.regioned_endpoints.len(), i64),
             ("count", 1, i64),
         );
-        let endpoint_latencies = Self::ping_and_rank_endpoints(&endpoints.regioned_endpoints).await;
+        let endpoint_latencies =
+            Self::probe_and_rank_endpoints(&endpoints.regioned_endpoints).await;
         if endpoint_latencies.is_empty() {
             let Some(global) = endpoints.global_endpoint else {
                 return Err(ProxyError::BlockEngineEndpointError(
@@ -481,6 +485,48 @@ impl BlockEngineStage {
         }
 
         Ok(endpoint_latencies)
+    }
+
+    async fn get_global_endpoint(
+        backend_endpoint: &Endpoint,
+    ) -> crate::proxy::Result<Option<(String, Option<SocketAddr>)>> {
+        let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
+            .await
+            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?;
+        let endpoints = endpoint_discovery
+            .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
+            .await
+            .map_err(|e| ProxyError::BlockEngineRequestError(Box::new(e)))?
+            .into_inner();
+
+        let Some(global) = endpoints.global_endpoint else {
+            return Err(ProxyError::BlockEngineEndpointError(
+                "Block engine configuration failed: no global endpoint found".to_owned(),
+            ));
+        };
+
+        datapoint_info!(
+            "block_engine_stage-connect",
+            "type" => "direct_global",
+            ("count", 1, i64),
+        );
+
+        let ss_res = global
+            .shredstream_receiver_address
+            .to_socket_addrs()
+            .inspect_err(|e| {
+                datapoint_warn!(
+                    "block_engine_stage-autoconfig_error",
+                    "type" => "shredstream_resolve",
+                    ("address", global.shredstream_receiver_address, String),
+                    ("count", 1, i64),
+                    ("err", e.to_string(), String),
+                );
+            })
+            .ok()
+            .and_then(|mut shredstream_sockets| shredstream_sockets.next());
+
+        Ok(Some((global.block_engine_url, ss_res)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -586,47 +632,69 @@ impl BlockEngineStage {
         Ok(backend_endpoint)
     }
 
-    /// Runs a single `ping -c 1 <ip>` command and returns the RTT in microseconds, or an error.
-    async fn ping(host: &str) -> Result<u64, PingError> {
-        let output = tokio::process::Command::new("ping")
-            .arg("-c")
-            .arg("1") // ping once
-            .arg("-w")
-            .arg("2") // don't wait more than 2 secs for a response
-            .arg(host)
-            .output()
-            .await?; // can produce std::io::Error -> PingError::CommandFailure
+    async fn probe_grpc_rtt_us(block_engine_url: &str) -> Result<u64, ProbeError> {
+        const PROBE_COUNT: usize = 3;
 
-        if !output.status.success() {
-            warn!(
-                "Ping error to host: {host}. Stdout: {}, Stderr:{}, return code: {:?}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr),
-                output.status.code()
-            );
-            return Err(PingError::NonZeroExit(host, output.status.code()));
+        // Connect once and probe multiple times so we're not ranking on handshake costs.
+        let endpoint = Self::get_endpoint(block_engine_url)?;
+        let channel = timeout(Self::CONNECTION_TIMEOUT, endpoint.connect())
+            .await
+            .map_err(|_| ProbeError::ConnectTimeout)??;
+
+        let mut client = BlockEngineValidatorClient::new(channel);
+
+        let mut best_us: u64 = u64::MAX;
+        let mut any_success = false;
+        for sample in 0..PROBE_COUNT {
+            let start = Instant::now();
+            let res = timeout(
+                Self::CONNECTION_TIMEOUT,
+                client.get_block_engine_endpoints(GetBlockEngineEndpointRequest {}),
+            )
+            .await;
+            match res {
+                Ok(Ok(_resp)) => {
+                    let elapsed_us = start.elapsed().as_micros() as u64;
+                    any_success = true;
+                    best_us = best_us.min(elapsed_us);
+                    datapoint_info!(
+                        "block_engine_stage-autoconfig_ping",
+                        "method" => "grpc",
+                        ("endpoint", block_engine_url, String),
+                        ("latency_us", elapsed_us, i64),
+                        ("sample", sample, i64),
+                    );
+                }
+                Ok(Err(status)) => {
+                    datapoint_warn!(
+                        "block_engine_stage-autoconfig_error",
+                        "type" => "probe_request",
+                        ("url", block_engine_url, String),
+                        ("count", 1, i64),
+                        ("err", status.to_string(), String),
+                    );
+                }
+                Err(_elapsed) => {
+                    datapoint_warn!(
+                        "block_engine_stage-autoconfig_error",
+                        "type" => "probe_timeout",
+                        ("url", block_engine_url, String),
+                        ("count", 1, i64),
+                        ("err", "timeout", String),
+                    );
+                }
+            }
         }
 
-        // Example line to parse: `64 bytes from 8.8.8.8: icmp_seq=1 ttl=57 time=12.3 ms`
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let Some(rtt_str) = line
-                .find("time=")
-                .map(|index| &line[index + "time=".len()..])
-                .and_then(|rtt_str| rtt_str.find(" ms").map(|index| &rtt_str[..index]))
-            else {
-                continue;
-            };
-
-            let rtt = rtt_str.parse::<f64>()?; // might return ParseFloatError
-            return Ok((rtt * 1000.0).round() as u64);
+        if any_success {
+            Ok(best_us)
+        } else {
+            Err(ProbeError::NoSuccessfulSamples)
         }
-
-        Err(PingError::NoRttFound)
     }
 
-    /// Ping all candidate endpoints concurrently, aggregate best RTT per endpoint
-    async fn ping_and_rank_endpoints(
+    /// Probe all candidate endpoints concurrently, aggregate best RTT per endpoint.
+    async fn probe_and_rank_endpoints(
         endpoints: &[BlockEngineEndpoint],
     ) -> ahash::HashMap<
         String, /* block engine url */
@@ -635,33 +703,6 @@ impl BlockEngineStage {
             u64,                /* latency us */
         ),
     > {
-        const PING_COUNT: usize = 3;
-
-        let endpoints_to_ping = endpoints
-            .iter()
-            .flat_map(|endpoint| std::iter::repeat_n(endpoint, PING_COUNT)) // send multiple pings to each destination to get the best time
-            .filter_map(|endpoint| {
-                let uri = endpoint
-                    .block_engine_url
-                    .parse::<Uri>()
-                    .inspect_err(|e| {
-                        warn!(
-                            "Failed to parse URI: {}, Error: {e}",
-                            endpoint.block_engine_url
-                        )
-                    })
-                    .ok()?;
-                let _ = uri.host()?;
-                Some((endpoint, uri))
-            })
-            .collect_vec();
-        let ping_res = futures::future::join_all(
-            endpoints_to_ping
-                .iter()
-                .map(|(_endpoint, uri)| Self::ping(uri.host().unwrap())), // unwrap checked in filter_map above
-        )
-        .await;
-
         let mut agg_endpoints: ahash::HashMap<
             String, /* block engine url */
             (
@@ -669,57 +710,85 @@ impl BlockEngineStage {
                 u64,                /* latency us */
             ),
         > = ahash::HashMap::with_capacity(endpoints.len());
-        let mut best_endpoint = (None, u64::MAX);
-        ping_res.iter().zip(endpoints_to_ping.iter()).for_each(
-            |(maybe_ping_res, (endpoint, _uri))| {
-                let Ok(latency_us) = maybe_ping_res else {
-                    return;
-                };
-                if *latency_us <= best_endpoint.1 {
-                    best_endpoint = (Some(endpoint), *latency_us);
-                };
-                datapoint_info!(
-                    "block_engine_stage-autoconfig_ping",
-                    ("endpoint", endpoint.block_engine_url, String),
-                    ("latency_us", *latency_us, i64),
-                );
-                match agg_endpoints.entry(endpoint.block_engine_url.clone()) {
-                    Entry::Occupied(mut ent) => {
-                        let (_shredstream_socket, best_ping_us) = ent.get_mut();
-                        if latency_us <= best_ping_us {
-                            *best_ping_us = *latency_us;
-                        }
+        let mut best_endpoint_url = String::new();
+        let mut best_endpoint_rtt_us = u64::MAX;
+
+        let tasks = endpoints
+            .iter()
+            .cloned()
+            .map(|endpoint| {
+                task::spawn(async move {
+                    let rtt_res = Self::probe_grpc_rtt_us(&endpoint.block_engine_url).await;
+                    (endpoint, rtt_res)
+                })
+            })
+            .collect_vec();
+
+        for join_res in futures::future::join_all(tasks).await {
+            let (endpoint, rtt_res) = match join_res {
+                Ok(v) => v,
+                Err(e) => {
+                    datapoint_warn!(
+                        "block_engine_stage-autoconfig_error",
+                        "type" => "probe_join",
+                        ("count", 1, i64),
+                        ("err", e.to_string(), String),
+                    );
+                    continue;
+                }
+            };
+
+            let rtt_us = match rtt_res {
+                Ok(v) => v,
+                Err(e) => {
+                    datapoint_warn!(
+                        "block_engine_stage-autoconfig_error",
+                        "type" => "probe",
+                        ("url", endpoint.block_engine_url.as_str(), String),
+                        ("count", 1, i64),
+                        ("err", e.to_string(), String),
+                    );
+                    continue;
+                }
+            };
+
+            if rtt_us <= best_endpoint_rtt_us {
+                best_endpoint_rtt_us = rtt_us;
+                best_endpoint_url = endpoint.block_engine_url.clone();
+            }
+
+            match agg_endpoints.entry(endpoint.block_engine_url.clone()) {
+                Entry::Occupied(mut ent) => {
+                    let (_shredstream_socket, best_rtt_us) = ent.get_mut();
+                    if rtt_us <= *best_rtt_us {
+                        *best_rtt_us = rtt_us;
                     }
-                    Entry::Vacant(entry) => {
-                        let maybe_shredstream_socket = endpoint
-                            .shredstream_receiver_address
-                            .to_socket_addrs()
-                            .inspect_err(|e| {
-                                warn!(
-                                    "Failed to resolve shredstream address {}, error: {e}",
-                                    endpoint.shredstream_receiver_address
-                                )
-                            })
-                            .ok()
-                            .and_then(|mut shredstream_sockets| shredstream_sockets.next());
-                        entry.insert((maybe_shredstream_socket, *latency_us));
-                    }
-                };
-            },
-        );
+                }
+                Entry::Vacant(entry) => {
+                    let maybe_shredstream_socket = endpoint
+                        .shredstream_receiver_address
+                        .to_socket_addrs()
+                        .inspect_err(|e| {
+                            datapoint_warn!(
+                                "block_engine_stage-autoconfig_error",
+                                "type" => "shredstream_resolve",
+                                ("address", endpoint.block_engine_url.as_str(), String),
+                                ("count", 1, i64),
+                                ("err", e.to_string(), String),
+                            );
+                        })
+                        .ok()
+                        .and_then(|mut shredstream_sockets| shredstream_sockets.next());
+                    entry.insert((maybe_shredstream_socket, rtt_us));
+                }
+            };
+        }
 
         datapoint_info!(
             "block_engine_stage-autoconfig",
             ("endpoints_count", agg_endpoints.len(), i64),
-            (
-                "best_endpoint_url",
-                best_endpoint
-                    .0
-                    .map(|x| x.block_engine_url.as_str())
-                    .unwrap_or_default(),
-                String
-            ),
-            ("best_endpoint_latency_us", best_endpoint.1, i64),
+            ("best_endpoint_url", best_endpoint_url.as_str(), String),
+            ("best_endpoint_latency_us", best_endpoint_rtt_us, i64),
             ("count", 1, i64),
         );
 
