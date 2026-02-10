@@ -419,8 +419,6 @@ impl BlockEngineStage {
         )))
     }
 
-    /// Discover candidate endpoints either ranked via gRPC RTT probe or using global fallback.
-    /// Use u64::MAX for latency value to indicate global fallback (no RTT probe data).
     fn map_bam_enabled(bam_enabled: &Arc<AtomicU8>, err: ProxyError) -> ProxyError {
         match BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed)) {
             BamConnectionState::Disconnected => err,
@@ -430,6 +428,8 @@ impl BlockEngineStage {
         }
     }
 
+    /// Discover candidate endpoints either ranked via gRPC RTT probe or using global fallback.
+    /// Use u64::MAX for latency value to indicate global fallback (no RTT probe data).
     async fn get_ranked_endpoints(
         backend_endpoint: &Endpoint,
     ) -> crate::proxy::Result<
