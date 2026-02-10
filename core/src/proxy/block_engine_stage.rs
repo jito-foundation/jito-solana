@@ -284,10 +284,11 @@ impl BlockEngineStage {
                     }
                 }
             }
-            Err(err) => match Self::map_bam_enabled(bam_enabled, err) {
-                ProxyError::BamEnabled => return Ok(()),
-                _ => {}
-            },
+            Err(err) => {
+                if let ProxyError::BamEnabled = Self::map_bam_enabled(bam_enabled, err) {
+                    return Ok(());
+                }
+            }
         }
 
         datapoint_info!(
