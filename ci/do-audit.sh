@@ -69,6 +69,28 @@ cargo_audit_ignores=(
   # Solution:  Upgrade to >=0.17.12
   # Dependency tree:
   --ignore RUSTSEC-2025-0009
+
+  # Crate:     time
+  # Version:   0.3.9
+  # Title:     Denial of Service via Stack Exhaustion
+  # Date:      2026-02-05
+  # ID:        RUSTSEC-2026-0009
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0009
+  # Solution:  Upgrade to >=0.3.47
+  # MSRV 1.88.0 required; rustc 1.86.0-nightly in use
+  --ignore RUSTSEC-2026-0009
+
+
+  # Crate:     bytes
+  # Version:   1.10.1
+  # Title:     Integer overflow in `BytesMut::reserve`
+  # Date:      2026-02-03
+  # ID:        RUSTSEC-2026-0007
+  # URL:       https://github.com/advisories/GHSA-434x-w66g-qw3r
+  # Solution:  Upgrade to >=1.11.1
+  # TODO: remove ignore once workspace bytes is >=1.11.1 everywhere
+  --ignore RUSTSEC-2026-0007
+
 )
 scripts/cargo-for-all-lock-files.sh audit "${cargo_audit_ignores[@]}" | $dep_tree_filter
 # we want the `cargo audit` exit code, not `$dep_tree_filter`'s
