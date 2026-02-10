@@ -110,9 +110,6 @@ enum ProbeError {
     #[error("gRPC connect error: {0}")]
     Connect(#[from] tonic::transport::Error),
 
-    #[error("gRPC request timeout")]
-    RequestTimeout,
-
     #[error("gRPC request error: {0}")]
     Request(#[from] tonic::Status),
 
@@ -278,17 +275,16 @@ impl BlockEngineStage {
             .map_err(|err| Self::map_bam_enabled(bam_enabled, err));
         }
 
-        if let Some((_best_url, (best_socket, _best_latency_us))) =
-            Self::get_ranked_endpoints(&endpoint)
-                .await
-                .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-                .into_iter()
-                .min_by_key(|(_url, (_socket, latency_us))| *latency_us)
+        let mut backend_endpoint = endpoint.clone();
+        if let Some((global_url, maybe_shredstream_socket)) = Self::get_global_endpoint(&endpoint)
+            .await
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         {
-            if best_socket.is_some() {
+            if maybe_shredstream_socket.is_some() {
                 // no else branch needed since we'll still send to shred_receiver_addresses
-                shredstream_receiver_address.store(Arc::new(best_socket));
+                shredstream_receiver_address.store(Arc::new(maybe_shredstream_socket));
             }
+            backend_endpoint = Self::get_endpoint(global_url.as_str())?;
         }
 
         datapoint_info!(
@@ -297,7 +293,7 @@ impl BlockEngineStage {
             ("count", 1, i64),
         );
         Self::connect_auth_and_stream(
-            &endpoint,
+            &backend_endpoint,
             local_block_engine_config,
             block_engine_config,
             cluster_info,
@@ -488,6 +484,48 @@ impl BlockEngineStage {
         }
 
         Ok(endpoint_latencies)
+    }
+
+    async fn get_global_endpoint(
+        backend_endpoint: &Endpoint,
+    ) -> crate::proxy::Result<Option<(String, Option<SocketAddr>)>> {
+        let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
+            .await
+            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?;
+        let endpoints = endpoint_discovery
+            .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
+            .await
+            .map_err(|e| ProxyError::BlockEngineRequestError(Box::new(e)))?
+            .into_inner();
+
+        let Some(global) = endpoints.global_endpoint else {
+            return Err(ProxyError::BlockEngineEndpointError(
+                "Block engine configuration failed: no global endpoint found".to_owned(),
+            ));
+        };
+
+        datapoint_info!(
+            "block_engine_stage-connect",
+            "type" => "direct_global",
+            ("count", 1, i64),
+        );
+
+        let ss_res = global
+            .shredstream_receiver_address
+            .to_socket_addrs()
+            .inspect_err(|e| {
+                datapoint_warn!(
+                    "block_engine_stage-autoconfig_error",
+                    "type" => "shredstream_resolve",
+                    ("address", global.shredstream_receiver_address, String),
+                    ("count", 1, i64),
+                    ("err", e.to_string(), String),
+                );
+            })
+            .ok()
+            .and_then(|mut shredstream_sockets| shredstream_sockets.next());
+
+        Ok(Some((global.block_engine_url, ss_res)))
     }
 
     #[allow(clippy::too_many_arguments)]
