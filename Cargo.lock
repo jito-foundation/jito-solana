@@ -1392,6 +1392,7 @@ version = "3.1.8"
 dependencies = [
  "agave-banking-stage-ingress-types",
  "agave-logger",
+ "arc-swap",
  "assert_matches",
  "clap 3.2.23",
  "crossbeam-channel",
@@ -8446,6 +8447,7 @@ dependencies = [
  "solana-metrics",
  "solana-native-token",
  "solana-net-utils",
+ "solana-nohash-hasher",
  "solana-nonce",
  "solana-nonce-account",
  "solana-packet",

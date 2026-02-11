@@ -13,6 +13,7 @@ use {
             },
         },
     },
+    smallvec::SmallVec,
     solana_account::ReadableAccount,
     solana_clock::Epoch,
     solana_instruction::{AccountMeta, Instruction},
@@ -468,8 +469,8 @@ impl TipManager {
         &self,
         bank: &Bank,
         keypair: &Keypair,
-    ) -> Result<Vec<RuntimeTransaction<SanitizedTransaction>>> {
-        let mut transactions = Vec::new();
+    ) -> Result<SmallVec<[RuntimeTransaction<SanitizedTransaction>; 2]>> {
+        let mut transactions = SmallVec::with_capacity(2);
         if self.should_initialize_tip_payment_program(bank) {
             info!("should_initialize_tip_payment_program=true");
             transactions.push(self.initialize_tip_payment_program_tx(bank, keypair)?);
@@ -488,8 +489,8 @@ impl TipManager {
         bank: &Bank,
         keypair: &Keypair,
         block_builder_fee_info: &BlockBuilderFeeInfo,
-    ) -> Result<Vec<RuntimeTransaction<SanitizedTransaction>>> {
-        let mut transactions = Vec::new();
+    ) -> Result<SmallVec<[RuntimeTransaction<SanitizedTransaction>; 2]>> {
+        let mut transactions = SmallVec::with_capacity(2);
         if self.should_init_tip_distribution_account(bank) {
             info!("should_init_tip_distribution_account=true");
             transactions.push(self.initialize_tip_distribution_account_tx(bank, keypair)?);

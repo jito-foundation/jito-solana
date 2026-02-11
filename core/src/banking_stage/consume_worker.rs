@@ -181,11 +181,9 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
 
-        let extra_info = if work.respond_with_extra_info {
-            Some(Self::generate_extra_info(&output, &work))
-        } else {
-            None
-        };
+        let extra_info = work
+            .respond_with_extra_info
+            .then(|| Self::generate_extra_info(&output, &work));
 
         self.consumed_sender.send(FinishedConsumeWork {
             work,
@@ -216,11 +214,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
 
         // Return true if no tip accounts touched
         let tip_accounts = tip_manager.get_tip_accounts();
-        if !txs.iter().any(|tx| {
-            tx.account_keys()
-                .iter()
-                .any(|key| tip_accounts.contains(key))
-        }) {
+        if !txs
+            .iter()
+            .flat_map(|tx| tx.account_keys().iter())
+            .any(|key| tip_accounts.contains(key))
+        {
             return true;
         }
 
@@ -229,7 +227,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return true;
         }
 
-        let keypair = cluster_info.keypair().clone();
+        let keypair = cluster_info.keypair();
         let initialize_tip_programs_bundle =
             tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
         if let Ok(init_bundle) = initialize_tip_programs_bundle {
@@ -253,7 +251,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             }
         }
 
-        let block_builder_fee_info = (*block_builder_fee_info.lock().unwrap()).clone();
+        let block_builder_fee_info = block_builder_fee_info.load();
         if block_builder_fee_info.block_builder == Pubkey::default() {
             return false;
         }
@@ -307,7 +305,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             };
         };
 
-        let mut processed_results = vec![];
+        let mut processed_results = Vec::with_capacity(commit_transactions_result.len());
         for commit_info in commit_transactions_result.iter() {
             match commit_info {
                 CommitTransactionDetails::Committed {
@@ -1846,6 +1844,7 @@ mod tests {
                 TipManagerConfig,
             },
         },
+        arc_swap::ArcSwap,
         crossbeam_channel::unbounded,
         solana_account::Account,
         solana_clock::{Slot, MAX_PROCESSING_AGE},
@@ -1982,7 +1981,7 @@ mod tests {
                     },
                 }),
                 last_tip_updated_slot: Arc::new(Mutex::new(0)),
-                block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo {
+                block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                     block_builder: mint_keypair.pubkey(),
                     block_builder_commission: 0,
                 })),

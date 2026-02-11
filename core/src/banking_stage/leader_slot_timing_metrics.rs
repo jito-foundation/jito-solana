@@ -45,9 +45,9 @@ impl LeaderExecuteAndCommitTimings {
             "banking_stage-leader_slot_vote_record_timings",
             ("slot", slot as i64, i64),
             (
-                "processing_results_to_transactions_us",
+                "prepare_record_transactions_us",
                 self.record_transactions_timings
-                    .processing_results_to_transactions_us
+                    .prepare_record_transactions_us
                     .0 as i64,
                 i64
             ),

@@ -7,7 +7,7 @@ use {
 };
 
 /// A unique identifier for a transaction batch.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransactionBatchId(pub u64);
 
 impl TransactionBatchId {
@@ -15,6 +15,14 @@ impl TransactionBatchId {
         Self(index)
     }
 }
+
+impl std::hash::Hash for TransactionBatchId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0)
+    }
+}
+
+impl solana_nohash_hasher::IsEnabled for TransactionBatchId {}
 
 impl Display for TransactionBatchId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

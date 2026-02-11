@@ -233,7 +233,7 @@ impl BamManager {
                         // with sending an auth proof w/ the old identity
                         let timeout = std::time::Duration::from_secs(180);
                         Self::wait_for_identity_in_cluster_info(
-                            *new_identity.load().as_ref(),
+                            **<arc_swap::ArcSwapAny<Arc<Option<Pubkey>>>>::load(&new_identity),
                             &dependencies.cluster_info,
                             timeout,
                         );
@@ -341,47 +341,59 @@ impl BamManager {
 
     fn update_block_engine_key_and_commission(
         config: Option<&ConfigResponse>,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
     ) {
         let Some(builder_info) = config.and_then(|c| c.block_engine_config.as_ref()) else {
             return;
         };
-
-        let Some(pubkey) = Pubkey::from_str(&builder_info.builder_pubkey).ok() else {
-            error!(
-                "Failed to parse builder pubkey: {}",
-                builder_info.builder_pubkey
-            );
-            block_builder_fee_info.lock().unwrap().block_builder = Pubkey::default();
-            return;
-        };
-
-        let commission = builder_info.builder_commission;
-        if commission > 100 {
+        if builder_info.builder_commission > 100 {
             error!("Block builder commission must be <= 100");
             return;
         }
-        let mut block_builder_fee_info = block_builder_fee_info.lock().unwrap();
-        block_builder_fee_info.block_builder = pubkey;
-        block_builder_fee_info.block_builder_commission = commission as u64;
+
+        let pubkey = Pubkey::from_str(&builder_info.builder_pubkey).unwrap_or_else(|e| {
+            error!(
+                "Failed to parse builder pubkey {}. Error: {e}",
+                builder_info.builder_pubkey
+            );
+            datapoint_warn!(
+                "bam_manager-pubkey_error",
+                ("count", 1, i64),
+                ("pubkey", builder_info.builder_pubkey, String),
+                ("error", e.to_string(), String),
+            );
+            <arc_swap::ArcSwapAny<Arc<BlockBuilderFeeInfo>>>::load(block_builder_fee_info)
+                .block_builder
+        });
+
+        block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
+            block_builder: pubkey,
+            block_builder_commission: builder_info.builder_commission as u64,
+        }));
     }
 
     fn update_bam_recipient_and_commission(
         config: &ConfigResponse,
-        prio_fee_recipient_pubkey: &Arc<Mutex<Pubkey>>,
+        prio_fee_recipient_pubkey: &Arc<ArcSwap<Pubkey>>,
     ) -> bool {
         let Some(bam_info) = config.bam_config.as_ref() else {
             return false;
         };
 
-        let Some(pubkey) = Pubkey::from_str(&bam_info.prio_fee_recipient_pubkey).ok() else {
-            return false;
+        let pubkey = match Pubkey::from_str(&bam_info.prio_fee_recipient_pubkey) {
+            Ok(pubkey) => pubkey,
+            Err(error) => {
+                datapoint_warn!(
+                    "bam_manager-pubkey_error",
+                    ("count", 1, i64),
+                    ("pubkey", bam_info.prio_fee_recipient_pubkey, String),
+                    ("error", error.to_string(), String),
+                );
+                return false;
+            }
         };
 
-        prio_fee_recipient_pubkey
-            .lock()
-            .unwrap()
-            .clone_from(&pubkey);
+        prio_fee_recipient_pubkey.store(Arc::new(pubkey));
         true
     }
 
