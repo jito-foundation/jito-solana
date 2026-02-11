@@ -661,8 +661,14 @@ impl AdminRpc for AdminRpcImpl {
         // Detailed log messages are printed inside validate function
         if RelayerStage::is_valid_relayer_config(&config) {
             meta.with_post_init(|post_init| {
-                *post_init.relayer_config.lock().unwrap() = config;
-                Ok(())
+                post_init
+                    .relayer_config_tx
+                    .send(config)
+                    .map_err(|_| jsonrpc_core::error::Error {
+                        code: jsonrpc_core::error::ErrorCode::InternalError,
+                        message: "failed to update relayer config: receiver dropped".into(),
+                        data: None,
+                    })
             })
         } else {
             Err(jsonrpc_core::error::Error::invalid_params(
@@ -1189,6 +1195,7 @@ pub fn load_staked_nodes_overrides(
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::watch;
     use {
         super::*,
         arc_swap::ArcSwap,
@@ -1272,7 +1279,7 @@ mod tests {
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
-            let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
+            let (relayer_config_tx, _) = watch::channel(RelayerConfig::default());
             let shred_receiver_address = Arc::new(ArcSwap::default());
             let shred_retransmit_receiver_address = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
@@ -1299,7 +1306,7 @@ mod tests {
                     node: None,
                     banking_control_sender: mpsc::channel(1).0,
                     block_engine_config,
-                    relayer_config,
+                    relayer_config_tx,
                     shred_receiver_address,
                     shred_retransmit_receiver_address,
                 }))),

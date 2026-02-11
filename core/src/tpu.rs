@@ -84,7 +84,7 @@ use {
         thread::{self, JoinHandle},
         time::Duration,
     },
-    tokio::sync::{mpsc, mpsc::Sender as AsyncSender},
+    tokio::sync::{mpsc, mpsc::Sender as AsyncSender, watch::Receiver as WatchReceiver},
     tokio_util::sync::CancellationToken,
 };
 use {
@@ -197,7 +197,7 @@ impl Tpu {
         scheduler_bindings: Option<(PathBuf, mpsc::Sender<BankingControlMsg>)>,
         cancel: CancellationToken,
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-        relayer_config: Arc<Mutex<RelayerConfig>>,
+        relayer_config_rx: WatchReceiver<RelayerConfig>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_url: Arc<Mutex<Option<String>>>,
@@ -404,7 +404,7 @@ impl Tpu {
         );
 
         let relayer_stage = RelayerStage::new(
-            relayer_config,
+            relayer_config_rx,
             cluster_info.clone(),
             heartbeat_tx,
             sigverify_stage_sender,
