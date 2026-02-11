@@ -3,6 +3,7 @@ mod mock_bam_server;
 
 use {
     crate::mock_bam_server::MockBamServer,
+    arc_swap::ArcSwap,
     assert_matches::assert_matches,
     clap::{crate_description, crate_name, Arg, Command},
     crossbeam_channel::{unbounded, Receiver},
@@ -42,7 +43,7 @@ use {
         collections::HashSet,
         sync::{
             atomic::{AtomicBool, AtomicU8, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
         thread::{sleep, spawn},
         time::{Duration, Instant},
@@ -120,9 +121,9 @@ fn main() {
             Arc::new(keypair),
             SocketAddrSpace::new(true),
         )),
-        block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
+        block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
         bank_forks: bank_forks.clone(),
-        bam_node_pubkey: Arc::new(Mutex::new(Pubkey::new_unique())),
+        bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::new_unique())),
     };
 
     let keypairs = (0..matches.value_of_t::<usize>("num_keypairs").unwrap())

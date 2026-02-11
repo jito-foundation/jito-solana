@@ -409,7 +409,7 @@ impl BundleConsumer {
             attempted_processing_count: processing_results.len() as u64,
         };
 
-        let (processed_transactions, processing_results_to_transactions_us) =
+        let (processed_transactions, prepare_record_transactions_us) =
             measure_us!(processing_results
                 .iter()
                 .zip(batch.sanitized_transactions())
@@ -438,9 +438,7 @@ impl BundleConsumer {
             starting_transaction_index,
         } = record_transactions_summary;
         execute_and_commit_timings.record_transactions_timings = RecordTransactionsTimings {
-            processing_results_to_transactions_us: Saturating(
-                processing_results_to_transactions_us,
-            ),
+            prepare_record_transactions_us: Saturating(prepare_record_transactions_us),
             ..record_transactions_timings
         };
 

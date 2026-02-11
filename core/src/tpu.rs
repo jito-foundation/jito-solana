@@ -365,7 +365,7 @@ impl Tpu {
             )
         };
 
-        let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+        let block_builder_fee_info = Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
             block_builder: cluster_info.keypair().pubkey(),
             block_builder_commission: 0,
         }));
@@ -438,8 +438,8 @@ impl Tpu {
             outbound_sender: bam_outbound_sender,
             outbound_receiver: bam_outbound_receiver,
             cluster_info: cluster_info.clone(),
-            block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
-            bam_node_pubkey: Arc::new(Mutex::new(Pubkey::default())),
+            block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+            bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bank_forks: bank_forks.clone(),
         };
 
