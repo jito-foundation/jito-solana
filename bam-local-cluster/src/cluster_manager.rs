@@ -125,7 +125,7 @@ impl BamValidator {
         .arg("--tip-payment-program-pubkey")
         .arg(&cluster_config.tip_payment_program_id)
         .arg("--merkle-root-upload-authority")
-        .arg(merkle_root_upload_authority.to_string())
+        .arg(merkle_root_upload_authority)
         .arg("--commission-bps")
         .arg("100");
 
