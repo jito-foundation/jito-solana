@@ -71,6 +71,7 @@ impl BamValidator {
         expected_bank_hash: Option<String>,
         identity_path: &PathBuf,
         vote_path: &PathBuf,
+        merkle_root_upload_authority: &str,
         runtime: &Runtime,
         config: &CustomValidatorConfig,
         quiet: bool,
@@ -79,51 +80,54 @@ impl BamValidator {
 
         let mut cmd = Command::new(validator_binary);
 
-        cmd.env("RUST_LOG", "info")
-            .arg("--log")
-            .arg(log_file_path)
-            .arg("--ledger")
-            .arg(ledger_path)
-            .arg("--identity")
-            .arg(identity_path)
-            .arg("--vote-account")
-            .arg(vote_path)
-            .arg("--authorized-voter")
-            .arg(vote_path)
-            .arg("--bind-address")
-            .arg("0.0.0.0")
-            .arg("--dynamic-port-range")
-            .arg(format!(
-                "{dynamic_port_range_start}-{dynamic_port_range_end}"
-            ))
-            .arg("--no-wait-for-vote-to-start-leader")
-            .arg("--no-os-network-limits-test")
-            .arg("--wait-for-supermajority")
-            .arg("0")
-            .arg("--rpc-port")
-            .arg(rpc_port.to_string())
-            .arg("--rpc-faucet-address")
-            .arg(&cluster_config.faucet_address)
-            .arg("--rpc-pubsub-enable-block-subscription")
-            .arg("--rpc-pubsub-enable-vote-subscription")
-            .arg("--account-index")
-            .arg("program-id")
-            .arg("--allow-private-addr")
-            .arg("--full-rpc-api")
-            .arg("--enable-rpc-transaction-history")
-            .arg("--enable-extended-tx-metadata-storage")
-            .arg("--expected-shred-version")
-            .arg(compute_shred_version(&genesis_config.hash(), None).to_string())
-            .arg("--bam-url")
-            .arg(&cluster_config.bam_url)
-            .arg("--tip-distribution-program-pubkey")
-            .arg(&cluster_config.tip_distribution_program_id)
-            .arg("--tip-payment-program-pubkey")
-            .arg(&cluster_config.tip_payment_program_id)
-            .arg("--merkle-root-upload-authority")
-            .arg("11111111111111111111111111111111")
-            .arg("--commission-bps")
-            .arg("100");
+        cmd.env(
+            "RUST_LOG",
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+        )
+        .arg("--log")
+        .arg(log_file_path)
+        .arg("--ledger")
+        .arg(ledger_path)
+        .arg("--identity")
+        .arg(identity_path)
+        .arg("--vote-account")
+        .arg(vote_path)
+        .arg("--authorized-voter")
+        .arg(vote_path)
+        .arg("--bind-address")
+        .arg("0.0.0.0")
+        .arg("--dynamic-port-range")
+        .arg(format!(
+            "{dynamic_port_range_start}-{dynamic_port_range_end}"
+        ))
+        .arg("--no-wait-for-vote-to-start-leader")
+        .arg("--no-os-network-limits-test")
+        .arg("--wait-for-supermajority")
+        .arg("0")
+        .arg("--rpc-port")
+        .arg(rpc_port.to_string())
+        .arg("--rpc-faucet-address")
+        .arg(&cluster_config.faucet_address)
+        .arg("--rpc-pubsub-enable-block-subscription")
+        .arg("--rpc-pubsub-enable-vote-subscription")
+        .arg("--account-index")
+        .arg("program-id")
+        .arg("--allow-private-addr")
+        .arg("--full-rpc-api")
+        .arg("--enable-rpc-transaction-history")
+        .arg("--enable-extended-tx-metadata-storage")
+        .arg("--expected-shred-version")
+        .arg(compute_shred_version(&genesis_config.hash(), None).to_string())
+        .arg("--bam-url")
+        .arg(&cluster_config.bam_url)
+        .arg("--tip-distribution-program-pubkey")
+        .arg(&cluster_config.tip_distribution_program_id)
+        .arg("--tip-payment-program-pubkey")
+        .arg(&cluster_config.tip_payment_program_id)
+        .arg("--merkle-root-upload-authority")
+        .arg(merkle_root_upload_authority.to_string())
+        .arg("--commission-bps")
+        .arg("100");
 
         if let Some(expected_bank_hash) = expected_bank_hash {
             cmd.arg("--expected-bank-hash").arg(expected_bank_hash);
@@ -321,12 +325,15 @@ impl BamValidator {
 
         let mut cmd = Command::new(ledger_tool_binary);
 
-        cmd.env("RUST_LOG", "info")
-            .arg("--ledger")
-            .arg(validator_ledger_path.to_str().unwrap())
-            .arg("--ignore-ulimit-nofile-error")
-            .arg("create-snapshot")
-            .arg("0");
+        cmd.env(
+            "RUST_LOG",
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+        )
+        .arg("--ledger")
+        .arg(validator_ledger_path.to_str().unwrap())
+        .arg("--ignore-ulimit-nofile-error")
+        .arg("create-snapshot")
+        .arg("0");
 
         let output = cmd.output()?;
         if !output.status.success() {
@@ -458,6 +465,7 @@ impl BamLocalCluster {
                 expected_bank_hash.clone(),
                 &validator_config.node_keypair,
                 &validator_config.vote_keypair,
+                &validator_config.node_pubkey,
                 &runtime,
                 validator_config,
                 quiet,
