@@ -146,6 +146,7 @@ use {
         self,
         broadcast_stage::BroadcastStageType,
         xdp::{master_ip_if_bonded, XdpConfig, XdpRetransmitter},
+        ShredReceiverAddresses,
     },
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     solana_validator_exit::Exit,
@@ -387,8 +388,8 @@ pub struct ValidatorConfig {
     // jito configuration
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-    pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-    pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub tip_manager_config: TipManagerConfig,
     pub bam_url: Arc<Mutex<Option<String>>>,
 }
@@ -476,8 +477,12 @@ impl ValidatorConfig {
             repair_handler_type: RepairHandlerType::default(),
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
-            shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
-            shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            shred_receiver_addresses: Arc::new(
+                ArcSwap::from_pointee(ShredReceiverAddresses::new()),
+            ),
+            shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                ShredReceiverAddresses::new(),
+            )),
             tip_manager_config: TipManagerConfig::default(),
             bam_url: Arc::new(Mutex::new(None)),
         }
@@ -1628,7 +1633,7 @@ impl Validator {
             wen_restart_repair_slots.clone(),
             slot_status_notifier,
             vote_connection_cache,
-            config.shred_retransmit_receiver_address.clone(),
+            config.shred_retransmit_receiver_addresses.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1730,7 +1735,7 @@ impl Validator {
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
-            config.shred_receiver_address.clone(),
+            config.shred_receiver_addresses.clone(),
             config.bam_url.clone(),
         );
 
@@ -1765,8 +1770,8 @@ impl Validator {
             banking_control_sender,
             block_engine_config: config.block_engine_config.clone(),
             relayer_config: config.relayer_config.clone(),
-            shred_receiver_address: config.shred_receiver_address.clone(),
-            shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
+            shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+            shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
         });
 
         Ok(Self {
