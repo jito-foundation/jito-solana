@@ -199,7 +199,7 @@ impl Tpu {
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
-        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_address: Arc<ArcSwap<Vec<SocketAddr>>>,
         bam_url: Arc<Mutex<Option<String>>>,
     ) -> Self {
         let TpuSockets {

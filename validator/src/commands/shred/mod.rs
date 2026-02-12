@@ -12,9 +12,12 @@ pub fn shred_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
                 .long("shred-receiver-address")
                 .value_name("SHRED_RECEIVER_ADDRESS")
                 .takes_value(true)
+                .multiple(true)
+                .number_of_values(1)
                 .help(
                     "Validator will forward all leader shreds to this address in addition to \
-                     normal turbine operation. Set to empty string to disable.",
+                     normal turbine operation. Can be specified multiple times for multiple \
+                     destinations. Set to empty string to disable.",
                 )
                 .required(true),
         )
@@ -40,7 +43,14 @@ pub fn set_shred_receiver_execute(
     subcommand_matches: &ArgMatches,
     ledger_path: &Path,
 ) -> Result<()> {
-    let addr = value_t_or_exit!(subcommand_matches, "shred_receiver_address", String);
+    let addr = subcommand_matches
+        .values_of("shred_receiver_address")
+        .map(|vals| {
+            vals.map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default();
     let admin_client = admin_rpc_service::connect(ledger_path);
     admin_rpc_service::runtime()
         .block_on(async move { admin_client.await?.set_shred_receiver_address(addr).await })?;

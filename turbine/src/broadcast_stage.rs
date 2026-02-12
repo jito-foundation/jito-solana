@@ -128,7 +128,7 @@ impl BroadcastStageType {
         quic_endpoint_sender: AsyncSender<(SocketAddr, Bytes)>,
         xdp_sender: Option<XdpSender>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_address: Arc<ArcSwap<Vec<SocketAddr>>>,
     ) -> BroadcastStage {
         match self {
             BroadcastStageType::Standard => BroadcastStage::new(
@@ -158,7 +158,7 @@ impl BroadcastStageType {
                 FailEntryVerificationBroadcastRun::new(shred_version),
                 xdp_sender,
                 shredstream_receiver_address,
-                Arc::new(ArcSwap::from_pointee(None)),
+                Arc::new(ArcSwap::from_pointee(Vec::new())),
             ),
 
             BroadcastStageType::BroadcastFakeShreds => BroadcastStage::new(
@@ -173,7 +173,7 @@ impl BroadcastStageType {
                 BroadcastFakeShredsRun::new(0, shred_version),
                 xdp_sender,
                 shredstream_receiver_address,
-                Arc::new(ArcSwap::from_pointee(None)),
+                Arc::new(ArcSwap::from_pointee(Vec::new())),
             ),
 
             BroadcastStageType::BroadcastDuplicates(config) => BroadcastStage::new(
@@ -188,7 +188,7 @@ impl BroadcastStageType {
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
                 xdp_sender,
                 shredstream_receiver_address,
-                Arc::new(ArcSwap::from_pointee(None)),
+                Arc::new(ArcSwap::from_pointee(Vec::new())),
             ),
         }
     }
@@ -211,7 +211,7 @@ trait BroadcastRun {
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
-        shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_address: &ArcSwap<Vec<SocketAddr>>,
     ) -> Result<()>;
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()>;
 }
@@ -310,7 +310,7 @@ impl BroadcastStage {
         mut broadcast_stage_run: impl BroadcastRun + Send + 'static + Clone,
         xdp_sender: Option<XdpSender>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_address: Arc<ArcSwap<Vec<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
         let (blockstore_sender, blockstore_receiver) = unbounded();
@@ -516,7 +516,7 @@ pub fn broadcast_shreds(
     socket_addr_space: &SocketAddrSpace,
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     shredstream_receiver_address: &Option<SocketAddr>,
-    shred_receiver_address: &Option<SocketAddr>,
+    shred_receiver_addresses: &[SocketAddr],
 ) -> Result<()> {
     let mut result = Ok(());
     // Compute destinations & transmission protocols for each of the shreds to be sent
@@ -551,20 +551,18 @@ pub fn broadcast_shreds(
         .partition_map(std::convert::identity);
 
     // forward shreds to external receivers, avoid duplicates if addresses match
-    match (shredstream_receiver_address, shred_receiver_address) {
-        (Some(ss_addr), Some(sr_addr)) => {
-            packets.extend(shreds.iter().map(|shred| (shred.payload(), *ss_addr)));
-            if ss_addr != sr_addr {
-                packets.extend(shreds.iter().map(|shred| (shred.payload(), *sr_addr)));
-            }
+    if let Some(ss_addr) = shredstream_receiver_address {
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), *ss_addr)));
+    }
+    for sr_addr in shred_receiver_addresses {
+        // avoid duplicate sends if a shred_receiver_address matches shredstream
+        if shredstream_receiver_address
+            .map(|ss_addr| ss_addr == *sr_addr)
+            .unwrap_or(false)
+        {
+            continue;
         }
-        (Some(ss_addr), None) => {
-            packets.extend(shreds.iter().map(|shred| (shred.payload(), *ss_addr)))
-        }
-        (None, Some(sr_addr)) => {
-            packets.extend(shreds.iter().map(|shred| (shred.payload(), *sr_addr)))
-        }
-        (None, None) => {}
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), *sr_addr)));
     }
 
     shred_select.stop();

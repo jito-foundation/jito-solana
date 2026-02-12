@@ -672,20 +672,25 @@ impl AdminRpc for AdminRpcImpl {
     }
 
     fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
-        let shred_receiver_address = if addr.is_empty() {
-            None
+        let shred_receiver_addresses = if addr.is_empty() {
+            Vec::new()
         } else {
-            Some(SocketAddr::from_str(&addr).map_err(|_| {
-                jsonrpc_core::error::Error::invalid_params(format!(
-                    "invalid shred receiver address: {addr}",
-                ))
-            })?)
+            addr.split(',')
+                .map(|a| {
+                    let a = a.trim();
+                    SocketAddr::from_str(a).map_err(|_| {
+                        jsonrpc_core::error::Error::invalid_params(format!(
+                            "invalid shred receiver address: {a}",
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
         };
 
         meta.with_post_init(|post_init| {
             post_init
                 .shred_receiver_address
-                .store(Arc::new(shred_receiver_address));
+                .store(Arc::new(shred_receiver_addresses));
             Ok(())
         })
     }

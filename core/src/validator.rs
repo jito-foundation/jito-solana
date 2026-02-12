@@ -387,7 +387,7 @@ pub struct ValidatorConfig {
     // jito configuration
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-    pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub shred_receiver_address: Arc<ArcSwap<Vec<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub bam_url: Arc<Mutex<Option<String>>>,
@@ -476,7 +476,7 @@ impl ValidatorConfig {
             repair_handler_type: RepairHandlerType::default(),
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
-            shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            shred_receiver_address: Arc::new(ArcSwap::from_pointee(Vec::new())),
             shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
             bam_url: Arc::new(Mutex::new(None)),

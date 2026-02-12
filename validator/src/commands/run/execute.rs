@@ -547,8 +547,15 @@ pub fn execute(
 
     let shred_receiver_address = Arc::new(ArcSwap::from_pointee(
         matches
-            .value_of("shred_receiver_address")
-            .map(|addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid")),
+            .values_of("shred_receiver_address")
+            .map(|addrs| {
+                addrs
+                    .map(|addr| {
+                        SocketAddr::from_str(addr).expect("shred_receiver_address invalid")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     ));
     let shred_retransmit_receiver_address = Arc::new(ArcSwap::from_pointee(
         matches

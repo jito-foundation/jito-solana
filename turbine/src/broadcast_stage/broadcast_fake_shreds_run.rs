@@ -157,7 +157,7 @@ impl BroadcastRun for BroadcastFakeShredsRun {
         _bank_forks: &RwLock<BankForks>,
         _quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
-        _shred_receiver_addr: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_addr: &ArcSwap<Vec<SocketAddr>>,
     ) -> Result<()> {
         let sock = match sock {
             BroadcastSocket::Udp(sock) => sock,

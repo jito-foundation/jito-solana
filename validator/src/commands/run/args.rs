@@ -1350,9 +1350,12 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .long("shred-receiver-address")
             .value_name("SHRED_RECEIVER_ADDRESS")
             .takes_value(true)
+            .multiple(true)
+            .number_of_values(1)
             .help(
                 "Validator will forward all leader shreds to this address in addition to normal \
-                 turbine operation. Set to empty string to disable.",
+                 turbine operation. Can be specified multiple times for multiple destinations. \
+                 Set to empty string to disable.",
             ),
     )
     .arg(
