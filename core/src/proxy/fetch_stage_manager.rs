@@ -423,8 +423,8 @@ impl FetchStageTpuStateMachine {
 mod tests {
     use {
         super::*, solana_gossip::contact_info::ContactInfo, solana_keypair::Keypair,
-        solana_net_utils::SocketAddrSpace, solana_perf::packet::BytesPacket, solana_signer::Signer,
-        solana_time_utils::timestamp,
+        solana_perf::packet::BytesPacketBatch, solana_signer::Signer,
+        solana_streamer::socket::SocketAddrSpace, solana_time_utils::timestamp,
     };
 
     fn new_test_cluster_info() -> Arc<ClusterInfo> {
@@ -471,7 +471,7 @@ mod tests {
         packet_rx: &Receiver<PacketBatch>,
         should_send: bool,
     ) {
-        let pkt = PacketBatch::Single(BytesPacket::empty());
+        let pkt = PacketBatch::Bytes(BytesPacketBatch::new());
         assert!(brain.handle_packet_batch(Ok(pkt.clone())));
         if should_send {
             let received_pkt = packet_rx.recv().unwrap();

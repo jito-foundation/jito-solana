@@ -325,7 +325,7 @@ impl BamManager {
         let Some(tpu_info) = config.and_then(|c| c.bam_config.as_ref()) else {
             return;
         };
-        
+
         let Some(tpu) = Self::get_sockaddr(tpu_info.tpu_sock.as_ref()) else {
             return;
         };
