@@ -243,11 +243,8 @@ impl BamManager {
                     continue;
                 }
 
-                // Check if url changed; if yes then disconnect
-                if current_url
-                    .as_ref()
-                    .is_some_and(|url| url != connection.url())
-                {
+                // Check if url changed or was cleared; if yes then disconnect
+                if current_url.as_deref() != Some(connection.url()) {
                     cached_builder_config = None;
                     dependencies
                         .bam_enabled
