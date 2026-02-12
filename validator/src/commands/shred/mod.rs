@@ -6,15 +6,17 @@ use {
 
 pub fn shred_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
     SubCommand::with_name("set-shred-receiver-address")
-        .about("Set shred receiver address")
+        .about("Set shred receiver address(es)")
         .arg(
             Arg::with_name("shred_receiver_address")
                 .long("shred-receiver-address")
                 .value_name("SHRED_RECEIVER_ADDRESS")
                 .takes_value(true)
                 .help(
-                    "Validator will forward all leader shreds to this address in addition to \
-                     normal turbine operation. Set to empty string to disable.",
+                    "Validator will forward all leader shreds to these addresses in addition to \
+                     normal turbine operation. Accepts comma-separated ip:port or host:port \
+                     entries. Hostnames resolve to IPv4 addresses only. Up to 32 unique \
+                     addresses are allowed. Set to empty string to disable.",
                 )
                 .required(true),
         )
@@ -22,15 +24,17 @@ pub fn shred_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
 
 pub fn shred_retransmit_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
     SubCommand::with_name("set-shred-retransmit-receiver-address")
-        .about("Set shred retransmit receiver address")
+        .about("Set shred retransmit receiver address(es)")
         .arg(
             Arg::with_name("shred_retransmit_receiver_address")
                 .long("shred-retransmit-receiver-address")
                 .value_name("SHRED_RETRANSMIT_RECEIVER_ADDRESS")
                 .takes_value(true)
                 .help(
-                    "Validator will forward all retransmit shreds to this address in addition to \
-                     normal turbine operation. Set to empty string to disable.",
+                    "Validator will forward all retransmit shreds to these addresses in addition \
+                     to normal turbine operation. Accepts comma-separated ip:port or host:port \
+                     entries. Hostnames resolve to IPv4 addresses only. Up to 32 unique \
+                     addresses are allowed. Set to empty string to disable.",
                 )
                 .required(true),
         )

@@ -1,4 +1,5 @@
 use {
+    crate::shred_receiver_addresses::parse_shred_receiver_addresses,
     crossbeam_channel::Sender,
     jsonrpc_core::{BoxFuture, ErrorCode, MetaIoHandler, Metadata, Result},
     jsonrpc_core_client::{transports::ipc, RpcError},
@@ -672,20 +673,17 @@ impl AdminRpc for AdminRpcImpl {
     }
 
     fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
-        let shred_receiver_address = if addr.is_empty() {
-            None
-        } else {
-            Some(SocketAddr::from_str(&addr).map_err(|_| {
+        let shred_receiver_addresses =
+            parse_shred_receiver_addresses([addr.as_str()]).map_err(|err| {
                 jsonrpc_core::error::Error::invalid_params(format!(
-                    "invalid shred receiver address: {addr}",
+                    "invalid shred receiver address for {addr}. Err: {err}",
                 ))
-            })?)
-        };
+            })?;
 
         meta.with_post_init(|post_init| {
             post_init
-                .shred_receiver_address
-                .store(Arc::new(shred_receiver_address));
+                .shred_receiver_addresses
+                .store(Arc::new(shred_receiver_addresses));
             Ok(())
         })
     }
@@ -695,20 +693,17 @@ impl AdminRpc for AdminRpcImpl {
         meta: Self::Metadata,
         addr: String,
     ) -> Result<()> {
-        let shred_receiver_address = if addr.is_empty() {
-            None
-        } else {
-            Some(SocketAddr::from_str(&addr).map_err(|_| {
+        let shred_receiver_addresses =
+            parse_shred_receiver_addresses([addr.as_str()]).map_err(|err| {
                 jsonrpc_core::error::Error::invalid_params(format!(
-                    "invalid shred receiver address: {addr}",
+                    "invalid shred retransmit receiver address for {addr}. Err: {err}",
                 ))
-            })?)
-        };
+            })?;
 
         meta.with_post_init(|post_init| {
             post_init
-                .shred_retransmit_receiver_address
-                .store(Arc::new(shred_receiver_address));
+                .shred_retransmit_receiver_addresses
+                .store(Arc::new(shred_receiver_addresses));
             Ok(())
         })
     }
@@ -1273,8 +1268,8 @@ mod tests {
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
-            let shred_receiver_address = Arc::new(ArcSwap::default());
-            let shred_retransmit_receiver_address = Arc::new(ArcSwap::default());
+            let shred_receiver_addresses = Arc::new(ArcSwap::default());
+            let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),
@@ -1300,8 +1295,8 @@ mod tests {
                     banking_control_sender: mpsc::channel(1).0,
                     block_engine_config,
                     relayer_config,
-                    shred_receiver_address,
-                    shred_retransmit_receiver_address,
+                    shred_receiver_addresses,
+                    shred_retransmit_receiver_addresses,
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
