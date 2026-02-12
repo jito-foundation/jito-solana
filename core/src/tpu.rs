@@ -70,6 +70,7 @@ use {
     solana_turbine::{
         broadcast_stage::{BroadcastStage, BroadcastStageType},
         xdp::XdpSender,
+        ShredReceiverAddresses,
     },
     std::{
         collections::HashMap,
@@ -195,7 +196,7 @@ impl Tpu {
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
-        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         bam_url: Arc<Mutex<Option<String>>>,
     ) -> Self {
         let TpuSockets {
@@ -531,7 +532,7 @@ impl Tpu {
             turbine_quic_endpoint_sender,
             xdp_sender,
             shredstream_receiver_address,
-            shred_receiver_address,
+            shred_receiver_addresses,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();

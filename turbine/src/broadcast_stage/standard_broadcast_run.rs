@@ -5,7 +5,7 @@ use {
         broadcast_utils::{self, ReceiveResults},
         *,
     },
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{cluster_nodes::ClusterNodesCache, ShredReceiverAddresses},
     solana_entry::entry::Entry,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -381,7 +381,7 @@ impl StandardBroadcastRun {
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &Option<SocketAddr>,
-        shred_receiver_addr: &Option<SocketAddr>,
+        shred_receiver_addresses: &ShredReceiverAddresses,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats {
@@ -404,7 +404,7 @@ impl StandardBroadcastRun {
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
             shredstream_receiver_address,
-            shred_receiver_addr,
+            shred_receiver_addresses,
         )?;
         transmit_time.stop();
 
@@ -473,7 +473,7 @@ impl BroadcastRun for StandardBroadcastRun {
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
-        shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
         self.broadcast(
@@ -484,7 +484,7 @@ impl BroadcastRun for StandardBroadcastRun {
             bank_forks,
             quic_endpoint_sender,
             &shredstream_receiver_address.load(),
-            &shred_receiver_address.load(),
+            &shred_receiver_addresses.load(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
