@@ -47,7 +47,7 @@ pub fn parse_shred_receiver_addresses<I: IntoIterator<Item = S>, S: AsRef<str>>(
             let mut resolved_any_ipv4 = false;
             for socket_addr in resolved {
                 if socket_addr.is_ipv4() {
-                    resolved_any_ipv4 = true;
+                    resolved_any_ipv4 = true; // avoid ipv6 due to XDP path will panic
                     push_unique_addr(&mut addrs, socket_addr)?;
                 }
             }
