@@ -338,8 +338,7 @@ async fn get_rewards_safe(rpc_client: &RpcClient, slot: u64, commitment: Option<
         match rpc_client.get_block_with_config(slot, RpcBlockConfig {
             max_supported_transaction_version: Some(0),
             rewards: Some(true),
-            commitment: Some(commitment),
-            ..RpcBlockConfig::default()
+            ..RpcBlockConfig::rewards_with_commitment(Some(commitment))
         }).await {
             Ok(block) => {
                 if let Some(rewards) = block.rewards {
