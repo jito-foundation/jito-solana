@@ -409,7 +409,7 @@ impl FetchStageTpuStateMachine {
         }
         if let Err(e) = self
             .cluster_info
-            .set_tpu_quic(self.current_tpu_state.fwd_addr)
+            .set_tpu_forwards_quic(self.current_tpu_state.fwd_addr)
         {
             error!("Failed to set TPU FWD address: {e:?}");
             return false;
