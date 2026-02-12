@@ -15,8 +15,8 @@ pub fn shred_receiver_command(_default_args: &DefaultArgs) -> App<'_, '_> {
                 .help(
                     "Validator will forward all leader shreds to these addresses in addition to \
                      normal turbine operation. Accepts comma-separated ip:port or host:port \
-                     entries. Hostnames resolve to IPv4 addresses only. Up to 32 unique \
-                     addresses are allowed. Set to empty string to disable.",
+                     entries. Hostnames resolve to IPv4 addresses only. Up to 32 unique addresses \
+                     are allowed. Set to empty string to disable.",
                 )
                 .required(true),
         )
@@ -33,8 +33,8 @@ pub fn shred_retransmit_receiver_command(_default_args: &DefaultArgs) -> App<'_,
                 .help(
                     "Validator will forward all retransmit shreds to these addresses in addition \
                      to normal turbine operation. Accepts comma-separated ip:port or host:port \
-                     entries. Hostnames resolve to IPv4 addresses only. Up to 32 unique \
-                     addresses are allowed. Set to empty string to disable.",
+                     entries. Hostnames resolve to IPv4 addresses only. Up to 32 unique addresses \
+                     are allowed. Set to empty string to disable.",
                 )
                 .required(true),
         )
