@@ -493,24 +493,27 @@ impl BamReceiveAndBuffer {
             }
 
             // Check 5: Ensure the fee payer has enough to pay for the transaction fee
-            let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
-                &working_bank,
-                &view,
-                &mut TransactionErrorMetrics::default(),
-            ));
-            metrics.increment_fee_payer_check_us(duration_us);
-            if let Err(err) = result {
-                let reason = convert_txn_error_to_proto(err);
-                stats.num_dropped_on_fee_payer += 1;
-                return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: reason as i32,
-                        },
-                    )),
-                    stats,
-                );
+            // Only check the first transaction in the batch because some fee payers in transaction index 0 seed indices 1..N
+            if index == 0 {
+                let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
+                    &working_bank,
+                    &view,
+                    &mut TransactionErrorMetrics::default(),
+                ));
+                metrics.increment_fee_payer_check_us(duration_us);
+                if let Err(err) = result {
+                    let reason = convert_txn_error_to_proto(err);
+                    stats.num_dropped_on_fee_payer += 1;
+                    return (
+                        Err(Reason::TransactionError(
+                            jito_protos::proto::bam_types::TransactionError {
+                                index: index as u32,
+                                reason: reason as i32,
+                            },
+                        )),
+                        stats,
+                    );
+                }
             }
 
             // Check 6: Ensure none of the accounts touch blacklisted accounts
