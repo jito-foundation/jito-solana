@@ -39,6 +39,7 @@ pub mod fetch_stage;
 pub mod forwarding_stage;
 pub mod gen_keys;
 mod mock_alpenglow_consensus;
+pub mod mock_bam_node;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
 pub mod packet_bundle;
