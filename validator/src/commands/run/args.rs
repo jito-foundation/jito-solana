@@ -1372,9 +1372,13 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .long("shred-receiver-address")
             .value_name("SHRED_RECEIVER_ADDRESS")
             .takes_value(true)
+            .multiple(true)
             .help(
-                "Validator will forward all leader shreds to this address in addition to normal \
-                 turbine operation. Set to empty string to disable.",
+                "Validator will forward all leader shreds to these addresses in addition to \
+                 normal turbine operation. Pass this flag multiple times or use comma-separated \
+                 entries; each entry may be ip:port or host:port. Hostnames resolve to IPv4 \
+                 addresses only. Up to 32 unique addresses are allowed. Pass empty string as the \
+                 only value to disable.",
             ),
     )
     .arg(
@@ -1382,9 +1386,13 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .long("shred-retransmit-receiver-address")
             .value_name("SHRED_RETRANSMIT_RECEIVER_ADDRESS")
             .takes_value(true)
+            .multiple(true)
             .help(
-                "Validator will forward all retransmit shreds to this address in addition to \
-                 normal turbine operation. Set to empty string to disable.",
+                "Validator will forward all retransmit shreds to these addresses in addition to \
+                 normal turbine operation. Pass this flag multiple times or use comma-separated \
+                 entries; each entry may be ip:port or host:port. Hostnames resolve to IPv4 \
+                 addresses only. Up to 32 unique addresses are allowed. Pass empty string as the \
+                 only value to disable.",
             ),
     )
     .arg(
