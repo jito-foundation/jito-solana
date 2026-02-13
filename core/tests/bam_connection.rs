@@ -16,8 +16,8 @@ use {
     solana_core::bam_dependencies::BamOutboundMessage,
     solana_gossip::{cluster_info::ClusterInfo, node::Node},
     solana_keypair::Keypair,
-    solana_streamer::socket::SocketAddrSpace,
     solana_signer::Signer,
+    solana_streamer::socket::SocketAddrSpace,
     std::{
         net::SocketAddr,
         sync::{
