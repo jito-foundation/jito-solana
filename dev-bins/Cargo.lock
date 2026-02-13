@@ -9723,6 +9723,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rayon",
  "rustls 0.23.34",
+ "smallvec",
  "solana-clock",
  "solana-cluster-type",
  "solana-entry",
