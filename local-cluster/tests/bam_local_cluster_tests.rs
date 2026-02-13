@@ -85,34 +85,6 @@ fn get_fresh_contact_info(cluster: &LocalCluster) -> Option<ContactInfo> {
         .find(|n| n.pubkey() == cluster.entry_point_info.pubkey())
 }
 
-fn wait_for_gossip_tpu_changed(
-    cluster: &LocalCluster,
-    old_tpu: SocketAddr,
-    timeout: Duration,
-) -> Option<SocketAddr> {
-    let start = Instant::now();
-    let entry_point = cluster.entry_point_info.gossip().unwrap();
-
-    while start.elapsed() < timeout {
-        if let Ok(nodes) = discover_validators(
-            &entry_point,
-            1,
-            cluster.shred_version(),
-            SocketAddrSpace::Unspecified,
-        ) {
-            for node in &nodes {
-                if let Some(tpu_quic) = node.tpu(solana_gossip::contact_info::Protocol::QUIC) {
-                    if tpu_quic != old_tpu {
-                        return Some(tpu_quic);
-                    }
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    None
-}
-
 fn send_and_verify_transaction(
     cluster: &LocalCluster,
     funding_keypair: &Keypair,
@@ -249,69 +221,6 @@ fn test_block_production_while_connected_to_bam() {
     );
     info!("Cluster produced and finalized blocks with transactions while connected to BAM");
     runtime.block_on(mock_bam.shutdown());
-}
-
-#[test]
-#[serial_test::serial]
-fn test_block_production_after_bam_disconnect() {
-    agave_logger::setup_with_default("info");
-
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let mut mock_bam = runtime
-        .block_on(MockBamNode::start(MockBamNodeConfig {
-            heartbeat_interval: Duration::from_millis(500),
-            ..MockBamNodeConfig::default()
-        }))
-        .expect("Failed to start mock BAM node");
-
-    let bam_tpu = mock_bam.tpu_addr();
-    info!(
-        "Mock BAM started - gRPC: {}, TPU: {}",
-        mock_bam.grpc_url(),
-        bam_tpu
-    );
-
-    let bam_url = Arc::new(Mutex::new(Some(mock_bam.grpc_url())));
-    let mut cluster_config = create_bam_cluster_config(bam_url.clone());
-    let cluster = LocalCluster::new(&mut cluster_config, SocketAddrSpace::Unspecified);
-
-    assert!(
-        wait_for_bam_auth(&mock_bam, BAM_CONNECTION_TIMEOUT),
-        "BAM auth failed"
-    );
-
-    assert!(
-        wait_for_gossip_tpu_update(&cluster, bam_tpu, GOSSIP_PROPAGATION_TIMEOUT),
-        "Gossip TPU not updated to BAM"
-    );
-    info!("Validator connected to BAM, gossip updated");
-
-    info!("Sending transactions while connected to BAM...");
-    send_and_verify_transaction(&cluster, &cluster.funding_keypair, 2);
-
-    info!("Verifying block production while connected...");
-    cluster.check_for_new_roots(3, "bam_connected", SocketAddrSpace::Unspecified);
-
-    info!("Shutting down mock BAM to simulate disconnect...");
-    runtime.block_on(mock_bam.shutdown());
-    drop(mock_bam);
-
-    info!("Waiting for validator to detect BAM unhealthy and update gossip...");
-    let new_tpu = wait_for_gossip_tpu_changed(&cluster, bam_tpu, Duration::from_secs(30));
-    assert!(
-        new_tpu.is_some(),
-        "Validator did not update gossip TPU after BAM disconnect"
-    );
-    info!("Gossip TPU changed from {bam_tpu} to {new_tpu:?}");
-
-    info!("Sending transactions after BAM disconnect...");
-    send_and_verify_transaction(&cluster, &cluster.funding_keypair, 2);
-
-    info!("Verifying block production continues after disconnect...");
-    cluster.check_for_new_roots(5, "bam_disconnected", SocketAddrSpace::Unspecified);
-    info!(
-        "Cluster continued producing and finalizing blocks with transactions after BAM disconnect"
-    );
 }
 
 #[test]

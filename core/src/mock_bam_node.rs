@@ -34,7 +34,7 @@ use {
         thread,
         time::{Duration, SystemTime},
     },
-    tokio::sync::mpsc,
+    tokio::sync::{mpsc, mpsc::error::TrySendError},
     tokio_stream::wrappers::ReceiverStream,
     tokio_util::sync::CancellationToken,
     tonic::{Request, Response, Status, Streaming},
@@ -260,7 +260,7 @@ impl BamNodeApi for MockBamNodeService {
             let mut heartbeat_ticker = tokio::time::interval(heartbeat_interval);
             heartbeat_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            let mut batch_check_ticker = tokio::time::interval(Duration::from_millis(10));
+            let mut batch_check_ticker = tokio::time::interval(Duration::from_millis(50));
             batch_check_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
@@ -274,15 +274,17 @@ impl BamNodeApi for MockBamNodeService {
                         }
                     }
                     _ = heartbeat_ticker.tick() => {
-                        if state.send_heartbeats.load(Ordering::Relaxed) && outbound_tx.send(Ok(heartbeat_response())).await.is_err() {
+                        if state.send_heartbeats.load(Ordering::Relaxed) && !try_send_outbound(&outbound_tx, heartbeat_response()) {
                             break;
                         }
                     }
                     _ = batch_check_ticker.tick() => {
-                        if let Some(batches) = state.drain_and_build_batches(state.current_slot.load(Ordering::Relaxed)) {
+                        let slot = state.current_slot.load(Ordering::Relaxed);
+                        let max_schedule_slot = slot.saturating_add(32).max(1);
+                        if let Some(batches) = state.drain_and_build_batches(max_schedule_slot) {
                             let batch_count = batches.batches.len();
                             state.batches_forwarded.fetch_add(batch_count as u64, Ordering::Relaxed);
-                            if outbound_tx.send(Ok(batch_response(batches))).await.is_err() {
+                            if !try_send_outbound(&outbound_tx, batch_response(batches)) {
                                 break;
                             }
                         }
@@ -292,6 +294,23 @@ impl BamNodeApi for MockBamNodeService {
         });
 
         Ok(Response::new(ReceiverStream::new(outbound_rx)))
+    }
+}
+
+fn try_send_outbound(
+    outbound_tx: &mpsc::Sender<Result<SchedulerResponse, Status>>,
+    msg: SchedulerResponse,
+) -> bool {
+    match outbound_tx.try_send(Ok(msg)) {
+        Ok(_) => true,
+        Err(TrySendError::Full(_)) => {
+            warn!("Outbound channel full, dropping message");
+            true // we want to keep running even if we drop messages
+        }
+        Err(TrySendError::Closed(_)) => {
+            warn!("Outbound channel closed, shutting down stream");
+            false
+        }
     }
 }
 
