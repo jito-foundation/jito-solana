@@ -24,6 +24,7 @@ _ cargo nextest run \
   --profile ci \
   --package solana-local-cluster \
   --test local_cluster \
+  --test bam_local_cluster \
   --partition hash:"$CURRENT/$TOTAL" \
   --test-threads=1 \
   --no-tests=warn
