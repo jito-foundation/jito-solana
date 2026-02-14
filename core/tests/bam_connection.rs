@@ -462,7 +462,7 @@ mod bam_manager_tests {
         super::*,
         arc_swap::ArcSwap,
         solana_core::{
-            admin_rpc_post_init::KeyUpdaters,
+            admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
             bam_dependencies::{BamConnectionState, BamDependencies},
             bam_manager::BamManager,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
@@ -499,6 +499,10 @@ mod bam_manager_tests {
             == BamConnectionState::Connected
     }
 
+    fn bam_state(bam_enabled: &Arc<AtomicU8>) -> BamConnectionState {
+        BamConnectionState::from_u8(bam_enabled.load(Ordering::Relaxed))
+    }
+
     #[allow(clippy::type_complexity)]
     fn create_test_poh_recorder() -> (
         Arc<AtomicBool>,
@@ -531,7 +535,10 @@ mod bam_manager_tests {
         let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
-        let bam_url = Arc::new(Mutex::new(Some(format!("http://{}", server.addr))));
+        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
+            "http://{}",
+            server.addr
+        ))));
         let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
 
         let _manager = BamManager::new(
@@ -567,7 +574,10 @@ mod bam_manager_tests {
         let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
-        let bam_url = Arc::new(Mutex::new(Some(format!("http://{}", server.addr))));
+        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
+            "http://{}",
+            server.addr
+        ))));
         let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
 
         let _manager = BamManager::new(
@@ -614,7 +624,7 @@ mod bam_manager_tests {
         let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
-        let bam_url = Arc::new(Mutex::new(None));
+        let bam_url = Arc::new(ArcSwap::from_pointee(None));
         let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
 
         let _manager = BamManager::new(
@@ -648,7 +658,10 @@ mod bam_manager_tests {
         let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
-        let bam_url = Arc::new(Mutex::new(Some(format!("http://{}", server1.addr))));
+        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
+            "http://{}",
+            server1.addr
+        ))));
         let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
 
         let _manager = BamManager::new(
@@ -668,13 +681,90 @@ mod bam_manager_tests {
         }
         assert!(bam_is_connected(&bam_enabled));
 
-        *bam_url.lock().unwrap() = Some(format!("http://{}", server2.addr));
+        bam_url.store(Arc::new(Some(format!("http://{}", server2.addr))));
 
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         assert!(
             bam_is_connected(&bam_enabled),
             "bam_enabled should be true after URL change"
+        );
+
+        exit.store(true, Ordering::Relaxed);
+        poh_service.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_identity_change_disconnects_before_cluster_info_updates() {
+        let send_heartbeats = Arc::new(AtomicBool::new(true));
+        let server = start_mock_server(send_heartbeats.clone(), Duration::from_secs(1)).await;
+
+        let cluster_info = create_test_cluster_info();
+        let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
+            create_test_poh_recorder();
+        let dependencies = create_test_bam_dependencies(cluster_info.clone(), bank_forks);
+        let bam_enabled = dependencies.bam_enabled.clone();
+
+        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
+            "http://{}",
+            server.addr
+        ))));
+        let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
+
+        let _manager = BamManager::new(
+            exit.clone(),
+            bam_url,
+            dependencies,
+            poh_recorder,
+            identity_notifiers.clone(),
+        );
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(15) {
+            if bam_is_connected(&bam_enabled) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(bam_is_connected(&bam_enabled));
+
+        let new_identity = Keypair::new();
+        {
+            let notifiers = identity_notifiers.read().unwrap();
+            let (_, notifier) = (&*notifiers)
+                .into_iter()
+                .find(|(updater_type, _)| **updater_type == KeyUpdaterType::BamConnection)
+                .expect("BAM identity notifier should be registered");
+            notifier
+                .update_key(&new_identity)
+                .expect("BAM identity update should succeed");
+        }
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            if bam_state(&bam_enabled) == BamConnectionState::Disconnected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            bam_state(&bam_enabled),
+            BamConnectionState::Disconnected,
+            "bam_enabled should flip to disconnected immediately after identity change"
+        );
+
+        cluster_info.set_keypair(Arc::new(new_identity));
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(15) {
+            if bam_is_connected(&bam_enabled) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            bam_is_connected(&bam_enabled),
+            "bam_enabled should reconnect after cluster_info reflects the new identity"
         );
 
         exit.store(true, Ordering::Relaxed);
@@ -693,7 +783,10 @@ mod bam_manager_tests {
         let block_builder_fee_info = dependencies.block_builder_fee_info.clone();
         let bam_enabled = dependencies.bam_enabled.clone();
 
-        let bam_url = Arc::new(Mutex::new(Some(format!("http://{}", server.addr))));
+        let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
+            "http://{}",
+            server.addr
+        ))));
         let identity_notifiers = Arc::new(std::sync::RwLock::new(KeyUpdaters::default()));
 
         let _manager = BamManager::new(

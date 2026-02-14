@@ -341,9 +341,13 @@ impl BamConnection {
         self.is_healthy.load(Relaxed)
     }
 
-    pub fn wait_until_healthy_and_config_received(&self, duration: std::time::Duration) -> bool {
+    pub fn wait_until_healthy_and_config_received(
+        &self,
+        duration: std::time::Duration,
+        exit: &AtomicBool,
+    ) -> bool {
         let start = std::time::Instant::now();
-        while start.elapsed() < duration {
+        while start.elapsed() < duration && !exit.load(Relaxed) {
             if self.is_healthy() && self.get_latest_config().is_some() {
                 return true;
             }

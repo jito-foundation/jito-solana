@@ -1,5 +1,6 @@
 use {
     crate::shred_receiver_addresses::parse_shred_receiver_addresses,
+    arc_swap::ArcSwap,
     crossbeam_channel::Sender,
     jsonrpc_core::{BoxFuture, ErrorCode, MetaIoHandler, Metadata, Result},
     jsonrpc_core_client::{transports::ipc, RpcError},
@@ -45,7 +46,7 @@ use {
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
         thread::{self, Builder},
         time::{Duration, SystemTime},
@@ -66,7 +67,7 @@ pub struct AdminRpcRequestMetadata {
     pub staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
-    pub bam_url: Arc<Mutex<Option<String>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl Metadata for AdminRpcRequestMetadata {}
@@ -582,16 +583,15 @@ impl AdminRpc for AdminRpcImpl {
     }
 
     fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
-        let old_bam_url = meta.bam_url.lock().unwrap().clone();
         let (bam_url, manual_disconnect) = match bam_url {
             Some(url) if url.trim().is_empty() => (None, true),
             Some(url) => (Some(url), false),
             None => (None, false),
         };
-        let new_bam_url = bam_url.as_ref().map(|url| url.to_string());
-        debug!("set_bam_url old= {old_bam_url:?}, new={new_bam_url:?}");
+        let old_bam_url = meta.bam_url.load();
+        debug!("set_bam_url old= {old_bam_url:?}, new={bam_url:?}");
 
-        if let Some(new_bam_url) = &new_bam_url {
+        if let Some(new_bam_url) = &bam_url {
             if let Err(e) = Endpoint::from_str(new_bam_url) {
                 return Err(jsonrpc_core::error::Error::invalid_params(format!(
                     "Could not create endpoint: {e}"
@@ -601,11 +601,15 @@ impl AdminRpc for AdminRpcImpl {
             datapoint_info!(
                 "bam_manually_disconnected",
                 ("count", 1, i64),
-                ("previous_bam_url", old_bam_url.unwrap_or_default(), String)
+                (
+                    "previous_bam_url",
+                    old_bam_url.as_ref().clone().unwrap_or_default(),
+                    String
+                ),
             );
         }
 
-        *meta.bam_url.lock().unwrap() = bam_url;
+        meta.bam_url.store(Arc::new(bam_url));
         Ok(())
     }
 
@@ -1300,7 +1304,7 @@ mod tests {
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
-                bam_url: Arc::new(Mutex::new(None)),
+                bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
             let mut io = MetaIoHandler::default();
             io.extend_with(AdminRpcImpl.to_delegate());
@@ -1721,7 +1725,7 @@ mod tests {
                 post_init: post_init.clone(),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
-                bam_url: Arc::new(Mutex::new(None)),
+                bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
 
             let _validator = Validator::new(

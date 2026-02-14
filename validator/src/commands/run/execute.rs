@@ -520,7 +520,9 @@ pub fn execute(
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
 
-    let bam_url = Arc::new(Mutex::new(crate::commands::bam::extract_bam_url(matches)?));
+    let bam_url = Arc::new(ArcSwap::from_pointee(
+        crate::commands::bam::extract_bam_url(matches)?,
+    ));
 
     // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms: u64 =
