@@ -37,8 +37,8 @@ use {
 
 pub struct BamConnectionIdentityUpdater {
     bam_url: Arc<Mutex<Option<String>>>,
-    new_identity: Arc<ArcSwap<Option<Pubkey>>>,
-    identity_changed_force_reconnect: Arc<AtomicBool>,
+    new_identity: ArcSwap<Option<Pubkey>>,
+    identity_changed_force_reconnect: AtomicBool,
 }
 
 impl NotifyKeyUpdate for BamConnectionIdentityUpdater {
@@ -111,19 +111,18 @@ impl BamManager {
         let mut cached_builder_config = None;
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
-        let identity_changed = Arc::new(AtomicBool::new(false));
-        let new_identity = Arc::new(ArcSwap::from_pointee(None));
-
         let identity_updater = Arc::new(BamConnectionIdentityUpdater {
             bam_url: bam_url.clone(),
-            new_identity: new_identity.clone(),
-            identity_changed_force_reconnect: identity_changed.clone(),
-        }) as Arc<dyn NotifyKeyUpdate + Sync + Send>;
+            new_identity: ArcSwap::from_pointee(None),
+            identity_changed_force_reconnect: AtomicBool::new(false),
+        });
+        let identity_updater_for_notifier =
+            identity_updater.clone() as Arc<dyn NotifyKeyUpdate + Sync + Send>;
 
         identity_notifiers
             .write()
             .unwrap()
-            .add(KeyUpdaterType::BamConnection, identity_updater);
+            .add(KeyUpdaterType::BamConnection, identity_updater_for_notifier);
         info!("BAM Manager: Added BAM connection key updater");
 
         let fallback_client_id = ClientId::JitoLabs;
@@ -223,21 +222,32 @@ impl BamManager {
 
                 // Check if connection is healthy or if the identity changed; if no then disconnect
                 // Disconnecting will cause a reconnect attempt, with the new identity if it changed
-                if !connection.is_healthy() || identity_changed.load(Ordering::Relaxed) {
+                if !connection.is_healthy()
+                    || identity_updater
+                        .identity_changed_force_reconnect
+                        .load(Ordering::Relaxed)
+                {
                     cached_builder_config = None;
                     dependencies
                         .bam_enabled
                         .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
-                    if identity_changed.load(Ordering::Relaxed) {
+                    if identity_updater
+                        .identity_changed_force_reconnect
+                        .load(Ordering::Relaxed)
+                    {
                         // Wait until the new identity is set in cluster info as to avoid race conditions
                         // with sending an auth proof w/ the old identity
                         let timeout = std::time::Duration::from_secs(180);
                         Self::wait_for_identity_in_cluster_info(
-                            **<arc_swap::ArcSwapAny<Arc<Option<Pubkey>>>>::load(&new_identity),
+                            **<arc_swap::ArcSwapAny<Arc<Option<Pubkey>>>>::load(
+                                &identity_updater.new_identity,
+                            ),
                             &dependencies.cluster_info,
                             timeout,
                         );
-                        identity_changed.store(false, Ordering::Relaxed);
+                        identity_updater
+                            .identity_changed_force_reconnect
+                            .store(false, Ordering::Relaxed);
                     }
                     warn!("BAM connection lost");
                     continue;
