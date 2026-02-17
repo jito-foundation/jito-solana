@@ -292,7 +292,14 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             let mut work = self.get_or_create_work_object();
             let batch_id = self.get_next_schedule_id();
             *num_scheduled += batch_ids.len();
-            Self::generate_work(&mut work, batch_id, &[id], revert_on_error, container, slot);
+            Self::populate_consume_work(
+                &mut work,
+                batch_id,
+                &[id],
+                revert_on_error,
+                container,
+                slot,
+            );
             self.send_to_worker(SmallVec::from([id]), work, slot);
         }
     }
@@ -326,7 +333,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         if let Some(work) = self.reusable_consume_work.pop() {
             work
         } else {
-            // These values will be overwritten by `generate_work`
+            // These values will be overwritten by `populate_consume_work`
             ConsumeWork {
                 batch_id: TransactionBatchId::new(0),
                 ids: Vec::with_capacity(1),
@@ -353,7 +360,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         self.reusable_priority_ids.push(priority_ids);
     }
 
-    fn generate_work(
+    /// Populates a reusable `ConsumeWork` from scheduled `priority_ids` and stamps
+    /// scheduling metadata for worker execution.
+    fn populate_consume_work(
         output: &mut ConsumeWork<Tx>,
         batch_id: TransactionBatchId,
         priority_ids: &[TransactionPriorityId],
