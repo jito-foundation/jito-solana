@@ -876,4 +876,26 @@ pub mod test {
             .join()
             .expect("Expect successful join of broadcast service");
     }
+
+    #[test]
+    fn test_multicast_ttl_set_on_broadcast_sockets() {
+        use std::net::UdpSocket;
+
+        const MULTICAST_TTL: u32 = 64;
+
+        // Create a UDP socket and set multicast TTL
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("Failed to bind socket");
+        socket
+            .set_multicast_ttl_v4(MULTICAST_TTL)
+            .expect("Failed to set multicast TTL");
+
+        // Verify the TTL is set correctly
+        let ttl = socket
+            .multicast_ttl_v4()
+            .expect("Failed to get multicast TTL");
+        assert_eq!(
+            ttl, MULTICAST_TTL,
+            "Multicast TTL should be set to {MULTICAST_TTL}"
+        );
+    }
 }
