@@ -104,6 +104,37 @@ where
         bam_controller: bool,
         bam_enabled: Arc<AtomicU8>,
     ) -> Self {
+        SchedulerController::new_with_metrics(
+            exit,
+            config,
+            decision_maker,
+            receive_and_buffer,
+            bank_forks,
+            scheduler,
+            SchedulerCountMetrics::default(),
+            SchedulerTimingMetrics::default(),
+            worker_metrics,
+            SchedulingDetails::default(),
+            bam_controller,
+            bam_enabled,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_metrics(
+        exit: Arc<AtomicBool>,
+        config: SchedulerConfig,
+        decision_maker: DecisionMaker,
+        receive_and_buffer: R,
+        bank_forks: Arc<RwLock<BankForks>>,
+        scheduler: S,
+        count_metrics: SchedulerCountMetrics,
+        timing_metrics: SchedulerTimingMetrics,
+        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+        scheduling_details: SchedulingDetails,
+        bam_controller: bool,
+        bam_enabled: Arc<AtomicU8>,
+    ) -> Self {
         Self {
             exit,
             config,
@@ -112,13 +143,42 @@ where
             bank_forks,
             container: R::Container::with_capacity(TOTAL_BUFFERED_PACKETS),
             scheduler,
-            count_metrics: SchedulerCountMetrics::default(),
-            timing_metrics: SchedulerTimingMetrics::default(),
+            count_metrics,
+            timing_metrics,
             worker_metrics,
-            scheduling_details: SchedulingDetails::default(),
+            scheduling_details,
             bam_controller,
             bam_enabled,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_metrics_id(
+        id: u32,
+        exit: Arc<AtomicBool>,
+        config: SchedulerConfig,
+        decision_maker: DecisionMaker,
+        receive_and_buffer: R,
+        bank_forks: Arc<RwLock<BankForks>>,
+        scheduler: S,
+        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+        bam_controller: bool,
+        bam_enabled: Arc<AtomicU8>,
+    ) -> Self {
+        SchedulerController::new_with_metrics(
+            exit,
+            config,
+            decision_maker,
+            receive_and_buffer,
+            bank_forks,
+            scheduler,
+            SchedulerCountMetrics::new(id),
+            SchedulerTimingMetrics::new(id),
+            worker_metrics,
+            SchedulingDetails::new(id),
+            bam_controller,
+            bam_enabled,
+        )
     }
 
     pub fn run(mut self) -> Result<(), SchedulerError> {
