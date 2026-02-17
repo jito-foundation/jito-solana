@@ -89,7 +89,7 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
     /// Panics if the transaction does not exist.
     fn get_transaction(&self, id: TransactionId) -> Option<&Tx>;
 
-    /// Get the batch id and revert_on_error flag for a transaction.
+    /// Get the transaction ids and metadata for a batch id.
     ///
     /// `BamReceiveAndBuffer::prevalidate_batches` rejects `AtomicTxnBatch`es with
     /// more than MAX_PACKETS_PER_BUNDLE packets before they reach
@@ -316,8 +316,8 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
     }
 
     /// Will try to insert a new batch of transactions if there is enough
-    /// capacity in the container. If successful, returns the batch id.
-    /// If there is not enough capacity, returns `None`.
+    /// free slab capacity for all transactions plus one batch metadata entry.
+    /// If successful, returns the batch id; otherwise returns `None`.
     /// Note: will not evict existing transactions to make room for the batch (unlike `insert_new_transaction`).
     pub(crate) fn insert_new_batch(
         &mut self,
@@ -327,8 +327,7 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
         revert_on_error: bool,
         max_schedule_slot: u64,
     ) -> Option<usize> {
-        // Add 1 slab entry for the batch metadata
-        let entries_required = txns_max_age.len().saturating_add(1);
+        let entries_required = txns_max_age.len().saturating_add(1); // add entry for BatchInfo
         let available_entries = self
             .id_to_transaction_state
             .capacity()
