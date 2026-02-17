@@ -340,6 +340,13 @@ impl BroadcastStage {
         let num_broadcast_sockets_per_interface = socks.len() / cluster_info.bind_ip_addrs().len();
         let num_interfaces: usize = cluster_info.bind_ip_addrs().len();
 
+        const MULTICAST_TTL: u32 = 64;
+        for sock in &socks {
+            if let Err(err) = sock.set_multicast_ttl_v4(MULTICAST_TTL) {
+                log::warn!("failed to set multicast TTL on broadcast socket: {err}");
+            }
+        }
+
         // Partition by interface
         // With 2 interfaces and the default of 4 sockets per interface, `sockets_by_interface` is:
         // sockets_by_interface = [[s0, s1, s2, s3], [s4, s5, s6, s7]]

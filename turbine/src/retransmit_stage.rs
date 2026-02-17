@@ -699,6 +699,13 @@ impl RetransmitStage {
                 .unwrap()
         };
 
+        const MULTICAST_TTL: u32 = 64;
+        for sock in retransmit_sockets.iter() {
+            if let Err(err) = sock.set_multicast_ttl_v4(MULTICAST_TTL) {
+                log::warn!("failed to set multicast TTL on retransmit socket: {err}");
+            }
+        }
+
         let retransmit_thread_handle = Builder::new()
             .name("solRetransmittr".to_string())
             .spawn({
