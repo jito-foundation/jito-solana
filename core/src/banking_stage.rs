@@ -103,6 +103,8 @@ const DEFAULT_NUM_WORKERS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 const TOTAL_BUFFERED_PACKETS: usize = 100_000;
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
+const BAM_METRICS_ID_OFFSET: u32 = 10_000;
+
 #[derive(Debug, Default)]
 pub struct BankingStageStats {
     last_report: AtomicInterval,
@@ -623,7 +625,7 @@ impl BankingStage {
             for index in 0..num_workers {
                 let id = index as u32;
                 let consume_worker = ConsumeWorker::new_with_tip_processing_deps(
-                    id,
+                    id + BAM_METRICS_ID_OFFSET,
                     exit.clone(),
                     work_receiver.clone(),
                     Consumer::new(
@@ -677,7 +679,8 @@ impl BankingStage {
                             bam_context.blacklisted_accounts.clone(),
                         );
 
-                        let scheduler_controller = SchedulerController::new(
+                        let scheduler_controller = SchedulerController::new_with_metrics_id(
+                            BAM_METRICS_ID_OFFSET,
                             bam_scheduler_exit,
                             scheduler_config,
                             decision_maker.clone(),
