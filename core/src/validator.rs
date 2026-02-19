@@ -395,7 +395,7 @@ pub struct ValidatorConfig {
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub tip_manager_config: TipManagerConfig,
-    pub bam_url: Arc<Mutex<Option<String>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl ValidatorConfig {
@@ -487,7 +487,7 @@ impl ValidatorConfig {
                 ShredReceiverAddresses::new(),
             )),
             tip_manager_config: TipManagerConfig::default(),
-            bam_url: Arc::new(Mutex::new(None)),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 

@@ -201,7 +201,7 @@ impl Tpu {
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
-        bam_url: Arc<Mutex<Option<String>>>,
+        bam_url: Arc<ArcSwap<Option<String>>>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
