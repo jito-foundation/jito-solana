@@ -11400,6 +11400,7 @@ version = "4.0.0-alpha.0"
 dependencies = [
  "agave-feature-set",
  "agave-snapshots",
+ "arc-swap",
  "base64 0.22.1",
  "bincode",
  "crossbeam-channel",
