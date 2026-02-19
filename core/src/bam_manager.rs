@@ -96,7 +96,7 @@ impl BamManager {
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
     ) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(8)
             .enable_all()
             .build()
             .unwrap();
@@ -433,8 +433,8 @@ impl BamManager {
     }
 
     fn wait_for_identity_in_cluster_info(
-        new_identity: &Arc<ArcSwap<Option<Pubkey>>>,
-        cluster_info: &Arc<ClusterInfo>,
+        new_identity: &ArcSwap<Option<Pubkey>>,
+        cluster_info: &ClusterInfo,
         exit: &AtomicBool,
         timeout: std::time::Duration,
     ) -> bool {
@@ -453,35 +453,27 @@ impl BamManager {
             };
             if latest_requested_identity != requested_identity {
                 info!(
-                    "BAM Manager: identity updated while waiting ({} -> {}), following latest",
-                    requested_identity, latest_requested_identity
+                    "BAM: identity updated while waiting ({requested_identity} -> \
+                     {latest_requested_identity}), following latest"
                 );
                 requested_identity = latest_requested_identity;
             }
             if cluster_info.keypair().pubkey() == requested_identity {
-                info!(
-                    "BAM Manager: detected new identity {} in cluster info",
-                    requested_identity
-                );
+                info!("BAM: detected new identity {requested_identity} in cluster info");
                 return true;
             }
 
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         warn!(
-            "BAM Manager: timed out waiting for new identity {} to appear in cluster info after \
-             {:?}",
-            requested_identity,
+            "BAM: timed out waiting for new identity {requested_identity} to appear in cluster \
+             info after {:?}",
             start.elapsed()
         );
         datapoint_warn!(
-            "bam-manager_identity-wait-timeout",
-            (
-                "waited_for_identity",
-                requested_identity.to_string(),
-                String
-            ),
-            ("timeout_secs", timeout.as_secs() as i64, i64)
+            "bam_manager-identity_wait_err",
+            ("identity", requested_identity.to_string(), String),
+            ("timeout_us", timeout.as_micros(), i64)
         );
         false
     }
