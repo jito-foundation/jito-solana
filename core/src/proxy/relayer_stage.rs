@@ -474,7 +474,6 @@ impl RelayerStage {
 
     pub fn is_valid_relayer_config(config: &RelayerConfig) -> bool {
         if config.relayer_url.is_empty() {
-            warn!("can't connect to relayer. missing relayer_url.");
             return false;
         }
         if config.oldest_allowed_heartbeat.is_zero() {
