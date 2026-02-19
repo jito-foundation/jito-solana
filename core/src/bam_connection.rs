@@ -40,6 +40,7 @@ pub struct BamConnection {
 
 const AUTH_LABEL: &[u8] = b"X_OFF_CHAIN_JITO_BAM_V1\0";
 const CONNECTION_TIMEOUT: Duration = std::time::Duration::from_secs(5);
+const NETWORK_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTBOUND_CHANNEL_CAPACITY: usize = 100_000;
 const VALIDATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const METRICS_AND_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(25);
@@ -47,6 +48,8 @@ const REFRESH_CONFIG_INTERVAL: Duration = Duration::from_secs(1);
 const OUTBOUND_TICK_INTERVAL: Duration = Duration::from_millis(1);
 const MAX_WAITING_RESULTS: usize = 24;
 const WAIT_SLEEP_DURATION: Duration = Duration::from_millis(10);
+const CHILD_TASK_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
+const CONNECTION_TASK_DROP_GRACE: Duration = Duration::from_millis(250);
 pub const MAX_DURATION_BETWEEN_NODE_HEARTBEATS: Duration = Duration::from_secs(6); // 3x the nodes heartbeat interval
 pub const WAIT_TO_RECONNECT_DURATION: Duration = Duration::from_secs(1);
 
@@ -59,20 +62,24 @@ impl BamConnection {
         outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
     ) -> Result<Self, TryInitError> {
         // Create connection and inbound and outbound streams
-        let backend_endpoint = tonic::transport::Endpoint::from_shared(url.clone())?;
+        let backend_endpoint = tonic::transport::Endpoint::from_shared(url.clone())?
+            .connect_timeout(CONNECTION_TIMEOUT)
+            .timeout(NETWORK_REQUEST_TIMEOUT);
         let channel = timeout(CONNECTION_TIMEOUT, backend_endpoint.connect()).await??;
         let mut validator_client = BamNodeApiClient::new(channel);
         let (outbound_sender, outbound_receiver_internal) =
             mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
         let outbound_stream = tonic::Request::new(ReceiverStream::new(outbound_receiver_internal));
-        let inbound_stream = validator_client
-            .init_scheduler_stream(outbound_stream)
-            .await
-            .map_err(|e| {
-                error!("Failed to start scheduler stream: {e:?}");
-                TryInitError::StreamStartError(e)
-            })?
-            .into_inner();
+        let inbound_stream = timeout(
+            NETWORK_REQUEST_TIMEOUT,
+            validator_client.init_scheduler_stream(outbound_stream),
+        )
+        .await?
+        .map_err(|e| {
+            error!("Failed to start scheduler stream: {e:?}");
+            TryInitError::StreamStartError(e)
+        })?
+        .into_inner();
 
         // Create data structures for the connection task
         let metrics = Arc::new(BamConnectionMetrics::default());
@@ -146,14 +153,14 @@ impl BamConnection {
             return;
         }
 
-        let builder_config_task = tokio::spawn(Self::refresh_config_task(
+        let mut builder_config_task = tokio::spawn(Self::refresh_config_task(
             exit.clone(),
             config.clone(),
             validator_client.clone(),
             metrics.clone(),
         ));
 
-        let outbound_task = tokio::spawn(Self::outbound_task(
+        let mut outbound_task = tokio::spawn(Self::outbound_task(
             exit.clone(),
             outbound_sender.clone(),
             outbound_receiver,
@@ -221,8 +228,29 @@ impl BamConnection {
             }
         }
         is_healthy.store(false, Relaxed);
-        let _ = builder_config_task.await.ok();
-        let _ = outbound_task.await.ok();
+        tokio::join!(
+            Self::wait_or_abort_child("refresh_config", &mut builder_config_task),
+            Self::wait_or_abort_child("outbound", &mut outbound_task),
+        );
+    }
+
+    async fn wait_or_abort_child(task_name: &str, task: &mut tokio::task::JoinHandle<()>) {
+        match timeout(CHILD_TASK_SHUTDOWN_GRACE, &mut *task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if !e.is_cancelled() {
+                    warn!("BAM task {task_name} error: {e:?}");
+                }
+            }
+            Err(_) => {
+                warn!(
+                    "BAM task {task_name} did not exit within {CHILD_TASK_SHUTDOWN_GRACE:?}; \
+                     aborting"
+                );
+                task.abort();
+                let _ = task.await;
+            }
+        }
     }
 
     fn send_batch_results(
@@ -260,15 +288,21 @@ impl BamConnection {
             tokio::select! {
                 _ = interval.tick() => {
                     let request = tonic::Request::new(ConfigRequest {});
-                    match validator_client.get_builder_config(request).await {
-                        Ok(response) => {
+                    match timeout(
+                        NETWORK_REQUEST_TIMEOUT,
+                        validator_client.get_builder_config(request),
+                    )
+                    .await
+                    {
+                        Ok(Ok(response)) => {
                             let resp_config = response.into_inner();
                             *config.lock().unwrap() = Some(resp_config);
                             metrics.builder_config_received.fetch_add(1, Relaxed);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             error!("Failed to get config: {e:?}");
                         }
+                        Err(_) => error!("Timed out getting config"),
                     }
                 }
             }
@@ -341,9 +375,13 @@ impl BamConnection {
         self.is_healthy.load(Relaxed)
     }
 
-    pub fn wait_until_healthy_and_config_received(&self, duration: std::time::Duration) -> bool {
+    pub fn wait_until_healthy_and_config_received(
+        &self,
+        duration: std::time::Duration,
+        exit: &AtomicBool,
+    ) -> bool {
         let start = std::time::Instant::now();
-        while start.elapsed() < duration {
+        while start.elapsed() < duration && !exit.load(Relaxed) {
             if self.is_healthy() && self.get_latest_config().is_some() {
                 return true;
             }
@@ -376,9 +414,21 @@ impl BamConnection {
         cluster_info: Arc<ClusterInfo>,
     ) -> Option<AuthProof> {
         let request = tonic::Request::new(AuthChallengeRequest {});
-        let Ok(resp) = validator_client.get_auth_challenge(request).await else {
-            error!("Failed to get auth challenge");
-            return None;
+        let resp = match timeout(
+            NETWORK_REQUEST_TIMEOUT,
+            validator_client.get_auth_challenge(request),
+        )
+        .await
+        {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => {
+                error!("Failed to get auth challenge: {e:?}");
+                return None;
+            }
+            Err(_) => {
+                error!("Timed out getting auth challenge");
+                return None;
+            }
         };
 
         let resp = resp.into_inner();
@@ -400,8 +450,10 @@ impl Drop for BamConnection {
     fn drop(&mut self) {
         self.is_healthy.store(false, Relaxed);
         self.exit.store(true, Relaxed);
-        std::thread::sleep(WAIT_SLEEP_DURATION);
-        self.connection_task.abort();
+        std::thread::sleep(CONNECTION_TASK_DROP_GRACE);
+        if !self.connection_task.is_finished() {
+            self.connection_task.abort();
+        }
     }
 }
 

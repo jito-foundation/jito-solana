@@ -7,6 +7,7 @@ use {
     agave_snapshots::{
         paths::BANK_SNAPSHOTS_DIR, snapshot_config::SnapshotConfig, SnapshotInterval,
     },
+    arc_swap::ArcSwap,
     base64::{prelude::BASE64_STANDARD, Engine},
     crossbeam_channel::Receiver,
     log::*,
@@ -73,7 +74,7 @@ use {
         num::{NonZero, NonZeroU64},
         path::{Path, PathBuf},
         str::FromStr,
-        sync::{Arc, Mutex, RwLock},
+        sync::{Arc, RwLock},
         time::Duration,
     },
     tokio::time::sleep,
@@ -144,7 +145,7 @@ pub struct TestValidatorGenesis {
     pub tpu_enable_udp: bool,
     pub geyser_plugin_manager: Arc<RwLock<GeyserPluginManager>>,
     admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
-    pub bam_url: Arc<Mutex<Option<String>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -181,7 +182,7 @@ impl Default for TestValidatorGenesis {
             geyser_plugin_manager: Arc::new(RwLock::new(GeyserPluginManager::default())),
             admin_rpc_service_post_init:
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
-            bam_url: Arc::new(Mutex::new(None)),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 }
