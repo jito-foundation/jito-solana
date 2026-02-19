@@ -492,25 +492,28 @@ impl BamReceiveAndBuffer {
                 );
             }
 
-            // Check 5: Ensure the fee payer has enough to pay for the transaction fee
-            let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
-                &working_bank,
-                &view,
-                &mut TransactionErrorMetrics::default(),
-            ));
-            metrics.increment_fee_payer_check_us(duration_us);
-            if let Err(err) = result {
-                let reason = convert_txn_error_to_proto(err);
-                stats.num_dropped_on_fee_payer += 1;
-                return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: reason as i32,
-                        },
-                    )),
-                    stats,
-                );
+            // Check 5: Ensure the seed fee payer has enough to pay for transaction fees.
+            // Downstream fee payers may be funded by earlier transactions in the same bundle.
+            if index == 0 {
+                let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
+                    &working_bank,
+                    &view,
+                    &mut TransactionErrorMetrics::default(),
+                ));
+                metrics.increment_fee_payer_check_us(duration_us);
+                if let Err(err) = result {
+                    let reason = convert_txn_error_to_proto(err);
+                    stats.num_dropped_on_fee_payer += 1;
+                    return (
+                        Err(Reason::TransactionError(
+                            jito_protos::proto::bam_types::TransactionError {
+                                index: index as u32,
+                                reason: reason as i32,
+                            },
+                        )),
+                        stats,
+                    );
+                }
             }
 
             // Check 6: Ensure none of the accounts touch blacklisted accounts
@@ -1394,6 +1397,62 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(stats.num_dropped_on_fee_payer, 1);
             assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
+        }
+    }
+
+    #[test]
+    fn test_batch_deserialize_seeded_later_fee_payer() {
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let later_fee_payer = Keypair::new();
+        let batch = AtomicTxnBatch {
+            seq_id: 1,
+            packets: vec![
+                Packet {
+                    data: bincode::serialize(&transfer(
+                        &mint_keypair,
+                        &later_fee_payer.pubkey(),
+                        1,
+                        bank_forks.read().unwrap().root_bank().last_blockhash(),
+                    ))
+                    .unwrap(),
+                    meta: None,
+                },
+                Packet {
+                    data: bincode::serialize(&transfer(
+                        &later_fee_payer,
+                        &Pubkey::new_unique(),
+                        1,
+                        bank_forks.read().unwrap().root_bank().last_blockhash(),
+                    ))
+                    .unwrap(),
+                    meta: None,
+                },
+            ],
+            max_schedule_slot: Slot::MAX,
+        };
+
+        let mut stats = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+
+        if let Ok((deserialized_packets, revert_on_error, seq_id, max_schedule_slot)) = &results[0]
+        {
+            let (result, stats) = BamReceiveAndBuffer::parse_batch(
+                deserialized_packets.clone(),
+                *seq_id,
+                *revert_on_error,
+                *max_schedule_slot,
+                &bank_forks,
+                &HashSet::new(),
+                &mut stats,
+            );
+
+            assert!(result.is_ok());
+            assert_eq!(stats.num_dropped_on_fee_payer, 0);
+            let parsed_batch = result.unwrap();
+            assert_eq!(parsed_batch.txns_max_age.len(), 2);
         }
     }
 
