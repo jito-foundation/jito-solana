@@ -1523,7 +1523,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -8830,9 +8830,9 @@ dependencies = [
 
 [[package]]
 name = "solana-file-download"
-version = "3.1.0"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6884e13cc98f58e609a9b73e3d53f728f0f743b8c15c6768cad6f6382c336c1"
+checksum = "3c94b4bfa6d8d6feb089cc1d46408a13d2ad94e7d8f32737d1d8353a93386989"
 dependencies = [
  "console 0.15.11",
  "indicatif 0.17.12",
