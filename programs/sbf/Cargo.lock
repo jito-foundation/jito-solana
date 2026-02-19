@@ -9989,6 +9989,7 @@ version = "3.1.8"
 dependencies = [
  "agave-feature-set",
  "agave-snapshots",
+ "arc-swap",
  "base64 0.22.1",
  "bincode",
  "crossbeam-channel",
