@@ -524,22 +524,18 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         container: &mut impl StateContainer<Tx>,
     ) {
         // Check if no bank or slot has changed
-        let maybe_bank = decision.bank();
-        if maybe_bank.map(|bank| bank.slot()) == self.slot {
+        let bank_slot = decision.bank().map(|bank| bank.slot());
+        if bank_slot == self.slot {
             return;
         }
         let prev_slot = self.slot;
-        if let Some(bank) = maybe_bank {
-            info!(
-                "Bank boundary detected: slot changed from {:?} to {:?}",
-                self.slot,
-                bank.slot()
-            );
-            self.slot = Some(bank.slot());
-        } else {
-            info!("Bank boundary detected: slot changed to None");
-            self.slot = None;
+        match bank_slot {
+            Some(bank_slot) => {
+                debug!("Bank boundary detected: slot changed from {prev_slot:?} to {bank_slot}")
+            }
+            None => debug!("Bank boundary detected: slot changed to None"),
         }
+        self.slot = bank_slot;
 
         // Drain container and send back 'retryable'
         if self.slot.is_none() {
