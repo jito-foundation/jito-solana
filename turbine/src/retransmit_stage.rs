@@ -699,6 +699,13 @@ impl RetransmitStage {
                 .unwrap()
         };
 
+        const MULTICAST_TTL: u32 = 64;
+        for sock in retransmit_sockets.iter() {
+            if let Err(err) = sock.set_multicast_ttl_v4(MULTICAST_TTL) {
+                log::warn!("failed to set multicast TTL on retransmit socket: {err}");
+            }
+        }
+
         let retransmit_thread_handle = Builder::new()
             .name("solRetransmittr".to_string())
             .spawn({
@@ -1090,6 +1097,28 @@ mod tests {
             "
            First time seeing shred Y w/ changed header (FEC Set index 3)=>Dup because common \
              header is unique but shred ID seen twice already"
+        );
+    }
+
+    #[test]
+    fn test_multicast_ttl_set_on_retransmit_sockets() {
+        use std::net::UdpSocket;
+
+        const MULTICAST_TTL: u32 = 64;
+
+        // Create a UDP socket and set multicast TTL
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("Failed to bind socket");
+        socket
+            .set_multicast_ttl_v4(MULTICAST_TTL)
+            .expect("Failed to set multicast TTL");
+
+        // Verify the TTL is set correctly
+        let ttl = socket
+            .multicast_ttl_v4()
+            .expect("Failed to get multicast TTL");
+        assert_eq!(
+            ttl, MULTICAST_TTL,
+            "Multicast TTL should be set to {MULTICAST_TTL}"
         );
     }
 }
