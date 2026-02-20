@@ -62,19 +62,28 @@ if $is_pr_build; then
   }'
 
   # get affected files
-  readarray -t affected_files < <(
-    gh api graphql \
-      -f query="$query" \
-      -F pr="$pr_number" \
-      -F owner="$owner" \
-      -F repo="$repo" \
-      --paginate \
-      --jq '.data.repository.pullRequest.files.nodes.[].path'
-  )
+  if command -v gh >/dev/null 2>&1; then
+    readarray -t affected_files < <(
+      gh api graphql \
+        -f query="$query" \
+        -F pr="$pr_number" \
+        -F owner="$owner" \
+        -F repo="$repo" \
+        --paginate \
+        --jq '.data.repository.pullRequest.files.nodes.[].path'
+    )
+  else
+    echo "gh not found; falling back to git diff for affected files"
+    if [[ -n $BUILDKITE_PULL_REQUEST_BASE_BRANCH ]]; then
+      readarray -t affected_files < <(
+        git diff --name-only "origin/$BUILDKITE_PULL_REQUEST_BASE_BRANCH"...HEAD
+      )
+    fi
+  fi
 
   if [[ ${#affected_files[*]} -eq 0 ]]; then
-    echo "Unable to determine the files affected by this PR"
-    exit 1
+    echo "Unable to determine the files affected by this PR; running conservative CI set"
+    affected_files=("ci/buildkite-pipeline.sh")
   fi
 else
   CI_PULL_REQUEST=
