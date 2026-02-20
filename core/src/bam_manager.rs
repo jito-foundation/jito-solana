@@ -239,12 +239,17 @@ impl BamManager {
             }
 
             // if url changed or cleared, then disconnect
-            if bam_url.load().as_deref() != Some(connection.url()) {
+            let configured_bam_url = bam_url.load();
+            if configured_bam_url.as_deref() != Some(connection.url()) {
                 cached_builder_config = None;
                 dependencies
                     .bam_enabled
                     .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
-                info!("BAM URL changed");
+                if let Some(new_url) = configured_bam_url.as_deref() {
+                    info!("BAM URL changed, connecting to new URL: {new_url}");
+                } else {
+                    info!("BAM URL cleared, disconnecting");
+                }
                 continue;
             }
 
