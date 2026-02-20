@@ -302,7 +302,7 @@ impl BamManager {
 
     fn handle_identity_change(
         identity_changed: &AtomicBool,
-        new_identity: &Arc<ArcSwap<Option<Pubkey>>>,
+        new_identity: &ArcSwap<Option<Pubkey>>,
         dependencies: &BamDependencies,
         exit: &AtomicBool,
         cached_builder_config: &mut Option<ConfigResponse>,
