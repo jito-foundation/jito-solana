@@ -41,6 +41,8 @@ impl BundleSigverifyStage {
         let mut num_bundles_received = 0;
         let mut num_bundles_failed_sigverify = 0;
         let mut num_packets_failed_sigverify = 0;
+        let mut num_bundles_failed_send = 0;
+        let mut num_packets_failed_send = 0;
         let mut last_update = Instant::now();
 
         while !exit.load(Ordering::Relaxed) {
@@ -64,11 +66,15 @@ impl BundleSigverifyStage {
                                 num_packets_failed_sigverify,
                                 i64
                             ),
+                            ("num_bundles_failed_send", num_bundles_failed_send, i64),
+                            ("num_packets_failed_send", num_packets_failed_send, i64),
                         );
                         num_packets_received = 0;
                         num_bundles_received = 0;
                         num_bundles_failed_sigverify = 0;
                         num_packets_failed_sigverify = 0;
+                        num_bundles_failed_send = 0;
+                        num_packets_failed_send = 0;
                         last_update = Instant::now();
                     }
                     continue;
@@ -92,12 +98,15 @@ impl BundleSigverifyStage {
                     .count();
 
                 // all the transactions in the bundle need to be verified to be valid
+                let len = bundle.len();
                 if num_packets_failed_sigverify_in_bundle == 0
                     && sender.send(VerifiedPacketBundle::new(bundle)).is_err()
                 {
                     warn!("failed to send verified packet bundle");
+                    num_bundles_failed_send += 1;
+                    num_packets_failed_send += len;
                     break;
-                } else {
+                } else if num_packets_failed_sigverify_in_bundle > 0 {
                     num_bundles_failed_sigverify += 1;
                     num_packets_failed_sigverify += num_packets_failed_sigverify_in_bundle;
                 }
@@ -120,11 +129,15 @@ impl BundleSigverifyStage {
                         num_packets_failed_sigverify,
                         i64
                     ),
+                    ("num_bundles_failed_send", num_bundles_failed_send, i64),
+                    ("num_packets_failed_send", num_packets_failed_send, i64),
                 );
                 num_packets_received = 0;
                 num_bundles_received = 0;
                 num_bundles_failed_sigverify = 0;
                 num_packets_failed_sigverify = 0;
+                num_bundles_failed_send = 0;
+                num_packets_failed_send = 0;
                 last_update = Instant::now();
             }
         }
