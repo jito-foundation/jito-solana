@@ -97,10 +97,13 @@ impl RpcHealth {
         } else {
             let num_slots = cluster_latest_optimistically_confirmed_slot
                 .saturating_sub(my_latest_optimistically_confirmed_slot);
+            let blockstore_max_root = self.blockstore.max_root();
+            let blockstore_highest_slot = self.blockstore.highest_slot().ok().flatten();
             warn!(
                 "health check: behind by {num_slots} slots: \
                  me={my_latest_optimistically_confirmed_slot}, latest \
-                 cluster={cluster_latest_optimistically_confirmed_slot}",
+                 cluster={cluster_latest_optimistically_confirmed_slot}, \
+                 blockstore max_root={blockstore_max_root}, highest_slot={blockstore_highest_slot:?}",
             );
             RpcHealthStatus::Behind { num_slots }
         }

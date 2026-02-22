@@ -11,6 +11,12 @@ use {
 static DEFAULT_MAX_GENESIS_ARCHIVE_UNPACKED_SIZE: LazyLock<String> =
     LazyLock::new(|| MAX_GENESIS_ARCHIVE_UNPACKED_SIZE.to_string());
 
+const DEFAULT_SNAPSHOT_MANIFEST_URL: &str = "https://data.pipedev.network/snapshot-manifest.json";
+const DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY: &str = "64";
+const DEFAULT_SNAPSHOT_DOWNLOAD_CHUNK_SIZE_BYTES: &str = "8388608"; // 8 MiB
+const DEFAULT_SNAPSHOT_DOWNLOAD_TIMEOUT_MS: &str = "30000";
+const DEFAULT_SNAPSHOT_DOWNLOAD_MAX_RETRIES: &str = "3";
+
 #[cfg(test)]
 impl Default for RpcBootstrapConfig {
     fn default() -> Self {
@@ -20,7 +26,22 @@ impl Default for RpcBootstrapConfig {
             check_vote_account: None,
             only_known_rpc: false,
             max_genesis_archive_unpacked_size: 10485760,
+            bootstrap_rpc_addrs: Vec::new(),
+            bootstrap_rpc_addrs_url: None,
             incremental_snapshot_fetch: true,
+            snapshot_manifest_url: DEFAULT_SNAPSHOT_MANIFEST_URL.to_string(),
+            snapshot_download_concurrency: DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY
+                .parse()
+                .expect("valid default snapshot download concurrency"),
+            snapshot_download_chunk_size_bytes: DEFAULT_SNAPSHOT_DOWNLOAD_CHUNK_SIZE_BYTES
+                .parse()
+                .expect("valid default snapshot chunk size"),
+            snapshot_download_timeout_ms: DEFAULT_SNAPSHOT_DOWNLOAD_TIMEOUT_MS
+                .parse()
+                .expect("valid default snapshot download timeout"),
+            snapshot_download_max_retries: DEFAULT_SNAPSHOT_DOWNLOAD_MAX_RETRIES
+                .parse()
+                .expect("valid default snapshot download max retries"),
         }
     }
 }
@@ -52,7 +73,33 @@ impl FromClapArgMatches for RpcBootstrapConfig {
             check_vote_account,
             only_known_rpc,
             max_genesis_archive_unpacked_size,
+            bootstrap_rpc_addrs: values_t!(matches, "bootstrap_rpc_addrs", std::net::SocketAddr)
+                .unwrap_or_default(),
+            bootstrap_rpc_addrs_url: matches
+                .value_of("bootstrap_rpc_addrs_url")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             incremental_snapshot_fetch: !no_incremental_snapshots,
+            snapshot_manifest_url: matches
+                .value_of("snapshot_manifest_url")
+                .unwrap_or(DEFAULT_SNAPSHOT_MANIFEST_URL)
+                .trim()
+                .to_string(),
+            snapshot_download_concurrency: value_t!(matches, "snapshot_download_concurrency", usize)
+                .unwrap_or_else(|_| DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY.parse().unwrap())
+                .max(1),
+            snapshot_download_chunk_size_bytes: value_t!(
+                matches,
+                "snapshot_download_chunk_size_bytes",
+                u64
+            )
+            .unwrap_or_else(|_| DEFAULT_SNAPSHOT_DOWNLOAD_CHUNK_SIZE_BYTES.parse().unwrap())
+            .max(1024 * 1024),
+            snapshot_download_timeout_ms: value_t!(matches, "snapshot_download_timeout_ms", u64)
+                .unwrap_or_else(|_| DEFAULT_SNAPSHOT_DOWNLOAD_TIMEOUT_MS.parse().unwrap())
+                .max(1000),
+            snapshot_download_max_retries: value_t!(matches, "snapshot_download_max_retries", u32)
+                .unwrap_or_else(|_| DEFAULT_SNAPSHOT_DOWNLOAD_MAX_RETRIES.parse().unwrap()),
         })
     }
 }
@@ -86,6 +133,17 @@ pub(crate) fn args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
             .takes_value(false)
             .requires("known_validators")
             .help("Use the RPC service of known validators only"),
+        Arg::with_name("bootstrap_rpc_addrs")
+            .long("bootstrap-rpc-addr")
+            .value_name("HOST:PORT")
+            .takes_value(true)
+            .multiple(true)
+            .help("Use these RPC nodes for bootstrap instead of gossip discovery (repeatable)"),
+        Arg::with_name("bootstrap_rpc_addrs_url")
+            .long("bootstrap-rpc-addrs-url")
+            .value_name("URL")
+            .takes_value(true)
+            .help("Fetch bootstrap RPC nodes from a URL that returns JSON array/object of socket addresses"),
         Arg::with_name("max_genesis_archive_unpacked_size")
             .long("max-genesis-archive-unpacked-size")
             .value_name("NUMBER")
@@ -96,6 +154,36 @@ pub(crate) fn args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
             .long("no-incremental-snapshots")
             .takes_value(false)
             .help("Disable incremental snapshots"),
+        Arg::with_name("snapshot_manifest_url")
+            .long("snapshot-manifest-url")
+            .takes_value(true)
+            .value_name("URL")
+            .default_value(DEFAULT_SNAPSHOT_MANIFEST_URL)
+            .help("Snapshot manifest URL (Pipe snapshot service)"),
+        Arg::with_name("snapshot_download_concurrency")
+            .long("snapshot-download-concurrency")
+            .takes_value(true)
+            .value_name("COUNT")
+            .default_value(DEFAULT_SNAPSHOT_DOWNLOAD_CONCURRENCY)
+            .help("Concurrent HTTP range requests per snapshot file"),
+        Arg::with_name("snapshot_download_chunk_size_bytes")
+            .long("snapshot-download-chunk-size-bytes")
+            .takes_value(true)
+            .value_name("BYTES")
+            .default_value(DEFAULT_SNAPSHOT_DOWNLOAD_CHUNK_SIZE_BYTES)
+            .help("Chunk size (bytes) for HTTP range requests"),
+        Arg::with_name("snapshot_download_timeout_ms")
+            .long("snapshot-download-timeout-ms")
+            .takes_value(true)
+            .value_name("MILLISECONDS")
+            .default_value(DEFAULT_SNAPSHOT_DOWNLOAD_TIMEOUT_MS)
+            .help("Timeout (ms) per HTTP request when downloading snapshot chunks"),
+        Arg::with_name("snapshot_download_max_retries")
+            .long("snapshot-download-max-retries")
+            .takes_value(true)
+            .value_name("COUNT")
+            .default_value(DEFAULT_SNAPSHOT_DOWNLOAD_MAX_RETRIES)
+            .help("Max retries per snapshot chunk HTTP request"),
     ]
 }
 

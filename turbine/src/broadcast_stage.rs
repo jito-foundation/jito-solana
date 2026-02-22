@@ -537,6 +537,11 @@ pub fn broadcast_shreds(
                 cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
             update_peer_stats(&cluster_nodes, last_datapoint_submit);
             shreds.filter_map(move |shred| {
+                // Best-effort: publish leader-produced shreds to SolanaCDN (if enabled).
+                // This is independent of whether the shred has an on-chain broadcast peer.
+                let payload = shred.payload();
+                crate::solanacdn_hooks::try_publish_leader_tvu_shred(payload.bytes.clone());
+
                 let key = shred.id();
                 let protocol = cluster_nodes::get_broadcast_protocol(&key);
                 cluster_nodes
@@ -547,7 +552,7 @@ pub fn broadcast_shreds(
                         (match protocol {
                             Protocol::QUIC => Either::Right,
                             Protocol::UDP => Either::Left,
-                        })((shred.payload(), addr))
+                        })((payload, addr))
                     })
             })
         })

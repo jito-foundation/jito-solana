@@ -37,6 +37,7 @@ use {
         consensus::tower_storage,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::repair_handler::RepairHandlerType,
+        solanacdn::SolanaCdnConfig,
         snapshot_packager_service::SnapshotPackagerService,
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
@@ -603,6 +604,156 @@ pub fn execute(
         })?,
     ));
 
+    let fast_shreds = matches.is_present("fast_shreds").then(|| {
+        solana_turbine::broadcast_stage::FastShredsConfig {
+            coalesce_duration: Duration::from_millis(5),
+            leader_fanout: 3,
+            prioritize_data_shreds: true,
+        }
+    });
+
+    let solanacdn_pops: Vec<SocketAddr> =
+        values_t!(matches, "solanacdn_pop", SocketAddr).unwrap_or_default();
+    let solanacdn_control = value_t!(matches, "solanacdn_control", SocketAddr).ok();
+    let has_solanacdn_api_token = matches
+        .value_of("solanacdn_api_token")
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+        || std::env::var("SOLANACDN_AGENT_API_TOKEN")
+            .ok()
+            .is_some_and(|s| !s.trim().is_empty())
+        || std::env::var("PIPE_API_KEY")
+            .ok()
+            .is_some_and(|s| !s.trim().is_empty());
+
+    let solanacdn = (!solanacdn_pops.is_empty()
+        || solanacdn_control.is_some()
+        || has_solanacdn_api_token)
+        .then(|| {
+        let mut cfg = SolanaCdnConfig::default();
+
+        cfg.pop_endpoints = solanacdn_pops;
+        cfg.control_endpoint = solanacdn_control;
+
+        if let Some(server_name) = matches.value_of("solanacdn_server_name") {
+            cfg.server_name = server_name.to_string();
+        }
+        cfg.pop_pubkey_pinning = match matches
+            .value_of("solanacdn_pop_pubkey_pinning")
+            .unwrap_or("warn")
+        {
+            "off" => solana_core::solanacdn::PopPubkeyPinningMode::Off,
+            "enforce" => solana_core::solanacdn::PopPubkeyPinningMode::Enforce,
+            _ => solana_core::solanacdn::PopPubkeyPinningMode::Warn,
+        };
+        cfg.tls_ca_cert_path = matches
+            .value_of("solanacdn_tls_ca_cert_path")
+            .map(PathBuf::from);
+        cfg.tls_insecure_skip_verify = matches.is_present("solanacdn_tls_insecure_skip_verify");
+
+        let default_ca = PathBuf::from("/etc/solanacdn/tls/ca.crt");
+        if cfg.tls_ca_cert_path.is_none() && default_ca.exists() {
+            cfg.tls_ca_cert_path = Some(default_ca.clone());
+        }
+
+        if let Some(control_server_name) = matches.value_of("solanacdn_control_server_name") {
+            cfg.control_server_name = control_server_name.to_string();
+        }
+        cfg.control_tls_ca_cert_path = matches
+            .value_of("solanacdn_control_tls_ca_cert_path")
+            .map(PathBuf::from);
+        cfg.control_tls_insecure_skip_verify =
+            matches.is_present("solanacdn_control_tls_insecure_skip_verify");
+        if cfg.control_endpoint.is_some()
+            && cfg.control_tls_ca_cert_path.is_none()
+            && default_ca.exists()
+        {
+            cfg.control_tls_ca_cert_path = Some(default_ca.clone());
+        }
+        cfg.control_refresh_ms =
+            value_t!(matches, "solanacdn_control_refresh_ms", u64).unwrap_or(1_000);
+
+        cfg.pipe_api_base_url = matches
+            .value_of("solanacdn_api_base")
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("SOLANACDN_AGENT_API_BASE").ok())
+            .or_else(|| std::env::var("PIPE_API_BASE").ok())
+            .unwrap_or_else(|| "https://api.pipedev.network".to_string())
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        cfg.pipe_api_token = matches
+            .value_of("solanacdn_api_token")
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("SOLANACDN_AGENT_API_TOKEN").ok())
+            .or_else(|| std::env::var("PIPE_API_KEY").ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        cfg.pipe_api_timeout_ms = value_t!(matches, "solanacdn_api_timeout_ms", u64)
+            .unwrap_or(2_000)
+            .max(250);
+        cfg.pipe_api_tls_ca_cert_path = matches
+            .value_of("solanacdn_api_tls_ca_cert_path")
+            .map(PathBuf::from);
+        cfg.pipe_api_tls_insecure_skip_verify =
+            matches.is_present("solanacdn_api_tls_insecure_skip_verify");
+        cfg.pipe_api_tls_bootstrap = matches.is_present("solanacdn_api_tls_bootstrap");
+
+        cfg.udp_mode = match matches.value_of("solanacdn_udp").unwrap_or("auto") {
+            "off" => solana_core::solanacdn::DataPlaneMode::Off,
+            "always" => solana_core::solanacdn::DataPlaneMode::Always,
+            _ => solana_core::solanacdn::DataPlaneMode::Auto,
+        };
+
+        cfg.publish_shreds = !matches.is_present("solanacdn_no_shreds");
+        cfg.publish_discarded_shreds = !matches.is_present("solanacdn_only_accepted_shreds");
+        cfg.subscribe_shreds = !matches.is_present("solanacdn_no_subscribe");
+        cfg.inject_shreds = !matches.is_present("solanacdn_no_inject");
+        cfg.repair_shreds = !matches.is_present("solanacdn_no_repair");
+        if !cfg.repair_shreds {
+            warn!("solanacdn: repair shreds disabled; this can stall catch-up if SolanaCDN misses shreds");
+        }
+        cfg.tvu_shred_ingest_mode = if matches.is_present("solanacdn_only") {
+            solana_core::solanacdn::TvuShredIngestMode::SolanaCdnOnly
+        } else if matches.is_present("solanacdn_hybrid") {
+            solana_core::solanacdn::TvuShredIngestMode::SolanaCdnPreferred
+        } else {
+            solana_core::solanacdn::TvuShredIngestMode::All
+        };
+        if matches.is_present("solanacdn_hybrid") {
+            cfg.tvu_shred_hybrid_stale_ms = value_t!(matches, "solanacdn_hybrid_stale_ms", u64)
+                .unwrap_or(cfg.tvu_shred_hybrid_stale_ms)
+                .max(250);
+        }
+        cfg.direct_shreds_from_pop = !matches.is_present("solanacdn_no_direct_shreds");
+        cfg.vote_tunnel = !matches.is_present("solanacdn_no_vote_tunnel");
+        if let Ok(v) = value_t!(matches, "solanacdn_vote_dedup_ttl_ms", u64) {
+            cfg.vote_dedup_ttl_ms = if v == 0 { 0 } else { v.min(60_000) };
+        }
+        if let Ok(v) = value_t!(matches, "solanacdn_vote_dedup_max_entries", usize) {
+            cfg.vote_dedup_max_entries = if v == 0 { 0 } else { v.min(2_000_000) };
+        }
+        cfg.metrics_listen_addr = value_t!(matches, "solanacdn_metrics_addr", SocketAddr).ok();
+
+        cfg.race_enabled = matches
+            .value_of("solanacdn_race")
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                !(v == "false" || v == "0")
+            })
+            .unwrap_or(true);
+        if cfg.race_enabled {
+            cfg.race_sample_bits = value_t!(matches, "solanacdn_race_sample_bits", u8)
+                .unwrap_or(cfg.race_sample_bits)
+                .min(31);
+            cfg.race_window_ms = value_t!(matches, "solanacdn_race_window_ms", u64)
+                .unwrap_or(cfg.race_window_ms)
+                .max(250);
+        }
+
+        cfg
+    });
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -630,12 +781,14 @@ pub fn execute(
             )
         }),
         pubsub_config: run_args.pub_sub_config,
-        voting_disabled: matches.is_present("no_voting") || restricted_repair_only_mode,
+        voting_disabled,
         wait_for_supermajority: value_t!(matches, "wait_for_supermajority", Slot).ok(),
         known_validators: run_args.known_validators,
         repair_validators,
         repair_whitelist,
         repair_handler_type: RepairHandlerType::default(),
+        solanacdn,
+        fast_shreds,
         gossip_validators,
         max_ledger_shreds,
         blockstore_options: run_args.blockstore_options,

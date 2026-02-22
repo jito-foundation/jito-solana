@@ -249,6 +249,7 @@ fn bench_banking(
         num_threads,
         SchedulerConfig {
             scheduler_pacing: SchedulerPacing::Disabled,
+            ..SchedulerConfig::default()
         },
         None,
         s,

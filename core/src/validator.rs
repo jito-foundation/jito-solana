@@ -161,7 +161,7 @@ use {
     std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
-        net::{IpAddr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, SocketAddr},
         num::{NonZeroU64, NonZeroUsize},
         path::{Path, PathBuf},
         str::FromStr,
@@ -370,6 +370,7 @@ pub struct ValidatorConfig {
     pub wait_to_vote_slot: Option<Slot>,
     pub runtime_config: RuntimeConfig,
     pub banking_trace_dir_byte_limit: banking_trace::DirByteLimit,
+    pub tx_io_check: Option<String>,
     pub block_verification_method: BlockVerificationMethod,
     pub block_production_method: BlockProductionMethod,
     pub block_production_num_workers: NonZeroUsize,
@@ -396,6 +397,8 @@ pub struct ValidatorConfig {
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub tip_manager_config: TipManagerConfig,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
+    pub solanacdn: Option<crate::solanacdn::SolanaCdnConfig>,
+    pub fast_shreds: Option<solana_turbine::broadcast_stage::FastShredsConfig>,
 }
 
 impl ValidatorConfig {
@@ -457,6 +460,7 @@ impl ValidatorConfig {
             wait_to_vote_slot: None,
             runtime_config: RuntimeConfig::default(),
             banking_trace_dir_byte_limit: 0,
+            tx_io_check: None,
             block_verification_method: BlockVerificationMethod::default(),
             block_production_method: BlockProductionMethod::default(),
             block_production_num_workers: BankingStage::default_num_workers(),
@@ -488,6 +492,8 @@ impl ValidatorConfig {
             )),
             tip_manager_config: TipManagerConfig::default(),
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
+            solanacdn: None,
+            fast_shreds: None,
         }
     }
 
@@ -742,6 +748,59 @@ impl Validator {
         let mut bank_notification_senders = Vec::new();
 
         let exit = Arc::new(AtomicBool::new(false));
+
+        if let Some(solanacdn_cfg) = config.solanacdn.as_ref().cloned() {
+            let tpu_port = node
+                .sockets
+                .tpu
+                .first()
+                .ok_or_else(|| ValidatorError::Other("missing TPU socket".to_string()))?
+                .local_addr()
+                .map_err(|e| ValidatorError::Other(format!("failed to read TPU socket addr: {e}")))?
+                .port();
+            let tpu_vote_port = node
+                .sockets
+                .tpu_vote
+                .first()
+                .ok_or_else(|| ValidatorError::Other("missing TPU vote socket".to_string()))?
+                .local_addr()
+                .map_err(|e| {
+                    ValidatorError::Other(format!("failed to read TPU vote socket addr: {e}"))
+                })?
+                .port();
+            let tvu_port = node
+                .sockets
+                .tvu
+                .first()
+                .ok_or_else(|| ValidatorError::Other("missing TVU socket".to_string()))?
+                .local_addr()
+                .map_err(|e| ValidatorError::Other(format!("failed to read TVU socket addr: {e}")))?
+                .port();
+            let gossip_port = node
+                .sockets
+                .gossip
+                .first()
+                .ok_or_else(|| ValidatorError::Other("missing gossip socket".to_string()))?
+                .local_addr()
+                .map_err(|e| {
+                    ValidatorError::Other(format!("failed to read gossip socket addr: {e}"))
+                })?
+                .port();
+            let inject_tpu = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), tpu_port);
+            let inject_tvu = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), tvu_port);
+            let inject_gossip = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), gossip_port);
+            let inject_vote = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), tpu_vote_port);
+            crate::solanacdn::init(
+                solanacdn_cfg,
+                identity_keypair.clone(),
+                exit.clone(),
+                vote_use_quic,
+                inject_tpu,
+                inject_tvu,
+                inject_gossip,
+                inject_vote,
+            );
+        }
 
         let geyser_plugin_config_files = config
             .on_start_geyser_plugin_config_files
@@ -1752,6 +1811,7 @@ impl Validator {
             entry_notification_sender,
             blockstore.clone(),
             &config.broadcast_stage_type,
+            config.fast_shreds.clone(),
             xdp_sender,
             exit,
             node.info.shred_version(),
@@ -1782,6 +1842,7 @@ impl Validator {
             config.enable_block_production_forwarding,
             config.generator_config.clone(),
             key_notifiers.clone(),
+            config.tx_io_check.clone(),
             cancel,
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
@@ -2363,10 +2424,87 @@ impl<'a> ProcessBlockStore<'a> {
                 let _ = Builder::new()
                     .name("solRptLdgrStat".to_string())
                     .spawn(move || {
+                        const LOG_INTERVAL: Duration = Duration::from_secs(5);
+                        const PROGRESS_BAR_WIDTH: usize = 20;
+
+                        let progress_start = Instant::now();
+                        let start_slot = bank_forks.read().unwrap().working_bank().slot();
+                        let mut last_slot = start_slot;
+                        let mut last_at = Instant::now();
+                        let mut next_log = last_at + LOG_INTERVAL;
                         while !exit.load(Ordering::Relaxed) {
                             let slot = bank_forks.read().unwrap().working_bank().slot();
                             *start_progress.write().unwrap() =
                                 ValidatorStartProgress::ProcessingLedger { slot, max_slot };
+
+                            let now = Instant::now();
+                            if now >= next_log {
+                                let total_slots = max_slot.saturating_sub(start_slot);
+                                let processed_slots = slot
+                                    .saturating_sub(start_slot)
+                                    .min(total_slots);
+                                let remaining_slots = total_slots.saturating_sub(processed_slots);
+
+                                let pct = if total_slots > 0 {
+                                    (processed_slots as f64) / (total_slots as f64) * 100.0
+                                } else {
+                                    100.0
+                                }
+                                .clamp(0.0, 100.0);
+
+                                let delta_slots = slot.saturating_sub(last_slot);
+                                let dt = now.duration_since(last_at).as_secs_f64().max(0.001);
+                                let slots_per_sec = (delta_slots as f64) / dt;
+
+                                let mut eta_secs = if slots_per_sec > 0.0 {
+                                    (remaining_slots as f64) / slots_per_sec
+                                } else {
+                                    f64::INFINITY
+                                };
+                                if !eta_secs.is_finite() || eta_secs < 0.0 {
+                                    let elapsed = progress_start.elapsed().as_secs_f64().max(0.001);
+                                    let avg_slots_per_sec = (processed_slots as f64) / elapsed;
+                                    eta_secs = if avg_slots_per_sec > 0.0 {
+                                        (remaining_slots as f64) / avg_slots_per_sec
+                                    } else {
+                                        f64::INFINITY
+                                    };
+                                }
+
+                                let eta_str = if eta_secs.is_finite() {
+                                    let total_secs =
+                                        eta_secs.ceil().clamp(0.0, u64::MAX as f64) as u64;
+                                    let h = total_secs / 3600;
+                                    let m = (total_secs % 3600) / 60;
+                                    let s = total_secs % 60;
+                                    format!("{h:02}:{m:02}:{s:02}")
+                                } else {
+                                    "--:--:--".to_string()
+                                };
+
+                                let filled = ((pct / 100.0) * (PROGRESS_BAR_WIDTH as f64))
+                                    .floor()
+                                    .clamp(0.0, PROGRESS_BAR_WIDTH as f64) as usize;
+                                let progress_bar = format!(
+                                    "{}{}",
+                                    "#".repeat(filled),
+                                    "-".repeat(PROGRESS_BAR_WIDTH.saturating_sub(filled))
+                                );
+
+                                info!(
+                                    "Ledger restore progress: [{}] {:.1}% (slot {}/{}) at {:.1} slots/s (ETA {})",
+                                    progress_bar,
+                                    pct,
+                                    slot,
+                                    max_slot,
+                                    slots_per_sec,
+                                    eta_str
+                                );
+
+                                last_slot = slot;
+                                last_at = now;
+                                next_log = now + LOG_INTERVAL;
+                            }
                             sleep(Duration::from_secs(2));
                         }
                     })

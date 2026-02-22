@@ -239,6 +239,18 @@ pub enum PacketHandlingError {
 }
 
 impl TransactionViewReceiveAndBuffer {
+    pub(crate) fn new(
+        receiver: BankingPacketReceiver,
+        bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+    ) -> Self {
+        Self {
+            receiver,
+            bank_forks,
+            blacklisted_accounts,
+        }
+    }
+
     /// Return number of received packets.
     fn handle_packet_batch_message(
         &mut self,
@@ -640,11 +652,8 @@ mod tests {
         TransactionViewReceiveAndBuffer,
         TransactionViewStateContainer,
     ) {
-        let receive_and_buffer = TransactionViewReceiveAndBuffer {
-            receiver,
-            bank_forks,
-            blacklisted_accounts,
-        };
+        let receive_and_buffer =
+            TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts);
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
     }

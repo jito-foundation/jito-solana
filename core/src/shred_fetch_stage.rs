@@ -162,21 +162,96 @@ impl ShredFetchStage {
                 )
             };
             let turbine_disabled = turbine_disabled.load(Ordering::Relaxed);
-            for mut packet in packet_batch.iter_mut().filter(|p| !p.meta().discard()) {
-                if turbine_disabled
-                    || should_discard_shred(
-                        packet.as_ref(),
-                        last_root,
-                        max_slot,
-                        shred_version,
-                        enforce_fixed_fec_set,
-                        discard_unexpected_data_complete_shreds,
-                        &mut stats,
-                    )
+            let solanacdn = crate::solanacdn::global();
+            let repair_disabled = flags.contains(PacketFlags::REPAIR)
+                && solanacdn
+                    .as_ref()
+                    .is_some_and(|h| !h.repair_shreds_enabled());
+            let solanacdn_publish = if flags.contains(PacketFlags::REPAIR) {
+                None
+            } else {
+                solanacdn.as_ref().filter(|h| h.publish_shreds_enabled())
+            };
+            for mut packet in packet_batch.iter_mut() {
+                let discard_by_solanacdn_only = !flags.contains(PacketFlags::REPAIR)
+                    && solanacdn
+                        .as_ref()
+                        .is_some_and(|h| !h.should_ingest_tvu_shred(packet.meta().addr));
+                let mut discarded = packet.meta().discard();
+                if !discarded && repair_disabled {
+                    discarded = true;
+                } else if !discarded
+                    && (turbine_disabled
+                        || should_discard_shred(
+                            packet.as_ref(),
+                            last_root,
+                            max_slot,
+                            shred_version,
+                            enforce_fixed_fec_set,
+                            discard_unexpected_data_complete_shreds,
+                            &mut stats,
+                        ))
                 {
-                    packet.meta_mut().set_discard(true);
-                } else {
+                    discarded = true;
+                }
+
+                let discarded_for_publish = discarded;
+                discarded |= discard_by_solanacdn_only;
+                packet.meta_mut().set_discard(discarded);
+
+                if !discarded {
                     packet.meta_mut().flags.insert(flags);
+                }
+
+                if let Some(handle) = solanacdn.as_ref().filter(|h| h.race_enabled()) {
+                    // Race is most useful when it can observe both paths even if the slower copy
+                    // is later discarded (e.g., because the slot is already rooted). Avoid copying
+                    // packet bytes unless needed by publishing.
+                    if let Some(shred_bytes) = packet.as_ref().data(..) {
+                        if let Some(shred_id) =
+                            solana_ledger::shred::layout::get_shred_id(shred_bytes)
+                        {
+                            handle.note_race_observation(shred_id, packet.meta().addr);
+                        }
+                    }
+                }
+
+                if let Some(bytes) = packet_payload_bytes(packet.as_ref()) {
+                    let slot = solana_ledger::shred::layout::get_slot(bytes.as_ref());
+
+                    // In `--solanacdn-only` mode, POPs may inject raw shreds directly to the TVU
+                    // socket (bypassing PushShredBatch). Those shreds are sourced from POP IPs
+                    // (added via `note_pop_endpoints` / `note_pop_egress_ip`), so count them here
+                    // to make the SolanaCDN "Pushed" metric reflect actual delivery.
+                    //
+                    // Avoid double-counting the non-direct mode, which injects via localhost.
+                    if solanacdn.as_ref().is_some_and(|h| {
+                        h.is_connected()
+                            && !packet.meta().addr.is_loopback()
+                            && h.should_ignore_src_ip(packet.meta().addr)
+                    }) {
+                        solanacdn
+                            .as_ref()
+                            .expect("is_some_and implies Some")
+                            .note_pop_delivered_shred_with_slot(bytes.len(), slot);
+                    }
+
+                    if solanacdn.as_ref().is_some_and(|h| {
+                        h.is_connected() && !discarded && h.should_ignore_src_ip(packet.meta().addr)
+                    }) {
+                        solanacdn
+                            .as_ref()
+                            .expect("is_some_and implies Some")
+                            .note_solanacdn_accepted_shred_with_slot(slot);
+                    }
+
+                    if let Some(handle) = solanacdn_publish {
+                        handle.try_publish_tvu_shred(
+                            packet.meta().addr,
+                            bytes,
+                            discarded_for_publish,
+                        );
+                    }
                 }
             }
             if stats.maybe_submit(name, STATS_SUBMIT_CADENCE) {
@@ -398,6 +473,13 @@ impl RepairContext {
     }
 }
 
+fn packet_payload_bytes(packet: PacketRef<'_>) -> Option<Bytes> {
+    match packet {
+        PacketRef::Bytes(pkt) => Some(pkt.buffer().clone()),
+        PacketRef::Packet(pkt) => pkt.data(..).map(Bytes::copy_from_slice),
+    }
+}
+
 // Returns false if repair nonce is invalid and packet should be discarded.
 #[must_use]
 fn verify_repair_nonce(
@@ -466,5 +548,123 @@ fn check_feature_activation(
             let shred_epoch = epoch_schedule.get_epoch(shred_slot);
             feature_epoch < shred_epoch
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        crate::{
+            repair::serve_repair::ShredRepairType,
+            solanacdn::{new_handle_for_tests, set_global_for_tests, SolanaCdnConfig},
+        },
+        solana_ledger::{
+            genesis_utils::{create_genesis_config, GenesisConfigInfo},
+            shred::Shredder,
+        },
+        solana_gossip::contact_info::ContactInfo,
+        solana_perf::packet::PinnedPacketBatch,
+        solana_runtime::bank::Bank,
+        solana_signer::Signer,
+        solana_streamer::socket::SocketAddrSpace,
+        solana_time_utils::timestamp,
+        std::net::{IpAddr, Ipv4Addr, SocketAddr},
+    };
+
+    struct GlobalGuard;
+    impl Drop for GlobalGuard {
+        fn drop(&mut self) {
+            set_global_for_tests(None);
+        }
+    }
+
+    fn run_repair_flag_case(repair_shreds: bool) -> Option<bool> {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.repair_shreds = repair_shreds;
+        let handle = new_handle_for_tests(cfg);
+        set_global_for_tests(Some(handle));
+        let _guard = GlobalGuard;
+
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let bank_forks = BankForks::new_rw_arc(bank);
+        let sharable_banks = bank_forks.read().unwrap().sharable_banks();
+
+        let keypair = Arc::new(Keypair::new());
+        let contact_info = ContactInfo::new_localhost(&keypair.pubkey(), timestamp());
+        let cluster_info =
+            Arc::new(ClusterInfo::new(contact_info, keypair, SocketAddrSpace::Unspecified));
+        let repair_socket = match UdpSocket::bind("127.0.0.1:0") {
+            Ok(sock) => Arc::new(sock),
+            Err(err) => {
+                eprintln!("skipping test (udp bind failed): {err}");
+                return None;
+            }
+        };
+        let outstanding = Arc::new(RwLock::new(OutstandingShredRepairs::default()));
+        let repair_context = RepairContext {
+            repair_socket,
+            cluster_info,
+            outstanding_repair_requests: outstanding.clone(),
+        };
+
+        let slot = 5;
+        let shred_keypair = Keypair::new();
+        let shred = Shredder::single_shred_for_tests(slot, &shred_keypair);
+        let repair_type = ShredRepairType::Shred(slot, shred.index() as u64);
+        let nonce = outstanding
+            .write()
+            .unwrap()
+            .add_request(repair_type, timestamp());
+
+        let mut packet = shred.payload().to_packet(Some(nonce));
+        packet.meta_mut().flags |= PacketFlags::REPAIR;
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234);
+        packet.meta_mut().set_socket_addr(&addr);
+        let batch = PacketBatch::from(PinnedPacketBatch::new(vec![packet]));
+
+        let (input_tx, input_rx) = unbounded();
+        let (sendr, output_rx) = EvictingSender::new_bounded(1);
+        let turbine_disabled = Arc::new(AtomicBool::new(false));
+
+        let handle_thread = std::thread::spawn(move || {
+            ShredFetchStage::modify_packets(
+                input_rx,
+                None,
+                sendr,
+                &sharable_banks,
+                42,
+                "test_repair",
+                PacketFlags::REPAIR,
+                Some(&repair_context),
+                turbine_disabled,
+            );
+        });
+
+        input_tx.send(batch).unwrap();
+        drop(input_tx);
+
+        let out_batch = output_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let discard = out_batch
+            .iter()
+            .next()
+            .expect("packet")
+            .meta()
+            .discard();
+
+        handle_thread.join().unwrap();
+        Some(discard)
+    }
+
+    #[test]
+    fn solanacdn_no_repair_drops_repair_packets() {
+        let allow = run_repair_flag_case(true);
+        let deny = run_repair_flag_case(false);
+        if allow.is_none() || deny.is_none() {
+            return;
+        }
+        assert!(!allow.unwrap());
+        assert!(deny.unwrap());
     }
 }

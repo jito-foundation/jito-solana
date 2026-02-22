@@ -1,4 +1,8 @@
 #![allow(clippy::arithmetic_side_effects)]
+
+#[macro_use]
+extern crate clap;
+
 pub use solana_test_validator as test_validator;
 use {
     console::style,

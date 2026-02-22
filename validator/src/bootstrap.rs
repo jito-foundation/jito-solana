@@ -1,22 +1,24 @@
 use {
     agave_snapshots::{
         paths as snapshot_paths, snapshot_archive_info::SnapshotArchiveInfoGetter as _,
-        SnapshotKind,
+        ArchiveFormat,
     },
     itertools::Itertools,
     log::*,
-    rand::{seq::SliceRandom, thread_rng, Rng},
+    rand::{seq::SliceRandom, thread_rng},
     rayon::prelude::*,
+    reqwest::Url,
+    reqwest::blocking::Client as HttpClient,
+    serde::Deserialize,
+    serde_json::Value as JsonValue,
     solana_account::ReadableAccount,
     solana_clock::Slot,
     solana_commitment_config::CommitmentConfig,
     solana_core::validator::{ValidatorConfig, ValidatorStartProgress},
-    solana_download_utils::{download_snapshot_archive, DownloadProgressRecord},
     solana_genesis_utils::download_then_check_genesis_hash,
     solana_gossip::{
         cluster_info::ClusterInfo,
         contact_info::{ContactInfo, Protocol},
-        crds_data,
         gossip_service::GossipService,
         node::Node,
     },
@@ -29,29 +31,30 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_vote_program::vote_state::VoteStateV4,
     std::{
-        collections::{hash_map::RandomState, HashMap, HashSet},
+        collections::{hash_map::{DefaultHasher, RandomState}, HashSet},
+        fs,
+        hash::{Hash as StdHash, Hasher},
+        io::{Read, Seek, SeekFrom, Write},
         net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
         path::Path,
         process::exit,
         sync::{
             atomic::{AtomicBool, Ordering},
+            mpsc,
             Arc, RwLock,
         },
+        thread,
         time::{Duration, Instant},
     },
     thiserror::Error,
 };
 
-/// When downloading snapshots, wait at most this long for snapshot hashes from
-/// _all_ known validators.  Afterwards, wait for snapshot hashes from _any_
-/// known validator.
-const WAIT_FOR_ALL_KNOWN_VALIDATORS: Duration = Duration::from_secs(60);
+#[cfg(test)]
+use std::collections::HashMap;
+
 /// If we don't have any alternative peers after this long, better off trying
 /// blacklisted peers again.
 const BLACKLIST_CLEAR_THRESHOLD: Duration = Duration::from_secs(60);
-/// If we can't find a good snapshot download candidate after this time, just
-/// give up.
-const NEWER_SNAPSHOT_THRESHOLD: Duration = Duration::from_secs(180);
 /// If we haven't found any RPC peers after this time, just give up.
 const GET_RPC_PEERS_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -66,7 +69,170 @@ pub struct RpcBootstrapConfig {
     pub only_known_rpc: bool,
     pub max_genesis_archive_unpacked_size: u64,
     pub check_vote_account: Option<String>,
+    /// Optional explicit RPC nodes to use for bootstrap instead of gossip discovery.
+    pub bootstrap_rpc_addrs: Vec<SocketAddr>,
+    /// Optional URL that returns a JSON list of RPC socket addresses for bootstrap.
+    pub bootstrap_rpc_addrs_url: Option<String>,
     pub incremental_snapshot_fetch: bool,
+    pub snapshot_manifest_url: String,
+    pub snapshot_download_concurrency: usize,
+    pub snapshot_download_chunk_size_bytes: u64,
+    pub snapshot_download_timeout_ms: u64,
+    pub snapshot_download_max_retries: u32,
+}
+
+const BOOTSTRAP_RPC_ADDRS_URL_MAX_BYTES: usize = 1024 * 1024;
+
+fn deterministic_pubkey_for_socket_addr(addr: &SocketAddr) -> Pubkey {
+    let mut bytes = [0u8; 32];
+    let addr_str = addr.to_string();
+    for i in 0u8..4 {
+        let mut hasher = DefaultHasher::new();
+        i.hash(&mut hasher);
+        addr_str.hash(&mut hasher);
+        let h = hasher.finish();
+        bytes[(i as usize) * 8..(i as usize + 1) * 8].copy_from_slice(&h.to_le_bytes());
+    }
+    Pubkey::new_from_array(bytes)
+}
+
+fn parse_socket_addrs_from_json(value: &JsonValue) -> Vec<SocketAddr> {
+    fn walk(value: &JsonValue, out: &mut Vec<SocketAddr>) {
+        match value {
+            JsonValue::String(s) => {
+                if let Ok(addr) = s.parse::<SocketAddr>() {
+                    out.push(addr);
+                }
+            }
+            JsonValue::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            JsonValue::Object(map) => {
+                for (_, v) in map {
+                    walk(v, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    match value {
+        JsonValue::Array(_) => walk(value, &mut out),
+        JsonValue::Object(map) => {
+            for key in [
+                "rpc_addrs",
+                "bootstrap_rpc_addrs",
+                "bootstrapRpcAddrs",
+                "rpc_endpoints",
+                "rpcEndpoints",
+                "rpcs",
+                "addrs",
+                "data",
+            ] {
+                if let Some(v) = map.get(key) {
+                    walk(v, &mut out);
+                    break;
+                }
+            }
+            if out.is_empty() {
+                walk(value, &mut out);
+            }
+        }
+        _ => {}
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn fetch_bootstrap_rpc_addrs_from_url(
+    client: &HttpClient,
+    url: &Url,
+) -> Result<Vec<SocketAddr>, String> {
+    let resp = client
+        .get(url.clone())
+        .send()
+        .and_then(|resp| resp.error_for_status())
+        .map_err(|e| format!("failed to fetch bootstrap rpc addrs {url}: {e}"))?;
+
+    let mut body = Vec::new();
+    resp.take((BOOTSTRAP_RPC_ADDRS_URL_MAX_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut body)
+        .map_err(|e| format!("failed to read bootstrap rpc addrs response: {e}"))?;
+    if body.len() > BOOTSTRAP_RPC_ADDRS_URL_MAX_BYTES {
+        return Err(format!(
+            "bootstrap rpc addrs response exceeded {} bytes",
+            BOOTSTRAP_RPC_ADDRS_URL_MAX_BYTES
+        ));
+    }
+
+    let json: JsonValue = serde_json::from_slice(&body)
+        .map_err(|e| format!("failed to decode bootstrap rpc addrs json: {e}"))?;
+    Ok(parse_socket_addrs_from_json(&json))
+}
+
+fn bootstrap_rpc_peers_from_config(
+    cluster_info: &ClusterInfo,
+    validator_config: &ValidatorConfig,
+    blacklisted_rpc_nodes: &HashSet<Pubkey>,
+    bootstrap_config: &RpcBootstrapConfig,
+) -> Option<Vec<ContactInfo>> {
+    let mut addrs = bootstrap_config.bootstrap_rpc_addrs.clone();
+    let url = bootstrap_config.bootstrap_rpc_addrs_url.as_deref().map(str::trim);
+    if let Some(url) = url.filter(|s| !s.is_empty()) {
+        match Url::parse(url) {
+            Ok(url) => {
+                let timeout =
+                    Duration::from_millis(bootstrap_config.snapshot_download_timeout_ms.max(1000));
+                let client = HttpClient::builder().timeout(timeout).build();
+                match client
+                    .as_ref()
+                    .map_err(|e| format!("failed to build bootstrap rpc http client: {e}"))
+                    .and_then(|client| fetch_bootstrap_rpc_addrs_from_url(client, &url))
+                {
+                    Ok(mut fetched) => addrs.append(&mut fetched),
+                    Err(err) => {
+                        warn!("bootstrap rpc addrs url fetch failed; falling back to gossip discovery: {err}");
+                    }
+                }
+            }
+            Err(err) => warn!(
+                "invalid --bootstrap-rpc-addrs-url; falling back to gossip discovery: {err}"
+            ),
+        }
+    }
+
+    addrs.sort();
+    addrs.dedup();
+    addrs.truncate(1024);
+
+    if addrs.is_empty() {
+        return None;
+    }
+
+    let shred_version = validator_config
+        .expected_shred_version
+        .unwrap_or_else(|| cluster_info.my_shred_version());
+
+    let wallclock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut peers = Vec::with_capacity(addrs.len());
+    for addr in addrs {
+        let pubkey = deterministic_pubkey_for_socket_addr(&addr);
+        if blacklisted_rpc_nodes.contains(&pubkey) {
+            continue;
+        }
+        let mut ci = ContactInfo::new(pubkey, wallclock, shred_version);
+        if ci.set_rpc(addr).is_ok() {
+            peers.push(ci);
+        }
+    }
+    Some(peers)
 }
 
 fn verify_reachable_ports(
@@ -307,6 +473,9 @@ pub enum GetRpcNodeError {
 
     #[error("Giving up, did not get newer snapshots from the cluster")]
     NoNewerSnapshots,
+
+    #[error("Snapshot manifest error: {0}")]
+    SnapshotManifestError(String),
 }
 
 /// Struct to wrap the return value from get_rpc_nodes().  The `rpc_contact_info` is the peer to
@@ -320,6 +489,7 @@ struct GetRpcNodeResult {
 
 /// Struct to wrap the peers & snapshot hashes together.
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg(test)]
 struct PeerSnapshotHash {
     rpc_contact_info: ContactInfo,
     snapshot_hash: SnapshotHash,
@@ -339,14 +509,16 @@ pub fn fail_rpc_node(
     rpc_id: &Pubkey,
     blacklisted_rpc_nodes: &mut HashSet<Pubkey, RandomState>,
 ) {
-    warn!("{err}");
-    if let Some(ref known_validators) = known_validators {
-        if known_validators.contains(rpc_id) {
-            return;
-        }
+    let is_known = known_validators
+        .as_ref()
+        .is_some_and(|known_validators| known_validators.contains(rpc_id));
+    if is_known {
+        warn!("{err}");
+        return;
     }
 
-    info!("Excluding {rpc_id} as a future RPC candidate");
+    debug!("{err}");
+    debug!("Excluding {rpc_id} as a future RPC candidate");
     blacklisted_rpc_nodes.insert(*rpc_id);
 }
 
@@ -683,30 +855,61 @@ pub fn rpc_bootstrap(
 
 /// Get RPC peer node candidates to download from.
 ///
-/// This function finds the highest compatible snapshots from the cluster and returns RPC peers.
+/// This function selects snapshots from the snapshot service manifest and returns RPC peers.
 fn get_rpc_nodes(
     cluster_info: &ClusterInfo,
     validator_config: &ValidatorConfig,
     blacklisted_rpc_nodes: &mut HashSet<Pubkey>,
     bootstrap_config: &RpcBootstrapConfig,
 ) -> Result<Vec<GetRpcNodeResult>, GetRpcNodeError> {
-    let mut blacklist_timeout = Instant::now();
-    let mut get_rpc_peers_timout = Instant::now();
-    let mut newer_cluster_snapshot_timeout = None;
+    let blacklist_timeout = Instant::now();
+    let get_rpc_peers_timout = Instant::now();
     let mut retry_reason = None;
     loop {
-        // Give gossip some time to populate and not spin on grabbing the crds lock
-        std::thread::sleep(Duration::from_secs(1));
-        info!("\n{}", cluster_info.rpc_info_trace());
-
-        let rpc_peers = get_rpc_peers(
+        let maybe_bootstrap_rpc_peers = bootstrap_rpc_peers_from_config(
             cluster_info,
             validator_config,
             blacklisted_rpc_nodes,
-            &blacklist_timeout,
-            &mut retry_reason,
             bootstrap_config,
         );
+
+        let rpc_peers = if let Some(rpc_peers) = maybe_bootstrap_rpc_peers {
+            let rpc_peers_total = rpc_peers.len() + blacklisted_rpc_nodes.len();
+            if rpc_peers.is_empty() && rpc_peers_total > 0 {
+                retry_reason = if !blacklisted_rpc_nodes.is_empty()
+                    && blacklist_timeout.elapsed() > BLACKLIST_CLEAR_THRESHOLD
+                {
+                    blacklisted_rpc_nodes.clear();
+                    Some("Blacklist timeout expired".to_owned())
+                } else {
+                    Some("Wait for bootstrap RPC peers".to_owned())
+                };
+                if get_rpc_peers_timout.elapsed() > GET_RPC_PEERS_TIMEOUT {
+                    return Err(GetRpcNodeError::NoRpcPeersFound);
+                }
+                continue;
+            }
+
+            info!(
+                "Using bootstrap RPC peers ({}/{})",
+                rpc_peers.len(),
+                rpc_peers_total
+            );
+            rpc_peers
+        } else {
+            // Give gossip some time to populate and not spin on grabbing the crds lock
+            std::thread::sleep(Duration::from_secs(1));
+            debug!("\n{}", cluster_info.rpc_info_trace());
+
+            get_rpc_peers(
+                cluster_info,
+                validator_config,
+                blacklisted_rpc_nodes,
+                &blacklist_timeout,
+                &mut retry_reason,
+                bootstrap_config,
+            )
+        };
         if rpc_peers.is_empty() {
             if get_rpc_peers_timout.elapsed() > GET_RPC_PEERS_TIMEOUT {
                 return Err(GetRpcNodeError::NoRpcPeersFound);
@@ -714,70 +917,57 @@ fn get_rpc_nodes(
             continue;
         }
 
-        // Reset timeouts if we found any viable RPC peers.
-        blacklist_timeout = Instant::now();
-        get_rpc_peers_timout = Instant::now();
-        if bootstrap_config.no_snapshot_fetch {
-            let random_peer = &rpc_peers[thread_rng().gen_range(0..rpc_peers.len())];
-            return Ok(vec![GetRpcNodeResult {
-                rpc_contact_info: random_peer.clone(),
-                snapshot_hash: None,
-            }]);
-        }
+        let snapshot_hash = if bootstrap_config.no_snapshot_fetch {
+            None
+        } else {
+            let manifest_url = Url::parse(&bootstrap_config.snapshot_manifest_url).map_err(|e| {
+                GetRpcNodeError::SnapshotManifestError(format!(
+                    "invalid --snapshot-manifest-url: {e}"
+                ))
+            })?;
+            let timeout = Duration::from_millis(bootstrap_config.snapshot_download_timeout_ms);
+            let client = HttpClient::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(|e| {
+                    GetRpcNodeError::SnapshotManifestError(format!(
+                        "failed to build snapshot http client: {e}"
+                    ))
+                })?;
+            let manifest = fetch_snapshot_manifest(&client, &manifest_url)
+                .map_err(GetRpcNodeError::SnapshotManifestError)?;
+            let (full, incremental) = select_snapshot_files_from_manifest(
+                &manifest_url,
+                &manifest,
+                bootstrap_config.incremental_snapshot_fetch,
+            )
+            .map_err(GetRpcNodeError::SnapshotManifestError)?;
 
-        let known_validators_to_wait_for = if newer_cluster_snapshot_timeout
-            .as_ref()
-            .map(|timer: &Instant| timer.elapsed() < WAIT_FOR_ALL_KNOWN_VALIDATORS)
-            .unwrap_or(true)
-        {
-            KnownValidatorsToWaitFor::All
-        } else {
-            KnownValidatorsToWaitFor::Any
-        };
-        let peer_snapshot_hashes = get_peer_snapshot_hashes(
-            cluster_info,
-            &rpc_peers,
-            validator_config.known_validators.as_ref(),
-            known_validators_to_wait_for,
-            bootstrap_config.incremental_snapshot_fetch,
-        );
-        if peer_snapshot_hashes.is_empty() {
-            match newer_cluster_snapshot_timeout {
-                None => newer_cluster_snapshot_timeout = Some(Instant::now()),
-                Some(newer_cluster_snapshot_timeout) => {
-                    if newer_cluster_snapshot_timeout.elapsed() > NEWER_SNAPSHOT_THRESHOLD {
-                        return Err(GetRpcNodeError::NoNewerSnapshots);
-                    }
-                }
-            }
-            retry_reason = Some("No snapshots available".to_owned());
-            continue;
-        } else {
-            let rpc_peers = peer_snapshot_hashes
-                .iter()
-                .map(|peer_snapshot_hash| peer_snapshot_hash.rpc_contact_info.pubkey())
-                .collect::<Vec<_>>();
-            let final_snapshot_hash = peer_snapshot_hashes[0].snapshot_hash;
+            let snapshot_hash = SnapshotHash {
+                full: (full.slot, full.hash),
+                incr: incremental.as_ref().map(|s| (s.slot, s.hash)),
+            };
+
             info!(
-                "Highest available snapshot slot is {}, available from {} node{}: {:?}",
-                final_snapshot_hash
-                    .incr
-                    .map(|(slot, _hash)| slot)
-                    .unwrap_or(final_snapshot_hash.full.0),
-                rpc_peers.len(),
-                if rpc_peers.len() > 1 { "s" } else { "" },
-                rpc_peers,
+                "Snapshot service manifest updated_at={:?}, full_slot={}, incremental_slot={:?}",
+                manifest.updated_at,
+                snapshot_hash.full.0,
+                snapshot_hash.incr.map(|(slot, _)| slot),
             );
-            let rpc_node_results = peer_snapshot_hashes
-                .iter()
-                .map(|peer_snapshot_hash| GetRpcNodeResult {
-                    rpc_contact_info: peer_snapshot_hash.rpc_contact_info.clone(),
-                    snapshot_hash: Some(peer_snapshot_hash.snapshot_hash),
-                })
-                .take(MAX_RPC_CONNECTIONS_EVALUATED_PER_ITERATION)
-                .collect();
-            return Ok(rpc_node_results);
+            Some(snapshot_hash)
+        };
+
+        let mut out = Vec::with_capacity(MAX_RPC_CONNECTIONS_EVALUATED_PER_ITERATION);
+        for rpc_contact_info in rpc_peers
+            .into_iter()
+            .take(MAX_RPC_CONNECTIONS_EVALUATED_PER_ITERATION)
+        {
+            out.push(GetRpcNodeResult {
+                rpc_contact_info,
+                snapshot_hash,
+            });
         }
+        return Ok(out);
     }
 }
 
@@ -809,119 +999,17 @@ fn get_highest_local_snapshot_hash(
         .map(|(slot, snapshot_hash)| (slot, snapshot_hash.0))
 }
 
-/// Get peer snapshot hashes
-///
-/// The result is a vector of peers with snapshot hashes that:
-/// 1. match a snapshot hash from the known validators
-/// 2. have the highest incremental snapshot slot
-/// 3. have the highest full snapshot slot of (2)
-fn get_peer_snapshot_hashes(
-    cluster_info: &ClusterInfo,
-    rpc_peers: &[ContactInfo],
-    known_validators: Option<&HashSet<Pubkey>>,
-    known_validators_to_wait_for: KnownValidatorsToWaitFor,
-    incremental_snapshot_fetch: bool,
-) -> Vec<PeerSnapshotHash> {
-    let mut peer_snapshot_hashes = get_eligible_peer_snapshot_hashes(cluster_info, rpc_peers);
-    if let Some(known_validators) = known_validators {
-        let known_snapshot_hashes = get_snapshot_hashes_from_known_validators(
-            cluster_info,
-            known_validators,
-            known_validators_to_wait_for,
-        );
-        retain_peer_snapshot_hashes_that_match_known_snapshot_hashes(
-            &known_snapshot_hashes,
-            &mut peer_snapshot_hashes,
-        );
-    }
-    if incremental_snapshot_fetch {
-        // Only filter by highest incremental snapshot slot if we're actually going to download an
-        // incremental snapshot.  Otherwise this could remove higher full snapshot slots from
-        // being selected.  For example, if there are two peer snapshot hashes:
-        // (A) full snapshot slot: 100, incremental snapshot slot: 160
-        // (B) full snapshot slot: 150, incremental snapshot slot: None
-        // Then (A) has the highest overall snapshot slot.  But if we're not downloading and
-        // incremental snapshot, (B) should be selected since it's full snapshot of 150 is highest.
-        retain_peer_snapshot_hashes_with_highest_incremental_snapshot_slot(
-            &mut peer_snapshot_hashes,
-        );
-    }
-    retain_peer_snapshot_hashes_with_highest_full_snapshot_slot(&mut peer_snapshot_hashes);
-
-    peer_snapshot_hashes
-}
-
 /// Map full snapshot hashes to a set of incremental snapshot hashes.  Each full snapshot hash
 /// is treated as the base for its set of incremental snapshot hashes.
+#[cfg(test)]
 type KnownSnapshotHashes = HashMap<(Slot, Hash), HashSet<(Slot, Hash)>>;
-
-/// Get the snapshot hashes from known validators.
-///
-/// The snapshot hashes are put into a map from full snapshot hash to a set of incremental
-/// snapshot hashes.  This map will be used as the "known snapshot hashes"; when peers are
-/// queried for their individual snapshot hashes, their results will be checked against this
-/// map to verify correctness.
-///
-/// NOTE: Only a single snashot hash is allowed per slot.  If somehow two known validators have
-/// a snapshot hash with the same slot and _different_ hashes, the second will be skipped.
-/// This applies to both full and incremental snapshot hashes.
-fn get_snapshot_hashes_from_known_validators(
-    cluster_info: &ClusterInfo,
-    known_validators: &HashSet<Pubkey>,
-    known_validators_to_wait_for: KnownValidatorsToWaitFor,
-) -> KnownSnapshotHashes {
-    // Get the snapshot hashes for a node from CRDS
-    let get_snapshot_hashes_for_node = |node| get_snapshot_hashes_for_node(cluster_info, node);
-
-    if !do_known_validators_have_all_snapshot_hashes(
-        known_validators,
-        known_validators_to_wait_for,
-        get_snapshot_hashes_for_node,
-    ) {
-        debug!(
-            "Snapshot hashes have not been discovered from known validators. This likely means \
-             the gossip tables are not fully populated. We will sleep and retry..."
-        );
-        return KnownSnapshotHashes::default();
-    }
-
-    build_known_snapshot_hashes(known_validators, get_snapshot_hashes_for_node)
-}
-
-/// Check if we can discover snapshot hashes for the known validators.
-///
-/// This is a heuristic to ensure the gossip tables are populated enough so that the bootstrap
-/// process will download snapshots.
-///
-/// This function will return false if we do not yet have snapshot hashes from known validators;
-/// and true otherwise.  Either require snapshot hashes from *all* or *any* of the known validators
-/// based on the `KnownValidatorsToWaitFor` parameter.
-fn do_known_validators_have_all_snapshot_hashes<'a>(
-    known_validators: impl IntoIterator<Item = &'a Pubkey>,
-    known_validators_to_wait_for: KnownValidatorsToWaitFor,
-    get_snapshot_hashes_for_node: impl Fn(&'a Pubkey) -> Option<SnapshotHash>,
-) -> bool {
-    let node_has_snapshot_hashes = |node| get_snapshot_hashes_for_node(node).is_some();
-
-    match known_validators_to_wait_for {
-        KnownValidatorsToWaitFor::All => known_validators.into_iter().all(node_has_snapshot_hashes),
-        KnownValidatorsToWaitFor::Any => known_validators.into_iter().any(node_has_snapshot_hashes),
-    }
-}
-
-/// When waiting for snapshot hashes from the known validators, should we wait for *all* or *any*
-/// of them?
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum KnownValidatorsToWaitFor {
-    All,
-    Any,
-}
 
 /// Build the known snapshot hashes from a set of nodes.
 ///
 /// The `get_snapshot_hashes_for_node` parameter is a function that map a pubkey to its snapshot
 /// hashes.  This parameter exist to provide a way to test the inner algorithm without needing
 /// runtime information such as the ClusterInfo or ValidatorConfig.
+#[cfg(test)]
 fn build_known_snapshot_hashes<'a>(
     nodes: impl IntoIterator<Item = &'a Pubkey>,
     get_snapshot_hashes_for_node: impl Fn(&'a Pubkey) -> Option<SnapshotHash>,
@@ -1000,32 +1088,8 @@ fn build_known_snapshot_hashes<'a>(
     known_snapshot_hashes
 }
 
-/// Get snapshot hashes from all eligible peers.
-///
-/// This fn will get only one snapshot hash per peer (the one with the highest slot).
-/// This may be just a full snapshot hash, or a combo full snapshot hash and
-/// incremental snapshot hash.
-fn get_eligible_peer_snapshot_hashes(
-    cluster_info: &ClusterInfo,
-    rpc_peers: &[ContactInfo],
-) -> Vec<PeerSnapshotHash> {
-    let peer_snapshot_hashes = rpc_peers
-        .iter()
-        .flat_map(|rpc_peer| {
-            get_snapshot_hashes_for_node(cluster_info, rpc_peer.pubkey()).map(|snapshot_hash| {
-                PeerSnapshotHash {
-                    rpc_contact_info: rpc_peer.clone(),
-                    snapshot_hash,
-                }
-            })
-        })
-        .collect();
-
-    trace!("peer snapshot hashes: {peer_snapshot_hashes:?}");
-    peer_snapshot_hashes
-}
-
 /// Retain the peer snapshot hashes that match a snapshot hash from the known snapshot hashes
+#[cfg(test)]
 fn retain_peer_snapshot_hashes_that_match_known_snapshot_hashes(
     known_snapshot_hashes: &KnownSnapshotHashes,
     peer_snapshot_hashes: &mut Vec<PeerSnapshotHash>,
@@ -1052,6 +1116,7 @@ fn retain_peer_snapshot_hashes_that_match_known_snapshot_hashes(
 }
 
 /// Retain the peer snapshot hashes with the highest full snapshot slot
+#[cfg(test)]
 fn retain_peer_snapshot_hashes_with_highest_full_snapshot_slot(
     peer_snapshot_hashes: &mut Vec<PeerSnapshotHash>,
 ) {
@@ -1074,6 +1139,7 @@ fn retain_peer_snapshot_hashes_with_highest_full_snapshot_slot(
 }
 
 /// Retain the peer snapshot hashes with the highest incremental snapshot slot
+#[cfg(test)]
 fn retain_peer_snapshot_hashes_with_highest_incremental_snapshot_slot(
     peer_snapshot_hashes: &mut Vec<PeerSnapshotHash>,
 ) {
@@ -1092,6 +1158,365 @@ fn retain_peer_snapshot_hashes_with_highest_incremental_snapshot_slot(
     );
 }
 
+#[derive(Debug, Deserialize)]
+struct SnapshotManifest {
+    #[serde(default)]
+    updated_at: Option<String>,
+    full_snapshot: SnapshotManifestSnapshot,
+    #[serde(default)]
+    incremental_snapshots: Vec<SnapshotManifestIncrementalSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotManifestSnapshot {
+    filename: String,
+    slot: Slot,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotManifestIncrementalSnapshot {
+    filename: String,
+    base_slot: Slot,
+    slot: Slot,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotServiceFile {
+    url: Url,
+    slot: Slot,
+    hash: Hash,
+    size_bytes: u64,
+    archive_format: ArchiveFormat,
+}
+
+fn fetch_snapshot_manifest(
+    client: &HttpClient,
+    manifest_url: &Url,
+) -> Result<SnapshotManifest, String> {
+    client
+        .get(manifest_url.clone())
+        .send()
+        .and_then(|resp| resp.error_for_status())
+        .map_err(|e| format!("failed to fetch snapshot manifest {manifest_url}: {e}"))?
+        .json::<SnapshotManifest>()
+        .map_err(|e| format!("failed to decode snapshot manifest {manifest_url}: {e}"))
+}
+
+fn parse_full_snapshot_from_manifest(
+    manifest_url: &Url,
+    entry: &SnapshotManifestSnapshot,
+) -> Result<SnapshotServiceFile, String> {
+    let filename = std::path::Path::new(&entry.filename)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("invalid snapshot filename in manifest: {}", entry.filename))?;
+    let (slot, hash, archive_format) =
+        snapshot_paths::parse_full_snapshot_archive_filename(filename).map_err(|e| e.to_string())?;
+    if slot != entry.slot {
+        return Err(format!(
+            "snapshot manifest mismatch: filename slot {slot} != field slot {} ({})",
+            entry.slot, entry.filename
+        ));
+    }
+    let url = manifest_url
+        .join(&entry.filename)
+        .map_err(|e| format!("invalid snapshot url join: {e}"))?;
+    Ok(SnapshotServiceFile {
+        url,
+        slot,
+        hash: hash.0,
+        size_bytes: entry.size_bytes,
+        archive_format,
+    })
+}
+
+fn parse_incremental_snapshot_from_manifest(
+    manifest_url: &Url,
+    entry: &SnapshotManifestIncrementalSnapshot,
+) -> Result<SnapshotServiceFile, String> {
+    let filename = std::path::Path::new(&entry.filename)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("invalid snapshot filename in manifest: {}", entry.filename))?;
+    let (base_slot, slot, hash, archive_format) =
+        snapshot_paths::parse_incremental_snapshot_archive_filename(filename)
+            .map_err(|e| e.to_string())?;
+    if base_slot != entry.base_slot || slot != entry.slot {
+        return Err(format!(
+            "snapshot manifest mismatch: filename base_slot {base_slot} slot {slot} != fields base_slot {} slot {} ({})",
+            entry.base_slot, entry.slot, entry.filename
+        ));
+    }
+    let url = manifest_url
+        .join(&entry.filename)
+        .map_err(|e| format!("invalid snapshot url join: {e}"))?;
+    Ok(SnapshotServiceFile {
+        url,
+        slot,
+        hash: hash.0,
+        size_bytes: entry.size_bytes,
+        archive_format,
+    })
+}
+
+fn select_snapshot_files_from_manifest(
+    manifest_url: &Url,
+    manifest: &SnapshotManifest,
+    incremental_snapshot_fetch: bool,
+) -> Result<(SnapshotServiceFile, Option<SnapshotServiceFile>), String> {
+    let full = parse_full_snapshot_from_manifest(manifest_url, &manifest.full_snapshot)?;
+
+    let incremental = incremental_snapshot_fetch
+        .then(|| {
+            manifest
+                .incremental_snapshots
+                .iter()
+                .filter(|snap| snap.base_slot == full.slot)
+                .max_by_key(|snap| snap.slot)
+        })
+        .flatten()
+        .map(|snap| parse_incremental_snapshot_from_manifest(manifest_url, snap))
+        .transpose()?;
+
+    Ok((full, incremental))
+}
+
+fn download_http_range_to_file(
+    client: &HttpClient,
+    url: &Url,
+    file: &mut fs::File,
+    start: u64,
+    end: u64,
+    buf: &mut [u8],
+) -> Result<(), String> {
+    let range = format!("bytes={start}-{end}");
+    let mut resp = client
+        .get(url.clone())
+        .header(reqwest::header::RANGE, range)
+        .send()
+        .map_err(|e| format!("snapshot download request failed: {e}"))?;
+    let status = resp.status();
+    if status != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Err(format!(
+            "snapshot download requires HTTP range support, got status {status}"
+        ));
+    }
+
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| format!("snapshot file seek failed: {e}"))?;
+
+    let mut remaining: u64 = end
+        .checked_sub(start)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| "invalid range".to_string())?;
+    while remaining > 0 {
+        let want = (remaining as usize).min(buf.len());
+        let n = resp
+            .read(&mut buf[..want])
+            .map_err(|e| format!("snapshot download read failed: {e}"))?;
+        if n == 0 {
+            return Err("snapshot download truncated (unexpected EOF)".to_string());
+        }
+        file.write_all(&buf[..n])
+            .map_err(|e| format!("snapshot file write failed: {e}"))?;
+        remaining = remaining.saturating_sub(n as u64);
+    }
+    Ok(())
+}
+
+fn download_http_file_concurrent_ranges(
+    client: &HttpClient,
+    url: &Url,
+    destination_path: &Path,
+    expected_size_bytes: u64,
+    concurrency: usize,
+    chunk_size_bytes: u64,
+    max_retries: u32,
+) -> Result<(), String> {
+    if destination_path.is_file() {
+        if let Ok(meta) = destination_path.metadata() {
+            if meta.len() == expected_size_bytes {
+                return Ok(());
+            }
+        }
+        return Err(format!(
+            "snapshot archive already exists but size does not match: {}",
+            destination_path.display()
+        ));
+    }
+
+    if expected_size_bytes == 0 {
+        return Err("snapshot archive size is zero".to_string());
+    }
+
+    let Some(parent) = destination_path.parent() else {
+        return Err(format!(
+            "snapshot archive destination has no parent dir: {}",
+            destination_path.display()
+        ));
+    };
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("failed to create snapshot dir {}: {e}", parent.display()))?;
+
+    let file_name = destination_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("invalid snapshot destination: {}", destination_path.display()))?;
+    let tmp_path = destination_path.with_file_name(format!("{file_name}.part"));
+    let _ = fs::remove_file(&tmp_path);
+
+    {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .map_err(|e| format!("failed to create snapshot temp file: {e}"))?;
+        file.set_len(expected_size_bytes)
+            .map_err(|e| format!("failed to preallocate snapshot file: {e}"))?;
+    }
+
+    let chunk_size_bytes = chunk_size_bytes.max(1024 * 1024);
+    let num_chunks_u64 = expected_size_bytes.div_ceil(chunk_size_bytes);
+    let num_chunks: usize = num_chunks_u64
+        .try_into()
+        .map_err(|_| format!("snapshot is too large to chunk: {expected_size_bytes}"))?;
+    let worker_count = concurrency.max(1).min(num_chunks.max(1));
+
+    let next_chunk = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let downloaded_bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (err_tx, err_rx) = mpsc::channel::<String>();
+
+    let progress_done = Arc::new(AtomicBool::new(false));
+    let progress_name = destination_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("snapshot");
+    let progress_start = Instant::now();
+    let progress_thread = {
+        let downloaded_bytes = Arc::clone(&downloaded_bytes);
+        let stop = Arc::clone(&stop);
+        let progress_done = Arc::clone(&progress_done);
+        let progress_name = progress_name.to_string();
+        std::thread::spawn(move || {
+            let mut last_bytes: u64 = 0;
+            let mut last_at = Instant::now();
+            let mut next_log = last_at + Duration::from_secs(5);
+            loop {
+                if progress_done.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                if progress_done.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
+                    return;
+                }
+
+                let now = Instant::now();
+                if now < next_log {
+                    continue;
+                }
+                let bytes = downloaded_bytes.load(Ordering::Relaxed);
+                let delta_bytes = bytes.saturating_sub(last_bytes);
+                let dt = now.duration_since(last_at).as_secs_f64().max(0.001);
+                let mib_per_sec = (delta_bytes as f64) / (1024.0 * 1024.0) / dt;
+
+                let pct = ((bytes as f64) / (expected_size_bytes as f64) * 100.0)
+                    .clamp(0.0, 100.0);
+
+                info!(
+                    "Snapshot download progress {}: {:.1}% ({}/{}) at {:.1} MiB/s",
+                    progress_name, pct, bytes, expected_size_bytes, mib_per_sec
+                );
+
+                last_bytes = bytes;
+                last_at = now;
+                next_log = now + Duration::from_secs(5);
+            }
+        })
+    };
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let client = client.clone();
+            let url = url.clone();
+            let tmp_path = tmp_path.clone();
+            let next_chunk = Arc::clone(&next_chunk);
+            let stop = Arc::clone(&stop);
+            let downloaded_bytes = Arc::clone(&downloaded_bytes);
+            let err_tx = err_tx.clone();
+            scope.spawn(move || {
+                let mut file = match fs::OpenOptions::new().write(true).open(&tmp_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = err_tx.send(format!("failed to open snapshot temp file: {e}"));
+                        stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+                let mut buf = vec![0u8; 1024 * 1024];
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let chunk_index = next_chunk.fetch_add(1, Ordering::Relaxed);
+                    if chunk_index >= num_chunks {
+                        return;
+                    }
+                    let start = (chunk_index as u64).saturating_mul(chunk_size_bytes);
+                    let end = start
+                        .saturating_add(chunk_size_bytes.saturating_sub(1))
+                        .min(expected_size_bytes.saturating_sub(1));
+
+                    let mut attempt: u32 = 0;
+                    loop {
+                        attempt = attempt.saturating_add(1);
+                        match download_http_range_to_file(&client, &url, &mut file, start, end, &mut buf)
+                        {
+                            Ok(()) => {
+                                let n = end.saturating_sub(start).saturating_add(1);
+                                downloaded_bytes.fetch_add(n, Ordering::Relaxed);
+                                break;
+                            }
+                            Err(e) => {
+                                if attempt > max_retries.saturating_add(1) {
+                                    let _ = err_tx.send(e);
+                                    stop.store(true, Ordering::Relaxed);
+                                    return;
+                                }
+                                thread::sleep(Duration::from_millis(200_u64.saturating_mul(attempt as u64)));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    drop(err_tx);
+    progress_done.store(true, Ordering::Relaxed);
+    let _ = progress_thread.join();
+    if let Ok(err) = err_rx.try_recv() {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    fs::rename(&tmp_path, destination_path)
+        .map_err(|e| format!("failed to move snapshot into place: {e}"))?;
+
+    let elapsed = progress_start.elapsed().as_secs_f64().max(0.001);
+    let avg_mib_per_sec = (expected_size_bytes as f64) / (1024.0 * 1024.0) / elapsed;
+    info!(
+        "Snapshot download complete {}: {} bytes in {:.1}s ({:.1} MiB/s avg)",
+        progress_name, expected_size_bytes, elapsed, avg_mib_per_sec
+    );
+    Ok(())
+}
+
 /// Check to see if we can use our local snapshots, otherwise download newer ones.
 #[allow(clippy::too_many_arguments)]
 fn download_snapshots(
@@ -1106,17 +1531,49 @@ fn download_snapshots(
     snapshot_hash: Option<SnapshotHash>,
     rpc_contact_info: &ContactInfo,
 ) -> Result<(), String> {
-    if snapshot_hash.is_none() {
+    let _ = use_progress_bar;
+    let _ = minimal_snapshot_download_speed;
+    let _ = maximum_snapshot_download_abort;
+    let _ = download_abort_count;
+
+    if bootstrap_config.no_snapshot_fetch {
         return Ok(());
     }
-    let SnapshotHash {
-        full: full_snapshot_hash,
-        incr: incremental_snapshot_hash,
-    } = snapshot_hash.unwrap();
+
+    let manifest_url = Url::parse(&bootstrap_config.snapshot_manifest_url)
+        .map_err(|e| format!("invalid --snapshot-manifest-url: {e}"))?;
+    let timeout = Duration::from_millis(bootstrap_config.snapshot_download_timeout_ms);
+    let client = HttpClient::builder()
+        .timeout(timeout)
+        .pool_max_idle_per_host(bootstrap_config.snapshot_download_concurrency.max(1))
+        .build()
+        .map_err(|e| format!("failed to build snapshot http client: {e}"))?;
+    let manifest = fetch_snapshot_manifest(&client, &manifest_url)?;
+    let (full, incremental) = select_snapshot_files_from_manifest(
+        &manifest_url,
+        &manifest,
+        bootstrap_config.incremental_snapshot_fetch,
+    )?;
+
+    let full_snapshot_hash = (full.slot, full.hash);
+    let incremental_snapshot_hash = incremental.as_ref().map(|s| (s.slot, s.hash));
     let full_snapshot_archives_dir = &validator_config.snapshot_config.full_snapshot_archives_dir;
     let incremental_snapshot_archives_dir = &validator_config
         .snapshot_config
         .incremental_snapshot_archives_dir;
+
+    // Backwards-compat: if caller provided a snapshot hash, log if it differs from the manifest.
+    if let Some(snapshot_hash) = snapshot_hash {
+        let manifest_hash = SnapshotHash {
+            full: full_snapshot_hash,
+            incr: incremental_snapshot_hash,
+        };
+        if snapshot_hash != manifest_hash {
+            warn!(
+                "Snapshot service selection differs from bootstrap snapshot hash. Using manifest. bootstrap={snapshot_hash:?} manifest={manifest_hash:?}"
+            );
+        }
+    }
 
     // If the local snapshots are new enough, then use 'em; no need to download new snapshots
     if should_use_local_snapshot(
@@ -1130,7 +1587,19 @@ fn download_snapshots(
         return Ok(());
     }
 
-    // Check and see if we've already got the full snapshot; if not, download it
+    // Purge old snapshot archives first (same behavior as the legacy download path).
+    solana_runtime::snapshot_utils::purge_old_snapshot_archives(
+        full_snapshot_archives_dir,
+        incremental_snapshot_archives_dir,
+        validator_config
+            .snapshot_config
+            .maximum_full_snapshot_archives_to_retain,
+        validator_config
+            .snapshot_config
+            .maximum_incremental_snapshot_archives_to_retain,
+    );
+
+    // Check and see if we've already got the full snapshot; if not, download it.
     if snapshot_paths::get_full_snapshot_archives(full_snapshot_archives_dir)
         .into_iter()
         .any(|snapshot_archive| {
@@ -1143,17 +1612,39 @@ fn download_snapshots(
             full_snapshot_hash.0, full_snapshot_hash.1
         );
     } else {
-        download_snapshot(
-            validator_config,
-            bootstrap_config,
-            use_progress_bar,
-            start_progress,
-            minimal_snapshot_download_speed,
-            maximum_snapshot_download_abort,
-            download_abort_count,
-            rpc_contact_info,
-            full_snapshot_hash,
-            SnapshotKind::FullSnapshot,
+        let remote_dir = snapshot_paths::build_snapshot_archives_remote_dir(full_snapshot_archives_dir);
+        fs::create_dir_all(&remote_dir).map_err(|e| {
+            format!(
+                "failed to create full snapshot download dir {}: {e}",
+                remote_dir.display()
+            )
+        })?;
+        let dest = snapshot_paths::build_full_snapshot_archive_path(
+            &remote_dir,
+            full.slot,
+            &agave_snapshots::snapshot_hash::SnapshotHash(full.hash),
+            full.archive_format,
+        );
+        info!(
+            "Downloading full snapshot from {} ({} bytes) -> {}",
+            full.url,
+            full.size_bytes,
+            dest.display()
+        );
+        *start_progress.write().unwrap() = ValidatorStartProgress::DownloadingSnapshot {
+            slot: full.slot,
+            rpc_addr: rpc_contact_info
+                .rpc()
+                .ok_or_else(|| String::from("Invalid RPC address"))?,
+        };
+        download_http_file_concurrent_ranges(
+            &client,
+            &full.url,
+            &dest,
+            full.size_bytes,
+            bootstrap_config.snapshot_download_concurrency,
+            bootstrap_config.snapshot_download_chunk_size_bytes,
+            bootstrap_config.snapshot_download_max_retries,
         )?;
     }
 
@@ -1174,112 +1665,51 @@ fn download_snapshots(
                     incremental_snapshot_hash.0, incremental_snapshot_hash.1
                 );
             } else {
-                download_snapshot(
-                    validator_config,
-                    bootstrap_config,
-                    use_progress_bar,
-                    start_progress,
-                    minimal_snapshot_download_speed,
-                    maximum_snapshot_download_abort,
-                    download_abort_count,
-                    rpc_contact_info,
-                    incremental_snapshot_hash,
-                    SnapshotKind::IncrementalSnapshot(full_snapshot_hash.0),
+                let incremental = incremental
+                    .as_ref()
+                    .expect("incremental snapshot hash implies incremental snapshot file");
+                let remote_dir = snapshot_paths::build_snapshot_archives_remote_dir(
+                    incremental_snapshot_archives_dir,
+                );
+                fs::create_dir_all(&remote_dir).map_err(|e| {
+                    format!(
+                        "failed to create incremental snapshot download dir {}: {e}",
+                        remote_dir.display()
+                    )
+                })?;
+                let dest = snapshot_paths::build_incremental_snapshot_archive_path(
+                    &remote_dir,
+                    full.slot,
+                    incremental.slot,
+                    &agave_snapshots::snapshot_hash::SnapshotHash(incremental.hash),
+                    incremental.archive_format,
+                );
+                info!(
+                    "Downloading incremental snapshot from {} ({} bytes) -> {}",
+                    incremental.url,
+                    incremental.size_bytes,
+                    dest.display()
+                );
+                *start_progress.write().unwrap() = ValidatorStartProgress::DownloadingSnapshot {
+                    slot: incremental.slot,
+                    rpc_addr: rpc_contact_info
+                        .rpc()
+                        .ok_or_else(|| String::from("Invalid RPC address"))?,
+                };
+                download_http_file_concurrent_ranges(
+                    &client,
+                    &incremental.url,
+                    &dest,
+                    incremental.size_bytes,
+                    bootstrap_config.snapshot_download_concurrency,
+                    bootstrap_config.snapshot_download_chunk_size_bytes,
+                    bootstrap_config.snapshot_download_max_retries,
                 )?;
             }
         }
     }
 
     Ok(())
-}
-
-/// Download a snapshot
-#[allow(clippy::too_many_arguments)]
-fn download_snapshot(
-    validator_config: &ValidatorConfig,
-    bootstrap_config: &RpcBootstrapConfig,
-    use_progress_bar: bool,
-    start_progress: &Arc<RwLock<ValidatorStartProgress>>,
-    minimal_snapshot_download_speed: f32,
-    maximum_snapshot_download_abort: u64,
-    download_abort_count: &mut u64,
-    rpc_contact_info: &ContactInfo,
-    desired_snapshot_hash: (Slot, Hash),
-    snapshot_kind: SnapshotKind,
-) -> Result<(), String> {
-    let maximum_full_snapshot_archives_to_retain = validator_config
-        .snapshot_config
-        .maximum_full_snapshot_archives_to_retain;
-    let maximum_incremental_snapshot_archives_to_retain = validator_config
-        .snapshot_config
-        .maximum_incremental_snapshot_archives_to_retain;
-    let full_snapshot_archives_dir = &validator_config.snapshot_config.full_snapshot_archives_dir;
-    let incremental_snapshot_archives_dir = &validator_config
-        .snapshot_config
-        .incremental_snapshot_archives_dir;
-
-    *start_progress.write().unwrap() = ValidatorStartProgress::DownloadingSnapshot {
-        slot: desired_snapshot_hash.0,
-        rpc_addr: rpc_contact_info
-            .rpc()
-            .ok_or_else(|| String::from("Invalid RPC address"))?,
-    };
-    let desired_snapshot_hash = (
-        desired_snapshot_hash.0,
-        agave_snapshots::snapshot_hash::SnapshotHash(desired_snapshot_hash.1),
-    );
-    download_snapshot_archive(
-        &rpc_contact_info
-            .rpc()
-            .ok_or_else(|| String::from("Invalid RPC address"))?,
-        full_snapshot_archives_dir,
-        incremental_snapshot_archives_dir,
-        desired_snapshot_hash,
-        snapshot_kind,
-        maximum_full_snapshot_archives_to_retain,
-        maximum_incremental_snapshot_archives_to_retain,
-        use_progress_bar,
-        &mut Some(Box::new(|download_progress: &DownloadProgressRecord| {
-            debug!("Download progress: {download_progress:?}");
-            if download_progress.last_throughput < minimal_snapshot_download_speed
-                && download_progress.notification_count <= 1
-                && download_progress.percentage_done <= 2_f32
-                && download_progress.estimated_remaining_time > 60_f32
-                && *download_abort_count < maximum_snapshot_download_abort
-            {
-                if let Some(ref known_validators) = validator_config.known_validators {
-                    if known_validators.contains(rpc_contact_info.pubkey())
-                        && known_validators.len() == 1
-                        && bootstrap_config.only_known_rpc
-                    {
-                        warn!(
-                            "The snapshot download is too slow, throughput: {} < min speed {} \
-                             bytes/sec, but will NOT abort and try a different node as it is the \
-                             only known validator and the --only-known-rpc flag is set. Abort \
-                             count: {}, Progress detail: {:?}",
-                            download_progress.last_throughput,
-                            minimal_snapshot_download_speed,
-                            download_abort_count,
-                            download_progress,
-                        );
-                        return true; // Do not abort download from the one-and-only known validator
-                    }
-                }
-                warn!(
-                    "The snapshot download is too slow, throughput: {} < min speed {} bytes/sec, \
-                     will abort and try a different node. Abort count: {}, Progress detail: {:?}",
-                    download_progress.last_throughput,
-                    minimal_snapshot_download_speed,
-                    download_abort_count,
-                    download_progress,
-                );
-                *download_abort_count += 1;
-                false
-            } else {
-                true
-            }
-        })),
-    )
 }
 
 /// Check to see if bootstrap should load from its local snapshots or not.  If not, then snapshots
@@ -1328,24 +1758,11 @@ fn should_use_local_snapshot(
     }
 }
 
-/// Get the node's highest snapshot hashes from CRDS
-fn get_snapshot_hashes_for_node(cluster_info: &ClusterInfo, node: &Pubkey) -> Option<SnapshotHash> {
-    cluster_info.get_snapshot_hashes_for_node(node).map(
-        |crds_data::SnapshotHashes {
-             full, incremental, ..
-         }| {
-            let highest_incremental_snapshot_hash = incremental.into_iter().max();
-            SnapshotHash {
-                full,
-                incr: highest_incremental_snapshot_hash,
-            }
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::net::TcpListener;
 
     impl PeerSnapshotHash {
         fn new(
@@ -1365,6 +1782,478 @@ mod tests {
 
     fn default_contact_info_for_tests() -> ContactInfo {
         ContactInfo::new_localhost(&Pubkey::default(), /*now:*/ 1_681_834_947_321)
+    }
+
+    #[test]
+    fn fail_rpc_node_blacklists_unless_known() {
+        let rpc_id = Pubkey::new_unique();
+
+        let mut blacklist = HashSet::new();
+        fail_rpc_node(
+            "test error".to_string(),
+            &None,
+            &rpc_id,
+            &mut blacklist,
+        );
+        assert!(blacklist.contains(&rpc_id));
+
+        let known_validators: HashSet<Pubkey> = [rpc_id].into_iter().collect();
+        let mut blacklist = HashSet::new();
+        fail_rpc_node(
+            "test error".to_string(),
+            &Some(known_validators),
+            &rpc_id,
+            &mut blacklist,
+        );
+        assert!(!blacklist.contains(&rpc_id));
+    }
+
+    #[test]
+    fn deterministic_pubkey_for_socket_addr_is_stable() {
+        let a: SocketAddr = "127.0.0.1:8899".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:8900".parse().unwrap();
+
+        let a1 = deterministic_pubkey_for_socket_addr(&a);
+        let a2 = deterministic_pubkey_for_socket_addr(&a);
+        assert_eq!(a1, a2);
+        assert_ne!(a1, deterministic_pubkey_for_socket_addr(&b));
+    }
+
+    #[test]
+    fn parse_socket_addrs_from_json_accepts_arrays_and_objects() {
+        let json: JsonValue = serde_json::from_str(
+            r#"{"rpc_addrs":["2.2.2.2:8899","1.1.1.1:8899","1.1.1.1:8899"],"ignored":["9.9.9.9:1234"]}"#,
+        )
+        .unwrap();
+        let addrs = parse_socket_addrs_from_json(&json);
+        assert_eq!(
+            addrs,
+            vec![
+                "1.1.1.1:8899".parse().unwrap(),
+                "2.2.2.2:8899".parse().unwrap(),
+            ]
+        );
+
+        let json: JsonValue = serde_json::from_str(r#"["3.3.3.3:8899","4.4.4.4:8899"]"#).unwrap();
+        let addrs = parse_socket_addrs_from_json(&json);
+        assert_eq!(
+            addrs,
+            vec![
+                "3.3.3.3:8899".parse().unwrap(),
+                "4.4.4.4:8899".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_manifest_selection_prefers_highest_incremental_for_base() {
+        let full_hash = Hash::new_unique();
+        let inc_hash1 = Hash::new_unique();
+        let inc_hash2 = Hash::new_unique();
+
+        let manifest = SnapshotManifest {
+            updated_at: Some("2026-01-01T00:00:00Z".to_string()),
+            full_snapshot: SnapshotManifestSnapshot {
+                filename: format!("snapshots/snapshot-100-{}.tar.zst", full_hash),
+                slot: 100,
+                size_bytes: 123,
+            },
+            incremental_snapshots: vec![
+                SnapshotManifestIncrementalSnapshot {
+                    filename: format!(
+                        "snapshots/incremental-snapshot-100-101-{}.tar.zst",
+                        inc_hash1
+                    ),
+                    base_slot: 100,
+                    slot: 101,
+                    size_bytes: 10,
+                },
+                SnapshotManifestIncrementalSnapshot {
+                    filename: format!(
+                        "snapshots/incremental-snapshot-100-102-{}.tar.zst",
+                        inc_hash2
+                    ),
+                    base_slot: 100,
+                    slot: 102,
+                    size_bytes: 11,
+                },
+                // Different base slot should be ignored.
+                SnapshotManifestIncrementalSnapshot {
+                    filename: format!(
+                        "snapshots/incremental-snapshot-99-200-{}.tar.zst",
+                        Hash::new_unique()
+                    ),
+                    base_slot: 99,
+                    slot: 200,
+                    size_bytes: 999,
+                },
+            ],
+        };
+
+        let manifest_url = Url::parse("https://data.example.com/snapshot-manifest.json").unwrap();
+        let (full, incremental) =
+            select_snapshot_files_from_manifest(&manifest_url, &manifest, true).unwrap();
+
+        assert_eq!(full.slot, 100);
+        assert_eq!(full.hash, full_hash);
+        assert_eq!(full.url.as_str(), &format!("https://data.example.com/{}", manifest.full_snapshot.filename));
+
+        let incremental = incremental.unwrap();
+        assert_eq!(incremental.slot, 102);
+        assert_eq!(incremental.hash, inc_hash2);
+    }
+
+    #[test]
+    fn snapshot_range_downloader_roundtrips() {
+        let chunk_size: u64 = 64 * 1024;
+        let concurrency: usize = 4;
+
+        let content: Vec<u8> = (0..(1024 * 1024))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let content_server = content.clone();
+        let total_size = content.len() as u64;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let done_server = Arc::clone(&done);
+        let server = thread::spawn(move || {
+            while !done_server.load(Ordering::Relaxed) {
+                let (mut stream, _peer) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept failed: {e}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if req.len() > 64 * 1024 {
+                        break;
+                    }
+                }
+                let req_str = String::from_utf8_lossy(&req);
+                let range_line = req_str
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                    .expect("range header present");
+                let range = range_line
+                    .splitn(2, ':')
+                    .nth(1)
+                    .unwrap()
+                    .trim()
+                    .strip_prefix("bytes=")
+                    .unwrap();
+                let (start_s, end_s) = range.split_once('-').unwrap();
+                let start: usize = start_s.parse().unwrap();
+                let end: usize = end_s.parse().unwrap();
+                let slice = &content_server[start..=end];
+                let header = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    slice.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(slice).unwrap();
+            }
+        });
+
+        let client = HttpClient::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url = Url::parse(&format!("http://{addr}/snapshot.tar.zst")).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("snapshot.tar.zst");
+
+        download_http_file_concurrent_ranges(
+            &client,
+            &url,
+            &dest,
+            total_size,
+            concurrency,
+            chunk_size,
+            0,
+        )
+        .unwrap();
+
+        let downloaded = fs::read(&dest).unwrap();
+        assert_eq!(downloaded, content);
+
+        done.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn download_snapshots_from_manifest_uses_ranges_and_skips_redownload() {
+        struct SnapshotHttpServerState {
+            manifest_body: Vec<u8>,
+            files: HashMap<String, Vec<u8>>,
+            manifest_requests: AtomicUsize,
+            range_requests: AtomicUsize,
+        }
+
+        fn write_http_response(mut stream: std::net::TcpStream, status: &str, body: &[u8]) {
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        }
+
+        fn handle_http_connection(mut stream: std::net::TcpStream, state: Arc<SnapshotHttpServerState>) {
+            stream.set_nonblocking(false).unwrap();
+
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+                if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+                if req.len() > 64 * 1024 {
+                    break;
+                }
+            }
+
+            let req_str = String::from_utf8_lossy(&req);
+            let Some(request_line) = req_str.lines().next() else {
+                write_http_response(stream, "400 Bad Request", b"");
+                return;
+            };
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("");
+
+            if method != "GET" {
+                write_http_response(stream, "405 Method Not Allowed", b"");
+                return;
+            }
+
+            if path == "/snapshot-manifest.json" {
+                state.manifest_requests.fetch_add(1, Ordering::Relaxed);
+                write_http_response(stream, "200 OK", &state.manifest_body);
+                return;
+            }
+
+            let Some(content) = state.files.get(path) else {
+                write_http_response(stream, "404 Not Found", b"");
+                return;
+            };
+
+            let range_line = req_str
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("range:"));
+            let Some(range_line) = range_line else {
+                write_http_response(stream, "416 Range Not Satisfiable", b"");
+                return;
+            };
+            let range = range_line
+                .splitn(2, ':')
+                .nth(1)
+                .unwrap_or("")
+                .trim()
+                .strip_prefix("bytes=")
+                .unwrap_or("");
+            let Some((start_s, end_s)) = range.split_once('-') else {
+                write_http_response(stream, "416 Range Not Satisfiable", b"");
+                return;
+            };
+            let start: usize = start_s.parse().unwrap();
+            let end: usize = end_s.parse().unwrap();
+            assert!(start <= end);
+            assert!(end < content.len());
+
+            state.range_requests.fetch_add(1, Ordering::Relaxed);
+
+            let slice = &content[start..=end];
+            let header = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                slice.len(),
+                start,
+                end,
+                content.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(slice).unwrap();
+        }
+
+        let full_slot: Slot = 100;
+        let incremental_slot: Slot = 101;
+        let full_hash = Hash::new_unique();
+        let incremental_hash = Hash::new_unique();
+
+        let full_file = format!("snapshot-{full_slot}-{full_hash}.tar.zst");
+        let incremental_file = format!(
+            "incremental-snapshot-{full_slot}-{incremental_slot}-{incremental_hash}.tar.zst"
+        );
+
+        let full_content: Vec<u8> = (0..(3 * 1024 * 1024))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let incremental_content: Vec<u8> = (0..(2 * 1024 * 1024))
+            .map(|i| (i % 241) as u8)
+            .collect();
+
+        let manifest_body = serde_json::json!({
+            "updated_at": "2026-01-01T00:00:00Z",
+            "full_snapshot": {
+                "filename": format!("snapshots/{full_file}"),
+                "slot": full_slot,
+                "size_bytes": full_content.len() as u64,
+            },
+            "incremental_snapshots": [{
+                "filename": format!("snapshots/{incremental_file}"),
+                "base_slot": full_slot,
+                "slot": incremental_slot,
+                "size_bytes": incremental_content.len() as u64,
+            }],
+        })
+        .to_string()
+        .into_bytes();
+
+        let mut files = HashMap::new();
+        files.insert(format!("/snapshots/{full_file}"), full_content.clone());
+        files.insert(
+            format!("/snapshots/{incremental_file}"),
+            incremental_content.clone(),
+        );
+
+        let state = Arc::new(SnapshotHttpServerState {
+            manifest_body,
+            files,
+            manifest_requests: AtomicUsize::new(0),
+            range_requests: AtomicUsize::new(0),
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let done = Arc::new(AtomicBool::new(false));
+        let done_server = Arc::clone(&done);
+        let state_server = Arc::clone(&state);
+        let server = thread::spawn(move || {
+            let mut handlers = Vec::new();
+            while !done_server.load(Ordering::Relaxed) {
+                let (stream, _peer) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("accept failed: {e}"),
+                };
+                let state = Arc::clone(&state_server);
+                handlers.push(thread::spawn(move || handle_http_connection(stream, state)));
+            }
+            for h in handlers {
+                let _ = h.join();
+            }
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let full_dir = tmp.path().join("full");
+        let incremental_dir = tmp.path().join("incremental");
+        fs::create_dir_all(&full_dir).unwrap();
+        fs::create_dir_all(&incremental_dir).unwrap();
+
+        let mut validator_config = ValidatorConfig::default_for_test();
+        validator_config.snapshot_config.full_snapshot_archives_dir = full_dir.clone();
+        validator_config.snapshot_config.incremental_snapshot_archives_dir = incremental_dir.clone();
+
+        let bootstrap_config = RpcBootstrapConfig {
+            no_genesis_fetch: false,
+            no_snapshot_fetch: false,
+            only_known_rpc: false,
+            max_genesis_archive_unpacked_size: 0,
+            check_vote_account: None,
+            bootstrap_rpc_addrs: Vec::new(),
+            bootstrap_rpc_addrs_url: None,
+            incremental_snapshot_fetch: true,
+            snapshot_manifest_url: format!("http://{addr}/snapshot-manifest.json"),
+            snapshot_download_concurrency: 4,
+            snapshot_download_chunk_size_bytes: 1024 * 1024,
+            snapshot_download_timeout_ms: 5_000,
+            snapshot_download_max_retries: 0,
+        };
+
+        let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::Initializing));
+        let mut download_abort_count = 0u64;
+        let rpc_contact_info = ContactInfo::new_localhost(&Pubkey::new_unique(), 1_681_834_947_321);
+
+        download_snapshots(
+            &validator_config,
+            &bootstrap_config,
+            false,
+            0,
+            &start_progress,
+            0.0,
+            0,
+            &mut download_abort_count,
+            None,
+            &rpc_contact_info,
+        )
+        .unwrap();
+
+        assert!(state.manifest_requests.load(Ordering::Relaxed) >= 1);
+        assert_eq!(state.range_requests.load(Ordering::Relaxed), 5);
+
+        let full_remote = snapshot_paths::build_snapshot_archives_remote_dir(&full_dir);
+        let (slot, hash, archive_format) =
+            snapshot_paths::parse_full_snapshot_archive_filename(&full_file).unwrap();
+        let full_path =
+            snapshot_paths::build_full_snapshot_archive_path(&full_remote, slot, &hash, archive_format);
+        assert_eq!(fs::read(&full_path).unwrap(), full_content);
+
+        let incremental_remote = snapshot_paths::build_snapshot_archives_remote_dir(&incremental_dir);
+        let (base_slot, slot, hash, archive_format) =
+            snapshot_paths::parse_incremental_snapshot_archive_filename(&incremental_file).unwrap();
+        let incremental_path = snapshot_paths::build_incremental_snapshot_archive_path(
+            &incremental_remote,
+            base_slot,
+            slot,
+            &hash,
+            archive_format,
+        );
+        assert_eq!(fs::read(&incremental_path).unwrap(), incremental_content);
+
+        let before = state.range_requests.load(Ordering::Relaxed);
+        download_snapshots(
+            &validator_config,
+            &bootstrap_config,
+            false,
+            0,
+            &start_progress,
+            0.0,
+            0,
+            &mut download_abort_count,
+            None,
+            &rpc_contact_info,
+        )
+        .unwrap();
+        assert_eq!(state.range_requests.load(Ordering::Relaxed), before);
+
+        done.store(true, Ordering::Relaxed);
+        server.join().unwrap();
     }
 
     #[test]

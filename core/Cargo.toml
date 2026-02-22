@@ -85,11 +85,17 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 rayon = { workspace = true }
 rolling-file = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rustls = { workspace = true }
+rustls-native-certs = "0.8.1"
+webpki-roots = "1.0.0"
+ed25519-dalek-v2 = { package = "ed25519-dalek", version = "2.1.1", features = ["rand_core", "serde"] }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_bytes = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
+solanacdn-protocol = { git = "https://github.com/PipeNetwork/solanacdn-protocol", rev = "a2440e5f2b088e82faa63e70a3d94818c18ba806" }
 solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
 solana-address-lookup-table-interface = { workspace = true }
@@ -152,7 +158,7 @@ solana-runtime-transaction = { workspace = true }
 solana-sanitize = { workspace = true }
 solana-sdk-ids = { workspace = true }
 solana-send-transaction-service = { workspace = true }
-solana-sha256-hasher = { workspace = true }
+solana-sha256-hasher = { workspace = true, features = ["sha2"] }
 solana-short-vec = { workspace = true }
 solana-shred-version = { workspace = true }
 solana-signature = { workspace = true }
@@ -190,6 +196,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }
+tokio-rustls = "0.26.2"
 tokio-util = { workspace = true }
 tonic = { workspace = true }
 trees = { workspace = true }

@@ -22,6 +22,7 @@ use {
             relayer_stage::{RelayerConfig, RelayerStage},
         },
         repair::repair_service,
+        solanacdn,
         validator::{
             BlockProductionMethod, SchedulerPacing, TransactionStructure, ValidatorStartProgress,
         },
@@ -204,6 +205,9 @@ pub trait AdminRpc {
 
     #[rpc(meta, name = "startProgress")]
     fn start_progress(&self, meta: Self::Metadata) -> Result<ValidatorStartProgress>;
+
+    #[rpc(meta, name = "solanaCdnStatus")]
+    fn solana_cdn_status(&self, meta: Self::Metadata) -> Result<Option<solanacdn::SolanaCdnStatus>>;
 
     #[rpc(meta, name = "addAuthorizedVoter")]
     fn add_authorized_voter(&self, meta: Self::Metadata, keypair_file: String) -> Result<()>;
@@ -515,6 +519,11 @@ impl AdminRpc for AdminRpcImpl {
     fn start_progress(&self, meta: Self::Metadata) -> Result<ValidatorStartProgress> {
         debug!("start_progress admin rpc request received");
         Ok(*meta.start_progress.read().unwrap())
+    }
+
+    fn solana_cdn_status(&self, _meta: Self::Metadata) -> Result<Option<solanacdn::SolanaCdnStatus>> {
+        debug!("solana_cdn_status admin rpc request received");
+        Ok(solanacdn::global().map(|h| h.status_snapshot()))
     }
 
     fn add_authorized_voter(&self, meta: Self::Metadata, keypair_file: String) -> Result<()> {
@@ -949,7 +958,10 @@ impl AdminRpc for AdminRpcImpl {
                 .spawn_internal_threads(
                     block_production_method,
                     num_workers,
-                    SchedulerConfig { scheduler_pacing },
+                    SchedulerConfig {
+                        scheduler_pacing,
+                        ..SchedulerConfig::default()
+                    },
                 )
                 .map_err(|err| {
                     error!("Failed to spawn new non-vote threads: {err:?}");
@@ -1290,6 +1302,33 @@ mod tests {
 
         let bank = Bank::new_with_config_for_tests(&genesis_config, config);
         (BankForks::new_rw_arc(bank), Arc::new(voting_keypair))
+    }
+
+    #[test]
+    fn test_solana_cdn_status_rpc_method_present() {
+        let rpc = RpcHandler::_start();
+        let RpcHandler { io, meta, .. } = rpc;
+
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"solanaCdnStatus"}"#;
+        let res = io
+            .handle_request_sync(req, meta)
+            .expect("actual response");
+        let value: Value = serde_json::from_str(&res).expect("json response");
+
+        assert!(
+            value.get("error").is_none(),
+            "unexpected rpc error: {value}"
+        );
+        assert!(value.get("result").is_some());
+
+        let result = &value["result"];
+        if result.is_object() {
+            assert!(result.get("connected").is_some());
+            assert!(result.get("connected_pops").is_some());
+            assert!(result.get("rx_shred_payloads_total").is_some());
+        } else {
+            assert!(result.is_null());
+        }
     }
 
     #[test]
