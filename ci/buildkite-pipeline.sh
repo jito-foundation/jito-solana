@@ -24,11 +24,15 @@ if $is_pr_build; then
     pr_number=${BASH_REMATCH[1]}
   else
     echo "Unable to determine PR number (BUILDKITE_PULL_REQUEST=$BUILDKITE_PULL_REQUEST, CI_BRANCH=$CI_BRANCH)"
-    exit 1
+    pr_number=
   fi
 
   CI_PULL_REQUEST=true
-  echo "get affected files from PR: $pr_number"
+  if [[ -n $pr_number ]]; then
+    echo "get affected files from PR: $pr_number"
+  else
+    echo "PR number missing; using conservative CI set"
+  fi
 
   if [[ $BUILDKITE_REPO =~ ^https:\/\/github\.com\/([^\/]+)\/([^\/\.]+) ]]; then
     owner="${BASH_REMATCH[1]}"
@@ -62,7 +66,7 @@ if $is_pr_build; then
   }'
 
   # get affected files
-  if command -v gh >/dev/null 2>&1; then
+  if [[ -n $pr_number ]] && command -v gh >/dev/null 2>&1; then
     readarray -t affected_files < <(
       gh api graphql \
         -f query="$query" \
@@ -73,7 +77,7 @@ if $is_pr_build; then
         --jq '.data.repository.pullRequest.files.nodes.[].path'
     )
   else
-    echo "gh not found; falling back to git diff for affected files"
+    echo "gh not found or PR number missing; falling back to git diff for affected files"
     if [[ -n $BUILDKITE_PULL_REQUEST_BASE_BRANCH ]]; then
       readarray -t affected_files < <(
         git diff --name-only "origin/$BUILDKITE_PULL_REQUEST_BASE_BRANCH"...HEAD
