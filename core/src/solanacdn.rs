@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
-use dashmap::{mapref::entry::Entry, DashMap, DashSet};
+use dashmap::{DashMap, DashSet};
 use ed25519_dalek_v2::SigningKey;
 use quinn::Endpoint;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -27,6 +27,7 @@ use solana_keypair::Keypair;
 use solana_ledger::shred::ShredId as LedgerShredId;
 use solana_packet::PACKET_DATA_SIZE;
 use solana_pubkey::Pubkey;
+use solana_signer::Signer;
 use solana_sha256_hasher as sha256_hasher;
 
 use solanacdn_protocol::crypto::{random_nonce_16, PubkeyBytes};
@@ -3219,7 +3220,6 @@ struct QuicConnectConfig {
 struct AuthContext {
     validator_pubkey: PubkeyBytes,
     signing_key: SigningKey,
-    identity_keypair: Arc<Keypair>,
 }
 
 impl AuthContext {
@@ -3229,7 +3229,6 @@ impl AuthContext {
         Ok(Self {
             validator_pubkey,
             signing_key,
-            identity_keypair,
         })
     }
 
@@ -5514,11 +5513,11 @@ async fn run_pop_session(
 
 async fn handle_pop_msg(
     endpoint: SocketAddr,
-    pop_pubkey: PubkeyBytes,
+    _pop_pubkey: PubkeyBytes,
     cfg: &SolanaCdnConfig,
-    auth: &AuthContext,
+    _auth: &AuthContext,
     handle: &SolanaCdnHandle,
-    ctrl_out_tx: &mpsc::Sender<AgentToPop>,
+    _ctrl_out_tx: &mpsc::Sender<AgentToPop>,
     publisher_rx: &mut watch::Receiver<Option<SocketAddr>>,
     shred_deduper: &ShredBatchDeduper,
     udp_inject_tpu: &UdpSocket,
