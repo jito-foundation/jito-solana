@@ -182,10 +182,11 @@ struct TpuState {
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
+#[repr(i64)]
 enum TpuConnectionType {
-    Original,
-    Relayer,
-    Bam,
+    Original = 0,
+    Bam = 1,
+    Relayer = 2,
 }
 
 impl fmt::Display for TpuConnectionType {
@@ -350,10 +351,10 @@ impl FetchStageTpuStateMachine {
                 "tpu_state_machine_tick",
                 (
                     "current_tpu",
-                    self.current_tpu_state.tpu_type.to_string(),
-                    String
+                    self.current_tpu_state.tpu_type,
+                    i64
                 ),
-                ("previous_tpu", prev_state.tpu_type.to_string(), String)
+                ("previous_tpu", prev_state.tpu_type, i64)
             );
             self.last_tpu_report = Instant::now();
         }
