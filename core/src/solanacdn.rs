@@ -1921,6 +1921,2168 @@ pub(crate) fn new_handle_for_tests(cfg: SolanaCdnConfig) -> Arc<SolanaCdnHandle>
     Arc::new(SolanaCdnHandle::new(cfg))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quinn::{crypto::rustls::QuicServerConfig, ServerConfig};
+    use solanacdn_protocol::messages::{
+        AuthError, AuthOk, ControlError, ControlRequest, ControlResponse, PopHeartbeatAck, PopInfo,
+        PopList, PopStatsSnapshot, RelayTransaction,
+    };
+    use solana_tls_utils::{crypto_provider, new_dummy_x509_certificate};
+    use tempfile::NamedTempFile;
+
+    fn encode_shortvec_len(mut value: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                break;
+            }
+            byte |= 0x80;
+            out.push(byte);
+        }
+        out
+    }
+
+    fn build_wire_tx(
+        program_id_index: u8,
+        keys: &[[u8; 32]],
+        versioned: bool,
+    ) -> Vec<u8> {
+        let mut msg = Vec::new();
+        if versioned {
+            msg.push(0x80); // v0 prefix
+        }
+        msg.extend_from_slice(&[1, 0, 0]); // header
+        msg.extend_from_slice(&encode_shortvec_len(keys.len()));
+        for key in keys {
+            msg.extend_from_slice(key);
+        }
+        msg.extend_from_slice(&[0u8; 32]); // recent_blockhash
+        msg.extend_from_slice(&encode_shortvec_len(1)); // one instruction
+        msg.push(program_id_index);
+        msg.extend_from_slice(&encode_shortvec_len(0)); // no accounts
+        msg.extend_from_slice(&encode_shortvec_len(0)); // no data
+
+        let mut tx = Vec::new();
+        tx.extend_from_slice(&encode_shortvec_len(1)); // one signature
+        tx.extend_from_slice(&[0u8; 64]);
+        tx.extend_from_slice(&msg);
+        tx
+    }
+
+    async fn udp_pair() -> (UdpSocket, UdpSocket) {
+        let recv = UdpSocket::bind("127.0.0.1:0").await.expect("udp recv");
+        let send = UdpSocket::bind("127.0.0.1:0").await.expect("udp send");
+        send.connect(recv.local_addr().expect("udp recv addr"))
+            .await
+            .expect("udp connect");
+        (send, recv)
+    }
+
+    async fn read_agent_msg<R: AsyncRead + Unpin>(
+        reader: &mut R,
+        max_frame_bytes: usize,
+    ) -> AgentToPop {
+        let bytes = read_len_prefixed_with_limit(reader, max_frame_bytes)
+            .await
+            .expect("read agent frame");
+        decode_envelope(&bytes).expect("decode agent msg")
+    }
+
+    async fn write_pop_msg<W: AsyncWrite + Unpin>(
+        writer: &mut W,
+        msg: &PopToAgent,
+    ) {
+        let bytes = encode_envelope(msg).expect("encode pop msg");
+        write_len_prefixed(writer, &bytes)
+            .await
+            .expect("write pop msg");
+    }
+
+    struct PopMsgHarness {
+        cfg: SolanaCdnConfig,
+        handle: Arc<SolanaCdnHandle>,
+        auth: AuthContext,
+        endpoint: SocketAddr,
+        publisher_rx: watch::Receiver<Option<SocketAddr>>,
+        shred_deduper: ShredBatchDeduper,
+        udp_inject_tpu: UdpSocket,
+        _tpu_recv: UdpSocket,
+        udp_inject_tvu: UdpSocket,
+        _tvu_recv: UdpSocket,
+        udp_inject_gossip: UdpSocket,
+        _gossip_recv: UdpSocket,
+        inject_vote: SocketAddr,
+        _vote_recv: UdpSocket,
+        udp_inject_votes: VoteInjectSockets,
+        session_events_tx: mpsc::UnboundedSender<SessionEvent>,
+        session_events_rx: mpsc::UnboundedReceiver<SessionEvent>,
+        last_hb_sent_ms: AtomicU64,
+        ctrl_out_tx: mpsc::Sender<AgentToPop>,
+    }
+
+    async fn setup_pop_msg_harness(cfg: SolanaCdnConfig) -> PopMsgHarness {
+        let endpoint: SocketAddr = "127.0.0.1:9000".parse().expect("endpoint");
+        let (_publisher_tx, publisher_rx) = watch::channel(Some(endpoint));
+        let handle = new_handle_for_tests(cfg.clone());
+        let identity = Arc::new(Keypair::new());
+        let auth = AuthContext::new(identity).expect("auth ctx");
+        let shred_deduper = ShredBatchDeduper::new(8);
+        let (udp_inject_tpu, tpu_recv) = udp_pair().await;
+        let (udp_inject_tvu, tvu_recv) = udp_pair().await;
+        let (udp_inject_gossip, gossip_recv) = udp_pair().await;
+        let vote_recv = UdpSocket::bind("127.0.0.1:0").await.expect("vote recv");
+        let inject_vote = vote_recv.local_addr().expect("vote addr");
+        let udp_inject_votes = VoteInjectSockets::bind().await.expect("vote sockets");
+        let (session_events_tx, session_events_rx) = mpsc::unbounded_channel();
+        let (ctrl_out_tx, _ctrl_out_rx) = mpsc::channel(1);
+        PopMsgHarness {
+            cfg,
+            handle,
+            auth,
+            endpoint,
+            publisher_rx,
+            shred_deduper,
+            udp_inject_tpu,
+            _tpu_recv: tpu_recv,
+            udp_inject_tvu,
+            _tvu_recv: tvu_recv,
+            udp_inject_gossip,
+            _gossip_recv: gossip_recv,
+            inject_vote,
+            _vote_recv: vote_recv,
+            udp_inject_votes,
+            session_events_tx,
+            session_events_rx,
+            last_hb_sent_ms: AtomicU64::new(0),
+            ctrl_out_tx,
+        }
+    }
+
+    async fn call_handle_pop_msg(h: &mut PopMsgHarness, msg: PopToAgent) {
+        handle_pop_msg(
+            h.endpoint,
+            PubkeyBytes([0u8; 32]),
+            &h.cfg,
+            &h.auth,
+            &h.handle,
+            &h.ctrl_out_tx,
+            &mut h.publisher_rx,
+            &h.shred_deduper,
+            &h.udp_inject_tpu,
+            &h.udp_inject_tvu,
+            &h.udp_inject_gossip,
+            h.inject_vote,
+            &h.udp_inject_votes,
+            &h.session_events_tx,
+            &h.last_hb_sent_ms,
+            msg,
+        )
+        .await;
+    }
+
+    async fn send_metrics_request(handle: Arc<SolanaCdnHandle>, request: &[u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("metrics listener");
+        let addr = listener.local_addr().expect("metrics addr");
+        let server_handle = handle.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("metrics accept");
+            handle_metrics_conn(stream, server_handle).await;
+        });
+
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("metrics connect");
+        client.write_all(request).await.expect("metrics write");
+        let mut resp = Vec::new();
+        client.read_to_end(&mut resp).await.expect("metrics read");
+        server.await.expect("metrics server");
+        String::from_utf8_lossy(&resp).to_string()
+    }
+
+    async fn run_control_io(
+        resp: ControlResponse,
+    ) -> Result<Vec<SocketAddr>, SolanaCdnError> {
+        let (client, server) = tokio::io::duplex(1024);
+        let server_task = tokio::spawn(async move {
+            let (mut reader, mut writer) = tokio::io::split(server);
+            let bytes = read_len_prefixed(&mut reader).await.unwrap();
+            let req: ControlRequest = decode_envelope(&bytes).unwrap();
+            assert!(matches!(req, ControlRequest::ListPops));
+            let payload = encode_envelope(&resp).unwrap();
+            write_len_prefixed(&mut writer, &payload).await.unwrap();
+        });
+
+        let (reader, writer) = tokio::io::split(client);
+        let result = fetch_pops_from_control_over_io(reader, writer).await;
+        server_task.await.unwrap();
+        result
+    }
+
+    fn save_env(key: &str) -> Option<String> {
+        std::env::var(key).ok()
+    }
+
+    fn restore_env(key: &str, value: Option<String>) {
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn test_parse_shortvec_len() {
+        assert_eq!(parse_shortvec_len(&[0x00]), Some((0, 1)));
+        assert_eq!(parse_shortvec_len(&[0x7f]), Some((127, 1)));
+        assert_eq!(parse_shortvec_len(&[0x80, 0x01]), Some((128, 2)));
+        assert_eq!(parse_shortvec_len(&[0x80, 0x80, 0x01]), Some((16384, 3)));
+        assert_eq!(parse_shortvec_len(&[0x80, 0x80, 0x80]), None);
+    }
+
+    #[test]
+    fn test_try_first_signature_bytes_from_wire_tx() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&encode_shortvec_len(1));
+        payload.extend_from_slice(&[0xAB; 64]);
+        let sig = try_first_signature_bytes_from_wire_tx(&payload).expect("sig");
+        assert_eq!(sig, [0xAB; 64]);
+
+        let mut empty = Vec::new();
+        empty.extend_from_slice(&encode_shortvec_len(0));
+        assert!(try_first_signature_bytes_from_wire_tx(&empty).is_none());
+
+        let mut short = Vec::new();
+        short.extend_from_slice(&encode_shortvec_len(1));
+        short.extend_from_slice(&[0xCD; 10]);
+        assert!(try_first_signature_bytes_from_wire_tx(&short).is_none());
+    }
+
+    #[test]
+    fn test_wire_tx_has_program_id_legacy() {
+        let program_id = [2u8; 32];
+        let keys = [[1u8; 32], program_id];
+        let tx = build_wire_tx(1, &keys, false);
+        assert!(wire_tx_has_program_id(&tx, &program_id));
+    }
+
+    #[test]
+    fn test_wire_tx_has_program_id_v0() {
+        let program_id = [3u8; 32];
+        let keys = [[9u8; 32], program_id];
+        let tx = build_wire_tx(1, &keys, true);
+        assert!(wire_tx_has_program_id(&tx, &program_id));
+    }
+
+    #[test]
+    fn test_wire_tx_has_program_id_missing() {
+        let program_id = [4u8; 32];
+        let keys = [[5u8; 32], [6u8; 32]];
+        let tx = build_wire_tx(0, &keys, false);
+        assert!(!wire_tx_has_program_id(&tx, &program_id));
+    }
+
+    #[test]
+    fn test_tx_sig_dedup_ttl() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        let sig = [7u8; 64];
+        let now = 10_000;
+        assert!(!handle.should_dedup_tx_sig(sig, now));
+        handle.note_dedup_tx_sig(sig, now);
+        assert!(handle.should_dedup_tx_sig(sig, now));
+        assert!(!handle.should_dedup_tx_sig(
+            sig,
+            now + TX_DEDUP_TTL_MS + 1
+        ));
+    }
+
+    #[test]
+    fn test_vote_dedup_disabled() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.vote_dedup_ttl_ms = 0;
+        cfg.vote_dedup_max_entries = 0;
+        let handle = new_handle_for_tests(cfg);
+        let dst: SocketAddr = "127.0.0.1:1234".parse().unwrap();
+        let payload = b"vote";
+        assert!(!handle.should_dedup_vote_payload(dst, payload, 100));
+        assert!(!handle.should_dedup_vote_payload(dst, payload, 100));
+    }
+
+    #[test]
+    fn test_vote_dedup_ttl() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.vote_dedup_ttl_ms = 100;
+        cfg.vote_dedup_max_entries = 16;
+        let handle = new_handle_for_tests(cfg);
+        let dst: SocketAddr = "127.0.0.1:1234".parse().unwrap();
+        let payload = b"vote";
+        assert!(!handle.should_dedup_vote_payload(dst, payload, 1_000));
+        assert!(handle.should_dedup_vote_payload(dst, payload, 1_000));
+        assert!(!handle.should_dedup_vote_payload(dst, payload, 1_101));
+    }
+
+    #[test]
+    fn test_normalize_base_url() {
+        assert_eq!(
+            normalize_base_url(" https://api.example.com/// "),
+            "https://api.example.com"
+        );
+    }
+
+    #[test]
+    fn test_json_error_message() {
+        assert_eq!(json_error_message(""), "empty response");
+        assert_eq!(json_error_message("  "), "empty response");
+        assert_eq!(
+            json_error_message(r#"{"error":"bad token"}"#),
+            "bad token"
+        );
+        assert_eq!(json_error_message(r#"{"ok":true}"#), r#"{"ok":true}"#);
+        assert_eq!(json_error_message("not json"), "not json");
+    }
+
+    #[test]
+    fn test_env_trimmed_and_first_env() {
+        let k1 = "SCDN_TEST_ENV_TRIMMED_1";
+        let k2 = "SCDN_TEST_ENV_TRIMMED_2";
+        std::env::set_var(k1, "   ");
+        std::env::set_var(k2, "  value ");
+        assert_eq!(env_trimmed(k1), None);
+        assert_eq!(env_trimmed(k2), Some("value".to_string()));
+        assert_eq!(first_env(&[k1, k2]), Some("value".to_string()));
+        std::env::remove_var(k1);
+        std::env::remove_var(k2);
+    }
+
+    #[test]
+    fn test_note_pop_endpoints_replaces() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        let ep1: SocketAddr = "1.1.1.1:1234".parse().unwrap();
+        let ep2: SocketAddr = "2.2.2.2:5678".parse().unwrap();
+        handle.note_pop_endpoints(&[ep1, ep2]);
+        assert!(handle.pop_endpoint_ips.contains(&ep1.ip()));
+        assert!(handle.pop_endpoint_ips.contains(&ep2.ip()));
+
+        handle.note_pop_endpoints(&[ep1]);
+        assert!(handle.pop_endpoint_ips.contains(&ep1.ip()));
+        assert!(!handle.pop_endpoint_ips.contains(&ep2.ip()));
+    }
+
+    #[test]
+    fn test_note_pop_egress_ip_ignores_loopback() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        handle.note_pop_egress_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert!(handle.pop_egress_ips.is_empty());
+    }
+
+    #[test]
+    fn test_is_pop_egress_ip_fresh_prunes_expired() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        let ip = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
+        let now = now_ms();
+        handle.pop_egress_ips.insert(ip, now.saturating_sub(1));
+        assert!(!handle.is_pop_egress_ip_fresh(ip, now));
+        assert!(handle.pop_egress_ips.get(&ip).is_none());
+    }
+
+    #[test]
+    fn test_shred_batch_deduper_eviction() {
+        let deduper = ShredBatchDeduper::new(2);
+        assert!(deduper.insert_if_new(1));
+        assert!(deduper.insert_if_new(2));
+        assert!(!deduper.insert_if_new(1));
+        assert!(deduper.insert_if_new(3));
+        // 1 should have been evicted.
+        assert!(deduper.insert_if_new(1));
+    }
+
+    #[test]
+    fn test_pipe_pop_expected_pubkeys() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        let ep1: SocketAddr = "10.10.10.10:1234".parse().unwrap();
+        let ep2: SocketAddr = "11.11.11.11:5678".parse().unwrap();
+        let mut expected = HashMap::new();
+        expected.insert(ep1, PubkeyBytes([1u8; 32]));
+        expected.insert(ep2, PubkeyBytes([2u8; 32]));
+        handle.note_pipe_pop_expected_pubkeys(&expected);
+        assert_eq!(handle.expected_pipe_pop_pubkey(ep1), Some(PubkeyBytes([1u8; 32])));
+        assert_eq!(handle.expected_pipe_pop_pubkey(ep2), Some(PubkeyBytes([2u8; 32])));
+
+        handle.note_pipe_pop_expected_pubkeys(&HashMap::new());
+        assert_eq!(handle.expected_pipe_pop_pubkey(ep1), None);
+        assert_eq!(handle.expected_pipe_pop_pubkey(ep2), None);
+    }
+
+    #[test]
+    fn test_vote_tunnel_allowed_dst_flag() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.vote_tunnel = false;
+        let handle = new_handle_for_tests(cfg);
+        let dst: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        handle.note_vote_tunnel_allowed_dst(dst, now_ms());
+        assert!(handle.vote_tunnel_allowed_dsts.is_empty());
+
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        handle.note_vote_tunnel_allowed_dst(dst, now_ms());
+        assert!(handle.vote_tunnel_allowed_dsts.contains_key(&dst));
+    }
+
+    #[test]
+    fn test_solanacdn_shred_freshness_checks() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.tvu_shred_hybrid_stale_ms = 1_000;
+        let handle = new_handle_for_tests(cfg);
+        let now = now_ms();
+        handle
+            .last_solanacdn_shred_rx_ms
+            .store(now.saturating_sub(500), Ordering::Relaxed);
+        assert!(handle.is_solanacdn_shred_rx_fresh_at(now));
+        handle
+            .last_solanacdn_shred_rx_ms
+            .store(now.saturating_sub(2_000), Ordering::Relaxed);
+        assert!(!handle.is_solanacdn_shred_rx_fresh_at(now));
+
+        handle
+            .last_solanacdn_shred_accepted_ms
+            .store(now.saturating_sub(500), Ordering::Relaxed);
+        assert!(handle.is_solanacdn_shred_accepted_fresh_at(now));
+        handle
+            .last_solanacdn_shred_accepted_ms
+            .store(now.saturating_sub(2_000), Ordering::Relaxed);
+        assert!(!handle.is_solanacdn_shred_accepted_fresh_at(now));
+    }
+
+    #[test]
+    fn test_body_exceeds_max_bytes() {
+        let body = serde_json::json!({"k":"12345"});
+        assert!(body_exceeds_max_bytes(&body, 1));
+        assert!(!body_exceeds_max_bytes(&body, 1_000));
+    }
+
+    #[test]
+    fn test_build_pipe_ingest_body_trims() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        let cfg = SolanaCdnConfig::default();
+        let verify = PipeApiVerifyResult {
+            agent_id: "agent".to_string(),
+            run_id: "run".to_string(),
+            run_token: "token".to_string(),
+            heartbeat_schema_version: 0,
+            ingest: PipeApiIngestConfig {
+                url: "https://example.invalid/ingest".to_string(),
+                interval_secs: 10,
+                max_body_bytes: 1,
+                max_events: 0,
+            },
+            pop_endpoints: Vec::new(),
+            pop_expected_pubkeys: HashMap::new(),
+        };
+
+        let (body, consumed) =
+            build_pipe_ingest_body(&verify, handle.as_ref(), &cfg, "validator", now_ts());
+        assert_eq!(consumed, 0);
+        assert!(body.get("runtime").is_none());
+        assert!(body.get("race").is_none());
+        assert!(body.get("race_samples").is_none());
+    }
+
+    #[test]
+    fn test_auth_request_verifies() {
+        let identity = Arc::new(Keypair::new());
+        let ctx = AuthContext::new(identity.clone()).expect("auth ctx");
+        let req = ctx.build_auth_request().expect("auth request");
+        let verified = req.verify_chain().expect("verify");
+        let expected = PubkeyBytes(identity.pubkey().to_bytes());
+        assert_eq!(verified.validator_pubkey, expected);
+        assert_eq!(verified.active_pubkey, expected);
+        assert!(verified.delegate_pubkey.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_write_agent_msg_roundtrip() {
+        let (mut tx, mut rx) = tokio::io::duplex(128);
+        let msg = AgentToPop::StreamHello(StreamKind::Shreds);
+        let writer = tokio::spawn(async move {
+            write_agent_msg(&mut tx, &msg).await.unwrap();
+        });
+        let bytes = read_len_prefixed(&mut rx).await.unwrap();
+        let decoded: AgentToPop = decode_envelope(&bytes).unwrap();
+        match decoded {
+            AgentToPop::StreamHello(kind) => assert!(matches!(kind, StreamKind::Shreds)),
+            other => panic!("unexpected decoded msg: {other:?}"),
+        }
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_read_pop_msg_roundtrip() {
+        let (mut tx, mut rx) = tokio::io::duplex(128);
+        let msg = PopToAgent::DirectShredsProbe { pop_now_ms: 42 };
+        let writer = tokio::spawn(async move {
+            let bytes = encode_envelope(&msg).unwrap();
+            write_len_prefixed(&mut tx, &bytes).await.unwrap();
+        });
+        let decoded = read_pop_msg(&mut rx, DEFAULT_MAX_FRAME_BYTES).await.unwrap();
+        match decoded {
+            PopToAgent::DirectShredsProbe { pop_now_ms } => assert_eq!(pop_now_ms, 42),
+            other => panic!("unexpected decoded msg: {other:?}"),
+        }
+        writer.await.unwrap();
+    }
+
+    #[test]
+    fn test_race_observation_records_pair() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.race_enabled = true;
+        cfg.race_sample_bits = 0;
+        cfg.race_window_ms = 1_000;
+        let handle = new_handle_for_tests(cfg);
+        handle.connected.store(true, Ordering::Relaxed);
+
+        let pop_ip = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        handle.note_pop_endpoint(SocketAddr::new(pop_ip, 9000));
+
+        let shred_id = LedgerShredId::new(1, 7, solana_ledger::shred::ShredType::Data);
+        let gossip_ip = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        handle.note_race_observation(shred_id, gossip_ip);
+        handle.note_race_observation(shred_id, pop_ip);
+
+        let (snapshot, samples) = handle.pipe_ingest_race_snapshot_and_samples(10);
+        assert_eq!(snapshot.pairs_total, 1);
+        assert_eq!(snapshot.inflight, 0);
+        assert_eq!(snapshot.last_shred_slot, Some(1));
+        assert!(!samples.is_empty());
+    }
+
+    #[test]
+    fn test_race_observation_disabled() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.race_enabled = false;
+        let handle = new_handle_for_tests(cfg);
+        handle.connected.store(true, Ordering::Relaxed);
+        let shred_id = LedgerShredId::new(1, 1, solana_ledger::shred::ShredType::Data);
+        handle.note_race_observation(shred_id, IpAddr::V4(Ipv4Addr::new(7, 7, 7, 7)));
+        let (snapshot, samples) = handle.pipe_ingest_race_snapshot_and_samples(10);
+        assert_eq!(snapshot.pairs_total, 0);
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn test_note_solanacdn_shreds_rx_updates_slot() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        handle.note_solanacdn_shreds_rx(100, 2, Some(5));
+        assert_eq!(
+            handle.rx_shred_payloads.load(Ordering::Relaxed),
+            2
+        );
+        assert!(handle
+            .last_solanacdn_shred_slot_valid
+            .load(Ordering::Relaxed));
+        assert_eq!(handle.last_solanacdn_shred_slot.load(Ordering::Relaxed), 5);
+
+        handle.note_solanacdn_shreds_rx(50, 1, Some(3));
+        assert_eq!(handle.last_solanacdn_shred_slot.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn test_note_solanacdn_accepted_shred_with_slot_updates() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        handle.note_solanacdn_accepted_shred_with_slot(Some(10));
+        assert!(handle
+            .last_solanacdn_shred_accepted_slot_valid
+            .load(Ordering::Relaxed));
+        assert_eq!(
+            handle
+                .last_solanacdn_shred_accepted_slot
+                .load(Ordering::Relaxed),
+            10
+        );
+        handle.note_solanacdn_accepted_shred_with_slot(Some(7));
+        assert_eq!(
+            handle
+                .last_solanacdn_shred_accepted_slot
+                .load(Ordering::Relaxed),
+            10
+        );
+    }
+    #[test]
+    fn test_read_env_file_value() {
+        let mut file = NamedTempFile::new().expect("tempfile");
+        writeln!(file, "# comment").unwrap();
+        writeln!(file, "export FOO=\"bar\"").unwrap();
+        writeln!(file, "BAZ=   qux  ").unwrap();
+        writeln!(file, "EMPTY=").unwrap();
+        writeln!(file, "QUOTED='zap'").unwrap();
+        let path = file.path().to_str().unwrap();
+
+        assert_eq!(read_env_file_value(path, "FOO"), Some("bar".to_string()));
+        assert_eq!(read_env_file_value(path, "BAZ"), Some("qux".to_string()));
+        assert_eq!(read_env_file_value(path, "QUOTED"), Some("zap".to_string()));
+        assert_eq!(read_env_file_value(path, "EMPTY"), None);
+        assert_eq!(read_env_file_value(path, "MISSING"), None);
+    }
+
+    #[test]
+    fn test_parse_hex_32() {
+        let hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let mut expected = [0u8; 32];
+        for (i, b) in expected.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        assert_eq!(parse_hex_32(hex), Some(expected));
+        assert!(parse_hex_32("abcd").is_none());
+        assert!(parse_hex_32("zz0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+            .is_none());
+    }
+
+    #[test]
+    fn test_sha256_bytes() {
+        let expected = parse_hex_32(
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .expect("hex");
+        assert_eq!(sha256_bytes(b"abc"), expected);
+    }
+
+    #[test]
+    fn test_pop_assign_score() {
+        assert_eq!(pop_assign_score("seed", "pop-1"), 1892543878090576758u64);
+    }
+
+    #[test]
+    fn test_compute_shred_batch_id_changes() {
+        let items = vec![
+            (ShredKind::Tvu, Bytes::from_static(b"abc")),
+            (ShredKind::Gossip, Bytes::from_static(b"def")),
+        ];
+        let id = compute_shred_batch_id(&items);
+        assert_eq!(id, compute_shred_batch_id(&items));
+
+        let mut reversed = items.clone();
+        reversed.reverse();
+        assert_ne!(id, compute_shred_batch_id(&reversed));
+
+        let mut changed = items.clone();
+        changed[0].1 = Bytes::from_static(b"abC");
+        assert_ne!(id, compute_shred_batch_id(&changed));
+    }
+
+    #[test]
+    fn test_vote_dedup_key_variants() {
+        let dst1: SocketAddr = "127.0.0.1:1234".parse().unwrap();
+        let dst2: SocketAddr = "127.0.0.1:1235".parse().unwrap();
+        let payload = b"vote";
+        let key = vote_dedup_key(&dst1, payload);
+        assert_eq!(key, vote_dedup_key(&dst1, payload));
+        assert_ne!(key, vote_dedup_key(&dst2, payload));
+        assert_ne!(key, vote_dedup_key(&dst1, b"vote2"));
+    }
+
+    #[test]
+    fn test_vote_flow_id_changes() {
+        let dst1: SocketAddr = "127.0.0.1:1111".parse().unwrap();
+        let dst2: SocketAddr = "127.0.0.1:1112".parse().unwrap();
+        assert_eq!(vote_flow_id(&dst1), vote_flow_id(&dst1));
+        assert_ne!(vote_flow_id(&dst1), vote_flow_id(&dst2));
+    }
+
+    #[test]
+    fn test_vote_dedup_key_ipv6_scope() {
+        use std::net::{Ipv6Addr, SocketAddrV6};
+        let addr1 = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 1234, 0, 1));
+        let addr2 = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 1234, 0, 2));
+        let key1 = vote_dedup_key(&addr1, b"vote");
+        let key2 = vote_dedup_key(&addr2, b"vote");
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_should_ignore_src_ip() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        handle.connected.store(true, Ordering::Relaxed);
+
+        let pop: SocketAddr = "1.2.3.4:1234".parse().unwrap();
+        handle.note_pop_endpoints(&[pop]);
+
+        assert!(handle.should_ignore_src_ip(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))));
+        assert!(!handle.should_ignore_src_ip(IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8))));
+
+        let egress_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        handle.note_pop_egress_ip(egress_ip);
+        assert!(handle.should_ignore_src_ip(egress_ip));
+    }
+
+    #[test]
+    fn test_should_ingest_tvu_shred_modes() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.tvu_shred_ingest_mode = TvuShredIngestMode::SolanaCdnOnly;
+        cfg.tvu_shred_hybrid_stale_ms = 10_000;
+        let handle = new_handle_for_tests(cfg);
+        handle.connected.store(true, Ordering::Relaxed);
+
+        let pop_ip = IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2));
+        handle.note_pop_endpoint(SocketAddr::new(pop_ip, 1234));
+
+        assert!(handle.should_ingest_tvu_shred(pop_ip));
+        assert!(!handle.should_ingest_tvu_shred(IpAddr::V4(Ipv4Addr::new(3, 3, 3, 3))));
+
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.tvu_shred_ingest_mode = TvuShredIngestMode::SolanaCdnPreferred;
+        cfg.tvu_shred_hybrid_stale_ms = 10_000;
+        let handle = new_handle_for_tests(cfg);
+        handle.connected.store(true, Ordering::Relaxed);
+
+        // Stale -> allow any source.
+        assert!(handle.should_ingest_tvu_shred(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))));
+
+        // Fresh -> enforce POP-only.
+        handle
+            .last_solanacdn_shred_accepted_ms
+            .store(now_ms(), Ordering::Relaxed);
+        let pop_ip = IpAddr::V4(Ipv4Addr::new(4, 4, 4, 4));
+        handle.note_pop_endpoint(SocketAddr::new(pop_ip, 9000));
+        assert!(handle.should_ingest_tvu_shred(pop_ip));
+        assert!(!handle.should_ingest_tvu_shred(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn test_should_ingest_tvu_shred_when_disconnected() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.tvu_shred_ingest_mode = TvuShredIngestMode::SolanaCdnOnly;
+        let handle = new_handle_for_tests(cfg);
+        handle.connected.store(false, Ordering::Relaxed);
+        assert!(handle.should_ingest_tvu_shred(IpAddr::V4(Ipv4Addr::new(7, 7, 7, 7))));
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_push_shred_batch_counts_and_dedup() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.race_enabled = false;
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        let payload1 = Bytes::from_static(b"abc");
+        let payload2 = Bytes::from_static(b"def");
+        let items = vec![
+            (ShredKind::Tvu, payload1.clone()),
+            (ShredKind::Gossip, payload2.clone()),
+        ];
+        let batch_id = compute_shred_batch_id(&items);
+        let shreds = vec![
+            Shred {
+                id: ShredId { slot: 5, index: 0 },
+                kind: ShredKind::Tvu,
+                payload: payload1.to_vec(),
+            },
+            Shred {
+                id: ShredId { slot: 7, index: 1 },
+                kind: ShredKind::Gossip,
+                payload: payload2.to_vec(),
+            },
+        ];
+        let batch = ShredBatch {
+            batch_id,
+            created_at_ms: now_ms(),
+            shreds,
+        };
+        let batch_dup = batch.clone();
+
+        call_handle_pop_msg(&mut h, PopToAgent::PushShredBatch(batch)).await;
+        assert_eq!(h.handle.pushed_shred_batches.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.rx_shred_payloads.load(Ordering::Relaxed), 2);
+        assert_eq!(h.handle.rx_shred_bytes.load(Ordering::Relaxed), 6);
+        assert!(h
+            .handle
+            .last_solanacdn_shred_slot_valid
+            .load(Ordering::Relaxed));
+        assert_eq!(
+            h.handle.last_solanacdn_shred_slot.load(Ordering::Relaxed),
+            7
+        );
+
+        call_handle_pop_msg(&mut h, PopToAgent::PushShredBatch(batch_dup)).await;
+        assert_eq!(h.handle.pushed_shred_batches.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.rx_shred_payloads.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_push_shred_batch_oversized_drops() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.race_enabled = false;
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        let mut shreds = Vec::with_capacity(PUSH_SHRED_BATCH_MAX_SHREDS + 1);
+        for i in 0..(PUSH_SHRED_BATCH_MAX_SHREDS + 1) {
+            shreds.push(Shred {
+                id: ShredId {
+                    slot: 1,
+                    index: i as u32,
+                },
+                kind: ShredKind::Tvu,
+                payload: Vec::new(),
+            });
+        }
+        let batch = ShredBatch {
+            batch_id: 1,
+            created_at_ms: now_ms(),
+            shreds,
+        };
+
+        call_handle_pop_msg(&mut h, PopToAgent::PushShredBatch(batch)).await;
+        assert_eq!(
+            h.handle
+                .dropped_shred_batches_oversized
+                .load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(h.handle.pushed_shred_batches.load(Ordering::Relaxed), 0);
+        assert_eq!(h.handle.rx_shred_payloads.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_vote_tunnel_disabled() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.vote_tunnel = false;
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        let dg = VoteDatagram {
+            flow_id: 1,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: h.inject_vote,
+            payload: vec![1, 2, 3],
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushVoteDatagram(dg)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 0);
+        assert_eq!(h.handle.dropped_vote_datagrams.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_vote_tunnel_invalid_paths() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        let payload = build_wire_tx(0, &[[1u8; 32], [2u8; 32]], false);
+        let bad_port = if h.inject_vote.port() == u16::MAX {
+            u16::MAX - 1
+        } else {
+            h.inject_vote.port() + 1
+        };
+        let bad_dst = SocketAddr::new(h.inject_vote.ip(), bad_port);
+        let dg = VoteDatagram {
+            flow_id: 1,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: bad_dst,
+            payload: payload.clone(),
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushVoteDatagram(dg)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.dropped_vote_datagrams.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            h.handle
+                .dropped_vote_datagrams_unexpected_dst
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        let dg = VoteDatagram {
+            flow_id: 2,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: h.inject_vote,
+            payload,
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushVoteDatagram(dg)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 2);
+        assert_eq!(h.handle.dropped_vote_datagrams.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            h.handle
+                .dropped_vote_datagrams_invalid_payload
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_vote_tunnel_dedup() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        let vote_program_id = solana_vote_program::id().to_bytes();
+        let keys = [[9u8; 32], vote_program_id];
+        let payload = build_wire_tx(1, &keys, false);
+        let dg = VoteDatagram {
+            flow_id: 1,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: h.inject_vote,
+            payload: payload.clone(),
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushVoteDatagram(dg)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.dropped_vote_datagrams.load(Ordering::Relaxed), 0);
+
+        let dg = VoteDatagram {
+            flow_id: 2,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: h.inject_vote,
+            payload,
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushVoteDatagram(dg)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 2);
+        assert_eq!(h.handle.dropped_vote_datagrams.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_relay_transaction_dedup() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        let payload = build_wire_tx(0, &[[9u8; 32]], false);
+        let tx = RelayTransaction {
+            tx_id: 1,
+            payload: payload.clone(),
+            target_slot: None,
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::RelayTransaction(tx)).await;
+        assert_eq!(h.handle.rx_tx_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.tx_injected_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.tx_deduped_packets.load(Ordering::Relaxed), 0);
+
+        let tx = RelayTransaction {
+            tx_id: 2,
+            payload: payload.clone(),
+            target_slot: None,
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::RelayTransaction(tx)).await;
+        assert_eq!(h.handle.rx_tx_packets.load(Ordering::Relaxed), 2);
+        assert_eq!(h.handle.tx_deduped_packets.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_relay_transaction_invalid_signature() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        let tx = RelayTransaction {
+            tx_id: 1,
+            payload: vec![1, 2, 3],
+            target_slot: None,
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::RelayTransaction(tx)).await;
+        assert_eq!(h.handle.rx_tx_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.tx_inject_failed.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_heartbeat_ack_emits_rtt() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+
+        h.last_hb_sent_ms
+            .store(now_ms().saturating_sub(5), Ordering::Relaxed);
+        let ack = PopHeartbeatAck {
+            pop_now_ms: now_ms(),
+            stats: PopStatsSnapshot::default(),
+            direct_shreds: None,
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::HeartbeatAck(ack)).await;
+
+        let event = h.session_events_rx.recv().await.expect("session event");
+        match event {
+            SessionEvent::RttSample { endpoint, .. } => assert_eq!(endpoint, h.endpoint),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_shred_batch_not_publisher_ignored() {
+        let cfg = SolanaCdnConfig::default();
+        let h = setup_pop_msg_harness(cfg).await;
+        let (_publisher_tx, mut publisher_rx) = watch::channel(None);
+        let batch = make_single_shred_batch(ShredKind::Tvu, Bytes::from_static(b"shred"));
+        handle_pop_msg(
+            h.endpoint,
+            PubkeyBytes([0u8; 32]),
+            &h.cfg,
+            &h.auth,
+            &h.handle,
+            &h.ctrl_out_tx,
+            &mut publisher_rx,
+            &h.shred_deduper,
+            &h.udp_inject_tpu,
+            &h.udp_inject_tvu,
+            &h.udp_inject_gossip,
+            h.inject_vote,
+            &h.udp_inject_votes,
+            &h.session_events_tx,
+            &h.last_hb_sent_ms,
+            PopToAgent::PushShredBatch(batch),
+        )
+        .await;
+        assert_eq!(h.handle.pushed_shred_batches.load(Ordering::Relaxed), 0);
+        assert_eq!(h.handle.rx_shred_payloads.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_shred_batch_inject_disabled() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.inject_shreds = false;
+        let mut h = setup_pop_msg_harness(cfg).await;
+        let batch = make_single_shred_batch(ShredKind::Tvu, Bytes::from_static(b"shred"));
+        call_handle_pop_msg(&mut h, PopToAgent::PushShredBatch(batch)).await;
+        assert_eq!(h.handle.pushed_shred_batches.load(Ordering::Relaxed), 0);
+        assert_eq!(h.handle.rx_shred_payloads.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_shred_batch_payload_too_large() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+        let payload = vec![0u8; PACKET_DATA_SIZE + 1];
+        let batch = ShredBatch {
+            batch_id: 42,
+            created_at_ms: now_ms(),
+            shreds: vec![Shred {
+                id: ShredId { slot: 1, index: 0 },
+                kind: ShredKind::Tvu,
+                payload,
+            }],
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushShredBatch(batch)).await;
+        assert_eq!(h.handle.pushed_shred_batches.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.rx_shred_payloads.load(Ordering::Relaxed), 0);
+        assert_eq!(h.handle.rx_shred_bytes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_vote_payload_empty() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+        let dg = VoteDatagram {
+            flow_id: 1,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: h.inject_vote,
+            payload: Vec::new(),
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushVoteDatagram(dg)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.dropped_vote_datagrams.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_vote_payload_oversized() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+        let dg = VoteDatagram {
+            flow_id: 1,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: h.inject_vote,
+            payload: vec![0u8; PACKET_DATA_SIZE + 1],
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::PushVoteDatagram(dg)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.dropped_vote_datagrams.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            h.handle
+                .dropped_vote_datagrams_oversized_payload
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_relay_transaction_oversized() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+        let tx = RelayTransaction {
+            tx_id: 1,
+            payload: vec![0u8; PACKET_DATA_SIZE + 1],
+            target_slot: None,
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::RelayTransaction(tx)).await;
+        assert_eq!(h.handle.rx_tx_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(h.handle.tx_inject_failed.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pop_msg_auth_error_noop() {
+        let cfg = SolanaCdnConfig::default();
+        let mut h = setup_pop_msg_harness(cfg).await;
+        let err = AuthError {
+            code: "401".to_string(),
+            message: "bad token".to_string(),
+        };
+        call_handle_pop_msg(&mut h, PopToAgent::AuthError(err)).await;
+        assert_eq!(h.handle.rx_vote_packets.load(Ordering::Relaxed), 0);
+        assert_eq!(h.handle.rx_tx_packets.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_pipe_session_token_immediate() {
+        let (_tx, mut rx) = watch::channel(Some(" token ".to_string()));
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        let token = wait_for_pipe_session_token(&mut rx, stop_rx).await;
+        assert_eq!(token, Some("token".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_pipe_session_token_stop() {
+        let (_tx, mut rx) = watch::channel(None);
+        let (_stop_tx, stop_rx) = watch::channel(true);
+        let token = wait_for_pipe_session_token(&mut rx, stop_rx).await;
+        assert_eq!(token, None);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_pipe_session_token_channel_closed() {
+        let (tx, mut rx) = watch::channel(None);
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        drop(tx);
+        let token = wait_for_pipe_session_token(&mut rx, stop_rx).await;
+        assert_eq!(token, None);
+    }
+
+    #[tokio::test]
+    async fn test_manage_pop_sessions_exits_when_flag_set() {
+        let cfg = SolanaCdnConfig::default();
+        let handle = new_handle_for_tests(cfg.clone());
+        let identity = Arc::new(Keypair::new());
+        let auth = Arc::new(AuthContext::new(identity).expect("auth ctx"));
+        let quic_connect = Arc::new(QuicConnectConfig {
+            client_config: make_quic_client_config(&cfg).expect("quic config"),
+            server_name: cfg.server_name.clone(),
+        });
+        let shred_deduper = ShredBatchDeduper::new(4);
+        let (publisher_tx, publisher_rx) = watch::channel(None);
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let exit = Arc::new(AtomicBool::new(true));
+        let inject = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
+        let res = tokio::time::timeout(
+            Duration::from_secs(1),
+            manage_pop_sessions(
+                Arc::new(cfg),
+                auth,
+                quic_connect,
+                None,
+                handle,
+                inject,
+                inject,
+                inject,
+                inject,
+                shred_deduper,
+                None,
+                None,
+                publisher_tx,
+                publisher_rx,
+                events_tx,
+                events_rx,
+                exit,
+            ),
+        )
+        .await;
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_make_single_shred_batch_fields() {
+        let payload = Bytes::from_static(b"single");
+        let start = now_ms();
+        let batch = make_single_shred_batch(ShredKind::Tvu, payload.clone());
+        assert_eq!(batch.shreds.len(), 1);
+        assert_eq!(batch.shreds[0].payload, payload.to_vec());
+        assert!(matches!(batch.shreds[0].kind, ShredKind::Tvu));
+        assert!(batch.created_at_ms >= start);
+        let expected_id = compute_shred_batch_id(&[(ShredKind::Tvu, payload)]);
+        assert_eq!(batch.batch_id, expected_id);
+    }
+
+    #[test]
+    fn test_prometheus_escape_label_value() {
+        assert_eq!(
+            prometheus_escape_label_value(r#"a"b\c"#),
+            r#"a\"b\\c"#
+        );
+    }
+
+    #[test]
+    fn test_histogram_quantile_seconds() {
+        assert!(histogram_quantile_seconds(1.5, 0, &[1], &[1], 1).is_none());
+        assert!(histogram_quantile_seconds(0.5, 0, &[1], &[], 1).is_none());
+        assert!(histogram_quantile_seconds(0.5, 0, &[1], &[0], 0).is_none());
+
+        let bounds = [1_000, 2_000];
+        let counts = [5u64, 10u64];
+        let median = histogram_quantile_seconds(0.5, 0, &bounds, &counts, 10).unwrap();
+        assert!((median - 1.0).abs() < 1e-9);
+
+        let counts = [0u64, 5u64];
+        let zero_q = histogram_quantile_seconds(0.0, 0, &bounds, &counts, 5).unwrap();
+        assert!((zero_q - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_status_snapshot_rates_and_stale() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.tvu_shred_ingest_mode = TvuShredIngestMode::SolanaCdnPreferred;
+        cfg.tvu_shred_hybrid_stale_ms = 1_000;
+        let handle = new_handle_for_tests(cfg);
+
+        handle.connected.store(true, Ordering::Relaxed);
+        let ep: SocketAddr = "10.0.0.1:1234".parse().unwrap();
+        handle.connected_pops.insert(ep);
+        handle
+            .publisher_endpoint
+            .store(Some(Arc::new(ep.to_string())));
+        handle
+            .publisher_switches_total
+            .store(2, Ordering::Relaxed);
+
+        handle.rx_shred_bytes.store(100, Ordering::Relaxed);
+        handle.rx_shred_payloads.store(10, Ordering::Relaxed);
+        handle
+            .tunneled_vote_packets
+            .store(5, Ordering::Relaxed);
+
+        let now = now_ms();
+        handle
+            .last_solanacdn_shred_rx_ms
+            .store(now.saturating_sub(500), Ordering::Relaxed);
+        handle
+            .last_solanacdn_shred_slot
+            .store(9, Ordering::Relaxed);
+        handle
+            .last_solanacdn_shred_slot_valid
+            .store(true, Ordering::Relaxed);
+        handle
+            .last_solanacdn_shred_accepted_ms
+            .store(now.saturating_sub(2_000), Ordering::Relaxed);
+        handle
+            .last_solanacdn_shred_accepted_slot
+            .store(8, Ordering::Relaxed);
+        handle
+            .last_solanacdn_shred_accepted_slot_valid
+            .store(true, Ordering::Relaxed);
+
+        {
+            let mut state = handle.rate_state.lock().unwrap_or_else(|p| p.into_inner());
+            state.last = Some(RateSample {
+                at_ms: now.saturating_sub(500),
+                rx_shred_payloads: 5,
+                tunneled_vote_packets: 2,
+            });
+        }
+
+        let status = handle.status_snapshot();
+        assert!(status.connected);
+        assert_eq!(status.publisher, Some(ep.to_string()));
+        assert_eq!(status.connected_pops, vec![ep.to_string()]);
+        assert!(status.rx_shred_payloads_per_sec > 0.0);
+        assert_eq!(status.tvu_shred_stale, Some(true));
+    }
+
+    #[test]
+    fn test_format_prometheus_metrics_with_histogram() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.race_sample_bits = 0;
+        let handle = new_handle_for_tests(cfg);
+
+        handle.connected.store(true, Ordering::Relaxed);
+        let ep: SocketAddr = "10.1.1.1:1234".parse().unwrap();
+        handle.note_pop_endpoint(ep);
+        handle.connected_pops.insert(ep);
+        handle
+            .publisher_endpoint
+            .store(Some(Arc::new(ep.to_string())));
+
+        handle.note_solanacdn_shreds_rx(10, 1, Some(5));
+        handle.note_solanacdn_accepted_shred_with_slot(Some(5));
+
+        let shred_id = LedgerShredId::new(1, 1, solana_ledger::shred::ShredType::Data);
+        handle.note_race_observation_from_pop(shred_id, ep);
+        handle.note_race_observation(shred_id, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)));
+
+        let body = format_prometheus_metrics(handle.as_ref());
+        assert!(body.contains("solanacdn_connected 1"));
+        assert!(body.contains("solanacdn_publisher_info{publisher=\"10.1.1.1:1234\"} 1"));
+        assert!(body.contains("solanacdn_race_lead_seconds_bucket{winner=\"solanacdn\""));
+        assert!(body.contains(
+            "solanacdn_race_delta_seconds_by_pop_endpoint_bucket{pop_endpoint=\"10.1.1.1:1234\""
+        ));
+    }
+
+    #[test]
+    fn test_format_prometheus_metrics_without_histogram() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.race_enabled = false;
+        let handle = new_handle_for_tests(cfg);
+        handle.connected.store(true, Ordering::Relaxed);
+
+        let body = format_prometheus_metrics(handle.as_ref());
+        assert!(body.contains(
+            "solanacdn_race_lead_seconds_quantile{winner=\"solanacdn\",quantile=\"0.50\"} 0"
+        ));
+        assert!(body.contains(
+            "solanacdn_race_delta_seconds_quantile{quantile=\"0.50\"} 0"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_handle_metrics_conn_responses() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        handle.connected.store(true, Ordering::Relaxed);
+
+        let resp = send_metrics_request(
+            handle.clone(),
+            b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(resp.contains("200 OK"));
+        assert!(resp.contains("solanacdn_connected"));
+
+        let resp = send_metrics_request(
+            handle.clone(),
+            b"GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(resp.contains("200 OK"));
+        assert!(resp.contains("\"connected\""));
+
+        let resp = send_metrics_request(
+            handle.clone(),
+            b"POST /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(resp.contains("405 Method Not Allowed"));
+
+        let resp = send_metrics_request(
+            handle.clone(),
+            b"GET /nope HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(resp.contains("404 Not Found"));
+
+        let mut big = b"GET /metrics HTTP/1.1\r\n".to_vec();
+        big.extend(vec![b'A'; METRICS_HTTP_MAX_REQUEST_BYTES + 1]);
+        let resp = send_metrics_request(handle, &big).await;
+        assert!(resp.contains("413 Payload Too Large"));
+    }
+
+    #[test]
+    fn test_solanacdn_config_new_defaults() {
+        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        let cfg = SolanaCdnConfig::new(addr);
+        assert_eq!(cfg.pop_endpoints, vec![addr]);
+        assert!(cfg.publish_shreds);
+        assert!(cfg.subscribe_shreds);
+        assert!(cfg.vote_tunnel);
+        assert_eq!(cfg.tvu_shred_ingest_mode, TvuShredIngestMode::All);
+    }
+
+    #[test]
+    fn test_init_skips_when_no_config() {
+        let saved_agent = save_env("SOLANACDN_AGENT_API_TOKEN");
+        let saved_pipe = save_env("PIPE_API_KEY");
+        std::env::remove_var("SOLANACDN_AGENT_API_TOKEN");
+        std::env::remove_var("PIPE_API_KEY");
+
+        set_global_for_tests(None);
+        let cfg = SolanaCdnConfig::default();
+        let identity = Arc::new(Keypair::new());
+        let exit = Arc::new(AtomicBool::new(false));
+        let zero: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        init(
+            cfg,
+            identity,
+            exit,
+            false,
+            zero,
+            zero,
+            zero,
+            zero,
+        );
+        assert!(global().is_none());
+
+        restore_env("SOLANACDN_AGENT_API_TOKEN", saved_agent);
+        restore_env("PIPE_API_KEY", saved_pipe);
+    }
+
+    #[test]
+    fn test_init_skips_when_features_disabled() {
+        set_global_for_tests(None);
+        let addr: SocketAddr = "127.0.0.1:1234".parse().unwrap();
+        let mut cfg = SolanaCdnConfig::new(addr);
+        cfg.publish_shreds = false;
+        cfg.subscribe_shreds = false;
+        cfg.vote_tunnel = false;
+        let identity = Arc::new(Keypair::new());
+        let exit = Arc::new(AtomicBool::new(false));
+        let zero: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        init(
+            cfg,
+            identity,
+            exit,
+            false,
+            zero,
+            zero,
+            zero,
+            zero,
+        );
+        assert!(global().is_none());
+    }
+
+    #[test]
+    fn test_set_publisher_uplink_tracks_switches() {
+        let handle = new_handle_for_tests(SolanaCdnConfig::default());
+        assert!(!handle.is_connected());
+
+        let (tx, _rx) = mpsc::channel::<UplinkMsg>(1);
+        let uplink = Arc::new(SessionUplink { tx });
+        let ep: SocketAddr = "10.0.0.1:1111".parse().unwrap();
+        handle.set_publisher_uplink(Some(ep), Some(uplink.clone()));
+        assert!(handle.is_connected());
+        assert_eq!(
+            handle.publisher_switches_total.load(Ordering::Relaxed),
+            1
+        );
+
+        handle.set_publisher_uplink(Some(ep), Some(uplink));
+        assert_eq!(
+            handle.publisher_switches_total.load(Ordering::Relaxed),
+            1
+        );
+
+        handle.set_publisher_uplink(None, None);
+        assert!(!handle.is_connected());
+    }
+
+    #[test]
+    fn test_select_publisher_prefers_udp_and_rtt() {
+        let p1: SocketAddr = "10.0.0.1:1111".parse().unwrap();
+        let p2: SocketAddr = "10.0.0.2:1111".parse().unwrap();
+        let p3: SocketAddr = "10.0.0.3:1111".parse().unwrap();
+        let mut desired: HashSet<SocketAddr> = HashSet::new();
+        desired.insert(p1);
+        desired.insert(p2);
+        desired.insert(p3);
+
+        let mut connected: HashMap<SocketAddr, ConnectedPop> = HashMap::new();
+        connected.insert(
+            p1,
+            ConnectedPop {
+                udp_enabled: false,
+                rtt_ewma_ms: 5,
+                rtt_valid: true,
+            },
+        );
+        connected.insert(
+            p2,
+            ConnectedPop {
+                udp_enabled: true,
+                rtt_ewma_ms: 50,
+                rtt_valid: true,
+            },
+        );
+        connected.insert(
+            p3,
+            ConnectedPop {
+                udp_enabled: true,
+                rtt_ewma_ms: 10,
+                rtt_valid: true,
+            },
+        );
+
+        assert_eq!(
+            select_publisher(Some(p1), &desired, &connected, true),
+            Some(p1)
+        );
+        assert_eq!(
+            select_publisher(None, &desired, &connected, true),
+            Some(p3)
+        );
+
+        connected.insert(
+            p2,
+            ConnectedPop {
+                udp_enabled: false,
+                rtt_ewma_ms: 1,
+                rtt_valid: false,
+            },
+        );
+        connected.insert(
+            p3,
+            ConnectedPop {
+                udp_enabled: false,
+                rtt_ewma_ms: 2,
+                rtt_valid: false,
+            },
+        );
+        assert_eq!(
+            select_publisher(None, &desired, &connected, false),
+            Some(p1)
+        );
+    }
+
+    #[test]
+    fn test_select_publisher_no_connected() {
+        let desired: HashSet<SocketAddr> = HashSet::new();
+        let connected: HashMap<SocketAddr, ConnectedPop> = HashMap::new();
+        assert_eq!(select_publisher(None, &desired, &connected, false), None);
+    }
+
+    #[test]
+    fn test_make_control_tls_client_none_and_invalid() {
+        let cfg = SolanaCdnConfig::default();
+        assert!(make_control_tls_client(&cfg).unwrap().is_none());
+
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.control_endpoint = Some("127.0.0.1:1234".parse().unwrap());
+        cfg.control_server_name = "bad\nname".to_string();
+        let err = match make_control_tls_client(&cfg) {
+            Ok(_) => panic!("expected invalid server name error"),
+            Err(e) => e,
+        };
+        match err {
+            SolanaCdnError::InvalidServerName(_) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_pops_from_control_over_io_poplist() {
+        let pops = vec![
+            PopInfo {
+                pop_id: "a".to_string(),
+                public_addr: "1.1.1.1:1111".parse().unwrap(),
+                last_seen_ms: 1,
+                capabilities: Default::default(),
+            },
+            PopInfo {
+                pop_id: "b".to_string(),
+                public_addr: "2.2.2.2:2222".parse().unwrap(),
+                last_seen_ms: 2,
+                capabilities: Default::default(),
+            },
+        ];
+        let resp = ControlResponse::PopList(PopList { pops });
+        let got = run_control_io(resp).await.expect("pop list");
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&"1.1.1.1:1111".parse().unwrap()));
+        assert!(got.contains(&"2.2.2.2:2222".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_pops_from_control_over_io_errors() {
+        let resp = ControlResponse::Error(ControlError {
+            code: "bad".to_string(),
+            message: "nope".to_string(),
+        });
+        let err = run_control_io(resp).await.unwrap_err();
+        match err {
+            SolanaCdnError::AuthFailed(msg) => assert!(msg.contains("control error")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let resp = ControlResponse::Ok;
+        let err = run_control_io(resp).await.unwrap_err();
+        match err {
+            SolanaCdnError::AuthFailed(msg) => assert!(msg.contains("unexpected control response")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_len_prefixed_roundtrip() {
+        let (mut tx, mut rx) = tokio::io::duplex(64);
+        let payload = b"hello";
+        let writer = tokio::spawn(async move {
+            write_len_prefixed(&mut tx, payload).await.unwrap();
+        });
+        let got = read_len_prefixed(&mut rx).await.unwrap();
+        assert_eq!(got, payload);
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_len_prefixed_limit_rejects() {
+        let (mut tx, mut rx) = tokio::io::duplex(64);
+        let payload = vec![0u8; 10];
+        let writer = tokio::spawn(async move {
+            write_len_prefixed(&mut tx, &payload).await.unwrap();
+        });
+        let err = read_len_prefixed_with_limit(&mut rx, 4).await.unwrap_err();
+        match err {
+            SolanaCdnError::Io(io_err) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidInput);
+            }
+            _ => panic!("unexpected error: {err:?}"),
+        }
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_run_pop_session_quic_roundtrip() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.tls_insecure_skip_verify = true;
+        cfg.udp_mode = DataPlaneMode::Off;
+        cfg.race_enabled = false;
+        cfg.direct_shreds_from_pop = false;
+        cfg.server_name = "localhost".to_string();
+        let cfg = Arc::new(cfg);
+
+        let handle = new_handle_for_tests(cfg.as_ref().clone());
+        let identity = Arc::new(Keypair::new());
+        let auth = Arc::new(AuthContext::new(identity).expect("auth ctx"));
+        let quic_connect = Arc::new(QuicConnectConfig {
+            client_config: make_quic_client_config(&cfg).expect("quic config"),
+            server_name: cfg.server_name.clone(),
+        });
+
+        let inject_tpu_sock = UdpSocket::bind("127.0.0.1:0").await.expect("inject tpu");
+        let inject_tvu_sock = UdpSocket::bind("127.0.0.1:0").await.expect("inject tvu");
+        let inject_gossip_sock =
+            UdpSocket::bind("127.0.0.1:0").await.expect("inject gossip");
+        let inject_vote_sock = UdpSocket::bind("127.0.0.1:0").await.expect("inject vote");
+        let inject_tpu = inject_tpu_sock.local_addr().expect("tpu addr");
+        let inject_tvu = inject_tvu_sock.local_addr().expect("tvu addr");
+        let inject_gossip = inject_gossip_sock.local_addr().expect("gossip addr");
+        let inject_vote = inject_vote_sock.local_addr().expect("vote addr");
+
+        let (cert, key) = new_dummy_x509_certificate(&Keypair::new());
+        let server_tls = rustls::ServerConfig::builder_with_provider(Arc::new(crypto_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("tls versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .expect("server tls");
+        let quic_server_config =
+            QuicServerConfig::try_from(server_tls).expect("quic server config");
+        let server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
+        let server_endpoint = quinn::Endpoint::server(
+            server_config,
+            "127.0.0.1:0".parse().expect("server addr"),
+        )
+        .expect("server endpoint");
+        let server_addr = server_endpoint.local_addr().expect("server local addr");
+
+        let (_publisher_tx, publisher_rx) = watch::channel(Some(server_addr));
+        let (session_events_tx, _session_events_rx) = mpsc::unbounded_channel();
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (uplink_tx, mut uplink_rx) = mpsc::channel(8);
+
+        let server_task = tokio::spawn(async move {
+            let incoming = server_endpoint.accept().await.expect("incoming");
+            let connecting = incoming.accept().expect("accept incoming");
+            let connection = connecting.await.expect("connect");
+
+            let (mut ctrl_send, mut ctrl_recv) =
+                connection.accept_bi().await.expect("control stream");
+            let auth_msg = read_agent_msg(&mut ctrl_recv, CTRL_MAX_FRAME_BYTES).await;
+            assert!(matches!(
+                auth_msg,
+                AgentToPop::Auth(_) | AgentToPop::AuthWithSessionToken(_)
+            ));
+
+            let auth_ok = AuthOk {
+                pop_id: "test-pop".to_string(),
+                pop_pubkey: PubkeyBytes([9u8; 32]),
+                server_time_ms: now_ms(),
+                udp_token: [7u8; 16],
+                udp_shreds_port: 0,
+                udp_votes_port: 0,
+            };
+            write_pop_msg(&mut ctrl_send, &PopToAgent::AuthOk(auth_ok)).await;
+
+            let (mut shreds_send, mut shreds_recv) =
+                connection.accept_bi().await.expect("shreds stream");
+            let hello = read_agent_msg(&mut shreds_recv, SHREDS_MAX_FRAME_BYTES).await;
+            match hello {
+                AgentToPop::StreamHello(kind) => assert!(matches!(kind, StreamKind::Shreds)),
+                other => panic!("unexpected shreds hello: {other:?}"),
+            }
+
+            let (mut votes_send, mut votes_recv) =
+                connection.accept_bi().await.expect("votes stream");
+            let hello = read_agent_msg(&mut votes_recv, VOTES_MAX_FRAME_BYTES).await;
+            match hello {
+                AgentToPop::StreamHello(kind) => assert!(matches!(kind, StreamKind::Votes)),
+                other => panic!("unexpected votes hello: {other:?}"),
+            }
+
+            let ctrl_reader = tokio::spawn(async move {
+                loop {
+                    let msg = read_agent_msg(&mut ctrl_recv, CTRL_MAX_FRAME_BYTES).await;
+                    if let AgentToPop::Heartbeat(_) = msg {
+                        let ack = PopHeartbeatAck {
+                            pop_now_ms: now_ms(),
+                            stats: PopStatsSnapshot::default(),
+                            direct_shreds: None,
+                        };
+                        write_pop_msg(&mut ctrl_send, &PopToAgent::HeartbeatAck(ack)).await;
+                        return;
+                    }
+                }
+            });
+
+            let batch = make_single_shred_batch(ShredKind::Tvu, Bytes::from_static(b"shred"));
+            write_pop_msg(&mut shreds_send, &PopToAgent::PushShredBatch(batch)).await;
+
+            let vote_program_id = solana_vote_program::id().to_bytes();
+            let keys = [[9u8; 32], vote_program_id];
+            let payload = build_wire_tx(1, &keys, false);
+            let dg = VoteDatagram {
+                flow_id: 1,
+                src: "1.1.1.1:1234".parse().unwrap(),
+                dst: inject_vote,
+                payload,
+            };
+            write_pop_msg(&mut votes_send, &PopToAgent::PushVoteDatagram(dg)).await;
+
+            let mut published_shreds: Option<ShredBatch> = None;
+            let mut published_votes: Option<VoteDatagram> = None;
+            let deadline = tokio::time::sleep(Duration::from_secs(3));
+            tokio::pin!(deadline);
+            while published_shreds.is_none() || published_votes.is_none() {
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    msg = read_agent_msg(&mut shreds_recv, SHREDS_MAX_FRAME_BYTES) => {
+                        if let AgentToPop::PublishShredBatch(batch) = msg {
+                            published_shreds = Some(batch);
+                        }
+                    }
+                    msg = read_agent_msg(&mut votes_recv, VOTES_MAX_FRAME_BYTES) => {
+                        if let AgentToPop::PublishVoteDatagram(dg) = msg {
+                            published_votes = Some(dg);
+                        }
+                    }
+                }
+            }
+
+            let published_shreds = published_shreds.expect("publish shreds");
+            let published_votes = published_votes.expect("publish votes");
+            ctrl_reader.abort();
+            (published_shreds, published_votes)
+        });
+
+        let handle_for_session = handle.clone();
+        let session_handle = tokio::spawn(async move {
+            run_pop_session(
+                server_addr,
+                cfg,
+                auth,
+                quic_connect,
+                handle_for_session,
+                &mut uplink_rx,
+                inject_tpu,
+                inject_tvu,
+                inject_gossip,
+                inject_vote,
+                ShredBatchDeduper::new(32),
+                None,
+                publisher_rx,
+                session_events_tx,
+                stop_rx,
+            )
+            .await
+            .expect("run pop session");
+        });
+
+        let uplink_shred = ShredPublish {
+            kind: ShredKind::Tvu,
+            payload: Bytes::from_static(b"uplink-shred"),
+        };
+        uplink_tx
+            .send(UplinkMsg::Shred(uplink_shred))
+            .await
+            .expect("send uplink shred");
+        let uplink_vote = VotePublish {
+            dst: inject_vote,
+            payload: Bytes::from_static(b"uplink-vote"),
+        };
+        uplink_tx
+            .send(UplinkMsg::Vote(uplink_vote.clone()))
+            .await
+            .expect("send uplink vote");
+
+        let (published_shreds, published_votes) = tokio::time::timeout(
+            Duration::from_secs(5),
+            server_task,
+        )
+        .await
+        .expect("server timeout")
+        .expect("server join");
+
+        assert_eq!(published_shreds.shreds.len(), 1);
+        assert_eq!(
+            published_shreds.shreds[0].payload,
+            b"uplink-shred".to_vec()
+        );
+        assert!(matches!(published_shreds.shreds[0].kind, ShredKind::Tvu));
+
+        assert_eq!(published_votes.dst, inject_vote);
+        assert_eq!(published_votes.payload, b"uplink-vote".to_vec());
+        assert_eq!(published_votes.flow_id, vote_flow_id(&inject_vote));
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if handle.rx_shred_payloads.load(Ordering::Relaxed) > 0
+                    && handle.rx_vote_packets.load(Ordering::Relaxed) > 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("downlink metrics");
+
+        let _ = stop_tx.send(true);
+        session_handle.await.expect("session join");
+        assert!(handle.published_shred_batches.load(Ordering::Relaxed) > 0);
+        assert!(handle.tunneled_vote_packets.load(Ordering::Relaxed) > 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_pop_session_udp_downlink_and_publisher_switch() {
+        let mut cfg = SolanaCdnConfig::default();
+        cfg.tls_insecure_skip_verify = true;
+        cfg.server_name = "localhost".to_string();
+        cfg.udp_mode = DataPlaneMode::Always;
+        cfg.race_enabled = false;
+        cfg.direct_shreds_from_pop = true;
+        cfg.subscribe_shreds = true;
+        let cfg = Arc::new(cfg);
+
+        let handle = new_handle_for_tests(cfg.as_ref().clone());
+        let identity = Arc::new(Keypair::new());
+        let auth = Arc::new(AuthContext::new(identity).expect("auth ctx"));
+        let quic_connect = Arc::new(QuicConnectConfig {
+            client_config: make_quic_client_config(&cfg).expect("quic config"),
+            server_name: cfg.server_name.clone(),
+        });
+
+        let inject_tpu_sock = UdpSocket::bind("127.0.0.1:0").await.expect("inject tpu");
+        let inject_tvu_sock = UdpSocket::bind("127.0.0.1:0").await.expect("inject tvu");
+        let inject_gossip_sock =
+            UdpSocket::bind("127.0.0.1:0").await.expect("inject gossip");
+        let inject_vote_sock = UdpSocket::bind("127.0.0.1:0").await.expect("inject vote");
+        let inject_tpu = inject_tpu_sock.local_addr().expect("tpu addr");
+        let inject_tvu = inject_tvu_sock.local_addr().expect("tvu addr");
+        let inject_gossip = inject_gossip_sock.local_addr().expect("gossip addr");
+        let inject_vote = inject_vote_sock.local_addr().expect("vote addr");
+
+        let pop_shreds_sock = UdpSocket::bind("127.0.0.1:0").await.expect("pop shreds");
+        let pop_votes_sock = UdpSocket::bind("127.0.0.1:0").await.expect("pop votes");
+        let udp_token = [9u8; 16];
+
+        let (cert, key) = new_dummy_x509_certificate(&Keypair::new());
+        let server_tls = rustls::ServerConfig::builder_with_provider(Arc::new(crypto_provider()))
+            .with_safe_default_protocol_versions()
+            .expect("tls versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .expect("server tls");
+        let quic_server_config =
+            QuicServerConfig::try_from(server_tls).expect("quic server config");
+        let server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
+        let server_endpoint = quinn::Endpoint::server(
+            server_config,
+            "127.0.0.1:0".parse().expect("server addr"),
+        )
+        .expect("server endpoint");
+        let server_addr = server_endpoint.local_addr().expect("server local addr");
+
+        let (publisher_tx, publisher_rx) = watch::channel(None);
+        let (session_events_tx, _session_events_rx) = mpsc::unbounded_channel();
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let (uplink_tx, mut uplink_rx) = mpsc::channel(8);
+
+        let (ctrl_msg_tx, mut ctrl_msg_rx) = mpsc::unbounded_channel::<AgentToPop>();
+        let (udp_ports_tx, udp_ports_rx) = tokio::sync::oneshot::channel::<(u16, u16)>();
+        let (uplink_seen_tx, uplink_seen_rx) =
+            tokio::sync::oneshot::channel::<(AgentToPop, AgentToPop)>();
+        let (server_done_tx, server_done_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server_task = tokio::spawn(async move {
+            let incoming = server_endpoint.accept().await.expect("incoming");
+            let connecting = incoming.accept().expect("accept incoming");
+            let connection = connecting.await.expect("connect");
+
+            let (mut ctrl_send, mut ctrl_recv) =
+                connection.accept_bi().await.expect("control stream");
+            let auth_msg = read_agent_msg(&mut ctrl_recv, CTRL_MAX_FRAME_BYTES).await;
+            assert!(matches!(
+                auth_msg,
+                AgentToPop::Auth(_) | AgentToPop::AuthWithSessionToken(_)
+            ));
+
+            let auth_ok = AuthOk {
+                pop_id: "test-pop-udp".to_string(),
+                pop_pubkey: PubkeyBytes([4u8; 32]),
+                server_time_ms: now_ms(),
+                udp_token,
+                udp_shreds_port: pop_shreds_sock.local_addr().expect("shreds addr").port(),
+                udp_votes_port: pop_votes_sock.local_addr().expect("votes addr").port(),
+            };
+            write_pop_msg(&mut ctrl_send, &PopToAgent::AuthOk(auth_ok)).await;
+
+            let (_shreds_send, mut shreds_recv) =
+                connection.accept_bi().await.expect("shreds stream");
+            let hello = read_agent_msg(&mut shreds_recv, SHREDS_MAX_FRAME_BYTES).await;
+            match hello {
+                AgentToPop::StreamHello(kind) => assert!(matches!(kind, StreamKind::Shreds)),
+                other => panic!("unexpected shreds hello: {other:?}"),
+            }
+
+            let (_votes_send, mut votes_recv) =
+                connection.accept_bi().await.expect("votes stream");
+            let hello = read_agent_msg(&mut votes_recv, VOTES_MAX_FRAME_BYTES).await;
+            match hello {
+                AgentToPop::StreamHello(kind) => assert!(matches!(kind, StreamKind::Votes)),
+                other => panic!("unexpected votes hello: {other:?}"),
+            }
+
+            let mut udp_ports_tx = Some(udp_ports_tx);
+            let ctrl_reader = tokio::spawn(async move {
+                loop {
+                    let bytes = match read_len_prefixed_with_limit(&mut ctrl_recv, CTRL_MAX_FRAME_BYTES).await {
+                        Ok(v) => v,
+                        Err(_) => return,
+                    };
+                    let msg: AgentToPop = match decode_envelope(&bytes) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if let AgentToPop::RegisterUdpPorts {
+                        shreds_port,
+                        votes_port,
+                    } = msg
+                    {
+                        if let Some(tx) = udp_ports_tx.take() {
+                            let _ = tx.send((shreds_port, votes_port));
+                        }
+                    }
+                    let _ = ctrl_msg_tx.send(msg);
+                }
+            });
+
+            let mut buf = vec![0u8; 2048];
+            let (len, _) = pop_shreds_sock
+                .recv_from(&mut buf)
+                .await
+                .expect("uplink shreds");
+            let (token1, msg1) =
+                solanacdn_protocol::udp::decode_udp_datagram::<AgentToPop>(&buf[..len])
+                    .expect("decode uplink shreds");
+            let (len, _) = pop_votes_sock
+                .recv_from(&mut buf)
+                .await
+                .expect("uplink votes");
+            let (token2, msg2) =
+                solanacdn_protocol::udp::decode_udp_datagram::<AgentToPop>(&buf[..len])
+                    .expect("decode uplink votes");
+            assert_eq!(token1, udp_token);
+            assert_eq!(token2, udp_token);
+            let _ = uplink_seen_tx.send((msg1, msg2));
+
+            let _ = server_done_rx.await;
+            ctrl_reader.abort();
+        });
+
+        let handle_for_session = handle.clone();
+        let session_handle = tokio::spawn(async move {
+            run_pop_session(
+                server_addr,
+                cfg,
+                auth,
+                quic_connect,
+                handle_for_session,
+                &mut uplink_rx,
+                inject_tpu,
+                inject_tvu,
+                inject_gossip,
+                inject_vote,
+                ShredBatchDeduper::new(32),
+                None,
+                publisher_rx,
+                session_events_tx,
+                stop_rx,
+            )
+            .await
+            .expect("run pop session");
+        });
+
+        let (agent_shreds_port, agent_votes_port) = tokio::time::timeout(
+            Duration::from_secs(5),
+            udp_ports_rx,
+        )
+        .await
+        .expect("udp ports timeout")
+        .expect("udp ports recv");
+
+        let mut register_false = 0usize;
+        let mut register_true = 0usize;
+        let mut saw_subscribe = false;
+        let mut saw_unsubscribe = false;
+
+        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline);
+        while register_false == 0 {
+            tokio::select! {
+                _ = &mut deadline => break,
+                msg = ctrl_msg_rx.recv() => {
+                    let Some(msg) = msg else { break; };
+                    if let AgentToPop::RegisterValidatorPorts { direct_shreds, .. } = msg {
+                        if direct_shreds {
+                            register_true += 1;
+                        } else {
+                            register_false += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(register_false >= 1);
+
+        publisher_tx
+            .send(Some(server_addr))
+            .expect("publisher on");
+
+        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline);
+        while !(saw_subscribe && register_true >= 1) {
+            tokio::select! {
+                _ = &mut deadline => break,
+                msg = ctrl_msg_rx.recv() => {
+                    let Some(msg) = msg else { break; };
+                    match msg {
+                        AgentToPop::SubscribeShreds => saw_subscribe = true,
+                        AgentToPop::RegisterValidatorPorts { direct_shreds, .. } => {
+                            if direct_shreds {
+                                register_true += 1;
+                            } else {
+                                register_false += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(saw_subscribe);
+        assert!(register_true >= 1);
+
+        let downlink_shreds_sock =
+            UdpSocket::bind("127.0.0.1:0").await.expect("downlink shreds");
+        let downlink_votes_sock =
+            UdpSocket::bind("127.0.0.1:0").await.expect("downlink votes");
+        let agent_shreds_addr =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), agent_shreds_port);
+        let agent_votes_addr =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), agent_votes_port);
+
+        let batch = make_single_shred_batch(ShredKind::Tvu, Bytes::from_static(b"udp-shred"));
+        let bytes =
+            solanacdn_protocol::udp::encode_udp_datagram(udp_token, &PopToAgent::PushShredBatch(batch))
+                .expect("encode udp shred");
+        downlink_shreds_sock
+            .send_to(&bytes, agent_shreds_addr)
+            .await
+            .expect("send udp shred");
+
+        let vote_program_id = solana_vote_program::id().to_bytes();
+        let keys = [[9u8; 32], vote_program_id];
+        let payload = build_wire_tx(1, &keys, false);
+        let dg = VoteDatagram {
+            flow_id: 1,
+            src: "1.1.1.1:1234".parse().unwrap(),
+            dst: inject_vote,
+            payload,
+        };
+        let bytes =
+            solanacdn_protocol::udp::encode_udp_datagram(udp_token, &PopToAgent::PushVoteDatagram(dg))
+                .expect("encode udp vote");
+        downlink_votes_sock
+            .send_to(&bytes, agent_votes_addr)
+            .await
+            .expect("send udp vote");
+
+        let uplink_shred = ShredPublish {
+            kind: ShredKind::Tvu,
+            payload: Bytes::from_static(b"uplink-udp-shred"),
+        };
+        uplink_tx
+            .send(UplinkMsg::Shred(uplink_shred))
+            .await
+            .expect("send uplink shred");
+        let uplink_vote = VotePublish {
+            dst: inject_vote,
+            payload: Bytes::from_static(b"uplink-udp-vote"),
+        };
+        uplink_tx
+            .send(UplinkMsg::Vote(uplink_vote))
+            .await
+            .expect("send uplink vote");
+
+        let (_shred_msg, _vote_msg) = tokio::time::timeout(
+            Duration::from_secs(5),
+            uplink_seen_rx,
+        )
+        .await
+        .expect("uplink seen timeout")
+        .expect("uplink seen");
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if handle.rx_shred_payloads.load(Ordering::Relaxed) > 0
+                    && handle.rx_vote_packets.load(Ordering::Relaxed) > 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("downlink metrics");
+
+        publisher_tx
+            .send(None)
+            .expect("publisher off");
+        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline);
+        while !(saw_unsubscribe && register_false >= 2) {
+            tokio::select! {
+                _ = &mut deadline => break,
+                msg = ctrl_msg_rx.recv() => {
+                    let Some(msg) = msg else { break; };
+                    match msg {
+                        AgentToPop::UnsubscribeShreds => saw_unsubscribe = true,
+                        AgentToPop::RegisterValidatorPorts { direct_shreds, .. } => {
+                            if direct_shreds {
+                                register_true += 1;
+                            } else {
+                                register_false += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(saw_unsubscribe);
+        assert!(register_false >= 2);
+
+        let _ = server_done_tx.send(());
+        let _ = stop_tx.send(true);
+        session_handle.await.expect("session join");
+        server_task.await.expect("server join");
+        assert!(handle.published_shred_batches.load(Ordering::Relaxed) > 0);
+        assert!(handle.tunneled_vote_packets.load(Ordering::Relaxed) > 0);
+    }
+}
+
 pub fn init(
     mut cfg: SolanaCdnConfig,
     identity_keypair: Arc<Keypair>,
