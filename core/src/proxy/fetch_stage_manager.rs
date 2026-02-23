@@ -348,7 +348,7 @@ impl FetchStageTpuStateMachine {
         println!("sss state_changed: {state_changed}, report_due: {report_due}");
         if state_changed || report_due {
             datapoint_info!(
-                "tpu_state_machine_tick",
+                "fetch_stage_tpu_state_machine_tick",
                 (
                     "current_tpu",
                     self.current_tpu_state.tpu_type,
