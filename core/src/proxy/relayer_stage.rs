@@ -289,7 +289,7 @@ impl RelayerStage {
             )
             .await
             .map_err(|_| ProxyError::MethodTimeout("relayer_get_tpu_configs".to_string()))?
-            .map_err(|e| ProxyError::MethodError(e.to_string()))?
+            .map_err(|e| ProxyError::MethodError { code: e.code(), message: e.message().to_string() })?
             .into_inner();
 
             let tpu_addr = tpu_config
@@ -313,7 +313,7 @@ impl RelayerStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
+        .map_err(|e| ProxyError::MethodError { code: e.code(), message: e.message().to_string() })?
         .into_inner();
 
         Self::consume_packet_stream(

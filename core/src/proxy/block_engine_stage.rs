@@ -447,7 +447,10 @@ impl BlockEngineStage {
         let endpoints = endpoint_discovery
             .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
             .await
-            .map_err(ProxyError::BlockEngineRequestError)?
+            .map_err(|s| ProxyError::BlockEngineRequestError {
+                code: s.code(),
+                message: s.message().to_string(),
+            })?
             .into_inner();
         datapoint_info!(
             "block_engine_stage-autoconfig",
@@ -496,7 +499,10 @@ impl BlockEngineStage {
         let endpoints = endpoint_discovery
             .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
             .await
-            .map_err(ProxyError::BlockEngineRequestError)?
+            .map_err(|s| ProxyError::BlockEngineRequestError {
+                code: s.code(),
+                message: s.message().to_string(),
+            })?
             .into_inner();
 
         let Some(global) = endpoints.global_endpoint else {
@@ -820,7 +826,7 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|e| ProxyError::MethodError { code: e.code(), message: e.message().to_string() })
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
 
@@ -830,7 +836,7 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|e| ProxyError::MethodError { code: e.code(), message: e.message().to_string() })
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
 
@@ -840,7 +846,7 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|e| ProxyError::MethodError { code: e.code(), message: e.message().to_string() })
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
         {
@@ -928,14 +934,20 @@ impl BlockEngineStage {
             tokio::select! {
                 maybe_packet = packet_stream.message() => {
                     let resp = maybe_packet
-                        .map_err(ProxyError::GrpcError)?
+                        .map_err(|s| ProxyError::GrpcError {
+                            code: s.code(),
+                            message: s.message().to_string(),
+                        })?
                         .ok_or(ProxyError::GrpcStreamDisconnected)
                         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
                     Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
                     let resp = maybe_bundles
-                        .map_err(ProxyError::GrpcError)?
+                        .map_err(|s| ProxyError::GrpcError {
+                            code: s.code(),
+                            message: s.message().to_string(),
+                        })?
                         .ok_or(ProxyError::GrpcStreamDisconnected)
                         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
                     Self::handle_block_engine_bundles(resp, bundle_tx, &mut block_engine_stats)?;
@@ -988,7 +1000,7 @@ impl BlockEngineStage {
                     )
                     .await
                     .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-                    .map_err(|e| ProxyError::MethodError(e.to_string()))
+                    .map_err(|e| ProxyError::MethodError { code: e.code(), message: e.message().to_string() })
                     .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
                     .into_inner();
                     let block_builder_pubkey =
