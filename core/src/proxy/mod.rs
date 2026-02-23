@@ -29,8 +29,8 @@ type HeartbeatEvent = (SocketAddr, SocketAddr);
 
 #[derive(Error, Debug)]
 pub enum ProxyError {
-    #[error("grpc error: {0}")]
-    GrpcError(Box<Status>),
+    #[error("GrpcError: code={code}, message={message}")]
+    GrpcError { code: tonic::Code, message: String },
 
     #[error("stream disconnected")]
     GrpcStreamDisconnected,
@@ -80,8 +80,8 @@ pub enum ProxyError {
     #[error("BlockEngineConnectionError: {0:?}")]
     BlockEngineConnectionError(Box<tonic::transport::Error>),
 
-    #[error("BlockEngineRequestError: {0:?}")]
-    BlockEngineRequestError(Box<tonic::Status>),
+    #[error("BlockEngineRequestError: code={code}, message={message}")]
+    BlockEngineRequestError { code: tonic::Code, message: String },
 
     #[error("RelayerConnectionTimeout")]
     RelayerConnectionTimeout,
@@ -92,8 +92,8 @@ pub enum ProxyError {
     #[error("RelayerConnectionError: {0:?}")]
     RelayerConnectionError(String),
 
-    #[error("AuthenticationError: {0:?}")]
-    AuthenticationError(String),
+    #[error("AuthenticationError: code={code}, message={message}")]
+    AuthenticationError { code: tonic::Code, message: String },
 
     #[error("AuthenticationPermissionDenied")]
     AuthenticationPermissionDenied,
@@ -104,6 +104,15 @@ pub enum ProxyError {
     #[error("MethodTimeout: {0:?}")]
     MethodTimeout(String),
 
-    #[error("MethodError: {0:?}")]
-    MethodError(String),
+    #[error("MethodError: code={code}, message={message}")]
+    MethodError { code: tonic::Code, message: String },
+}
+
+impl From<Status> for ProxyError {
+    fn from(status: Status) -> Self {
+        ProxyError::GrpcError {
+            code: status.code(),
+            message: status.message().to_string(),
+        }
+    }
 }
