@@ -537,17 +537,17 @@ pub fn execute(
         "relayer-max-failed-heartbeats must be greater than zero"
     );
 
-    let relayer_config = Arc::new(Mutex::new(RelayerConfig {
-        relayer_url: if matches.is_present("relayer_url") {
-            value_of(matches, "relayer_url").expect("couldn't parse relayer_url")
-        } else {
-            "".to_string()
-        },
-        expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
-        oldest_allowed_heartbeat: Duration::from_millis(
-            max_failed_heartbeats * expected_heartbeat_interval_ms,
-        ),
-    }));
+    let relayer_config = if matches.is_present("relayer_url") {
+        Some(RelayerConfig {
+            relayer_url: value_of(matches, "relayer_url").expect("couldn't parse relayer_url"),
+            expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
+            oldest_allowed_heartbeat: Duration::from_millis(
+                max_failed_heartbeats * expected_heartbeat_interval_ms,
+            ),
+        })
+    } else {
+        None
+    };
 
     let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
         parse_shred_receiver_addresses(

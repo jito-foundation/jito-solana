@@ -50,6 +50,7 @@ use {
 
 const CONNECTION_TIMEOUT_S: u64 = 10;
 const CONNECTION_BACKOFF_S: u64 = 5;
+const CONFIG_CHANGE_POLL_MS: u64 = 200;
 
 #[derive(Default)]
 struct RelayerStageStats {
@@ -87,7 +88,7 @@ pub struct RelayerStage {
 
 impl RelayerStage {
     pub fn new(
-        relayer_config_rx: Receiver<RelayerConfig>,
+        relayer_config_rx: Receiver<Option<RelayerConfig>>,
         // The keypair stored here is used to sign auth challenges.
         cluster_info: Arc<ClusterInfo>,
         // Channel that server-sent heartbeats are piped through.
@@ -128,40 +129,42 @@ impl RelayerStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn start(
-        mut relayer_config_rx: Receiver<RelayerConfig>,
+        mut relayer_config_rx: Receiver<Option<RelayerConfig>>,
         cluster_info: Arc<ClusterInfo>,
         heartbeat_tx: Sender<HeartbeatEvent>,
         packet_tx: Sender<PacketBatch>,
         exit: Arc<AtomicBool>,
     ) {
         const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
-        const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
-
         let mut error_count: u64 = 0;
+        let mut last_config: Option<RelayerConfig> = None;
+        let mut last_valid = false;
 
         while !exit.load(Ordering::Relaxed) {
-            // Wait until a valid config is supplied (either initially or by admin rpc)
-            let local_relayer_config = loop {
-                if exit.load(Ordering::Relaxed) {
-                    return;
-                }
-                let config = relayer_config_rx.borrow_and_update().clone();
-                if Self::is_valid_relayer_config(&config) {
-                    break config;
-                }
-                // Wait for config change notification or exit signal
-                tokio::select! {
-                    changed = relayer_config_rx.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
+            let current = relayer_config_rx.borrow_and_update().clone();
+            if current != last_config {
+                Self::log_relayer_config_transition(&last_config, &current);
+                last_valid = current
+                    .as_ref()
+                    .map(Self::is_valid_relayer_config)
+                    .unwrap_or(false);
+                last_config = current;
+            }
+
+            let local_relayer_config = match (&last_config, last_valid) {
+                (Some(config), true) => config.clone(),
+                _ => {
+                    if !Self::wait_for_relayer_config_change(&mut relayer_config_rx, &exit).await {
+                        return;
                     }
-                    _ = sleep(CONNECTION_BACKOFF) => {}
+                    continue;
                 }
             };
+
+            let mut config_abort_rx = relayer_config_rx.clone();
             if let Err(e) = Self::connect_auth_and_stream(
                 &local_relayer_config,
-                &mut relayer_config_rx,
+                &mut config_abort_rx,
                 &cluster_info,
                 &heartbeat_tx,
                 &packet_tx,
@@ -171,6 +174,10 @@ impl RelayerStage {
             .await
             {
                 match e {
+                    ProxyError::RelayerConfigChanged => {
+                        debug!("relayer config changed; reconnecting");
+                        continue;
+                    }
                     // This error is frequent on hot spares, and the parsed string does not work
                     // with datapoints (incorrect escaping).
                     ProxyError::AuthenticationPermissionDenied => {
@@ -188,14 +195,95 @@ impl RelayerStage {
                         );
                     }
                 }
-                sleep(CONNECTION_BACKOFF).await;
+                if exit.load(Ordering::Relaxed) {
+                    return;
+                }
+                tokio::select! {
+                    _ = sleep(Duration::from_secs(CONNECTION_BACKOFF_S)) => {}
+                    _ = Self::wait_for_exit(&exit) => { return; }
+                }
             }
+        }
+    }
+
+    async fn wait_for_relayer_config_change(
+        relayer_config_rx: &mut Receiver<Option<RelayerConfig>>,
+        exit: &Arc<AtomicBool>,
+    ) -> bool {
+        loop {
+            if exit.load(Ordering::Relaxed) {
+                return false;
+            }
+            tokio::select! {
+                changed = relayer_config_rx.changed() => {
+                    return changed.is_ok();
+                }
+                _ = sleep(Duration::from_millis(CONFIG_CHANGE_POLL_MS)) => {
+                    if exit.load(Ordering::Relaxed) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn wait_for_abort(
+        relayer_config_rx: &mut Receiver<Option<RelayerConfig>>,
+        exit: &Arc<AtomicBool>,
+    ) {
+        loop {
+            if exit.load(Ordering::Relaxed) {
+                return;
+            }
+            tokio::select! {
+                _ = relayer_config_rx.changed() => {
+                    return;
+                }
+                _ = sleep(Duration::from_millis(CONFIG_CHANGE_POLL_MS)) => {}
+            }
+        }
+    }
+
+    async fn wait_for_exit(exit: &Arc<AtomicBool>) {
+        loop {
+            if exit.load(Ordering::Relaxed) {
+                return;
+            }
+            sleep(Duration::from_millis(CONFIG_CHANGE_POLL_MS)).await;
+        }
+    }
+
+    fn log_relayer_config_transition(
+        old_config: &Option<RelayerConfig>,
+        new_config: &Option<RelayerConfig>,
+    ) {
+        match (old_config, new_config) {
+            (None, Some(new)) => {
+                info!(
+                    "relayer config set: url={} interval_ms={} max_age_ms={}",
+                    new.relayer_url,
+                    new.expected_heartbeat_interval.as_millis(),
+                    new.oldest_allowed_heartbeat.as_millis()
+                );
+            }
+            (Some(old), Some(new)) if old != new => {
+                info!(
+                    "relayer config updated: url={} interval_ms={} max_age_ms={}",
+                    new.relayer_url,
+                    new.expected_heartbeat_interval.as_millis(),
+                    new.oldest_allowed_heartbeat.as_millis()
+                );
+            }
+            (Some(_), None) => {
+                info!("relayer config cleared; relayer disabled");
+            }
+            _ => {}
         }
     }
 
     async fn connect_auth_and_stream(
         local_relayer_config: &RelayerConfig,
-        relayer_config_rx: &mut Receiver<RelayerConfig>,
+        relayer_config_rx: &mut Receiver<Option<RelayerConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
@@ -224,20 +312,31 @@ impl RelayerStage {
         }
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+        let auth_channel = tokio::select! {
+            _ = Self::wait_for_abort(relayer_config_rx, exit) => {
+                return Err(ProxyError::RelayerConfigChanged);
+            }
+            result = timeout(*connection_timeout, backend_endpoint.connect()) => {
+                result
+                    .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+                    .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?
+            }
+        };
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
         debug!("generating authentication token");
-        let (access_token, refresh_token) = timeout(
-            *connection_timeout,
-            generate_auth_tokens(&mut auth_client, &keypair),
-        )
-        .await
-        .map_err(|_| ProxyError::AuthenticationTimeout)??;
+        let (access_token, refresh_token) = tokio::select! {
+            _ = Self::wait_for_abort(relayer_config_rx, exit) => {
+                return Err(ProxyError::RelayerConfigChanged);
+            }
+            result = timeout(
+                *connection_timeout,
+                generate_auth_tokens(&mut auth_client, &keypair),
+            ) => {
+                result.map_err(|_| ProxyError::AuthenticationTimeout)??
+            }
+        };
 
         datapoint_info!(
             "relayer_stage-tokens_generated",
@@ -249,10 +348,16 @@ impl RelayerStage {
             "connecting to relayer: {}",
             local_relayer_config.relayer_url
         );
-        let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::RelayerConnectionTimeout)?
-            .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
+        let relayer_channel = tokio::select! {
+            _ = Self::wait_for_abort(relayer_config_rx, exit) => {
+                return Err(ProxyError::RelayerConfigChanged);
+            }
+            result = timeout(*connection_timeout, backend_endpoint.connect()) => {
+                result
+                    .map_err(|_| ProxyError::RelayerConnectionTimeout)?
+                    .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?
+            }
+        };
 
         let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(
@@ -283,7 +388,7 @@ impl RelayerStage {
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &RelayerConfig, // local copy of config with current connections
-        relayer_config_rx: &mut Receiver<RelayerConfig>, // for detecting run-time updates
+        relayer_config_rx: &mut Receiver<Option<RelayerConfig>>, // for detecting run-time updates
         exit: &Arc<AtomicBool>,
         auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
@@ -293,14 +398,20 @@ impl RelayerStage {
         connection_timeout: &Duration,
     ) -> crate::proxy::Result<()> {
         let heartbeat_event: HeartbeatEvent = {
-            let tpu_config = timeout(
-                *connection_timeout,
-                client.get_tpu_configs(relayer::GetTpuConfigsRequest {}),
-            )
-            .await
-            .map_err(|_| ProxyError::MethodTimeout("relayer_get_tpu_configs".to_string()))?
-            .map_err(|e| ProxyError::MethodError(e.to_string()))?
-            .into_inner();
+            let tpu_config = tokio::select! {
+                _ = Self::wait_for_abort(relayer_config_rx, exit) => {
+                    return Err(ProxyError::RelayerConfigChanged);
+                }
+                result = timeout(
+                    *connection_timeout,
+                    client.get_tpu_configs(relayer::GetTpuConfigsRequest {}),
+                ) => {
+                    result
+                        .map_err(|_| ProxyError::MethodTimeout("relayer_get_tpu_configs".to_string()))?
+                        .map_err(|e| ProxyError::MethodError(e.to_string()))?
+                        .into_inner()
+                }
+            };
 
             let tpu_addr = tpu_config
                 .tpu
@@ -317,14 +428,20 @@ impl RelayerStage {
             (tpu_socket, tpu_forward_socket)
         };
 
-        let packet_stream = timeout(
-            *connection_timeout,
-            client.subscribe_packets(relayer::SubscribePacketsRequest {}),
-        )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
-        .into_inner();
+        let packet_stream = tokio::select! {
+            _ = Self::wait_for_abort(relayer_config_rx, exit) => {
+                return Err(ProxyError::RelayerConfigChanged);
+            }
+            result = timeout(
+                *connection_timeout,
+                client.subscribe_packets(relayer::SubscribePacketsRequest {}),
+            ) => {
+                result
+                    .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
+                    .map_err(|e| ProxyError::MethodError(e.to_string()))?
+                    .into_inner()
+            }
+        };
 
         Self::consume_packet_stream(
             heartbeat_event,
@@ -351,7 +468,7 @@ impl RelayerStage {
         mut packet_stream: Streaming<relayer::SubscribePacketsResponse>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &RelayerConfig, // local copy of config with current connections
-        relayer_config_rx: &mut Receiver<RelayerConfig>, // for detecting run-time updates
+        relayer_config_rx: &mut Receiver<Option<RelayerConfig>>, // for detecting run-time updates
         exit: &Arc<AtomicBool>,
         mut auth_client: AuthServiceClient<Channel>,
         access_token: Arc<Mutex<Token>>,
@@ -380,6 +497,15 @@ impl RelayerStage {
                     let resp = maybe_msg.map_err(|e| ProxyError::GrpcError(Box::new(e)))?.ok_or(ProxyError::GrpcStreamDisconnected)?;
                     Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, &mut relayer_stats)?;
                 }
+                changed = relayer_config_rx.changed() => {
+                    if changed.is_err() {
+                        return Err(ProxyError::RelayerConfigChanged);
+                    }
+                    return Err(ProxyError::RelayerConfigChanged);
+                }
+                _ = Self::wait_for_exit(exit) => {
+                    return Err(ProxyError::RelayerConfigChanged);
+                }
                 _ = heartbeat_check_interval.tick() => {
                     if last_heartbeat_ts.elapsed() > local_config.oldest_allowed_heartbeat {
                         return Err(ProxyError::HeartbeatExpired);
@@ -392,10 +518,8 @@ impl RelayerStage {
                     if cluster_info.id() != keypair.pubkey() {
                         return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
-
-                    // Check if config changed
-                    if *local_config != *relayer_config_rx.borrow_and_update() {
-                        return Err(ProxyError::AuthenticationConnectionError("relayer config changed".to_string()));
+                    if Some(local_config.clone()) != *relayer_config_rx.borrow() {
+                        return Err(ProxyError::RelayerConfigChanged);
                     }
 
                     let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,

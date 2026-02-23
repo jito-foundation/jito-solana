@@ -88,8 +88,7 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub node: Option<Arc<NodeMultihoming>>,
     pub banking_control_sender: mpsc::Sender<BankingControlMsg>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-    pub relayer_config: Arc<Mutex<RelayerConfig>>,
-    pub relayer_config_tx: Sender<RelayerConfig>,
+    pub relayer_config_tx: Sender<Option<RelayerConfig>>,
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }

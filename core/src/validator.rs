@@ -389,7 +389,7 @@ pub struct ValidatorConfig {
     pub retransmit_xdp: Option<XdpConfig>,
     pub repair_handler_type: RepairHandlerType,
     // jito configuration
-    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub relayer_config: Option<RelayerConfig>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
@@ -478,7 +478,7 @@ impl ValidatorConfig {
             delay_leader_block_for_pending_fork: false,
             retransmit_xdp: None,
             repair_handler_type: RepairHandlerType::default(),
-            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
+            relayer_config: None,
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
             shred_receiver_addresses: Arc::new(
                 ArcSwap::from_pointee(ShredReceiverAddresses::new()),
@@ -1675,8 +1675,7 @@ impl Validator {
             ))
         };
         let (banking_control_sender, banking_control_reciever) = mpsc::channel(1);
-        let (relayer_config_tx, relayer_config_rx) =
-            watch::channel(config.relayer_config.lock().unwrap().clone());
+        let (relayer_config_tx, relayer_config_rx) = watch::channel(config.relayer_config.clone());
         let tpu = Tpu::new_with_client(
             &cluster_info,
             &poh_recorder,
@@ -1774,7 +1773,6 @@ impl Validator {
             node: Some(node_multihoming),
             banking_control_sender,
             block_engine_config: config.block_engine_config.clone(),
-            relayer_config: config.relayer_config.clone(),
             relayer_config_tx,
             shred_receiver_addresses: config.shred_receiver_addresses.clone(),
             shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),

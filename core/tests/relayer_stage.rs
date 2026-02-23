@@ -22,11 +22,12 @@ use {
     solana_signer::Signer,
     solana_time_utils::timestamp,
     std::{
+        net::SocketAddr,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
         },
-        time::Duration,
+        time::{Duration, Instant},
     },
     tokio::sync::watch,
     tokio_stream::wrappers::ReceiverStream,
@@ -101,13 +102,16 @@ impl Relayer for MockRelayer {
         &self,
         _: Request<SubscribePacketsRequest>,
     ) -> Result<Response<Self::SubscribePacketsStream>, Status> {
-        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop(tx);
+        });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
 
-#[tokio::test]
-async fn test_relayer_stage_connects_on_config_update() {
+async fn start_mock_relayer() -> (SocketAddr, Arc<AtomicU64>) {
     let connection_count = Arc::new(AtomicU64::new(0));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -124,19 +128,64 @@ async fn test_relayer_stage_connects_on_config_update() {
         }
     });
 
+    (addr, connection_count)
+}
+
+fn make_cluster_info() -> Arc<ClusterInfo> {
     let keypair = Arc::new(Keypair::new());
-    let cluster_info = Arc::new(ClusterInfo::new(
+    Arc::new(ClusterInfo::new(
         ContactInfo::new_localhost(&keypair.pubkey(), timestamp()),
         keypair,
         SocketAddrSpace::Unspecified,
-    ));
+    ))
+}
 
-    let (config_tx, config_rx) = watch::channel(RelayerConfig::default());
+fn valid_config(addr: SocketAddr) -> RelayerConfig {
+    RelayerConfig {
+        relayer_url: format!("http://{addr}"),
+        expected_heartbeat_interval: Duration::from_millis(1000),
+        oldest_allowed_heartbeat: Duration::from_secs(30),
+    }
+}
+
+fn invalid_config() -> RelayerConfig {
+    RelayerConfig {
+        relayer_url: "not a url".to_string(),
+        expected_heartbeat_interval: Duration::from_millis(1000),
+        oldest_allowed_heartbeat: Duration::from_secs(30),
+    }
+}
+
+async fn wait_for_count_at_least(counter: &AtomicU64, target: u64) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if counter.load(Ordering::SeqCst) >= target {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("expected connection count >= {target}, got {}", counter.load(Ordering::SeqCst));
+}
+
+async fn wait_for_stage_exit(stage: RelayerStage, timeout: Duration) {
+    let handle = tokio::task::spawn_blocking(move || stage.join());
+    let join_result = tokio::time::timeout(timeout, handle)
+        .await
+        .expect("relayer stage did not exit in time");
+    let _ = join_result.expect("relayer stage join failed");
+}
+
+#[tokio::test]
+async fn test_relayer_stage_connects_on_config_update() {
+    let (addr, connection_count) = start_mock_relayer().await;
+    let cluster_info = make_cluster_info();
+
+    let (config_tx, config_rx) = watch::channel(None);
     let (heartbeat_tx, _) = unbounded();
     let (packet_tx, _) = unbounded();
     let exit = Arc::new(AtomicBool::new(false));
 
-    RelayerStage::new(
+    let stage = RelayerStage::new(
         config_rx,
         cluster_info,
         heartbeat_tx,
@@ -145,20 +194,150 @@ async fn test_relayer_stage_connects_on_config_update() {
     );
 
     // No connection with empty config
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(connection_count.load(Ordering::SeqCst), 0);
 
-    // Send valid config → should connect
-    config_tx
-        .send(RelayerConfig {
-            relayer_url: format!("http://{addr}"),
-            expected_heartbeat_interval: Duration::from_millis(500),
-            oldest_allowed_heartbeat: Duration::from_millis(2000),
-        })
-        .unwrap();
+    // Send valid config -> should connect
+    config_tx.send(Some(valid_config(addr))).unwrap();
+    wait_for_count_at_least(&connection_count, 1).await;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(connection_count.load(Ordering::SeqCst) > 0);
+    config_tx.send(None).unwrap();
+    exit.store(true, Ordering::Relaxed);
+    wait_for_stage_exit(stage, Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn test_relayer_stage_ignores_invalid_then_connects() {
+    let (addr, connection_count) = start_mock_relayer().await;
+    let cluster_info = make_cluster_info();
+
+    let (config_tx, config_rx) = watch::channel(Some(invalid_config()));
+    let (heartbeat_tx, _) = unbounded();
+    let (packet_tx, _) = unbounded();
+    let exit = Arc::new(AtomicBool::new(false));
+
+    let stage = RelayerStage::new(
+        config_rx,
+        cluster_info,
+        heartbeat_tx,
+        packet_tx,
+        exit.clone(),
+    );
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(connection_count.load(Ordering::SeqCst), 0);
+
+    config_tx.send(Some(valid_config(addr))).unwrap();
+    wait_for_count_at_least(&connection_count, 1).await;
+
+    config_tx.send(None).unwrap();
+    exit.store(true, Ordering::Relaxed);
+    wait_for_stage_exit(stage, Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn test_relayer_stage_reconnects_on_config_change() {
+    let (addr, connection_count) = start_mock_relayer().await;
+    let cluster_info = make_cluster_info();
+
+    let (config_tx, config_rx) = watch::channel(Some(valid_config(addr)));
+    let (heartbeat_tx, _) = unbounded();
+    let (packet_tx, _) = unbounded();
+    let exit = Arc::new(AtomicBool::new(false));
+
+    let stage = RelayerStage::new(
+        config_rx,
+        cluster_info,
+        heartbeat_tx,
+        packet_tx,
+        exit.clone(),
+    );
+
+    wait_for_count_at_least(&connection_count, 1).await;
+    let initial_count = connection_count.load(Ordering::SeqCst);
+
+    // Update config to trigger reconnect.
+    let mut updated = valid_config(addr);
+    updated.expected_heartbeat_interval = Duration::from_millis(1200);
+    updated.oldest_allowed_heartbeat = Duration::from_secs(35);
+    config_tx.send(Some(updated)).unwrap();
+
+    wait_for_count_at_least(&connection_count, initial_count + 1).await;
+
+    config_tx.send(None).unwrap();
+    exit.store(true, Ordering::Relaxed);
+    wait_for_stage_exit(stage, Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn test_relayer_stage_stops_on_config_clear() {
+    let (addr, connection_count) = start_mock_relayer().await;
+    let cluster_info = make_cluster_info();
+
+    let (config_tx, config_rx) = watch::channel(Some(valid_config(addr)));
+    let (heartbeat_tx, _) = unbounded();
+    let (packet_tx, _) = unbounded();
+    let exit = Arc::new(AtomicBool::new(false));
+
+    let stage = RelayerStage::new(
+        config_rx,
+        cluster_info,
+        heartbeat_tx,
+        packet_tx,
+        exit.clone(),
+    );
+
+    wait_for_count_at_least(&connection_count, 1).await;
+    let count_before_clear = connection_count.load(Ordering::SeqCst);
+
+    config_tx.send(None).unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let count_after_clear = connection_count.load(Ordering::SeqCst);
+    assert_eq!(count_after_clear, count_before_clear);
 
     exit.store(true, Ordering::Relaxed);
+    wait_for_stage_exit(stage, Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn test_relayer_stage_exit_while_idle() {
+    let cluster_info = make_cluster_info();
+
+    let (_config_tx, config_rx) = watch::channel(None);
+    let (heartbeat_tx, _) = unbounded();
+    let (packet_tx, _) = unbounded();
+    let exit = Arc::new(AtomicBool::new(false));
+
+    let stage = RelayerStage::new(
+        config_rx,
+        cluster_info,
+        heartbeat_tx,
+        packet_tx,
+        exit.clone(),
+    );
+
+    exit.store(true, Ordering::Relaxed);
+    wait_for_stage_exit(stage, Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn test_relayer_stage_exit_while_invalid() {
+    let cluster_info = make_cluster_info();
+
+    let (_config_tx, config_rx) = watch::channel(Some(invalid_config()));
+    let (heartbeat_tx, _) = unbounded();
+    let (packet_tx, _) = unbounded();
+    let exit = Arc::new(AtomicBool::new(false));
+
+    let stage = RelayerStage::new(
+        config_rx,
+        cluster_info,
+        heartbeat_tx,
+        packet_tx,
+        exit.clone(),
+    );
+
+    exit.store(true, Ordering::Relaxed);
+    wait_for_stage_exit(stage, Duration::from_secs(2)).await;
 }

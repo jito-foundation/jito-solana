@@ -68,6 +68,9 @@ pub enum ProxyError {
     #[error("BlockEngineConfigChanged")]
     BlockEngineConfigChanged,
 
+    #[error("RelayerConfigChanged")]
+    RelayerConfigChanged,
+
     #[error("BamEnabled")]
     BamEnabled,
 

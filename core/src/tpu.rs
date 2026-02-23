@@ -198,7 +198,7 @@ impl Tpu {
         scheduler_bindings: Option<(PathBuf, mpsc::Sender<BankingControlMsg>)>,
         cancel: CancellationToken,
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-        relayer_config_rx: WatchReceiver<RelayerConfig>,
+        relayer_config_rx: WatchReceiver<Option<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
