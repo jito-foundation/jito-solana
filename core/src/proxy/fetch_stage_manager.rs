@@ -112,13 +112,21 @@ impl FetchStageManager {
                 // Run the semi-eternal loop
                 while !exit.load(Ordering::Relaxed) {
                     let all_good = select! {
-                        recv(packet_intercept_rx) -> pkt => tpu_state_machine.handle_packet_batch(pkt),
+                        recv(packet_intercept_rx) -> pkt => {
+                            println!("sss 1");
+                            tpu_state_machine.handle_packet_batch(pkt)
+                        },
                         recv(state_machine_tick) -> _ => {
+                            println!("sss 2");
                             tpu_state_machine.state_machine_tick();
                             true
                         },
-                        recv(relayer_heartbeat_rx) -> tpu_info => tpu_state_machine.handle_relayer_message(tpu_info),
+                        recv(relayer_heartbeat_rx) -> tpu_info => {
+                            println!("sss 3");
+                            tpu_state_machine.handle_relayer_message(tpu_info)
+                        },
                         recv(metrics_tick) -> _ => {
+                            println!("sss 4");
                             tpu_state_machine.handle_metrics_tick();
                             true
                         },
@@ -128,6 +136,7 @@ impl FetchStageManager {
                         break;
                     }
                 }
+                println!("sss exiting");
             })
             .unwrap()
     }
