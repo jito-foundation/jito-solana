@@ -146,6 +146,7 @@ use {
         self,
         broadcast_stage::BroadcastStageType,
         xdp::{master_ip_if_bonded, XdpConfig, XdpRetransmitter},
+        ShredReceiverAddresses,
     },
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     solana_validator_exit::Exit,
@@ -388,12 +389,12 @@ pub struct ValidatorConfig {
     pub retransmit_xdp: Option<XdpConfig>,
     pub repair_handler_type: RepairHandlerType,
     // jito configuration
-    pub relayer_config: RelayerConfig,
+    pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-    pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-    pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub tip_manager_config: TipManagerConfig,
-    pub bam_url: Arc<Mutex<Option<String>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl ValidatorConfig {
@@ -477,12 +478,16 @@ impl ValidatorConfig {
             delay_leader_block_for_pending_fork: false,
             retransmit_xdp: None,
             repair_handler_type: RepairHandlerType::default(),
-            relayer_config: RelayerConfig::default(),
+            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
-            shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
-            shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            shred_receiver_addresses: Arc::new(
+                ArcSwap::from_pointee(ShredReceiverAddresses::new()),
+            ),
+            shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
+                ShredReceiverAddresses::new(),
+            )),
             tip_manager_config: TipManagerConfig::default(),
-            bam_url: Arc::new(Mutex::new(None)),
+            bam_url: Arc::new(ArcSwap::from_pointee(None)),
         }
     }
 
@@ -1631,7 +1636,7 @@ impl Validator {
             wen_restart_repair_slots.clone(),
             slot_status_notifier,
             vote_connection_cache,
-            config.shred_retransmit_receiver_address.clone(),
+            config.shred_retransmit_receiver_addresses.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1670,7 +1675,8 @@ impl Validator {
             ))
         };
         let (banking_control_sender, banking_control_reciever) = mpsc::channel(1);
-        let (relayer_config_tx, relayer_config_rx) = watch::channel(config.relayer_config.clone());
+        let (relayer_config_tx, relayer_config_rx) =
+            watch::channel(config.relayer_config.lock().unwrap().clone());
         let tpu = Tpu::new_with_client(
             &cluster_info,
             &poh_recorder,
@@ -1734,7 +1740,7 @@ impl Validator {
             config.block_engine_config.clone(),
             relayer_config_rx,
             config.tip_manager_config.clone(),
-            config.shred_receiver_address.clone(),
+            config.shred_receiver_addresses.clone(),
             config.bam_url.clone(),
         );
 
@@ -1768,9 +1774,10 @@ impl Validator {
             node: Some(node_multihoming),
             banking_control_sender,
             block_engine_config: config.block_engine_config.clone(),
+            relayer_config: config.relayer_config.clone(),
             relayer_config_tx,
-            shred_receiver_address: config.shred_receiver_address.clone(),
-            shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
+            shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+            shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
         });
 
         Ok(Self {

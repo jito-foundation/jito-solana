@@ -152,8 +152,8 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             }
         }
 
-        // Update tip account receivers if needed
-        if !self.run_tip_programs_if_needed(bank, &work.transactions) {
+        // Best-effort tip-program upkeep for batches that touch tip accounts.
+        if !self.maybe_run_tip_programs(bank, &work.transactions) {
             error!(
                 "Error running tip programs for transactions: {:?}",
                 work.transactions
@@ -180,11 +180,9 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
 
-        let extra_info = if work.respond_with_extra_info {
-            Some(Self::generate_extra_info(&output, &work))
-        } else {
-            None
-        };
+        let extra_info = work
+            .respond_with_extra_info
+            .then(|| Self::build_finished_consume_work_extra_info(&output, &work));
 
         self.consumed_sender.send(FinishedConsumeWork {
             work,
@@ -196,29 +194,34 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(ProcessingStatus::Processed)
     }
 
-    fn run_tip_programs_if_needed(
-        &self,
-        bank: &Arc<Bank>,
-        txs: &[impl TransactionWithMeta],
-    ) -> bool {
-        let Some(tip_processing_dependencies) = &self.tip_processing_dependencies else {
-            return true;
-        };
-        let TipProcessingDependencies {
+    /// Best-effort per-slot tip-program maintenance for batches that touch tip accounts.
+    ///
+    /// Returns `true` when tip deps are disabled, no tip account is touched, tips were already
+    /// updated for this slot, or the best-effort upkeep path reaches the end.
+    /// Bundle-construction errors from init/crank bundle creation are non-fatal (crank errors are
+    /// logged), and this path still sets `last_tip_updated_slot = bank.slot()`.
+    ///
+    /// Returns `false` when required upkeep transactions fail to commit, or when block-builder
+    /// info is unavailable.
+    fn maybe_run_tip_programs(&self, bank: &Arc<Bank>, txs: &[impl TransactionWithMeta]) -> bool {
+        let Some(TipProcessingDependencies {
             tip_manager,
             last_tip_updated_slot,
             block_builder_fee_info,
             cluster_info,
             bundle_account_locker,
-        } = tip_processing_dependencies;
+        }) = &self.tip_processing_dependencies
+        else {
+            return true;
+        };
 
         // Return true if no tip accounts touched
         let tip_accounts = tip_manager.get_tip_accounts();
-        if !txs.iter().any(|tx| {
-            tx.account_keys()
-                .iter()
-                .any(|key| tip_accounts.contains(key))
-        }) {
+        if !txs
+            .iter()
+            .flat_map(|tx| tx.account_keys().iter())
+            .any(|key| tip_accounts.contains(key))
+        {
             return true;
         }
 
@@ -227,7 +230,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             return true;
         }
 
-        let keypair = cluster_info.keypair().clone();
+        let keypair = cluster_info.keypair();
         let initialize_tip_programs_bundle =
             tip_manager.get_initialize_tip_programs_bundle(bank, &keypair);
         if let Ok(init_bundle) = initialize_tip_programs_bundle {
@@ -250,7 +253,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             }
         }
 
-        let block_builder_fee_info = (*block_builder_fee_info.lock().unwrap()).clone();
+        let block_builder_fee_info = block_builder_fee_info.load();
         if block_builder_fee_info.block_builder == Pubkey::default() {
             return false;
         }
@@ -284,7 +287,13 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         true
     }
 
-    fn generate_extra_info(
+    /// Builds `FinishedConsumeWorkExtraInfo` from consume output for BAM responses.
+    ///
+    /// If commit details are available, each `CommitTransactionDetails` is mapped into a
+    /// `TransactionResult` with commit metadata or a not-committed error. If commit details are
+    /// unavailable (e.g., a PoH recorder failure), it falls back to one `NotCommitted(PohTimeout)`
+    /// result per input transaction.
+    fn build_finished_consume_work_extra_info(
         output: &ProcessTransactionBatchOutput,
         work: &ConsumeWork<Tx>,
     ) -> FinishedConsumeWorkExtraInfo {
@@ -303,7 +312,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             };
         };
 
-        let mut processed_results = vec![];
+        let mut processed_results = Vec::with_capacity(commit_transactions_result.len());
         for commit_info in commit_transactions_result.iter() {
             match commit_info {
                 CommitTransactionDetails::Committed {
@@ -2326,6 +2335,7 @@ mod tests {
                 TipManagerConfig,
             },
         },
+        arc_swap::ArcSwap,
         crossbeam_channel::unbounded,
         solana_account::Account,
         solana_clock::{Slot, MAX_PROCESSING_AGE},
@@ -2462,7 +2472,7 @@ mod tests {
                     },
                 }),
                 last_tip_updated_slot: Arc::new(Mutex::new(0)),
-                block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo {
+                block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
                     block_builder: mint_keypair.pubkey(),
                     block_builder_commission: 0,
                 })),

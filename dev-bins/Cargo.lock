@@ -6925,6 +6925,7 @@ dependencies = [
  "solana-metrics",
  "solana-native-token",
  "solana-net-utils",
+ "solana-nohash-hasher",
  "solana-nonce",
  "solana-nonce-account",
  "solana-packet 4.0.0",
@@ -9353,6 +9354,7 @@ version = "4.0.0-alpha.0"
 dependencies = [
  "agave-feature-set",
  "agave-snapshots",
+ "arc-swap",
  "base64 0.22.1",
  "bincode",
  "crossbeam-channel",
@@ -9655,6 +9657,7 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rayon",
  "rustls 0.23.35",
+ "smallvec",
  "solana-clock",
  "solana-cluster-type",
  "solana-entry",

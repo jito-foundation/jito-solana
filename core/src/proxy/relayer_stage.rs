@@ -142,13 +142,21 @@ impl RelayerStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             let local_relayer_config = loop {
+                if exit.load(Ordering::Relaxed) {
+                    return;
+                }
                 let config = relayer_config_rx.borrow_and_update().clone();
                 if Self::is_valid_relayer_config(&config) {
                     break config;
                 }
-                // Wait for config change notification
-                if relayer_config_rx.changed().await.is_err() {
-                    return;
+                // Wait for config change notification or exit signal
+                tokio::select! {
+                    changed = relayer_config_rx.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                    }
+                    _ = sleep(CONNECTION_BACKOFF) => {}
                 }
             };
             if let Err(e) = Self::connect_auth_and_stream(
@@ -474,7 +482,7 @@ impl RelayerStage {
 
     pub fn is_valid_relayer_config(config: &RelayerConfig) -> bool {
         if config.relayer_url.is_empty() {
-            debug!("can't connect to relayer. missing relayer_url.");
+            debug!("relayer not configured. set via Admin RPC or CLI flag.");
             return false;
         }
         if config.oldest_allowed_heartbeat.is_zero() {

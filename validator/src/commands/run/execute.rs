@@ -5,6 +5,7 @@ use {
         cli::{self},
         commands::{run::args::RunArgs, FromClapArgMatches},
         ledger_lockfile, lock_ledger,
+        shred_receiver_addresses::parse_shred_receiver_addresses,
     },
     agave_snapshots::{
         paths::BANK_SNAPSHOTS_DIR,
@@ -75,6 +76,7 @@ use {
     std::{
         collections::HashSet,
         fs::{self, File},
+        io,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         num::{NonZeroU64, NonZeroUsize},
         path::{Path, PathBuf},
@@ -518,7 +520,9 @@ pub fn execute(
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
 
-    let bam_url = Arc::new(Mutex::new(crate::commands::bam::extract_bam_url(matches)?));
+    let bam_url = Arc::new(ArcSwap::from_pointee(
+        crate::commands::bam::extract_bam_url(matches)?,
+    ));
 
     // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms: u64 =
@@ -533,7 +537,7 @@ pub fn execute(
         "relayer-max-failed-heartbeats must be greater than zero"
     );
 
-    let relayer_config = RelayerConfig {
+    let relayer_config = Arc::new(Mutex::new(RelayerConfig {
         relayer_url: if matches.is_present("relayer_url") {
             value_of(matches, "relayer_url").expect("couldn't parse relayer_url")
         } else {
@@ -543,19 +547,35 @@ pub fn execute(
         oldest_allowed_heartbeat: Duration::from_millis(
             max_failed_heartbeats * expected_heartbeat_interval_ms,
         ),
-    };
+    }));
 
-    let shred_receiver_address = Arc::new(ArcSwap::from_pointee(
-        matches
-            .value_of("shred_receiver_address")
-            .map(|addr| SocketAddr::from_str(addr).expect("shred_receiver_address invalid")),
+    let shred_receiver_addresses = Arc::new(ArcSwap::from_pointee(
+        parse_shred_receiver_addresses(
+            matches
+                .values_of("shred_receiver_address")
+                .into_iter()
+                .flatten(),
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("shred_receiver_address invalid: {err}"),
+            )
+        })?,
     ));
-    let shred_retransmit_receiver_address = Arc::new(ArcSwap::from_pointee(
-        matches
-            .value_of("shred_retransmit_receiver_address")
-            .map(|addr| {
-                SocketAddr::from_str(addr).expect("shred_retransmit_receiver_address invalid")
-            }),
+    let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::from_pointee(
+        parse_shred_receiver_addresses(
+            matches
+                .values_of("shred_retransmit_receiver_address")
+                .into_iter()
+                .flatten(),
+        )
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("shred_retransmit_receiver_address invalid: {err}"),
+            )
+        })?,
     ));
 
     let mut validator_config = ValidatorConfig {
@@ -677,8 +697,8 @@ pub fn execute(
         // jito config
         relayer_config,
         block_engine_config,
-        shred_receiver_address,
-        shred_retransmit_receiver_address,
+        shred_receiver_addresses,
+        shred_retransmit_receiver_addresses,
         tip_manager_config,
         bam_url,
     };

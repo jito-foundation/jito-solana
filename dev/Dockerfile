@@ -1,8 +1,8 @@
-FROM rust:1.64-slim-bullseye as builder
+FROM rust:1.90-slim-bullseye AS builder
 
 # Add Google Protocol Buffers for Libra's metrics library.
-ENV PROTOC_VERSION 3.8.0
-ENV PROTOC_ZIP protoc-$PROTOC_VERSION-linux-x86_64.zip
+ENV PROTOC_VERSION=3.8.0
+ENV PROTOC_ZIP=protoc-$PROTOC_VERSION-linux-x86_64.zip
 
 RUN set -x \
  && apt update \
@@ -17,8 +17,6 @@ RUN set -x \
       pkg-config \
       zlib1g-dev \
       curl \
- && rustup component add rustfmt \
- && rustup component add clippy \
  && rustc --version \
  && cargo --version \
  && curl -OL https://github.com/google/protobuf/releases/download/v$PROTOC_VERSION/$PROTOC_ZIP \
