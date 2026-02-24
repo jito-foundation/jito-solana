@@ -108,6 +108,12 @@ impl Node {
             ip_echo_sockets.push(ip_echo);
         }
         let socket_config = SocketConfig::default();
+        let multicast_socket_config = if cfg!(target_os = "linux") {
+            const MULTICAST_TTL: u32 = 64;
+            SocketConfig::default().multicast_ttl(MULTICAST_TTL)
+        } else {
+            socket_config
+        };
 
         let (tvu_port, mut tvu_sockets) = multi_bind_in_range_with_config(
             bind_ip_addr,
@@ -210,7 +216,7 @@ impl Node {
         let (tvu_retransmit_port, mut retransmit_sockets) = multi_bind_in_range_with_config(
             bind_ip_addr,
             port_range,
-            socket_config,
+            multicast_socket_config,
             num_tvu_retransmit_sockets.get(),
         )
         .expect("tvu retransmit multi_bind");
@@ -220,7 +226,7 @@ impl Node {
                 &bind_ip_addrs,
                 tvu_retransmit_port,
                 num_tvu_retransmit_sockets.get(),
-                socket_config,
+                multicast_socket_config,
             )
             .expect("Secondary bind TVU retransmit"),
         );
@@ -238,11 +244,11 @@ impl Node {
                 .expect("serve_repair_quic");
 
         let (broadcast_port, mut broadcast) =
-            multi_bind_in_range_with_config(bind_ip_addr, port_range, socket_config, 4)
+            multi_bind_in_range_with_config(bind_ip_addr, port_range, multicast_socket_config, 4)
                 .expect("broadcast multi_bind");
         // Multihoming TX for broadcast
         broadcast.append(
-            &mut Self::bind_to_extra_ip(&bind_ip_addrs, broadcast_port, 4, socket_config)
+            &mut Self::bind_to_extra_ip(&bind_ip_addrs, broadcast_port, 4, multicast_socket_config)
                 .expect("Secondary bind broadcast"),
         );
 
