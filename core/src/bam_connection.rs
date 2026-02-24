@@ -583,12 +583,12 @@ impl BamConnectionMetrics {
 
 #[derive(Error, Debug)]
 pub enum TryInitError {
-    #[error("In leader slot")]
+    #[error("Currently in leader slot")]
     MidLeaderSlotError,
-    #[error("Invalid URI")]
+    #[error("Failed to connect to endpoint: {0}")]
     EndpointConnectError(#[from] tonic::transport::Error),
-    #[error("Connection timeout")]
+    #[error("Connection attempt timed out: {0}")]
     ConnectionTimeout(#[from] tokio::time::error::Elapsed),
-    #[error("Stream start error")]
+    #[error("Failed to start stream: {0}")]
     StreamStartError(#[from] tonic::Status),
 }
