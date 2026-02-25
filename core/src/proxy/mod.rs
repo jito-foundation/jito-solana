@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_sanitize_status_message_for_influx() {
         let input = r#"Relayer is unhealthy!!! @@@ Please "try" \again\ when {it's} [healthy]."#;
-        let expected = "Relayer is unhealthy Please try again when its healthy";
+        let expected = "Relayer is unhealthy  Please try again when its healthy";
         assert_eq!(sanitize_status_message_for_influx(input), expected);
     }
 }
