@@ -1,5 +1,5 @@
 use {
-    crate::proxy::ProxyError,
+    crate::proxy::{sanitize_status_message_for_influx, ProxyError},
     chrono::Utc,
     jito_protos::proto::auth::{
         auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
@@ -61,7 +61,10 @@ pub async fn generate_auth_tokens(
             if e.code() == Code::PermissionDenied {
                 ProxyError::AuthenticationPermissionDenied
             } else {
-                ProxyError::AuthenticationError(e.to_string())
+                ProxyError::AuthenticationError {
+                    code: e.code(),
+                    message: sanitize_status_message_for_influx(e.message()),
+                }
             }
         })?;
 
@@ -85,7 +88,10 @@ pub async fn generate_auth_tokens(
             signed_challenge,
         })
         .await
-        .map_err(|e| ProxyError::AuthenticationError(e.to_string()))?;
+        .map_err(|e| ProxyError::AuthenticationError {
+            code: e.code(),
+            message: sanitize_status_message_for_influx(e.message()),
+        })?;
 
     let inner = auth_tokens.into_inner();
     let access_token = get_validated_token(inner.access_token)?;
@@ -135,7 +141,10 @@ pub async fn maybe_refresh_auth_tokens(
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("generate_auth_tokens".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?;
+        .map_err(|e| ProxyError::MethodError {
+            code: tonic::Code::Unknown,
+            message: sanitize_status_message_for_influx(&e.to_string()),
+        })?;
 
         return Ok((Some(new_access_token), Some(new_refresh_token)));
     } else if should_refresh_access {
@@ -145,7 +154,10 @@ pub async fn maybe_refresh_auth_tokens(
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("refresh_access_token".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?;
+        .map_err(|e| ProxyError::MethodError {
+            code: tonic::Code::Unknown,
+            message: sanitize_status_message_for_influx(&e.to_string()),
+        })?;
 
         return Ok((Some(new_access_token), None));
     }
@@ -162,7 +174,10 @@ pub async fn refresh_access_token(
             refresh_token: refresh_token.value.clone(),
         })
         .await
-        .map_err(|e| ProxyError::AuthenticationError(e.to_string()))?;
+        .map_err(|e| ProxyError::AuthenticationError {
+            code: e.code(),
+            message: sanitize_status_message_for_influx(e.message()),
+        })?;
     get_validated_token(response.into_inner().access_token)
 }
 

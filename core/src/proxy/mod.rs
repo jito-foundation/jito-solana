@@ -29,8 +29,8 @@ type HeartbeatEvent = (SocketAddr, SocketAddr);
 
 #[derive(Error, Debug)]
 pub enum ProxyError {
-    #[error("grpc error: {0}")]
-    GrpcError(#[from] Status),
+    #[error("GrpcError: code={code}, message={message}")]
+    GrpcError { code: tonic::Code, message: String },
 
     #[error("stream disconnected")]
     GrpcStreamDisconnected,
@@ -49,12 +49,6 @@ pub enum ProxyError {
 
     #[error("invalid socket address: {0:?}")]
     InvalidSocketAddress(#[from] AddrParseError),
-
-    #[error("invalid gRPC data: {0:?}")]
-    InvalidData(String),
-
-    #[error("timeout: {0:?}")]
-    ConnectionError(#[from] tonic::transport::Error),
 
     #[error("AuthenticationConnectionTimeout")]
     AuthenticationConnectionTimeout,
@@ -80,8 +74,8 @@ pub enum ProxyError {
     #[error("BlockEngineConnectionError: {0:?}")]
     BlockEngineConnectionError(tonic::transport::Error),
 
-    #[error("BlockEngineRequestError: {0:?}")]
-    BlockEngineRequestError(tonic::Status),
+    #[error("BlockEngineRequestError: code={code}, message={message}")]
+    BlockEngineRequestError { code: tonic::Code, message: String },
 
     #[error("RelayerConnectionTimeout")]
     RelayerConnectionTimeout,
@@ -92,8 +86,8 @@ pub enum ProxyError {
     #[error("RelayerConnectionError: {0:?}")]
     RelayerConnectionError(String),
 
-    #[error("AuthenticationError: {0:?}")]
-    AuthenticationError(String),
+    #[error("AuthenticationError: code={code}, message={message}")]
+    AuthenticationError { code: tonic::Code, message: String },
 
     #[error("AuthenticationPermissionDenied")]
     AuthenticationPermissionDenied,
@@ -104,6 +98,37 @@ pub enum ProxyError {
     #[error("MethodTimeout: {0:?}")]
     MethodTimeout(String),
 
-    #[error("MethodError: {0:?}")]
-    MethodError(String),
+    #[error("MethodError: code={code}, message={message}")]
+    MethodError { code: tonic::Code, message: String },
+}
+
+const SANITIZED_MESSAGE_LIMIT: usize = 128;
+
+fn sanitize_status_message_for_influx(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | ' '))
+        .take(SANITIZED_MESSAGE_LIMIT)
+        .collect()
+}
+
+impl From<Status> for ProxyError {
+    fn from(status: Status) -> Self {
+        ProxyError::GrpcError {
+            code: status.code(),
+            message: sanitize_status_message_for_influx(status.message()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_status_message_for_influx() {
+        let input = r#"Relayer is unhealthy!!! @@@ Please "try" \again\ when {it's} [healthy]."#;
+        let expected = "Relayer is unhealthy  Please try again when its healthy";
+        assert_eq!(sanitize_status_message_for_influx(input), expected);
+    }
 }
