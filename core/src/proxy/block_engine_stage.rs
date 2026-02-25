@@ -12,7 +12,7 @@ use {
         proto_packet_to_packet,
         proxy::{
             auth::{generate_auth_tokens, maybe_refresh_auth_tokens, AuthInterceptor},
-            ProxyError,
+            sanitize_status_message_for_influx, ProxyError,
         },
     },
     ahash::HashMapExt,
@@ -447,7 +447,10 @@ impl BlockEngineStage {
         let endpoints = endpoint_discovery
             .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
             .await
-            .map_err(|e| ProxyError::BlockEngineRequestError(Box::new(e)))?
+            .map_err(|s| ProxyError::BlockEngineRequestError {
+                code: s.code(),
+                message: sanitize_status_message_for_influx(s.message()),
+            })?
             .into_inner();
         datapoint_info!(
             "block_engine_stage-autoconfig",
@@ -496,7 +499,10 @@ impl BlockEngineStage {
         let endpoints = endpoint_discovery
             .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
             .await
-            .map_err(|e| ProxyError::BlockEngineRequestError(Box::new(e)))?
+            .map_err(|s| ProxyError::BlockEngineRequestError {
+                code: s.code(),
+                message: sanitize_status_message_for_influx(s.message()),
+            })?
             .into_inner();
 
         let Some(global) = endpoints.global_endpoint else {
@@ -550,7 +556,11 @@ impl BlockEngineStage {
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))
+            .map_err(|e| {
+                ProxyError::AuthenticationConnectionError(sanitize_status_message_for_influx(
+                    &e.to_string(),
+                ))
+            })
             .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
@@ -820,7 +830,10 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|e| ProxyError::MethodError {
+            code: e.code(),
+            message: sanitize_status_message_for_influx(e.message()),
+        })
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
 
@@ -830,7 +843,10 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|e| ProxyError::MethodError {
+            code: e.code(),
+            message: sanitize_status_message_for_influx(e.message()),
+        })
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
 
@@ -840,7 +856,10 @@ impl BlockEngineStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))
+        .map_err(|e| ProxyError::MethodError {
+            code: e.code(),
+            message: sanitize_status_message_for_influx(e.message()),
+        })
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
         .into_inner();
         {
@@ -928,8 +947,9 @@ impl BlockEngineStage {
             tokio::select! {
                 maybe_packet = packet_stream.message() => {
                     let resp = maybe_packet
-                        .map_err(|e| {
-                            Self::map_bam_enabled(bam_enabled, ProxyError::GrpcError(Box::new(e)))
+                        .map_err(|s| ProxyError::GrpcError {
+                            code: s.code(),
+                            message: sanitize_status_message_for_influx(s.message()),
                         })?
                         .ok_or(ProxyError::GrpcStreamDisconnected)
                         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
@@ -937,8 +957,9 @@ impl BlockEngineStage {
                 }
                 maybe_bundles = bundle_stream.message() => {
                     let resp = maybe_bundles
-                        .map_err(|e| {
-                            Self::map_bam_enabled(bam_enabled, ProxyError::GrpcError(Box::new(e)))
+                        .map_err(|s| ProxyError::GrpcError {
+                            code: s.code(),
+                            message: sanitize_status_message_for_influx(s.message()),
                         })?
                         .ok_or(ProxyError::GrpcStreamDisconnected)
                         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
@@ -992,7 +1013,7 @@ impl BlockEngineStage {
                     )
                     .await
                     .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-                    .map_err(|e| ProxyError::MethodError(e.to_string()))
+                    .map_err(|e| ProxyError::MethodError { code: e.code(), message: sanitize_status_message_for_influx(e.message()) })
                     .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
                     .into_inner();
                     let block_builder_pubkey =
