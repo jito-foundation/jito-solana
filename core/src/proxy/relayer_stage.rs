@@ -13,7 +13,7 @@ use {
         proto_packet_to_packet,
         proxy::{
             auth::{generate_auth_tokens, maybe_refresh_auth_tokens, AuthInterceptor},
-            HeartbeatEvent, ProxyError,
+            sanitize_status_message_for_influx, HeartbeatEvent, ProxyError,
         },
     },
     crossbeam_channel::Sender,
@@ -217,7 +217,11 @@ impl RelayerStage {
         let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| ProxyError::AuthenticationConnectionError(e.to_string()))?;
+            .map_err(|e| {
+                ProxyError::AuthenticationConnectionError(sanitize_status_message_for_influx(
+                    &e.to_string(),
+                ))
+            })?;
 
         let mut auth_client = AuthServiceClient::new(auth_channel);
 
@@ -242,7 +246,11 @@ impl RelayerStage {
         let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::RelayerConnectionTimeout)?
-            .map_err(|e| ProxyError::RelayerConnectionError(e.to_string()))?;
+            .map_err(|e| {
+                ProxyError::RelayerConnectionError(sanitize_status_message_for_influx(
+                    &e.to_string(),
+                ))
+            })?;
 
         let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(
@@ -291,7 +299,7 @@ impl RelayerStage {
             .map_err(|_| ProxyError::MethodTimeout("relayer_get_tpu_configs".to_string()))?
             .map_err(|e| ProxyError::MethodError {
                 code: e.code(),
-                message: e.message().to_string(),
+                message: sanitize_status_message_for_influx(e.message()),
             })?
             .into_inner();
 
@@ -318,7 +326,7 @@ impl RelayerStage {
         .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
         .map_err(|e| ProxyError::MethodError {
             code: e.code(),
-            message: e.message().to_string(),
+            message: sanitize_status_message_for_influx(e.message()),
         })?
         .into_inner();
 
@@ -373,7 +381,7 @@ impl RelayerStage {
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
-                    let resp = maybe_msg.map_err(|e| ProxyError::GrpcError{ code: e.code(),message: e.message().to_string()})?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+                    let resp = maybe_msg.map_err(|e| ProxyError::GrpcError{ code: e.code(),message: sanitize_status_message_for_influx(e.message())})?.ok_or(ProxyError::GrpcStreamDisconnected)?;
                     Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, &mut relayer_stats)?;
                 }
                 _ = heartbeat_check_interval.tick() => {
