@@ -25,31 +25,26 @@ pub fn parse_shred_receiver_addresses<I: IntoIterator<Item = S>, S: AsRef<str>>(
     values: I,
 ) -> Result<ShredReceiverAddresses, String> {
     let mut addrs = ShredReceiverAddresses::new();
-    let mut saw_non_empty_value = false;
     for value in values {
         let value = value.as_ref().trim();
-        if value.is_empty() {
-            continue;
-        }
-        saw_non_empty_value = true;
-        for addr in value.split(',').map(str::trim) {
-            if addr.is_empty() {
-                continue;
-            }
+        for addr in value
+            .split(',')
+            .map(str::trim)
+            .filter(|addr| !addr.is_empty())
+        {
             // Avoid DNS resolution for direct socket addresses.
             if let Ok(socket_addr) = addr.parse::<SocketAddr>() {
                 push_unique_addr(&mut addrs, socket_addr)?;
                 continue;
             }
+
             let resolved = addr
                 .to_socket_addrs()
                 .map_err(|err| format!("Unable to resolve host {addr}: {err}"))?;
             let mut resolved_any_ipv4 = false;
-            for socket_addr in resolved {
-                if socket_addr.is_ipv4() {
-                    resolved_any_ipv4 = true; // avoid ipv6 due to XDP path will panic
-                    push_unique_addr(&mut addrs, socket_addr)?;
-                }
+            for socket_addr in resolved.filter(SocketAddr::is_ipv4) {
+                resolved_any_ipv4 = true; // avoid ipv6 due to XDP path will panic
+                push_unique_addr(&mut addrs, socket_addr)?;
             }
             if !resolved_any_ipv4 {
                 return Err(format!(
@@ -57,10 +52,6 @@ pub fn parse_shred_receiver_addresses<I: IntoIterator<Item = S>, S: AsRef<str>>(
                 ));
             }
         }
-    }
-    // Treat an empty-only input set as an explicit disable.
-    if !saw_non_empty_value {
-        return Ok(ShredReceiverAddresses::new());
     }
     Ok(addrs)
 }

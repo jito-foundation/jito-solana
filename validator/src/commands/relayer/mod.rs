@@ -20,7 +20,6 @@ pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
                 .long("relayer-expected-heartbeat-interval-ms")
                 .takes_value(true)
                 .help("Interval at which the Relayer is expected to send heartbeat messages.")
-                .required(false)
                 .default_value(&default_args.relayer_expected_heartbeat_interval_ms),
         )
         .arg(
@@ -31,7 +30,6 @@ pub fn command(default_args: &DefaultArgs) -> App<'_, '_> {
                     "Maximum number of heartbeats the Relayer can miss before falling back to the \
                      normal TPU pipeline.",
                 )
-                .required(false)
                 .default_value(&default_args.relayer_max_failed_heartbeats),
         )
 }
