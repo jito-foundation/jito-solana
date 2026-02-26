@@ -81,13 +81,11 @@ impl FetchStageManager {
         Builder::new()
             .name("fetch-stage-manager".into())
             .spawn(move || {
-                // Save original TPU info
-                // yes, using UDP here is extremely confusing for the validator
-                // since the entire network is running QUIC. However, it's correct.
+                // Save original TPU info.
                 let original_tpu_info = (
-                    my_fallback_contact_info.tpu(Protocol::UDP).unwrap(),
+                    my_fallback_contact_info.tpu(Protocol::QUIC).unwrap(),
                     my_fallback_contact_info
-                        .tpu_forwards(Protocol::UDP)
+                        .tpu_forwards(Protocol::QUIC)
                         .unwrap(),
                 );
 
@@ -262,6 +260,8 @@ impl FetchStageTpuStateMachine {
             == BamConnectionState::Connected
     }
 
+    // NOTE: For BAM and Relayer sockets we add +6.
+    // Those systems still conform to legacy pre v4.X agave offsetting scheme, so the TPU port is actually 6 higher than the one returned from them.
     fn get_next_tpu_state(&self) -> TpuState {
         // BAM has the highest priority.
         // We'll always advertise BAM TPU even if relayer-url is set.
@@ -269,8 +269,8 @@ impl FetchStageTpuStateMachine {
             if let Some((addr, fwd_addr)) = self.bam_tpu_info.load().as_ref() {
                 return TpuState {
                     tpu_type: TpuConnectionType::Bam,
-                    addr: *addr,
-                    fwd_addr: *fwd_addr,
+                    addr: SocketAddr::new(addr.ip(), addr.port().saturating_add(6)),
+                    fwd_addr: SocketAddr::new(fwd_addr.ip(), fwd_addr.port().saturating_add(6)),
                 };
             }
         }
@@ -281,15 +281,12 @@ impl FetchStageTpuStateMachine {
             now.duration_since(info.last_heartbeat) < self.max_time_between_relayer_heartbeats
                 && now.duration_since(info.first_heartbeat) > self.relayer_tpu_enable_delay
         }) {
+            let relayer_addr = self.relayer_info.as_ref().unwrap().tpu_addresses.tpu_addr;
+            let relayer_fwd_addr = self.relayer_info.as_ref().unwrap().tpu_addresses.tpu_forward_addr;
             return TpuState {
                 tpu_type: TpuConnectionType::Relayer,
-                addr: self.relayer_info.as_ref().unwrap().tpu_addresses.tpu_addr,
-                fwd_addr: self
-                    .relayer_info
-                    .as_ref()
-                    .unwrap()
-                    .tpu_addresses
-                    .tpu_forward_addr,
+                addr: SocketAddr::new(relayer_addr.ip(), relayer_addr.port().saturating_add(6)),
+                fwd_addr: SocketAddr::new(relayer_fwd_addr.ip(), relayer_fwd_addr.port().saturating_add(6)),
             };
         }
 
@@ -435,7 +432,7 @@ impl FetchStageTpuStateMachine {
             .cluster_info
             .set_tpu_forwards_quic(self.current_tpu_state.fwd_addr)
         {
-            error!("Failed to set TPU FWD addresses: {e:?}");
+            error!("Failed to set TPU FWD QUIC address: {e:?}");
             return false;
         }
 
@@ -611,17 +608,19 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to relayer and packets should NOT be forwarded
+        let expected_relayer_addr = SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
+        let expected_relayer_fwd_addr = SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Relayer,
-            &relayer_tpu_addr,
-            &relayer_tpu_fwd_addr,
+            &expected_relayer_addr,
+            &expected_relayer_fwd_addr,
         );
-        check_cluster_info(&cluster_info, &relayer_tpu_addr, &relayer_tpu_fwd_addr);
+        check_cluster_info(&cluster_info, &expected_relayer_addr, &expected_relayer_fwd_addr);
         check_sending_packet(&mut brain, &packet_rx, false);
 
         // Simulate relayer heartbeat timeout by waiting longer than heartbeat_check_interval
-        std::thread::sleep(heartbeat_check_interval.saturating_mul(2));
+        thread::sleep(heartbeat_check_interval.saturating_mul(2));
         assert!(brain.state_machine_tick());
         // Should have switched back to original and packets should be forwarded
         check_brain(
@@ -674,13 +673,15 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to BAM and packets should NOT be forwarded
+        let expected_bam_addr = SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6);
+        let expected_bam_fwd_addr = SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Bam,
-            &bam_tpu_addr,
-            &bam_tpu_fwd_addr,
+            &expected_bam_addr,
+            &expected_bam_fwd_addr,
         );
-        check_cluster_info(&cluster_info, &bam_tpu_addr, &bam_tpu_fwd_addr);
+        check_cluster_info(&cluster_info, &expected_bam_addr, &expected_bam_fwd_addr);
         check_sending_packet(&mut brain, &packet_rx, false);
 
         // Disable BAM
@@ -724,13 +725,15 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should be BAM and packets should NOT be forwarded
+        let expected_bam_addr = SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6);
+        let expected_bam_fwd_addr = SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Bam,
-            &bam_tpu_addr,
-            &bam_tpu_fwd_addr,
+            &expected_bam_addr,
+            &expected_bam_fwd_addr,
         );
-        check_cluster_info(&cluster_info, &bam_tpu_addr, &bam_tpu_fwd_addr);
+        check_cluster_info(&cluster_info, &expected_bam_addr, &expected_bam_fwd_addr);
         check_sending_packet(&mut brain, &packet_rx, false);
 
         // Simulate relayer heartbeat
@@ -746,10 +749,10 @@ mod tests {
         check_brain(
             &brain,
             TpuConnectionType::Bam,
-            &bam_tpu_addr,
-            &bam_tpu_fwd_addr,
+            &expected_bam_addr,
+            &expected_bam_fwd_addr,
         );
-        check_cluster_info(&cluster_info, &bam_tpu_addr, &bam_tpu_fwd_addr);
+        check_cluster_info(&cluster_info, &expected_bam_addr, &expected_bam_fwd_addr);
         check_sending_packet(&mut brain, &packet_rx, false);
 
         // Disable BAM
@@ -757,13 +760,15 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to relayer and packets should NOT be forwarded
+        let expected_relayer_addr = SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
+        let expected_relayer_fwd_addr = SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Relayer,
-            &relayer_tpu_addr,
-            &relayer_tpu_fwd_addr,
+            &expected_relayer_addr,
+            &expected_relayer_fwd_addr,
         );
-        check_cluster_info(&cluster_info, &relayer_tpu_addr, &relayer_tpu_fwd_addr);
+        check_cluster_info(&cluster_info, &expected_relayer_addr, &expected_relayer_fwd_addr);
         check_sending_packet(&mut brain, &packet_rx, false);
     }
 
