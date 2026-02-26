@@ -9166,9 +9166,9 @@ dependencies = [
 
 [[package]]
 name = "solana-instruction-error"
-version = "2.1.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b04259e03c05faf38a8c24217b5cfe4c90572ae6184ab49cddb1584fdd756d3f"
+checksum = "7d3d048edaaeef5a3dc8c01853e585539a74417e4c2d43a9e2c161270045b838"
 dependencies = [
  "num-traits",
  "serde",
