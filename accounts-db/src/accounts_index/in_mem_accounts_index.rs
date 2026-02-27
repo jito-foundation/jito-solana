@@ -442,8 +442,12 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
     }
 
     // If the slot list for pubkey exists in the index and is empty, remove the index entry for pubkey and return true.
-    // Return false otherwise.
-    pub fn remove_if_slot_list_empty(&self, pubkey: Pubkey) -> bool {
+    // Return false otherwise. `if_removed` is called while this bin's write lock is still held.
+    pub fn remove_if_slot_list_empty(
+        &self,
+        pubkey: Pubkey,
+        if_removed: impl FnOnce(),
+    ) -> bool {
         let mut m = Measure::start("entry");
         let mut map = self.map_internal.write().unwrap();
         let capacity_pre = map.capacity();
@@ -451,6 +455,9 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> InMemAccountsIndex<T,
         m.stop();
         let found = matches!(entry, Entry::Occupied(_));
         let result = self.remove_if_slot_list_empty_entry(entry);
+        if result {
+            if_removed();
+        }
         let capacity_post = map.capacity();
         drop(map);
         self.stats()
