@@ -13,6 +13,8 @@ if [[ -n $BUILDKITE_PULL_REQUEST && $BUILDKITE_PULL_REQUEST != "false" ]]; then
   is_pr_build=true
 elif [[ -n $CI_PULL_REQUEST ]]; then
   is_pr_build=true
+elif [[ $CI == "true" ]]; then
+  is_pr_build=true
 fi
 
 if $is_pr_build; then
