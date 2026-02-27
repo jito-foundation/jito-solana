@@ -570,34 +570,32 @@ impl AdminRpc for AdminRpcImpl {
             trust_packets,
         };
         // Detailed log messages are printed inside validate function
-        if BlockEngineStage::is_valid_block_engine_config(&config) {
-            meta.with_post_init(|post_init| {
-                *post_init.block_engine_config.lock().unwrap() = config;
-                Ok(())
-            })
-        } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
+        if !BlockEngineStage::is_valid_block_engine_config(&config) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
                 "failed to set block engine config. see logs for details.",
-            ))
+            ));
         }
+        meta.with_post_init(|post_init| {
+            *post_init.block_engine_config.lock().unwrap() = config;
+            Ok(())
+        })
     }
 
     fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
-        let (bam_url, manual_disconnect) = match bam_url {
-            Some(url) if url.trim().is_empty() => (None, true),
-            Some(url) => (Some(url), false),
-            None => (None, false),
-        };
+        let manual_disconnect = bam_url.as_deref().is_some_and(|url| url.trim().is_empty());
+        let bam_url = bam_url.filter(|url| !url.trim().is_empty());
         let old_bam_url = meta.bam_url.load();
         debug!("set_bam_url old= {old_bam_url:?}, new={bam_url:?}");
 
         if let Some(new_bam_url) = &bam_url {
-            if let Err(e) = Endpoint::from_str(new_bam_url) {
-                return Err(jsonrpc_core::error::Error::invalid_params(format!(
+            Endpoint::from_str(new_bam_url).map_err(|e| {
+                jsonrpc_core::error::Error::invalid_params(format!(
                     "Could not create endpoint: {e}"
-                )));
-            }
-        } else if manual_disconnect {
+                ))
+            })?;
+        }
+
+        if bam_url.is_none() && manual_disconnect {
             datapoint_info!(
                 "bam_manually_disconnected",
                 ("count", 1, i64),
@@ -664,16 +662,15 @@ impl AdminRpc for AdminRpcImpl {
             oldest_allowed_heartbeat,
         };
         // Detailed log messages are printed inside validate function
-        if RelayerStage::is_valid_relayer_config(&config) {
-            meta.with_post_init(|post_init| {
-                *post_init.relayer_config.lock().unwrap() = config;
-                Ok(())
-            })
-        } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
+        if !RelayerStage::is_valid_relayer_config(&config) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
                 "failed to set relayer config. see logs for details.",
-            ))
+            ));
         }
+        meta.with_post_init(|post_init| {
+            *post_init.relayer_config.lock().unwrap() = config;
+            Ok(())
+        })
     }
 
     fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {

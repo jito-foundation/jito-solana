@@ -7,13 +7,14 @@ use {
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
         bam_dependencies::{BamConnectionState, BamDependencies},
         bam_manager::BamManager,
-        banking_stage::consumer::TipProcessingDependencies,
         banking_stage::{
+            consumer::TipProcessingDependencies,
             transaction_scheduler::scheduler_controller::SchedulerConfig, BankingControlMsg,
             BankingStage, BankingStageHandle,
         },
         banking_trace::{Channels, TracerThread},
-        // bundle_stage::bundle_account_locker::BundleAccountLocker,
+        bundle_sigverify_stage::BundleSigverifyStage,
+        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoterSlotsSender, VoteTracker,
@@ -30,11 +31,12 @@ use {
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
-        // tip_manager::{TipManager, TipManagerConfig},
+        tip_manager::{TipManager, TipManagerConfig},
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig},
         vortexor_receiver_adapter::VortexorReceiverAdapter,
     },
+    ahash::{HashSet, HashSetExt},
     arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{bounded, unbounded, Receiver},
@@ -87,14 +89,6 @@ use {
     },
     tokio::sync::{mpsc, mpsc::Sender as AsyncSender},
     tokio_util::sync::CancellationToken,
-};
-use {
-    crate::{
-        bundle_sigverify_stage::BundleSigverifyStage,
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
-        tip_manager::{TipManager, TipManagerConfig},
-    },
-    ahash::{HashSet, HashSetExt},
 };
 
 pub struct TpuSockets {

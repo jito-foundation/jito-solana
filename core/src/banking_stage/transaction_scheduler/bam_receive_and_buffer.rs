@@ -156,15 +156,14 @@ impl BamReceiveAndBuffer {
                 stats = ReceivingStats::default();
             }
 
-            let start = Instant::now();
-            let (recv_info, receive_time_us) = measure_us!(Self::batch_receive_until(
+            let recv_info = Self::batch_receive_until(
                 &bundle_receiver,
                 &mut recv_buffer,
-                &start,
+                &loop_start,
                 TIMEOUT,
-                ATOMIC_TXN_BATCH_BURST
-            ));
-            stats.receive_time_us += receive_time_us;
+                ATOMIC_TXN_BATCH_BURST,
+            );
+            stats.receive_time_us += loop_start.elapsed().as_micros() as u64;
 
             match recv_info {
                 Ok((_, num_batches_received)) => {
@@ -195,8 +194,8 @@ impl BamReceiveAndBuffer {
             recv_buffer.clear();
 
             for result in verify_results.drain(..) {
-                match result {
-                    Ok((verified_batch, revert_on_error, seq_id, max_schedule_slot)) => {
+                let parsed_batch = match result.and_then(
+                    |(verified_batch, revert_on_error, seq_id, max_schedule_slot)| {
                         metrics
                             .sigverify_metrics
                             .increment_total_batches_verified(1);
@@ -212,33 +211,10 @@ impl BamReceiveAndBuffer {
                             ));
                         stats.accumulate(parse_stats);
                         metrics.increment_total_us(duration_us);
-
-                        let parsed_batch = match parse_result {
-                            Ok(batch) => batch,
-                            Err(reason) => {
-                                let _ =
-                                    response_sender
-                                        .try_send(BamOutboundMessage::AtomicTxnBatchResult(
-                                        jito_protos::proto::bam_types::AtomicTxnBatchResult {
-                                            seq_id,
-                                            result: Some(
-                                                atomic_txn_batch_result::Result::NotCommitted(
-                                                    jito_protos::proto::bam_types::NotCommitted {
-                                                        reason: Some(reason),
-                                                    },
-                                                ),
-                                            ),
-                                        },
-                                    ));
-                                continue;
-                            }
-                        };
-
-                        stats.num_buffered = stats
-                            .num_buffered
-                            .saturating_add(parsed_batch.txns_max_age.len());
-                        let _ = parsed_batch_sender.try_send(parsed_batch);
-                    }
+                        parse_result.map_err(|reason| (reason, seq_id))
+                    },
+                ) {
+                    Ok(batch) => batch,
                     Err((reason, seq_id)) => {
                         let _ = response_sender.try_send(BamOutboundMessage::AtomicTxnBatchResult(
                             jito_protos::proto::bam_types::AtomicTxnBatchResult {
@@ -252,7 +228,12 @@ impl BamReceiveAndBuffer {
                         ));
                         continue;
                     }
-                }
+                };
+
+                stats.num_buffered = stats
+                    .num_buffered
+                    .saturating_add(parsed_batch.txns_max_age.len());
+                let _ = parsed_batch_sender.try_send(parsed_batch);
             }
         }
     }
@@ -571,11 +552,13 @@ impl BamReceiveAndBuffer {
         recv_buffer.push(batch);
 
         while let Ok(batch) = bundle_receiver.try_recv() {
-            trace!("got more packet batches in bam receive and buffer");
             num_packets_received += batch.packets.len();
             num_atomic_txn_batches_received += 1;
             recv_buffer.push(batch);
-            if start.elapsed() > recv_timeout || recv_buffer.len() >= batch_count_upperbound {
+            if recv_buffer.len() >= batch_count_upperbound
+                || (num_atomic_txn_batches_received % 8 == 1 && start.elapsed() > recv_timeout)
+            // check if time exceeded on every 8th iteration
+            {
                 break;
             }
         }

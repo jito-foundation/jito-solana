@@ -511,11 +511,7 @@ pub fn execute(
     let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
 
     let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig {
-        block_engine_url: if matches.is_present("block_engine_url") {
-            value_of(matches, "block_engine_url").expect("couldn't parse block_engine_url")
-        } else {
-            String::default()
-        },
+        block_engine_url: value_of(matches, "block_engine_url").unwrap_or_default(),
         disable_block_engine_autoconfig: matches.is_present("disable_block_engine_autoconfig"),
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
@@ -525,24 +521,16 @@ pub fn execute(
     ));
 
     // Defaults are set in cli definition, safe to use unwrap() here
-    let expected_heartbeat_interval_ms: u64 =
-        value_of(matches, "relayer_expected_heartbeat_interval_ms").unwrap();
-    assert!(
-        expected_heartbeat_interval_ms > 0,
-        "relayer-max-failed-heartbeats must be greater than zero"
-    );
-    let max_failed_heartbeats: u64 = value_of(matches, "relayer_max_failed_heartbeats").unwrap();
-    assert!(
-        max_failed_heartbeats > 0,
-        "relayer-max-failed-heartbeats must be greater than zero"
-    );
+    let expected_heartbeat_interval_ms =
+        value_of::<NonZeroU64>(matches, "relayer_expected_heartbeat_interval_ms")
+            .expect("couldn't parse relayer_expected_heartbeat_interval_ms")
+            .get();
+    let max_failed_heartbeats = value_of::<NonZeroU64>(matches, "relayer_max_failed_heartbeats")
+        .expect("couldn't parse relayer_max_failed_heartbeats")
+        .get();
 
     let relayer_config = Arc::new(Mutex::new(RelayerConfig {
-        relayer_url: if matches.is_present("relayer_url") {
-            value_of(matches, "relayer_url").expect("couldn't parse relayer_url")
-        } else {
-            "".to_string()
-        },
+        relayer_url: value_of(matches, "relayer_url").unwrap_or_default(),
         expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
         oldest_allowed_heartbeat: Duration::from_millis(
             max_failed_heartbeats * expected_heartbeat_interval_ms,
@@ -606,7 +594,7 @@ pub fn execute(
             )
         }),
         pubsub_config: run_args.pub_sub_config,
-        voting_disabled: matches.is_present("no_voting") || restricted_repair_only_mode,
+        voting_disabled,
         wait_for_supermajority: value_t!(matches, "wait_for_supermajority", Slot).ok(),
         known_validators: run_args.known_validators,
         repair_validators,
@@ -1364,50 +1352,35 @@ fn tip_manager_config_from_matches(
     matches: &ArgMatches,
     voting_disabled: bool,
 ) -> TipManagerConfig {
-    TipManagerConfig {
-        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
-            || {
-                if !voting_disabled {
-                    panic!(
-                        "--tip-payment-program-pubkey argument required when validator is voting"
-                    );
-                }
-                Pubkey::new_unique()
+    if voting_disabled {
+        return TipManagerConfig {
+            tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey")
+                .unwrap_or_else(Pubkey::new_unique),
+            tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
+                .unwrap_or_else(Pubkey::new_unique),
+            tip_distribution_account_config: TipDistributionAccountConfig {
+                merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
+                    .unwrap_or_else(Pubkey::new_unique),
+                vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(Pubkey::new_unique),
+                commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_default(),
             },
-        ),
+        };
+    }
+
+    TipManagerConfig {
+        tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey")
+            .expect("--tip-payment-program-pubkey argument required when validator is voting"),
         tip_distribution_program_id: pubkey_of(matches, "tip_distribution_program_pubkey")
-            .unwrap_or_else(|| {
-                if !voting_disabled {
-                    panic!(
-                        "--tip-distribution-program-pubkey argument required when validator is \
-                         voting"
-                    );
-                }
-                Pubkey::new_unique()
-            }),
+            .expect("--tip-distribution-program-pubkey argument required when validator is voting"),
         tip_distribution_account_config: TipDistributionAccountConfig {
             merkle_root_upload_authority: pubkey_of(matches, "merkle_root_upload_authority")
-                .unwrap_or_else(|| {
-                    if !voting_disabled {
-                        panic!(
-                            "--merkle-root-upload-authority argument required when validator is \
-                             voting"
-                        );
-                    }
-                    Pubkey::new_unique()
-                }),
-            vote_account: pubkey_of(matches, "vote_account").unwrap_or_else(|| {
-                if !voting_disabled {
-                    panic!("--vote-account argument required when validator is voting");
-                }
-                Pubkey::new_unique()
-            }),
-            commission_bps: value_t!(matches, "commission_bps", u16).unwrap_or_else(|_| {
-                if !voting_disabled {
-                    panic!("--commission-bps argument required when validator is voting");
-                }
-                0
-            }),
+                .expect(
+                    "--merkle-root-upload-authority argument required when validator is voting",
+                ),
+            vote_account: pubkey_of(matches, "vote_account")
+                .expect("--vote-account argument required when validator is voting"),
+            commission_bps: value_t!(matches, "commission_bps", u16)
+                .expect("--commission-bps argument required when validator is voting"),
         },
     }
 }

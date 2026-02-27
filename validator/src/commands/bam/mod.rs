@@ -12,8 +12,6 @@ pub enum BamUrlError {
     InvalidUrlFormat { url: String, source: ParseError },
     #[error("BAM URL unsupported scheme '{scheme}', only http and https are allowed")]
     UnsupportedScheme { scheme: String },
-    #[error("BAM URL host cannot be empty")]
-    EmptyHost { url: String },
     #[error("BAM URL failed to set default port")]
     PortSetFailed { url: String },
 }
@@ -35,57 +33,45 @@ const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 /// # Errors
 /// Returns an error if the URL is invalid or uses an unsupported scheme.
 fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
-    let url_str_to_parse = if url_str.contains("://") {
-        url_str.into()
+    let url_str = url_str.trim();
+    let parse_target = if url_str.contains("://") {
+        url_str.to_string()
     } else {
         format!("{DEFAULT_BAM_URL_SCHEME}://{url_str}")
     };
-    let url = Url::parse(&url_str_to_parse).map_err(|e| BamUrlError::InvalidUrlFormat {
+
+    let mut url = Url::parse(&parse_target).map_err(|source| BamUrlError::InvalidUrlFormat {
         url: url_str.to_string(),
-        source: e,
+        source,
     })?;
 
-    let scheme = url.scheme();
-    if !matches!(scheme, "http" | "https") {
-        return Err(BamUrlError::UnsupportedScheme {
-            scheme: scheme.to_string(),
-        });
-    }
-
-    // Check if host is empty
-    match url.host_str() {
-        None | Some("") => {
-            return Err(BamUrlError::EmptyHost {
-                url: url_str.to_string(),
-            })
-        }
-        Some(_) => {}
-    }
-
-    // Transform URL to add default port if missing
-    let final_url = match url.port() {
-        Some(_) => url, // Port already specified
-        None => {
-            let default_port = match scheme {
-                "https" => DEFAULT_BAM_HTTPS_PORT,
-                _ => DEFAULT_BAM_HTTP_PORT,
-            };
-            let mut url_with_port = url;
-            url_with_port
-                .set_port(Some(default_port))
-                .map_err(|_| BamUrlError::PortSetFailed {
-                    url: url_str.to_string(),
-                })?;
-            url_with_port
+    let default_port = match url.scheme() {
+        "http" => DEFAULT_BAM_HTTP_PORT,
+        "https" => DEFAULT_BAM_HTTPS_PORT,
+        scheme => {
+            return Err(BamUrlError::UnsupportedScheme {
+                scheme: scheme.to_string(),
+            });
         }
     };
 
-    let final_url_string = final_url.to_string();
-    if url_str.ends_with('/') {
-        Ok(final_url_string)
-    } else {
-        Ok(final_url_string.trim_end_matches('/').to_string())
+    if url.port().is_none() {
+        url.set_port(Some(default_port))
+            .map_err(|_| BamUrlError::PortSetFailed {
+                url: url_str.to_string(),
+            })?;
     }
+
+    let mut normalized = url.to_string();
+    if !url_str.ends_with('/')
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+    {
+        normalized.pop();
+    }
+
+    Ok(normalized)
 }
 
 /// Extract and validate BAM URL from command line arguments.
@@ -111,15 +97,12 @@ fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
 /// let bam_url = extract_bam_url(&matches)?;
 /// ```
 pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlError> {
-    match matches.value_of("bam_url") {
-        Some(url) => {
-            if url.trim().is_empty() {
-                return Ok(None);
-            }
-            normalize_bam_url(url).map(Some)
-        }
-        None => Ok(None),
-    }
+    matches
+        .value_of("bam_url")
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(normalize_bam_url)
+        .transpose()
 }
 
 pub fn argument() -> Arg<'static, 'static> {
@@ -141,7 +124,6 @@ pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> crate::co
     if !subcommand_matches.is_present("bam_url") {
         return Ok(());
     }
-
     let bam_url = extract_bam_url(subcommand_matches)
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
     let admin_client = admin_rpc_service::connect(ledger_path);
@@ -156,13 +138,7 @@ mod tests {
 
     fn create_test_matches(bam_url: Option<&str>) -> ArgMatches<'_> {
         let app = clap::App::new("test-app").arg(argument());
-
-        let args = if let Some(url) = bam_url {
-            vec!["test-app", "--bam-url", url]
-        } else {
-            vec!["test-app"]
-        };
-
+        let args = bam_url.map_or(vec!["test-app"], |url| vec!["test-app", "--bam-url", url]);
         app.get_matches_from(args)
     }
 
@@ -180,34 +156,11 @@ mod tests {
 
     fn assert_extract_bam_url_error<S: AsRef<str>>(input: S, expected_variant: BamUrlError) {
         let matches = create_test_matches(Some(input.as_ref()));
-        let result = extract_bam_url(&matches);
-        assert!(
-            result.is_err(),
-            "Expected error for input: '{}', but got: {:?}",
-            input.as_ref(),
-            result.ok()
-        );
-        let actual_error = result.unwrap_err();
-
-        // Use matches! macro to check the error variant type
-        let matches_expected = matches!(
-            (&actual_error, &expected_variant),
-            (
-                BamUrlError::UnsupportedScheme { .. },
-                BamUrlError::UnsupportedScheme { .. }
-            ) | (BamUrlError::EmptyHost { .. }, BamUrlError::EmptyHost { .. })
-                | (
-                    BamUrlError::InvalidUrlFormat { .. },
-                    BamUrlError::InvalidUrlFormat { .. }
-                )
-                | (
-                    BamUrlError::PortSetFailed { .. },
-                    BamUrlError::PortSetFailed { .. }
-                )
-        );
-
-        assert!(
-            matches_expected,
+        let actual_error = extract_bam_url(&matches)
+            .expect_err(&format!("Expected error for input: '{}'", input.as_ref()));
+        assert_eq!(
+            std::mem::discriminant(&actual_error),
+            std::mem::discriminant(&expected_variant),
             "Expected error variant '{:?}' for input: '{}', but got: '{:?}'",
             expected_variant,
             input.as_ref(),
@@ -281,10 +234,9 @@ mod tests {
     #[test_case("https://" ; "https with empty host")]
     #[test_case("http://:50055" ; "http with port but empty host")]
     fn test_extract_bam_url_invalid_formats(input: &str) {
-        let expected_source = if input == "://invalid" {
-            ParseError::RelativeUrlWithoutBase
-        } else {
-            ParseError::EmptyHost
+        let expected_source = match input {
+            "://invalid" => ParseError::RelativeUrlWithoutBase,
+            _ => ParseError::EmptyHost,
         };
         assert_extract_bam_url_error(
             input,
@@ -340,9 +292,6 @@ mod tests {
     #[test]
     fn test_extract_bam_url_missing_argument() {
         let matches = create_test_matches(None);
-        let result = extract_bam_url(&matches);
-        assert!(result.is_ok());
-        let bam_url = result.unwrap();
-        assert!(bam_url.is_none());
+        assert_eq!(extract_bam_url(&matches).unwrap(), None);
     }
 }
