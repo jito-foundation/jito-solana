@@ -417,8 +417,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         processed_results: I,
     ) -> atomic_txn_batch_result::Result {
         let mut saw_commit_cancelled = false;
-        let mut transaction_results = Vec::new();
-        for (i, result) in processed_results.into_iter().enumerate() {
+        let processed_results = processed_results.into_iter();
+        let mut transaction_results = Vec::with_capacity(processed_results.size_hint().0);
+        for (i, result) in processed_results.enumerate() {
             match result {
                 TransactionResult::Committed(processed) => transaction_results.push(processed),
                 // TransactionError::CommitCancelled indicates another transaction in this bundle errored out.
