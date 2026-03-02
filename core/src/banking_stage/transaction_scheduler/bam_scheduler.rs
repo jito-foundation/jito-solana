@@ -25,15 +25,15 @@ use {
             },
         },
     },
-    ahash::HashMap,
     crossbeam_channel::{Receiver, Sender},
     histogram::Histogram,
-    itertools::Itertools,
     jito_protos::proto::bam_types::{
         atomic_txn_batch_result, not_committed::Reason, SchedulingError,
     },
     prio_graph::{AccessKind, GraphNode, PrioGraph},
+    smallvec::SmallVec,
     solana_clock::{Slot, MAX_PROCESSING_AGE},
+    solana_nohash_hasher::IntMap,
     solana_pubkey::Pubkey,
     solana_runtime::bank_forks::BankForks,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -62,15 +62,18 @@ fn passthrough_priority(
     *id
 }
 
+pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_PACKETS_PER_BUNDLE
+
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
     response_sender: Sender<BamOutboundMessage>,
 
     next_batch_id: u64,
-    inflight_batch_info: HashMap<TransactionBatchId, InflightBatchInfo>,
+    inflight_batch_info: IntMap<TransactionBatchId, InflightBatchInfo>,
     prio_graph: SchedulerPrioGraph,
-    insertion_to_prio_graph_time: HashMap<u32, Instant>,
+    /// seq_id is the key
+    insertion_to_prio_graph_time: IntMap<u32, Instant>,
     time_in_priograph_us: Histogram,
     time_in_worker_us: Histogram,
     time_between_schedule_us: Histogram,
@@ -79,7 +82,6 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 
     // Reusable objects to avoid allocations
     reusable_consume_work: Vec<ConsumeWork<Tx>>,
-    reusable_priority_ids: Vec<Vec<TransactionPriorityId>>,
 
     extra_checks_enabled: bool,
     bank_forks: Arc<RwLock<BankForks>>,
@@ -90,7 +92,8 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 // 'non-revert_on_error' batches that are scheduled together.
 struct InflightBatchInfo {
     pub schedule_time: Instant,
-    pub batch_priority_ids: Vec<TransactionPriorityId>,
+    // SmallVec 1: each scheduled work item typically corresponds to one batch id.
+    pub batch_priority_ids: SmallVec<[TransactionPriorityId; 1]>,
     pub slot: Slot,
 }
 
@@ -106,16 +109,15 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             finished_consume_work_receiver,
             response_sender,
             next_batch_id: 0,
-            inflight_batch_info: HashMap::default(),
+            inflight_batch_info: IntMap::default(),
             prio_graph: PrioGraph::new(passthrough_priority),
-            insertion_to_prio_graph_time: HashMap::default(),
+            insertion_to_prio_graph_time: IntMap::default(),
             time_in_priograph_us: Histogram::new(),
             time_in_worker_us: Histogram::new(),
             time_between_schedule_us: Histogram::new(),
             last_schedule_time: Instant::now(),
             slot: None,
             reusable_consume_work: Vec::new(),
-            reusable_priority_ids: Vec::new(),
             extra_checks_enabled: true,
             bank_forks,
         }
@@ -163,23 +165,24 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             let txns = batch_ids
                 .iter()
                 .filter_map(|txn_id| container.get_transaction(*txn_id))
-                .collect_vec();
+                .collect::<SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]>>();
 
             if self.extra_checks_enabled {
-                let lock_results = (0..txns.len())
-                    .map(|_| Ok(()))
-                    .collect::<Vec<solana_transaction_error::TransactionResult<()>>>();
+                let lock_results: SmallVec<
+                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
+                > = SmallVec::from_elem(Ok(()), txns.len());
                 let check_result = working_bank.check_transactions::<Tx>(
                     &txns,
-                    lock_results.as_slice(),
+                    &lock_results,
                     MAX_PROCESSING_AGE,
                     &mut TransactionErrorMetrics::default(),
                 );
                 if let Some((index, err)) = check_result
                     .iter()
-                    .find_position(|res| res.is_err())
-                    .map(|(i, res)| (i, res.as_ref().err().unwrap().clone()))
+                    .enumerate()
+                    .find_map(|(i, res)| res.as_ref().err().cloned().map(|err| (i, err)))
                 {
+                    drop(txns);
                     container.remove_by_id(next_batch_id.id);
 
                     let seq_id = priority_to_seq_id(next_batch_id.priority);
@@ -242,25 +245,28 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
             // Filter on check_transactions
             if self.extra_checks_enabled {
-                let sanitized_txs = batch_ids
-                    .iter()
-                    .filter_map(|txn_id| container.get_transaction(*txn_id))
-                    .map(|txn| txn.borrow())
-                    .collect::<Vec<_>>();
-                let lock_results = (0..sanitized_txs.len())
-                    .map(|_| Ok(()))
-                    .collect::<Vec<solana_transaction_error::TransactionResult<()>>>();
+                let mut sanitized_txs: SmallVec<[&Tx; MAX_PACKETS_PER_BUNDLE]> = SmallVec::new();
+                let mut lock_results: SmallVec<
+                    [solana_transaction_error::TransactionResult<()>; MAX_PACKETS_PER_BUNDLE],
+                > = SmallVec::new();
+                for txn_id in batch_ids.iter() {
+                    if let Some(txn) = container.get_transaction(*txn_id) {
+                        sanitized_txs.push(txn.borrow());
+                        lock_results.push(Ok(()));
+                    }
+                }
                 let check_result = working_bank.check_transactions::<Tx>(
                     &sanitized_txs,
-                    lock_results.as_slice(),
+                    &lock_results,
                     MAX_PROCESSING_AGE,
                     &mut TransactionErrorMetrics::default(),
                 );
                 if let Some((index, err)) = check_result
                     .iter()
-                    .find_position(|res| res.is_err())
-                    .map(|(i, res)| (i, res.as_ref().err().unwrap().clone()))
+                    .enumerate()
+                    .find_map(|(i, res)| res.as_ref().err().cloned().map(|err| (i, err)))
                 {
+                    drop(sanitized_txs);
                     container.remove_by_id(id.id);
                     self.prio_graph.unblock(&id);
 
@@ -282,14 +288,22 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             let mut work = self.get_or_create_work_object();
             let batch_id = self.get_next_schedule_id();
             *num_scheduled += batch_ids.len();
-            Self::generate_work(&mut work, batch_id, &[id], revert_on_error, container, slot);
-            self.send_to_worker(vec![id], work, slot);
+            Self::populate_consume_work(
+                &mut work,
+                batch_id,
+                &[id],
+                revert_on_error,
+                container,
+                slot,
+            );
+            self.send_to_worker(SmallVec::from([id]), work, slot);
         }
     }
 
     fn send_to_worker(
         &mut self,
-        priority_ids: Vec<TransactionPriorityId>,
+        // SmallVec 1: scheduler currently sends a single batch id per work item.
+        priority_ids: SmallVec<[TransactionPriorityId; 1]>,
         work: ConsumeWork<Tx>,
         slot: Slot,
     ) {
@@ -312,20 +326,18 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     fn get_or_create_work_object(&mut self) -> ConsumeWork<Tx> {
-        if let Some(work) = self.reusable_consume_work.pop() {
-            work
-        } else {
-            // These values will be overwritten by `generate_work`
+        self.reusable_consume_work.pop().unwrap_or_else(|| {
+            // These values will be overwritten by `populate_consume_work`
             ConsumeWork {
                 batch_id: TransactionBatchId::new(0),
                 ids: Vec::with_capacity(1),
-                transactions: Vec::with_capacity(5),
-                max_ages: Vec::with_capacity(5),
+                transactions: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
+                max_ages: Vec::with_capacity(MAX_PACKETS_PER_BUNDLE),
                 revert_on_error: false,
                 respond_with_extra_info: false,
                 max_schedule_slot: None,
             }
-        }
+        })
     }
 
     fn recycle_work_object(&mut self, mut work: ConsumeWork<Tx>) {
@@ -336,12 +348,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         self.reusable_consume_work.push(work);
     }
 
-    fn recycle_priority_ids(&mut self, mut priority_ids: Vec<TransactionPriorityId>) {
-        priority_ids.clear();
-        self.reusable_priority_ids.push(priority_ids);
-    }
-
-    fn generate_work(
+    /// Populates a reusable `ConsumeWork` from scheduled `priority_ids` and stamps
+    /// scheduling metadata for worker execution.
+    fn populate_consume_work(
         output: &mut ConsumeWork<Tx>,
         batch_id: TransactionBatchId,
         priority_ids: &[TransactionPriorityId],
@@ -404,72 +413,72 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     }
 
     /// Generates a `bundle_result::Result` based on the processed results for 'revert_on_error' batches.
-    fn generate_revert_on_error_bundle_result(
-        processed_results: &[TransactionResult],
+    fn generate_revert_on_error_bundle_result<I: IntoIterator<Item = TransactionResult>>(
+        processed_results: I,
     ) -> atomic_txn_batch_result::Result {
-        if processed_results
-            .iter()
-            .all(|result| matches!(result, TransactionResult::Committed(_)))
-        {
-            let transaction_results = processed_results
-                .iter()
-                .filter_map(|result| {
-                    if let TransactionResult::Committed(processed) = result {
-                        Some(processed.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            atomic_txn_batch_result::Result::Committed(jito_protos::proto::bam_types::Committed {
-                transaction_results,
-            })
-        } else {
-            let mut index = 0;
-            let mut not_commit_reason = NotCommittedReason::PohTimeout;
-            for (i, result) in processed_results.iter().enumerate() {
-                match result {
-                    TransactionResult::NotCommitted(NotCommittedReason::Error(err)) => {
-                        // TransactionError::CommitCancelled used to indicate that another transaction in this bundle errored out
-                        if *err != TransactionError::CommitCancelled {
-                            index = i;
-                            not_commit_reason = NotCommittedReason::Error(err.clone());
-                            break;
-                        }
-                    }
-                    TransactionResult::NotCommitted(NotCommittedReason::PohTimeout) => {
-                        index = i;
-                        not_commit_reason = NotCommittedReason::PohTimeout;
-                        break;
-                    }
-                    _ => {}
+        let mut saw_commit_cancelled = false;
+        let processed_results = processed_results.into_iter();
+        let mut transaction_results = Vec::with_capacity(processed_results.size_hint().0);
+        for (i, result) in processed_results.enumerate() {
+            match result {
+                TransactionResult::Committed(processed) => transaction_results.push(processed),
+                // TransactionError::CommitCancelled indicates another transaction in this bundle errored out.
+                TransactionResult::NotCommitted(NotCommittedReason::Error(err))
+                    if err != TransactionError::CommitCancelled =>
+                {
+                    return atomic_txn_batch_result::Result::NotCommitted(
+                        jito_protos::proto::bam_types::NotCommitted {
+                            reason: Some(Self::convert_reason_to_proto(
+                                i,
+                                NotCommittedReason::Error(err),
+                            )),
+                        },
+                    );
+                }
+                TransactionResult::NotCommitted(NotCommittedReason::PohTimeout) => {
+                    return atomic_txn_batch_result::Result::NotCommitted(
+                        jito_protos::proto::bam_types::NotCommitted {
+                            reason: Some(Self::convert_reason_to_proto(
+                                i,
+                                NotCommittedReason::PohTimeout,
+                            )),
+                        },
+                    );
+                }
+                TransactionResult::NotCommitted(NotCommittedReason::Error(_)) => {
+                    saw_commit_cancelled = true;
                 }
             }
-
-            atomic_txn_batch_result::Result::NotCommitted(
-                jito_protos::proto::bam_types::NotCommitted {
-                    reason: Some(Self::convert_reason_to_proto(index, not_commit_reason)),
-                },
-            )
         }
+
+        if saw_commit_cancelled {
+            return atomic_txn_batch_result::Result::NotCommitted(
+                jito_protos::proto::bam_types::NotCommitted {
+                    reason: Some(Self::convert_reason_to_proto(
+                        0,
+                        NotCommittedReason::PohTimeout,
+                    )),
+                },
+            );
+        }
+
+        atomic_txn_batch_result::Result::Committed(jito_protos::proto::bam_types::Committed {
+            transaction_results,
+        })
     }
 
     /// Generates a `bundle_result::Result` based on the processed result of a single transaction.
-    fn generate_bundle_result(processed: &TransactionResult) -> atomic_txn_batch_result::Result {
+    fn generate_bundle_result(processed: TransactionResult) -> atomic_txn_batch_result::Result {
         match processed {
             TransactionResult::Committed(result) => atomic_txn_batch_result::Result::Committed(
                 jito_protos::proto::bam_types::Committed {
-                    transaction_results: vec![result.clone()],
+                    transaction_results: vec![result],
                 },
             ),
             TransactionResult::NotCommitted(reason) => {
-                let (index, not_commit_reason) = match reason {
-                    NotCommittedReason::PohTimeout => (0, NotCommittedReason::PohTimeout),
-                    NotCommittedReason::Error(err) => (0, NotCommittedReason::Error(err.clone())),
-                };
                 atomic_txn_batch_result::Result::NotCommitted(
                     jito_protos::proto::bam_types::NotCommitted {
-                        reason: Some(Self::convert_reason_to_proto(index, not_commit_reason)),
+                        reason: Some(Self::convert_reason_to_proto(0, reason)),
                     },
                 )
             }
@@ -503,22 +512,18 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         container: &mut impl StateContainer<Tx>,
     ) {
         // Check if no bank or slot has changed
-        let maybe_bank = decision.bank();
-        if maybe_bank.map(|bank| bank.slot()) == self.slot {
+        let bank_slot = decision.bank().map(|bank| bank.slot());
+        if bank_slot == self.slot {
             return;
         }
         let prev_slot = self.slot;
-        if let Some(bank) = maybe_bank {
-            info!(
-                "Bank boundary detected: slot changed from {:?} to {:?}",
-                self.slot,
-                bank.slot()
-            );
-            self.slot = Some(bank.slot());
-        } else {
-            info!("Bank boundary detected: slot changed to None");
-            self.slot = None;
+        match bank_slot {
+            Some(bank_slot) => {
+                debug!("Bank boundary detected: slot changed from {prev_slot:?} to {bank_slot}")
+            }
+            None => debug!("Bank boundary detected: slot changed to None"),
         }
+        self.slot = bank_slot;
 
         // Drain container and send back 'retryable'
         if self.slot.is_none() {
@@ -726,10 +731,13 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
         let mut num_transactions = 0;
         let now = Instant::now();
         while let Ok(result) = self.finished_consume_work_receiver.try_recv() {
-            num_transactions += result.work.ids.len();
-            let batch_id = result.work.batch_id;
-            let revert_on_error = result.work.revert_on_error;
-            self.recycle_work_object(result.work);
+            let FinishedConsumeWork {
+                work, extra_info, ..
+            } = result;
+            num_transactions += work.ids.len();
+            let batch_id = work.batch_id;
+            let revert_on_error = work.revert_on_error;
+            self.recycle_work_object(work);
 
             let Some(inflight_batch_info) = self.inflight_batch_info.remove(&batch_id) else {
                 continue;
@@ -739,6 +747,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 now.duration_since(inflight_batch_info.schedule_time)
                     .as_micros() as u64,
             );
+            let mut processed_results = extra_info.map(|info| info.processed_results.into_iter());
 
             // Should never not be 1; but just in case
             let len = if revert_on_error {
@@ -753,19 +762,24 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 .take(len)
             {
                 // If we got extra info, we can send back the result
-                if let Some(extra_info) = result.extra_info.as_ref() {
-                    let bundle_result = if revert_on_error {
-                        Self::generate_revert_on_error_bundle_result(&extra_info.processed_results)
-                    } else {
-                        let Some(txn_result) = extra_info.processed_results.get(i) else {
-                            warn!(
-                                "Processed results for batch {} are missing for index {}",
-                                batch_id.0, i
-                            );
-                            continue;
-                        };
-                        Self::generate_bundle_result(txn_result)
+                if revert_on_error {
+                    if let Some(processed_results) = processed_results.take() {
+                        let bundle_result =
+                            Self::generate_revert_on_error_bundle_result(processed_results);
+                        self.send_back_result(
+                            priority_to_seq_id(priority_id.priority),
+                            bundle_result,
+                        );
+                    }
+                } else if let Some(processed_results) = processed_results.as_mut() {
+                    let Some(txn_result) = processed_results.next() else {
+                        warn!(
+                            "Processed results for batch {} are missing for index {i}",
+                            batch_id.0
+                        );
+                        continue;
                     };
+                    let bundle_result = Self::generate_bundle_result(txn_result);
                     self.send_back_result(priority_to_seq_id(priority_id.priority), bundle_result);
                 }
 
@@ -777,7 +791,6 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 // Remove the transaction from the container
                 container.remove_by_id(priority_id.id);
             }
-            self.recycle_priority_ids(inflight_batch_info.batch_priority_ids);
         }
 
         Ok((num_transactions, 0))
@@ -801,7 +814,7 @@ mod tests {
                 tests::create_slow_genesis_config,
                 transaction_scheduler::{
                     bam_receive_and_buffer::seq_id_to_priority,
-                    bam_scheduler::BamScheduler,
+                    bam_scheduler::{BamScheduler, MAX_PACKETS_PER_BUNDLE},
                     scheduler::{PreLockFilterAction, Scheduler},
                     transaction_state_container::{StateContainer, TransactionStateContainer},
                 },
@@ -813,6 +826,7 @@ mod tests {
             atomic_txn_batch_result::Result::{Committed, NotCommitted},
             TransactionCommittedResult,
         },
+        smallvec::SmallVec,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_hash::Hash,
         solana_keypair::Keypair,
@@ -847,7 +861,6 @@ mod tests {
         let (consume_work_sender, consume_work_receiver) = unbounded();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
         let (response_sender, response_receiver) = unbounded();
-        test_bank_forks();
         let scheduler = BamScheduler::new(
             consume_work_sender,
             finished_consume_work_receiver,
@@ -905,8 +918,12 @@ mod tests {
                 compute_unit_price,
             );
             const TEST_TRANSACTION_COST: u64 = 5000;
+            let mut txns_max_age: SmallVec<
+                [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
+            > = SmallVec::new();
+            txns_max_age.push((transaction, MaxAge::MAX));
             container.insert_new_batch(
-                vec![(transaction, MaxAge::MAX)],
+                txns_max_age,
                 compute_unit_price,
                 TEST_TRANSACTION_COST,
                 false,

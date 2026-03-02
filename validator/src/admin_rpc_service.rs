@@ -1,4 +1,6 @@
 use {
+    crate::shred_receiver_addresses::parse_shred_receiver_addresses,
+    arc_swap::ArcSwap,
     crossbeam_channel::Sender,
     jsonrpc_core::{BoxFuture, ErrorCode, MetaIoHandler, Metadata, Result},
     jsonrpc_core_client::{transports::ipc, RpcError},
@@ -44,7 +46,7 @@ use {
         str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
         thread::{self, Builder},
         time::{Duration, SystemTime},
@@ -65,7 +67,7 @@ pub struct AdminRpcRequestMetadata {
     pub staked_nodes_overrides: Arc<RwLock<HashMap<Pubkey, u64>>>,
     pub post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub rpc_to_plugin_manager_sender: Option<Sender<GeyserPluginManagerRequest>>,
-    pub bam_url: Arc<Mutex<Option<String>>>,
+    pub bam_url: Arc<ArcSwap<Option<String>>>,
 }
 
 impl Metadata for AdminRpcRequestMetadata {}
@@ -568,43 +570,44 @@ impl AdminRpc for AdminRpcImpl {
             trust_packets,
         };
         // Detailed log messages are printed inside validate function
-        if BlockEngineStage::is_valid_block_engine_config(&config) {
-            meta.with_post_init(|post_init| {
-                *post_init.block_engine_config.lock().unwrap() = config;
-                Ok(())
-            })
-        } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
+        if !BlockEngineStage::is_valid_block_engine_config(&config) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
                 "failed to set block engine config. see logs for details.",
-            ))
+            ));
         }
+        meta.with_post_init(|post_init| {
+            *post_init.block_engine_config.lock().unwrap() = config;
+            Ok(())
+        })
     }
 
     fn set_bam_url(&self, meta: Self::Metadata, bam_url: Option<String>) -> Result<()> {
-        let old_bam_url = meta.bam_url.lock().unwrap().clone();
-        let (bam_url, manual_disconnect) = match bam_url {
-            Some(url) if url.trim().is_empty() => (None, true),
-            Some(url) => (Some(url), false),
-            None => (None, false),
-        };
-        let new_bam_url = bam_url.as_ref().map(|url| url.to_string());
-        debug!("set_bam_url old= {old_bam_url:?}, new={new_bam_url:?}");
+        let manual_disconnect = bam_url.as_deref().is_some_and(|url| url.trim().is_empty());
+        let bam_url = bam_url.filter(|url| !url.trim().is_empty());
+        let old_bam_url = meta.bam_url.load();
+        debug!("set_bam_url old= {old_bam_url:?}, new={bam_url:?}");
 
-        if let Some(new_bam_url) = &new_bam_url {
-            if let Err(e) = Endpoint::from_str(new_bam_url) {
-                return Err(jsonrpc_core::error::Error::invalid_params(format!(
+        if let Some(new_bam_url) = &bam_url {
+            Endpoint::from_str(new_bam_url).map_err(|e| {
+                jsonrpc_core::error::Error::invalid_params(format!(
                     "Could not create endpoint: {e}"
-                )));
-            }
-        } else if manual_disconnect {
+                ))
+            })?;
+        }
+
+        if bam_url.is_none() && manual_disconnect {
             datapoint_info!(
                 "bam_manually_disconnected",
                 ("count", 1, i64),
-                ("previous_bam_url", old_bam_url.unwrap_or_default(), String)
+                (
+                    "previous_bam_url",
+                    old_bam_url.as_ref().clone().unwrap_or_default(),
+                    String
+                ),
             );
         }
 
-        *meta.bam_url.lock().unwrap() = bam_url;
+        meta.bam_url.store(Arc::new(bam_url));
         Ok(())
     }
 
@@ -659,33 +662,29 @@ impl AdminRpc for AdminRpcImpl {
             oldest_allowed_heartbeat,
         };
         // Detailed log messages are printed inside validate function
-        if RelayerStage::is_valid_relayer_config(&config) {
-            meta.with_post_init(|post_init| {
-                *post_init.relayer_config.lock().unwrap() = config;
-                Ok(())
-            })
-        } else {
-            Err(jsonrpc_core::error::Error::invalid_params(
+        if !RelayerStage::is_valid_relayer_config(&config) {
+            return Err(jsonrpc_core::error::Error::invalid_params(
                 "failed to set relayer config. see logs for details.",
-            ))
+            ));
         }
+        meta.with_post_init(|post_init| {
+            *post_init.relayer_config.lock().unwrap() = config;
+            Ok(())
+        })
     }
 
     fn set_shred_receiver_address(&self, meta: Self::Metadata, addr: String) -> Result<()> {
-        let shred_receiver_address = if addr.is_empty() {
-            None
-        } else {
-            Some(SocketAddr::from_str(&addr).map_err(|_| {
+        let shred_receiver_addresses =
+            parse_shred_receiver_addresses([addr.as_str()]).map_err(|err| {
                 jsonrpc_core::error::Error::invalid_params(format!(
-                    "invalid shred receiver address: {addr}",
+                    "invalid shred receiver address for {addr}. Err: {err}",
                 ))
-            })?)
-        };
+            })?;
 
         meta.with_post_init(|post_init| {
             post_init
-                .shred_receiver_address
-                .store(Arc::new(shred_receiver_address));
+                .shred_receiver_addresses
+                .store(Arc::new(shred_receiver_addresses));
             Ok(())
         })
     }
@@ -695,20 +694,17 @@ impl AdminRpc for AdminRpcImpl {
         meta: Self::Metadata,
         addr: String,
     ) -> Result<()> {
-        let shred_receiver_address = if addr.is_empty() {
-            None
-        } else {
-            Some(SocketAddr::from_str(&addr).map_err(|_| {
+        let shred_receiver_addresses =
+            parse_shred_receiver_addresses([addr.as_str()]).map_err(|err| {
                 jsonrpc_core::error::Error::invalid_params(format!(
-                    "invalid shred receiver address: {addr}",
+                    "invalid shred retransmit receiver address for {addr}. Err: {err}",
                 ))
-            })?)
-        };
+            })?;
 
         meta.with_post_init(|post_init| {
             post_init
-                .shred_retransmit_receiver_address
-                .store(Arc::new(shred_receiver_address));
+                .shred_retransmit_receiver_addresses
+                .store(Arc::new(shred_receiver_addresses));
             Ok(())
         })
     }
@@ -1273,8 +1269,8 @@ mod tests {
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
-            let shred_receiver_address = Arc::new(ArcSwap::default());
-            let shred_retransmit_receiver_address = Arc::new(ArcSwap::default());
+            let shred_receiver_addresses = Arc::new(ArcSwap::default());
+            let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,
                 start_time: SystemTime::now(),
@@ -1300,12 +1296,12 @@ mod tests {
                     banking_control_sender: mpsc::channel(1).0,
                     block_engine_config,
                     relayer_config,
-                    shred_receiver_address,
-                    shred_retransmit_receiver_address,
+                    shred_receiver_addresses,
+                    shred_retransmit_receiver_addresses,
                 }))),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
-                bam_url: Arc::new(Mutex::new(None)),
+                bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
             let mut io = MetaIoHandler::default();
             io.extend_with(AdminRpcImpl.to_delegate());
@@ -1726,7 +1722,7 @@ mod tests {
                 post_init: post_init.clone(),
                 staked_nodes_overrides: Arc::new(RwLock::new(HashMap::new())),
                 rpc_to_plugin_manager_sender: None,
-                bam_url: Arc::new(Mutex::new(None)),
+                bam_url: Arc::new(ArcSwap::from_pointee(None)),
             };
 
             let _validator = Validator::new(

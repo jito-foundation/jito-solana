@@ -14,6 +14,7 @@ use {
             decision_maker::BufferedPacketsDecision,
             scheduler_messages::MaxAge,
             transaction_scheduler::{
+                bam_scheduler::MAX_PACKETS_PER_BUNDLE,
                 bam_utils::convert_txn_error_to_proto,
                 receive_and_buffer::{
                     calculate_max_age, calculate_priority_and_cost, DisconnectedError,
@@ -36,6 +37,7 @@ use {
         atomic_txn_batch_result, not_committed::Reason, AtomicTxnBatch, DeserializationErrorReason,
         Packet, SchedulingError, TransactionErrorReason,
     },
+    smallvec::SmallVec,
     solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::{Slot, MAX_PROCESSING_AGE},
     solana_measure::{measure::Measure, measure_us},
@@ -75,10 +77,12 @@ pub struct BamReceiveAndBuffer {
 }
 
 struct ParsedBatch {
-    pub txns_max_age: Vec<(
-        RuntimeTransaction<ResolvedTransactionView<SharedBytes>>,
-        MaxAge,
-    )>,
+    pub txns_max_age: SmallVec<
+        [(
+            RuntimeTransaction<ResolvedTransactionView<SharedBytes>>,
+            MaxAge,
+        ); MAX_PACKETS_PER_BUNDLE],
+    >,
     pub cost: u64,
     priority: u64,
     pub revert_on_error: bool,
@@ -137,29 +141,29 @@ impl BamReceiveAndBuffer {
         let mut last_metrics_report = Instant::now();
         let mut metrics = BamReceiveAndBufferMetrics::default();
         let mut stats = ReceivingStats::default();
-        let mut prevalidated = Vec::new();
-        let mut packet_batches = Vec::new();
-        let mut verify_results = Vec::new();
+        let mut prevalidated = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
+        let mut packet_batches = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
+        let mut verify_results = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
         const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(20);
         let mut recv_buffer = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST * 2);
 
         while !exit.load(Ordering::Relaxed) {
-            if last_metrics_report.elapsed() > METRICS_REPORT_INTERVAL {
+            let loop_start = Instant::now();
+            if loop_start.duration_since(last_metrics_report) > METRICS_REPORT_INTERVAL {
                 metrics.report();
-                last_metrics_report = Instant::now();
+                last_metrics_report = loop_start;
                 let _ = recv_stats_sender.try_send(stats);
                 stats = ReceivingStats::default();
             }
 
-            let start = Instant::now();
-            let (recv_info, receive_time_us) = measure_us!(Self::batch_receive_until(
+            let recv_info = Self::batch_receive_until(
                 &bundle_receiver,
                 &mut recv_buffer,
-                &start,
+                &loop_start,
                 TIMEOUT,
-                ATOMIC_TXN_BATCH_BURST
-            ));
-            stats.receive_time_us += receive_time_us;
+                ATOMIC_TXN_BATCH_BURST,
+            );
+            stats.receive_time_us += loop_start.elapsed().as_micros() as u64;
 
             match recv_info {
                 Ok((_, num_batches_received)) => {
@@ -190,8 +194,8 @@ impl BamReceiveAndBuffer {
             recv_buffer.clear();
 
             for result in verify_results.drain(..) {
-                match result {
-                    Ok((verified_batch, revert_on_error, seq_id, max_schedule_slot)) => {
+                let parsed_batch = match result.and_then(
+                    |(verified_batch, revert_on_error, seq_id, max_schedule_slot)| {
                         metrics
                             .sigverify_metrics
                             .increment_total_batches_verified(1);
@@ -207,33 +211,10 @@ impl BamReceiveAndBuffer {
                             ));
                         stats.accumulate(parse_stats);
                         metrics.increment_total_us(duration_us);
-
-                        let parsed_batch = match parse_result {
-                            Ok(batch) => batch,
-                            Err(reason) => {
-                                let _ =
-                                    response_sender
-                                        .try_send(BamOutboundMessage::AtomicTxnBatchResult(
-                                        jito_protos::proto::bam_types::AtomicTxnBatchResult {
-                                            seq_id,
-                                            result: Some(
-                                                atomic_txn_batch_result::Result::NotCommitted(
-                                                    jito_protos::proto::bam_types::NotCommitted {
-                                                        reason: Some(reason),
-                                                    },
-                                                ),
-                                            ),
-                                        },
-                                    ));
-                                continue;
-                            }
-                        };
-
-                        stats.num_buffered = stats
-                            .num_buffered
-                            .saturating_add(parsed_batch.txns_max_age.len());
-                        let _ = parsed_batch_sender.try_send(parsed_batch);
-                    }
+                        parse_result.map_err(|reason| (reason, seq_id))
+                    },
+                ) {
+                    Ok(batch) => batch,
                     Err((reason, seq_id)) => {
                         let _ = response_sender.try_send(BamOutboundMessage::AtomicTxnBatchResult(
                             jito_protos::proto::bam_types::AtomicTxnBatchResult {
@@ -247,7 +228,12 @@ impl BamReceiveAndBuffer {
                         ));
                         continue;
                     }
-                }
+                };
+
+                stats.num_buffered = stats
+                    .num_buffered
+                    .saturating_add(parsed_batch.txns_max_age.len());
+                let _ = parsed_batch_sender.try_send(parsed_batch);
             }
         }
     }
@@ -310,25 +296,24 @@ impl BamReceiveAndBuffer {
         let enable_static_instruction_limit = root_bank
             .feature_set
             .is_active(&agave_feature_set::static_instruction_limit::ID);
-
         let mut cost: u64 = 0;
-        let mut txns_max_age = Vec::with_capacity(verified_batch.len());
+        let mut txns_max_age = SmallVec::with_capacity(verified_batch.len());
+
+        if vote_only {
+            return (
+                Err(Reason::DeserializationError(
+                    jito_protos::proto::bam_types::DeserializationError {
+                        index: 0,
+                        reason: DeserializationErrorReason::SanitizeError as i32,
+                    },
+                )),
+                stats,
+            );
+        }
 
         // Checks are taken from receive_and_buffer.rs:
         // SanitizedTransactionReceiveAndBuffer::buffer_packets
         for (index, verified_packet) in verified_batch.into_iter().enumerate() {
-            if vote_only {
-                return (
-                    Err(Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: index as u32,
-                            reason: DeserializationErrorReason::SanitizeError as i32,
-                        },
-                    )),
-                    stats,
-                );
-            }
-
             // Parsing and basic sanitization checks
             let sanitization_start = Instant::now();
             let Ok(view) = SanitizedTransactionView::try_new_sanitized(
@@ -488,25 +473,28 @@ impl BamReceiveAndBuffer {
                 );
             }
 
-            // Check 5: Ensure the fee payer has enough to pay for the transaction fee
-            let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
-                &working_bank,
-                &view,
-                &mut TransactionErrorMetrics::default(),
-            ));
-            metrics.increment_fee_payer_check_us(duration_us);
-            if let Err(err) = result {
-                let reason = convert_txn_error_to_proto(err);
-                stats.num_dropped_on_fee_payer += 1;
-                return (
-                    Err(Reason::TransactionError(
-                        jito_protos::proto::bam_types::TransactionError {
-                            index: index as u32,
-                            reason: reason as i32,
-                        },
-                    )),
-                    stats,
-                );
+            // Check 5: Ensure the seed fee payer has enough to pay for transaction fees.
+            // Downstream fee payers may be funded by earlier transactions in the same bundle.
+            if index == 0 {
+                let (result, duration_us) = measure_us!(Consumer::check_fee_payer_unlocked(
+                    &working_bank,
+                    &view,
+                    &mut TransactionErrorMetrics::default(),
+                ));
+                metrics.increment_fee_payer_check_us(duration_us);
+                if let Err(err) = result {
+                    let reason = convert_txn_error_to_proto(err);
+                    stats.num_dropped_on_fee_payer += 1;
+                    return (
+                        Err(Reason::TransactionError(
+                            jito_protos::proto::bam_types::TransactionError {
+                                index: index as u32,
+                                reason: reason as i32,
+                            },
+                        )),
+                        stats,
+                    );
+                }
             }
 
             // Check 6: Ensure none of the accounts touch blacklisted accounts
@@ -564,11 +552,13 @@ impl BamReceiveAndBuffer {
         recv_buffer.push(batch);
 
         while let Ok(batch) = bundle_receiver.try_recv() {
-            trace!("got more packet batches in bam receive and buffer");
             num_packets_received += batch.packets.len();
             num_atomic_txn_batches_received += 1;
             recv_buffer.push(batch);
-            if start.elapsed() > recv_timeout || recv_buffer.len() >= batch_count_upperbound {
+            if recv_buffer.len() >= batch_count_upperbound
+                || (num_atomic_txn_batches_received % 8 == 1 && start.elapsed() > recv_timeout)
+            // check if time exceeded on every 8th iteration
+            {
                 break;
             }
         }
@@ -608,7 +598,7 @@ impl BamReceiveAndBuffer {
                     ));
                 }
 
-                if atomic_txn_batch.packets.len() > 5 {
+                if atomic_txn_batch.packets.len() > MAX_PACKETS_PER_BUNDLE {
                     stats.num_dropped_without_parsing += 1;
                     return Err((
                         Reason::DeserializationError(
@@ -1390,6 +1380,62 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(stats.num_dropped_on_fee_payer, 1);
             assert!(matches!(result.err().unwrap(), Reason::TransactionError(_)));
+        }
+    }
+
+    #[test]
+    fn test_batch_deserialize_seeded_later_fee_payer() {
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let later_fee_payer = Keypair::new();
+        let batch = AtomicTxnBatch {
+            seq_id: 1,
+            packets: vec![
+                Packet {
+                    data: bincode::serialize(&transfer(
+                        &mint_keypair,
+                        &later_fee_payer.pubkey(),
+                        1,
+                        bank_forks.read().unwrap().root_bank().last_blockhash(),
+                    ))
+                    .unwrap(),
+                    meta: None,
+                },
+                Packet {
+                    data: bincode::serialize(&transfer(
+                        &later_fee_payer,
+                        &Pubkey::new_unique(),
+                        1,
+                        bank_forks.read().unwrap().root_bank().last_blockhash(),
+                    ))
+                    .unwrap(),
+                    meta: None,
+                },
+            ],
+            max_schedule_slot: Slot::MAX,
+        };
+
+        let mut stats = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+
+        if let Ok((deserialized_packets, revert_on_error, seq_id, max_schedule_slot)) = &results[0]
+        {
+            let (result, stats) = BamReceiveAndBuffer::parse_batch(
+                deserialized_packets.clone(),
+                *seq_id,
+                *revert_on_error,
+                *max_schedule_slot,
+                &bank_forks,
+                &HashSet::new(),
+                &mut stats,
+            );
+
+            assert!(result.is_ok());
+            assert_eq!(stats.num_dropped_on_fee_payer, 0);
+            let parsed_batch = result.unwrap();
+            assert_eq!(parsed_batch.txns_max_age.len(), 2);
         }
     }
 

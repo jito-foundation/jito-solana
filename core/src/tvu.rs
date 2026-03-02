@@ -48,7 +48,7 @@ use {
         vote_sender_types::ReplayVoteSender,
     },
     solana_streamer::evicting_sender::EvictingSender,
-    solana_turbine::{retransmit_stage::RetransmitStage, xdp::XdpSender},
+    solana_turbine::{retransmit_stage::RetransmitStage, xdp::XdpSender, ShredReceiverAddresses},
     std::{
         collections::HashSet,
         net::{SocketAddr, UdpSocket},
@@ -174,7 +174,7 @@ impl Tvu {
         wen_restart_repair_slots: Option<Arc<RwLock<Vec<Slot>>>>,
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
-        shred_receiver_addr: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Result<Self, String> {
         let in_wen_restart = wen_restart_repair_slots.is_some();
 
@@ -233,7 +233,7 @@ impl Tvu {
             tvu_config.xdp_sender,
             // votor_event_sender is Alpenglow specific sender, it is None if Alpenglow is not enabled.
             None,
-            shred_receiver_addr,
+            shred_receiver_addresses,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -618,7 +618,7 @@ pub mod tests {
             wen_restart_repair_slots,
             None,
             Arc::new(connection_cache),
-            Arc::new(ArcSwap::from_pointee(None)),
+            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
         )
         .expect("assume success");
         if enable_wen_restart {

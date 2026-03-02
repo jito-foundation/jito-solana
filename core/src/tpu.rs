@@ -7,13 +7,14 @@ use {
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
         bam_dependencies::{BamConnectionState, BamDependencies},
         bam_manager::BamManager,
-        banking_stage::consumer::TipProcessingDependencies,
         banking_stage::{
+            consumer::TipProcessingDependencies,
             transaction_scheduler::scheduler_controller::SchedulerConfig, BankingControlMsg,
             BankingStage, BankingStageHandle,
         },
         banking_trace::{Channels, TracerThread},
-        // bundle_stage::bundle_account_locker::BundleAccountLocker,
+        bundle_sigverify_stage::BundleSigverifyStage,
+        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoterSlotsSender, VoteTracker,
@@ -30,11 +31,12 @@ use {
         sigverify::TransactionSigVerifier,
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
-        // tip_manager::{TipManager, TipManagerConfig},
+        tip_manager::{TipManager, TipManagerConfig},
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig},
         vortexor_receiver_adapter::VortexorReceiverAdapter,
     },
+    ahash::{HashSet, HashSetExt},
     arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{bounded, unbounded, Receiver},
@@ -71,6 +73,7 @@ use {
     solana_turbine::{
         broadcast_stage::{BroadcastStage, BroadcastStageType},
         xdp::XdpSender,
+        ShredReceiverAddresses,
     },
     std::{
         collections::HashMap,
@@ -86,14 +89,6 @@ use {
     },
     tokio::sync::{mpsc, mpsc::Sender as AsyncSender},
     tokio_util::sync::CancellationToken,
-};
-use {
-    crate::{
-        bundle_sigverify_stage::BundleSigverifyStage,
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
-        tip_manager::{TipManager, TipManagerConfig},
-    },
-    ahash::{HashSet, HashSetExt},
 };
 
 pub struct TpuSockets {
@@ -199,8 +194,8 @@ impl Tpu {
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
-        shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        bam_url: Arc<Mutex<Option<String>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_url: Arc<ArcSwap<Option<String>>>,
     ) -> Self {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -365,7 +360,7 @@ impl Tpu {
             )
         };
 
-        let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+        let block_builder_fee_info = Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
             block_builder: cluster_info.keypair().pubkey(),
             block_builder_commission: 0,
         }));
@@ -392,6 +387,7 @@ impl Tpu {
             exit.clone(),
         );
 
+        let bam_tpu_info = Arc::new(ArcSwap::new(Arc::new(None)));
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
             cluster_info.clone(),
@@ -401,6 +397,7 @@ impl Tpu {
             exit.clone(),
             bam_enabled.clone(),
             cluster_info.my_contact_info().clone(),
+            bam_tpu_info.clone(),
         );
 
         let relayer_stage = RelayerStage::new(
@@ -438,9 +435,10 @@ impl Tpu {
             outbound_sender: bam_outbound_sender,
             outbound_receiver: bam_outbound_receiver,
             cluster_info: cluster_info.clone(),
-            block_builder_fee_info: Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
-            bam_node_pubkey: Arc::new(Mutex::new(Pubkey::default())),
+            block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+            bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bank_forks: bank_forks.clone(),
+            bam_tpu_info,
         };
 
         let mut blacklisted_accounts = HashSet::new();
@@ -543,7 +541,7 @@ impl Tpu {
             turbine_quic_endpoint_sender,
             xdp_sender,
             shredstream_receiver_address,
-            shred_receiver_address,
+            shred_receiver_addresses,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();

@@ -5,6 +5,7 @@ use {
         dashboard::Dashboard,
         ledger_lockfile, lock_ledger, println_name_value,
     },
+    arc_swap::ArcSwap,
     clap::{crate_name, value_t, value_t_or_exit, values_t_or_exit},
     crossbeam_channel::unbounded,
     itertools::Itertools,
@@ -412,7 +413,7 @@ fn main() {
             (None, None)
         };
 
-    genesis.bam_url = Arc::new(Mutex::new(
+    genesis.bam_url = Arc::new(ArcSwap::from_pointee(
         commands::bam::extract_bam_url(&matches).unwrap_or_else(|err| {
             println!("Error: BAM URL invalid: {err}");
             exit(1);
