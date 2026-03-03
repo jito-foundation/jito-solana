@@ -317,7 +317,7 @@ mod tests {
         let iterations = 5_000;
         let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(outer_keys.len() + 1);
 
-        for outer_key in outer_keys.iter().copied() {
+        for outer_key in outer_keys.clone() {
             let secondary_index = Arc::clone(&secondary_index);
             handles.push(thread::spawn(move || {
                 for _ in 0..iterations {
