@@ -432,7 +432,7 @@ struct ExtraFieldsToDeserialize {
     /// Hence the annotation to allow dead code.
     /// This code is not truly dead though, as it enables newer versions to
     /// populate this field and have older versions still load the snapshot.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     #[serde(deserialize_with = "default_on_eof")]
     block_id: Option<Hash>,
 }
@@ -790,7 +790,7 @@ pub(crate) struct ReconstructedBankInfo {
     pub(crate) calculated_capitalization: u64,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_bank_from_fields<E>(
     bank_fields: SnapshotBankFields,
     snapshot_accounts_db_fields: SnapshotAccountsDbFields<E>,
@@ -1011,7 +1011,6 @@ pub struct ReconstructedAccountsDbInfo {
     pub bank_hash_stats: BankHashStats,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reconstruct_accountsdb_from_fields<E>(
     snapshot_accounts_db_fields: SnapshotAccountsDbFields<E>,
     account_paths: &[PathBuf],
