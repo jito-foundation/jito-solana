@@ -22,7 +22,7 @@ use {
     },
 };
 
-/// How often to check for heartbeat timeouts
+/// Maximum time allowed between relayer heartbeats before considering the relayer timed out
 const MAX_TIME_BETWEEN_RELAYER_HEARTBEATS: Duration = Duration::from_millis(1500); // Empirically determined from load testing
 
 /// How often to re-evaluate TPU state
@@ -310,13 +310,6 @@ impl FetchStageTpuStateMachine {
         let state_changed = prev_state != self.current_tpu_state;
         let report_due = Instant::now().duration_since(self.last_tpu_report) >= TPU_REPORT_INTERVAL;
 
-        // Reset relayer info if we switched away from it;
-        if prev_state.tpu_type == TpuConnectionType::Relayer
-            && self.current_tpu_state.tpu_type != TpuConnectionType::Relayer
-        {
-            self.relayer_info = None;
-        }
-
         let mut succeeded = true;
 
         // Update gossip if the state changed
@@ -332,6 +325,12 @@ impl FetchStageTpuStateMachine {
                 self.current_tpu_state = prev_state;
                 let _ = self.gossip_current_tpu_state();
                 succeeded = false;
+            }
+            if succeeded
+                && prev_state.tpu_type == TpuConnectionType::Relayer
+                && self.current_tpu_state.tpu_type != TpuConnectionType::Relayer
+            {
+                self.relayer_info = None;
             }
         }
 
@@ -351,7 +350,7 @@ impl FetchStageTpuStateMachine {
         succeeded
     }
 
-    /// Log metrics and reset counters; returns false if we should shut down
+    /// Log metrics and reset counters
     fn handle_metrics_tick(&mut self) {
         datapoint_info!(
             "relayer-heartbeat",
@@ -429,14 +428,14 @@ impl FetchStageTpuStateMachine {
         );
 
         if let Err(e) = self.cluster_info.set_tpu(self.current_tpu_state.addr) {
-            error!("Failed to set TPU QUIC address: {e:?}");
+            error!("Failed to set TPU addresses: {e:?}");
             return false;
         }
         if let Err(e) = self
             .cluster_info
             .set_tpu_forwards(self.current_tpu_state.fwd_addr)
         {
-            error!("Failed to set TPU FWD address: {e:?}");
+            error!("Failed to set TPU FWD addresses: {e:?}");
             return false;
         }
 
