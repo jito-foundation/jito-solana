@@ -426,7 +426,7 @@ impl FetchStageTpuStateMachine {
             "Gossiping TPU addresses to {}, {}",
             self.current_tpu_state.addr, self.current_tpu_state.fwd_addr
         );
-        
+
         if let Err(e) = self.cluster_info.set_tpu_quic(self.current_tpu_state.addr) {
             error!("Failed to set TPU QUIC address: {e:?}");
             return false;
