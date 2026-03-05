@@ -282,11 +282,19 @@ impl FetchStageTpuStateMachine {
                 && now.duration_since(info.first_heartbeat) > self.relayer_tpu_enable_delay
         }) {
             let relayer_addr = self.relayer_info.as_ref().unwrap().tpu_addresses.tpu_addr;
-            let relayer_fwd_addr = self.relayer_info.as_ref().unwrap().tpu_addresses.tpu_forward_addr;
+            let relayer_fwd_addr = self
+                .relayer_info
+                .as_ref()
+                .unwrap()
+                .tpu_addresses
+                .tpu_forward_addr;
             return TpuState {
                 tpu_type: TpuConnectionType::Relayer,
                 addr: SocketAddr::new(relayer_addr.ip(), relayer_addr.port().saturating_add(6)),
-                fwd_addr: SocketAddr::new(relayer_fwd_addr.ip(), relayer_fwd_addr.port().saturating_add(6)),
+                fwd_addr: SocketAddr::new(
+                    relayer_fwd_addr.ip(),
+                    relayer_fwd_addr.port().saturating_add(6),
+                ),
             };
         }
 
@@ -608,15 +616,21 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to relayer and packets should NOT be forwarded
-        let expected_relayer_addr = SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
-        let expected_relayer_fwd_addr = SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
+        let expected_relayer_addr =
+            SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
+        let expected_relayer_fwd_addr =
+            SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Relayer,
             &expected_relayer_addr,
             &expected_relayer_fwd_addr,
         );
-        check_cluster_info(&cluster_info, &expected_relayer_addr, &expected_relayer_fwd_addr);
+        check_cluster_info(
+            &cluster_info,
+            &expected_relayer_addr,
+            &expected_relayer_fwd_addr,
+        );
         check_sending_packet(&mut brain, &packet_rx, false);
 
         // Simulate relayer heartbeat timeout by waiting longer than heartbeat_check_interval
@@ -674,7 +688,8 @@ mod tests {
 
         // Should have switched to BAM and packets should NOT be forwarded
         let expected_bam_addr = SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6);
-        let expected_bam_fwd_addr = SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
+        let expected_bam_fwd_addr =
+            SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Bam,
@@ -726,7 +741,8 @@ mod tests {
 
         // Should be BAM and packets should NOT be forwarded
         let expected_bam_addr = SocketAddr::new(bam_tpu_addr.ip(), bam_tpu_addr.port() + 6);
-        let expected_bam_fwd_addr = SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
+        let expected_bam_fwd_addr =
+            SocketAddr::new(bam_tpu_fwd_addr.ip(), bam_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Bam,
@@ -760,15 +776,21 @@ mod tests {
         assert!(brain.state_machine_tick());
 
         // Should have switched to relayer and packets should NOT be forwarded
-        let expected_relayer_addr = SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
-        let expected_relayer_fwd_addr = SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
+        let expected_relayer_addr =
+            SocketAddr::new(relayer_tpu_addr.ip(), relayer_tpu_addr.port() + 6);
+        let expected_relayer_fwd_addr =
+            SocketAddr::new(relayer_tpu_fwd_addr.ip(), relayer_tpu_fwd_addr.port() + 6);
         check_brain(
             &brain,
             TpuConnectionType::Relayer,
             &expected_relayer_addr,
             &expected_relayer_fwd_addr,
         );
-        check_cluster_info(&cluster_info, &expected_relayer_addr, &expected_relayer_fwd_addr);
+        check_cluster_info(
+            &cluster_info,
+            &expected_relayer_addr,
+            &expected_relayer_fwd_addr,
+        );
         check_sending_packet(&mut brain, &packet_rx, false);
     }
 
