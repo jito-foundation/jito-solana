@@ -3822,7 +3822,10 @@ fn test_accounts_db_cache_clean_dead_slots() {
     accounts_db.flush_accounts_cache(true, None);
     assert_eq!(accounts_db.accounts_cache.num_slots(), 0);
     assert_eq!(
-        accounts_db.accounts_cache.fetch_max_flush_root(),
+        accounts_db
+            .accounts_cache
+            .fetch_max_flush_root()
+            .expect("Roots have been flushed"),
         alive_slot,
     );
 
@@ -3866,7 +3869,10 @@ fn test_accounts_db_cache_clean() {
     accounts_db.flush_accounts_cache(true, None);
     assert_eq!(accounts_db.accounts_cache.num_slots(), 0);
     assert_eq!(
-        accounts_db.accounts_cache.fetch_max_flush_root(),
+        accounts_db
+            .accounts_cache
+            .fetch_max_flush_root()
+            .expect("Roots have been flushed"),
         *slots.last().unwrap()
     );
 
@@ -3924,7 +3930,10 @@ fn run_test_accounts_db_cache_clean_max_root(
     };
 
     assert_eq!(
-        accounts_db.accounts_cache.fetch_max_flush_root(),
+        accounts_db
+            .accounts_cache
+            .fetch_max_flush_root()
+            .expect("Roots have been flushed"),
         expected_max_flushed_root,
     );
 
