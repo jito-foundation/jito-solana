@@ -38,7 +38,7 @@ solana-account = "=3.2.0"
 solana-bls-signatures = { workspace = true }
 solana-clap-utils = { workspace = true }
 solana-cli-config = { workspace = true }
-solana-clock = "=3.0.0"
+solana-clock = "=3.0.1"
 solana-cluster-type = "=3.0.0"
 solana-commitment-config = "=3.0.0"
 solana-entry = { workspace = true }
