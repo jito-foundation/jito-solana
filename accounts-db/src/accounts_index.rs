@@ -868,12 +868,10 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
         if !dead_keys.is_empty() {
             for key in dead_keys.iter() {
                 let w_index = self.get_bin(key);
-                if w_index.remove_if_slot_list_empty(*key) {
-                    pubkeys_removed_from_accounts_index.insert(*key);
-                    // Note it's only safe to remove all the entries for this key
-                    // because we have the lock for this key's entry in the AccountsIndex,
-                    // so no other thread is also updating the index
+                if w_index.remove_if_slot_list_empty(*key, || {
                     self.purge_secondary_indexes_by_inner_key(key, account_indexes);
+                }) {
+                    pubkeys_removed_from_accounts_index.insert(*key);
                 }
             }
         }
@@ -1552,7 +1550,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
         // remove() below.
         if is_slot_list_empty {
             let w_maps = self.get_bin(pubkey);
-            removed = w_maps.remove_if_slot_list_empty(*pubkey);
+            removed = w_maps.remove_if_slot_list_empty(*pubkey, || {});
         }
         removed || missing_in_accounts_index
     }
