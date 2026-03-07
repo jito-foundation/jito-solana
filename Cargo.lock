@@ -7384,6 +7384,7 @@ dependencies = [
  "seqlock",
  "serde",
  "serde_bytes",
+ "shuttle",
  "smallvec",
  "solana-account",
  "solana-accounts-db",
