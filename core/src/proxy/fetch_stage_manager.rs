@@ -146,7 +146,6 @@ struct FetchStageMetrics {
 struct TpuAddresses {
     /// Standard TPU address for public traffic
     tpu_addr: SocketAddr,
-
     /// TPU forward address for other validators
     tpu_forward_addr: SocketAddr,
 }
@@ -155,10 +154,8 @@ struct TpuAddresses {
 struct HeartbeatingRelayerInfo {
     /// TPU addresses received from relayer heartbeats
     tpu_addresses: TpuAddresses,
-
     /// When the first heartbeat was received
     first_heartbeat: Instant,
-
     /// When the last heartbeat was received
     last_heartbeat: Instant,
 }
@@ -191,34 +188,24 @@ impl fmt::Display for TpuConnectionType {
 struct FetchStageTpuStateMachine {
     /// Which Tpu is being used
     current_tpu_state: TpuState,
-
     /// Channel to forward packets to FetchStage
     packet_tx: Sender<PacketBatch>,
-
     /// Whether BAM is enabled and connected
     bam_enabled: Arc<AtomicU8>,
-
     /// Fallback TPU addresses
     original_tpu_info: TpuAddresses,
-
     /// Relayer heartbeat tracking
     relayer_info: Option<HeartbeatingRelayerInfo>,
-
     /// BAM TPU addresses
     bam_tpu_info: Arc<ArcSwap<Option<(SocketAddr, SocketAddr)>>>,
-
     /// ClusterInfo to update TPU addresses
     cluster_info: Arc<ClusterInfo>,
-
     /// Metrics collected
     metrics: FetchStageMetrics,
-
     /// How often to check for relayer heartbeat timeouts
     max_time_between_relayer_heartbeats: Duration,
-
     /// Relayer TPU enable delay
     relayer_tpu_enable_delay: Duration,
-
     /// Last TPU report time
     last_tpu_report: Instant,
 }

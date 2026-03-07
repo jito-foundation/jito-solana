@@ -82,7 +82,7 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::{self, FromStr},
-        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        sync::{atomic::AtomicBool, Arc, RwLock},
         time::Duration,
     },
 };
@@ -510,7 +510,7 @@ pub fn execute(
 
     let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
 
-    let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig {
+    let block_engine_config = Arc::new(ArcSwap::from_pointee(BlockEngineConfig {
         block_engine_url: value_of(matches, "block_engine_url").unwrap_or_default(),
         disable_block_engine_autoconfig: matches.is_present("disable_block_engine_autoconfig"),
         trust_packets: matches.is_present("trust_block_engine_packets"),
@@ -529,7 +529,7 @@ pub fn execute(
         .expect("couldn't parse relayer_max_failed_heartbeats")
         .get();
 
-    let relayer_config = Arc::new(Mutex::new(RelayerConfig {
+    let relayer_config = Arc::new(ArcSwap::from_pointee(RelayerConfig {
         relayer_url: value_of(matches, "relayer_url").unwrap_or_default(),
         expected_heartbeat_interval: Duration::from_millis(expected_heartbeat_interval_ms),
         oldest_allowed_heartbeat: Duration::from_millis(

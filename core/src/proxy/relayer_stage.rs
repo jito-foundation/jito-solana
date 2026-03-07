@@ -12,10 +12,11 @@ use {
     crate::{
         proto_packet_to_packet,
         proxy::{
-            auth::{generate_auth_tokens, maybe_refresh_auth_tokens, AuthInterceptor},
-            sanitize_status_message_for_influx, HeartbeatEvent, ProxyError,
+            auth::{auth_client_from_endpoint, maybe_refresh_auth_tokens, AuthInterceptor},
+            endpoint_from_url, HeartbeatEvent, ProxyError,
         },
     },
+    arc_swap::ArcSwap,
     crossbeam_channel::Sender,
     jito_protos::proto::{
         auth::{auth_service_client::AuthServiceClient, Token},
@@ -28,18 +29,14 @@ use {
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         ops::AddAssign,
-        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex,
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
     },
-    tokio::{
-        task,
-        time::{interval, sleep, timeout},
-    },
+    tokio::time::{interval, sleep, timeout},
     tonic::{
         codegen::InterceptedService,
         transport::{Channel, Endpoint},
@@ -72,10 +69,8 @@ impl RelayerStageStats {
 pub struct RelayerConfig {
     /// Relayer URL
     pub relayer_url: String,
-
     /// Interval at which heartbeats are expected.
     pub expected_heartbeat_interval: Duration,
-
     /// The max tolerable age of the last heartbeat.
     pub oldest_allowed_heartbeat: Duration,
 }
@@ -86,7 +81,7 @@ pub struct RelayerStage {
 
 impl RelayerStage {
     pub fn new(
-        relayer_config: Arc<Mutex<RelayerConfig>>,
+        relayer_config: Arc<ArcSwap<RelayerConfig>>,
         // The keypair stored here is used to sign auth challenges.
         cluster_info: Arc<ClusterInfo>,
         // Channel that server-sent heartbeats are piped through.
@@ -127,7 +122,7 @@ impl RelayerStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn start(
-        relayer_config: Arc<Mutex<RelayerConfig>>,
+        relayer_config: Arc<ArcSwap<RelayerConfig>>,
         cluster_info: Arc<ClusterInfo>,
         heartbeat_tx: Sender<HeartbeatEvent>,
         packet_tx: Sender<PacketBatch>,
@@ -141,12 +136,7 @@ impl RelayerStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            let local_relayer_config = {
-                let relayer_config = relayer_config.clone();
-                task::spawn_blocking(move || relayer_config.lock().unwrap().clone())
-                    .await
-                    .expect("Failed to get execute tokio task.")
-            };
+            let local_relayer_config = relayer_config.load();
             if !Self::is_valid_relayer_config(&local_relayer_config) {
                 sleep(CONNECTION_BACKOFF).await;
             } else if let Err(e) = Self::connect_auth_and_stream(
@@ -185,7 +175,7 @@ impl RelayerStage {
 
     async fn connect_auth_and_stream(
         local_relayer_config: &RelayerConfig,
-        global_relayer_config: &Arc<Mutex<RelayerConfig>>,
+        global_relayer_config: &Arc<ArcSwap<RelayerConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
@@ -194,44 +184,12 @@ impl RelayerStage {
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
-
-        let mut backend_endpoint = Endpoint::from_shared(local_relayer_config.relayer_url.clone())
-            .map_err(|_| {
-                ProxyError::RelayerConnectionError(format!(
-                    "invalid relayer url value: {}",
-                    local_relayer_config.relayer_url
-                ))
-            })?
-            .tcp_keepalive(Some(Duration::from_secs(60)));
-        if local_relayer_config.relayer_url.starts_with("https") {
-            backend_endpoint = backend_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .map_err(|_| {
-                    ProxyError::RelayerConnectionError(
-                        "failed to set tls_config for relayer service".to_string(),
-                    )
-                })?;
-        }
+        let backend_endpoint = Self::get_endpoint(&local_relayer_config.relayer_url)?;
 
         debug!("connecting to auth: {}", local_relayer_config.relayer_url);
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| {
-                ProxyError::AuthenticationConnectionError(sanitize_status_message_for_influx(
-                    &e.to_string(),
-                ))
-            })?;
-
-        let mut auth_client = AuthServiceClient::new(auth_channel);
-
-        debug!("generating authentication token");
-        let (access_token, refresh_token) = timeout(
-            *connection_timeout,
-            generate_auth_tokens(&mut auth_client, &keypair),
-        )
-        .await
-        .map_err(|_| ProxyError::AuthenticationTimeout)??;
+        let (auth_client, access_token, refresh_token) =
+            auth_client_from_endpoint(&backend_endpoint, connection_timeout, keypair.as_ref())
+                .await?;
 
         datapoint_info!(
             "relayer_stage-tokens_generated",
@@ -246,13 +204,11 @@ impl RelayerStage {
         let relayer_channel = timeout(*connection_timeout, backend_endpoint.connect())
             .await
             .map_err(|_| ProxyError::RelayerConnectionTimeout)?
-            .map_err(|e| {
-                ProxyError::RelayerConnectionError(sanitize_status_message_for_influx(
-                    &e.to_string(),
-                ))
+            .map_err(|err| {
+                ProxyError::RelayerConnectionError(
+                    crate::proxy::sanitize_status_message_for_influx(&err.to_string()),
+                )
             })?;
-
-        let access_token = Arc::new(Mutex::new(access_token));
         let relayer_client = RelayerClient::with_interceptor(
             relayer_channel,
             AuthInterceptor::new(access_token.clone()),
@@ -281,10 +237,10 @@ impl RelayerStage {
         heartbeat_tx: &Sender<HeartbeatEvent>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &RelayerConfig, // local copy of config with current connections
-        global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
+        global_config: &Arc<ArcSwap<RelayerConfig>>, // guarded reference for detecting run-time updates
         exit: &Arc<AtomicBool>,
         auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<Mutex<Token>>,
+        access_token: Arc<ArcSwap<Token>>,
         refresh_token: Token,
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
@@ -297,9 +253,9 @@ impl RelayerStage {
             )
             .await
             .map_err(|_| ProxyError::MethodTimeout("relayer_get_tpu_configs".to_string()))?
-            .map_err(|e| ProxyError::MethodError {
-                code: e.code(),
-                message: sanitize_status_message_for_influx(e.message()),
+            .map_err(|status| ProxyError::MethodError {
+                code: status.code(),
+                message: crate::proxy::sanitize_status_message_for_influx(status.message()),
             })?
             .into_inner();
 
@@ -324,9 +280,9 @@ impl RelayerStage {
         )
         .await
         .map_err(|_| ProxyError::MethodTimeout("relayer_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError {
-            code: e.code(),
-            message: sanitize_status_message_for_influx(e.message()),
+        .map_err(|status| ProxyError::MethodError {
+            code: status.code(),
+            message: crate::proxy::sanitize_status_message_for_influx(status.message()),
         })?
         .into_inner();
 
@@ -355,10 +311,10 @@ impl RelayerStage {
         mut packet_stream: Streaming<relayer::SubscribePacketsResponse>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &RelayerConfig, // local copy of config with current connections
-        global_config: &Arc<Mutex<RelayerConfig>>, // guarded reference for detecting run-time updates
+        global_config: &Arc<ArcSwap<RelayerConfig>>, // guarded reference for detecting run-time updates
         exit: &Arc<AtomicBool>,
         mut auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<Mutex<Token>>,
+        access_token: Arc<ArcSwap<Token>>,
         mut refresh_token: Token,
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
@@ -381,7 +337,9 @@ impl RelayerStage {
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
                 maybe_msg = packet_stream.message() => {
-                    let resp = maybe_msg.map_err(|e| ProxyError::GrpcError{ code: e.code(),message: sanitize_status_message_for_influx(e.message())})?.ok_or(ProxyError::GrpcStreamDisconnected)?;
+                    let resp = maybe_msg
+                        .map_err(ProxyError::from)?
+                        .ok_or(ProxyError::GrpcStreamDisconnected)?;
                     Self::handle_relayer_packets(resp, heartbeat_event, heartbeat_tx, &mut last_heartbeat_ts, packet_tx, &mut relayer_stats)?;
                 }
                 _ = heartbeat_check_interval.tick() => {
@@ -397,10 +355,7 @@ impl RelayerStage {
                         return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
-                    let global_config = global_config.clone();
-                    if *local_config != task::spawn_blocking(move || global_config.lock().unwrap().clone())
-                        .await
-                        .unwrap() {
+                    if global_config.load().as_ref() != local_config {
                         return Err(ProxyError::AuthenticationConnectionError("relayer config changed".to_string()));
                     }
 
@@ -420,10 +375,7 @@ impl RelayerStage {
                             ("count", num_refresh_access_token, i64),
                         );
 
-                        let access_token = access_token.clone();
-                        task::spawn_blocking(move || *access_token.lock().unwrap() = new_token)
-                            .await
-                            .unwrap();
+                        access_token.store(Arc::new(new_token));
                     }
                     if let Some(new_token) = maybe_new_refresh {
                         num_full_refreshes += 1;
@@ -498,10 +450,26 @@ impl RelayerStage {
             error!("can't connect to relayer. expected heartbeat interval must be greater than 0.");
             return false;
         }
-        if let Err(e) = Endpoint::from_str(&config.relayer_url) {
+        if let Err(e) = Self::get_endpoint(&config.relayer_url) {
             error!("can't connect to relayer. error creating relayer endpoint - {e}");
             return false;
         }
         true
+    }
+
+    fn get_endpoint(relayer_url: &str) -> crate::proxy::Result<Endpoint> {
+        endpoint_from_url(
+            relayer_url,
+            || {
+                ProxyError::RelayerConnectionError(format!(
+                    "invalid relayer url value: {relayer_url}"
+                ))
+            },
+            || {
+                ProxyError::RelayerConnectionError(
+                    "failed to set tls_config for relayer service".to_string(),
+                )
+            },
+        )
     }
 }

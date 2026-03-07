@@ -19,9 +19,13 @@ use {
     std::{
         net::{AddrParseError, SocketAddr},
         result,
+        time::Duration,
     },
     thiserror::Error,
-    tonic::Status,
+    tonic::{
+        transport::Endpoint,
+        Status,
+    },
 };
 
 type Result<T> = result::Result<T, ProxyError>;
@@ -110,6 +114,22 @@ fn sanitize_status_message_for_influx(input: &str) -> String {
         .filter(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | ' '))
         .take(SANITIZED_MESSAGE_LIMIT)
         .collect()
+}
+
+fn endpoint_from_url(
+    url: &str,
+    invalid_error: impl FnOnce() -> ProxyError,
+    tls_error: impl FnOnce() -> ProxyError,
+) -> Result<Endpoint> {
+    let mut endpoint = Endpoint::from_shared(url.to_owned())
+        .map_err(|_| invalid_error())?
+        .tcp_keepalive(Some(Duration::from_secs(60)));
+    if url.starts_with("https") {
+        endpoint = endpoint
+            .tls_config(tonic::transport::ClientTlsConfig::new())
+            .map_err(|_| tls_error())?;
+    }
+    Ok(endpoint)
 }
 
 impl From<Status> for ProxyError {

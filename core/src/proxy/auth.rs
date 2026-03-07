@@ -1,5 +1,6 @@
 use {
     crate::proxy::{sanitize_status_message_for_influx, ProxyError},
+    arc_swap::ArcSwap,
     chrono::Utc,
     jito_protos::proto::auth::{
         auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
@@ -8,22 +9,23 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_signer::Signer,
-    std::{
-        sync::{Arc, Mutex},
-        time::Duration,
-    },
+    std::{sync::Arc, time::Duration},
     tokio::time::timeout,
-    tonic::{service::Interceptor, transport::Channel, Code, Request, Status},
+    tonic::{
+        service::Interceptor,
+        transport::{Channel, Endpoint},
+        Code, Request, Status,
+    },
 };
 
 /// Interceptor responsible for adding the access token to request headers.
 pub(crate) struct AuthInterceptor {
     /// The token added to each request header.
-    access_token: Arc<Mutex<Token>>,
+    access_token: Arc<ArcSwap<Token>>,
 }
 
 impl AuthInterceptor {
-    pub(crate) fn new(access_token: Arc<Mutex<Token>>) -> Self {
+    pub(crate) fn new(access_token: Arc<ArcSwap<Token>>) -> Self {
         Self { access_token }
     }
 }
@@ -32,13 +34,41 @@ impl Interceptor for AuthInterceptor {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         request.metadata_mut().insert(
             "authorization",
-            format!("Bearer {}", self.access_token.lock().unwrap().value)
+            format!("Bearer {}", self.access_token.load().value)
                 .parse()
                 .map_err(|_| Status::invalid_argument("Failed to parse authorization token"))?,
         );
 
         Ok(request)
     }
+}
+
+pub(crate) async fn auth_client_from_endpoint(
+    endpoint: &Endpoint,
+    connection_timeout: &Duration,
+    keypair: &Keypair,
+) -> crate::proxy::Result<(AuthServiceClient<Channel>, Arc<ArcSwap<Token>>, Token)> {
+    let mut auth_client = AuthServiceClient::new(
+        timeout(*connection_timeout, endpoint.connect())
+            .await
+            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
+            .map_err(|err| {
+                ProxyError::AuthenticationConnectionError(sanitize_status_message_for_influx(
+                    &err.to_string(),
+                ))
+            })?,
+    );
+    let (access_token, refresh_token) = timeout(
+        *connection_timeout,
+        generate_auth_tokens(&mut auth_client, keypair),
+    )
+    .await
+    .map_err(|_| ProxyError::AuthenticationTimeout)??;
+    Ok((
+        auth_client,
+        Arc::new(ArcSwap::from_pointee(access_token)),
+        refresh_token,
+    ))
 }
 
 /// Generates an auth challenge then generates and returns validated auth tokens.
@@ -103,7 +133,7 @@ pub async fn generate_auth_tokens(
 /// Tries to refresh the access token or run full-reauth if needed.
 pub async fn maybe_refresh_auth_tokens(
     auth_service_client: &mut AuthServiceClient<Channel>,
-    access_token: &Arc<Mutex<Token>>,
+    access_token: &Arc<ArcSwap<Token>>,
     refresh_token: &Token,
     cluster_info: &Arc<ClusterInfo>,
     connection_timeout: &Duration,
@@ -112,25 +142,25 @@ pub async fn maybe_refresh_auth_tokens(
     Option<Token>, // access token
     Option<Token>, // refresh token
 )> {
-    let access_token_expiry: u64 = access_token
-        .lock()
-        .unwrap()
-        .expires_at_utc
-        .as_ref()
-        .map(|ts| ts.seconds as u64)
-        .unwrap_or_default();
-    let refresh_token_expiry: u64 = refresh_token
-        .expires_at_utc
-        .as_ref()
-        .map(|ts| ts.seconds as u64)
-        .unwrap_or_default();
-
     let now = Utc::now().timestamp() as u64;
 
-    let should_refresh_access =
-        access_token_expiry.checked_sub(now).unwrap_or_default() <= refresh_within_s;
-    let should_generate_new_tokens =
-        refresh_token_expiry.checked_sub(now).unwrap_or_default() <= refresh_within_s;
+    let should_refresh_access = access_token
+        .load()
+        .expires_at_utc
+        .as_ref()
+        .map(|ts| ts.seconds as u64)
+        .unwrap_or_default()
+        .checked_sub(now)
+        .unwrap_or_default()
+        <= refresh_within_s;
+    let should_generate_new_tokens = refresh_token
+        .expires_at_utc
+        .as_ref()
+        .map(|ts| ts.seconds as u64)
+        .unwrap_or_default()
+        .checked_sub(now)
+        .unwrap_or_default()
+        <= refresh_within_s;
 
     if should_generate_new_tokens {
         let kp = cluster_info.keypair().clone();
@@ -169,16 +199,19 @@ pub async fn refresh_access_token(
     auth_service_client: &mut AuthServiceClient<Channel>,
     refresh_token: &Token,
 ) -> crate::proxy::Result<Token> {
-    let response = auth_service_client
-        .refresh_access_token(RefreshAccessTokenRequest {
-            refresh_token: refresh_token.value.clone(),
-        })
-        .await
-        .map_err(|e| ProxyError::AuthenticationError {
-            code: e.code(),
-            message: sanitize_status_message_for_influx(e.message()),
-        })?;
-    get_validated_token(response.into_inner().access_token)
+    get_validated_token(
+        auth_service_client
+            .refresh_access_token(RefreshAccessTokenRequest {
+                refresh_token: refresh_token.value.clone(),
+            })
+            .await
+            .map_err(|e| ProxyError::AuthenticationError {
+                code: e.code(),
+                message: sanitize_status_message_for_influx(e.message()),
+            })?
+            .into_inner()
+            .access_token,
+    )
 }
 
 /// An invalid token is one where any of its fields are None or the token itself is None.

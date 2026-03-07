@@ -11,8 +11,8 @@ use {
         packet_bundle::PacketBundle,
         proto_packet_to_packet,
         proxy::{
-            auth::{generate_auth_tokens, maybe_refresh_auth_tokens, AuthInterceptor},
-            sanitize_status_message_for_influx, ProxyError,
+            auth::{auth_client_from_endpoint, maybe_refresh_auth_tokens, AuthInterceptor},
+            endpoint_from_url, sanitize_status_message_for_influx, ProxyError,
         },
     },
     ahash::HashMapExt,
@@ -38,7 +38,7 @@ use {
         str::FromStr,
         sync::{
             atomic::{AtomicBool, AtomicU8, Ordering},
-            Arc, Mutex,
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -88,10 +88,8 @@ pub struct BlockBuilderFeeInfo {
 pub struct BlockEngineConfig {
     /// Block Engine URL
     pub block_engine_url: String,
-
     /// Disables Block Engine auto-configuration. This stops the validator client from using the most performant Block Engine region. Values provided to `--block-engine-url` will be used as-is.
     pub disable_block_engine_autoconfig: bool,
-
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
 }
@@ -121,7 +119,7 @@ impl BlockEngineStage {
     const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
     const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
     pub fn new(
-        block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+        block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
         // Channel that bundles get piped through.
         bundle_tx: Sender<Vec<PacketBundle>>,
         // The keypair stored here is used to sign auth challenges.
@@ -172,7 +170,7 @@ impl BlockEngineStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn start(
-        block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+        block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
         cluster_info: Arc<ClusterInfo>,
         bundle_tx: Sender<Vec<PacketBundle>>,
         packet_tx: Sender<PacketBatch>,
@@ -187,8 +185,7 @@ impl BlockEngineStage {
         while !exit.load(Ordering::Relaxed) {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
-            let local_block_engine_config =
-                task::block_in_place(|| block_engine_config.lock().unwrap().clone());
+            let local_block_engine_config = block_engine_config.load();
             if !Self::is_valid_block_engine_config(&local_block_engine_config) {
                 shredstream_receiver_address.store(Arc::new(None));
                 sleep(Self::CONNECTION_BACKOFF).await;
@@ -233,7 +230,7 @@ impl BlockEngineStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream_maybe_autoconfig(
-        block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
+        block_engine_config: &Arc<ArcSwap<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
@@ -275,17 +272,31 @@ impl BlockEngineStage {
             .map_err(|err| Self::map_bam_enabled(bam_enabled, err));
         }
 
-        let mut backend_endpoint = endpoint.clone();
-        if let Some((global_url, maybe_shredstream_socket)) = Self::get_global_endpoint(&endpoint)
+        let Some(global) = Self::get_block_engine_endpoints(&endpoint)
             .await
             .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
+            .global_endpoint
+        else {
+            return Err(Self::map_bam_enabled(
+                bam_enabled,
+                ProxyError::BlockEngineEndpointError(
+                    "Block engine configuration failed: no global endpoint found".to_owned(),
+                ),
+            ));
+        };
+
+        datapoint_info!(
+            "block_engine_stage-connect",
+            "type" => "direct_global",
+            ("count", 1, i64),
+        );
+        if let Some(shredstream_socket) =
+            Self::resolve_shredstream_receiver_address(&global.shredstream_receiver_address)
         {
-            if maybe_shredstream_socket.is_some() {
-                // no else branch needed since we'll still send to shred_receiver_addresses
-                shredstream_receiver_address.store(Arc::new(maybe_shredstream_socket));
-            }
-            backend_endpoint = Self::get_endpoint(global_url.as_str())?;
+            // no else branch needed since we'll still send to shred_receiver_addresses
+            shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
         }
+        let backend_endpoint = Self::get_endpoint(global.block_engine_url.as_str())?;
 
         datapoint_info!(
             "block_engine_stage-connect",
@@ -321,7 +332,7 @@ impl BlockEngineStage {
     async fn connect_auth_and_stream_autoconfig(
         endpoint: Endpoint,
         local_block_engine_config: &BlockEngineConfig,
-        global_block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
+        global_block_engine_config: &Arc<ArcSwap<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
@@ -331,9 +342,38 @@ impl BlockEngineStage {
         shredstream_receiver_address: &Arc<ArcSwap<Option<SocketAddr>>>,
         bam_enabled: &Arc<AtomicU8>,
     ) -> crate::proxy::Result<()> {
-        let candidates = Self::get_ranked_endpoints(&endpoint)
+        let endpoints = Self::get_block_engine_endpoints(&endpoint)
             .await
             .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
+        datapoint_info!(
+            "block_engine_stage-autoconfig",
+            ("regioned_count", endpoints.regioned_endpoints.len(), i64),
+            ("count", 1, i64),
+        );
+        let candidates = Self::probe_and_rank_endpoints(&endpoints.regioned_endpoints).await;
+        let candidates = if candidates.is_empty() {
+            let Some(global) = endpoints.global_endpoint else {
+                return Err(Self::map_bam_enabled(
+                    bam_enabled,
+                    ProxyError::BlockEngineEndpointError(
+                        "Block engine configuration failed: no reachable endpoints found"
+                            .to_owned(),
+                    ),
+                ));
+            };
+
+            ahash::HashMap::from_iter([(
+                global.block_engine_url,
+                (
+                    Self::resolve_shredstream_receiver_address(
+                        &global.shredstream_receiver_address,
+                    ),
+                    u64::MAX,
+                ),
+            )])
+        } else {
+            candidates
+        };
 
         // try connecting to best block engine
         let mut attempted = false;
@@ -428,118 +468,11 @@ impl BlockEngineStage {
         }
     }
 
-    /// Discover candidate endpoints either ranked via gRPC RTT probe or using global fallback.
-    /// Use u64::MAX for latency value to indicate global fallback (no RTT probe data).
-    async fn get_ranked_endpoints(
-        backend_endpoint: &Endpoint,
-    ) -> crate::proxy::Result<
-        ahash::HashMap<
-            String, /* block engine url */
-            (
-                Option<SocketAddr>, /* shredstream receiver, fallible when DNS can't resolve */
-                u64,                /* latency us */
-            ),
-        >,
-    > {
-        let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
-            .await
-            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?;
-        let endpoints = endpoint_discovery
-            .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
-            .await
-            .map_err(|s| ProxyError::BlockEngineRequestError {
-                code: s.code(),
-                message: sanitize_status_message_for_influx(s.message()),
-            })?
-            .into_inner();
-        datapoint_info!(
-            "block_engine_stage-autoconfig",
-            ("regioned_count", endpoints.regioned_endpoints.len(), i64),
-            ("count", 1, i64),
-        );
-        let endpoint_latencies =
-            Self::probe_and_rank_endpoints(&endpoints.regioned_endpoints).await;
-        if endpoint_latencies.is_empty() {
-            let Some(global) = endpoints.global_endpoint else {
-                return Err(ProxyError::BlockEngineEndpointError(
-                    "Block engine configuration failed: no reachable endpoints found".to_owned(),
-                ));
-            };
-
-            let ss_res = global
-                .shredstream_receiver_address
-                .to_socket_addrs()
-                .inspect_err(|e| {
-                    datapoint_warn!(
-                        "block_engine_stage-autoconfig_error",
-                        "type" => "shredstream_resolve",
-                        ("address", global.shredstream_receiver_address, String),
-                        ("count", 1, i64),
-                        ("err", e.to_string(), String),
-                    );
-                })
-                .ok()
-                .and_then(|mut shredstream_sockets| shredstream_sockets.next());
-
-            return Ok(ahash::HashMap::from_iter([(
-                global.block_engine_url,
-                (ss_res, u64::MAX),
-            )]));
-        }
-
-        Ok(endpoint_latencies)
-    }
-
-    async fn get_global_endpoint(
-        backend_endpoint: &Endpoint,
-    ) -> crate::proxy::Result<Option<(String, Option<SocketAddr>)>> {
-        let mut endpoint_discovery = BlockEngineValidatorClient::connect(backend_endpoint.clone())
-            .await
-            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?;
-        let endpoints = endpoint_discovery
-            .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
-            .await
-            .map_err(|s| ProxyError::BlockEngineRequestError {
-                code: s.code(),
-                message: sanitize_status_message_for_influx(s.message()),
-            })?
-            .into_inner();
-
-        let Some(global) = endpoints.global_endpoint else {
-            return Err(ProxyError::BlockEngineEndpointError(
-                "Block engine configuration failed: no global endpoint found".to_owned(),
-            ));
-        };
-
-        datapoint_info!(
-            "block_engine_stage-connect",
-            "type" => "direct_global",
-            ("count", 1, i64),
-        );
-
-        let ss_res = global
-            .shredstream_receiver_address
-            .to_socket_addrs()
-            .inspect_err(|e| {
-                datapoint_warn!(
-                    "block_engine_stage-autoconfig_error",
-                    "type" => "shredstream_resolve",
-                    ("address", global.shredstream_receiver_address, String),
-                    ("count", 1, i64),
-                    ("err", e.to_string(), String),
-                );
-            })
-            .ok()
-            .and_then(|mut shredstream_sockets| shredstream_sockets.next());
-
-        Ok(Some((global.block_engine_url, ss_res)))
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn connect_auth_and_stream(
         backend_endpoint: &Endpoint,
         local_block_engine_config: &BlockEngineConfig,
-        global_block_engine_config: &Arc<Mutex<BlockEngineConfig>>,
+        global_block_engine_config: &Arc<ArcSwap<BlockEngineConfig>>,
         cluster_info: &Arc<ClusterInfo>,
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
@@ -553,26 +486,10 @@ impl BlockEngineStage {
         let keypair = cluster_info.keypair().clone();
 
         debug!("connecting to auth: {}", backend_endpoint.uri());
-        let auth_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::AuthenticationConnectionTimeout)?
-            .map_err(|e| {
-                ProxyError::AuthenticationConnectionError(sanitize_status_message_for_influx(
-                    &e.to_string(),
-                ))
-            })
-            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
-
-        let mut auth_client = AuthServiceClient::new(auth_channel);
-
-        debug!("generating authentication token");
-        let (access_token, refresh_token) = timeout(
-            *connection_timeout,
-            generate_auth_tokens(&mut auth_client, &keypair),
-        )
-        .await
-        .map_err(|_| ProxyError::AuthenticationTimeout)
-        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))??;
+        let (auth_client, access_token, refresh_token) =
+            auth_client_from_endpoint(backend_endpoint, connection_timeout, keypair.as_ref())
+                .await
+                .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
 
         let backend_url = backend_endpoint.uri().to_string();
         datapoint_info!(
@@ -582,22 +499,24 @@ impl BlockEngineStage {
         );
 
         debug!("connecting to block engine: {}", backend_endpoint.uri());
-        let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
-            .await
-            .map_err(|_| ProxyError::BlockEngineConnectionTimeout)?
-            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))
-            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
-
-        let access_token = Arc::new(Mutex::new(access_token));
-        let block_engine_client = BlockEngineValidatorClient::with_interceptor(
-            block_engine_channel,
-            AuthInterceptor::new(access_token.clone()),
-        );
-
         datapoint_info!(
             "block_engine_stage-connected",
             ("url", backend_url, String),
             ("count", 1, i64),
+        );
+        let block_engine_channel = timeout(*connection_timeout, backend_endpoint.connect())
+            .await
+            .map_err(|_| ProxyError::BlockEngineConnectionTimeout)
+            .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
+            .map_err(|err| {
+                Self::map_bam_enabled(
+                    bam_enabled,
+                    ProxyError::BlockEngineConnectionError(Box::new(err)),
+                )
+            })?;
+        let block_engine_client = BlockEngineValidatorClient::with_interceptor(
+            block_engine_channel,
+            AuthInterceptor::new(access_token.clone()),
         );
 
         Self::start_consuming_block_engine_bundles_and_packets(
@@ -623,23 +542,19 @@ impl BlockEngineStage {
 
     /// Build an Endpoint from the URL provided
     fn get_endpoint(block_engine_url: &str) -> Result<Endpoint, ProxyError> {
-        let mut backend_endpoint = Endpoint::from_shared(block_engine_url.to_owned())
-            .map_err(|_| {
+        endpoint_from_url(
+            block_engine_url,
+            || {
                 ProxyError::BlockEngineEndpointError(format!(
                     "invalid block engine url value: {block_engine_url}",
                 ))
-            })?
-            .tcp_keepalive(Some(Duration::from_secs(60)));
-        if block_engine_url.starts_with("https") {
-            backend_endpoint = backend_endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .map_err(|_| {
-                    ProxyError::BlockEngineEndpointError(format!(
-                        "failed to set tls_config for block engine: {block_engine_url}",
-                    ))
-                })?;
-        }
-        Ok(backend_endpoint)
+            },
+            || {
+                ProxyError::BlockEngineEndpointError(format!(
+                    "failed to set tls_config for block engine: {block_engine_url}",
+                ))
+            },
+        )
     }
 
     async fn probe_grpc_rtt_us(block_engine_url: &str) -> Result<u64, ProbeError> {
@@ -811,12 +726,12 @@ impl BlockEngineStage {
         mut client: BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &BlockEngineConfig, // local copy of config with current connections
-        global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
+        global_config: &Arc<ArcSwap<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<Mutex<Token>>,
+        access_token: Arc<ArcSwap<Token>>,
         refresh_token: Token,
         connection_timeout: &Duration,
         keypair: Arc<Keypair>,
@@ -829,12 +744,17 @@ impl BlockEngineStage {
             client.subscribe_packets(block_engine::SubscribePacketsRequest {}),
         )
         .await
-        .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))?
-        .map_err(|e| ProxyError::MethodError {
-            code: e.code(),
-            message: sanitize_status_message_for_influx(e.message()),
-        })
+        .map_err(|_| ProxyError::MethodTimeout("block_engine_subscribe_packets".to_string()))
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
+        .map_err(|status| {
+            Self::map_bam_enabled(
+                bam_enabled,
+                ProxyError::MethodError {
+                    code: status.code(),
+                    message: sanitize_status_message_for_influx(status.message()),
+                },
+            )
+        })?
         .into_inner();
 
         let subscribe_bundles_stream = timeout(
@@ -842,42 +762,27 @@ impl BlockEngineStage {
             client.subscribe_bundles(block_engine::SubscribeBundlesRequest {}),
         )
         .await
-        .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))?
-        .map_err(|e| ProxyError::MethodError {
-            code: e.code(),
-            message: sanitize_status_message_for_influx(e.message()),
-        })
+        .map_err(|_| ProxyError::MethodTimeout("subscribe_bundles".to_string()))
         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
+        .map_err(|status| {
+            Self::map_bam_enabled(
+                bam_enabled,
+                ProxyError::MethodError {
+                    code: status.code(),
+                    message: sanitize_status_message_for_influx(status.message()),
+                },
+            )
+        })?
         .into_inner();
 
-        let block_builder_info = timeout(
-            *connection_timeout,
-            client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest {}),
+        Self::refresh_block_builder_fee_info(
+            &mut client,
+            connection_timeout,
+            block_builder_fee_info,
+            block_engine_url,
+            bam_enabled,
         )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-        .map_err(|e| ProxyError::MethodError {
-            code: e.code(),
-            message: sanitize_status_message_for_influx(e.message()),
-        })
-        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-        .into_inner();
-        {
-            let block_builder_pubkey =
-                Pubkey::from_str(&block_builder_info.pubkey).unwrap_or_else(|_| {
-                    datapoint_warn!(
-                        "block_engine_stage-block_builder_pubkey_parse_error",
-                        ("url", &block_engine_url, String),
-                        ("pubkey", &block_builder_info.pubkey, String),
-                        ("count", 1, i64),
-                    );
-                    block_builder_fee_info.load().block_builder
-                });
-            block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
-                block_builder: block_builder_pubkey,
-                block_builder_commission: block_builder_info.commission,
-            }));
-        }
+        .await?;
 
         Self::consume_bundle_and_packet_stream(
             client,
@@ -911,12 +816,12 @@ impl BlockEngineStage {
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
         local_config: &BlockEngineConfig, // local copy of config with current connections
-        global_config: &Arc<Mutex<BlockEngineConfig>>, // guarded reference for detecting run-time updates
+        global_config: &Arc<ArcSwap<BlockEngineConfig>>, // guarded reference for detecting run-time updates
         banking_packet_sender: &BankingPacketSender,
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
         mut auth_client: AuthServiceClient<Channel>,
-        access_token: Arc<Mutex<Token>>,
+        access_token: Arc<ArcSwap<Token>>,
         mut refresh_token: Token,
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
@@ -947,20 +852,14 @@ impl BlockEngineStage {
             tokio::select! {
                 maybe_packet = packet_stream.message() => {
                     let resp = maybe_packet
-                        .map_err(|s| ProxyError::GrpcError {
-                            code: s.code(),
-                            message: sanitize_status_message_for_influx(s.message()),
-                        })?
+                        .map_err(ProxyError::from)?
                         .ok_or(ProxyError::GrpcStreamDisconnected)
                         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
                     Self::handle_block_engine_packets(resp, packet_tx, banking_packet_sender, local_config.trust_packets, &mut block_engine_stats)?;
                 }
                 maybe_bundles = bundle_stream.message() => {
                     let resp = maybe_bundles
-                        .map_err(|s| ProxyError::GrpcError {
-                            code: s.code(),
-                            message: sanitize_status_message_for_influx(s.message()),
-                        })?
+                        .map_err(ProxyError::from)?
                         .ok_or(ProxyError::GrpcStreamDisconnected)
                         .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?;
                     Self::handle_block_engine_bundles(resp, bundle_tx, &mut block_engine_stats)?;
@@ -973,7 +872,7 @@ impl BlockEngineStage {
                         return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
-                    if !global_config.lock().unwrap().eq(local_config) {
+                    if global_config.load().as_ref() != local_config {
                         return Err(ProxyError::BlockEngineConfigChanged);
                     }
 
@@ -994,7 +893,7 @@ impl BlockEngineStage {
                             ("count", num_refresh_access_token, i64),
                         );
 
-                         *access_token.lock().unwrap() = new_token;
+                        access_token.store(Arc::new(new_token));
                     }
                     if let Some(new_token) = maybe_new_refresh {
                         num_full_refreshes += 1;
@@ -1007,29 +906,13 @@ impl BlockEngineStage {
                     }
                 }
                 _ = maintenance_tick.tick() => {
-                    let block_builder_info = timeout(
-                        *connection_timeout,
-                        client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest{})
-                    )
-                    .await
-                    .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-                    .map_err(|e| ProxyError::MethodError { code: e.code(), message: sanitize_status_message_for_influx(e.message()) })
-                    .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
-                    .into_inner();
-                    let block_builder_pubkey =
-                        Pubkey::from_str(&block_builder_info.pubkey).unwrap_or_else(|_| {
-                            datapoint_warn!(
-                                "block_engine_stage-block_builder_pubkey_parse_error",
-                                ("url", &block_engine_url, String),
-                                ("pubkey", &block_builder_info.pubkey, String),
-                                ("count", 1, i64),
-                            );
-                            block_builder_fee_info.load().block_builder
-                        });
-                    block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
-                        block_builder: block_builder_pubkey,
-                        block_builder_commission: block_builder_info.commission,
-                    }));
+                    Self::refresh_block_builder_fee_info(
+                        &mut client,
+                        connection_timeout,
+                        block_builder_fee_info,
+                        block_engine_url,
+                        bam_enabled,
+                    ).await?;
                 }
             }
         }
@@ -1123,5 +1006,77 @@ impl BlockEngineStage {
             return false;
         }
         true
+    }
+
+    async fn get_block_engine_endpoints(
+        backend_endpoint: &Endpoint,
+    ) -> crate::proxy::Result<block_engine::GetBlockEngineEndpointResponse> {
+        BlockEngineValidatorClient::connect(backend_endpoint.clone())
+            .await
+            .map_err(|e| ProxyError::BlockEngineConnectionError(Box::new(e)))?
+            .get_block_engine_endpoints(GetBlockEngineEndpointRequest {})
+            .await
+            .map_err(|s| ProxyError::BlockEngineRequestError {
+                code: s.code(),
+                message: sanitize_status_message_for_influx(s.message()),
+            })
+            .map(|response| response.into_inner())
+    }
+
+    fn resolve_shredstream_receiver_address(address: &str) -> Option<SocketAddr> {
+        address
+            .to_socket_addrs()
+            .inspect_err(|e| {
+                datapoint_warn!(
+                    "block_engine_stage-autoconfig_error",
+                    "type" => "shredstream_resolve",
+                    ("address", address, String),
+                    ("count", 1, i64),
+                    ("err", e.to_string(), String),
+                );
+            })
+            .ok()
+            .and_then(|mut shredstream_sockets| shredstream_sockets.next())
+    }
+
+    async fn refresh_block_builder_fee_info(
+        client: &mut BlockEngineValidatorClient<InterceptedService<Channel, AuthInterceptor>>,
+        connection_timeout: &Duration,
+        block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
+        block_engine_url: &str,
+        bam_enabled: &Arc<AtomicU8>,
+    ) -> crate::proxy::Result<()> {
+        let block_builder_info = timeout(
+            *connection_timeout,
+            client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest {}),
+        )
+        .await
+        .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))
+        .map_err(|err| Self::map_bam_enabled(bam_enabled, err))?
+        .map_err(|status| {
+            Self::map_bam_enabled(
+                bam_enabled,
+                ProxyError::MethodError {
+                    code: status.code(),
+                    message: sanitize_status_message_for_influx(status.message()),
+                },
+            )
+        })?
+        .into_inner();
+        let block_builder_pubkey =
+            Pubkey::from_str(&block_builder_info.pubkey).unwrap_or_else(|_| {
+                datapoint_warn!(
+                    "block_engine_stage-block_builder_pubkey_parse_error",
+                    ("url", block_engine_url, String),
+                    ("pubkey", &block_builder_info.pubkey, String),
+                    ("count", 1, i64),
+                );
+                block_builder_fee_info.load().block_builder
+            });
+        block_builder_fee_info.store(Arc::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: block_builder_info.commission,
+        }));
+        Ok(())
     }
 }
