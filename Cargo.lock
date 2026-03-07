@@ -3811,7 +3811,7 @@ dependencies = [
  "hash32 0.2.1",
  "rustc_version 0.4.1",
  "serde",
- "spin",
+ "spin 0.9.8",
  "stable_deref_trait",
 ]
 
@@ -6804,7 +6804,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8572f3c2cb9934231157b45499fc41e1f58c589fdfb81a844ba873265e80f8eb"
 dependencies = [
  "aws-lc-rs",
- "ring",
+ "ring 0.17.14",
  "rustls-pki-types",
  "untrusted 0.9.0",
 ]
@@ -8569,7 +8569,7 @@ dependencies = [
  "rolling-file",
  "rts-alloc",
  "rustls 0.23.34",
- "rustls-native-certs",
+ "rustls-native-certs 0.8.1",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -8683,8 +8683,8 @@ dependencies = [
  "thiserror 2.0.17",
  "tikv-jemallocator",
  "tokio",
- "tokio-stream",
  "tokio-rustls 0.26.2",
+ "tokio-stream",
  "tokio-util 0.7.16",
  "tonic",
  "tonic-build",
