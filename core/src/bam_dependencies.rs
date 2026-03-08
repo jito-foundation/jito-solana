@@ -18,7 +18,6 @@ pub enum BamOutboundMessage {
     AtomicTxnBatchResult(bam_types::AtomicTxnBatchResult),
     Heartbeat(bam_types::ValidatorHeartBeat),
     LeaderState(bam_types::LeaderState),
-    Ping(u32),
 }
 
 #[repr(u8)]

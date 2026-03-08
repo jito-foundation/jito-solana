@@ -10,7 +10,7 @@ use {
         },
         bam_types::{
             AtomicTxnBatch, BamConfig, BlockEngineBuilderConfig, BuilderHeartBeat,
-            MultipleAtomicTxnBatch, Packet, Socket,
+            MultipleAtomicTxnBatch, Packet, Ping, Pong, Socket,
         },
     },
     solana_core::bam_dependencies::BamOutboundMessage,
@@ -31,6 +31,16 @@ use {
     tonic::{Request, Response, Status, Streaming},
 };
 
+fn unix_timestamp_microseconds() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_micros(),
+    )
+    .unwrap()
+}
+
 fn v0_response(resp: Resp) -> SchedulerResponse {
     SchedulerResponse {
         versioned_msg: Some(
@@ -43,10 +53,7 @@ fn v0_response(resp: Resp) -> SchedulerResponse {
 
 fn heartbeat_response() -> SchedulerResponse {
     v0_response(Resp::HeartBeat(BuilderHeartBeat {
-        time_sent_microseconds: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u64,
+        time_sent_microseconds: unix_timestamp_microseconds(),
     }))
 }
 
@@ -75,6 +82,8 @@ struct MockBamNode {
     auth_proofs_received: Arc<AtomicU64>,
     config: Arc<Mutex<MockConfig>>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
+    ping_to_send: Arc<Mutex<Option<Ping>>>,
+    received_pongs: Arc<Mutex<Vec<Pong>>>,
     #[allow(dead_code)]
     outbound_tx: Arc<Mutex<Option<mpsc::Sender<AtomicTxnBatch>>>>,
 }
@@ -87,6 +96,8 @@ impl MockBamNode {
             auth_proofs_received: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Mutex::new(MockConfig::default())),
             batch_to_send: Arc::new(Mutex::new(None)),
+            ping_to_send: Arc::new(Mutex::new(None)),
+            received_pongs: Arc::new(Mutex::new(Vec::new())),
             outbound_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -146,6 +157,8 @@ impl BamNodeApi for MockBamNode {
         let heartbeat_interval = self.heartbeat_interval;
         let auth_proofs_received = self.auth_proofs_received.clone();
         let batch_to_send = self.batch_to_send.clone();
+        let ping_to_send = self.ping_to_send.clone();
+        let received_pongs = self.received_pongs.clone();
 
         tokio::spawn(async move {
             let mut authenticated = false;
@@ -163,6 +176,17 @@ impl BamNodeApi for MockBamNode {
             if !authenticated {
                 return;
             }
+
+            tokio::spawn(async move {
+                while let Ok(Some(msg)) = inbound.message().await {
+                    let Some(VersionedMsg::V0(v0)) = msg.versioned_msg else {
+                        continue;
+                    };
+                    if let Some(Msg::Pong(pong)) = v0.msg {
+                        received_pongs.lock().unwrap().push(pong);
+                    }
+                }
+            });
 
             if send_heartbeats.load(Ordering::Relaxed)
                 && tx.send(Ok(heartbeat_response())).await.is_err()
@@ -188,6 +212,14 @@ impl BamNodeApi for MockBamNode {
                         break;
                     }
                 }
+
+                let ping = ping_to_send.lock().unwrap().take();
+                if let Some(ping) = ping {
+                    let resp = v0_response(Resp::Ping(ping));
+                    if tx.send(Ok(resp)).await.is_err() {
+                        break;
+                    }
+                }
             }
         });
 
@@ -201,6 +233,8 @@ struct MockServerHandle {
     #[allow(dead_code)]
     config: Arc<Mutex<MockConfig>>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
+    ping_to_send: Arc<Mutex<Option<Ping>>>,
+    received_pongs: Arc<Mutex<Vec<Pong>>>,
 }
 
 async fn start_mock_server(
@@ -210,6 +244,8 @@ async fn start_mock_server(
     let mock = MockBamNode::new(send_heartbeats.clone(), heartbeat_interval);
     let config = mock.config.clone();
     let batch_to_send = mock.batch_to_send.clone();
+    let ping_to_send = mock.ping_to_send.clone();
+    let received_pongs = mock.received_pongs.clone();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -234,6 +270,8 @@ async fn start_mock_server(
         send_heartbeats,
         config,
         batch_to_send,
+        ping_to_send,
+        received_pongs,
     }
 }
 
@@ -429,6 +467,46 @@ mod bam_connection_tests {
         let received = batch_rx.try_recv().expect("should receive batch");
         assert_eq!(received.seq_id, 42);
         assert_eq!(received.max_schedule_slot, 100);
+    }
+
+    #[tokio::test]
+    async fn test_connection_replies_to_ping_with_timestamped_pong() {
+        let send_heartbeats = Arc::new(AtomicBool::new(true));
+        let server = start_mock_server(send_heartbeats, Duration::from_millis(100)).await;
+
+        let cluster_info = create_test_cluster_info();
+        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+
+        let connection = BamConnection::try_init(
+            format!("http://{}", server.addr),
+            cluster_info,
+            batch_tx,
+            outbound_rx,
+        )
+        .await
+        .expect("should connect");
+
+        assert!(wait_until_healthy(&connection, Duration::from_secs(10)).await);
+
+        let ping_id = 7;
+        *server.ping_to_send.lock().unwrap() = Some(Ping {
+            id: ping_id,
+            time_sent_microseconds: unix_timestamp_microseconds(),
+        });
+
+        let start = std::time::Instant::now();
+        let mut received_pong = None;
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Some(pong) = server.received_pongs.lock().unwrap().last().cloned() {
+                received_pong = Some(pong);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let received_pong = received_pong.expect("should receive pong");
+        assert_eq!(received_pong.id, ping_id);
+        assert!(received_pong.time_sent_microseconds > 0);
     }
 
     #[tokio::test]

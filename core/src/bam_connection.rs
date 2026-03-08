@@ -53,6 +53,16 @@ const CONNECTION_TASK_DROP_GRACE: Duration = Duration::from_millis(250);
 pub const MAX_DURATION_BETWEEN_NODE_HEARTBEATS: Duration = Duration::from_secs(6); // 3x the nodes heartbeat interval
 pub const WAIT_TO_RECONNECT_DURATION: Duration = Duration::from_secs(1);
 
+fn unix_timestamp_microseconds() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros(),
+    )
+    .unwrap_or_default()
+}
+
 impl BamConnection {
     /// Try to initialize a connection to the BAM Node; if it is not possible to connect, it will return an error.
     pub async fn try_init(
@@ -172,10 +182,7 @@ impl BamConnection {
                 _ = heartbeat_interval.tick() => {
                     let _ = outbound_sender.try_send(v0_to_versioned_proto(SchedulerMessageV0 {
                         msg: Some(Msg::HeartBeat(ValidatorHeartBeat {
-                            time_sent_microseconds: u64::try_from(SystemTime::now()
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_micros()).unwrap_or_default(),
+                            time_sent_microseconds: unix_timestamp_microseconds(),
                         })),
                     }));
                     metrics.heartbeat_sent.fetch_add(1, Relaxed);
@@ -213,6 +220,26 @@ impl BamConnection {
                         SchedulerResponseV0 { resp: Some(Resp::HeartBeat(_)), .. } => {
                             last_heartbeat = Some(std::time::Instant::now());
                             metrics.heartbeat_received.fetch_add(1, Relaxed);
+                        }
+                        SchedulerResponseV0 { resp: Some(Resp::Ping(ping)), .. } => {
+                            metrics.ping_received.fetch_add(1, Relaxed);
+                            metrics.last_ping_id_received.store(ping.id, Relaxed);
+
+                            let pong_message_outbound = SchedulerMessageV0 {
+                                msg: Some(Msg::Pong(Pong {
+                                    id: ping.id,
+                                    time_sent_microseconds: unix_timestamp_microseconds(),
+                                })),
+                            };
+                            if outbound_sender
+                                .try_send(v0_to_versioned_proto(pong_message_outbound))
+                                .is_err()
+                            {
+                                metrics.outbound_pong_send_fail.fetch_add(1, Relaxed);
+                            } else {
+                                metrics.outbound_pong_sent.fetch_add(1, Relaxed);
+                                metrics.last_ping_id_sent.store(ping.id, Relaxed);
+                            }
                         }
                         SchedulerResponseV0 { resp: Some(Resp::MultipleAtomicTxnBatch(batches)), .. } => {
                             for batch in batches.batches {
@@ -341,19 +368,6 @@ impl BamConnection {
                                 waiting_results.push(result);
                                 if waiting_results.len() >= MAX_WAITING_RESULTS {
                                     Self::send_batch_results(&mut outbound_sender, std::mem::take(&mut waiting_results), metrics.as_ref());
-                                }
-                            }
-                            BamOutboundMessage::Ping(id) => {
-                                metrics.ping_received.fetch_add(1, Relaxed);
-                                metrics.last_ping_id_received.store(id, Relaxed);
-                                let pong_message_outbound = SchedulerMessageV0 {
-                                    msg: Some(Msg::Pong(Pong { id })),
-                                };
-                                if outbound_sender.try_send(v0_to_versioned_proto(pong_message_outbound)).is_err() {
-                                    metrics.outbound_pong_send_fail.fetch_add(1, Relaxed);
-                                } else {
-                                    metrics.outbound_pong_sent.fetch_add(1, Relaxed);
-                                    metrics.last_ping_id_sent.store(id, Relaxed);
                                 }
                             }
                             _ => {}
