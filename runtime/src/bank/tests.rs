@@ -5502,7 +5502,7 @@ fn test_shrink_candidate_slots_cached() {
     // No more slots should be shrunk
     assert_eq!(bank2.shrink_candidate_slots(), 0);
     // alive_counts represents the count of alive accounts in the three slots 0,1,2
-    assert_eq!(alive_counts, vec![12, 1, 6]);
+    assert_eq!(alive_counts, vec![13, 1, 6]);
 }
 
 #[test]
@@ -9295,9 +9295,7 @@ fn calculate_test_fee(
         lamports_per_signature == 0,
         fee_structure.lamports_per_signature,
         fee_budget_limits.prioritization_fee,
-        FeeFeatures {
-            enable_secp256r1_precompile: true,
-        },
+        FeeFeatures {},
     )
 }
 
