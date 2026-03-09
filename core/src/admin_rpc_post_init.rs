@@ -14,7 +14,7 @@ use {
     std::{
         collections::{HashMap, HashSet},
         net::UdpSocket,
-        sync::{Arc, Mutex, RwLock},
+        sync::{Arc, RwLock},
     },
     tokio::sync::mpsc,
 };
@@ -87,8 +87,8 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub cluster_slots: Arc<ClusterSlots>,
     pub node: Option<Arc<NodeMultihoming>>,
     pub banking_control_sender: mpsc::Sender<BankingControlMsg>,
-    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-    pub relayer_config: Arc<Mutex<RelayerConfig>>,
+    pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
+    pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }

@@ -386,8 +386,8 @@ pub struct ValidatorConfig {
     pub retransmit_xdp: Option<XdpConfig>,
     pub repair_handler_type: RepairHandlerType,
     // jito configuration
-    pub relayer_config: Arc<Mutex<RelayerConfig>>,
-    pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
+    pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub tip_manager_config: TipManagerConfig,
@@ -475,8 +475,8 @@ impl ValidatorConfig {
             delay_leader_block_for_pending_fork: false,
             retransmit_xdp: None,
             repair_handler_type: RepairHandlerType::default(),
-            relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
-            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            relayer_config: Arc::new(ArcSwap::from_pointee(RelayerConfig::default())),
+            block_engine_config: Arc::new(ArcSwap::from_pointee(BlockEngineConfig::default())),
             shred_receiver_addresses: Arc::new(
                 ArcSwap::from_pointee(ShredReceiverAddresses::new()),
             ),
