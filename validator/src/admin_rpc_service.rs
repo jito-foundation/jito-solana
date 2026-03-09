@@ -576,7 +576,7 @@ impl AdminRpc for AdminRpcImpl {
             ));
         }
         meta.with_post_init(|post_init| {
-            *post_init.block_engine_config.lock().unwrap() = config;
+            post_init.block_engine_config.store(Arc::new(config));
             Ok(())
         })
     }
@@ -668,7 +668,7 @@ impl AdminRpc for AdminRpcImpl {
             ));
         }
         meta.with_post_init(|post_init| {
-            *post_init.relayer_config.lock().unwrap() = config;
+            post_init.relayer_config.store(Arc::new(config));
             Ok(())
         })
     }
@@ -1221,11 +1221,7 @@ mod tests {
         spl_token_2022_interface::state::{
             Account as TokenAccount, AccountState as TokenAccountState, Mint,
         },
-        std::{
-            collections::HashSet,
-            fs::remove_dir_all,
-            sync::{atomic::AtomicBool, Mutex},
-        },
+        std::{collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
         tokio::sync::mpsc,
     };
 
@@ -1267,8 +1263,8 @@ mod tests {
             let vote_account = vote_keypair.pubkey();
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
-            let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
-            let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
+            let block_engine_config = Arc::new(ArcSwap::from_pointee(BlockEngineConfig::default()));
+            let relayer_config = Arc::new(ArcSwap::from_pointee(RelayerConfig::default()));
             let shred_receiver_addresses = Arc::new(ArcSwap::default());
             let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
