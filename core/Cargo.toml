@@ -41,6 +41,7 @@ frozen-abi = [
 
 [dependencies]
 agave-banking-stage-ingress-types = { workspace = true }
+agave-bls-cert-verify = { workspace = true }
 agave-feature-set = { workspace = true }
 agave-logger = { workspace = true }
 agave-scheduler-bindings = { workspace = true }
@@ -87,6 +88,7 @@ solana-accounts-db = { workspace = true }
 solana-address-lookup-table-interface = { workspace = true }
 solana-bincode = { workspace = true }
 solana-bloom = { workspace = true }
+solana-bls-signatures = { workspace = true }
 solana-client = { workspace = true }
 solana-clock = { workspace = true }
 solana-cluster-type = { workspace = true }
@@ -173,6 +175,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 trees = { workspace = true }
+wincode = { workspace = true }
 
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dependencies]
 jemallocator = { workspace = true }
@@ -186,6 +189,7 @@ sysctl = { workspace = true }
 agave-reserved-account-keys = { workspace = true }
 agave-scheduler-bindings = { workspace = true }
 bencher = { workspace = true }
+bitvec = { workspace = true }
 criterion = { workspace = true }
 fs_extra = { workspace = true }
 serde_json = { workspace = true }
@@ -205,6 +209,7 @@ solana-poh = { workspace = true, features = ["dev-context-only-utils"] }
 solana-program-binaries = { workspace = true }
 solana-program-runtime = { workspace = true, features = ["metrics"] }
 solana-rpc = { workspace = true, features = ["dev-context-only-utils"] }
+solana-signer-store = { workspace = true }
 solana-system-program = { workspace = true }
 solana-unified-scheduler-pool = { workspace = true, features = [
     "dev-context-only-utils",
@@ -222,6 +227,10 @@ name = "gen_keys"
 
 [[bench]]
 name = "sigverify_stage"
+harness = false
+
+[[bench]]
+name = "bls_vote_sigverify"
 harness = false
 
 [[bench]]
