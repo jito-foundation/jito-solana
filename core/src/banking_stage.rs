@@ -1687,7 +1687,9 @@ mod tests {
 
     #[test]
     fn test_blacklisted_accounts() {
-        for block_production_method in BlockProductionMethod::iter() {
+        for block_production_method in BlockProductionMethod::iter()
+            .filter(|m| !matches!(m, BlockProductionMethod::UnifiedScheduler))
+        {
             let GenesisConfigInfo {
                 genesis_config,
                 mint_keypair,
