@@ -291,6 +291,10 @@ where
         let scheduled = match decision {
             BufferedPacketsDecision::Consume(bank) => {
                 if !self.scheduling_enabled() {
+                    // When BAM disconnects while we're still leader, `schedule`
+                    // is never called so `pull_into_prio_graph` never drains the
+                    // priority queue. Drain leftover batch entries here to avoid
+                    // stale batches accumulating until the next slot change.
                     if self.bam_controller {
                         while let Some(id) = self.container.pop() {
                             self.container.remove_by_id(id.id);
