@@ -468,9 +468,7 @@ impl Tpu {
             tip_manager,
             bundle_account_locker,
             &block_builder_fee_info,
-            prioritization_fee_cache
-                .as_ref()
-                .expect("prioritization fee cache required for bundle stage"),
+            prioritization_fee_cache.clone(),
             blacklisted_accounts,
         );
 
