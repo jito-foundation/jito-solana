@@ -41,8 +41,8 @@ use {
         num::{NonZeroUsize, Saturating},
         ops::Deref,
         sync::{
-            Arc, RwLock,
             atomic::{AtomicBool, Ordering},
+            Arc, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -602,7 +602,10 @@ impl BundleStage {
 
         let mut bundles = VecDeque::with_capacity(BUNDLE_WINDOW_SIZE.get());
 
-        if bank.slot() != *last_tip_update_slot {
+        // Fix #1209: Wait for first bundle to prevent BAM/BlockEngine thrashing 
+        // Tip programs should only be processed if there is at least one bundle received, 
+        // preventing thrashing between BAM and Block Engine.
+        if bank.slot() != *last_tip_update_slot && bundle_storage.unprocessed_bundles_len() > 0 {
             if Self::handle_tip_programs(
                 bank,
                 bundle_account_locker,
@@ -995,6 +998,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // TODO: Ignored as per Issue #1209 (reverting auto-crank behavior without bundles)
     fn test_tip_programs_initialized_with_no_bundles() {
         agave_logger::setup();
         let TestFixture {
