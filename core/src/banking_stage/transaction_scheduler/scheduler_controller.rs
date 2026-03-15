@@ -291,6 +291,15 @@ where
         let scheduled = match decision {
             BufferedPacketsDecision::Consume(bank) => {
                 if !self.scheduling_enabled() {
+                    // When BAM disconnects while we're still leader, `schedule`
+                    // is never called so `pull_into_prio_graph` never drains the
+                    // priority queue. Drain leftover batch entries here to avoid
+                    // stale batches accumulating until the next slot change.
+                    if self.bam_controller {
+                        while let Some(id) = self.container.pop() {
+                            self.container.remove_by_id(id.id);
+                        }
+                    }
                     return Ok(0);
                 }
                 let scheduling_budget = if self.bam_controller {
@@ -393,7 +402,14 @@ where
     /// Incrementally recheck queued transactions for validity. A cursor walks the
     /// priority queue from highest to lowest priority. When the cursor reaches the end it
     /// wraps back to the top, continuously sweeping the queue.
+    ///
+    /// Skipped for the BAM controller: its priority queue holds `Batch` entries
+    /// (not individual `TransactionState` entries), so `get_transaction` would
+    /// return `None` and panic. BAM has its own validation in the scheduler.
     fn incremental_recheck(&mut self) {
+        if self.bam_controller {
+            return;
+        }
         let bank = self.sharable_banks.working();
 
         // Walk the cursor to collect up to one chunk of valid IDs.
