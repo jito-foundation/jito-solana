@@ -351,7 +351,7 @@ proptest = "1.10"
 prost = "0.14.3"
 prost-build = "0.14.3"
 prost-types = "0.14.3"
-protobuf-src = "1.1.0"
+protobuf-src = "2.1.1"
 protosol = "2.0.0"
 qstring = "0.7.2"
 qualifier_attr = { version = "0.2.2", default-features = false }
