@@ -30,6 +30,9 @@ use {
         sigverify,
         snapshot_packager_service::SnapshotPackagerService,
         stats_reporter_service::StatsReporterService,
+        multicast_shred_check_service::{
+            MulticastShredCheckService,
+        },
         system_monitor_service::{
             verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
         },
@@ -396,6 +399,7 @@ pub struct ValidatorConfig {
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub tip_manager_config: TipManagerConfig,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
+    pub disable_multicast_shred_check: bool,
 }
 
 impl ValidatorConfig {
@@ -488,6 +492,7 @@ impl ValidatorConfig {
             )),
             tip_manager_config: TipManagerConfig::default(),
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
+            disable_multicast_shred_check: false,
         }
     }
 
@@ -648,6 +653,7 @@ pub struct Validator {
     transaction_status_service: Option<TransactionStatusService>,
     entry_notifier_service: Option<EntryNotifierService>,
     system_monitor_service: Option<SystemMonitorService>,
+    multicast_shred_check_service: Option<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
     stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
@@ -878,6 +884,22 @@ impl Validator {
                 report_os_disk_stats: !config.no_os_disk_stats_reporting,
             },
         ));
+
+        let multicast_shred_check_service =
+            if !config.disable_multicast_shred_check
+                && matches!(
+                    genesis_config.cluster_type,
+                    ClusterType::MainnetBeta | ClusterType::Testnet
+                )
+            {
+                Some(MulticastShredCheckService::new(
+                    exit.clone(),
+                    config.shred_receiver_addresses.clone(),
+                    genesis_config.cluster_type,
+                ))
+            } else {
+                None
+            };
 
         let dependency_tracker = Arc::new(DependencyTracker::default());
 
@@ -1840,6 +1862,7 @@ impl Validator {
             transaction_status_service,
             entry_notifier_service,
             system_monitor_service,
+            multicast_shred_check_service,
             sample_performance_service,
             snapshot_packager_service,
             completed_data_sets_service,
@@ -1943,6 +1966,12 @@ impl Validator {
             system_monitor_service
                 .join()
                 .expect("system_monitor_service");
+        }
+
+        if let Some(multicast_shred_check_service) = self.multicast_shred_check_service {
+            multicast_shred_check_service
+                .join()
+                .expect("multicast_shred_check_service");
         }
 
         if let Some(sample_performance_service) = self.sample_performance_service {
