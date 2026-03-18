@@ -957,6 +957,7 @@ pub fn execute(
         shred_retransmit_receiver_addresses,
         tip_manager_config,
         bam_url,
+        disable_multicast_shred_check: matches.is_present("disable_multicast_shred_check"),
     };
 
     let vote_account = pubkey_of(matches, "vote_account").unwrap_or_else(|| {

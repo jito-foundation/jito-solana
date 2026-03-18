@@ -1327,6 +1327,16 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             ),
     )
     .arg(
+        Arg::with_name("disable_multicast_shred_check")
+            .long("disable-multicast-shred-check")
+            .takes_value(false)
+            .help(
+                "Disables the background service that automatically detects multicast \
+                 infrastructure and adds the multicast shred address to the validator's \
+                 receiver list. Explicit --shred-receiver-address configuration still works.",
+            ),
+    )
+    .arg(
         Arg::with_name("retransmit_xdp_interface")
             .hidden(hidden_unless_forced())
             .long("experimental-retransmit-xdp-interface")
