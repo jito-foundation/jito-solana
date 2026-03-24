@@ -429,6 +429,7 @@ pub(crate) mod external {
         },
         ahash::HashSet,
         solana_account::ReadableAccount,
+        std::sync::Arc,
         solana_clock::{MAX_PROCESSING_AGE, Slot},
         solana_cost_model::cost_model::CostModel,
         solana_message::v0::LoadedAddresses,
@@ -461,7 +462,7 @@ pub(crate) mod external {
         sharable_banks: SharableBanks,
         metrics: Arc<ConsumeWorkerMetrics>,
         bundle_account_locker: BundleAccountLocker,
-        blacklisted_accounts: HashSet<Pubkey>,
+        blacklisted_accounts: Arc<HashSet<Pubkey>>,
     }
 
     type Tx = RuntimeTransaction<ResolvedTransactionView<TransactionPtr>>;
@@ -477,7 +478,7 @@ pub(crate) mod external {
             shared_leader_state: SharedLeaderState,
             sharable_banks: SharableBanks,
             bundle_account_locker: BundleAccountLocker,
-            blacklisted_accounts: HashSet<Pubkey>,
+            blacklisted_accounts: Arc<HashSet<Pubkey>>,
         ) -> Self {
             Self {
                 exit,
@@ -1785,6 +1786,36 @@ pub(crate) mod external {
                 result,
                 Err(PacketHandlingError::BlacklistedAccount)
             ));
+        }
+
+        #[test]
+        fn test_translate_transaction_non_blacklisted_account() {
+            let genesis = genesis_utils::create_genesis_config(1_000_000_000);
+            let bank = Bank::new_for_tests(&genesis.genesis_config);
+            let recipient = Pubkey::new_unique();
+            let tx = transfer(
+                &solana_keypair::Keypair::new(),
+                &recipient,
+                1,
+                bank.confirmed_last_blockhash(),
+            );
+            let serialized_tx = bincode::serialize(&tx).unwrap();
+            let transaction_ptr = unsafe {
+                TransactionPtr::from_raw_parts(
+                    NonNull::new(serialized_tx.as_ptr().cast_mut()).unwrap(),
+                    serialized_tx.len(),
+                )
+            };
+
+            let result = ExternalWorker::translate_transaction(
+                transaction_ptr,
+                &bank,
+                bank.get_transaction_account_lock_limit(),
+                true,
+                &HashSet::default(),
+            );
+
+            assert!(result.is_ok());
         }
 
         #[test]
