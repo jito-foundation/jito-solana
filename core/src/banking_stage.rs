@@ -856,7 +856,7 @@ mod external {
             }: AgaveSession,
         ) -> Result<Vec<JoinHandle<()>>, ()> {
             let bundle_account_locker = self.bundle_account_locker.clone();
-            let blacklisted_accounts = self.blacklisted_accounts.clone();
+            let blacklisted_accounts = Arc::new(self.blacklisted_accounts.clone());
             info!("Spawning external scheduler");
             // Toggling unified scheduler into the disabled state should always be a safe and
             // idempotent operation.
