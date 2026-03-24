@@ -112,6 +112,15 @@ pub(crate) struct TransactionViewReceiveAndBuffer {
     pub blacklisted_accounts: HashSet<Pubkey>,
 }
 
+pub(crate) fn contains_blacklisted_account<'a>(
+    account_keys: impl IntoIterator<Item = &'a Pubkey>,
+    blacklisted_accounts: &HashSet<Pubkey>,
+) -> bool {
+    account_keys
+        .into_iter()
+        .any(|account| blacklisted_accounts.contains(account))
+}
+
 impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
     type Transaction = RuntimeTransaction<ResolvedTransactionView<SharedBytes>>;
     type Container = TransactionViewStateContainer;
@@ -433,11 +442,7 @@ impl TransactionViewReceiveAndBuffer {
             enable_instruction_accounts_limit,
         )?;
 
-        if view
-            .account_keys()
-            .iter()
-            .any(|account| blacklisted_accounts.contains(account))
-        {
+        if contains_blacklisted_account(view.account_keys().iter(), blacklisted_accounts) {
             return Err(PacketHandlingError::BlacklistedAccount);
         }
 
