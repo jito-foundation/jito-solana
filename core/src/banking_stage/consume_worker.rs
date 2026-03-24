@@ -429,7 +429,6 @@ pub(crate) mod external {
         },
         ahash::HashSet,
         solana_account::ReadableAccount,
-        std::sync::Arc,
         solana_clock::{MAX_PROCESSING_AGE, Slot},
         solana_cost_model::cost_model::CostModel,
         solana_message::v0::LoadedAddresses,
@@ -441,7 +440,7 @@ pub(crate) mod external {
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_svm_transaction::svm_message::SVMMessage,
         solana_transaction::TransactionError,
-        std::ptr::NonNull,
+        std::{ptr::NonNull, sync::Arc},
     };
 
     #[derive(Debug, Error)]

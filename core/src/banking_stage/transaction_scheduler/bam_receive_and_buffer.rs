@@ -506,9 +506,10 @@ impl BamReceiveAndBuffer {
             }
 
             // Check 6: Ensure none of the accounts touch blacklisted accounts
-            let (is_blacklisted, duration_us) = measure_us!(
-                contains_blacklisted_account(view.account_keys().iter(), blacklisted_accounts)
-            );
+            let (is_blacklisted, duration_us) = measure_us!(contains_blacklisted_account(
+                view.account_keys().iter(),
+                blacklisted_accounts
+            ));
             metrics.increment_blacklist_check_us(duration_us);
             if is_blacklisted {
                 stats.num_dropped_on_blacklisted_account += 1;
