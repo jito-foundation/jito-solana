@@ -856,6 +856,7 @@ mod external {
             }: AgaveSession,
         ) -> Result<Vec<JoinHandle<()>>, ()> {
             let bundle_account_locker = self.bundle_account_locker.clone();
+            let blacklisted_accounts = self.blacklisted_accounts.clone();
             info!("Spawning external scheduler");
             // Toggling unified scheduler into the disabled state should always be a safe and
             // idempotent operation.
@@ -894,6 +895,7 @@ mod external {
                     self.poh_recorder.read().unwrap().shared_leader_state(),
                     self.bank_forks.read().unwrap().sharable_banks(),
                     bundle_account_locker.clone(),
+                    blacklisted_accounts.clone(),
                 );
 
                 worker_metrics.push(consume_worker.metrics_handle());
