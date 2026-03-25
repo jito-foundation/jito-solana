@@ -518,7 +518,7 @@ pub fn broadcast_shreds(
                 cluster_nodes
                     .get_broadcast_peer(&key)?
                     .tvu(protocol)
-                    .filter(|addr| socket_addr_space.check(addr))
+                    .filter(|addr| !addr.is_ipv6() && socket_addr_space.check(addr))
                     .map(|addr| {
                         (match protocol {
                             Protocol::QUIC => Either::Right,
