@@ -14,6 +14,8 @@ pub struct LocalClusterConfig {
     pub ledger_tool_build_path: String,
     pub validators: Vec<CustomValidatorConfig>,
     pub dynamic_port_range_start: u16,
+    pub bind_address: Option<String>,
+    pub gossip_host: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

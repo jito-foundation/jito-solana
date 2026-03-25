@@ -90,8 +90,6 @@ impl BamValidator {
         .arg(vote_path)
         .arg("--authorized-voter")
         .arg(vote_path)
-        .arg("--bind-address")
-        .arg("0.0.0.0")
         .arg("--dynamic-port-range")
         .arg(format!(
             "{dynamic_port_range_start}-{dynamic_port_range_end}"
@@ -131,6 +129,14 @@ impl BamValidator {
 
         if let Some(gossip_port) = gossip_port {
             cmd.arg("--gossip-port").arg(gossip_port.to_string());
+        }
+
+        if let Some(bind_address) = &cluster_config.bind_address {
+            cmd.arg("--bind-address").arg(bind_address);
+        }
+
+        if let Some(gossip_host) = &cluster_config.gossip_host {
+            cmd.arg("--gossip-host").arg(gossip_host);
         }
 
         if let Some(bootstrap_gossip) = bootstrap_gossip {
