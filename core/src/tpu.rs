@@ -201,6 +201,7 @@ impl Tpu {
         relayer_config: Arc<Mutex<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
     ) -> Self {
         let TpuSockets {
@@ -540,6 +541,7 @@ impl Tpu {
             xdp_sender,
             shredstream_receiver_address,
             shred_receiver_addresses,
+            multicast_receiver_address,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();

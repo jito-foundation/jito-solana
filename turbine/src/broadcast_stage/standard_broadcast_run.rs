@@ -180,6 +180,7 @@ impl StandardBroadcastRun {
             quic_endpoint_sender,
             &ArcSwap::default(),
             &ArcSwap::default(),
+            &ArcSwap::default(),
         );
         let _ = self.record(&brecv, blockstore);
         Ok(())
@@ -382,6 +383,7 @@ impl StandardBroadcastRun {
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &Option<SocketAddr>,
         shred_receiver_addresses: &ShredReceiverAddresses,
+        multicast_receiver_address: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats {
@@ -405,6 +407,7 @@ impl StandardBroadcastRun {
             quic_endpoint_sender,
             shredstream_receiver_address,
             shred_receiver_addresses,
+            multicast_receiver_address,
         )?;
         transmit_time.stop();
 
@@ -474,6 +477,7 @@ impl BroadcastRun for StandardBroadcastRun {
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
         self.broadcast(
@@ -485,6 +489,7 @@ impl BroadcastRun for StandardBroadcastRun {
             quic_endpoint_sender,
             &shredstream_receiver_address.load(),
             &shred_receiver_addresses.load(),
+            &multicast_receiver_address.load(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {

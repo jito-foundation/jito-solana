@@ -319,6 +319,7 @@ pub trait AdminRpc {
 }
 
 pub struct AdminRpcImpl;
+
 impl AdminRpc for AdminRpcImpl {
     type Metadata = AdminRpcRequestMetadata;
 
@@ -1178,6 +1179,7 @@ mod tests {
         },
         solana_streamer::socket::SocketAddrSpace,
         solana_system_interface::program as system_program,
+        solana_turbine::ShredReceiverAddresses,
         solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
         spl_generic_token::token,
         spl_token_2022_interface::state::{
@@ -1230,7 +1232,8 @@ mod tests {
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
-            let shred_receiver_addresses = Arc::new(ArcSwap::default());
+            let shred_receiver_addresses =
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new()));
             let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,

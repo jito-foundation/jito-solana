@@ -184,6 +184,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
@@ -198,6 +199,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             quic_endpoint_sender,
             &shredstream_receiver_address.load(),
             &shred_receiver_addresses.load(),
+            &multicast_receiver_address.load(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
