@@ -1309,7 +1309,8 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
                  normal turbine operation. Pass this flag multiple times or use comma-separated \
                  entries; each entry may be ip:port or host:port. Hostnames resolve to IPv4 \
                  addresses only. Up to 32 unique addresses are allowed. Pass empty string as the \
-                 only value to disable.",
+                 only value to configure an empty explicit receiver list; auto-detected multicast \
+                 may still be used.",
             ),
     )
     .arg(
@@ -1332,8 +1333,8 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(false)
             .help(
                 "Disables the background service that automatically detects multicast \
-                 infrastructure and adds the multicast shred address to the validator's \
-                 receiver list. Explicit --shred-receiver-address configuration still works.",
+                 infrastructure and adds the cluster multicast shred address when the route \
+                 exists and the address is not already added.",
             ),
     )
     .arg(

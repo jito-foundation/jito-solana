@@ -1,9 +1,7 @@
 use {
-    solana_turbine::ShredReceiverAddresses,
+    solana_turbine::{MAX_SHRED_RECEIVER_ADDRESSES, ShredReceiverAddresses},
     std::net::{SocketAddr, ToSocketAddrs},
 };
-
-pub const MAX_SHRED_RECEIVER_ADDRESSES: usize = 32;
 
 fn push_unique_addr(
     addrs: &mut ShredReceiverAddresses,
