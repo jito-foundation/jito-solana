@@ -18,6 +18,12 @@ use {
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
+struct ExternalBroadcastReceivers<'a> {
+    shredstream_receiver_address: &'a Option<SocketAddr>,
+    shred_receiver_addresses: &'a ShredReceiverAddresses,
+    multicast_receiver_address: &'a Option<SocketAddr>,
+}
+
 #[derive(Clone)]
 pub struct StandardBroadcastRun {
     slot: Slot,
@@ -381,9 +387,7 @@ impl StandardBroadcastRun {
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
-        shredstream_receiver_address: &Option<SocketAddr>,
-        shred_receiver_addresses: &ShredReceiverAddresses,
-        multicast_receiver_address: &Option<SocketAddr>,
+        external_receivers: ExternalBroadcastReceivers<'_>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats {
@@ -405,9 +409,9 @@ impl StandardBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
-            shredstream_receiver_address,
-            shred_receiver_addresses,
-            multicast_receiver_address,
+            external_receivers.shredstream_receiver_address,
+            external_receivers.shred_receiver_addresses,
+            external_receivers.multicast_receiver_address,
         )?;
         transmit_time.stop();
 
@@ -487,9 +491,11 @@ impl BroadcastRun for StandardBroadcastRun {
             batch_info,
             bank_forks,
             quic_endpoint_sender,
-            &shredstream_receiver_address.load(),
-            &shred_receiver_addresses.load(),
-            &multicast_receiver_address.load(),
+            ExternalBroadcastReceivers {
+                shredstream_receiver_address: &shredstream_receiver_address.load(),
+                shred_receiver_addresses: &shred_receiver_addresses.load(),
+                multicast_receiver_address: &multicast_receiver_address.load(),
+            },
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
