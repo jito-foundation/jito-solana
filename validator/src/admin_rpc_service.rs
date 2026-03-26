@@ -327,6 +327,7 @@ pub trait AdminRpc {
 }
 
 pub struct AdminRpcImpl;
+
 impl AdminRpc for AdminRpcImpl {
     type Metadata = AdminRpcRequestMetadata;
 
@@ -1208,6 +1209,7 @@ mod tests {
             bank::{Bank, BankTestConfig},
             bank_forks::BankForks,
         },
+        solana_turbine::ShredReceiverAddresses,
         std::{collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
         tokio::sync::mpsc,
     };
@@ -1259,7 +1261,8 @@ mod tests {
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(ArcSwap::from_pointee(BlockEngineConfig::default()));
             let relayer_config = Arc::new(ArcSwap::from_pointee(RelayerConfig::default()));
-            let shred_receiver_addresses = Arc::new(ArcSwap::default());
+            let shred_receiver_addresses =
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new()));
             let shred_retransmit_receiver_addresses = Arc::new(ArcSwap::default());
             let meta = AdminRpcRequestMetadata {
                 rpc_addr: None,

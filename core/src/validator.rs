@@ -18,6 +18,7 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
         },
         forwarding_stage::ForwardingClientConfig,
+        multicast_shred_check_service::MulticastShredCheckService,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self,
@@ -29,9 +30,6 @@ use {
         sample_performance_service::SamplePerformanceService,
         snapshot_packager_service::SnapshotPackagerService,
         stats_reporter_service::StatsReporterService,
-        multicast_shred_check_service::{
-            MulticastShredCheckService,
-        },
         system_monitor_service::{
             SystemMonitorService, SystemMonitorStatsReportConfig, verify_net_stats_access,
         },
@@ -396,10 +394,16 @@ pub struct ValidatorConfig {
     // jito configuration
     pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
     pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
+    /// Configured leader shred receiver addresses. This list may be empty.
+    /// Auto-detected multicast may still be appended when the cluster
+    /// route exists and the multicast address is not already present.
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Automatically detected multicast destination for leader shreds.
+    pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
+    /// Skips automatic multicast route detection and multicast receiver updates.
     pub disable_multicast_shred_check: bool,
 }
 
@@ -490,6 +494,7 @@ impl ValidatorConfig {
             shred_retransmit_receiver_addresses: Arc::new(ArcSwap::from_pointee(
                 ShredReceiverAddresses::new(),
             )),
+            multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
             disable_multicast_shred_check: false,
@@ -658,6 +663,8 @@ pub struct Validator {
     transaction_status_service: Option<TransactionStatusService>,
     entry_notifier_service: Option<EntryNotifierService>,
     system_monitor_service: Option<SystemMonitorService>,
+    /// Background watcher that keeps the cluster multicast shred address in sync
+    /// with kernel route availability.
     multicast_shred_check_service: Option<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
     stats_reporter_service: StatsReporterService,
@@ -914,22 +921,6 @@ impl Validator {
                 report_os_disk_stats: !config.no_os_disk_stats_reporting,
             },
         ));
-
-        let multicast_shred_check_service =
-            if !config.disable_multicast_shred_check
-                && matches!(
-                    genesis_config.cluster_type,
-                    ClusterType::MainnetBeta | ClusterType::Testnet
-                )
-            {
-                Some(MulticastShredCheckService::new(
-                    exit.clone(),
-                    config.shred_receiver_addresses.clone(),
-                    genesis_config.cluster_type,
-                ))
-            } else {
-                None
-            };
 
         let dependency_tracker = Arc::new(DependencyTracker::default());
 
@@ -1798,6 +1789,7 @@ impl Validator {
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_addresses.clone(),
+            config.multicast_receiver_address.clone(),
             config.bam_url.clone(),
         );
 
@@ -1835,6 +1827,19 @@ impl Validator {
             relayer_config: config.relayer_config.clone(),
             shred_receiver_addresses: config.shred_receiver_addresses.clone(),
             shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
+        });
+
+        let multicast_shred_check_service = (!config.disable_multicast_shred_check
+            && matches!(
+                genesis_config.cluster_type,
+                ClusterType::MainnetBeta | ClusterType::Testnet
+            ))
+        .then(|| {
+            MulticastShredCheckService::new(
+                exit.clone(),
+                config.multicast_receiver_address.clone(),
+                genesis_config.cluster_type,
+            )
         });
 
         Ok(Self {

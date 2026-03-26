@@ -946,6 +946,7 @@ pub fn execute(
         block_engine_config,
         shred_receiver_addresses,
         shred_retransmit_receiver_addresses,
+        multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
         tip_manager_config,
         bam_url,
         disable_multicast_shred_check: matches.is_present("disable_multicast_shred_check"),
