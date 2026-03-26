@@ -1766,7 +1766,7 @@ impl Validator {
             blockstore.clone(),
             &config.broadcast_stage_type,
             xdp_sender,
-            exit,
+            exit.clone(),
             node.info.shred_version(),
             vote_tracker,
             bank_forks.clone(),
