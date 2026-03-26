@@ -9,10 +9,9 @@ use {
         standard_broadcast_run::StandardBroadcastRun,
     },
     crate::{
-        MAX_SHRED_RECEIVER_ADDRESSES,
         cluster_nodes::{self, ClusterNodes, ClusterNodesCache},
         xdp::XdpSender,
-        ShredReceiverAddresses,
+        ShredReceiverAddresses, MAX_SHRED_RECEIVER_ADDRESSES,
     },
     arc_swap::ArcSwap,
     bytes::Bytes,

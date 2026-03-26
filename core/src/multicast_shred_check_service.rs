@@ -5,8 +5,8 @@ use {
     std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,

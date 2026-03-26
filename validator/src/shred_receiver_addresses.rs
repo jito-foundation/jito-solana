@@ -1,5 +1,5 @@
 use {
-    solana_turbine::{MAX_SHRED_RECEIVER_ADDRESSES, ShredReceiverAddresses},
+    solana_turbine::{ShredReceiverAddresses, MAX_SHRED_RECEIVER_ADDRESSES},
     std::net::{SocketAddr, ToSocketAddrs},
 };
 

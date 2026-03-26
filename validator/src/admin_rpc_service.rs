@@ -1179,8 +1179,8 @@ mod tests {
         },
         solana_streamer::socket::SocketAddrSpace,
         solana_system_interface::program as system_program,
-        solana_turbine::ShredReceiverAddresses,
         solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
+        solana_turbine::ShredReceiverAddresses,
         spl_generic_token::token,
         spl_token_2022_interface::state::{
             Account as TokenAccount, AccountState as TokenAccountState, Mint,
