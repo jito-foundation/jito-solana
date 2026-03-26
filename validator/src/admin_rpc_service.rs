@@ -1281,11 +1281,11 @@ mod tests {
             bank_forks::BankForks,
         },
         solana_system_interface::program as system_program,
+        solana_turbine::ShredReceiverAddresses,
         spl_generic_token::token,
         spl_token_2022_interface::state::{
             Account as TokenAccount, AccountState as TokenAccountState, Mint,
         },
-        solana_turbine::ShredReceiverAddresses,
         std::{collections::HashSet, fs::remove_dir_all, sync::atomic::AtomicBool},
         tokio::sync::mpsc,
     };
