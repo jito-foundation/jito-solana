@@ -8,5 +8,13 @@ rustflags = ["-Clinker-plugin-lto=no"]
 [target.x86_64-apple-darwin]
 rustflags = ["-Clinker-plugin-lto=no"]
 
+[env]
+CC_aarch64_apple_darwin = "/opt/homebrew/opt/llvm/bin/clang"
+AR_aarch64_apple_darwin = "/opt/homebrew/opt/llvm/bin/llvm-ar"
+RANLIB_aarch64_apple_darwin = "/opt/homebrew/opt/llvm/bin/llvm-ranlib"
+CC_x86_64_apple_darwin = "/opt/homebrew/opt/llvm/bin/clang"
+AR_x86_64_apple_darwin = "/opt/homebrew/opt/llvm/bin/llvm-ar"
+RANLIB_x86_64_apple_darwin = "/opt/homebrew/opt/llvm/bin/llvm-ranlib"
+
 [alias]
 xtask = "run --manifest-path ci/xtask/Cargo.toml --bin xtask --"
