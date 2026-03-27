@@ -90,8 +90,6 @@ impl BamValidator {
         .arg(vote_path)
         .arg("--authorized-voter")
         .arg(vote_path)
-        .arg("--bind-address")
-        .arg("0.0.0.0")
         .arg("--dynamic-port-range")
         .arg(format!(
             "{dynamic_port_range_start}-{dynamic_port_range_end}"
@@ -131,6 +129,14 @@ impl BamValidator {
 
         if let Some(gossip_port) = gossip_port {
             cmd.arg("--gossip-port").arg(gossip_port.to_string());
+        }
+
+        if let Some(bind_address) = &cluster_config.bind_address {
+            cmd.arg("--bind-address").arg(bind_address);
+        }
+
+        if let Some(gossip_host) = &cluster_config.gossip_host {
+            cmd.arg("--gossip-host").arg(gossip_host);
         }
 
         if let Some(bootstrap_gossip) = bootstrap_gossip {
@@ -373,10 +379,11 @@ impl BamLocalCluster {
             solana_local_cluster::local_cluster::DEFAULT_MINT_LAMPORTS,
             &vote_keypairs,
             stakes,
-            ClusterType::Development, // don't use mainnet, since we de-dupe local tvu ip
-                                      // addresses, every validator has TVU IP of 127.0.0.1
-
-                                      // see: https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
+            // Don't use mainnet, since we de-dupe local TVU IP addresses and every validator
+            // has TVU IP of 127.0.0.1. See:
+            // https://github.com/jito-foundation/jito-solana/blob/ba3cfa5fe84ac1061427aa25e2a3e8e6bb7a5914/turbine/src/cluster_nodes.rs#L389-L392
+            ClusterType::Development,
+            config.hashes_per_tick,
         );
 
         let runtime = Runtime::new().expect("Could not create Tokio runtime");
@@ -491,6 +498,7 @@ impl BamLocalCluster {
         voting_keypairs: &[impl Borrow<ValidatorVoteKeypairs>],
         stakes: Vec<u64>,
         cluster_type: ClusterType,
+        hashes_per_tick: Option<u64>,
     ) -> GenesisConfigInfo {
         let validator_lamports = 100000 * LAMPORTS_PER_SOL;
 
@@ -523,6 +531,9 @@ impl BamLocalCluster {
             &FeatureSet::all_enabled(),
             vec![],
         );
+        if let Some(hashes_per_tick) = hashes_per_tick {
+            genesis_config.poh_config.hashes_per_tick = Some(hashes_per_tick);
+        }
 
         // copy features from mainnet-beta
         let rpc_client = RpcClient::new_with_commitment(
