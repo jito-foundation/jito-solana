@@ -856,6 +856,7 @@ impl BankingSimulator {
             completed_block_sender,
             Arc::new(ArcSwap::default()),
             Arc::new(ArcSwap::default()),
+            Arc::new(ArcSwap::default()),
         );
 
         info!("Start banking stage!...");
