@@ -112,6 +112,15 @@ pub(crate) struct TransactionViewReceiveAndBuffer {
     pub blacklisted_accounts: HashSet<Pubkey>,
 }
 
+pub(crate) fn contains_blacklisted_account<'a>(
+    account_keys: impl IntoIterator<Item = &'a Pubkey>,
+    blacklisted_accounts: &HashSet<Pubkey>,
+) -> bool {
+    account_keys
+        .into_iter()
+        .any(|account| blacklisted_accounts.contains(account))
+}
+
 impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
     type Transaction = RuntimeTransaction<ResolvedTransactionView<SharedBytes>>;
     type Container = TransactionViewStateContainer;
@@ -439,11 +448,7 @@ impl TransactionViewReceiveAndBuffer {
             enable_instruction_accounts_limit,
         )?;
 
-        if view
-            .account_keys()
-            .iter()
-            .any(|account| blacklisted_accounts.contains(account))
-        {
+        if contains_blacklisted_account(view.account_keys().iter(), blacklisted_accounts) {
             return Err(PacketHandlingError::BlacklistedAccount);
         }
 
@@ -696,6 +701,21 @@ mod tests {
                 alt_invalidation_slot: current_slot + solana_slot_hashes::get_entries() as u64,
             }
         );
+    }
+
+    #[test]
+    fn test_contains_blacklisted_account() {
+        let a = Pubkey::new_unique();
+        let b = Pubkey::new_unique();
+        let c = Pubkey::new_unique();
+
+        let empty: HashSet<Pubkey> = HashSet::default();
+        assert!(!contains_blacklisted_account([&a, &b], &empty));
+
+        let blacklist: HashSet<Pubkey> = [b].into_iter().collect();
+        assert!(!contains_blacklisted_account([&a, &c], &blacklist));
+        assert!(contains_blacklisted_account([&a, &b], &blacklist));
+        assert!(contains_blacklisted_account([&b], &blacklist));
     }
 
     #[test]
