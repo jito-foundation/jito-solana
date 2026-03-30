@@ -695,6 +695,21 @@ mod tests {
     }
 
     #[test]
+    fn test_contains_blacklisted_account() {
+        let a = Pubkey::new_unique();
+        let b = Pubkey::new_unique();
+        let c = Pubkey::new_unique();
+
+        let empty: HashSet<Pubkey> = HashSet::default();
+        assert!(!contains_blacklisted_account([&a, &b], &empty));
+
+        let blacklist: HashSet<Pubkey> = [b].into_iter().collect();
+        assert!(!contains_blacklisted_account([&a, &c], &blacklist));
+        assert!(contains_blacklisted_account([&a, &b], &blacklist));
+        assert!(contains_blacklisted_account([&b], &blacklist));
+    }
+
+    #[test]
     fn test_receive_and_buffer_disconnected_channel() {
         let (sender, receiver) = unbounded();
         let (bank_forks, _mint_keypair) = test_bank_forks();
