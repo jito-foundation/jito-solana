@@ -403,7 +403,7 @@ pub(crate) mod external {
                 committer::CommitTransactionDetails,
                 scheduler_messages::MaxAge,
                 transaction_scheduler::receive_and_buffer::{
-                    PacketHandlingError, translate_to_runtime_view,
+                    PacketHandlingError, contains_blacklisted_account, translate_to_runtime_view,
                 },
             },
             bundle_stage::bundle_account_locker::BundleAccountLocker,
@@ -427,6 +427,7 @@ pub(crate) mod external {
             resolved_transaction_view::ResolvedTransactionView, result::TransactionViewError,
             transaction_data::TransactionData, transaction_view::SanitizedTransactionView,
         },
+        ahash::HashSet,
         solana_account::ReadableAccount,
         solana_clock::{MAX_PROCESSING_AGE, Slot},
         solana_cost_model::cost_model::CostModel,
@@ -437,8 +438,9 @@ pub(crate) mod external {
             bank_forks::{BankPair, SharableBanks},
         },
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+        solana_svm_transaction::svm_message::SVMMessage,
         solana_transaction::TransactionError,
-        std::ptr::NonNull,
+        std::{ptr::NonNull, sync::Arc},
     };
 
     #[derive(Debug, Error)]
@@ -459,6 +461,7 @@ pub(crate) mod external {
         sharable_banks: SharableBanks,
         metrics: Arc<ConsumeWorkerMetrics>,
         bundle_account_locker: BundleAccountLocker,
+        blacklisted_accounts: Arc<HashSet<Pubkey>>,
     }
 
     type Tx = RuntimeTransaction<ResolvedTransactionView<TransactionPtr>>;
@@ -474,6 +477,7 @@ pub(crate) mod external {
             shared_leader_state: SharedLeaderState,
             sharable_banks: SharableBanks,
             bundle_account_locker: BundleAccountLocker,
+            blacklisted_accounts: Arc<HashSet<Pubkey>>,
         ) -> Self {
             Self {
                 exit,
@@ -484,6 +488,7 @@ pub(crate) mod external {
                 sharable_banks,
                 metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
                 bundle_account_locker,
+                blacklisted_accounts,
             }
         }
 
@@ -616,7 +621,7 @@ pub(crate) mod external {
                     )
                 };
                 let (translation_results, transactions, max_ages) =
-                    Self::translate_transaction_batch(&batch, bank);
+                    self.translate_transaction_batch(&batch, bank);
 
                 // Enforce all or nothing on translation_results.
                 let execution_flags = ExecutionFlags {
@@ -734,7 +739,7 @@ pub(crate) mod external {
 
             // Do resolving next since we (currently) need resolved transactions for status checks.
             let (parsing_and_resolve_results, txs, max_ages) =
-                Self::translate_transaction_batch(&batch, &root_bank);
+                self.translate_transaction_batch(&batch, &root_bank);
 
             if message.flags & check_flags::LOAD_ADDRESS_LOOKUP_TABLES != 0 {
                 self.check_resolve_pubkeys(
@@ -1181,6 +1186,7 @@ pub(crate) mod external {
 
         /// Translate batch of transactions into usable
         fn translate_transaction_batch(
+            &self,
             batch: &TransactionPtrBatch,
             bank: &Bank,
         ) -> (Vec<Result<(), PacketHandlingError>>, Vec<Tx>, Vec<MaxAge>) {
@@ -1198,6 +1204,7 @@ pub(crate) mod external {
                     bank,
                     transaction_account_lock_limit,
                     enable_instruction_accounts_limit,
+                    &self.blacklisted_accounts,
                 ) {
                     Ok((tx, max_age)) => {
                         transactions.push(tx);
@@ -1216,6 +1223,7 @@ pub(crate) mod external {
             bank: &Bank,
             transaction_account_lock_limit: usize,
             enable_instruction_accounts_limit: bool,
+            blacklisted_accounts: &HashSet<Pubkey>,
         ) -> Result<(Tx, MaxAge), PacketHandlingError> {
             translate_to_runtime_view(
                 transaction_ptr,
@@ -1223,14 +1231,18 @@ pub(crate) mod external {
                 transaction_account_lock_limit,
                 enable_instruction_accounts_limit,
             )
-            .map(|(view, deactivation_slot)| {
-                (
+            .and_then(|(view, deactivation_slot)| {
+                if contains_blacklisted_account(view.account_keys().iter(), blacklisted_accounts) {
+                    return Err(PacketHandlingError::BlacklistedAccount);
+                }
+
+                Ok((
                     view,
                     MaxAge {
                         sanitized_epoch: bank.epoch(),
                         alt_invalidation_slot: deactivation_slot,
                     },
-                )
+                ))
             })
         }
 
@@ -1727,6 +1739,12 @@ pub(crate) mod external {
                 ),
                 not_included_reasons::SANITIZE_FAILURE
             );
+            assert_eq!(
+                ExternalWorker::reason_from_packet_handling_error(
+                    &PacketHandlingError::BlacklistedAccount
+                ),
+                not_included_reasons::SANITIZE_FAILURE
+            );
 
             assert_eq!(
                 ExternalWorker::reason_from_packet_handling_error(
@@ -1734,6 +1752,69 @@ pub(crate) mod external {
                 ),
                 not_included_reasons::ADDRESS_LOOKUP_TABLE_NOT_FOUND
             );
+        }
+
+        #[test]
+        fn test_translate_transaction_blacklisted_account() {
+            let genesis = genesis_utils::create_genesis_config(1_000_000_000);
+            let bank = Bank::new_for_tests(&genesis.genesis_config);
+            let recipient = Pubkey::new_unique();
+            let tx = transfer(
+                &solana_keypair::Keypair::new(),
+                &recipient,
+                1,
+                bank.confirmed_last_blockhash(),
+            );
+            let serialized_tx = bincode::serialize(&tx).unwrap();
+            let transaction_ptr = unsafe {
+                TransactionPtr::from_raw_parts(
+                    NonNull::new(serialized_tx.as_ptr().cast_mut()).unwrap(),
+                    serialized_tx.len(),
+                )
+            };
+
+            let result = ExternalWorker::translate_transaction(
+                transaction_ptr,
+                &bank,
+                bank.get_transaction_account_lock_limit(),
+                true,
+                &HashSet::from_iter([recipient]),
+            );
+
+            assert!(matches!(
+                result,
+                Err(PacketHandlingError::BlacklistedAccount)
+            ));
+        }
+
+        #[test]
+        fn test_translate_transaction_non_blacklisted_account() {
+            let genesis = genesis_utils::create_genesis_config(1_000_000_000);
+            let bank = Bank::new_for_tests(&genesis.genesis_config);
+            let recipient = Pubkey::new_unique();
+            let tx = transfer(
+                &solana_keypair::Keypair::new(),
+                &recipient,
+                1,
+                bank.confirmed_last_blockhash(),
+            );
+            let serialized_tx = bincode::serialize(&tx).unwrap();
+            let transaction_ptr = unsafe {
+                TransactionPtr::from_raw_parts(
+                    NonNull::new(serialized_tx.as_ptr().cast_mut()).unwrap(),
+                    serialized_tx.len(),
+                )
+            };
+
+            let result = ExternalWorker::translate_transaction(
+                transaction_ptr,
+                &bank,
+                bank.get_transaction_account_lock_limit(),
+                true,
+                &HashSet::default(),
+            );
+
+            assert!(result.is_ok());
         }
 
         #[test]
