@@ -29,7 +29,7 @@ pull_request_rules:
     actions:
       request_reviews:
         teams:
-          - "@jito-labs/engineering-team"
+          - "@jito-foundation/jito-solana"
   - name: label changes from monorepo-triage
     conditions:
       - author≠@anza
@@ -217,4 +217,4 @@ commands_restrictions:
   # Restrict `copy` access to Core Contributors
   copy:
     conditions:
-    - author=@jito-labs/engineering-team
+    - sender=@jito-foundation/jito-solana
