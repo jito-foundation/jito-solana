@@ -36,3 +36,5 @@ extern crate solana_metrics;
 extern crate assert_matches;
 
 pub type ShredReceiverAddresses = SmallVec<[SocketAddr; 5]>;
+
+pub const MAX_SHRED_RECEIVER_ADDRESSES: usize = 32;

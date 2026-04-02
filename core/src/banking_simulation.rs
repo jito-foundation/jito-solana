@@ -830,6 +830,7 @@ impl BankingSimulator {
             None,
             Arc::new(ArcSwap::default()),
             Arc::new(ArcSwap::default()),
+            Arc::new(ArcSwap::default()),
         );
 
         info!("Start banking stage!...");
