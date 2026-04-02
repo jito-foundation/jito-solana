@@ -83,7 +83,11 @@ struct MockBamNode {
 }
 
 impl MockBamNode {
-    fn new(send_heartbeats: Arc<AtomicBool>, heartbeat_interval: Duration) -> Self {
+    fn new(
+        send_heartbeats: Arc<AtomicBool>,
+        heartbeat_interval: Duration,
+        reject_scheduler_stream: bool,
+    ) -> Self {
         Self {
             send_heartbeats,
             heartbeat_interval,
@@ -92,7 +96,7 @@ impl MockBamNode {
             scheduler_stream_rejections: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Mutex::new(MockConfig::default())),
             batch_to_send: Arc::new(Mutex::new(None)),
-            reject_scheduler_stream: false,
+            reject_scheduler_stream,
             outbound_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -230,18 +234,23 @@ async fn start_mock_server(
     heartbeat_interval: Duration,
     reject_scheduler_stream: bool,
 ) -> MockServerHandle {
-    let mut mock = MockBamNode::new(send_heartbeats.clone(), heartbeat_interval);
-    if reject_scheduler_stream {
-        mock.reject_scheduler_stream = true;
-    }
-    let auth_proofs_received = mock.auth_proofs_received.clone();
-    let config_requests = mock.config_requests.clone();
-    let scheduler_stream_rejections = mock.scheduler_stream_rejections.clone();
-    let config = mock.config.clone();
-    let batch_to_send = mock.batch_to_send.clone();
+    let mock = MockBamNode::new(
+        send_heartbeats.clone(),
+        heartbeat_interval,
+        reject_scheduler_stream,
+    );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let handle = MockServerHandle {
+        addr,
+        send_heartbeats,
+        auth_proofs_received: Arc::clone(&mock.auth_proofs_received),
+        config_requests: Arc::clone(&mock.config_requests),
+        scheduler_stream_rejections: Arc::clone(&mock.scheduler_stream_rejections),
+        config: Arc::clone(&mock.config),
+        batch_to_send: Arc::clone(&mock.batch_to_send),
+    };
 
     let server_started = Arc::new(AtomicBool::new(false));
     let server_started_clone = server_started.clone();
@@ -258,15 +267,7 @@ async fn start_mock_server(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    MockServerHandle {
-        addr,
-        send_heartbeats,
-        auth_proofs_received,
-        config_requests,
-        scheduler_stream_rejections,
-        config,
-        batch_to_send,
-    }
+    handle
 }
 
 fn create_test_cluster_info() -> Arc<ClusterInfo> {
