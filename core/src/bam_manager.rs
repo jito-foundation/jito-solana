@@ -178,7 +178,6 @@ impl BamManager {
                         }
                     };
 
-                    info!("BAM connection established");
                     // Wait until connection is healthy
                     if !connection.wait_until_healthy_and_config_received(
                         MAX_DURATION_BETWEEN_NODE_HEARTBEATS,
@@ -197,6 +196,7 @@ impl BamManager {
                         continue;
                     }
 
+                    info!("BAM connection established");
                     if let Some(builder_config) = connection.get_latest_config() {
                         Self::update_tpu_config(Some(&builder_config), &dependencies);
                         Self::update_block_engine_key_and_commission(
