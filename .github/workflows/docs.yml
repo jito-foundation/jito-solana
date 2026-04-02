@@ -12,6 +12,7 @@ on:
       - master
       - v[0-9]+.[0-9]+
 
+
 jobs:
   check:
     if: github.repository == 'anza-xyz/agave'
