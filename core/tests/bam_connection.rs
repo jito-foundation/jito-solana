@@ -73,8 +73,11 @@ struct MockBamNode {
     send_heartbeats: Arc<AtomicBool>,
     heartbeat_interval: Duration,
     auth_proofs_received: Arc<AtomicU64>,
+    config_requests: Arc<AtomicU64>,
+    scheduler_stream_rejections: Arc<AtomicU64>,
     config: Arc<Mutex<MockConfig>>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
+    reject_scheduler_stream: bool,
     #[allow(dead_code)]
     outbound_tx: Arc<Mutex<Option<mpsc::Sender<AtomicTxnBatch>>>>,
 }
@@ -85,8 +88,11 @@ impl MockBamNode {
             send_heartbeats,
             heartbeat_interval,
             auth_proofs_received: Arc::new(AtomicU64::new(0)),
+            config_requests: Arc::new(AtomicU64::new(0)),
+            scheduler_stream_rejections: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Mutex::new(MockConfig::default())),
             batch_to_send: Arc::new(Mutex::new(None)),
+            reject_scheduler_stream: false,
             outbound_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -113,6 +119,7 @@ impl BamNodeApi for MockBamNode {
         &self,
         _request: Request<ConfigRequest>,
     ) -> Result<Response<ConfigResponse>, Status> {
+        self.config_requests.fetch_add(1, Ordering::Relaxed);
         let config = self.config.lock().unwrap().clone();
         Ok(Response::new(ConfigResponse {
             block_engine_config: Some(BlockEngineBuilderConfig {
@@ -145,7 +152,9 @@ impl BamNodeApi for MockBamNode {
         let send_heartbeats = self.send_heartbeats.clone();
         let heartbeat_interval = self.heartbeat_interval;
         let auth_proofs_received = self.auth_proofs_received.clone();
+        let scheduler_stream_rejections = self.scheduler_stream_rejections.clone();
         let batch_to_send = self.batch_to_send.clone();
+        let reject_scheduler_stream = self.reject_scheduler_stream;
 
         tokio::spawn(async move {
             let mut authenticated = false;
@@ -161,6 +170,16 @@ impl BamNodeApi for MockBamNode {
             }
 
             if !authenticated {
+                return;
+            }
+
+            if reject_scheduler_stream {
+                scheduler_stream_rejections.fetch_add(1, Ordering::Relaxed);
+                let _ = tx
+                    .send(Err(Status::permission_denied(
+                        "Validator is not on the leader schedule: test-validator",
+                    )))
+                    .await;
                 return;
             }
 
@@ -198,6 +217,9 @@ impl BamNodeApi for MockBamNode {
 struct MockServerHandle {
     addr: SocketAddr,
     send_heartbeats: Arc<AtomicBool>,
+    auth_proofs_received: Arc<AtomicU64>,
+    config_requests: Arc<AtomicU64>,
+    scheduler_stream_rejections: Arc<AtomicU64>,
     #[allow(dead_code)]
     config: Arc<Mutex<MockConfig>>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
@@ -206,8 +228,15 @@ struct MockServerHandle {
 async fn start_mock_server(
     send_heartbeats: Arc<AtomicBool>,
     heartbeat_interval: Duration,
+    reject_scheduler_stream: bool,
 ) -> MockServerHandle {
-    let mock = MockBamNode::new(send_heartbeats.clone(), heartbeat_interval);
+    let mut mock = MockBamNode::new(send_heartbeats.clone(), heartbeat_interval);
+    if reject_scheduler_stream {
+        mock.reject_scheduler_stream = true;
+    }
+    let auth_proofs_received = mock.auth_proofs_received.clone();
+    let config_requests = mock.config_requests.clone();
+    let scheduler_stream_rejections = mock.scheduler_stream_rejections.clone();
     let config = mock.config.clone();
     let batch_to_send = mock.batch_to_send.clone();
 
@@ -232,6 +261,9 @@ async fn start_mock_server(
     MockServerHandle {
         addr,
         send_heartbeats,
+        auth_proofs_received,
+        config_requests,
+        scheduler_stream_rejections,
         config,
         batch_to_send,
     }
@@ -279,7 +311,7 @@ mod bam_connection_tests {
     #[tokio::test]
     async fn test_connection_healthy_with_heartbeats() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats, Duration::from_secs(2)).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(2), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
@@ -304,7 +336,8 @@ mod bam_connection_tests {
     #[tokio::test]
     async fn test_connection_unhealthy_when_heartbeats_stop() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats.clone(), Duration::from_millis(500)).await;
+        let server =
+            start_mock_server(send_heartbeats.clone(), Duration::from_millis(500), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
@@ -335,7 +368,7 @@ mod bam_connection_tests {
     #[tokio::test]
     async fn test_connection_stays_unhealthy_without_initial_heartbeats() {
         let send_heartbeats = Arc::new(AtomicBool::new(false));
-        let server = start_mock_server(send_heartbeats, Duration::from_secs(2)).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(2), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
@@ -372,9 +405,57 @@ mod bam_connection_tests {
     }
 
     #[tokio::test]
+    async fn test_immediate_rejection_does_not_spawn_post_auth_tasks() {
+        let server = start_mock_server(
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(1),
+            true,
+        )
+        .await;
+
+        let cluster_info = create_test_cluster_info();
+        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+
+        let connection = BamConnection::try_init(
+            format!("http://{}", server.addr),
+            cluster_info,
+            batch_tx,
+            outbound_rx,
+        )
+        .await
+        .expect("transport should connect before auth rejection");
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if server.auth_proofs_received.load(Ordering::Relaxed) == 1
+                && server.scheduler_stream_rejections.load(Ordering::Relaxed) == 1
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(server.auth_proofs_received.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            server.scheduler_stream_rejections.load(Ordering::Relaxed),
+            1
+        );
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert_eq!(
+            server.config_requests.load(Ordering::Relaxed),
+            0,
+            "refresh_config should not start when auth is rejected immediately"
+        );
+        assert!(!connection.is_healthy());
+        assert!(connection.get_latest_config().is_none());
+    }
+
+    #[tokio::test]
     async fn test_config_available_when_healthy() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats, Duration::from_secs(1)).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
@@ -398,7 +479,7 @@ mod bam_connection_tests {
     #[tokio::test]
     async fn test_batches_forwarded_to_receiver() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats, Duration::from_millis(100)).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_millis(100), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (batch_tx, batch_rx, _outbound_tx, outbound_rx) = create_channels();
@@ -434,7 +515,7 @@ mod bam_connection_tests {
     #[tokio::test]
     async fn test_drop_sets_unhealthy() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats, Duration::from_secs(1)).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
@@ -528,7 +609,8 @@ mod bam_manager_tests {
     #[tokio::test]
     async fn test_bam_enabled_when_connection_healthy() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats.clone(), Duration::from_secs(1)).await;
+        let server =
+            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
@@ -567,7 +649,8 @@ mod bam_manager_tests {
     #[tokio::test]
     async fn test_bam_disabled_when_connection_unhealthy() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats.clone(), Duration::from_millis(500)).await;
+        let server =
+            start_mock_server(send_heartbeats.clone(), Duration::from_millis(500), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
@@ -650,8 +733,10 @@ mod bam_manager_tests {
     #[tokio::test]
     async fn test_reconnects_when_url_changes() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server1 = start_mock_server(send_heartbeats.clone(), Duration::from_secs(1)).await;
-        let server2 = start_mock_server(send_heartbeats.clone(), Duration::from_secs(1)).await;
+        let server1 =
+            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
+        let server2 =
+            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
@@ -698,7 +783,8 @@ mod bam_manager_tests {
     #[tokio::test]
     async fn test_identity_change_disconnects_before_cluster_info_updates() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats.clone(), Duration::from_secs(1)).await;
+        let server =
+            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
@@ -775,7 +861,8 @@ mod bam_manager_tests {
     #[tokio::test]
     async fn test_block_builder_fee_info_updated() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats.clone(), Duration::from_secs(1)).await;
+        let server =
+            start_mock_server(send_heartbeats.clone(), Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
