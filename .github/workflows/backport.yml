@@ -4,6 +4,12 @@ on:
   pull_request_target:
     types:
       - closed
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: 'PR number to backport (for testing)'
+        required: true
+        type: number
 
 permissions:
   contents: write
@@ -15,27 +21,39 @@ jobs:
       matrix:
         target: [v3.1, v4.0]
     if: >
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'master' &&
-      !contains(github.event.pull_request.labels.*.name, 'feature-gate')
+      github.event_name == 'workflow_dispatch' || (
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'master' &&
+        !contains(github.event.pull_request.labels.*.name, 'feature-gate')
+      )
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Check label
-        id: check-label
+      - name: Resolve PR metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if echo '${{ toJson(github.event.pull_request.labels.*.name) }}' | jq -e 'index("${{ matrix.target }}")' > /dev/null 2>&1; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ inputs.pull_number }}"
+            LABELS=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels -q '[.labels[].name]')
+          else
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          if echo "$LABELS" | jq -e 'index("${{ matrix.target }}")' > /dev/null 2>&1; then
             echo "match=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check out repository
-        if: steps.check-label.outputs.match == 'true'
+        if: steps.pr.outputs.match == 'true'
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Import backport signing key
-        if: steps.check-label.outputs.match == 'true'
+        if: steps.pr.outputs.match == 'true'
         id: import-gpg
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6.3.0
         with:
@@ -46,7 +64,7 @@ jobs:
           git_commit_gpgsign: true
 
       - name: Create backport PR
-        if: steps.check-label.outputs.match == 'true'
+        if: steps.pr.outputs.match == 'true'
         uses: korthout/backport-action@d07416681cab29bf2661702f925f020aaa962997 # v3.4.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
