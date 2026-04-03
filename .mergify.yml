@@ -100,6 +100,7 @@ pull_request_rules:
         message: automerge label removed due to a CI failure
   - name: v3.1 feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v3.1
       - label=feature-gate
     actions:
@@ -114,6 +115,7 @@ pull_request_rules:
           - v3.1
   - name: v3.1 non-feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v3.1
       - label!=feature-gate
     actions:
@@ -125,6 +127,7 @@ pull_request_rules:
           - v3.1
   - name: v3.1 backport warning comment
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v3.1
     actions:
       comment:
@@ -138,6 +141,7 @@ pull_request_rules:
           into master and ride the normal stabilization schedule.
   - name: v4.0 feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.0
       - label=feature-gate
     actions:
@@ -151,6 +155,7 @@ pull_request_rules:
           - v4.0
   - name: v4.0 non-feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.0
       - label!=feature-gate
     actions:
@@ -162,6 +167,7 @@ pull_request_rules:
           - v4.0
   - name: v4.0 backport warning comment
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.0
     actions:
       comment:
