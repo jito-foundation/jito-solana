@@ -7,7 +7,7 @@ updates:
       interval: daily
       time: "08:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 6
+    open-pull-requests-limit: 0
 
   # split from root directory schedule to avoid duplicate checks
   - package-ecosystem: cargo
@@ -19,7 +19,7 @@ updates:
       interval: daily
       time: "14:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 6
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -27,4 +27,4 @@ updates:
       interval: daily
       time: "08:00"
       timezone: Etc/UTC
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0
