@@ -1,4 +1,4 @@
-name: Backport v4.0
+name: Backport
 
 on:
   pull_request_target:
@@ -11,10 +11,13 @@ permissions:
 
 jobs:
   backport:
+    strategy:
+      matrix:
+        target: [v3.1, v4.0]
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'master' &&
-      contains(github.event.pull_request.labels.*.name, 'v4.0') &&
+      contains(github.event.pull_request.labels.*.name, matrix.target) &&
       !contains(github.event.pull_request.labels.*.name, 'feature-gate')
     runs-on: ubuntu-24.04
 
@@ -34,7 +37,7 @@ jobs:
           git_user_signingkey: true
           git_commit_gpgsign: true
 
-      - name: Create v4.0 backport PR
+      - name: Create backport PR
         uses: korthout/backport-action@d07416681cab29bf2661702f925f020aaa962997 # v3.4.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -42,7 +45,7 @@ jobs:
           git_committer_email: ${{ steps.import-gpg.outputs.email }}
           experimental: '{"conflict_resolution":"draft_commit_conflicts"}'
           label_pattern: ''
-          target_branches: v4.0
+          target_branches: ${{ matrix.target }}
           pull_title: '${target_branch}: ${pull_title} (backport of #${pull_number})'
           pull_description: |
             Backport of #${pull_number} to `${target_branch}`.
