@@ -67,7 +67,7 @@ struct BanksServer {
 
 impl BanksServer {
     /// Return a BanksServer that forwards transactions to the
-    /// given sender.. If unit-testing, those transactions can go to
+    /// given sender... If unit-testing, those transactions can go to
     /// a bank in the given BankForks. Otherwise, the receiver should
     /// forward them to a validator in the leader schedule.
     fn new(
