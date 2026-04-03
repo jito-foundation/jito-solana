@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       pull_number:
-        description: 'PR number to backport (for testing)'
+        description: 'PR number to backport'
         required: true
         type: number
 
