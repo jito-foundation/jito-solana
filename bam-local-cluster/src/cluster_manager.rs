@@ -619,11 +619,18 @@ impl BamLocalCluster {
             Self::monitor_validators(validators_ptr, skip_last_validator, tx).await;
         });
 
-        // Wait for Ctrl+C or validator death
+        // Wait for Ctrl+C, SIGTERM, or validator death
         self.runtime.block_on(async {
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            )
+            .expect("Failed to install SIGTERM handler");
             tokio::select! {
                 _ = signal::ctrl_c() => {
                     info!("Received Ctrl+C, shutting down...");
+                }
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, shutting down...");
                 }
                 _ = &mut rx => {
                     error!("A validator died, shutting down cluster...");
