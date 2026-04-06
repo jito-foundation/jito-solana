@@ -5,8 +5,8 @@ use solana_sysvar::recent_blockhashes::{Entry as BlockhashesEntry, RecentBlockha
 use {
     agave_syscalls::{
         SyscallAbort, SyscallGetClockSysvar, SyscallGetEpochScheduleSysvar, SyscallGetRentSysvar,
-        SyscallInvokeSignedRust, SyscallLog, SyscallMemcmp, SyscallMemcpy, SyscallMemmove,
-        SyscallMemset, SyscallSetReturnData,
+        SyscallGetSysvar, SyscallInvokeSignedRust, SyscallLog, SyscallMemcmp, SyscallMemcpy,
+        SyscallMemmove, SyscallMemset, SyscallPanic, SyscallSetReturnData,
     },
     solana_account::{Account, AccountSharedData, ReadableAccount, WritableAccount},
     solana_clock::{Clock, Slot, UnixTimestamp},
@@ -413,6 +413,12 @@ pub fn create_custom_loader<'a>() -> BuiltinProgram<InvokeContext<'a, 'a>> {
             "sol_get_epoch_schedule_sysvar",
             SyscallGetEpochScheduleSysvar::vm,
         )
+        .expect("Registration failed");
+    loader
+        .register_function("sol_panic_", SyscallPanic::vm)
+        .expect("Registration failed");
+    loader
+        .register_function("sol_get_sysvar", SyscallGetSysvar::vm)
         .expect("Registration failed");
     loader
 }
