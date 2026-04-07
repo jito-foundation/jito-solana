@@ -446,7 +446,9 @@ impl BamLocalCluster {
                 .saturating_add(i.saturating_mul(1000) as u16);
             let dynamic_port_range_end = dynamic_port_range_start.saturating_add(1000);
             let poh_core = match std::thread::available_parallelism() {
-                Ok(c) => i.strict_rem(c.get()),
+                Ok(c) => i
+                    .checked_rem(c.get())
+                    .expect("available_parallelism returns a non-zero CPU count"),
                 Err(_) => 0,
             };
 
