@@ -54,6 +54,7 @@ impl BamValidator {
         ledger_path: &PathBuf,
         log_file_path: &PathBuf,
         node_name: &str,
+        poh_pinned_cpu_core: usize,
         gossip_port: Option<u16>,
         rpc_port: u16,
         dynamic_port_range_start: u16,
@@ -91,6 +92,8 @@ impl BamValidator {
         .arg(format!(
             "{dynamic_port_range_start}-{dynamic_port_range_end}"
         ))
+        .arg("--experimental-poh-pinned-cpu-core")
+        .arg(poh_pinned_cpu_core.to_string())
         .arg("--no-wait-for-vote-to-start-leader")
         .arg("--no-os-network-limits-test")
         .arg("--wait-for-supermajority")
@@ -442,11 +445,16 @@ impl BamLocalCluster {
                 .dynamic_port_range_start
                 .saturating_add(i.saturating_mul(1000) as u16);
             let dynamic_port_range_end = dynamic_port_range_start.saturating_add(1000);
+            let poh_core = match std::thread::available_parallelism() {
+                Ok(c) => i.strict_rem(c.get()),
+                Err(_) => 0,
+            };
 
             let validator = BamValidator::start_process(
                 &ledger_path,
                 &log_file_path,
                 &format!("validator-{}", i.saturating_add(1)),
+                poh_core,
                 is_bootstrap.then_some(BOOTSTRAP_GOSSIP_PORT),
                 if is_bootstrap {
                     BOOTSTRAP_RPC_PORT
