@@ -106,7 +106,12 @@ pull_request_rules:
         message: automerge label removed due to a CI failure
   - name: v2.3 feature-gate backport
     conditions:
+<<<<<<< HEAD
       - label=v2.3
+=======
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v3.1
+>>>>>>> df23fd6722 (feat: Add backport automation with GPG signing (#1386))
       - label=feature-gate
     actions:
       backport:
@@ -120,7 +125,12 @@ pull_request_rules:
           - v2.3
   - name: v2.3 non-feature-gate backport
     conditions:
+<<<<<<< HEAD
       - label=v2.3
+=======
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v3.1
+>>>>>>> df23fd6722 (feat: Add backport automation with GPG signing (#1386))
       - label!=feature-gate
     actions:
       backport:
@@ -131,7 +141,12 @@ pull_request_rules:
           - v2.3
   - name: v2.3 backport warning comment
     conditions:
+<<<<<<< HEAD
       - label=v2.3
+=======
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v3.1
+>>>>>>> df23fd6722 (feat: Add backport automation with GPG signing (#1386))
     actions:
       comment:
         message: >
@@ -144,7 +159,12 @@ pull_request_rules:
           into master and ride the normal stabilization schedule.
   - name: v3.0 feature-gate backport
     conditions:
+<<<<<<< HEAD
       - label=v3.0
+=======
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v4.0
+>>>>>>> df23fd6722 (feat: Add backport automation with GPG signing (#1386))
       - label=feature-gate
     actions:
       backport:
@@ -157,7 +177,12 @@ pull_request_rules:
           - v3.0
   - name: v3.0 non-feature-gate backport
     conditions:
+<<<<<<< HEAD
       - label=v3.0
+=======
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v4.0
+>>>>>>> df23fd6722 (feat: Add backport automation with GPG signing (#1386))
       - label!=feature-gate
     actions:
       backport:
@@ -168,7 +193,12 @@ pull_request_rules:
           - v3.0
   - name: v3.0 backport warning comment
     conditions:
+<<<<<<< HEAD
       - label=v3.0
+=======
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v4.0
+>>>>>>> df23fd6722 (feat: Add backport automation with GPG signing (#1386))
     actions:
       comment:
         message: >
