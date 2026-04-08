@@ -1,8 +1,13 @@
 use {
     crate::banking_stage::transaction_scheduler::{
         receive_and_buffer::{
+<<<<<<< HEAD
             calculate_max_age, calculate_priority_and_cost, translate_to_runtime_view,
             PacketHandlingError,
+=======
+            PacketHandlingError, calculate_max_age, calculate_priority_and_cost,
+            contains_blacklisted_account, translate_to_runtime_view,
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
         },
         transaction_state::TransactionState,
         transaction_state_container::{SharedBytes, TransactionViewState},
@@ -56,11 +61,7 @@ impl BundlePacketDeserializer {
             return Err(PacketHandlingError::LockValidation);
         }
 
-        if view
-            .account_keys()
-            .iter()
-            .any(|account| blacklisted_accounts.contains(account))
-        {
+        if contains_blacklisted_account(view.account_keys().iter(), blacklisted_accounts) {
             return Err(PacketHandlingError::BlacklistedAccount);
         }
 

@@ -783,6 +783,7 @@ mod external {
                 progress_tracker,
                 workers,
             }: AgaveSession,
+<<<<<<< HEAD
             bundle_account_locker: BundleAccountLocker,
         ) -> thread::Result<()> {
             if let Some(context) = self.context.as_ref() {
@@ -792,6 +793,15 @@ mod external {
                 for bank_thread_hdl in self.thread_hdls.drain(..) {
                     bank_thread_hdl.join()?;
                 }
+=======
+        ) -> Result<Vec<JoinHandle<()>>, ()> {
+            let bundle_account_locker = self.bundle_account_locker.clone();
+            let blacklisted_accounts = Arc::new(self.blacklisted_accounts.clone());
+            info!("Spawning external scheduler");
+            // Toggling unified scheduler into the disabled state should always be a safe and
+            // idempotent operation.
+            assert!(self.toggle_internal_unified(false));
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
 
                 context.exit_signal.store(false, Ordering::Relaxed);
 
@@ -874,6 +884,7 @@ mod external {
                     context.poh_recorder.read().unwrap().shared_leader_state(),
                     context.bank_forks.read().unwrap().sharable_banks(),
                     bundle_account_locker.clone(),
+                    blacklisted_accounts.clone(),
                 );
 
                 worker_metrics.push(consume_worker.metrics_handle());

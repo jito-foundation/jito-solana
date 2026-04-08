@@ -393,7 +393,11 @@ pub(crate) mod external {
                 committer::CommitTransactionDetails,
                 scheduler_messages::MaxAge,
                 transaction_scheduler::receive_and_buffer::{
+<<<<<<< HEAD
                     load_addresses_for_view, translate_to_runtime_view, PacketHandlingError,
+=======
+                    PacketHandlingError, contains_blacklisted_account, translate_to_runtime_view,
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
                 },
             },
             bundle_stage::bundle_account_locker::BundleAccountLocker,
@@ -413,13 +417,25 @@ pub(crate) mod external {
             resolved_transaction_view::ResolvedTransactionView,
             transaction_view::SanitizedTransactionView,
         },
+<<<<<<< HEAD
         solana_clock::Slot,
+=======
+        ahash::HashSet,
+        solana_account::ReadableAccount,
+        solana_clock::{MAX_PROCESSING_AGE, Slot},
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
         solana_cost_model::cost_model::CostModel,
         solana_message::v0::LoadedAddresses,
         solana_pubkey::Pubkey,
         solana_runtime::{bank::Bank, bank_forks::SharableBanks},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+<<<<<<< HEAD
         std::ptr::NonNull,
+=======
+        solana_svm_transaction::svm_message::SVMMessage,
+        solana_transaction::TransactionError,
+        std::{ptr::NonNull, sync::Arc},
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
     };
 
     #[derive(Debug, Error)]
@@ -441,6 +457,7 @@ pub(crate) mod external {
         sharable_banks: SharableBanks,
         metrics: Arc<ConsumeWorkerMetrics>,
         bundle_account_locker: BundleAccountLocker,
+        blacklisted_accounts: Arc<HashSet<Pubkey>>,
     }
 
     type Tx = RuntimeTransaction<ResolvedTransactionView<TransactionPtr>>;
@@ -456,6 +473,7 @@ pub(crate) mod external {
             shared_leader_state: SharedLeaderState,
             sharable_banks: SharableBanks,
             bundle_account_locker: BundleAccountLocker,
+            blacklisted_accounts: Arc<HashSet<Pubkey>>,
         ) -> Self {
             Self {
                 exit,
@@ -467,6 +485,7 @@ pub(crate) mod external {
                 sharable_banks,
                 metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
                 bundle_account_locker,
+                blacklisted_accounts,
             }
         }
 
@@ -571,7 +590,26 @@ pub(crate) mod external {
                     )
                 };
                 let (translation_results, transactions, max_ages) =
+<<<<<<< HEAD
                     Self::translate_transaction_batch(&batch, bank, &root_bank);
+=======
+                    self.translate_transaction_batch(&batch, bank);
+
+                // Enforce all or nothing on translation_results.
+                let execution_flags = ExecutionFlags {
+                    drop_on_failure: message.flags & execution_flags::DROP_ON_FAILURE != 0,
+                    all_or_nothing: message.flags & execution_flags::ALL_OR_NOTHING != 0,
+                };
+                if execution_flags.all_or_nothing && translation_results.len() != transactions.len()
+                {
+                    self.send_execution_response(
+                        message,
+                        Self::all_or_nothing_translate_iterator(&translation_results, bank.slot()),
+                    )?;
+
+                    return Ok(false);
+                }
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
 
                 let output = self.consumer.process_and_record_aged_transactions(
                     bank,
@@ -649,6 +687,53 @@ pub(crate) mod external {
             )
             .ok_or(ExternalConsumeWorkerError::AllocationFailure)?;
 
+<<<<<<< HEAD
+=======
+            // SAFETY: responses_ptr is sufficiently sized and aligned.
+            let (parsing_results, parsed_transactions, response_slice) = unsafe {
+                Self::parse_transactions_and_populate_initial_check_responses(
+                    message,
+                    &batch,
+                    &root_bank,
+                    responses_ptr,
+                )
+            };
+
+            // Check fee-payer if requested.
+            if message.flags & check_flags::LOAD_FEE_PAYER_BALANCE != 0 {
+                Self::check_load_fee_payer_balance(
+                    &parsing_results,
+                    &parsed_transactions,
+                    response_slice,
+                    &working_bank,
+                );
+            }
+
+            // Do resolving next since we (currently) need resolved transactions for status checks.
+            let (parsing_and_resolve_results, txs, max_ages) =
+                self.translate_transaction_batch(&batch, &root_bank);
+
+            if message.flags & check_flags::LOAD_ADDRESS_LOOKUP_TABLES != 0 {
+                self.check_resolve_pubkeys(
+                    &parsing_results,
+                    &parsing_and_resolve_results,
+                    &txs,
+                    &max_ages,
+                    response_slice,
+                    root_bank.slot(),
+                )?;
+            }
+
+            if message.flags & check_flags::STATUS_CHECKS != 0 {
+                Self::check_status_checks(
+                    &parsing_and_resolve_results,
+                    &txs,
+                    response_slice,
+                    &working_bank,
+                );
+            }
+
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
             let response = WorkerToPackMessage {
                 batch: message.batch,
                 processed: agave_scheduler_bindings::PROCESSED,
@@ -841,6 +926,7 @@ pub(crate) mod external {
 
         /// Translate batch of transactions into usable
         fn translate_transaction_batch(
+            &self,
             batch: &TransactionPtrBatch,
             working_bank: &Bank,
             root_bank: &Bank,
@@ -860,6 +946,11 @@ pub(crate) mod external {
                     root_bank,
                     enable_static_instruction_limit,
                     transaction_account_lock_limit,
+<<<<<<< HEAD
+=======
+                    enable_instruction_accounts_limit,
+                    &self.blacklisted_accounts,
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
                 ) {
                     Ok((tx, max_age)) => {
                         transactions.push(tx);
@@ -879,6 +970,11 @@ pub(crate) mod external {
             root_bank: &Bank,
             enable_static_instruction_limit: bool,
             transaction_account_lock_limit: usize,
+<<<<<<< HEAD
+=======
+            enable_instruction_accounts_limit: bool,
+            blacklisted_accounts: &HashSet<Pubkey>,
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
         ) -> Result<(Tx, MaxAge), PacketHandlingError> {
             translate_to_runtime_view(
                 transaction_ptr,
@@ -887,14 +983,18 @@ pub(crate) mod external {
                 enable_static_instruction_limit,
                 transaction_account_lock_limit,
             )
-            .map(|(view, deactivation_slot)| {
-                (
+            .and_then(|(view, deactivation_slot)| {
+                if contains_blacklisted_account(view.account_keys().iter(), blacklisted_accounts) {
+                    return Err(PacketHandlingError::BlacklistedAccount);
+                }
+
+                Ok((
                     view,
                     MaxAge {
                         sanitized_epoch: root_bank.epoch(),
                         alt_invalidation_slot: deactivation_slot,
                     },
-                )
+                ))
             })
         }
 
@@ -1188,6 +1288,12 @@ pub(crate) mod external {
                 ),
                 not_included_reasons::SANITIZE_FAILURE
             );
+            assert_eq!(
+                ExternalWorker::reason_from_packet_handling_error(
+                    &PacketHandlingError::BlacklistedAccount
+                ),
+                not_included_reasons::SANITIZE_FAILURE
+            );
 
             assert_eq!(
                 ExternalWorker::reason_from_packet_handling_error(
@@ -1195,6 +1301,69 @@ pub(crate) mod external {
                 ),
                 not_included_reasons::ADDRESS_LOOKUP_TABLE_NOT_FOUND
             );
+        }
+
+        #[test]
+        fn test_translate_transaction_blacklisted_account() {
+            let genesis = genesis_utils::create_genesis_config(1_000_000_000);
+            let bank = Bank::new_for_tests(&genesis.genesis_config);
+            let recipient = Pubkey::new_unique();
+            let tx = transfer(
+                &solana_keypair::Keypair::new(),
+                &recipient,
+                1,
+                bank.confirmed_last_blockhash(),
+            );
+            let serialized_tx = bincode::serialize(&tx).unwrap();
+            let transaction_ptr = unsafe {
+                TransactionPtr::from_raw_parts(
+                    NonNull::new(serialized_tx.as_ptr().cast_mut()).unwrap(),
+                    serialized_tx.len(),
+                )
+            };
+
+            let result = ExternalWorker::translate_transaction(
+                transaction_ptr,
+                &bank,
+                bank.get_transaction_account_lock_limit(),
+                true,
+                &HashSet::from_iter([recipient]),
+            );
+
+            assert!(matches!(
+                result,
+                Err(PacketHandlingError::BlacklistedAccount)
+            ));
+        }
+
+        #[test]
+        fn test_translate_transaction_non_blacklisted_account() {
+            let genesis = genesis_utils::create_genesis_config(1_000_000_000);
+            let bank = Bank::new_for_tests(&genesis.genesis_config);
+            let recipient = Pubkey::new_unique();
+            let tx = transfer(
+                &solana_keypair::Keypair::new(),
+                &recipient,
+                1,
+                bank.confirmed_last_blockhash(),
+            );
+            let serialized_tx = bincode::serialize(&tx).unwrap();
+            let transaction_ptr = unsafe {
+                TransactionPtr::from_raw_parts(
+                    NonNull::new(serialized_tx.as_ptr().cast_mut()).unwrap(),
+                    serialized_tx.len(),
+                )
+            };
+
+            let result = ExternalWorker::translate_transaction(
+                transaction_ptr,
+                &bank,
+                bank.get_transaction_account_lock_limit(),
+                true,
+                &HashSet::default(),
+            );
+
+            assert!(result.is_ok());
         }
 
         #[test]

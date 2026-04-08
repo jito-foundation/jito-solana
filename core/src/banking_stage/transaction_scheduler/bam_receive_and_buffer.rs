@@ -17,8 +17,13 @@ use {
                 bam_scheduler::MAX_PACKETS_PER_BUNDLE,
                 bam_utils::convert_txn_error_to_proto,
                 receive_and_buffer::{
+<<<<<<< HEAD
                     calculate_max_age, calculate_priority_and_cost, DisconnectedError,
                     ReceivingStats,
+=======
+                    DisconnectedError, ReceivingStats, calculate_max_age,
+                    calculate_priority_and_cost, contains_blacklisted_account,
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
                 },
                 transaction_state_container::{SharedBytes, StateContainer},
             },
@@ -511,12 +516,19 @@ impl BamReceiveAndBuffer {
             }
 
             // Check 6: Ensure none of the accounts touch blacklisted accounts
+<<<<<<< HEAD
             let (contains_blacklisted_account, duration_us) = measure_us!(view
                 .account_keys()
                 .iter()
                 .any(|key| blacklisted_accounts.contains(key)));
+=======
+            let (is_blacklisted, duration_us) = measure_us!(contains_blacklisted_account(
+                view.account_keys().iter(),
+                blacklisted_accounts
+            ));
+>>>>>>> dfea51b1e6 (Bugfix - External Scheduler Account Checks (#1356))
             metrics.increment_blacklist_check_us(duration_us);
-            if contains_blacklisted_account {
+            if is_blacklisted {
                 stats.num_dropped_on_blacklisted_account += 1;
                 return (
                     Err(Reason::TransactionError(
