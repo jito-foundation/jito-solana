@@ -278,7 +278,20 @@ where
         match decision {
             BufferedPacketsDecision::Consume(bank) => {
                 if !self.scheduling_enabled() {
+<<<<<<< HEAD
                     return Ok(());
+=======
+                    // When BAM disconnects while we're still leader, `schedule`
+                    // is never called so `pull_into_prio_graph` never drains the
+                    // priority queue. Drain leftover batch entries here to avoid
+                    // stale batches accumulating until the next slot change.
+                    if self.bam_controller {
+                        while let Some(id) = self.container.pop() {
+                            self.container.remove_by_id(id.id);
+                        }
+                    }
+                    return Ok(0);
+>>>>>>> 2aec645c6a (Disable incremental re-check inside BAM (#1334))
                 }
                 let scheduling_budget = if let Some(cost_pacer) = cost_pacer {
                     cost_pacer.scheduling_budget(now)
@@ -372,11 +385,49 @@ where
         });
     }
 
+<<<<<<< HEAD
     /// Clean unprocessable transactions from the queue. These will be transactions that are
     /// expired, already processed, or are no longer sanitizable.
     /// This only clears pending transactions, and does **not** clear in-flight transactions.
     fn clean_queue(&mut self) {
         if self.bam_controller {
+=======
+    /// Incrementally recheck queued transactions for validity. A cursor walks the
+    /// priority queue from highest to lowest priority. When the cursor reaches the end it
+    /// wraps back to the top, continuously sweeping the queue.
+    ///
+    /// Skipped for the BAM controller: its priority queue holds `Batch` entries
+    /// (not individual `TransactionState` entries), so `get_transaction` would
+    /// return `None` and panic. BAM has its own validation in the scheduler.
+    fn incremental_recheck(&mut self) {
+        if self.bam_controller {
+            return;
+        }
+        let bank = self.sharable_banks.working();
+
+        // Walk the cursor to collect up to one chunk of valid IDs.
+        self.recheck_chunk.clear();
+        let mut last_seen = None;
+        for id in self.container.recheck_iter(self.recheck_cursor.as_ref()) {
+            last_seen = Some(*id);
+
+            self.recheck_chunk.push(*id);
+            if self.recheck_chunk.len() >= CHECK_CHUNK {
+                break;
+            }
+        }
+
+        // Update cursor: if we hit the chunk limit, continue from last seen;
+        // otherwise we exhausted the range, so wrap back to start.
+        self.recheck_cursor = if self.recheck_chunk.len() >= CHECK_CHUNK {
+            last_seen
+        } else {
+            None
+        };
+
+        // Bail if no work to do (should only happen if container is empty).
+        if self.recheck_chunk.is_empty() {
+>>>>>>> 2aec645c6a (Disable incremental re-check inside BAM (#1334))
             return;
         }
 

@@ -691,6 +691,79 @@ mod tests {
     }
 
     #[test]
+    fn test_recheck_iter_descends() {
+        let mut container = TransactionStateContainer::with_capacity(8);
+        for priority in [5, 10, 5, 1] {
+            let (transaction, max_age, priority, cost) = test_transaction(priority);
+            container.insert_new_transaction(transaction, max_age, priority, cost);
+        }
+
+        let seen_priorities: Vec<_> = container.recheck_iter(None).map(|id| id.priority).collect();
+        assert_eq!(seen_priorities, vec![10, 5, 5, 1]);
+
+        // With a cursor, should return items strictly below it.
+        let cursor = *container.recheck_iter(None).next().unwrap();
+        assert_eq!(cursor.priority, 10);
+        let remaining: Vec<_> = container
+            .recheck_iter(Some(&cursor))
+            .map(|id| id.priority)
+            .collect();
+        assert_eq!(remaining, vec![5, 5, 1]);
+    }
+
+    #[test]
+    fn test_recheck_iter_wraps_from_top_after_exhaustion() {
+        let mut container = TransactionStateContainer::with_capacity(4);
+        for priority in [10, 5] {
+            let (transaction, max_age, priority, cost) = test_transaction(priority);
+            container.insert_new_transaction(transaction, max_age, priority, cost);
+        }
+
+        // Walk the full iterator and remember the last (lowest) cursor.
+        let mut cursor = None;
+        for id in container.recheck_iter(None) {
+            cursor = Some(*id);
+        }
+        let cursor = cursor.unwrap();
+        assert_eq!(cursor.priority, 5);
+
+        // Starting below the last item should yield nothing.
+        let remaining: Vec<_> = container.recheck_iter(Some(&cursor)).collect();
+        assert!(remaining.is_empty());
+
+        // A fresh sweep should wrap back to the highest priority.
+        let wrapped = container.recheck_iter(None).next().unwrap();
+        assert_eq!(wrapped.priority, 10);
+    }
+
+    #[test]
+    fn test_remove_by_id_removes_from_queue() {
+        let mut container = TransactionStateContainer::with_capacity(4);
+        for priority in [7, 3] {
+            let (transaction, max_age, priority, cost) = test_transaction(priority);
+            container.insert_new_transaction(transaction, max_age, priority, cost);
+        }
+
+        let (highest, lowest) = (
+            *container.priority_queue.last().unwrap(),
+            *container.priority_queue.first().unwrap(),
+        );
+
+        // Removing an in-queue transaction drops it from both structures.
+        container.remove_by_id(highest.id);
+        assert!(!container.priority_queue.contains(&highest));
+        assert_eq!(container.queue_size(), 1);
+        assert!(container.get_transaction(highest.id).is_none());
+
+        // Removing after pop should still clean up the map even if not in queue.
+        let popped = container.pop().unwrap();
+        assert_eq!(popped, lowest);
+        container.remove_by_id(popped.id);
+        assert!(container.get_transaction(popped.id).is_none());
+        assert!(container.is_empty());
+    }
+
+    #[test]
     fn test_batch() {
         let mut container = TransactionStateContainer::with_capacity(5);
         let mut transaction_max_ages = SmallVec::with_capacity(5);
