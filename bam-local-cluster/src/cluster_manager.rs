@@ -150,6 +150,11 @@ impl BamValidator {
             cmd.arg("--geyser-plugin-config").arg(geyser_config);
         }
 
+        if let Some(limit_ledger_size) = cluster_config.limit_ledger_size {
+            cmd.arg("--limit-ledger-size")
+                .arg(limit_ledger_size.to_string());
+        }
+
         info!("Starting {node_name} node with command: {cmd:?}");
 
         // Print the command as it would appear on the CLI

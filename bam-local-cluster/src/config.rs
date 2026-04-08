@@ -17,6 +17,7 @@ pub struct LocalClusterConfig {
     pub hashes_per_tick: Option<u64>,
     pub bind_address: Option<String>,
     pub gossip_host: Option<String>,
+    pub limit_ledger_size: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
