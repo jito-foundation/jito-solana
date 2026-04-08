@@ -35,7 +35,7 @@ pub struct BamConnection {
     connection_task: tokio::task::JoinHandle<()>,
     is_healthy: Arc<AtomicBool>,
     url: String,
-    exit: Arc<AtomicBool>,
+    connection_exit: Arc<AtomicBool>,
 }
 
 const AUTH_LABEL: &[u8] = b"X_OFF_CHAIN_JITO_BAM_V1\0";
@@ -85,11 +85,11 @@ impl BamConnection {
         let metrics = Arc::new(BamConnectionMetrics::default());
         let is_healthy = Arc::new(AtomicBool::new(false));
         let config = Arc::new(Mutex::new(None));
-        let exit = Arc::new(AtomicBool::new(false));
+        let connection_exit = Arc::new(AtomicBool::new(false));
 
         // Start the connection task
         let connection_task = tokio::spawn(Self::connection_task(
-            exit.clone(),
+            connection_exit.clone(),
             inbound_stream,
             outbound_sender,
             validator_client,
@@ -106,13 +106,13 @@ impl BamConnection {
             connection_task,
             is_healthy,
             url,
-            exit,
+            connection_exit,
         })
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn connection_task(
-        exit: Arc<AtomicBool>,
+        connection_exit: Arc<AtomicBool>,
         mut inbound_stream: tonic::Streaming<SchedulerResponse>,
         outbound_sender: mpsc::Sender<SchedulerMessage>,
         mut validator_client: BamNodeApiClient<tonic::transport::channel::Channel>,
@@ -153,21 +153,13 @@ impl BamConnection {
             return;
         }
 
-        let mut builder_config_task = tokio::spawn(Self::refresh_config_task(
-            exit.clone(),
-            config.clone(),
-            validator_client.clone(),
-            metrics.clone(),
-        ));
+        let mut post_auth_start = Some((validator_client, outbound_receiver));
+        let mut post_auth_tasks: Option<(
+            tokio::task::JoinHandle<()>,
+            tokio::task::JoinHandle<()>,
+        )> = None;
 
-        let mut outbound_task = tokio::spawn(Self::outbound_task(
-            exit.clone(),
-            outbound_sender.clone(),
-            outbound_receiver,
-            metrics.clone(),
-        ));
-
-        while !exit.load(Relaxed) {
+        while !connection_exit.load(Relaxed) {
             tokio::select! {
                 _ = heartbeat_interval.tick() => {
                     let _ = outbound_sender.try_send(v0_to_versioned_proto(SchedulerMessageV0 {
@@ -209,6 +201,27 @@ impl BamConnection {
                         break;
                     };
 
+                    // The first successful inbound scheduler message proves the auth'd stream was accepted.
+                    post_auth_tasks.get_or_insert_with(|| {
+                        let (validator_client, outbound_receiver) = post_auth_start
+                            .take()
+                            .expect("post-auth start state should only move once");
+                        (
+                            tokio::spawn(Self::refresh_config_task(
+                                connection_exit.clone(),
+                                config.clone(),
+                                validator_client,
+                                metrics.clone(),
+                            )),
+                            tokio::spawn(Self::outbound_task(
+                                connection_exit.clone(),
+                                outbound_sender.clone(),
+                                outbound_receiver,
+                                metrics.clone(),
+                            )),
+                        )
+                    });
+
                     match inbound {
                         SchedulerResponseV0 { resp: Some(Resp::HeartBeat(_)), .. } => {
                             last_heartbeat = Some(std::time::Instant::now());
@@ -227,10 +240,14 @@ impl BamConnection {
                 }
             }
         }
+        connection_exit.store(true, Relaxed);
         is_healthy.store(false, Relaxed);
+        let Some((refresh_config_task, outbound_task)) = post_auth_tasks.as_mut() else {
+            return;
+        };
         tokio::join!(
-            Self::wait_or_abort_child("refresh_config", &mut builder_config_task),
-            Self::wait_or_abort_child("outbound", &mut outbound_task),
+            Self::wait_or_abort_child("refresh_config", refresh_config_task),
+            Self::wait_or_abort_child("outbound", outbound_task),
         );
     }
 
@@ -276,7 +293,7 @@ impl BamConnection {
     }
 
     async fn refresh_config_task(
-        exit: Arc<AtomicBool>,
+        connection_exit: Arc<AtomicBool>,
         config: Arc<Mutex<Option<ConfigResponse>>>,
         mut validator_client: BamNodeApiClient<tonic::transport::channel::Channel>,
         metrics: Arc<BamConnectionMetrics>,
@@ -284,7 +301,7 @@ impl BamConnection {
         let mut interval = interval(REFRESH_CONFIG_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        while !exit.load(Relaxed) {
+        while !connection_exit.load(Relaxed) {
             tokio::select! {
                 _ = interval.tick() => {
                     let request = tonic::Request::new(ConfigRequest {});
@@ -310,7 +327,7 @@ impl BamConnection {
     }
 
     async fn outbound_task(
-        exit: Arc<AtomicBool>,
+        connection_exit: Arc<AtomicBool>,
         mut outbound_sender: mpsc::Sender<SchedulerMessage>,
         outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
         metrics: Arc<BamConnectionMetrics>,
@@ -320,7 +337,7 @@ impl BamConnection {
 
         let mut waiting_results = Vec::new();
 
-        while !exit.load(Relaxed) {
+        while !connection_exit.load(Relaxed) {
             tokio::select! {
                 _ = outbound_tick_interval.tick() => {
                     while let Ok(outbound) = outbound_receiver.try_recv() {
@@ -382,6 +399,9 @@ impl BamConnection {
     ) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < duration && !exit.load(Relaxed) {
+            if self.connection_task.is_finished() {
+                return false;
+            }
             if self.is_healthy() && self.get_latest_config().is_some() {
                 return true;
             }
@@ -449,7 +469,7 @@ impl BamConnection {
 impl Drop for BamConnection {
     fn drop(&mut self) {
         self.is_healthy.store(false, Relaxed);
-        self.exit.store(true, Relaxed);
+        self.connection_exit.store(true, Relaxed);
         std::thread::sleep(CONNECTION_TASK_DROP_GRACE);
         if !self.connection_task.is_finished() {
             self.connection_task.abort();
