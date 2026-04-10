@@ -8825,6 +8825,7 @@ name = "solana-runtime-transaction"
 version = "3.1.13"
 dependencies = [
  "agave-transaction-view",
+ "bincode",
  "log",
  "solana-compute-budget",
  "solana-compute-budget-instruction",
