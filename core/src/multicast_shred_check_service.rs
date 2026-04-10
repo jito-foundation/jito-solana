@@ -111,6 +111,7 @@ impl MulticastShredCheckService {
 
     /// Encode an IPv4 address as the `/proc/net/route` destination value
     /// (e.g. 233.84.178.1 -> 0x01B254E9).
+    #[allow(dead_code)]
     fn ipv4_to_route_value(addr: SocketAddr) -> Option<u32> {
         match addr.ip() {
             IpAddr::V4(v4) => Some(u32::from_le_bytes(v4.octets())),
@@ -118,6 +119,7 @@ impl MulticastShredCheckService {
         }
     }
 
+    #[allow(dead_code)]
     fn parse_route_field(field: &str) -> Option<u32> {
         if field.len() != 8 {
             return None;
@@ -147,6 +149,7 @@ impl MulticastShredCheckService {
     /// for `multicast_addr` is present.
     ///
     /// Format: Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+    #[allow(dead_code)]
     fn route_table_contains_addr(data: &str, multicast_addr: SocketAddr) -> bool {
         // Instead of polling, the ideal approach to this is to use Linux API's Netlink RTNETLINK socket.
         // It subscribes to the RTMGRP_IPV4_ROUTE multicast group and the kernel pushes

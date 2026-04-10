@@ -12,11 +12,14 @@ use {
     itertools::Itertools,
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
-    solana_poh::transaction_recorder::{
-        RecordTransactionsSummary, RecordTransactionsTimings, TransactionRecorder,
+    solana_poh::{
+        poh_recorder::PohRecorderError,
+        transaction_recorder::{RecordTransactionsTimings, TransactionRecorder},
     },
     solana_runtime::{
-        bank::{Bank, LoadAndExecuteTransactionsOutput},
+        bank::{
+            entry_bytes_budget::EntryBytesReserveError, Bank, LoadAndExecuteTransactionsOutput,
+        },
         transaction_batch::TransactionBatch,
     },
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -33,6 +36,11 @@ use {
         time::{Duration, Instant},
         vec,
     },
+};
+
+const SERIALIZED_ENTRIES_OVERHEAD: u64 = {
+    48  // Entry Header
+    + 8 // Vec<Entry> length
 };
 
 pub struct BundleConsumer {
@@ -409,12 +417,15 @@ impl BundleConsumer {
             attempted_processing_count: processing_results.len() as u64,
         };
 
+        let mut entry_bytes =
+            SERIALIZED_ENTRIES_OVERHEAD * batch.sanitized_transactions().len() as u64;
         let (processed_transactions, prepare_record_transactions_us) =
             measure_us!(processing_results
                 .iter()
                 .zip(batch.sanitized_transactions())
                 .filter_map(|(processing_result, tx)| {
                     if processing_result.was_processed() {
+                        entry_bytes += tx.serialized_size() as u64;
                         Some(tx.to_versioned_transaction())
                     } else {
                         None
@@ -425,26 +436,35 @@ impl BundleConsumer {
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
 
+        let reserved_bytes =
+            bank.entry_bytes_budget()
+                .reserve(entry_bytes)
+                .map_err(|err| match err {
+                    EntryBytesReserveError::ExceedsSlotLimit => PohRecorderError::MaxHeightReached,
+                });
+
         // BundleStage: executes multiple transactions which may contain overlapping accounts
         // This needs to happen until the relax_intrabatch_account_locks feature is enabled
-        let (record_transactions_summary, record_us) = measure_us!(self
+        let (record_transactions_summary, record_us) = measure_us!(reserved_bytes.map(|_| self
             .transaction_recorder
-            .record_bundle(bank.bank_id(), processed_transactions));
+            .record_bundle(bank.bank_id(), processed_transactions)));
         execute_and_commit_timings.record_us = record_us;
 
-        let RecordTransactionsSummary {
-            result: record_transactions_result,
-            record_transactions_timings,
-            starting_transaction_index,
-        } = record_transactions_summary;
-        execute_and_commit_timings.record_transactions_timings = RecordTransactionsTimings {
-            prepare_record_transactions_us: Saturating(prepare_record_transactions_us),
-            ..record_transactions_timings
+        let (recording_result, starting_transaction_index) = match record_transactions_summary {
+            Ok(summary) => {
+                execute_and_commit_timings.record_transactions_timings =
+                    RecordTransactionsTimings {
+                        prepare_record_transactions_us: Saturating(prepare_record_transactions_us),
+                        ..summary.record_transactions_timings
+                    };
+                (summary.result, summary.starting_transaction_index)
+            }
+            Err(err) => (Err(err), None),
         };
 
         // If recording error, all transactions are retryable
         // Any transaction failures trigger a bailout of the entire bundle above
-        if let Err(recorder_err) = record_transactions_result {
+        if let Err(recorder_err) = recording_result {
             return ExecuteAndCommitTransactionsOutput {
                 transaction_counts,
                 retryable_transaction_indexes: (0..batch.sanitized_transactions().len())
