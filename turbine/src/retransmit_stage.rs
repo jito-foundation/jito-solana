@@ -509,14 +509,21 @@ fn retransmit_shred(
         }
         RetransmitSocket::Socket(_) | RetransmitSocket::Multihomed { .. } => {
             let socket = socket.get_socket();
-            let mut send_addrs =
+            let mut uc_addrs =
                 Vec::with_capacity(num_addrs.saturating_add(shred_receiver_addresses.len()));
-            send_addrs.extend(addrs.iter().copied());
-            send_addrs.extend(shred_receiver_addresses.iter().copied());
-            if send_addrs.is_empty() {
+            uc_addrs.extend(addrs.iter().copied());
+            let mut mc_addrs: Vec<SocketAddr> = Vec::new();
+            for &addr in shred_receiver_addresses {
+                if addr.ip().is_multicast() {
+                    mc_addrs.push(addr);
+                } else {
+                    uc_addrs.push(addr);
+                }
+            }
+            let uc_sent = if uc_addrs.is_empty() {
                 0
             } else {
-                match multi_target_send(socket, shred, &send_addrs) {
+                match multi_target_send(socket, shred, &uc_addrs) {
                     Ok(()) => num_addrs,
                     Err(SendPktsError::IoError(ioerr, num_failed)) => {
                         let num_failed = num_failed.min(num_addrs);
@@ -527,7 +534,20 @@ fn retransmit_shred(
                         num_addrs - num_failed
                     }
                 }
+            };
+            if !mc_addrs.is_empty() {
+                crate::broadcast_stage::MC_SOCKET.with(|mc_sock| {
+                    if let Err(SendPktsError::IoError(ioerr, num_failed)) =
+                        multi_target_send(mc_sock, shred, &mc_addrs)
+                    {
+                        error!(
+                            "retransmit multicast multi_target_send error: {ioerr:?}, \
+                             {num_failed} packets failed"
+                        );
+                    }
+                });
             }
+            uc_sent
         }
     };
     retransmit_time.stop();

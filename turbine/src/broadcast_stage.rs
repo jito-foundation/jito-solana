@@ -52,6 +52,14 @@ pub(crate) mod broadcast_utils;
 mod fail_entry_verification_broadcast_run;
 pub(crate) mod standard_broadcast_run;
 
+thread_local! {
+    pub(crate) static MC_SOCKET: UdpSocket = {
+        let sock = UdpSocket::bind("0.0.0.0:0").expect("multicast socket bind");
+        sock.set_multicast_ttl_v4(64).expect("set multicast ttl");
+        sock
+    };
+}
+
 const _: () = const {
     // From https://github.com/anza-xyz/agave/pull/1735#discussion_r1644899183:
     // 1. There must be at least two epochs because near an epoch boundary you might receive
@@ -582,12 +590,26 @@ pub fn broadcast_shreds(
     match socket {
         BroadcastSocket::Udp(s) => {
             let mut send_mmsg_time = Measure::start("send_mmsg");
-            match batch_send(s, packets) {
-                Ok(()) => (),
-                Err(SendPktsError::IoError(ioerr, num_failed)) => {
+            let (mc_packets, uc_packets): (Vec<_>, Vec<_>) = packets
+                .into_iter()
+                .partition(|(_, addr)| addr.ip().is_multicast());
+            if !uc_packets.is_empty() {
+                if let Err(SendPktsError::IoError(ioerr, num_failed)) =
+                    batch_send(s, uc_packets)
+                {
                     transmit_stats.dropped_packets_udp += num_failed;
                     result = Err(Error::Io(ioerr));
                 }
+            }
+            if !mc_packets.is_empty() {
+                MC_SOCKET.with(|mc_sock| {
+                    if let Err(SendPktsError::IoError(ioerr, num_failed)) =
+                        batch_send(mc_sock, mc_packets)
+                    {
+                        transmit_stats.dropped_packets_udp += num_failed;
+                        result = Err(Error::Io(ioerr));
+                    }
+                });
             }
             send_mmsg_time.stop();
             transmit_stats.send_mmsg_elapsed += send_mmsg_time.as_us();
