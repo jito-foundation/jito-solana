@@ -694,7 +694,7 @@ mod tests {
             Version::new_from_parts(0, 0, 0, 0, 0, ClientId::this_client(), Prerelease::Stable);
         assert_eq!(
             version.as_detailed_string(),
-            "0.0.0 (src:00000000; feat:00000000, client:Agave)",
+            "0.0.0 (src:00000000; feat:00000000, client:JitoLabs)",
         );
 
         let version = Version::new_from_parts(
@@ -708,7 +708,7 @@ mod tests {
         );
         assert_eq!(
             version.as_detailed_string(),
-            "0.0.0-rc.0 (src:00000000; feat:00000000, client:Agave)",
+            "0.0.0-rc.0 (src:00000000; feat:00000000, client:JitoLabs)",
         );
     }
 }
