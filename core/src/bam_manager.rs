@@ -75,36 +75,6 @@ impl BamManager {
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
     ) -> Self {
-        Self {
-            thread: std::thread::spawn(move || {
-                Self::run(
-                    exit,
-                    bam_url,
-                    dependencies,
-                    poh_recorder,
-                    identity_notifiers,
-                )
-            }),
-        }
-    }
-
-    fn run(
-        exit: Arc<AtomicBool>,
-        bam_url: Arc<ArcSwap<Option<String>>>,
-        dependencies: BamDependencies,
-        poh_recorder: Arc<RwLock<PohRecorder>>,
-        identity_notifiers: Arc<RwLock<KeyUpdaters>>,
-    ) {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(8)
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let mut current_connection = None;
-        let mut cached_builder_config = None;
-        let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
-
         let identity_changed = Arc::new(AtomicBool::new(false));
         let new_identity = Arc::new(ArcSwap::from_pointee(None));
 
@@ -119,6 +89,38 @@ impl BamManager {
             .unwrap()
             .add(KeyUpdaterType::BamConnection, identity_updater);
         info!("BAM Manager: Added BAM connection key updater");
+
+        Self {
+            thread: std::thread::spawn(move || {
+                Self::run(
+                    exit,
+                    bam_url,
+                    dependencies,
+                    poh_recorder,
+                    identity_changed,
+                    new_identity,
+                )
+            }),
+        }
+    }
+
+    fn run(
+        exit: Arc<AtomicBool>,
+        bam_url: Arc<ArcSwap<Option<String>>>,
+        dependencies: BamDependencies,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
+        identity_changed: Arc<AtomicBool>,
+        new_identity: Arc<ArcSwap<Option<Pubkey>>>,
+    ) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let mut current_connection = None;
+        let mut cached_builder_config = None;
+        let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let fallback_client_id = ClientId::JitoLabs;
         let mut current_client_id = fallback_client_id;
