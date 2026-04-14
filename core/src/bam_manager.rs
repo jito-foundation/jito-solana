@@ -81,6 +81,21 @@ impl BamManager {
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
     ) -> Self {
+        let identity_changed = Arc::new(AtomicBool::new(false));
+        let new_identity = Arc::new(ArcSwap::from_pointee(None));
+
+        let identity_updater = Arc::new(BamConnectionIdentityUpdater {
+            bam_url: bam_url.clone(),
+            new_identity: new_identity.clone(),
+            identity_changed_force_reconnect: identity_changed.clone(),
+        }) as Arc<dyn NotifyKeyUpdate + Sync + Send>;
+
+        identity_notifiers
+            .write()
+            .unwrap()
+            .add(KeyUpdaterType::BamConnection, identity_updater);
+        info!("BAM Manager: Added BAM connection key updater");
+
         Self {
             thread: std::thread::spawn(move || {
                 Self::run(
@@ -88,7 +103,8 @@ impl BamManager {
                     bam_url,
                     dependencies,
                     poh_recorder,
-                    identity_notifiers,
+                    identity_changed,
+                    new_identity,
                 )
             }),
         }
@@ -99,7 +115,8 @@ impl BamManager {
         bam_url: Arc<ArcSwap<Option<String>>>,
         dependencies: BamDependencies,
         poh_recorder: Arc<RwLock<PohRecorder>>,
-        identity_notifiers: Arc<RwLock<KeyUpdaters>>,
+        identity_changed: Arc<AtomicBool>,
+        new_identity: Arc<ArcSwap<Option<Pubkey>>>,
     ) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(8)
@@ -126,7 +143,7 @@ impl BamManager {
             .add(KeyUpdaterType::BamConnection, identity_updater);
         info!("BAM Manager: Added BAM connection key updater");
 
-        let fallback_client_id = Self::FALLBACK_CLIENT_ID;
+        let fallback_client_id = ClientId::JitoLabs;
         let mut current_client_id = fallback_client_id;
         let bam_client_id = Self::BAM_CLIENT_ID;
 
