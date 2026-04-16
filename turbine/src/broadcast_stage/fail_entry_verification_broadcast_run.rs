@@ -4,7 +4,11 @@ use {
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
-    std::{net::SocketAddr, thread::sleep, time::Duration},
+    std::{
+        net::{SocketAddr, UdpSocket},
+        thread::sleep,
+        time::Duration,
+    },
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
@@ -185,10 +189,12 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
             sock,
+            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &AtomicInterval::default(),
