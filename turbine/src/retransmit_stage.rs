@@ -498,7 +498,8 @@ fn retransmit_shred(
             if !send_addrs.is_empty()
                 && let Err(e) = sender.try_send(key.index() as usize, send_addrs, shred.bytes)
             {
-                // External shred receivers are intentionally not included in retransmit stats.
+                // External retransmit receivers (`--shred-retransmit-receiver-address`) are
+                // intentionally not included in retransmit stats.
                 log::warn!("xdp channel full: {e:?}");
                 stats
                     .num_shreds_dropped_xdp_full

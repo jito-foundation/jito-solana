@@ -296,7 +296,7 @@ impl BlockEngineStage {
         if let Some(shredstream_socket) =
             Self::resolve_shredstream_receiver_address(&global.shredstream_receiver_address)
         {
-            // no else branch needed since we'll still send to shred_receiver_addresses
+            // Direct leader-broadcast copies still go to shred_receiver_addresses.
             shredstream_receiver_address.store(Arc::new(Some(shredstream_socket)));
         }
         let backend_endpoint = Self::get_endpoint(global.block_engine_url.as_str())?;

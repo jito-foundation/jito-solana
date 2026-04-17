@@ -573,9 +573,10 @@ pub fn broadcast_shreds(
         })
         .collect();
 
-    // Forward shreds to external receivers, avoiding duplicates when addresses
-    // overlap. Add the cluster multicast address only when the route is present
-    // and the address is not already added.
+    // Mirror this validator's own broadcast shreds to external receivers
+    // (`--shred-receiver-address`), avoiding duplicates when addresses overlap.
+    // Add the cluster multicast address only when the route is present and the
+    // address is not already added.
     if let Some(addr) = shredstream_receiver_address {
         packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
     }
