@@ -291,6 +291,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,
@@ -301,6 +302,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         _shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         _multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        _shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         if shreds.is_empty() {
