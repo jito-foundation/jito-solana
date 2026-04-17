@@ -291,6 +291,7 @@ impl BroadcastRun for BroadcastDuplicatesRun {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,

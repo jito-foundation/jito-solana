@@ -179,6 +179,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,

@@ -478,6 +478,7 @@ impl BroadcastRun for StandardBroadcastRun {
             &mut process_stats,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn transmit(
         &mut self,
         receiver: &TransmitReceiver,
