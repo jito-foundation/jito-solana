@@ -160,6 +160,7 @@ impl BroadcastRun for BroadcastFakeShredsRun {
         _quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         _shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         _shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        _bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         _multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
         _shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {

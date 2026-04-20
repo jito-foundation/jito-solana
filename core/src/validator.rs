@@ -1485,6 +1485,9 @@ impl Validator {
             "New shred signal for the TVU should be the same as the clear bank signal."
         );
 
+        let bam_shred_receiver_addresses =
+            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new()));
+
         let vote_tracker = Arc::<VoteTracker>::default();
 
         let (retransmit_slots_sender, retransmit_slots_receiver) = unbounded();
@@ -1709,6 +1712,7 @@ impl Validator {
             slot_status_notifier,
             vote_connection_cache,
             config.shred_retransmit_receiver_addresses.clone(),
+            bam_shred_receiver_addresses.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1805,6 +1809,7 @@ impl Validator {
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_addresses.clone(),
+            bam_shred_receiver_addresses,
             config.multicast_receiver_address.clone(),
             config.bam_url.clone(),
         );

@@ -36,7 +36,7 @@ use {
     },
     solana_time_utils::{timestamp, AtomicInterval},
     std::{
-        collections::{HashMap, HashSet},
+        collections::HashSet,
         net::{SocketAddr, UdpSocket},
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -133,6 +133,7 @@ impl BroadcastStageType {
         xdp_sender: Option<XdpSender>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> BroadcastStage {
         match self {
@@ -149,6 +150,7 @@ impl BroadcastStageType {
                 xdp_sender,
                 shredstream_receiver_address,
                 shred_receiver_addresses,
+                bam_shred_receiver_addresses,
                 multicast_receiver_address,
             ),
 
@@ -164,6 +166,7 @@ impl BroadcastStageType {
                 FailEntryVerificationBroadcastRun::new(shred_version),
                 xdp_sender,
                 shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
                 Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
                 Arc::new(ArcSwap::from_pointee(None)),
             ),
@@ -181,6 +184,7 @@ impl BroadcastStageType {
                 xdp_sender,
                 shredstream_receiver_address,
                 Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
                 Arc::new(ArcSwap::from_pointee(None)),
             ),
 
@@ -196,6 +200,7 @@ impl BroadcastStageType {
                 BroadcastDuplicatesRun::new(shred_version, config.clone()),
                 xdp_sender,
                 shredstream_receiver_address,
+                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
                 Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
                 Arc::new(ArcSwap::from_pointee(None)),
             ),
@@ -222,6 +227,7 @@ trait BroadcastRun {
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_socket: &UdpSocket,
     ) -> Result<()>;
@@ -323,6 +329,7 @@ impl BroadcastStage {
         xdp_sender: Option<XdpSender>,
         shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Self {
         let (socket_sender, socket_receiver) = unbounded();
@@ -395,6 +402,7 @@ impl BroadcastStage {
             let xdp_sender = xdp_sender.clone();
             let shredstream_receiver_address = shredstream_receiver_address.clone();
             let shred_receiver_addresses = shred_receiver_addresses.clone();
+            let bam_shred_receiver_addresses = bam_shred_receiver_addresses.clone();
             let multicast_receiver_address = multicast_receiver_address.clone();
             let shred_receiver_socket = shred_receiver_socket.clone();
 
@@ -415,6 +423,7 @@ impl BroadcastStage {
                     &quic_endpoint_sender,
                     &shredstream_receiver_address,
                     &shred_receiver_addresses,
+                    &bam_shred_receiver_addresses,
                     &multicast_receiver_address,
                     &shred_receiver_socket,
                 );
@@ -523,6 +532,36 @@ fn update_peer_stats(
     }
 }
 
+fn get_additional_external_shred_receiver_addresses(
+    shredstream_receiver_address: &Option<SocketAddr>,
+    shred_receiver_addresses: &ShredReceiverAddresses,
+    bam_shred_receiver_addresses: &ShredReceiverAddresses,
+    multicast_receiver_address: &Option<SocketAddr>,
+) -> ShredReceiverAddresses {
+    let shredstream_receiver_address = shredstream_receiver_address.as_ref();
+    let mut additional_external_addrs = ShredReceiverAddresses::new();
+    for addr in shred_receiver_addresses {
+        if Some(addr) != shredstream_receiver_address && !additional_external_addrs.contains(addr) {
+            additional_external_addrs.push(*addr);
+        }
+    }
+    for addr in bam_shred_receiver_addresses {
+        if Some(addr) != shredstream_receiver_address && !additional_external_addrs.contains(addr) {
+            additional_external_addrs.push(*addr);
+        }
+    }
+    if let Some(addr) = multicast_receiver_address
+        && Some(addr) != shredstream_receiver_address
+        && !additional_external_addrs.contains(addr)
+    {
+        additional_external_addrs.push(*addr);
+    }
+    // Always truncate to MAX_SHRED_RECEIVER_ADDRESSES at the end.
+    additional_external_addrs.truncate(MAX_SHRED_RECEIVER_ADDRESSES);
+
+    additional_external_addrs
+}
+
 #[derive(Clone, Copy)]
 pub enum BroadcastSocket<'a> {
     Udp(&'a UdpSocket),
@@ -545,6 +584,7 @@ pub fn broadcast_shreds(
     quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
     shredstream_receiver_address: &Option<SocketAddr>,
     shred_receiver_addresses: &ShredReceiverAddresses,
+    bam_shred_receiver_addresses: &ShredReceiverAddresses,
     multicast_receiver_address: &Option<SocketAddr>,
 ) -> Result<()> {
     let mut result = Ok(());
@@ -579,28 +619,26 @@ pub fn broadcast_shreds(
         })
         .partition_map(std::convert::identity);
 
-    // Forward shreds to external receivers, avoiding duplicates when addresses
-    // overlap. Add the cluster multicast address only when the route is present
-    // and the address is not already added.
+    // Mirror this validator's own broadcast shreds to external receivers
+    // (`--shred-receiver-address`), avoiding duplicates when addresses overlap.
+    // Add BAM and cluster multicast addresses only when they are present and
+    // not already added.
     if let Some(addr) = shredstream_receiver_address {
         packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
     }
     let external_packets_start = packets.len();
-    packets.reserve(
-        shreds.len().saturating_mul(
-            shred_receiver_addresses.len() + multicast_receiver_address.iter().len(),
-        ),
-    );
-    for addr in shred_receiver_addresses
-        .iter()
-        .filter(|addr| shredstream_receiver_address.as_ref() != Some(addr))
-        .chain(multicast_receiver_address.iter().filter(|addr| {
-            shred_receiver_addresses.len() < MAX_SHRED_RECEIVER_ADDRESSES
-                && !shred_receiver_addresses.contains(addr)
-                && shredstream_receiver_address.as_ref() != Some(addr)
-        }))
-    {
-        packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
+    packets.reserve(shreds.len().saturating_mul(
+        shred_receiver_addresses.len()
+            + bam_shred_receiver_addresses.len()
+            + multicast_receiver_address.iter().len(),
+    ));
+    for addr in get_additional_external_shred_receiver_addresses(
+        shredstream_receiver_address,
+        shred_receiver_addresses,
+        bam_shred_receiver_addresses,
+        multicast_receiver_address,
+    ) {
+        packets.extend(shreds.iter().map(|shred| (shred.payload(), addr)));
     }
     let (packets, external_packets) = packets.split_at(external_packets_start);
 
@@ -786,6 +824,34 @@ pub mod test {
     }
 
     #[test]
+    fn test_bam_shred_receivers_are_added_and_deduped_for_leader_broadcast() {
+        let shredstream_addr = "127.0.0.1:10".parse().unwrap();
+        let regular_addr_1 = "127.0.0.1:11".parse().unwrap();
+        let regular_addr_2 = "127.0.0.1:12".parse().unwrap();
+        let bam_addr = "127.0.0.1:13".parse().unwrap();
+        let multicast_addr = "127.0.0.1:14".parse().unwrap();
+
+        let shred_receiver_addresses: ShredReceiverAddresses =
+            [regular_addr_1, regular_addr_2].into_iter().collect();
+        let bam_shred_receiver_addresses: ShredReceiverAddresses =
+            [regular_addr_2, bam_addr, shredstream_addr]
+                .into_iter()
+                .collect();
+
+        let additional_external_addrs = get_additional_external_shred_receiver_addresses(
+            &Some(shredstream_addr),
+            &shred_receiver_addresses,
+            &bam_shred_receiver_addresses,
+            &Some(multicast_addr),
+        );
+
+        assert_eq!(
+            additional_external_addrs.as_slice(),
+            &[regular_addr_1, regular_addr_2, bam_addr, multicast_addr]
+        );
+    }
+
+    #[test]
     fn test_duplicate_retransmit_signal() {
         // Setup
         let ledger_path = get_tmp_ledger_path_auto_delete!();
@@ -881,6 +947,7 @@ pub mod test {
             quic_endpoint_sender,
             StandardBroadcastRun::new(0),
             None,
+            Arc::default(),
             Arc::default(),
             Arc::default(),
             Arc::default(),
