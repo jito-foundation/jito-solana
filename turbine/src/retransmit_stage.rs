@@ -23,7 +23,7 @@ use {
         shred::{self, ShredFlags, ShredId, ShredType},
     },
     solana_measure::measure::Measure,
-    solana_net_utils::SocketAddrSpace,
+    solana_net_utils::{SocketAddrSpace, bind_to_unspecified},
     solana_perf::deduper::Deduper,
     solana_pubkey::Pubkey,
     solana_rpc::{
@@ -294,6 +294,7 @@ fn retransmit(
     cluster_info: &ClusterInfo,
     retransmit_receiver: &Receiver<Vec<shred::Payload>>,
     retransmit_sockets: &[UdpSocket],
+    external_sender_socket: &UdpSocket,
     xdp_sender: Option<&XdpSender>,
     stats: &mut RetransmitStats,
     cluster_nodes_cache: &ClusterNodesCache<RetransmitStage>,
@@ -306,6 +307,7 @@ fn retransmit(
     votor_event_sender: &Sender<VotorEvent>,
     migration_status: &MigrationStatus,
     shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+    bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
 ) -> Result<(), ()> {
     // Try to receive shreds from the channel without blocking. If the channel
     // is empty precompute turbine trees speculatively. If no cache updates are
@@ -361,12 +363,20 @@ fn retransmit(
     );
     epoch_cache_update.stop();
     stats.epoch_cache_update += epoch_cache_update.as_us();
-    // Lookup slot leader and cluster nodes for each slot.
-    let cache: HashMap<Slot, _> = shred_buf
+    let shred_slots: HashSet<Slot> = shred_buf
         .iter()
         .flatten()
         .filter_map(|shred| shred::layout::get_slot(shred))
-        .collect::<HashSet<Slot>>()
+        .collect();
+    let bam_forward_slots = get_bam_forward_slots(
+        &shred_slots,
+        leader_schedule_cache,
+        &cluster_info.id(),
+        &working_bank,
+    );
+
+    // Lookup slot leader and cluster nodes for each slot.
+    let cache: HashMap<Slot, _> = shred_slots
         .into_iter()
         .filter_map(|slot: Slot| {
             max_slots.retransmit.fetch_max(slot, Ordering::Relaxed);
@@ -393,6 +403,7 @@ fn retransmit(
         stats
     };
     let shred_receiver_addresses_local = shred_receiver_addresses.load();
+    let bam_shred_receiver_addresses_local = bam_shred_receiver_addresses.load();
     let retransmit_shred = |shred, socket, stats| {
         retransmit_shred(
             shred,
@@ -402,8 +413,11 @@ fn retransmit(
             addr_cache,
             socket_addr_space,
             socket,
+            external_sender_socket,
             stats,
             &shred_receiver_addresses_local,
+            &bam_forward_slots,
+            &bam_shred_receiver_addresses_local,
         )
     };
 
@@ -456,6 +470,46 @@ fn retransmit(
     Ok(())
 }
 
+fn should_forward_to_bam_for_slot(
+    slot: Slot,
+    leader_schedule_cache: &LeaderScheduleCache,
+    my_pubkey: &Pubkey,
+    working_bank: &Bank,
+) -> bool {
+    should_forward_to_bam_for_slot_with_leader_lookup(slot, my_pubkey, |slot| {
+        leader_schedule_cache
+            .slot_leader_at(slot, Some(working_bank))
+            .map(|leader| leader.id)
+    })
+}
+
+fn should_forward_to_bam_for_slot_with_leader_lookup(
+    slot: Slot,
+    my_pubkey: &Pubkey,
+    mut leader_at_slot: impl FnMut(Slot) -> Option<Pubkey>,
+) -> bool {
+    (0..3).any(|offset| {
+        slot.checked_add(offset)
+            .and_then(&mut leader_at_slot)
+            .is_some_and(|leader| leader == *my_pubkey)
+    })
+}
+
+fn get_bam_forward_slots(
+    shred_slots: &HashSet<Slot>,
+    leader_schedule_cache: &LeaderScheduleCache,
+    my_pubkey: &Pubkey,
+    working_bank: &Bank,
+) -> HashSet<Slot> {
+    shred_slots
+        .iter()
+        .copied()
+        .filter(|slot| {
+            should_forward_to_bam_for_slot(*slot, leader_schedule_cache, my_pubkey, working_bank)
+        })
+        .collect()
+}
+
 // Retransmit a single shred to all downstream nodes
 #[allow(clippy::too_many_arguments)]
 fn retransmit_shred(
@@ -466,8 +520,11 @@ fn retransmit_shred(
     addr_cache: &AddrCache,
     socket_addr_space: &SocketAddrSpace,
     socket: RetransmitSocket<'_>,
+    external_sender_socket: &UdpSocket,
     stats: &RetransmitStats,
     shred_receiver_addresses: &ShredReceiverAddresses,
+    bam_forward_slots: &HashSet<Slot>,
+    bam_shred_receiver_addresses: &ShredReceiverAddresses,
 ) -> Option<RetransmitShredOutput> {
     let key = shred::layout::get_shred_id(shred.as_ref())?;
     if key.slot() < root_bank.slot()
@@ -487,16 +544,39 @@ fn retransmit_shred(
         .map(|flags| flags.contains(ShredFlags::LAST_SHRED_IN_SLOT))
         .unwrap_or_default();
     let mut retransmit_time = Measure::start("retransmit_to");
-    let num_addrs = addrs.len();
+    let include_bam_shred_receivers = bam_forward_slots.contains(&key.slot());
+    let mut turbine_addrs = Vec::with_capacity(addrs.len());
+    for addr in addrs.iter() {
+        if !turbine_addrs.contains(addr) {
+            turbine_addrs.push(*addr);
+        }
+    }
+    let mut external_addrs = Vec::with_capacity(shred_receiver_addresses.len().saturating_add(
+        if include_bam_shred_receivers {
+            bam_shred_receiver_addresses.len()
+        } else {
+            0
+        },
+    ));
+    for addr in shred_receiver_addresses.iter() {
+        if !turbine_addrs.contains(addr) && !external_addrs.contains(addr) {
+            external_addrs.push(*addr);
+        }
+    }
+    if include_bam_shred_receivers {
+        for addr in bam_shred_receiver_addresses.iter() {
+            if !turbine_addrs.contains(addr) && !external_addrs.contains(addr) {
+                external_addrs.push(*addr);
+            }
+        }
+    }
+    let num_addrs = turbine_addrs.len();
     let num_nodes = match socket {
         RetransmitSocket::Xdp(sender) => {
             let mut sent = num_addrs;
-            let mut send_addrs =
-                Vec::with_capacity(num_addrs.saturating_add(shred_receiver_addresses.len()));
-            send_addrs.extend(addrs.iter().copied());
-            send_addrs.extend(shred_receiver_addresses.iter().copied());
-            if !send_addrs.is_empty()
-                && let Err(e) = sender.try_send(key.index() as usize, send_addrs, shred.bytes)
+            if !turbine_addrs.is_empty()
+                && let Err(e) =
+                    sender.try_send(key.index() as usize, turbine_addrs, shred.bytes.clone())
             {
                 // External shred receivers are intentionally not included in retransmit stats.
                 log::warn!("xdp channel full: {e:?}");
@@ -509,14 +589,10 @@ fn retransmit_shred(
         }
         RetransmitSocket::Socket(_) | RetransmitSocket::Multihomed { .. } => {
             let socket = socket.get_socket();
-            let mut send_addrs =
-                Vec::with_capacity(num_addrs.saturating_add(shred_receiver_addresses.len()));
-            send_addrs.extend(addrs.iter().copied());
-            send_addrs.extend(shred_receiver_addresses.iter().copied());
-            if send_addrs.is_empty() {
+            if turbine_addrs.is_empty() {
                 0
             } else {
-                match multi_target_send(socket, shred, &send_addrs) {
+                match multi_target_send(socket, &shred, &turbine_addrs) {
                     Ok(()) => num_addrs,
                     Err(SendPktsError::IoError(ioerr, num_failed)) => {
                         let num_failed = num_failed.min(num_addrs);
@@ -530,6 +606,16 @@ fn retransmit_shred(
             }
         }
     };
+    if !external_addrs.is_empty()
+        && let Err(SendPktsError::IoError(ioerr, num_failed)) =
+            multi_target_send(external_sender_socket, &shred, &external_addrs)
+    {
+        warn!(
+            "retransmit_to external multi_target_send error: {ioerr:?}, {num_failed}/{} packets \
+             failed",
+            external_addrs.len()
+        );
+    }
     retransmit_time.stop();
     stats
         .num_addrs_failed
@@ -665,6 +751,7 @@ impl RetransmitStage {
         xdp_sender: Option<XdpSender>,
         votor_event_sender: Sender<VotorEvent>,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     ) -> Self {
         let migration_status = bank_forks.read().unwrap().migration_status();
         let cluster_nodes_cache = ClusterNodesCache::<RetransmitStage>::new(
@@ -688,6 +775,10 @@ impl RetransmitStage {
         let retransmit_thread_handle = Builder::new()
             .name("solRetransmittr".to_string())
             .spawn({
+                let external_sender_socket = Arc::new(
+                    bind_to_unspecified()
+                        .expect("bind retransmit external_sender_socket 0.0.0.0:0"),
+                );
                 move || {
                     let mut shred_buf = Vec::with_capacity(RETRANSMIT_BATCH_SIZE);
                     while retransmit(
@@ -697,6 +788,7 @@ impl RetransmitStage {
                         &cluster_info,
                         &retransmit_receiver,
                         &retransmit_sockets,
+                        &external_sender_socket,
                         xdp_sender.as_ref(),
                         &mut stats,
                         &cluster_nodes_cache,
@@ -709,6 +801,7 @@ impl RetransmitStage {
                         &votor_event_sender,
                         &migration_status,
                         &shred_receiver_addresses,
+                        &bam_shred_receiver_addresses,
                     )
                     .is_ok()
                     {}
@@ -956,6 +1049,51 @@ mod tests {
             .map(Keypair::try_from)
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn test_should_forward_to_bam_for_slot_near_leader_window() {
+        let my_pubkey = Pubkey::new_unique();
+        let other_pubkey = Pubkey::new_unique();
+        let leader_window = 10..=13;
+        let leader_at_slot = |slot| {
+            Some(if leader_window.contains(&slot) {
+                my_pubkey
+            } else {
+                other_pubkey
+            })
+        };
+
+        assert!(!should_forward_to_bam_for_slot_with_leader_lookup(
+            7,
+            &my_pubkey,
+            leader_at_slot
+        ));
+        assert!(should_forward_to_bam_for_slot_with_leader_lookup(
+            8,
+            &my_pubkey,
+            leader_at_slot
+        ));
+        assert!(should_forward_to_bam_for_slot_with_leader_lookup(
+            9,
+            &my_pubkey,
+            leader_at_slot
+        ));
+        assert!(should_forward_to_bam_for_slot_with_leader_lookup(
+            10,
+            &my_pubkey,
+            leader_at_slot
+        ));
+        assert!(should_forward_to_bam_for_slot_with_leader_lookup(
+            13,
+            &my_pubkey,
+            leader_at_slot
+        ));
+        assert!(!should_forward_to_bam_for_slot_with_leader_lookup(
+            14,
+            &my_pubkey,
+            leader_at_slot
+        ));
     }
 
     #[test]
