@@ -122,6 +122,28 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
         }
     }
 
+    /// Retries a batch - inserts all transactions back into their map entries
+    /// and requeues the batch id.
+    fn retry_batch(
+        &mut self,
+        batch_priority_id: TransactionPriorityId,
+        transactions: impl Iterator<Item = (TransactionId, Tx)>,
+        immediately_retryable: bool,
+    ) {
+        for (transaction_id, transaction) in transactions {
+            let transaction_state = self
+                .get_mut_transaction_state(transaction_id)
+                .expect("transaction must exist");
+            transaction_state.retry_transaction(transaction);
+        }
+
+        if immediately_retryable {
+            self.push_ids_into_queue(std::iter::once(batch_priority_id));
+        } else {
+            self.hold_transaction(batch_priority_id);
+        }
+    }
+
     /// Pushes transaction ids into the priority queue. If the queue if full,
     /// the lowest priority transactions will be dropped (removed from the
     /// queue and map) **after** all ids have been pushed.

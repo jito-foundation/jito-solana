@@ -702,6 +702,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
 
         self.pull_into_prio_graph(container);
         self.send_to_workers(container, &mut num_scheduled);
+        container.flush_held_transactions();
 
         // TODO(seg): Double check the zeros here
         Ok(SchedulingSummary {
@@ -729,17 +730,22 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
         self.maybe_bank_boundary_actions(decision, container);
 
         let mut num_transactions = 0;
+        let mut num_retryable = 0;
         let now = Instant::now();
         while let Ok(result) = self.finished_consume_work_receiver.try_recv() {
             let FinishedConsumeWork {
-                work, extra_info, ..
+                work,
+                retryable_indexes,
+                extra_info,
             } = result;
             num_transactions += work.ids.len();
+            num_retryable += retryable_indexes.len();
             let batch_id = work.batch_id;
             let revert_on_error = work.revert_on_error;
-            self.recycle_work_object(work);
+            let mut work = Some(work);
 
             let Some(inflight_batch_info) = self.inflight_batch_info.remove(&batch_id) else {
+                self.recycle_work_object(work.take().unwrap());
                 continue;
             };
 
@@ -747,6 +753,47 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 now.duration_since(inflight_batch_info.schedule_time)
                     .as_micros() as u64,
             );
+
+            let retry_account_in_use = !retryable_indexes.is_empty()
+                && extra_info.as_ref().is_some_and(|info| {
+                    info.processed_results.iter().any(|result| {
+                        matches!(
+                            result,
+                            TransactionResult::NotCommitted(NotCommittedReason::Error(
+                                TransactionError::AccountInUse
+                            ))
+                        )
+                    })
+                });
+
+            if retry_account_in_use {
+                if Some(inflight_batch_info.slot) == self.slot {
+                    for priority_id in &inflight_batch_info.batch_priority_ids {
+                        self.prio_graph.unblock(priority_id);
+                    }
+                    // AccountInUse is a transient scheduling conflict. Keep the
+                    // atomic batch local and defer it until the next scheduling
+                    // pass so it cannot spin in the current pass.
+                    let ConsumeWork {
+                        ids, transactions, ..
+                    } = work.take().unwrap();
+                    container.retry_batch(
+                        inflight_batch_info.batch_priority_ids[0],
+                        ids.into_iter().zip(transactions),
+                        false,
+                    );
+                } else {
+                    for priority_id in &inflight_batch_info.batch_priority_ids {
+                        self.send_no_leader_slot_bundle_result(priority_to_seq_id(
+                            priority_id.priority,
+                        ));
+                        container.remove_by_id(priority_id.id);
+                    }
+                    self.recycle_work_object(work.take().unwrap());
+                }
+                continue;
+            }
+
             let mut processed_results = extra_info.map(|info| info.processed_results.into_iter());
 
             // Should never not be 1; but just in case
@@ -791,9 +838,11 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 // Remove the transaction from the container
                 container.remove_by_id(priority_id.id);
             }
+
+            self.recycle_work_object(work.take().unwrap());
         }
 
-        Ok((num_transactions, 0))
+        Ok((num_transactions, num_retryable))
     }
 
     fn scheduling_common_mut(&mut self) -> &mut SchedulingCommon<Tx> {
@@ -807,6 +856,7 @@ mod tests {
         crate::{
             bam_dependencies::BamOutboundMessage,
             banking_stage::{
+                consumer::RetryableIndex,
                 decision_maker::BufferedPacketsDecision,
                 scheduler_messages::{
                     ConsumeWork, FinishedConsumeWork, MaxAge, NotCommittedReason, TransactionResult,
@@ -838,6 +888,7 @@ mod tests {
         solana_signer::Signer,
         solana_system_interface::instruction::transfer_many,
         solana_transaction::{Transaction, sanitized::SanitizedTransaction},
+        solana_transaction_error::TransactionError,
         std::{
             borrow::Borrow,
             sync::{Arc, RwLock},
@@ -966,6 +1017,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result.num_scheduled, 0);
+    }
+
+    #[test]
+    fn test_receive_completed_retries_account_in_use_locally() {
+        let (bank_forks, _) = test_bank_forks();
+        let TestScheduler {
+            mut scheduler,
+            consume_work_receivers,
+            finished_consume_work_sender,
+            response_receiver,
+        } = create_test_scheduler(1, &bank_forks);
+        scheduler.extra_checks_enabled = false;
+
+        let keypair = Keypair::new();
+        let bank = bank_forks.read().unwrap().working_bank();
+        let decision = BufferedPacketsDecision::Consume(bank.clone());
+        let mut container = create_container([(
+            &keypair,
+            vec![Pubkey::new_unique()],
+            1000,
+            seq_id_to_priority(0),
+            u64::MAX,
+        )]);
+
+        scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+
+        let result = scheduler
+            .schedule(
+                &mut container,
+                0,
+                true,
+                |_, _| {},
+                |_| PreLockFilterAction::AttemptToSchedule,
+            )
+            .unwrap();
+        assert_eq!(result.num_scheduled, 1);
+        let work = consume_work_receivers[0].try_recv().unwrap();
+
+        finished_consume_work_sender
+            .send(FinishedConsumeWork {
+                work,
+                retryable_indexes: vec![RetryableIndex::new(0, true)],
+                extra_info: Some(
+                    crate::banking_stage::scheduler_messages::FinishedConsumeWorkExtraInfo {
+                        processed_results: vec![TransactionResult::NotCommitted(
+                            NotCommittedReason::Error(TransactionError::AccountInUse),
+                        )],
+                    },
+                ),
+            })
+            .unwrap();
+
+        let (num_transactions, num_retryable) = scheduler
+            .receive_completed(&mut container, &decision)
+            .unwrap();
+        assert_eq!(num_transactions, 1);
+        assert_eq!(num_retryable, 1);
+        assert!(response_receiver.try_recv().is_err());
+
+        let result = scheduler
+            .schedule(
+                &mut container,
+                0,
+                true,
+                |_, _| {},
+                |_| PreLockFilterAction::AttemptToSchedule,
+            )
+            .unwrap();
+        assert_eq!(result.num_scheduled, 0);
+
+        let result = scheduler
+            .schedule(
+                &mut container,
+                0,
+                true,
+                |_, _| {},
+                |_| PreLockFilterAction::AttemptToSchedule,
+            )
+            .unwrap();
+        assert_eq!(result.num_scheduled, 1);
+        let retried_work = consume_work_receivers[0].try_recv().unwrap();
+        assert_eq!(retried_work.ids.len(), 1);
     }
 
     #[test]
