@@ -8,6 +8,7 @@ use {
     clap::{Arg, Command, crate_description, crate_name},
     crossbeam_channel::{Receiver, unbounded},
     log::*,
+    smallvec::SmallVec,
     solana_core::{
         bam_dependencies::{BamConnectionState, BamDependencies},
         banking_stage::{
@@ -126,6 +127,7 @@ fn main() {
         bank_forks: bank_forks.clone(),
         bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::new_unique())),
         bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
+        bam_shred_receiver_addresses: Arc::new(ArcSwap::from_pointee(SmallVec::default())),
     };
 
     let keypairs = (0..matches.value_of_t::<usize>("num_keypairs").unwrap())

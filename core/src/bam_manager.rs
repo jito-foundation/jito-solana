@@ -32,6 +32,7 @@ use {
     solana_runtime::bank::Bank,
     solana_signer::Signer,
     solana_tls_utils::NotifyKeyUpdate,
+    solana_turbine::{MAX_SHRED_RECEIVER_ADDRESSES, ShredReceiverAddresses},
     solana_version::ClientId,
 };
 
@@ -155,6 +156,7 @@ impl BamManager {
                         dependencies
                             .bam_enabled
                             .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                        Self::clear_bam_shred_receiver_addresses(&dependencies);
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
                     };
@@ -175,6 +177,7 @@ impl BamManager {
                             dependencies
                                 .bam_enabled
                                 .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                            Self::clear_bam_shred_receiver_addresses(&dependencies);
                             std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                             continue;
                         }
@@ -194,6 +197,7 @@ impl BamManager {
                         dependencies
                             .bam_enabled
                             .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                        Self::clear_bam_shred_receiver_addresses(&dependencies);
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
                     }
@@ -201,6 +205,7 @@ impl BamManager {
                     info!("BAM connection established");
                     if let Some(builder_config) = connection.get_latest_config() {
                         Self::update_tpu_config(Some(&builder_config), &dependencies);
+                        Self::update_shred_socks_config(Some(&builder_config), &dependencies);
                         Self::update_block_engine_key_and_commission(
                             Some(&builder_config),
                             &dependencies.block_builder_fee_info,
@@ -221,6 +226,7 @@ impl BamManager {
                 dependencies
                     .bam_enabled
                     .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                Self::clear_bam_shred_receiver_addresses(&dependencies);
                 warn!("BAM connection unhealthy");
                 continue;
             }
@@ -244,6 +250,7 @@ impl BamManager {
                 dependencies
                     .bam_enabled
                     .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                Self::clear_bam_shred_receiver_addresses(&dependencies);
                 if let Some(new_url) = configured_bam_url.as_deref() {
                     info!("BAM URL changed, connecting to new URL: {new_url}");
                 } else {
@@ -256,6 +263,7 @@ impl BamManager {
             if let Some(builder_config) = connection.get_latest_config() {
                 if Some(&builder_config) != cached_builder_config.as_ref() {
                     Self::update_tpu_config(Some(&builder_config), &dependencies);
+                    Self::update_shred_socks_config(Some(&builder_config), &dependencies);
                     Self::update_block_engine_key_and_commission(
                         Some(&builder_config),
                         &dependencies.block_builder_fee_info,
@@ -315,6 +323,7 @@ impl BamManager {
         dependencies
             .bam_enabled
             .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+        Self::clear_bam_shred_receiver_addresses(dependencies);
 
         // When we are still holding a live connection, disconnect first and wait in the
         // disconnected path before starting a new BAM auth handshake.
@@ -359,9 +368,10 @@ impl BamManager {
     fn get_sockaddr(info: Option<&Socket>) -> Option<SocketAddr> {
         let info = info?;
         let Socket { ip, port } = info;
+        let port = u16::try_from(*port).ok().filter(|port| *port != 0)?;
         Some(SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::from_str(ip).ok()?,
-            *port as u16,
+            port,
         )))
     }
 
@@ -380,6 +390,50 @@ impl BamManager {
         dependencies
             .bam_tpu_info
             .store(Arc::new(Some((tpu, tpu_fwd))));
+    }
+
+    fn clear_bam_shred_receiver_addresses(dependencies: &BamDependencies) {
+        dependencies
+            .bam_shred_receiver_addresses
+            .store(Arc::new(ShredReceiverAddresses::new()));
+    }
+
+    fn update_shred_socks_config(config: Option<&ConfigResponse>, dependencies: &BamDependencies) {
+        let Some(bam_config) = config.and_then(|c| c.bam_config.as_ref()) else {
+            Self::clear_bam_shred_receiver_addresses(dependencies);
+            return;
+        };
+
+        let mut shred_receiver_addresses = ShredReceiverAddresses::new();
+        for socket in &bam_config.shred_socks {
+            let Some(addr) = Self::get_sockaddr(Some(socket)) else {
+                warn!(
+                    "Dropping invalid BAM shred receiver socket {}:{}",
+                    socket.ip, socket.port
+                );
+                continue;
+            };
+            if shred_receiver_addresses.contains(&addr) {
+                continue;
+            }
+            if shred_receiver_addresses.len() >= MAX_SHRED_RECEIVER_ADDRESSES {
+                warn!(
+                    "Dropping excess BAM shred receiver socket {}:{}; maximum is {}",
+                    socket.ip, socket.port, MAX_SHRED_RECEIVER_ADDRESSES
+                );
+                continue;
+            }
+            shred_receiver_addresses.push(addr);
+        }
+
+        info!(
+            "Setting {} BAM shred receiver address(es) from BAM config: {:?}",
+            shred_receiver_addresses.len(),
+            shred_receiver_addresses
+        );
+        dependencies
+            .bam_shred_receiver_addresses
+            .store(Arc::new(shred_receiver_addresses));
     }
 
     fn update_block_engine_key_and_commission(

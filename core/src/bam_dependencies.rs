@@ -11,6 +11,7 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_pubkey::Pubkey,
     solana_runtime::bank_forks::BankForks,
+    solana_turbine::ShredReceiverAddresses,
     std::sync::RwLock,
 };
 
@@ -55,6 +56,7 @@ pub struct BamDependencies {
     pub bank_forks: Arc<RwLock<BankForks>>,
     pub bam_node_pubkey: Arc<ArcSwap<Pubkey>>,
     pub bam_tpu_info: Arc<ArcSwap<Option<(std::net::SocketAddr, std::net::SocketAddr)>>>,
+    pub bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }
 
 pub fn v0_to_versioned_proto(v0: SchedulerMessageV0) -> SchedulerMessage {
