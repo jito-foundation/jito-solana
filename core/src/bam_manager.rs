@@ -68,6 +68,12 @@ pub struct BamManager {
 }
 
 impl BamManager {
+    /// Client id advertised in gossip when BAM is not connected. Also used as the
+    /// default before the manager's run loop first touches `ClusterInfo`.
+    pub(crate) const FALLBACK_CLIENT_ID: ClientId = ClientId::JitoLabs;
+    /// Client id advertised in gossip while connected to BAM.
+    pub(crate) const BAM_CLIENT_ID: ClientId = ClientId::JitoBam;
+
     pub fn new(
         exit: Arc<AtomicBool>,
         bam_url: Arc<ArcSwap<Option<String>>>,
@@ -122,9 +128,24 @@ impl BamManager {
         let mut cached_builder_config = None;
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
+        let identity_changed = Arc::new(AtomicBool::new(false));
+        let new_identity = Arc::new(ArcSwap::from_pointee(None));
+
+        let identity_updater = Arc::new(BamConnectionIdentityUpdater {
+            bam_url: bam_url.clone(),
+            new_identity: new_identity.clone(),
+            identity_changed_force_reconnect: identity_changed.clone(),
+        }) as Arc<dyn NotifyKeyUpdate + Sync + Send>;
+
+        identity_notifiers
+            .write()
+            .unwrap()
+            .add(KeyUpdaterType::BamConnection, identity_updater);
+        info!("BAM Manager: Added BAM connection key updater");
+
         let fallback_client_id = ClientId::JitoLabs;
         let mut current_client_id = fallback_client_id;
-        let bam_client_id = ClientId::AgaveBam;
+        let bam_client_id = Self::BAM_CLIENT_ID;
 
         while !exit.load(Ordering::Relaxed) {
             let connection = match current_connection.take() {
@@ -496,5 +517,65 @@ impl BamManager {
 
     pub fn join(self) -> std::thread::Result<()> {
         self.thread.join()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
+        solana_keypair::Keypair,
+        solana_net_utils::SocketAddrSpace,
+        solana_signer::Signer,
+        solana_time_utils::timestamp,
+    };
+
+    fn new_test_cluster_info() -> ClusterInfo {
+        let keypair = Arc::new(Keypair::new());
+        let contact_info = ContactInfo::new_localhost(&keypair.pubkey(), timestamp());
+        ClusterInfo::new(contact_info, keypair, SocketAddrSpace::Unspecified)
+    }
+
+    #[test]
+    fn fallback_and_bam_client_ids_match_spec() {
+        // Locks in the gossip identities requested in jito-foundation/jito-solana#1357:
+        // default/disconnected -> JitoLabs, connected to BAM -> JitoBam.
+        assert_eq!(BamManager::FALLBACK_CLIENT_ID, ClientId::JitoLabs);
+        assert_eq!(BamManager::BAM_CLIENT_ID, ClientId::JitoBam);
+    }
+
+    #[test]
+    fn cluster_info_defaults_to_jito_labs() {
+        // A freshly-constructed ClusterInfo (i.e. a validator that has not yet
+        // started BamManager) must already advertise as JitoLabs, not Agave.
+        let cluster_info = new_test_cluster_info();
+        assert_eq!(cluster_info.get_client_id(), ClientId::JitoLabs);
+    }
+
+    #[test]
+    fn set_client_id_transitions_disconnected_then_connected() {
+        // Walk the client id through the same transitions the run loop performs:
+        // start (JitoLabs) -> connected (JitoBam) -> disconnected (JitoLabs).
+        let cluster_info = new_test_cluster_info();
+        assert_eq!(cluster_info.get_client_id(), ClientId::JitoLabs);
+
+        BamManager::set_client_id(&cluster_info, BamManager::BAM_CLIENT_ID);
+        assert_eq!(cluster_info.get_client_id(), ClientId::JitoBam);
+
+        BamManager::set_client_id(&cluster_info, BamManager::FALLBACK_CLIENT_ID);
+        assert_eq!(cluster_info.get_client_id(), ClientId::JitoLabs);
+    }
+
+    #[test]
+    fn set_client_id_is_noop_when_already_set() {
+        // The wrapper skips the write (and the resulting refresh) when the
+        // cluster info is already reporting the requested client id.
+        let cluster_info = new_test_cluster_info();
+        BamManager::set_client_id(&cluster_info, BamManager::BAM_CLIENT_ID);
+        assert_eq!(cluster_info.get_client_id(), ClientId::JitoBam);
+
+        BamManager::set_client_id(&cluster_info, BamManager::BAM_CLIENT_ID);
+        assert_eq!(cluster_info.get_client_id(), ClientId::JitoBam);
     }
 }
