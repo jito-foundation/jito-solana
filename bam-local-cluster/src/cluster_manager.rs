@@ -454,7 +454,8 @@ impl BamLocalCluster {
             let poh_core = match std::thread::available_parallelism() {
                 Ok(c) => {
                     let core_count = c.get();
-                    core_count.saturating_sub((i % core_count).saturating_add(1))
+                    let wrapped_index = i.checked_rem(core_count).unwrap_or_default();
+                    core_count.saturating_sub(wrapped_index.saturating_add(1))
                 }
                 Err(_) => 0,
             };
