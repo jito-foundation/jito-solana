@@ -1068,11 +1068,7 @@ impl Validator {
 
         let (replay_vote_sender, replay_vote_receiver) = unbounded();
 
-        let prioritization_fee_cache = if config.rpc_config.full_api {
-            Some(Arc::new(PrioritizationFeeCache::default()))
-        } else {
-            None
-        };
+        let prioritization_fee_cache = Some(Arc::new(PrioritizationFeeCache::default()));
 
         let leader_schedule_cache = Arc::new(leader_schedule_cache);
         let (poh_recorder, entry_receiver) = {
@@ -3060,6 +3056,57 @@ mod tests {
             None,
         )
         .expect("assume successful validator start");
+        assert_eq!(
+            *start_progress.read().unwrap(),
+            ValidatorStartProgress::Running
+        );
+        validator.close();
+        remove_dir_all(validator_ledger_path).unwrap();
+    }
+
+    #[test]
+    fn validator_starts_without_full_rpc_api() {
+        agave_logger::setup();
+        let leader_keypair = Keypair::new();
+        let leader_node = Node::new_localhost_with_pubkey(&leader_keypair.pubkey());
+
+        let validator_keypair = Keypair::new();
+        let validator_node = Node::new_localhost_with_pubkey(&validator_keypair.pubkey());
+        let genesis_config =
+            create_genesis_config_with_leader(10_000, &leader_keypair.pubkey(), 1000)
+                .genesis_config;
+        let (validator_ledger_path, _blockhash) = create_new_tmp_ledger!(&genesis_config);
+
+        let voting_keypair = Arc::new(Keypair::new());
+        let config = ValidatorConfig {
+            rpc_addrs: Some((
+                validator_node.info.rpc().unwrap(),
+                validator_node.info.rpc_pubsub().unwrap(),
+            )),
+            rpc_config: JsonRpcConfig {
+                full_api: false,
+                ..JsonRpcConfig::default_for_test()
+            },
+            ..ValidatorConfig::default_for_test()
+        };
+        let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
+        let validator = Validator::new(
+            validator_node,
+            Arc::new(validator_keypair),
+            &validator_ledger_path,
+            &voting_keypair.pubkey(),
+            Arc::new(RwLock::new(vec![voting_keypair])),
+            vec![leader_node.info],
+            &config,
+            true, // should_check_duplicate_instance
+            None, // rpc_to_plugin_manager_receiver
+            start_progress.clone(),
+            SocketAddrSpace::Unspecified,
+            ValidatorTpuConfig::new_for_tests(),
+            Arc::new(RwLock::new(None)),
+            None,
+        )
+        .expect("assume successful validator start without full rpc api");
         assert_eq!(
             *start_progress.read().unwrap(),
             ValidatorStartProgress::Running
