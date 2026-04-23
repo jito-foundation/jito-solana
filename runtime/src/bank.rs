@@ -3631,7 +3631,7 @@ impl Bank {
                         enable_return_data_recording: true,
                         enable_transaction_balance_recording: true,
                     },
-                    drop_on_failure: true,
+                    drop_on_failure: false,
                     all_or_nothing: true,
                 },
                 &mut program_cache_for_tx_batch,
