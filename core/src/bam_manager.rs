@@ -124,7 +124,7 @@ impl BamManager {
 
         let fallback_client_id = ClientId::JitoLabs;
         let mut current_client_id = fallback_client_id;
-        let bam_client_id = ClientId::AgaveBam;
+        let bam_client_id = ClientId::JitoBam;
 
         while !exit.load(Ordering::Relaxed) {
             let connection = match current_connection.take() {
