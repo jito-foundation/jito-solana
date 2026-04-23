@@ -450,10 +450,12 @@ impl BamLocalCluster {
                 .dynamic_port_range_start
                 .saturating_add(i.saturating_mul(1000) as u16);
             let dynamic_port_range_end = dynamic_port_range_start.saturating_add(1000);
+            // Assign PoH cores from max down to 0, then wrap back to max.
             let poh_core = match std::thread::available_parallelism() {
-                Ok(c) => i
-                    .checked_rem(c.get())
-                    .expect("available_parallelism returns a non-zero CPU count"),
+                Ok(c) => {
+                    let core_count = c.get();
+                    core_count.saturating_sub(i.strict_rem(core_count).saturating_add(1))
+                }
                 Err(_) => 0,
             };
 
