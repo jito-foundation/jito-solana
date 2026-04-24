@@ -555,10 +555,23 @@ fn retransmit_shred(
                         0
                     }),
             );
-            send_addrs.extend(addrs.iter().copied());
-            send_addrs.extend(shred_receiver_addresses.iter().copied());
+            let mut seen_addrs = HashSet::with_capacity(send_addrs.capacity());
+            for addr in addrs.iter() {
+                if seen_addrs.insert(*addr) {
+                    send_addrs.push(*addr);
+                }
+            }
+            for addr in shred_receiver_addresses.iter() {
+                if seen_addrs.insert(*addr) {
+                    send_addrs.push(*addr);
+                }
+            }
             if include_bam_shred_receivers {
-                send_addrs.extend(bam_shred_receiver_addresses.iter().copied());
+                for addr in bam_shred_receiver_addresses.iter() {
+                    if seen_addrs.insert(*addr) {
+                        send_addrs.push(*addr);
+                    }
+                }
             }
             if !send_addrs.is_empty()
                 && let Err(e) = sender.try_send(key.index() as usize, send_addrs, shred.bytes)
@@ -584,10 +597,23 @@ fn retransmit_shred(
                         0
                     }),
             );
-            send_addrs.extend(addrs.iter().copied());
-            send_addrs.extend(shred_receiver_addresses.iter().copied());
+            let mut seen_addrs = HashSet::with_capacity(send_addrs.capacity());
+            for addr in addrs.iter() {
+                if seen_addrs.insert(*addr) {
+                    send_addrs.push(*addr);
+                }
+            }
+            for addr in shred_receiver_addresses.iter() {
+                if seen_addrs.insert(*addr) {
+                    send_addrs.push(*addr);
+                }
+            }
             if include_bam_shred_receivers {
-                send_addrs.extend(bam_shred_receiver_addresses.iter().copied());
+                for addr in bam_shred_receiver_addresses.iter() {
+                    if seen_addrs.insert(*addr) {
+                        send_addrs.push(*addr);
+                    }
+                }
             }
             if send_addrs.is_empty() {
                 0
