@@ -368,10 +368,9 @@ impl BamManager {
     fn get_sockaddr(info: Option<&Socket>) -> Option<SocketAddr> {
         let info = info?;
         let Socket { ip, port } = info;
-        let port = u16::try_from(*port).ok().filter(|port| *port != 0)?;
         Some(SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::from_str(ip).ok()?,
-            port,
+            *port as u16,
         )))
     }
 
