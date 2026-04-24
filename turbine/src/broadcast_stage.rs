@@ -33,7 +33,7 @@ use {
     solana_streamer::sendmmsg::{SendPktsError, batch_send},
     solana_time_utils::{AtomicInterval, timestamp},
     std::{
-        collections::{HashMap, HashSet},
+        collections::HashSet,
         net::{SocketAddr, UdpSocket},
         sync::{
             Arc, Mutex, RwLock,
@@ -538,26 +538,22 @@ fn get_additional_external_shred_receiver_addresses(
     bam_shred_receiver_addresses: &ShredReceiverAddresses,
     multicast_receiver_address: &Option<SocketAddr>,
 ) -> ShredReceiverAddresses {
-    let mut seen = HashMap::new();
-    if let Some(addr) = shredstream_receiver_address {
-        seen.insert(*addr, ());
-    }
-
+    let shredstream_receiver_address = shredstream_receiver_address.as_ref();
     let mut additional_external_addrs = ShredReceiverAddresses::new();
     for addr in shred_receiver_addresses {
-        if seen.insert(*addr, ()).is_none() {
+        if Some(addr) != shredstream_receiver_address && !additional_external_addrs.contains(addr) {
             additional_external_addrs.push(*addr);
         }
     }
     for addr in bam_shred_receiver_addresses {
-        if seen.insert(*addr, ()).is_none() {
+        if Some(addr) != shredstream_receiver_address && !additional_external_addrs.contains(addr) {
             additional_external_addrs.push(*addr);
         }
     }
     if let Some(addr) = multicast_receiver_address
-        && !seen.contains_key(addr)
+        && Some(addr) != shredstream_receiver_address
+        && !additional_external_addrs.contains(addr)
     {
-        seen.insert(*addr, ());
         additional_external_addrs.push(*addr);
     }
     // Always truncate to MAX_SHRED_RECEIVER_ADDRESSES at the end.

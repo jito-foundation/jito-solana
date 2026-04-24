@@ -555,20 +555,19 @@ fn retransmit_shred(
                         0
                     }),
             );
-            let mut seen_addrs = HashSet::with_capacity(send_addrs.capacity());
             for addr in addrs.iter() {
-                if seen_addrs.insert(*addr) {
+                if !send_addrs.contains(addr) {
                     send_addrs.push(*addr);
                 }
             }
             for addr in shred_receiver_addresses.iter() {
-                if seen_addrs.insert(*addr) {
+                if !send_addrs.contains(addr) {
                     send_addrs.push(*addr);
                 }
             }
             if include_bam_shred_receivers {
                 for addr in bam_shred_receiver_addresses.iter() {
-                    if seen_addrs.insert(*addr) {
+                    if !send_addrs.contains(addr) {
                         send_addrs.push(*addr);
                     }
                 }
@@ -597,20 +596,19 @@ fn retransmit_shred(
                         0
                     }),
             );
-            let mut seen_addrs = HashSet::with_capacity(send_addrs.capacity());
             for addr in addrs.iter() {
-                if seen_addrs.insert(*addr) {
+                if !send_addrs.contains(addr) {
                     send_addrs.push(*addr);
                 }
             }
             for addr in shred_receiver_addresses.iter() {
-                if seen_addrs.insert(*addr) {
+                if !send_addrs.contains(addr) {
                     send_addrs.push(*addr);
                 }
             }
             if include_bam_shred_receivers {
                 for addr in bam_shred_receiver_addresses.iter() {
-                    if seen_addrs.insert(*addr) {
+                    if !send_addrs.contains(addr) {
                         send_addrs.push(*addr);
                     }
                 }
