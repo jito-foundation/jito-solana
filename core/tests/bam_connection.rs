@@ -544,7 +544,6 @@ mod bam_manager_tests {
     use {
         super::*,
         arc_swap::ArcSwap,
-        smallvec::SmallVec,
         solana_core::{
             admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
             bam_dependencies::{BamConnectionState, BamDependencies},
@@ -576,7 +575,7 @@ mod bam_manager_tests {
             bank_forks,
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
-            bam_shred_receiver_addresses: Arc::new(ArcSwap::from_pointee(SmallVec::default())),
+            bam_shred_receiver_addresses: Arc::default(),
         }
     }
 
