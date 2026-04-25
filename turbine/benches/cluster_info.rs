@@ -9,7 +9,7 @@ use {
         genesis_utils::{GenesisConfigInfo, create_genesis_config},
         shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
     },
-    solana_net_utils::{SocketAddrSpace, bind_to_unspecified, sockets::bind_to_localhost_unique},
+    solana_net_utils::{SocketAddrSpace, sockets::bind_to_localhost_unique},
     solana_pubkey as pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_signer::Signer,
@@ -35,8 +35,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
         SocketAddrSpace::Unspecified,
     );
     let socket = bind_to_localhost_unique().expect("should bind");
-    let broadcast_socket = BroadcastSocket::Udp(&socket);
-    let shred_receiver_socket = bind_to_unspecified().expect("should bind");
+    let socket = BroadcastSocket::Udp(&socket);
     let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
     let bank = Bank::new_for_benches(&genesis_config);
     let bank_forks = BankForks::new_rw_arc(bank);
@@ -85,8 +84,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
     b.iter(move || {
         let shreds = shreds.clone();
         broadcast_shreds(
-            broadcast_socket,
-            &shred_receiver_socket,
+            socket,
             &shreds,
             &cluster_nodes_cache,
             &last_datapoint,
