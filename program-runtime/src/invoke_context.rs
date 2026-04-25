@@ -8,6 +8,7 @@ use {
     solana_sdk_ids::sysvar,
     solana_svm_type_overrides::sync::Arc,
     solana_transaction_context::transaction_accounts::KeyedAccountSharedData,
+    std::collections::{HashMap, HashSet},
 };
 use {
     crate::{
@@ -46,7 +47,6 @@ use {
         alloc::Layout,
         borrow::Cow,
         cell::RefCell,
-        collections::{HashMap, HashSet},
         fmt::{self, Debug},
         rc::Rc,
     },
@@ -1090,6 +1090,7 @@ mod tests {
         solana_signer::Signer,
         solana_transaction::{Transaction, sanitized::SanitizedTransaction},
         solana_transaction_context::MAX_ACCOUNTS_PER_INSTRUCTION,
+        std::collections::HashSet,
         test_case::test_case,
     };
 

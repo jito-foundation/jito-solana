@@ -81,6 +81,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
     let shreds = Arc::new(shreds);
     let last_datapoint = Arc::new(AtomicInterval::default());
     let shred_receiver_addresses = ShredReceiverAddresses::new();
+    let bam_shred_receiver_addresses = ShredReceiverAddresses::new();
     b.iter(move || {
         let shreds = shreds.clone();
         broadcast_shreds(
@@ -95,6 +96,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
             &SocketAddrSpace::Unspecified,
             &None,
             &shred_receiver_addresses,
+            &bam_shred_receiver_addresses,
             &None,
         )
         .unwrap();

@@ -186,6 +186,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         bank_forks: &RwLock<BankForks>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
@@ -202,6 +203,7 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             cluster_info.socket_addr_space(),
             &shredstream_receiver_address.load(),
             &shred_receiver_addresses.load(),
+            &bam_shred_receiver_addresses.load(),
             &multicast_receiver_address.load(),
         )
     }
