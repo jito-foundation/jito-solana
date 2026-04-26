@@ -862,7 +862,7 @@ pub mod tests {
                 voting_service_test_override: None,
             },
             Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
-            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+            Arc::default(),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);

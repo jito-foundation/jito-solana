@@ -4,11 +4,7 @@ use {
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
-    std::{
-        net::{SocketAddr, UdpSocket},
-        thread::sleep,
-        time::Duration,
-    },
+    std::{net::SocketAddr, thread::sleep, time::Duration},
 };
 
 pub const NUM_BAD_SLOTS: u64 = 10;
@@ -188,12 +184,10 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
-        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
             sock,
-            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &AtomicInterval::default(),

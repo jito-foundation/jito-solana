@@ -25,7 +25,6 @@ jito-protos = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
-smallvec.workspace = true
 solana-client = { workspace = true }
 solana-compute-budget-interface = { workspace = true }
 solana-core = { workspace = true }

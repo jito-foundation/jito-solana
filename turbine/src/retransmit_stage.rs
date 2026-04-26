@@ -2,7 +2,7 @@
 
 use {
     crate::{
-        ShredReceiverAddresses,
+        MAX_SHRED_RECEIVER_ADDRESSES, ShredReceiverAddresses,
         addr_cache::AddrCache,
         cluster_nodes::{
             ClusterNodes, ClusterNodesCache, DATA_PLANE_FANOUT, Error, MAX_NUM_TURBINE_HOPS,
@@ -367,12 +367,18 @@ fn retransmit(
         .flatten()
         .filter_map(|shred| shred::layout::get_slot(shred))
         .collect();
-    let bam_forward_slots = get_bam_forward_slots(
-        &shred_slots,
-        leader_schedule_cache,
-        &cluster_info.id(),
-        &working_bank,
-    );
+    let my_pubkey = cluster_info.id();
+    let bam_forward_slots: HashSet<Slot> = shred_slots
+        .iter()
+        .copied()
+        .filter(|slot| {
+            should_forward_to_bam_for_slot_with_leader_lookup(*slot, &my_pubkey, |slot| {
+                leader_schedule_cache
+                    .slot_leader_at(slot, Some(&working_bank))
+                    .map(|leader| leader.id)
+            })
+        })
+        .collect();
 
     // Lookup slot leader and cluster nodes for each slot.
     let cache: HashMap<Slot, _> = shred_slots
@@ -468,19 +474,6 @@ fn retransmit(
     Ok(())
 }
 
-fn should_forward_to_bam_for_slot(
-    slot: Slot,
-    leader_schedule_cache: &LeaderScheduleCache,
-    my_pubkey: &Pubkey,
-    working_bank: &Bank,
-) -> bool {
-    should_forward_to_bam_for_slot_with_leader_lookup(slot, my_pubkey, |slot| {
-        leader_schedule_cache
-            .slot_leader_at(slot, Some(working_bank))
-            .map(|leader| leader.id)
-    })
-}
-
 fn should_forward_to_bam_for_slot_with_leader_lookup(
     slot: Slot,
     my_pubkey: &Pubkey,
@@ -491,21 +484,6 @@ fn should_forward_to_bam_for_slot_with_leader_lookup(
             .and_then(&mut leader_at_slot)
             .is_some_and(|leader| leader == *my_pubkey)
     })
-}
-
-fn get_bam_forward_slots(
-    shred_slots: &HashSet<Slot>,
-    leader_schedule_cache: &LeaderScheduleCache,
-    my_pubkey: &Pubkey,
-    working_bank: &Bank,
-) -> HashSet<Slot> {
-    shred_slots
-        .iter()
-        .copied()
-        .filter(|slot| {
-            should_forward_to_bam_for_slot(*slot, leader_schedule_cache, my_pubkey, working_bank)
-        })
-        .collect()
 }
 
 // Retransmit a single shred to all downstream nodes
@@ -543,40 +521,41 @@ fn retransmit_shred(
     let mut retransmit_time = Measure::start("retransmit_to");
     let num_addrs = addrs.len();
     let include_bam_shred_receivers = bam_forward_slots.contains(&key.slot());
+    let num_shred_receiver_addresses = shred_receiver_addresses
+        .len()
+        .min(MAX_SHRED_RECEIVER_ADDRESSES);
+    let mut send_addrs = Vec::with_capacity(
+        num_addrs
+            .saturating_add(num_shred_receiver_addresses)
+            .saturating_add(if include_bam_shred_receivers {
+                bam_shred_receiver_addresses.len()
+            } else {
+                0
+            }),
+    );
+    for addr in addrs.iter().chain(
+        shred_receiver_addresses
+            .iter()
+            .take(num_shred_receiver_addresses),
+    ) {
+        if !send_addrs.contains(addr) {
+            send_addrs.push(*addr);
+        }
+    }
+    if include_bam_shred_receivers {
+        for addr in bam_shred_receiver_addresses.iter() {
+            if !send_addrs.contains(addr) {
+                send_addrs.push(*addr);
+            }
+        }
+    }
     let num_nodes = match socket {
         RetransmitSocket::Xdp(sender) => {
             let mut sent = num_addrs;
-            let mut send_addrs = Vec::with_capacity(
-                num_addrs
-                    .saturating_add(shred_receiver_addresses.len())
-                    .saturating_add(if include_bam_shred_receivers {
-                        bam_shred_receiver_addresses.len()
-                    } else {
-                        0
-                    }),
-            );
-            for addr in addrs.iter() {
-                if !send_addrs.contains(addr) {
-                    send_addrs.push(*addr);
-                }
-            }
-            for addr in shred_receiver_addresses.iter() {
-                if !send_addrs.contains(addr) {
-                    send_addrs.push(*addr);
-                }
-            }
-            if include_bam_shred_receivers {
-                for addr in bam_shred_receiver_addresses.iter() {
-                    if !send_addrs.contains(addr) {
-                        send_addrs.push(*addr);
-                    }
-                }
-            }
             if !send_addrs.is_empty()
                 && let Err(e) = sender.try_send(key.index() as usize, send_addrs, shred.bytes)
             {
-                // External retransmit receivers (`--shred-retransmit-receiver-address`) are
-                // intentionally not included in retransmit stats.
+                // External shred receivers are intentionally not included in retransmit stats.
                 log::warn!("xdp channel full: {e:?}");
                 stats
                     .num_shreds_dropped_xdp_full
@@ -587,32 +566,6 @@ fn retransmit_shred(
         }
         RetransmitSocket::Socket(_) | RetransmitSocket::Multihomed { .. } => {
             let socket = socket.get_socket();
-            let mut send_addrs = Vec::with_capacity(
-                num_addrs
-                    .saturating_add(shred_receiver_addresses.len())
-                    .saturating_add(if include_bam_shred_receivers {
-                        bam_shred_receiver_addresses.len()
-                    } else {
-                        0
-                    }),
-            );
-            for addr in addrs.iter() {
-                if !send_addrs.contains(addr) {
-                    send_addrs.push(*addr);
-                }
-            }
-            for addr in shred_receiver_addresses.iter() {
-                if !send_addrs.contains(addr) {
-                    send_addrs.push(*addr);
-                }
-            }
-            if include_bam_shred_receivers {
-                for addr in bam_shred_receiver_addresses.iter() {
-                    if !send_addrs.contains(addr) {
-                        send_addrs.push(*addr);
-                    }
-                }
-            }
             if send_addrs.is_empty() {
                 0
             } else {
