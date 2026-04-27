@@ -226,6 +226,10 @@ trait BroadcastRun {
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        // Dedicated socket bound to 0.0.0.0:0 used only for ShredReceiverAddresses and
+        // multicast_receiver_address on the UDP path. Kept separate from the main broadcast
+        // socket so the OS routing table (not --bind-address) selects the outbound interface
+        // per destination. The XDP path resolves routes from the kernel table directly.
         shred_receiver_socket: &UdpSocket,
     ) -> Result<()>;
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()>;
@@ -354,8 +358,8 @@ impl BroadcastStage {
         let mut thread_hdls = vec![thread_hdl];
 
         // Dedicated socket bound to 0.0.0.0:0 for sending shreds to ShredReceiverAddresses
-        // and multicast_receiver_address. Not constrained by --bind-address, so the OS
-        // routing table selects the appropriate interface for each destination.
+        // and multicast_receiver_address on the UDP path. Not constrained by --bind-address,
+        // so the OS routing table selects the appropriate interface for each destination.
         let shred_receiver_socket =
             Arc::new(bind_to_unspecified().expect("bind shred_receiver_socket 0.0.0.0:0"));
         shred_receiver_socket
@@ -593,7 +597,7 @@ pub fn broadcast_shreds(
         let bank_forks = bank_forks.read().unwrap();
         (bank_forks.root_bank(), bank_forks.working_bank())
     };
-    let mut packets: Vec<_> = shreds
+    let mut all_packets: Vec<_> = shreds
         .iter()
         .chunk_by(|shred| shred.slot())
         .into_iter()
@@ -619,10 +623,14 @@ pub fn broadcast_shreds(
     // Add BAM and cluster multicast addresses only when they are present and
     // not already added.
     if let Some(addr) = shredstream_receiver_address {
-        packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
+        all_packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
     }
-    let external_packets_start = packets.len();
-    packets.reserve(shreds.len().saturating_mul(
+    // ShredReceiverAddresses, BAM ShredReceiverAddresses, and multicast_receiver_address are
+    // external receivers that may be reachable via a different interface than --bind-address.
+    // Keep them separate so the UDP path can use the dedicated 0.0.0.0:0 socket, while the
+    // XDP path can route them directly.
+    let external_packets_start = all_packets.len();
+    all_packets.reserve(shreds.len().saturating_mul(
         shred_receiver_addresses.len()
             + bam_shred_receiver_addresses.len()
             + multicast_receiver_address.iter().len(),
@@ -633,18 +641,19 @@ pub fn broadcast_shreds(
         bam_shred_receiver_addresses,
         multicast_receiver_address,
     ) {
-        packets.extend(shreds.iter().map(|shred| (shred.payload(), addr)));
+        all_packets.extend(shreds.iter().map(|shred| (shred.payload(), addr)));
     }
-    let (packets, external_packets) = packets.split_at(external_packets_start);
+    let (main_packets, external_packets) = all_packets.split_at(external_packets_start);
 
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
-    let num_udp_packets = packets.len() + external_packets.len();
+    let num_udp_packets = main_packets.len() + external_packets.len();
     match socket {
         BroadcastSocket::Udp(s) => {
             let mut send_mmsg_time = Measure::start("send_mmsg");
+            // Turbine tree + shredstream: use the main socket bound to --bind-address.
             // `.copied()` copies only `(&Payload, SocketAddr)`, not payload bytes.
-            match batch_send(s, packets.iter().copied()) {
+            match batch_send(s, main_packets.iter().copied()) {
                 Ok(()) => (),
                 Err(SendPktsError::IoError(ioerr, num_failed)) => {
                     transmit_stats.dropped_packets_udp += num_failed;
@@ -652,6 +661,8 @@ pub fn broadcast_shreds(
                 }
             }
             if !external_packets.is_empty() {
+                // External receivers: use the dedicated 0.0.0.0:0 socket so the kernel routing
+                // table picks the outbound interface independent of --bind-address.
                 // `.copied()` copies only `(&Payload, SocketAddr)`, not payload bytes.
                 match batch_send(shred_receiver_socket, external_packets.iter().copied()) {
                     Ok(()) => (),
@@ -668,8 +679,16 @@ pub fn broadcast_shreds(
         }
         BroadcastSocket::Xdp(s) => {
             let mut send_xdp_time = Measure::start("send_xdp");
+            // Turbine tree, shredstream, and external receivers all go through XDP.
+            // The XDP Router resolves the correct interface and next-hop per destination
+            // from the kernel routing table.
             // `.copied()` copies only `(&Payload, SocketAddr)`; `payload.bytes.clone()` is refcount-only.
-            for (idx, (payload, addr)) in packets.iter().copied().enumerate() {
+            for (idx, (payload, addr)) in main_packets
+                .iter()
+                .copied()
+                .chain(external_packets.iter().copied())
+                .enumerate()
+            {
                 if let Err(e) = s.try_send(idx, addr, payload.bytes.clone()) {
                     log::warn!("xdp channel full: {e:?}");
                     transmit_stats.dropped_packets_xdp += 1;
@@ -678,26 +697,6 @@ pub fn broadcast_shreds(
             }
             send_xdp_time.stop();
             transmit_stats.send_xdp_elapsed += send_xdp_time.as_us();
-            // External receivers (ShredReceiverAddresses + multicast) must be sent via
-            // the dedicated UDP socket bound to 0.0.0.0, even when XDP is active.
-            // XDP bypasses the kernel network stack and is attached to the specific NIC
-            // that corresponds to --bind-address. It has no visibility into the routing
-            // table, so packets destined for an address reachable only through a different
-            // interface will be dropped by the NIC driver or never reach the destination.
-            // The dedicated 0.0.0.0 socket goes through the normal kernel IP stack, which
-            // uses the routing table to select the correct outbound interface per destination.
-            if !external_packets.is_empty() {
-                // `.copied()` copies only `(&Payload, SocketAddr)`, not payload bytes.
-                match batch_send(shred_receiver_socket, external_packets.iter().copied()) {
-                    Ok(()) => (),
-                    Err(SendPktsError::IoError(ioerr, num_failed)) => {
-                        transmit_stats.dropped_packets_udp += num_failed;
-                        if result.is_ok() {
-                            result = Err(Error::Io(ioerr));
-                        }
-                    }
-                }
-            }
         }
     }
 
