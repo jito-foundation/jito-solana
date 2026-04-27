@@ -587,7 +587,7 @@ fn retransmit_shred(
                 let mut sent = num_addrs;
                 if !turbine_addrs.is_empty()
                     && let Err(e) =
-                        sender.try_send(key.index() as usize, turbine_addrs, shred.bytes.clone())
+                        sender.try_send(key.index() as usize, turbine_addrs, shred.clone())
                 {
                     log::warn!("xdp channel full: {e:?}");
                     stats
