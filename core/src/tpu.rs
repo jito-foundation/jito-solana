@@ -178,6 +178,7 @@ impl Tpu {
         relayer_config: Arc<ArcSwap<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
     ) -> Self {
@@ -406,6 +407,7 @@ impl Tpu {
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bank_forks: bank_forks.clone(),
             bam_tpu_info,
+            bam_shred_receiver_addresses: bam_shred_receiver_addresses.clone(),
         };
 
         let mut blacklisted_accounts = HashSet::new();
@@ -508,6 +510,7 @@ impl Tpu {
             votor_event_sender,
             shredstream_receiver_address,
             shred_receiver_addresses,
+            bam_shred_receiver_addresses,
             multicast_receiver_address,
         );
 
