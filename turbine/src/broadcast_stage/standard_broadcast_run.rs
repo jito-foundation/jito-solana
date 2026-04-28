@@ -21,6 +21,7 @@ use {
 struct ExternalBroadcastReceivers<'a> {
     shredstream_receiver_address: &'a Option<SocketAddr>,
     shred_receiver_addresses: &'a ShredReceiverAddresses,
+    bam_shred_receiver_addresses: &'a ShredReceiverAddresses,
     multicast_receiver_address: &'a Option<SocketAddr>,
 }
 
@@ -186,6 +187,7 @@ impl StandardBroadcastRun {
             BroadcastSocket::Udp(sock),
             bank_forks,
             quic_endpoint_sender,
+            &ArcSwap::default(),
             &ArcSwap::default(),
             &ArcSwap::default(),
             &ArcSwap::default(),
@@ -417,6 +419,7 @@ impl StandardBroadcastRun {
             quic_endpoint_sender,
             external_receivers.shredstream_receiver_address,
             external_receivers.shred_receiver_addresses,
+            external_receivers.bam_shred_receiver_addresses,
             external_receivers.multicast_receiver_address,
         )?;
         transmit_time.stop();
@@ -488,6 +491,7 @@ impl BroadcastRun for StandardBroadcastRun {
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
@@ -503,6 +507,7 @@ impl BroadcastRun for StandardBroadcastRun {
             ExternalBroadcastReceivers {
                 shredstream_receiver_address: &shredstream_receiver_address.load(),
                 shred_receiver_addresses: &shred_receiver_addresses.load(),
+                bam_shred_receiver_addresses: &bam_shred_receiver_addresses.load(),
                 multicast_receiver_address: &multicast_receiver_address.load(),
             },
         )
