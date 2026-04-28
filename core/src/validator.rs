@@ -1525,8 +1525,7 @@ impl Validator {
             "New shred signal for the TVU should be the same as the clear bank signal."
         );
 
-        let bam_shred_receiver_addresses =
-            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new()));
+        let bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>> = Arc::default();
 
         let vote_tracker = Arc::<VoteTracker>::default();
 
