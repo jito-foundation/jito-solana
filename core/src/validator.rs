@@ -393,10 +393,12 @@ pub struct ValidatorConfig {
     // jito configuration
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-    /// Configured leader shred receiver addresses. This list may be empty.
-    /// Auto-detected multicast may still be appended when the cluster
-    /// route exists and the multicast address is not already present.
+    /// Configured external receivers for this validator's own broadcast path.
+    /// Used for direct leader shreds and replay-triggered rebroadcasts of this
+    /// validator's slots.
     pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    /// Configured external receivers for TVU retransmit-stage shreds.
+    /// Does not apply to this validator's own direct leader broadcast path.
     pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
     /// Automatically detected multicast destination for leader shreds.
     pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
@@ -1485,8 +1487,7 @@ impl Validator {
             "New shred signal for the TVU should be the same as the clear bank signal."
         );
 
-        let bam_shred_receiver_addresses =
-            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new()));
+        let bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>> = Arc::default();
 
         let vote_tracker = Arc::<VoteTracker>::default();
 

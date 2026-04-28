@@ -1443,7 +1443,6 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "rayon",
- "smallvec",
  "solana-client",
  "solana-compute-budget-interface",
  "solana-core",

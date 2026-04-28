@@ -623,7 +623,7 @@ pub mod tests {
             None,
             Arc::new(connection_cache),
             Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
-            Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+            Arc::default(),
         )
         .expect("assume success");
         if enable_wen_restart {

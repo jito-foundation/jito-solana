@@ -16,7 +16,7 @@ use {
     arc_swap::ArcSwap,
     bytes::Bytes,
     crossbeam_channel::{unbounded, Receiver, RecvError, RecvTimeoutError, Sender},
-    itertools::{Either, Itertools},
+    itertools::Itertools,
     solana_clock::Slot,
     solana_gossip::{
         cluster_info::{ClusterInfo, ClusterInfoError},
@@ -167,7 +167,7 @@ impl BroadcastStageType {
                 xdp_sender,
                 shredstream_receiver_address,
                 Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
-                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                Arc::default(),
                 Arc::new(ArcSwap::from_pointee(None)),
             ),
 
@@ -184,7 +184,7 @@ impl BroadcastStageType {
                 xdp_sender,
                 shredstream_receiver_address,
                 Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
-                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                Arc::default(),
                 Arc::new(ArcSwap::from_pointee(None)),
             ),
 
@@ -201,7 +201,7 @@ impl BroadcastStageType {
                 xdp_sender,
                 shredstream_receiver_address,
                 Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
-                Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
+                Arc::default(),
                 Arc::new(ArcSwap::from_pointee(None)),
             ),
         }
@@ -361,9 +361,10 @@ impl BroadcastStage {
         };
         let mut thread_hdls = vec![thread_hdl];
 
-        // Dedicated socket bound to 0.0.0.0:0 for sending shreds to ShredReceiverAddresses
-        // and multicast_receiver_address on the UDP path. Not constrained by --bind-address,
-        // so the OS routing table selects the appropriate interface for each destination.
+        // Dedicated socket for ShredReceiverAddresses and multicast_receiver_address.
+        // Bound to 0.0.0.0:0 (not --bind-address) so the OS routing table selects the
+        // correct outbound interface per destination, regardless of which interface Turbine
+        // uses for its main broadcast traffic.
         let shred_receiver_socket =
             Arc::new(bind_to_unspecified().expect("bind shred_receiver_socket 0.0.0.0:0"));
         shred_receiver_socket
@@ -536,36 +537,6 @@ fn update_peer_stats(
     }
 }
 
-fn get_additional_external_shred_receiver_addresses(
-    shredstream_receiver_address: &Option<SocketAddr>,
-    shred_receiver_addresses: &ShredReceiverAddresses,
-    bam_shred_receiver_addresses: &ShredReceiverAddresses,
-    multicast_receiver_address: &Option<SocketAddr>,
-) -> ShredReceiverAddresses {
-    let shredstream_receiver_address = shredstream_receiver_address.as_ref();
-    let mut additional_external_addrs = ShredReceiverAddresses::new();
-    for addr in shred_receiver_addresses {
-        if Some(addr) != shredstream_receiver_address && !additional_external_addrs.contains(addr) {
-            additional_external_addrs.push(*addr);
-        }
-    }
-    for addr in bam_shred_receiver_addresses {
-        if Some(addr) != shredstream_receiver_address && !additional_external_addrs.contains(addr) {
-            additional_external_addrs.push(*addr);
-        }
-    }
-    if let Some(addr) = multicast_receiver_address
-        && Some(addr) != shredstream_receiver_address
-        && !additional_external_addrs.contains(addr)
-    {
-        additional_external_addrs.push(*addr);
-    }
-    // Always truncate to MAX_SHRED_RECEIVER_ADDRESSES at the end.
-    additional_external_addrs.truncate(MAX_SHRED_RECEIVER_ADDRESSES);
-
-    additional_external_addrs
-}
-
 #[derive(Clone, Copy)]
 pub enum BroadcastSocket<'a> {
     Udp(&'a UdpSocket),
@@ -598,61 +569,85 @@ pub fn broadcast_shreds(
         let bank_forks = bank_forks.read().unwrap();
         (bank_forks.root_bank(), bank_forks.working_bank())
     };
-    let (mut all_packets, quic_packets): (Vec<_>, Vec<_>) = shreds
-        .iter()
-        .group_by(|shred| shred.slot())
+    let shredstream_receiver_address = shredstream_receiver_address.as_ref();
+    let num_shred_receiver_addresses = shred_receiver_addresses
+        .len()
+        .min(MAX_SHRED_RECEIVER_ADDRESSES);
+    let external_addr_capacity = num_shred_receiver_addresses
+        .saturating_add(multicast_receiver_address.iter().len())
+        .saturating_add(usize::from(shredstream_receiver_address.is_some()))
+        .saturating_add(bam_shred_receiver_addresses.len());
+    let mut external_addrs = ShredReceiverAddresses::with_capacity(external_addr_capacity);
+    for &addr in shredstream_receiver_address
         .into_iter()
-        .flat_map(|(slot, shreds)| {
-            let cluster_nodes =
-                cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
-            update_peer_stats(&cluster_nodes, last_datapoint_submit);
-            shreds.filter_map(move |shred| {
-                let key = shred.id();
-                let protocol = cluster_nodes::get_broadcast_protocol(&key);
-                cluster_nodes
-                    .get_broadcast_peer(&key)?
-                    .tvu(protocol)
-                    .filter(|addr| !addr.is_ipv6() && socket_addr_space.check(addr))
-                    .map(|addr| {
-                        (match protocol {
-                            Protocol::QUIC => Either::Right,
-                            Protocol::UDP => Either::Left,
-                        })((shred.payload(), addr))
-                    })
-            })
-        })
-        .partition_map(std::convert::identity);
+        .chain(
+            shred_receiver_addresses
+                .iter()
+                .take(num_shred_receiver_addresses),
+        )
+        .chain(bam_shred_receiver_addresses)
+        .chain(multicast_receiver_address.iter())
+    {
+        // ShredReceiverAddresses and multicast_receiver_address are external receivers that may be
+        // reachable via a different interface than --bind-address. They are collected separately so
+        // they can be sent through the right path:
+        //   - UDP path: shred_receiver_socket (0.0.0.0:0), letting the kernel pick the interface.
+        //   - XDP path: XDP sender, which uses its own Router (fed from the kernel routing table via
+        //               netlink) to resolve the correct next-hop and interface per destination.
+        if !external_addrs.contains(&addr) {
+            external_addrs.push(addr);
+        }
+    }
+    let packet_capacity = shreds.len().saturating_mul(1 + external_addrs.len());
+    let mut all_packets = Vec::with_capacity(packet_capacity);
+    let mut quic_packets = Vec::with_capacity(shreds.len());
+    for (slot, shreds) in shreds.iter().group_by(|shred| shred.slot()).into_iter() {
+        let cluster_nodes = cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
+        update_peer_stats(&cluster_nodes, last_datapoint_submit);
+
+        for shred in shreds {
+            let key = shred.id();
+            let protocol = cluster_nodes::get_broadcast_protocol(&key);
+            if let Some(addr) = cluster_nodes
+                .get_broadcast_peer(&key)
+                .and_then(|peer| peer.tvu(protocol))
+                .filter(|addr| !addr.is_ipv6() && socket_addr_space.check(addr))
+            {
+                match protocol {
+                    Protocol::QUIC => quic_packets.push((shred.payload(), addr)),
+                    Protocol::UDP => all_packets.push((shred.payload(), addr)),
+                }
+            }
+        }
+    }
+
+    for &addr in external_addrs
+        .iter()
+        .filter(|addr| Some(*addr) == shredstream_receiver_address)
+    {
+        for shred in shreds {
+            all_packets.push((shred.payload(), addr));
+        }
+    }
 
     // Mirror this validator's own broadcast shreds to external receivers
     // (`--shred-receiver-address`), avoiding duplicates when addresses overlap.
-    // Add BAM and cluster multicast addresses only when they are present and
-    // not already added.
-    if let Some(addr) = shredstream_receiver_address {
-        all_packets.extend(shreds.iter().map(|shred| (shred.payload(), *addr)));
-    }
-    // ShredReceiverAddresses, BAM ShredReceiverAddresses, and multicast_receiver_address are
-    // external receivers that may be reachable via a different interface than --bind-address.
-    // Keep them separate so the UDP path can use the dedicated 0.0.0.0:0 socket, while the
-    // XDP path can route them directly.
+    // Add the cluster multicast address only when the route is present and the
+    // address is not already added.
     let external_packets_start = all_packets.len();
-    all_packets.reserve(shreds.len().saturating_mul(
-        shred_receiver_addresses.len()
-            + bam_shred_receiver_addresses.len()
-            + multicast_receiver_address.iter().len(),
-    ));
-    for addr in get_additional_external_shred_receiver_addresses(
-        shredstream_receiver_address,
-        shred_receiver_addresses,
-        bam_shred_receiver_addresses,
-        multicast_receiver_address,
-    ) {
-        all_packets.extend(shreds.iter().map(|shred| (shred.payload(), addr)));
+    for &addr in external_addrs
+        .iter()
+        .filter(|addr| Some(*addr) != shredstream_receiver_address)
+    {
+        for shred in shreds {
+            all_packets.push((shred.payload(), addr));
+        }
     }
     let (main_packets, external_packets) = all_packets.split_at(external_packets_start);
 
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
-    let num_udp_packets = main_packets.len() + external_packets.len();
+    let num_packets = main_packets.len() + external_packets.len();
     match socket {
         BroadcastSocket::Udp(s) => {
             let mut send_mmsg_time = Measure::start("send_mmsg");
@@ -706,7 +701,7 @@ pub fn broadcast_shreds(
     }
 
     let mut quic_send_time = Measure::start("send shreds via quic");
-    transmit_stats.total_packets += num_udp_packets + quic_packets.len();
+    transmit_stats.total_packets += num_packets + quic_packets.len();
     for (payload, addr) in quic_packets {
         if let Err(err) = quic_endpoint_sender.blocking_send((addr, payload.bytes.clone())) {
             transmit_stats.dropped_packets_quic += 1;
@@ -745,12 +740,15 @@ pub mod test {
             get_tmp_ledger_path_auto_delete,
             shred::{max_ticks_per_n_shreds, ProcessShredsStats, ReedSolomonCache, Shredder},
         },
+        solana_net_utils::bind_to_localhost,
         solana_runtime::bank::Bank,
         solana_signer::Signer,
         std::{
+            net::UdpSocket,
             path::Path,
             sync::{atomic::AtomicBool, Arc},
             thread::sleep,
+            time::Duration,
         },
     };
 
@@ -823,31 +821,94 @@ pub mod test {
     }
 
     #[test]
-    fn test_bam_shred_receivers_are_added_and_deduped_for_leader_broadcast() {
-        let shredstream_addr = "127.0.0.1:10".parse().unwrap();
-        let regular_addr_1 = "127.0.0.1:11".parse().unwrap();
-        let regular_addr_2 = "127.0.0.1:12".parse().unwrap();
-        let bam_addr = "127.0.0.1:13".parse().unwrap();
-        let multicast_addr = "127.0.0.1:14".parse().unwrap();
+    fn test_external_shred_receivers_are_deduped_and_configured_cap_only() {
+        let bind_receiver = || {
+            let socket = bind_to_localhost().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_millis(50)))
+                .unwrap();
+            socket
+        };
+        let recv_source = |socket: &UdpSocket| {
+            let mut buf = [0u8; 2048];
+            socket.recv_from(&mut buf).unwrap().1
+        };
+        let assert_no_packet = |socket: &UdpSocket| {
+            let mut buf = [0u8; 2048];
+            assert!(socket.recv_from(&mut buf).is_err());
+        };
 
-        let shred_receiver_addresses: ShredReceiverAddresses =
-            [regular_addr_1, regular_addr_2].into_iter().collect();
-        let bam_shred_receiver_addresses: ShredReceiverAddresses =
-            [regular_addr_2, bam_addr, shredstream_addr]
-                .into_iter()
-                .collect();
+        let main_sender = bind_to_localhost().unwrap();
+        let external_sender = bind_to_localhost().unwrap();
+        let shredstream_receiver = bind_receiver();
+        let configured_receivers: Vec<_> = (0..=MAX_SHRED_RECEIVER_ADDRESSES)
+            .map(|_| bind_receiver())
+            .collect();
+        let bam_receiver = bind_receiver();
+        let multicast_receiver = bind_receiver();
+        let shredstream_addr = shredstream_receiver.local_addr().unwrap();
+        let configured_addrs: ShredReceiverAddresses = configured_receivers
+            .iter()
+            .map(|socket| socket.local_addr().unwrap())
+            .collect();
+        let bam_addr = bam_receiver.local_addr().unwrap();
+        let multicast_addr = multicast_receiver.local_addr().unwrap();
+        let bam_addrs: ShredReceiverAddresses = [configured_addrs[1], bam_addr, shredstream_addr]
+            .into_iter()
+            .collect();
 
-        let additional_external_addrs = get_additional_external_shred_receiver_addresses(
+        let keypair = Arc::new(Keypair::new());
+        let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+        let cluster_info =
+            ClusterInfo::new(node.info.clone(), keypair, SocketAddrSpace::Unspecified);
+        let GenesisConfigInfo { genesis_config, .. } = create_genesis_config(10_000);
+        let bank = Bank::new_for_tests(&genesis_config);
+        let bank_forks = BankForks::new_rw_arc(bank);
+        let cluster_nodes_cache =
+            ClusterNodesCache::<BroadcastStage>::new(1, Duration::from_secs(60));
+        let mut transmit_stats = TransmitShredsStats::default();
+        let (shreds, _, _, _) = make_transmit_shreds(0, 1);
+        let shreds = vec![shreds[0].clone()];
+        let (quic_endpoint_sender, _quic_endpoint_receiver) = tokio::sync::mpsc::channel(1);
+
+        broadcast_shreds(
+            BroadcastSocket::Udp(&main_sender),
+            &external_sender,
+            &shreds,
+            &cluster_nodes_cache,
+            &AtomicInterval::default(),
+            &mut transmit_stats,
+            &cluster_info,
+            &bank_forks,
+            &SocketAddrSpace::Unspecified,
+            &quic_endpoint_sender,
             &Some(shredstream_addr),
-            &shred_receiver_addresses,
-            &bam_shred_receiver_addresses,
+            &configured_addrs,
+            &bam_addrs,
             &Some(multicast_addr),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
-            additional_external_addrs.as_slice(),
-            &[regular_addr_1, regular_addr_2, bam_addr, multicast_addr]
+            recv_source(&shredstream_receiver),
+            main_sender.local_addr().unwrap()
         );
+        assert_no_packet(&shredstream_receiver);
+        for receiver in &configured_receivers[..MAX_SHRED_RECEIVER_ADDRESSES] {
+            assert_eq!(recv_source(receiver), external_sender.local_addr().unwrap());
+        }
+        assert_no_packet(&configured_receivers[MAX_SHRED_RECEIVER_ADDRESSES]);
+        assert_no_packet(&configured_receivers[1]);
+        assert_eq!(
+            recv_source(&bam_receiver),
+            external_sender.local_addr().unwrap()
+        );
+        assert_no_packet(&bam_receiver);
+        assert_eq!(
+            recv_source(&multicast_receiver),
+            external_sender.local_addr().unwrap()
+        );
+        assert_no_packet(&multicast_receiver);
     }
 
     #[test]
