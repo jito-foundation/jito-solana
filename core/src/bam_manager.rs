@@ -32,6 +32,7 @@ use {
     solana_quic_definitions::NotifyKeyUpdate,
     solana_runtime::bank::Bank,
     solana_signer::Signer,
+    solana_turbine::{ShredReceiverAddresses, MAX_SHRED_RECEIVER_ADDRESSES},
     solana_version::ClientId,
 };
 
@@ -150,9 +151,7 @@ impl BamManager {
                     // Try to connect to BAM
                     let bam_url = bam_url.load();
                     let Some(url) = bam_url.as_ref() else {
-                        dependencies
-                            .bam_enabled
-                            .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                        Self::set_bam_disconnected(&dependencies);
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
                     };
@@ -170,9 +169,7 @@ impl BamManager {
                         Ok(connection) => connection,
                         Err(e) => {
                             error!("Failed to connect to BAM with url: {url}: {e}");
-                            dependencies
-                                .bam_enabled
-                                .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                            Self::set_bam_disconnected(&dependencies);
                             std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                             continue;
                         }
@@ -190,17 +187,16 @@ impl BamManager {
                              retry",
                         );
                         cached_builder_config = None;
-                        dependencies
-                            .bam_enabled
-                            .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                        Self::set_bam_disconnected(&dependencies);
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
                     }
 
                     if let Some(builder_config) = connection.get_latest_config() {
-                        Self::update_tpu_config(Some(&builder_config), &dependencies);
+                        Self::update_tpu_config(&builder_config, &dependencies);
+                        Self::update_shred_socks_config(&builder_config, &dependencies);
                         Self::update_block_engine_key_and_commission(
-                            Some(&builder_config),
+                            &builder_config,
                             &dependencies.block_builder_fee_info,
                         );
                         Self::update_bam_recipient_and_commission(
@@ -219,9 +215,7 @@ impl BamManager {
 
             if !connection.is_healthy() {
                 cached_builder_config = None;
-                dependencies
-                    .bam_enabled
-                    .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+                Self::set_bam_disconnected(&dependencies);
                 warn!("BAM connection unhealthy");
                 continue;
             }
@@ -239,21 +233,25 @@ impl BamManager {
             }
 
             // if url changed or cleared, then disconnect
-            if bam_url.load().as_deref() != Some(connection.url()) {
+            let configured_bam_url = bam_url.load();
+            if configured_bam_url.as_deref() != Some(connection.url()) {
                 cached_builder_config = None;
-                dependencies
-                    .bam_enabled
-                    .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
-                info!("BAM URL changed");
+                Self::set_bam_disconnected(&dependencies);
+                if let Some(new_url) = configured_bam_url.as_deref() {
+                    info!("BAM URL changed, connecting to new URL: {new_url}");
+                } else {
+                    info!("BAM URL cleared, disconnecting");
+                }
                 continue;
             }
 
             // Check if block builder info has changed
             if let Some(builder_config) = connection.get_latest_config() {
                 if Some(&builder_config) != cached_builder_config.as_ref() {
-                    Self::update_tpu_config(Some(&builder_config), &dependencies);
+                    Self::update_tpu_config(&builder_config, &dependencies);
+                    Self::update_shred_socks_config(&builder_config, &dependencies);
                     Self::update_block_engine_key_and_commission(
-                        Some(&builder_config),
+                        &builder_config,
                         &dependencies.block_builder_fee_info,
                     );
                     Self::update_bam_recipient_and_commission(
@@ -308,9 +306,7 @@ impl BamManager {
         }
 
         *cached_builder_config = None;
-        dependencies
-            .bam_enabled
-            .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+        Self::set_bam_disconnected(dependencies);
 
         // When we are still holding a live connection, disconnect first and wait in the
         // disconnected path before starting a new BAM auth handshake.
@@ -350,24 +346,23 @@ impl BamManager {
         }
     }
 
-    fn get_sockaddr(info: Option<&Socket>) -> Option<SocketAddr> {
-        let info = info?;
-        let Socket { ip, port } = info;
+    fn get_sockaddr(Socket { ip, port }: &Socket) -> Option<SocketAddr> {
+        let port = u16::try_from(*port).ok().filter(|port| *port != 0)?;
         Some(SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::from_str(ip).ok()?,
-            *port as u16,
+            port,
         )))
     }
 
-    fn update_tpu_config(config: Option<&ConfigResponse>, dependencies: &BamDependencies) {
-        let Some(tpu_info) = config.and_then(|c| c.bam_config.as_ref()) else {
+    fn update_tpu_config(config: &ConfigResponse, dependencies: &BamDependencies) {
+        let Some(tpu_info) = config.bam_config.as_ref() else {
             return;
         };
 
-        let Some(tpu) = Self::get_sockaddr(tpu_info.tpu_sock.as_ref()) else {
-            return;
-        };
-        let Some(tpu_fwd) = Self::get_sockaddr(tpu_info.tpu_fwd_sock.as_ref()) else {
+        let (Some(tpu), Some(tpu_fwd)) = (
+            tpu_info.tpu_sock.as_ref().and_then(Self::get_sockaddr),
+            tpu_info.tpu_fwd_sock.as_ref().and_then(Self::get_sockaddr),
+        ) else {
             return;
         };
         info!("Setting TPU={tpu}, TPU Forward={tpu_fwd} from BAM config");
@@ -376,11 +371,62 @@ impl BamManager {
             .store(Arc::new(Some((tpu, tpu_fwd))));
     }
 
+    fn set_bam_disconnected(dependencies: &BamDependencies) {
+        dependencies
+            .bam_enabled
+            .store(BamConnectionState::Disconnected as u8, Ordering::Relaxed);
+        Self::clear_bam_shred_receiver_addresses(dependencies);
+    }
+
+    fn clear_bam_shred_receiver_addresses(dependencies: &BamDependencies) {
+        dependencies
+            .bam_shred_receiver_addresses
+            .store(Arc::new(ShredReceiverAddresses::new()));
+    }
+
+    fn update_shred_socks_config(config: &ConfigResponse, dependencies: &BamDependencies) {
+        let Some(bam_config) = config.bam_config.as_ref() else {
+            Self::clear_bam_shred_receiver_addresses(dependencies);
+            return;
+        };
+
+        let mut shred_receiver_addresses = ShredReceiverAddresses::new();
+        for socket in &bam_config.shred_socks {
+            let Some(addr) = Self::get_sockaddr(socket) else {
+                warn!(
+                    "Dropping invalid BAM shred receiver socket {}:{}",
+                    socket.ip, socket.port
+                );
+                continue;
+            };
+            if shred_receiver_addresses.contains(&addr) {
+                continue;
+            }
+            if shred_receiver_addresses.len() >= MAX_SHRED_RECEIVER_ADDRESSES {
+                warn!(
+                    "Dropping excess BAM shred receiver socket {}:{}; maximum is {}",
+                    socket.ip, socket.port, MAX_SHRED_RECEIVER_ADDRESSES
+                );
+                continue;
+            }
+            shred_receiver_addresses.push(addr);
+        }
+
+        info!(
+            "Setting {} BAM shred receiver address(es) from BAM config: {:?}",
+            shred_receiver_addresses.len(),
+            shred_receiver_addresses
+        );
+        dependencies
+            .bam_shred_receiver_addresses
+            .store(Arc::new(shred_receiver_addresses));
+    }
+
     fn update_block_engine_key_and_commission(
-        config: Option<&ConfigResponse>,
+        config: &ConfigResponse,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
     ) {
-        let Some(builder_info) = config.and_then(|c| c.block_engine_config.as_ref()) else {
+        let Some(builder_info) = config.block_engine_config.as_ref() else {
             return;
         };
         if builder_info.builder_commission > 100 {

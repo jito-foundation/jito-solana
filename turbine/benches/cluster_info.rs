@@ -99,6 +99,7 @@ fn broadcast_shreds_bench(b: &mut Bencher) {
             &quic_endpoint_sender,
             &None,
             &shred_receiver_addresses,
+            &shred_receiver_addresses,
             &None,
         )
         .unwrap();
