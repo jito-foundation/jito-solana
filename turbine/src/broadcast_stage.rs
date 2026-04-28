@@ -588,9 +588,9 @@ pub fn broadcast_shreds(
         .chain(bam_shred_receiver_addresses)
         .chain(multicast_receiver_address.iter())
     {
-        // ShredReceiverAddresses and multicast_receiver_address are external receivers that may be
-        // reachable via a different interface than --bind-address. They are collected separately so
-        // they can be sent through the right path:
+        // Shredstream, ShredReceiverAddresses, and multicast_receiver_address are external
+        // receivers that may be reachable via a different interface than --bind-address. They are
+        // collected separately so they can be sent through the right path:
         //   - UDP path: shred_receiver_socket (0.0.0.0:0), letting the kernel pick the interface.
         //   - XDP path: XDP sender, which uses its own Router (fed from the kernel routing table via
         //               netlink) to resolve the correct next-hop and interface per destination.
@@ -621,24 +621,11 @@ pub fn broadcast_shreds(
         }
     }
 
-    for &addr in external_addrs
-        .iter()
-        .filter(|addr| Some(*addr) == shredstream_receiver_address)
-    {
-        for shred in shreds {
-            all_packets.push((shred.payload(), addr));
-        }
-    }
-
     // Mirror this validator's own broadcast shreds to external receivers
-    // (`--shred-receiver-address`), avoiding duplicates when addresses overlap.
-    // Add the cluster multicast address only when the route is present and the
-    // address is not already added.
+    // (shredstream, `--shred-receiver-address`, BAM, and multicast), avoiding duplicates when
+    // addresses overlap. Add the cluster multicast address only when the route is present.
     let external_packets_start = all_packets.len();
-    for &addr in external_addrs
-        .iter()
-        .filter(|addr| Some(*addr) != shredstream_receiver_address)
-    {
+    for &addr in external_addrs.iter() {
         for shred in shreds {
             all_packets.push((shred.payload(), addr));
         }
@@ -651,7 +638,7 @@ pub fn broadcast_shreds(
     match socket {
         BroadcastSocket::Udp(s) => {
             let mut send_mmsg_time = Measure::start("send_mmsg");
-            // Turbine tree + shredstream: use the main socket bound to --bind-address.
+            // Turbine tree: use the main socket bound to --bind-address.
             // `.copied()` copies only `(&Payload, SocketAddr)`, not payload bytes.
             match batch_send(s, main_packets.iter().copied()) {
                 Ok(()) => (),
@@ -891,7 +878,7 @@ pub mod test {
 
         assert_eq!(
             recv_source(&shredstream_receiver),
-            main_sender.local_addr().unwrap()
+            external_sender.local_addr().unwrap()
         );
         assert_no_packet(&shredstream_receiver);
         for receiver in &configured_receivers[..MAX_SHRED_RECEIVER_ADDRESSES] {
