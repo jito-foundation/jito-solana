@@ -126,6 +126,7 @@ fn main() {
         bank_forks: bank_forks.clone(),
         bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::new_unique())),
         bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
+        bam_shred_receiver_addresses: Arc::default(),
     };
 
     let keypairs = (0..matches.value_of_t::<usize>("num_keypairs").unwrap())

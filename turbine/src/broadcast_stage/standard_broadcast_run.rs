@@ -190,6 +190,7 @@ impl StandardBroadcastRun {
             &ArcSwap::default(),
             &ArcSwap::default(),
             &ArcSwap::default(),
+            &ArcSwap::default(),
             &shred_receiver_socket,
         );
         let _ = self.record(&brecv, blockstore);
@@ -404,6 +405,7 @@ impl StandardBroadcastRun {
         bank_forks: &RwLock<BankForks>,
         shredstream_receiver_address: &Option<SocketAddr>,
         shred_receiver_addresses: &ShredReceiverAddresses,
+        bam_shred_receiver_addresses: &ShredReceiverAddresses,
         multicast_receiver_address: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
@@ -428,6 +430,7 @@ impl StandardBroadcastRun {
             cluster_info.socket_addr_space(),
             shredstream_receiver_address,
             shred_receiver_addresses,
+            bam_shred_receiver_addresses,
             multicast_receiver_address,
         )?;
         transmit_time.stop();
@@ -497,6 +500,7 @@ impl BroadcastRun for StandardBroadcastRun {
         bank_forks: &RwLock<BankForks>,
         shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
         multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
         shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
@@ -510,6 +514,7 @@ impl BroadcastRun for StandardBroadcastRun {
             bank_forks,
             &shredstream_receiver_address.load(),
             &shred_receiver_addresses.load(),
+            &bam_shred_receiver_addresses.load(),
             &multicast_receiver_address.load(),
         )
     }

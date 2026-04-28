@@ -141,6 +141,7 @@ impl BamNodeApi for MockBamNode {
                     ip: "127.0.0.1".to_string(),
                     port: 8001,
                 }),
+                shred_socks: vec![],
             }),
         }))
     }
@@ -574,6 +575,7 @@ mod bam_manager_tests {
             bank_forks,
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
+            bam_shred_receiver_addresses: Arc::default(),
         }
     }
 
