@@ -634,7 +634,6 @@ pub fn broadcast_shreds(
 
     shred_select.stop();
     transmit_stats.shred_select += shred_select.as_us();
-    let num_packets = main_packets.len() + external_packets.len();
     match socket {
         BroadcastSocket::Udp(s) => {
             let mut send_mmsg_time = Measure::start("send_mmsg");
@@ -670,12 +669,7 @@ pub fn broadcast_shreds(
             // The XDP Router resolves the correct interface and next-hop per destination
             // from the kernel routing table.
             // `.copied()` copies only `(&Payload, SocketAddr)`; `payload.clone()` is refcount-only.
-            for (idx, (payload, addr)) in main_packets
-                .iter()
-                .copied()
-                .chain(external_packets.iter().copied())
-                .enumerate()
-            {
+            for (idx, (payload, addr)) in all_packets.iter().copied().enumerate() {
                 if let Err(e) = s.try_send(idx, addr, payload.clone()) {
                     log::warn!("xdp channel full: {e:?}");
                     transmit_stats.dropped_packets_xdp += 1;
@@ -688,7 +682,7 @@ pub fn broadcast_shreds(
     }
 
     let mut quic_send_time = Measure::start("send shreds via quic");
-    transmit_stats.total_packets += num_packets + quic_packets.len();
+    transmit_stats.total_packets += all_packets.len() + quic_packets.len();
     for (payload, addr) in quic_packets {
         if let Err(err) = quic_endpoint_sender.blocking_send((addr, payload.bytes.clone())) {
             transmit_stats.dropped_packets_quic += 1;
