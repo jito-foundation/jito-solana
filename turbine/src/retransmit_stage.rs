@@ -16,7 +16,7 @@ use {
     lru::LruCache,
     rand::Rng,
     rayon::{ThreadPool, ThreadPoolBuilder, prelude::*},
-    solana_clock::Slot,
+    solana_clock::{NUM_CONSECUTIVE_LEADER_SLOTS, Slot},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
         leader_schedule_cache::LeaderScheduleCache,
@@ -409,9 +409,12 @@ fn retransmit(
             let include_bam_shred_receivers = !bam_shred_receiver_addresses_local.is_empty()
                 && slot_leader.id != my_pubkey
                 && (1..=2).any(|offset| {
-                    slot.checked_add(offset)
-                        .and_then(&mut leader_at_slot)
-                        .is_some_and(|leader| leader.id == my_pubkey)
+                    slot.checked_add(offset).is_some_and(|lookahead_slot| {
+                        lookahead_slot % NUM_CONSECUTIVE_LEADER_SLOTS == 0
+                            && lookahead_slot > working_bank.slot()
+                            && leader_at_slot(lookahead_slot)
+                                .is_some_and(|leader| leader.id == my_pubkey)
+                    })
                 });
             let cluster_nodes =
                 cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
