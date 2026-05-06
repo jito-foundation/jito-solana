@@ -97,15 +97,15 @@ solana-cost-model = { path = "../cost-model", version = "=4.0.0-rc.0", features 
 solana-entry = { path = "../entry", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-faucet = { path = "../faucet", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-feature-gate-interface = "3.1.0"
-solana-fee-calculator = "3.1.0"
+solana-fee-calculator = ">=3.1.0,<3.3.0"
 solana-genesis = { path = "../genesis", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-genesis-config = "3.0.0"
 solana-genesis-utils = { path = "../genesis-utils", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-geyser-plugin-manager = { path = "../geyser-plugin-manager", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-gossip = { path = "../gossip", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
-solana-hash = "4.2.0"
-solana-inflation = "3.0.0"
-solana-instruction = "3.2.0"
+solana-hash = "~4.2.0"
+solana-inflation = "~3.0.0"
+solana-instruction = ">=3.2.0,<3.4.0"
 solana-keypair = "3.0.1"
 solana-ledger = { path = "../ledger", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-loader-v3-interface = "6.1.0"
@@ -115,11 +115,11 @@ solana-message = "3.1.0"
 solana-metrics = { path = "../metrics", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-native-token = "3.0.0"
 solana-net-utils = { path = "../net-utils", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
-solana-nonce = "3.0.0"
+solana-nonce = ">=3.0.0,<3.2.0"
 solana-perf = { path = "../perf", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-poh = { path = "../poh", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-program-runtime = { path = "../program-runtime", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
-solana-pubkey = { version = "4.1.0", default-features = false }
+solana-pubkey = { version = "~4.1.0", default-features = false }
 solana-quic-client = { path = "../quic-client", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-rent = "3.0.0"
 solana-rpc = { path = "../rpc", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
@@ -131,7 +131,7 @@ solana-runtime-transaction = { path = "../runtime-transaction", version = "=4.0.
 solana-sbpf = { version = "=0.14.4", default-features = false }
 solana-sdk-ids = "3.1.0"
 solana-shred-version = "3.0.0"
-solana-signature = { version = "3.3.0", default-features = false }
+solana-signature = { version = "~3.3.0", default-features = false }
 solana-signer = "3.0.0"
 solana-stake-interface = "2.0.2"
 solana-storage-bigtable = { path = "../storage-bigtable", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
@@ -140,7 +140,7 @@ solana-svm-callback = { path = "../svm-callback", version = "=4.0.0-rc.0", featu
 solana-svm-feature-set = { path = "../svm-feature-set", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-svm-log-collector = { path = "../svm-log-collector", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
 solana-svm-type-overrides = { path = "../svm-type-overrides", version = "=4.0.0-rc.0", features = ["agave-unstable-api"] }
-solana-system-interface = "3.0"
+solana-system-interface = ">=3.0.0,<3.2.0"
 solana-system-transaction = "3.0.0"
 solana-test-validator = { path = "../test-validator", version = "=4.0.0-rc.0" }
 solana-time-utils = "3.0.0"
