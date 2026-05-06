@@ -73,7 +73,10 @@ use {
         get_program_data_address, instruction::UpgradeableLoaderInstruction,
         state::UpgradeableLoaderState,
     },
-    solana_loader_v4_interface::{instruction as loader_v4, state::LoaderV4State},
+    solana_loader_v4_interface::{
+        instruction as loader_v4,
+        state::{LoaderV4State, LoaderV4Status},
+    },
     solana_message::{
         Message, MessageHeader, SanitizedMessage, compiled_instruction::CompiledInstruction,
     },
@@ -12500,6 +12503,19 @@ fn test_load_and_execute_transactions_populates_global_program_cache() {
     }
 }
 
+fn simulate_program_cache_test_tx(
+    bank: &Bank,
+    instructions: Vec<Instruction>,
+    signers: &[&Keypair],
+) -> RuntimeTransaction<SanitizedTransaction> {
+    let message = Message::new(&instructions, Some(&signers[0].pubkey()));
+    RuntimeTransaction::from_transaction_for_tests(Transaction::new(
+        signers,
+        message,
+        bank.last_blockhash(),
+    ))
+}
+
 #[test]
 fn test_simulate_transactions_unchecked_with_pre_accounts_does_not_populate_global_program_cache() {
     let (genesis_config, mint_keypair) = create_genesis_config(100_000);
@@ -12565,5 +12581,251 @@ fn test_simulate_transactions_unchecked_with_pre_accounts_does_not_populate_glob
             "simulate_transactions_unchecked_with_pre_accounts must not populate global program \
              cache",
         );
+    }
+}
+
+#[test]
+fn test_simulate_bundle_deploy_then_invoke_does_not_poison_global_program_cache() {
+    let (mut genesis_config, mint_keypair) = create_genesis_config_no_tx_fee(10 * LAMPORTS_PER_SOL);
+    activate_feature(
+        &mut genesis_config,
+        agave_feature_set::enable_loader_v4::id(),
+    );
+    let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+    goto_end_of_slot(root_bank.clone());
+    let bank = new_from_parent_with_fork_next_slot(root_bank, bank_forks.as_ref());
+
+    let program_data = include_bytes!("../../../programs/bpf_loader/test_elfs/out/noop_aligned.so");
+    let program_keypair = Keypair::new();
+    let program_data_len = program_data.len() as u32;
+    let program_account_len = LoaderV4State::program_data_offset() + program_data.len();
+    let program_lamports = bank.get_minimum_balance_for_rent_exemption(program_account_len);
+
+    let mut transactions = vec![simulate_program_cache_test_tx(
+        &bank,
+        loader_v4::create_buffer(
+            &mint_keypair.pubkey(),
+            &program_keypair.pubkey(),
+            program_lamports,
+            &mint_keypair.pubkey(),
+            program_data_len,
+            &mint_keypair.pubkey(),
+        ),
+        &[&mint_keypair, &program_keypair],
+    )];
+
+    for (offset, chunk) in program_data.chunks(700).enumerate() {
+        transactions.push(simulate_program_cache_test_tx(
+            &bank,
+            vec![loader_v4::write(
+                &program_keypair.pubkey(),
+                &mint_keypair.pubkey(),
+                (offset * 700) as u32,
+                chunk.to_vec(),
+            )],
+            &[&mint_keypair],
+        ));
+    }
+
+    transactions.push(simulate_program_cache_test_tx(
+        &bank,
+        vec![loader_v4::deploy(
+            &program_keypair.pubkey(),
+            &mint_keypair.pubkey(),
+        )],
+        &[&mint_keypair],
+    ));
+    transactions.push(simulate_program_cache_test_tx(
+        &bank,
+        vec![Instruction::new_with_bytes(
+            program_keypair.pubkey(),
+            &[],
+            Vec::new(),
+        )],
+        &[&mint_keypair],
+    ));
+
+    let requested_accounts = vec![vec![]; transactions.len()];
+    let simulation_results = bank.simulate_transactions_unchecked_with_pre_accounts(
+        &transactions,
+        &requested_accounts,
+        &requested_accounts,
+        None,
+    );
+    assert_eq!(simulation_results.len(), transactions.len());
+    assert!(
+        simulation_results
+            .iter()
+            .take(simulation_results.len() - 1)
+            .all(|(_pre_accounts, result, _post_accounts)| result.result.is_ok())
+    );
+    assert_eq!(
+        simulation_results.last().unwrap().1.result,
+        Err(TransactionError::InstructionError(
+            0,
+            InstructionError::UnsupportedProgramId
+        )),
+    );
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        assert!(
+            program_cache
+                .get_slot_versions_for_tests(&program_keypair.pubkey())
+                .is_empty(),
+            "simulation must not populate the global program cache",
+        );
+    }
+
+    let create_buffer_transaction = Transaction::new(
+        &[&mint_keypair, &program_keypair],
+        Message::new(
+            &loader_v4::create_buffer(
+                &mint_keypair.pubkey(),
+                &program_keypair.pubkey(),
+                program_lamports,
+                &mint_keypair.pubkey(),
+                123,
+                &mint_keypair.pubkey(),
+            ),
+            Some(&mint_keypair.pubkey()),
+        ),
+        bank.last_blockhash(),
+    );
+    assert_eq!(bank.process_transaction(&create_buffer_transaction), Ok(()));
+
+    goto_end_of_slot(bank.clone());
+    let bank = new_from_parent_with_fork_next_slot(bank, bank_forks.as_ref());
+    let invoke_transaction = Transaction::new(
+        &[&mint_keypair],
+        Message::new(
+            &[Instruction::new_with_bytes(
+                program_keypair.pubkey(),
+                &[],
+                Vec::new(),
+            )],
+            Some(&mint_keypair.pubkey()),
+        ),
+        bank.last_blockhash(),
+    );
+    assert_eq!(
+        bank.process_transaction(&invoke_transaction),
+        Err(TransactionError::InstructionError(
+            0,
+            InstructionError::UnsupportedProgramId
+        )),
+    );
+}
+
+#[test]
+fn test_simulate_bundle_close_tombstone_applies_to_later_simulated_invoke() {
+    let (mut genesis_config, mint_keypair) = create_genesis_config_no_tx_fee(10 * LAMPORTS_PER_SOL);
+    activate_feature(
+        &mut genesis_config,
+        agave_feature_set::enable_loader_v4::id(),
+    );
+    let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+    goto_end_of_slot(root_bank.clone());
+    let bank = new_from_parent_with_fork_next_slot(root_bank, bank_forks.as_ref());
+
+    let program_data = include_bytes!("../../../programs/bpf_loader/test_elfs/out/noop_aligned.so");
+    let program_key = Pubkey::new_unique();
+    let upgrade_authority = Keypair::new();
+    let program_account_len = LoaderV4State::program_data_offset() + program_data.len();
+    let mut program_account = AccountSharedData::new(
+        bank.get_minimum_balance_for_rent_exemption(program_account_len),
+        program_account_len,
+        &solana_sdk_ids::loader_v4::id(),
+    );
+    program_account.set_executable(true);
+    let program_state = <&mut [u8; LoaderV4State::program_data_offset()]>::try_from(
+        program_account
+            .data_as_mut_slice()
+            .get_mut(0..LoaderV4State::program_data_offset())
+            .unwrap(),
+    )
+    .unwrap();
+    let program_state = unsafe {
+        std::mem::transmute::<&mut [u8; LoaderV4State::program_data_offset()], &mut LoaderV4State>(
+            program_state,
+        )
+    };
+    *program_state = LoaderV4State {
+        slot: bank.slot() - 1,
+        authority_address_or_next_version: upgrade_authority.pubkey(),
+        status: LoaderV4Status::Deployed,
+    };
+    program_account.data_as_mut_slice()[LoaderV4State::program_data_offset()..]
+        .copy_from_slice(program_data);
+    bank.store_account(&program_key, &program_account);
+
+    let invoke_message = Message::new(
+        &[Instruction::new_with_bytes(program_key, &[], Vec::new())],
+        Some(&mint_keypair.pubkey()),
+    );
+    let invoke_transaction = Transaction::new(
+        &[&mint_keypair],
+        invoke_message.clone(),
+        bank.last_blockhash(),
+    );
+    assert_eq!(bank.process_transaction(&invoke_transaction), Ok(()));
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        let slot_versions = program_cache.get_slot_versions_for_tests(&program_key);
+        assert_eq!(slot_versions.len(), 1);
+        assert_matches!(slot_versions[0].program, ProgramCacheEntryType::Loaded(_));
+    }
+
+    goto_end_of_slot(bank.clone());
+    let bank = new_from_parent_with_fork_next_slot(bank, bank_forks.as_ref());
+
+    let transactions = vec![
+        simulate_program_cache_test_tx(
+            &bank,
+            vec![loader_v4::retract(
+                &program_key,
+                &upgrade_authority.pubkey(),
+            )],
+            &[&mint_keypair, &upgrade_authority],
+        ),
+        simulate_program_cache_test_tx(
+            &bank,
+            vec![Instruction::new_with_bytes(program_key, &[], Vec::new())],
+            &[&mint_keypair],
+        ),
+    ];
+    let requested_accounts = vec![vec![]; transactions.len()];
+    let simulation_results = bank.simulate_transactions_unchecked_with_pre_accounts(
+        &transactions,
+        &requested_accounts,
+        &requested_accounts,
+        None,
+    );
+
+    assert_eq!(simulation_results.len(), transactions.len());
+    assert_eq!(simulation_results[0].1.result, Ok(()));
+    assert_eq!(
+        simulation_results[1].1.result,
+        Err(TransactionError::InstructionError(
+            0,
+            InstructionError::UnsupportedProgramId
+        )),
+    );
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        let slot_versions = program_cache.get_slot_versions_for_tests(&program_key);
+        assert_eq!(slot_versions.len(), 1);
+        assert_matches!(slot_versions[0].program, ProgramCacheEntryType::Loaded(_));
     }
 }
