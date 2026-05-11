@@ -1,7 +1,7 @@
 //! Use a separate file for Jito related code to minimize upstream merge conflicts.
 
 use {
-    crate::config::RpcSimulateTransactionAccountsConfig,
+    crate::{config::RpcSimulateTransactionAccountsConfig, response::RpcBlockhash},
     serde::{Deserialize, Serialize},
     solana_account_decoder_client_types::UiAccount,
     solana_clock::Slot,
@@ -70,6 +70,7 @@ pub struct RpcSimulateBundleTransactionResult {
     pub units_consumed: Option<u64>,
     pub loaded_accounts_data_size: Option<u32>,
     pub return_data: Option<UiTransactionReturnData>,
+    pub replacement_blockhash: Option<RpcBlockhash>,
     pub fee: Option<u64>,
     pub pre_balances: Option<Vec<u64>>,
     pub post_balances: Option<Vec<u64>>,
