@@ -8,7 +8,10 @@ use {
     solana_commitment_config::{CommitmentConfig, CommitmentLevel},
     solana_signature::Signature,
     solana_transaction_error::TransactionError,
-    solana_transaction_status_client_types::{UiTransactionEncoding, UiTransactionReturnData},
+    solana_transaction_status_client_types::{
+        UiLoadedAddresses, UiTransactionEncoding, UiTransactionReturnData,
+        UiTransactionTokenBalance,
+    },
     thiserror::Error,
 };
 
@@ -65,7 +68,14 @@ pub struct RpcSimulateBundleTransactionResult {
     pub pre_execution_accounts: Option<Vec<UiAccount>>,
     pub post_execution_accounts: Option<Vec<UiAccount>>,
     pub units_consumed: Option<u64>,
+    pub loaded_accounts_data_size: Option<u32>,
     pub return_data: Option<UiTransactionReturnData>,
+    pub fee: Option<u64>,
+    pub pre_balances: Option<Vec<u64>>,
+    pub post_balances: Option<Vec<u64>>,
+    pub pre_token_balances: Option<Vec<UiTransactionTokenBalance>>,
+    pub post_token_balances: Option<Vec<UiTransactionTokenBalance>>,
+    pub loaded_addresses: Option<UiLoadedAddresses>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

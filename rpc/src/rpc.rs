@@ -4335,7 +4335,7 @@ pub mod rpc_full {
                 transaction_results: transactions
                     .into_iter()
                     .zip(results.into_iter())
-                    .map(|(_tx, (pre_accounts, result, post_accounts))| {
+                    .map(|(tx, (pre_accounts, result, post_accounts))| {
                         Ok(RpcSimulateBundleTransactionResult {
                             err: result.result.err(),
                             logs: Some(result.logs),
@@ -4366,7 +4366,20 @@ pub mod rpc_full {
                                     .collect::<Result<Vec<_>>>()?,
                             ),
                             units_consumed: Some(result.units_consumed),
+                            loaded_accounts_data_size: Some(result.loaded_accounts_data_size),
                             return_data: result.return_data.map(|return_data| return_data.into()),
+                            fee: result.fee,
+                            pre_balances: result.pre_balances,
+                            post_balances: result.post_balances,
+                            pre_token_balances: result.pre_token_balances.map(|balances| {
+                                balances.into_iter().map(|balance| solana_ledger::transaction_balances::svm_token_info_to_token_balance(balance).into()).collect()
+                            }),
+                            post_token_balances: result.post_token_balances.map(|balances| {
+                                balances.into_iter().map(|balance| solana_ledger::transaction_balances::svm_token_info_to_token_balance(balance).into()).collect()
+                            }),
+                            loaded_addresses: Some(UiLoadedAddresses::from(
+                                &tx.get_loaded_addresses(),
+                            )),
                         })
                     })
                     .collect::<Result<Vec<_>>>()?,
@@ -6293,26 +6306,32 @@ pub mod tests {
 
         // create tip tx
         let tip_amount = 10000;
-        let tip_tx = VersionedTransaction::from(system_transaction::transfer(
+        let tip_ix = system_transaction::transfer(
             &searcher_keypair,
             &leader_pubkey,
             tip_amount,
             recent_blockhash,
-        ));
+        );
+        let tip_tx = VersionedTransaction::from(tip_ix.clone());
 
         // some random mev tx
         let mev_amount = 20000;
         let goku_pubkey = solana_pubkey::new_rand();
-        let mev_tx = VersionedTransaction::from(system_transaction::transfer(
+        let ix = system_transaction::transfer(
             &searcher_keypair,
             &goku_pubkey,
             mev_amount,
             recent_blockhash,
-        ));
+        );
+        let mev_tx = VersionedTransaction::from(ix.clone());
 
         let encoded_mev_tx = general_purpose::STANDARD.encode(serialize(&mev_tx).unwrap());
         let encoded_tip_tx = general_purpose::STANDARD.encode(serialize(&tip_tx).unwrap());
         let b64_data = general_purpose::STANDARD.encode(leader_account_data.data());
+        let searcher_balance = bank.get_balance(&searcher_keypair.pubkey());
+        let expected_mev_loaded_accounts_data_size = expected_loaded_accounts_data_size(&bank, &ix);
+        let expected_tip_loaded_accounts_data_size =
+            expected_loaded_accounts_data_size(&bank, &tip_ix);
 
         // 3. test and assert
         let skip_sig_verify = true;
@@ -6329,6 +6348,13 @@ pub mod tests {
                             "logs": ["Program 11111111111111111111111111111111 invoke [1]", "Program 11111111111111111111111111111111 success"],
                             "returnData": null,
                             "unitsConsumed": 150,
+                            "loadedAccountsDataSize": expected_mev_loaded_accounts_data_size,
+                            "fee": TEST_SIGNATURE_FEE,
+                            "loadedAddresses": {"readonly": [], "writable": []},
+                            "preBalances": [searcher_balance, 0, 1],
+                            "postBalances": [searcher_balance - mev_amount - TEST_SIGNATURE_FEE, mev_amount, 1],
+                            "preTokenBalances": [],
+                            "postTokenBalances": [],
                             "postExecutionAccounts": [],
                             "preExecutionAccounts": [
                                 {
@@ -6346,6 +6372,13 @@ pub mod tests {
                             "logs": ["Program 11111111111111111111111111111111 invoke [1]", "Program 11111111111111111111111111111111 success"],
                             "returnData": null,
                             "unitsConsumed": 150,
+                            "loadedAccountsDataSize": expected_tip_loaded_accounts_data_size,
+                            "fee": TEST_SIGNATURE_FEE,
+                            "loadedAddresses": {"readonly": [], "writable": []},
+                            "preBalances": [searcher_balance - mev_amount - TEST_SIGNATURE_FEE, leader_account_data.lamports(), 1],
+                            "postBalances": [searcher_balance - mev_amount - TEST_SIGNATURE_FEE - tip_amount - TEST_SIGNATURE_FEE, leader_account_data.lamports() + tip_amount, 1],
+                            "preTokenBalances": [],
+                            "postTokenBalances": [],
                             "preExecutionAccounts": [],
                             "postExecutionAccounts": [
                                 {
