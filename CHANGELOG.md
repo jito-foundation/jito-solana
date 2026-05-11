@@ -22,6 +22,9 @@ Release channels have their own copy of this changelog:
 #### Deprecations
 * Using `minimal` for `--accounts-index-limit` is now deprecated.
 #### Changes
+### Geyser
+#### Changes
+* Added deshred transaction notifications for Geyser plugins.
 
 ## 4.0.0
 ### RPC
