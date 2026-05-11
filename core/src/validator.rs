@@ -178,6 +178,13 @@ use {
 const MAX_COMPLETED_DATA_SETS_IN_CHANNEL: usize = 100_000;
 const WAIT_FOR_SUPERMAJORITY_THRESHOLD_PERCENT: u64 = 80;
 
+const fn should_start_completed_data_sets_service(
+    full_api: bool,
+    deshred_transaction_notifier_enabled: bool,
+) -> bool {
+    full_api || deshred_transaction_notifier_enabled
+}
+
 #[derive(Clone, EnumCount, EnumIter, EnumString, VariantNames, Default, IntoStaticStr, Display)]
 #[strum(serialize_all = "kebab-case")]
 pub enum BlockVerificationMethod {
@@ -1363,7 +1370,10 @@ impl Validator {
             };
 
             let (completed_data_sets_sender, completed_data_sets_service) =
-                if !config.rpc_config.full_api {
+                if !should_start_completed_data_sets_service(
+                    config.rpc_config.full_api,
+                    deshred_transaction_notifier.is_some(),
+                ) {
                     (None, None)
                 } else {
                     let (completed_data_sets_sender, completed_data_sets_receiver) =
@@ -3029,6 +3039,14 @@ mod tests {
         solana_sha256_hasher::hash,
         std::{fs::remove_dir_all, num::NonZeroU64, thread, time::Duration},
     };
+
+    #[test]
+    fn test_should_start_completed_data_sets_service() {
+        assert!(!should_start_completed_data_sets_service(false, false));
+        assert!(should_start_completed_data_sets_service(true, false));
+        assert!(should_start_completed_data_sets_service(false, true));
+        assert!(should_start_completed_data_sets_service(true, true));
+    }
 
     #[test]
     fn validator_exit() {
