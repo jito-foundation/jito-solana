@@ -1,18 +1,28 @@
 use {
     crate::banking_stage::consumer::RetryableIndex,
+    jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_clock::{Epoch, Slot},
+    solana_transaction_error::TransactionError,
     std::fmt::Display,
 };
 
 /// A unique identifier for a transaction batch.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct TransactionBatchId(u64);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransactionBatchId(pub u64);
 
 impl TransactionBatchId {
     pub fn new(index: u64) -> Self {
         Self(index)
     }
 }
+
+impl std::hash::Hash for TransactionBatchId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0)
+    }
+}
+
+impl solana_nohash_hasher::IsEnabled for TransactionBatchId {}
 
 impl Display for TransactionBatchId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -42,6 +52,9 @@ pub struct ConsumeWork<Tx> {
     pub ids: Vec<TransactionId>,
     pub transactions: Vec<Tx>,
     pub max_ages: Vec<MaxAge>,
+    pub revert_on_error: bool,
+    pub respond_with_extra_info: bool,
+    pub max_schedule_slot: Option<Slot>,
 }
 
 /// Message: [Worker -> Scheduler]
@@ -49,4 +62,22 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<RetryableIndex>,
+    pub extra_info: Option<FinishedConsumeWorkExtraInfo>,
+}
+
+#[derive(Debug)]
+pub struct FinishedConsumeWorkExtraInfo {
+    pub processed_results: Vec<TransactionResult>,
+}
+
+#[derive(Clone, Debug)]
+pub enum TransactionResult {
+    Committed(TransactionCommittedResult),
+    NotCommitted(NotCommittedReason),
+}
+
+#[derive(Clone, Debug)]
+pub enum NotCommittedReason {
+    PohTimeout,
+    Error(TransactionError),
 }
