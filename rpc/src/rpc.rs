@@ -4298,6 +4298,7 @@ pub mod rpc_full {
                 )));
             }
 
+            let mut blockhash: Option<RpcBlockhash> = None;
             if replace_recent_blockhash {
                 if !skip_sig_verify {
                     return Err(Error::invalid_params(
@@ -4305,6 +4306,13 @@ pub mod rpc_full {
                     ));
                 }
                 let recent_blockhash = bank.last_blockhash();
+                let last_valid_block_height = bank
+                    .get_blockhash_last_valid_block_height(&recent_blockhash)
+                    .expect("bank blockhash queue should contain blockhash");
+                blockhash.replace(RpcBlockhash {
+                    blockhash: recent_blockhash.to_string(),
+                    last_valid_block_height,
+                });
                 unsanitized_txs.iter_mut().for_each(|tx| {
                     tx.message.set_recent_blockhash(recent_blockhash);
                 });
@@ -4371,7 +4379,7 @@ pub mod rpc_full {
                 transaction_results: transactions
                     .into_iter()
                     .zip(results.into_iter())
-                    .map(|(_tx, (pre_accounts, result, post_accounts))| {
+                    .map(|(tx, (pre_accounts, result, post_accounts))| {
                         Ok(RpcSimulateBundleTransactionResult {
                             err: result.result.err(),
                             logs: Some(result.logs),
@@ -4402,7 +4410,21 @@ pub mod rpc_full {
                                     .collect::<Result<Vec<_>>>()?,
                             ),
                             units_consumed: Some(result.units_consumed),
+                            loaded_accounts_data_size: Some(result.loaded_accounts_data_size),
                             return_data: result.return_data.map(|return_data| return_data.into()),
+                            replacement_blockhash: blockhash.clone(),
+                            fee: result.fee,
+                            pre_balances: result.pre_balances,
+                            post_balances: result.post_balances,
+                            pre_token_balances: result.pre_token_balances.map(|balances| {
+                                balances.into_iter().map(|balance| solana_ledger::transaction_balances::svm_token_info_to_token_balance(balance).into()).collect()
+                            }),
+                            post_token_balances: result.post_token_balances.map(|balances| {
+                                balances.into_iter().map(|balance| solana_ledger::transaction_balances::svm_token_info_to_token_balance(balance).into()).collect()
+                            }),
+                            loaded_addresses: Some(UiLoadedAddresses::from(
+                                &tx.get_loaded_addresses(),
+                            )),
                         })
                     })
                     .collect::<Result<Vec<_>>>()?,
@@ -6331,31 +6353,41 @@ pub mod tests {
 
         // create tip tx
         let tip_amount = 10000;
-        let tip_tx = VersionedTransaction::from(system_transaction::transfer(
+        let tip_ix = system_transaction::transfer(
             &searcher_keypair,
             &leader_pubkey,
             tip_amount,
             recent_blockhash,
-        ));
+        );
+        let tip_tx = VersionedTransaction::from(tip_ix.clone());
 
         // some random mev tx
         let mev_amount = 20000;
         let goku_pubkey = solana_pubkey::new_rand();
-        let mev_tx = VersionedTransaction::from(system_transaction::transfer(
+        let ix = system_transaction::transfer(
             &searcher_keypair,
             &goku_pubkey,
             mev_amount,
             recent_blockhash,
-        ));
+        );
+        let mev_tx = VersionedTransaction::from(ix.clone());
 
         let encoded_mev_tx = general_purpose::STANDARD.encode(serialize(&mev_tx).unwrap());
         let encoded_tip_tx = general_purpose::STANDARD.encode(serialize(&tip_tx).unwrap());
         let b64_data = general_purpose::STANDARD.encode(leader_account_data.data());
+        let searcher_balance = bank.get_balance(&searcher_keypair.pubkey());
+        let expected_mev_loaded_accounts_data_size = expected_loaded_accounts_data_size(&bank, &ix);
+        let expected_tip_loaded_accounts_data_size =
+            expected_loaded_accounts_data_size(&bank, &tip_ix);
+        let expected_replacement_blockhash = bank.last_blockhash();
+        let expected_last_valid_block_height = bank
+            .get_blockhash_last_valid_block_height(&expected_replacement_blockhash)
+            .unwrap();
 
         // 3. test and assert
         let skip_sig_verify = true;
         let replace_recent_blockhash = false;
-        let expected_response = json!({
+        let mut expected_response = json!({
             "jsonrpc": "2.0",
             "result": {
                 "context": {"slot": bank.slot(), "apiVersion": RpcApiVersion::default()},
@@ -6367,6 +6399,13 @@ pub mod tests {
                             "logs": ["Program 11111111111111111111111111111111 invoke [1]", "Program 11111111111111111111111111111111 success"],
                             "returnData": null,
                             "unitsConsumed": 150,
+                            "loadedAccountsDataSize": expected_mev_loaded_accounts_data_size,
+                            "fee": TEST_SIGNATURE_FEE,
+                            "loadedAddresses": {"readonly": [], "writable": []},
+                            "preBalances": [searcher_balance, 0, 1],
+                            "postBalances": [searcher_balance - mev_amount - TEST_SIGNATURE_FEE, mev_amount, 1],
+                            "preTokenBalances": [],
+                            "postTokenBalances": [],
                             "postExecutionAccounts": [],
                             "preExecutionAccounts": [
                                 {
@@ -6384,6 +6423,13 @@ pub mod tests {
                             "logs": ["Program 11111111111111111111111111111111 invoke [1]", "Program 11111111111111111111111111111111 success"],
                             "returnData": null,
                             "unitsConsumed": 150,
+                            "loadedAccountsDataSize": expected_tip_loaded_accounts_data_size,
+                            "fee": TEST_SIGNATURE_FEE,
+                            "loadedAddresses": {"readonly": [], "writable": []},
+                            "preBalances": [searcher_balance - mev_amount - TEST_SIGNATURE_FEE, leader_account_data.lamports(), 1],
+                            "postBalances": [searcher_balance - mev_amount - TEST_SIGNATURE_FEE - tip_amount - TEST_SIGNATURE_FEE, leader_account_data.lamports() + tip_amount, 1],
+                            "preTokenBalances": [],
+                            "postTokenBalances": [],
                             "preExecutionAccounts": [],
                             "postExecutionAccounts": [
                                 {
@@ -6401,6 +6447,11 @@ pub mod tests {
             },
             "id": 1,
         });
+        expected_response["result"]["value"]["transactionResults"][0]["replacementBlockhash"] =
+            serde_json::Value::Null;
+        expected_response["result"]["value"]["transactionResults"][1]["replacementBlockhash"] =
+            serde_json::Value::Null;
+        let expected_response_json = expected_response.clone();
 
         let request = format!(
             r#"{{"jsonrpc":"2.0",
@@ -6438,8 +6489,61 @@ pub mod tests {
             .handle_request_sync(&request, meta.clone())
             .expect("response");
 
+        let expected_response = serde_json::from_value::<Response>(expected_response_json.clone())
+            .expect("expected_response deserialization");
+        let actual_response = serde_json::from_str::<Response>(&actual_response)
+            .expect("actual_response deserialization");
+
+        assert_eq!(expected_response, actual_response);
+
+        let replace_recent_blockhash = true;
+        let request = format!(
+            r#"{{"jsonrpc":"2.0",
+                 "id":1,
+                 "method":"simulateBundle",
+                 "params":[
+                   {{
+                     "encodedTransactions": ["{}", "{}"]
+                   }},
+                   {{
+                     "skipSigVerify": {},
+                     "replaceRecentBlockhash": {},
+                     "slot": {},
+                     "preExecutionAccountsConfigs": [
+                        {{ "encoding": "base64", "addresses": ["{}"] }},
+                        {{ "encoding": "base64", "addresses": [] }}
+                     ],
+                     "postExecutionAccountsConfigs": [
+                        {{ "encoding": "base64", "addresses": [] }},
+                        {{ "encoding": "base64", "addresses": ["{}"] }}
+                     ]
+                   }}
+                ]
+            }}"#,
+            encoded_mev_tx,
+            encoded_tip_tx,
+            skip_sig_verify,
+            replace_recent_blockhash,
+            bank.slot(),
+            leader_pubkey,
+            leader_pubkey,
+        );
+
+        let mut expected_response = expected_response_json;
+        let replacement_blockhash = json!({
+            "blockhash": expected_replacement_blockhash.to_string(),
+            "lastValidBlockHeight": expected_last_valid_block_height,
+        });
+        expected_response["result"]["value"]["transactionResults"][0]["replacementBlockhash"] =
+            replacement_blockhash.clone();
+        expected_response["result"]["value"]["transactionResults"][1]["replacementBlockhash"] =
+            replacement_blockhash;
         let expected_response = serde_json::from_value::<Response>(expected_response)
             .expect("expected_response deserialization");
+
+        let actual_response = io
+            .handle_request_sync(&request, meta.clone())
+            .expect("response");
         let actual_response = serde_json::from_str::<Response>(&actual_response)
             .expect("actual_response deserialization");
 
