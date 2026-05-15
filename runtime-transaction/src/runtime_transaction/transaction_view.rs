@@ -215,6 +215,10 @@ impl<D: TransactionData> TransactionWithMeta for RuntimeTransaction<ResolvedTran
             message,
         }
     }
+
+    fn serialized_size(&self) -> usize {
+        self.transaction.data().len()
+    }
 }
 
 #[cfg(test)]
@@ -419,6 +423,38 @@ mod tests {
             sanitized_transaction,
             Some(loaded_addresses),
             &reserved_key_set,
+        );
+    }
+
+    #[test]
+    fn test_serialized_size() {
+        let serialized_transaction =
+            bincode::serialize(&VersionedTransaction::from(system_transaction::transfer(
+                &Keypair::new(),
+                &Pubkey::new_unique(),
+                1,
+                Hash::new_unique(),
+            )))
+            .unwrap();
+        let transaction_view =
+            SanitizedTransactionView::try_new_sanitized(&serialized_transaction[..], true).unwrap();
+        let static_runtime_transaction =
+            RuntimeTransaction::<SanitizedTransactionView<_>>::try_new(
+                transaction_view,
+                MessageHash::Compute,
+                None,
+            )
+            .unwrap();
+        let runtime_transaction = RuntimeTransaction::<ResolvedTransactionView<_>>::try_new(
+            static_runtime_transaction,
+            None,
+            &ReservedAccountKeys::empty_key_set(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtime_transaction.serialized_size(),
+            serialized_transaction.len()
         );
     }
 }
