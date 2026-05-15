@@ -1178,6 +1178,18 @@ fn test_single_tx_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     assert_eq!(simulate_result.transaction_results.len(), 1);
     let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, None);
+    assert_eq!(result.fee, Some(0));
+    assert_eq!(result.pre_balances, Some(vec![mint_balance, 0, 1]));
+    assert_eq!(
+        result.post_balances,
+        Some(vec![mint_balance.saturating_sub(rent), rent, 1])
+    );
+    assert_eq!(result.pre_token_balances, Some(vec![]));
+    assert_eq!(result.post_token_balances, Some(vec![]));
+    assert!(result.loaded_accounts_data_size.is_some());
+    let loaded_addresses = result.loaded_addresses.as_ref().unwrap();
+    assert!(loaded_addresses.readonly.is_empty());
+    assert!(loaded_addresses.writable.is_empty());
 
     let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
     assert_eq!(pre_execution_accounts.len(), 2);
@@ -1266,6 +1278,22 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
 
     let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, None);
+    assert_eq!(result.fee, Some(0));
+    assert_eq!(result.pre_balances, Some(vec![mint_balance, 0, 1]));
+    assert_eq!(
+        result.post_balances,
+        Some(vec![
+            mint_balance.saturating_sub(rent.saturating_mul(2)),
+            rent.saturating_mul(2),
+            1,
+        ])
+    );
+    assert_eq!(result.pre_token_balances, Some(vec![]));
+    assert_eq!(result.post_token_balances, Some(vec![]));
+    assert!(result.loaded_accounts_data_size.is_some());
+    let loaded_addresses = result.loaded_addresses.as_ref().unwrap();
+    assert!(loaded_addresses.readonly.is_empty());
+    assert!(loaded_addresses.writable.is_empty());
     let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
     assert_eq!(pre_execution_accounts.len(), 1);
     assert_eq!(pre_execution_accounts[0].lamports, mint_balance); // mint
@@ -1279,6 +1307,18 @@ fn test_chained_transfers_ok(rpc_client: &RpcClient, mint_keypair: &Keypair) {
 
     let result = simulate_result.transaction_results.get(1).unwrap();
     assert_eq!(result.err, None);
+    assert_eq!(result.fee, Some(0));
+    assert_eq!(
+        result.pre_balances,
+        Some(vec![rent.saturating_mul(2), 0, 1])
+    );
+    assert_eq!(result.post_balances, Some(vec![rent, rent, 1]));
+    assert_eq!(result.pre_token_balances, Some(vec![]));
+    assert_eq!(result.post_token_balances, Some(vec![]));
+    assert!(result.loaded_accounts_data_size.is_some());
+    let loaded_addresses = result.loaded_addresses.as_ref().unwrap();
+    assert!(loaded_addresses.readonly.is_empty());
+    assert!(loaded_addresses.writable.is_empty());
     let pre_execution_accounts = result.pre_execution_accounts.as_ref().unwrap();
     assert_eq!(pre_execution_accounts.len(), 2);
     assert_eq!(
@@ -1340,6 +1380,10 @@ fn test_single_bad_tx(rpc_client: &RpcClient, mint_keypair: &Keypair) {
     assert_eq!(simulate_result.transaction_results.len(), 1);
     let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, Some(TransactionError::AccountNotFound));
+    assert!(result.loaded_accounts_data_size.is_some());
+    let loaded_addresses = result.loaded_addresses.as_ref().unwrap();
+    assert!(loaded_addresses.readonly.is_empty());
+    assert!(loaded_addresses.writable.is_empty());
 }
 
 fn test_last_tx_fails(rpc_client: &RpcClient, mint_keypair: &Keypair) {
