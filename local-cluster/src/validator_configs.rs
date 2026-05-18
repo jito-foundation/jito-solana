@@ -81,6 +81,14 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         voting_service_test_override: config.voting_service_test_override.clone(),
         repair_handler_type: config.repair_handler_type.clone(),
         snapshot_packager_niceness_adj: config.snapshot_packager_niceness_adj,
+        relayer_config: config.relayer_config.clone(),
+        block_engine_config: config.block_engine_config.clone(),
+        shred_receiver_addresses: config.shred_receiver_addresses.clone(),
+        shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
+        multicast_receiver_address: config.multicast_receiver_address.clone(),
+        tip_manager_config: config.tip_manager_config.clone(),
+        bam_url: config.bam_url.clone(),
+        disable_multicast_shred_check: config.disable_multicast_shred_check,
     }
 }
 

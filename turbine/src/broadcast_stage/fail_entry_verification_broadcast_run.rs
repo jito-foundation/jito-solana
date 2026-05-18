@@ -1,10 +1,14 @@
 use {
     super::*,
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{ShredReceiverAddresses, cluster_nodes::ClusterNodesCache},
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{ProcessShredsStats, ReedSolomonCache, Shredder},
-    std::{thread::sleep, time::Duration},
+    std::{
+        net::{SocketAddr, UdpSocket},
+        thread::sleep,
+        time::Duration,
+    },
 };
 
 pub const NUM_BAD_SLOTS: u64 = 10;
@@ -180,10 +184,16 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, _) = receiver.recv()?;
         broadcast_shreds(
             sock,
+            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &AtomicInterval::default(),
@@ -191,6 +201,10 @@ impl BroadcastRun for FailEntryVerificationBroadcastRun {
             cluster_info,
             bank_forks,
             cluster_info.socket_addr_space(),
+            &shredstream_receiver_address.load(),
+            &shred_receiver_addresses.load(),
+            &bam_shred_receiver_addresses.load(),
+            &multicast_receiver_address.load(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
