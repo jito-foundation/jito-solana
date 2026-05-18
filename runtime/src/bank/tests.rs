@@ -41,6 +41,7 @@ use {
     solana_account_info::MAX_PERMITTED_DATA_INCREASE,
     solana_accounts_db::{
         accounts::AccountAddressFilter,
+        accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING,
         accounts_index::{
             AccountIndex, AccountSecondaryIndexes, ITER_BATCH_SIZE, IndexKey, ScanConfig, ScanError,
         },
@@ -11648,6 +11649,46 @@ fn test_filter_program_errors_and_collect_fee_details() {
 }
 
 #[test]
+fn test_priority_fee_total() {
+    // Test that priority_fee_total() correctly returns the accumulated priority fees
+    let (genesis_config, _mint_keypair) = create_genesis_config(1_000_000);
+    let mut bank = Bank::new_for_tests(&genesis_config);
+
+    // Initially, priority_fee_total should be 0
+    assert_eq!(bank.priority_fee_total(), 0);
+
+    // Set some priority fees in collector_fee_details
+    let transaction_fee = 5000;
+    let priority_fee = 10000;
+    bank.collector_fee_details = RwLock::new(CollectorFeeDetails {
+        transaction_fee,
+        priority_fee,
+    });
+
+    // Now priority_fee_total should return the priority fee amount
+    assert_eq!(bank.priority_fee_total(), priority_fee);
+
+    // Test with different values
+    let new_priority_fee = 25000;
+    bank.collector_fee_details = RwLock::new(CollectorFeeDetails {
+        transaction_fee: 1000,
+        priority_fee: new_priority_fee,
+    });
+    assert_eq!(bank.priority_fee_total(), new_priority_fee);
+
+    // Test accumulation by modifying the existing collector_fee_details
+    {
+        let mut fee_details = bank.collector_fee_details.write().unwrap();
+        fee_details.accumulate(&FeeDetails::new(2000, 3000));
+    }
+    assert_eq!(bank.priority_fee_total(), new_priority_fee + 3000);
+
+    // Test after freezing the bank (should still work)
+    bank.freeze();
+    assert_eq!(bank.priority_fee_total(), new_priority_fee + 3000);
+}
+
+#[test]
 fn test_deploy_last_epoch_slot() {
     agave_logger::setup();
 
@@ -12746,4 +12787,123 @@ fn test_new_from_snapshot_uses_rent_from_sysvar() {
     // Verify the bank's rent matches the sysvar, NOT the corrupted fields
     assert_eq!(new_bank.rent_collector.rent, expected_rent);
     assert_ne!(new_bank.rent_collector.rent, wrong_rent);
+}
+
+#[test]
+fn test_load_and_execute_transactions_populates_global_program_cache() {
+    let (genesis_config, mint_keypair) = create_genesis_config(100_000);
+    let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+    let program_key = Pubkey::new_unique();
+    let program_data = include_bytes!("../../../programs/bpf_loader/test_elfs/out/noop_aligned.so");
+    let program_account = AccountSharedData::from(Account {
+        lamports: Rent::default().minimum_balance(program_data.len()).min(1),
+        data: program_data.to_vec(),
+        owner: bpf_loader::id(),
+        executable: true,
+        rent_epoch: 0,
+    });
+    root_bank.store_account(&program_key, &program_account);
+
+    goto_end_of_slot(root_bank.clone());
+    let bank = new_from_parent_with_fork_next_slot(root_bank, bank_forks.as_ref());
+
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        assert!(
+            program_cache
+                .get_slot_versions_for_tests(&program_key)
+                .is_empty(),
+            "newly stored program must not exist in global cache before execution",
+        );
+    }
+
+    let instruction = Instruction::new_with_bytes(program_key, &[], Vec::new());
+    let message = Message::new(&[instruction], Some(&mint_keypair.pubkey()));
+    let binding = mint_keypair.insecure_clone();
+    let transaction = Transaction::new(&[&binding], message, bank.last_blockhash());
+    assert_eq!(bank.process_transaction(&transaction), Ok(()));
+
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        let slot_versions = program_cache.get_slot_versions_for_tests(&program_key);
+        assert_eq!(slot_versions.len(), 1);
+        assert_matches!(slot_versions[0].program, ProgramCacheEntryType::Loaded(_));
+    }
+}
+
+#[test]
+fn test_simulate_transactions_unchecked_with_pre_accounts_does_not_populate_global_program_cache() {
+    let (genesis_config, mint_keypair) = create_genesis_config(100_000);
+    let (root_bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+    let program_key = Pubkey::new_unique();
+    let program_data = include_bytes!("../../../programs/bpf_loader/test_elfs/out/noop_aligned.so");
+    let program_account = AccountSharedData::from(Account {
+        lamports: Rent::default().minimum_balance(program_data.len()).min(1),
+        data: program_data.to_vec(),
+        owner: bpf_loader::id(),
+        executable: true,
+        rent_epoch: 0,
+    });
+    root_bank.store_account(&program_key, &program_account);
+
+    goto_end_of_slot(root_bank.clone());
+    let bank = new_from_parent_with_fork_next_slot(root_bank, bank_forks.as_ref());
+
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        assert!(
+            program_cache
+                .get_slot_versions_for_tests(&program_key)
+                .is_empty(),
+            "newly stored program must not exist in global cache before simulation",
+        );
+    }
+
+    let instruction = Instruction::new_with_bytes(program_key, &[], Vec::new());
+    let message = Message::new(&[instruction], Some(&mint_keypair.pubkey()));
+    let binding = mint_keypair.insecure_clone();
+    let transaction = Transaction::new(&[&binding], message, bank.last_blockhash());
+    let sanitized = RuntimeTransaction::from_transaction_for_tests(transaction);
+
+    let simulation_results = bank.simulate_transactions_unchecked_with_pre_accounts(
+        &[sanitized],
+        &vec![vec![]],
+        &vec![vec![]],
+        None,
+    );
+    assert_eq!(simulation_results.len(), 1);
+    assert_eq!(
+        simulation_results[0].1.result,
+        Ok(()),
+        "simulation should execute successfully with a valid program",
+    );
+
+    {
+        let program_cache = bank
+            .transaction_processor
+            .global_program_cache
+            .read()
+            .unwrap();
+        assert!(
+            program_cache
+                .get_slot_versions_for_tests(&program_key)
+                .is_empty(),
+            "simulate_transactions_unchecked_with_pre_accounts must not populate global program \
+             cache",
+        );
+    }
 }

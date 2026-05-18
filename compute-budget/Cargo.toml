@@ -11,10 +11,7 @@ edition = { workspace = true }
 
 [features]
 agave-unstable-api = []
-dev-context-only-utils = [
-    "dep:qualifier_attr",
-    "solana-program-runtime/dev-context-only-utils",
-]
+dev-context-only-utils = ["dep:qualifier_attr", "solana-program-runtime/dev-context-only-utils"]
 frozen-abi = ["dep:solana-frozen-abi", "solana-fee-structure/frozen-abi"]
 
 [dependencies]
