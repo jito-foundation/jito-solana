@@ -67,38 +67,42 @@ cargo_audit_ignores=(
   # NOTE: we took the fix for 0.103.6 dependents. 0.101.7 is unaffected
   --ignore RUSTSEC-2026-0049
 
+  # Crate:     ring
+  # Version:   0.16.20
+  # Title:     Some AES functions may panic when overflow checking is enabled.
+  # Date:      2025-03-06
+  # ID:        RUSTSEC-2025-0009
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2025-0009
+  # Solution:  Upgrade to >=0.17.12
+  --ignore RUSTSEC-2025-0009
+
   # Crate:     rustls-webpki
-  # Version:   0.101.7
+  # Version:   0.103.10
   # Title:     Name constraints for URI names were incorrectly accepted
   # Date:      2026-04-14
   # ID:        RUSTSEC-2026-0098
   # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0098
   # Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
-  #
-  # AVAVE OK: we picked upstream fix atop our vendored branches
   --ignore RUSTSEC-2026-0098
 
   # Crate:     rustls-webpki
-  # Version:   0.101.7
+  # Version:   0.103.10
   # Title:     Name constraints were accepted for certificates asserting a wildcard name
   # Date:      2026-04-14
   # ID:        RUSTSEC-2026-0099
   # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0099
   # Solution:  Upgrade to >=0.103.12, <0.104.0-alpha.1 OR >=0.104.0-alpha.6
-  #
-  # AVAVE OK: we picked upstream fix atop our vendored branches
   --ignore RUSTSEC-2026-0099
 
   # Crate:     rustls-webpki
-  # Version:   0.101.7
+  # Version:   0.103.10
   # Title:     Reachable panic in certificate revocation list parsing
   # Date:      2026-04-22
   # ID:        RUSTSEC-2026-0104
   # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0104
   # Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
-  #
-  # AGAVE OK: vendored the upstream fix again
   --ignore RUSTSEC-2026-0104
+
 )
 scripts/cargo-for-all-lock-files.sh audit "${cargo_audit_ignores[@]}" | $dep_tree_filter
 # we want the `cargo audit` exit code, not `$dep_tree_filter`'s
