@@ -9213,6 +9213,7 @@ dependencies = [
  "agave-random",
  "agave-transaction-view",
  "ahash 0.8.12",
+ "arc-swap",
  "assert_matches",
  "bencher",
  "bincode",
