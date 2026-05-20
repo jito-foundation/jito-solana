@@ -13,7 +13,9 @@ use {
     },
     agave_feature_set::{FEATURE_NAMES, FeatureSet, raise_cpi_nesting_limit_to_8},
     agave_syscalls::create_program_runtime_environment_v1,
+    base64::Engine,
     bip39::{Language, Mnemonic, MnemonicType, Seed},
+    borsh::BorshSerialize,
     clap::{App, AppSettings, Arg, ArgMatches, SubCommand},
     log::*,
     solana_account::state_traits::StateMut,
@@ -72,7 +74,7 @@ use {
     solana_transaction_error::TransactionError,
     std::{
         fs::File,
-        io::{Read, Write},
+        io::{Cursor, Read, Write},
         mem::size_of,
         num::Saturating,
         path::PathBuf,
@@ -137,7 +139,9 @@ pub enum ProgramCliCommand {
     SetUpgradeAuthority {
         program_pubkey: Pubkey,
         upgrade_authority_index: Option<SignerIndex>,
+        current_authority_pubkey: Option<Pubkey>,
         new_upgrade_authority: Option<Pubkey>,
+        print_governance_ix: bool,
         sign_only: bool,
         dump_transaction_message: bool,
         blockhash_query: BlockhashQuery,
@@ -146,6 +150,7 @@ pub enum ProgramCliCommand {
         program_pubkey: Pubkey,
         upgrade_authority_index: SignerIndex,
         new_upgrade_authority_index: SignerIndex,
+        print_governance_ix: bool,
         sign_only: bool,
         dump_transaction_message: bool,
         blockhash_query: BlockhashQuery,
@@ -473,6 +478,13 @@ impl ProgramSubCommands for App<'_, '_> {
                                     "Upgrade authority [default: the default configured keypair]",
                                 ),
                         )
+                        .arg(pubkey!(
+                            Arg::with_name("current_authority_pubkey")
+                                .long("current-authority-pubkey")
+                                .value_name("CURRENT_AUTHORITY_PUBKEY")
+                                .conflicts_with("upgrade_authority"),
+                            "Current upgrade authority pubkey (print-governance-ix only)."
+                        ))
                         .arg(
                             Arg::with_name("new_upgrade_authority")
                                 .long("new-upgrade-authority")
@@ -504,6 +516,14 @@ impl ProgramSubCommands for App<'_, '_> {
                                 .help(
                                     "Set this flag if you don't want the new authority to sign \
                                      the set-upgrade-authority transaction.",
+                                ),
+                        )
+                        .arg(
+                            Arg::with_name("print_governance_ix")
+                                .long("print-governance-ix")
+                                .takes_value(false)
+                                .help(
+                                    "Print instruction encoded as governance InstructionData (base64) and skip sending transaction.",
                                 ),
                         )
                         .offline_args(),
@@ -914,8 +934,21 @@ pub fn parse_program_subcommand(
             let sign_only = matches.is_present(SIGN_ONLY_ARG.name);
             let dump_transaction_message = matches.is_present(DUMP_TRANSACTION_MESSAGE.name);
             let blockhash_query = BlockhashQuery::new_from_matches(matches);
+            let print_governance_ix = matches.is_present("print_governance_ix");
+            let current_authority_pubkey = pubkey_of(matches, "current_authority_pubkey");
+            if current_authority_pubkey.is_some() && !print_governance_ix {
+                return Err(CliError::BadParameter(
+                    "--current-authority-pubkey is only supported with --print-governance-ix"
+                        .to_string(),
+                ));
+            }
+
             let (upgrade_authority_signer, upgrade_authority_pubkey) =
-                signer_of(matches, "upgrade_authority", wallet_manager)?;
+                if let Some(current_authority_pubkey) = current_authority_pubkey {
+                    (None, Some(current_authority_pubkey))
+                } else {
+                    signer_of(matches, "upgrade_authority", wallet_manager)?
+                };
             let program_pubkey = pubkey_of(matches, "program_id").unwrap();
             let is_final = matches.is_present("final");
             let new_upgrade_authority = if is_final {
@@ -923,13 +956,25 @@ pub fn parse_program_subcommand(
             } else {
                 pubkey_of_signer(matches, "new_upgrade_authority", wallet_manager)?
             };
+            let skip_new_upgrade_authority_signer_check =
+                matches.is_present("skip_new_upgrade_authority_signer_check");
+
+            if current_authority_pubkey.is_some()
+                && !skip_new_upgrade_authority_signer_check
+                && !is_final
+            {
+                return Err(CliError::BadParameter(
+                    "--current-authority-pubkey requires --skip-new-upgrade-authority-signer-check (or --final)"
+                        .to_string(),
+                ));
+            }
 
             let mut signers = vec![
                 Some(default_signer.signer_from_path(matches, wallet_manager)?),
                 upgrade_authority_signer,
             ];
 
-            if !is_final && !matches.is_present("skip_new_upgrade_authority_signer_check") {
+            if !is_final && !skip_new_upgrade_authority_signer_check {
                 let (new_upgrade_authority_signer, _) =
                     signer_of(matches, "new_upgrade_authority", wallet_manager)?;
                 signers.push(new_upgrade_authority_signer);
@@ -938,12 +983,14 @@ pub fn parse_program_subcommand(
             let signer_info =
                 default_signer.generate_unique_signers(signers, matches, wallet_manager)?;
 
-            if matches.is_present("skip_new_upgrade_authority_signer_check") || is_final {
+            if skip_new_upgrade_authority_signer_check || is_final {
                 CliCommandInfo {
                     command: CliCommand::Program(ProgramCliCommand::SetUpgradeAuthority {
                         program_pubkey,
                         upgrade_authority_index: signer_info.index_of(upgrade_authority_pubkey),
+                        current_authority_pubkey,
                         new_upgrade_authority,
+                        print_governance_ix,
                         sign_only,
                         dump_transaction_message,
                         blockhash_query,
@@ -960,6 +1007,7 @@ pub fn parse_program_subcommand(
                         new_upgrade_authority_index: signer_info
                             .index_of(new_upgrade_authority)
                             .expect("new upgrade authority is missing from signers"),
+                        print_governance_ix,
                         sign_only,
                         dump_transaction_message,
                         blockhash_query,
@@ -1202,7 +1250,9 @@ pub async fn process_program_subcommand(
                 None,
                 Some(*buffer_pubkey),
                 *buffer_authority_index,
+                None,
                 Some(*new_buffer_authority),
+                false,
                 false,
                 false,
                 &BlockhashQuery::default(),
@@ -1212,7 +1262,9 @@ pub async fn process_program_subcommand(
         ProgramCliCommand::SetUpgradeAuthority {
             program_pubkey,
             upgrade_authority_index,
+            current_authority_pubkey,
             new_upgrade_authority,
+            print_governance_ix,
             sign_only,
             dump_transaction_message,
             blockhash_query,
@@ -1223,7 +1275,9 @@ pub async fn process_program_subcommand(
                 Some(*program_pubkey),
                 None,
                 *upgrade_authority_index,
+                *current_authority_pubkey,
                 *new_upgrade_authority,
+                *print_governance_ix,
                 *sign_only,
                 *dump_transaction_message,
                 blockhash_query,
@@ -1234,6 +1288,7 @@ pub async fn process_program_subcommand(
             program_pubkey,
             upgrade_authority_index,
             new_upgrade_authority_index,
+            print_governance_ix,
             sign_only,
             dump_transaction_message,
             blockhash_query,
@@ -1244,6 +1299,7 @@ pub async fn process_program_subcommand(
                 *program_pubkey,
                 *upgrade_authority_index,
                 *new_upgrade_authority_index,
+                *print_governance_ix,
                 *sign_only,
                 *dump_transaction_message,
                 blockhash_query,
@@ -1574,6 +1630,8 @@ async fn process_program_deploy(
             None,
             Some(upgrade_authority_signer_index),
             None,
+            None,
+            false,
             false,
             false,
             &BlockhashQuery::default(),
@@ -1837,53 +1895,118 @@ async fn process_write_buffer(
     result
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize)]
+struct GovernanceInstructionData {
+    program_id: Pubkey,
+    accounts: Vec<GovernanceAccountMetaData>,
+    data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize)]
+struct GovernanceAccountMetaData {
+    pubkey: Pubkey,
+    is_signer: bool,
+    is_writable: bool,
+}
+
+impl From<Instruction> for GovernanceInstructionData {
+    fn from(instruction: Instruction) -> Self {
+        Self {
+            program_id: instruction.program_id,
+            accounts: instruction
+                .accounts
+                .iter()
+                .map(|account_meta| GovernanceAccountMetaData {
+                    pubkey: account_meta.pubkey,
+                    is_signer: account_meta.is_signer,
+                    is_writable: account_meta.is_writable,
+                })
+                .collect(),
+            data: instruction.data,
+        }
+    }
+}
+
+fn print_governance_ix(ixs: &[Instruction]) {
+    ixs.iter().for_each(|ix| {
+        println!("\n------ GOV IX ------\n");
+
+        let gov_ix_data = GovernanceInstructionData::from(ix.clone());
+
+        let mut buffer = Cursor::new(Vec::new());
+        match gov_ix_data.serialize(&mut buffer) {
+            Ok(()) => {
+                for account in gov_ix_data.accounts {
+                    println!("Account: {:?}", account.pubkey);
+                }
+                println!("Data: {:?}", gov_ix_data.data);
+                let base64_ix = base64::engine::general_purpose::STANDARD.encode(buffer.into_inner());
+                println!("Base64 InstructionData: {base64_ix:?}\n");
+            }
+            Err(err) => {
+                println!("Failed to serialize InstructionData: {err}");
+            }
+        }
+    });
+}
+
 async fn process_set_authority(
     rpc_client: &RpcClient,
     config: &CliConfig<'_>,
     program_pubkey: Option<Pubkey>,
     buffer_pubkey: Option<Pubkey>,
     authority: Option<SignerIndex>,
+    current_authority_pubkey: Option<Pubkey>,
     new_authority: Option<Pubkey>,
+    print_governance_ix_flag: bool,
     sign_only: bool,
     dump_transaction_message: bool,
     blockhash_query: &BlockhashQuery,
 ) -> ProcessResult {
-    let authority_signer = if let Some(index) = authority {
-        config.signers[index]
-    } else {
-        return Err("Set authority requires the current authority".into());
-    };
+    let authority_signer = authority.map(|index| config.signers[index]);
+    let authority_pubkey = authority_signer
+        .map(|signer| signer.pubkey())
+        .or(current_authority_pubkey)
+        .ok_or("Set authority requires the current authority signer")?;
 
     trace!("Set a new authority");
-    let blockhash = blockhash_query
-        .get_blockhash(rpc_client, config.commitment)
-        .await?;
 
-    let mut tx = if let Some(ref pubkey) = program_pubkey {
-        Transaction::new_unsigned(Message::new(
-            &[loader_v3_instruction::set_upgrade_authority(
-                pubkey,
-                &authority_signer.pubkey(),
-                new_authority.as_ref(),
-            )],
-            Some(&config.signers[0].pubkey()),
-        ))
+    let instruction = if let Some(ref pubkey) = program_pubkey {
+        loader_v3_instruction::set_upgrade_authority(
+            pubkey,
+            &authority_pubkey,
+            new_authority.as_ref(),
+        )
     } else if let Some(pubkey) = buffer_pubkey {
         if let Some(ref new_authority) = new_authority {
-            Transaction::new_unsigned(Message::new(
-                &[loader_v3_instruction::set_buffer_authority(
-                    &pubkey,
-                    &authority_signer.pubkey(),
-                    new_authority,
-                )],
-                Some(&config.signers[0].pubkey()),
-            ))
+            loader_v3_instruction::set_buffer_authority(
+                &pubkey,
+                &authority_pubkey,
+                new_authority,
+            )
         } else {
             return Err("Buffer authority cannot be None".into());
         }
     } else {
         return Err("Program or Buffer not provided".into());
     };
+
+    if print_governance_ix_flag {
+        print_governance_ix(&[instruction]);
+        return Ok("Governance instruction printed".to_string());
+    }
+
+    let authority_signer = authority_signer.ok_or(
+        "Set authority without --print-governance-ix requires --upgrade-authority signer",
+    )?;
+
+    let blockhash = blockhash_query
+        .get_blockhash(rpc_client, config.commitment)
+        .await?;
+    let mut tx = Transaction::new_unsigned(Message::new(
+        &[instruction],
+        Some(&config.signers[0].pubkey()),
+    ));
 
     let signers = &[config.signers[0], authority_signer];
 
@@ -1927,6 +2050,7 @@ async fn process_set_authority_checked(
     program_pubkey: Pubkey,
     authority_index: SignerIndex,
     new_authority_index: SignerIndex,
+    print_governance_ix_flag: bool,
     sign_only: bool,
     dump_transaction_message: bool,
     blockhash_query: &BlockhashQuery,
@@ -1935,16 +2059,23 @@ async fn process_set_authority_checked(
     let new_authority_signer = config.signers[new_authority_index];
 
     trace!("Set a new (checked) authority");
+    let instruction = loader_v3_instruction::set_upgrade_authority_checked(
+        &program_pubkey,
+        &authority_signer.pubkey(),
+        &new_authority_signer.pubkey(),
+    );
+
+    if print_governance_ix_flag {
+        print_governance_ix(&[instruction]);
+        return Ok("Governance instruction printed".to_string());
+    }
+
     let blockhash = blockhash_query
         .get_blockhash(rpc_client, config.commitment)
         .await?;
 
     let mut tx = Transaction::new_unsigned(Message::new(
-        &[loader_v3_instruction::set_upgrade_authority_checked(
-            &program_pubkey,
-            &authority_signer.pubkey(),
-            &new_authority_signer.pubkey(),
-        )],
+        &[instruction],
         Some(&config.signers[0].pubkey()),
     ));
 
@@ -4166,7 +4297,9 @@ mod tests {
                 command: CliCommand::Program(ProgramCliCommand::SetUpgradeAuthority {
                     program_pubkey,
                     upgrade_authority_index: Some(0),
+                    current_authority_pubkey: None,
                     new_upgrade_authority: Some(new_authority_pubkey),
+                    print_governance_ix: false,
                     sign_only: true,
                     dump_transaction_message: true,
                     blockhash_query: BlockhashQuery::new(Some(blockhash), true, None),
@@ -4194,7 +4327,38 @@ mod tests {
                 command: CliCommand::Program(ProgramCliCommand::SetUpgradeAuthority {
                     program_pubkey,
                     upgrade_authority_index: Some(0),
+                    current_authority_pubkey: None,
                     new_upgrade_authority: Some(new_authority_pubkey.pubkey()),
+                    print_governance_ix: false,
+                    sign_only: false,
+                    dump_transaction_message: false,
+                    blockhash_query: BlockhashQuery::default(),
+                }),
+                signers: vec![Box::new(read_keypair_file(&keypair_file).unwrap())],
+            }
+        );
+
+        let program_pubkey = Pubkey::new_unique();
+        let new_authority_pubkey = Pubkey::new_unique();
+        let test_command = test_commands.clone().get_matches_from(vec![
+            "test",
+            "program",
+            "set-upgrade-authority",
+            &program_pubkey.to_string(),
+            "--new-upgrade-authority",
+            &new_authority_pubkey.to_string(),
+            "--skip-new-upgrade-authority-signer-check",
+            "--print-governance-ix",
+        ]);
+        assert_eq!(
+            parse_command(&test_command, &default_signer, &mut None).unwrap(),
+            CliCommandInfo {
+                command: CliCommand::Program(ProgramCliCommand::SetUpgradeAuthority {
+                    program_pubkey,
+                    upgrade_authority_index: Some(0),
+                    current_authority_pubkey: None,
+                    new_upgrade_authority: Some(new_authority_pubkey),
+                    print_governance_ix: true,
                     sign_only: false,
                     dump_transaction_message: false,
                     blockhash_query: BlockhashQuery::default(),
@@ -4227,6 +4391,7 @@ mod tests {
                     program_pubkey,
                     upgrade_authority_index: 0,
                     new_upgrade_authority_index: 1,
+                    print_governance_ix: false,
                     sign_only: true,
                     dump_transaction_message: true,
                     blockhash_query: BlockhashQuery::new(Some(blockhash), true, None),
@@ -4255,7 +4420,9 @@ mod tests {
                 command: CliCommand::Program(ProgramCliCommand::SetUpgradeAuthority {
                     program_pubkey,
                     upgrade_authority_index: Some(0),
+                    current_authority_pubkey: None,
                     new_upgrade_authority: None,
+                    print_governance_ix: false,
                     sign_only: false,
                     dump_transaction_message: false,
                     blockhash_query: BlockhashQuery::default(),
@@ -4283,7 +4450,9 @@ mod tests {
                 command: CliCommand::Program(ProgramCliCommand::SetUpgradeAuthority {
                     program_pubkey,
                     upgrade_authority_index: Some(1),
+                    current_authority_pubkey: None,
                     new_upgrade_authority: None,
+                    print_governance_ix: false,
                     sign_only: false,
                     dump_transaction_message: false,
                     blockhash_query: BlockhashQuery::default(),

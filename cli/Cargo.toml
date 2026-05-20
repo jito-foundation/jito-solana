@@ -31,7 +31,9 @@ agave-feature-set = { workspace = true }
 agave-logger = { workspace = true }
 agave-syscalls = { workspace = true }
 agave-votor-messages = { workspace = true }
+base64 = { workspace = true }
 bincode = { workspace = true }
+borsh = { workspace = true }
 bs58 = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
