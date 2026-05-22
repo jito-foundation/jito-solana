@@ -13,5 +13,8 @@ NPROC=$(nproc)
 SYS_JOBS=$((SYS_JOBS > NPROC ? NPROC : SYS_JOBS))
 : "${JOBS:=$SYS_JOBS}"
 
+# Jito override to avoid overflow in unique_port_range_for_tests from NEXTEST_TEST_GLOBAL_SLOT being too high.
+JOBS=48
+
 export NPROC
 export JOBS
