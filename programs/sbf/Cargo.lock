@@ -8370,7 +8370,6 @@ dependencies = [
  "solana-stake-interface",
  "solana-svm",
  "solana-svm-feature-set",
- "solana-svm-test-harness-instr",
  "solana-svm-timings",
  "solana-svm-transaction",
  "solana-svm-type-overrides",
@@ -9429,22 +9428,29 @@ dependencies = [
 name = "solana-svm"
 version = "4.2.0-alpha.0"
 dependencies = [
+ "agave-feature-set",
+ "agave-precompiles",
  "ahash 0.8.12",
  "log",
  "percentage",
  "qualifier_attr",
  "serde",
  "solana-account 4.3.0",
+ "solana-bpf-loader-program",
  "solana-clock",
+ "solana-compute-budget",
+ "solana-compute-budget-program",
  "solana-fee-structure",
  "solana-hash 4.3.0",
  "solana-instruction",
+ "solana-instruction-error",
  "solana-instructions-sysvar",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
  "solana-message",
  "solana-nonce",
  "solana-nonce-account",
+ "solana-precompile-error",
  "solana-program-entrypoint",
  "solana-program-pack",
  "solana-program-runtime",
@@ -9458,7 +9464,9 @@ dependencies = [
  "solana-svm-timings",
  "solana-svm-transaction",
  "solana-svm-type-overrides",
+ "solana-syscalls",
  "solana-system-interface 3.2.0",
+ "solana-system-program",
  "solana-sysvar-id",
  "solana-transaction-context",
  "solana-transaction-error",
@@ -9490,49 +9498,6 @@ dependencies = [
 [[package]]
 name = "solana-svm-measure"
 version = "4.2.0-alpha.0"
-
-[[package]]
-name = "solana-svm-test-harness-fixture"
-version = "4.2.0-alpha.0"
-dependencies = [
- "solana-account 4.3.0",
- "solana-instruction",
- "solana-instruction-error",
- "solana-pubkey 4.2.0",
- "solana-svm-feature-set",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "solana-svm-test-harness-instr"
-version = "4.2.0-alpha.0"
-dependencies = [
- "bincode",
- "env_logger",
- "solana-account 4.3.0",
- "solana-bpf-loader-program",
- "solana-clock",
- "solana-compute-budget",
- "solana-compute-budget-program",
- "solana-instruction",
- "solana-instruction-error",
- "solana-precompile-error",
- "solana-program-runtime",
- "solana-pubkey 4.2.0",
- "solana-rent",
- "solana-sdk-ids",
- "solana-svm",
- "solana-svm-callback",
- "solana-svm-feature-set",
- "solana-svm-log-collector",
- "solana-svm-test-harness-fixture",
- "solana-svm-timings",
- "solana-svm-transaction",
- "solana-syscalls",
- "solana-system-program",
- "solana-sysvar-id",
- "solana-transaction-context",
-]
 
 [[package]]
 name = "solana-svm-timings"
