@@ -5023,11 +5023,14 @@ impl AccountsDb {
                             target_slot,
                             target_slot,
                             account.pubkey(),
-                            &account,
-                            &self.account_indexes,
                             info,
                             ReclaimsSlotList::default().as_mut(),
                             UpsertReclaim::PreviousSlotEntryWasCached,
+                        );
+                        self.accounts_index.update_secondary_indexes(
+                            account.pubkey(),
+                            &account,
+                            &self.account_indexes,
                         );
                     });
                 }
@@ -5089,11 +5092,14 @@ impl AccountsDb {
                         target_slot,
                         old_slot,
                         account.pubkey(),
-                        &account,
-                        &self.account_indexes,
                         info,
                         &mut reclaims,
                         reclaim,
+                    );
+                    self.accounts_index.update_secondary_indexes(
+                        account.pubkey(),
+                        &account,
+                        &self.account_indexes,
                     );
                 });
             });
