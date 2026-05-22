@@ -77,3 +77,6 @@ harness = false
 [[bench]]
 name = "cluster_nodes"
 harness = false
+
+[lints]
+workspace = true
