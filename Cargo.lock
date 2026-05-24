@@ -8510,7 +8510,6 @@ dependencies = [
  "serde-big-array",
  "serde_bytes",
  "serial_test",
- "siphasher 1.0.2",
  "solana-bloom",
  "solana-client",
  "solana-clock",
