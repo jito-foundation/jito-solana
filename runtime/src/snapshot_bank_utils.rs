@@ -510,7 +510,10 @@ fn verify_slot_deltas(
     bank: &Bank,
 ) -> std::result::Result<(), VerifySlotDeltasError> {
     let info = verify_slot_deltas_structural(slot_deltas, bank.slot())?;
-    verify_slot_deltas_with_history(&info.slots, &bank.get_slot_history(), bank.slot())
+    let slot_history = bank
+        .get_slot_history()
+        .expect("snapshot bank must have slot history");
+    verify_slot_deltas_with_history(&info.slots, &slot_history, bank.slot())
 }
 
 /// Verify that the snapshot's slot deltas are not corrupt/invalid
