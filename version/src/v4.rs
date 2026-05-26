@@ -304,7 +304,7 @@ impl Version {
     fn to_serialized(src: &Version) -> WriteResult<SerializedVersion> {
         let (packed_minor, patch) = PackedMinor::try_pack(src.minor, src.patch, &src.prerelease)
             .map_err(|_| WriteError::Custom("Version: invalid minor/patch/prerelease"))?;
-        let client = u16::try_from(src.client.clone())
+        let client = u16::try_from(src.client)
             .map_err(|_| WriteError::Custom("Version: invalid client ID"))?;
         Ok(SerializedVersion {
             major: src.major,

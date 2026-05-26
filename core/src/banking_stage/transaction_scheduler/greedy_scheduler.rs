@@ -583,6 +583,7 @@ mod test {
                     + 1,
                 ..GreedySchedulerConfig::default()
             },
+            BundleAccountLocker::default(),
         );
         let mut container = create_container([
             (&Keypair::new(), &[Pubkey::new_unique()], 1, 1),
