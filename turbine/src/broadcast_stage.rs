@@ -714,8 +714,8 @@ pub mod test {
         solana_runtime::bank::Bank,
         solana_signer::Signer,
         std::{
-            num::NonZeroUsize,
             net::UdpSocket,
+            num::NonZeroUsize,
             path::Path,
             sync::{Arc, atomic::AtomicBool},
             thread::sleep,

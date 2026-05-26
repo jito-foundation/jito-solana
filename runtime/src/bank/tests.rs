@@ -40,9 +40,8 @@ use {
     solana_account_info::MAX_PERMITTED_DATA_INCREASE,
     solana_accounts_db::{
         accounts::{AccountAddressFilter, Accounts},
-        accounts_db::AccountsDb,
+        accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDb},
         accounts_hash::AccountsLtHash,
-        accounts_db::ACCOUNTS_DB_CONFIG_FOR_TESTING,
         accounts_index::{AccountIndex, AccountSecondaryIndexes, IndexKey},
         accounts_scan::ScanError,
         ancestors::Ancestors,

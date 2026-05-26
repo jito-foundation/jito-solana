@@ -36,9 +36,9 @@ use {
     },
     agave_votor::event::VotorEventSender,
     agave_xdp::transmitter::XdpSender,
-    crossbeam_channel::{Receiver, bounded},
     ahash::HashSet as AHashSet,
     arc_swap::ArcSwap,
+    crossbeam_channel::{Receiver, bounded},
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -70,8 +70,7 @@ use {
         streamer::StakedNodes,
     },
     solana_turbine::{
-        XdpSender as TurbineXdpSender,
-        ShredReceiverAddresses,
+        ShredReceiverAddresses, XdpSender as TurbineXdpSender,
         broadcast_stage::{BroadcastStage, BroadcastStageType},
     },
     std::{

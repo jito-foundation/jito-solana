@@ -567,7 +567,10 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                             let program_accounts_set = missing_programs
                                 .iter()
                                 .map(|program_to_load| {
-                                    (*program_to_load.program_id, program_to_load.last_modification_slot)
+                                    (
+                                        *program_to_load.program_id,
+                                        program_to_load.last_modification_slot,
+                                    )
                                 })
                                 .collect();
                             self.replenish_program_cache_for_simulation(
@@ -962,29 +965,28 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         check_program_modification_slot: bool,
         increment_usage_counter: bool,
     ) {
-        let mut missing_programs: Vec<ProgramToLoad> =
-            program_accounts_set
-                .iter()
-                .map(|(pubkey, last_modification_slot)| {
-                    let match_criteria = if check_program_modification_slot {
-                        account_loader
-                            .get_account_shared_data(pubkey)
-                            .and_then(|(program, _)| {
-                                get_program_deployment_slot(account_loader, &program).ok()
-                            })
-                            .map_or(ProgramCacheMatchCriteria::Tombstone, |slot| {
-                                ProgramCacheMatchCriteria::DeployedOnOrAfterSlot(slot)
-                            })
-                    } else {
-                        ProgramCacheMatchCriteria::NoCriteria
-                    };
-                    ProgramToLoad {
-                        program_id: pubkey,
-                        match_criteria,
-                        last_modification_slot: *last_modification_slot,
-                    }
-                })
-                .collect();
+        let mut missing_programs: Vec<ProgramToLoad> = program_accounts_set
+            .iter()
+            .map(|(pubkey, last_modification_slot)| {
+                let match_criteria = if check_program_modification_slot {
+                    account_loader
+                        .get_account_shared_data(pubkey)
+                        .and_then(|(program, _)| {
+                            get_program_deployment_slot(account_loader, &program).ok()
+                        })
+                        .map_or(ProgramCacheMatchCriteria::Tombstone, |slot| {
+                            ProgramCacheMatchCriteria::DeployedOnOrAfterSlot(slot)
+                        })
+                } else {
+                    ProgramCacheMatchCriteria::NoCriteria
+                };
+                ProgramToLoad {
+                    program_id: pubkey,
+                    match_criteria,
+                    last_modification_slot: *last_modification_slot,
+                }
+            })
+            .collect();
 
         {
             let global_program_cache = self.global_program_cache.read().unwrap();
