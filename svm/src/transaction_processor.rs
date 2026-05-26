@@ -426,7 +426,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         check_results: Vec<TransactionCheckResult>,
         environment: &TransactionProcessingEnvironment,
         config: &TransactionProcessingConfig,
-        mut program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
+        program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
         replenish_program_cache: bool,
     ) -> LoadAndExecuteSanitizedTransactionsOutput {
         // If `check_results` does not have the same length as `sanitized_txs`,
@@ -541,7 +541,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                     let (missing_programs, filter_executable_us) =
                         measure_us!(filter_executable_program_accounts(
                             &account_loader,
-                            &program_cache_for_tx_batch,
+                            program_cache_for_tx_batch,
                             tx,
                             config.check_program_deployment_slot,
                         ));
@@ -558,7 +558,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                                 environment
                                     .program_runtime_environments
                                     .get_env_for_execution(),
-                                &mut program_cache_for_tx_batch,
+                                program_cache_for_tx_batch,
                                 &mut execute_timings,
                                 config.limit_to_load_programs,
                                 true, // increment_usage_counter
@@ -579,7 +579,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                                 environment
                                     .program_runtime_environments
                                     .get_env_for_execution(),
-                                &mut program_cache_for_tx_batch,
+                                program_cache_for_tx_batch,
                                 &mut execute_timings,
                                 config.check_program_deployment_slot,
                                 true, // increment_usage_counter
