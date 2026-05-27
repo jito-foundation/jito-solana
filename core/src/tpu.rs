@@ -4,7 +4,7 @@
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
-        bam_dependencies::{BamConnectionState, BamDependencies},
+        bam_dependencies::{BAM_CHANNEL_CAPACITY, BamDependencies, BamOutboundMessage},
         bam_manager::BamManager,
         banking_stage::{
             BankingControlMsg, BankingStage, BankingStageHandle,
@@ -37,7 +37,7 @@ use {
     agave_votor::event::VotorEventSender,
     ahash::HashSet as AHashSet,
     arc_swap::ArcSwap,
-    crossbeam_channel::{Receiver, bounded},
+    crossbeam_channel::{Receiver, Sender, bounded},
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -180,6 +180,9 @@ impl Tpu {
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         bam_url: Arc<ArcSwap<Option<String>>>,
+        bam_enabled: Arc<AtomicU8>,
+        bam_outbound_sender: Sender<BamOutboundMessage>,
+        bam_outbound_receiver: Receiver<BamOutboundMessage>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -329,8 +332,6 @@ impl Tpu {
 
         let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
         let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
-        let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8));
-
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
             unverified_bundle_sender,
@@ -394,8 +395,7 @@ impl Tpu {
             filter_keys.insert(tip_manager.tip_payment_program_id());
             Arc::new(filter_keys)
         };
-        let (bam_batch_sender, bam_batch_receiver) = bounded(100_000);
-        let (bam_outbound_sender, bam_outbound_receiver) = bounded(100_000);
+        let (bam_batch_sender, bam_batch_receiver) = bounded(BAM_CHANNEL_CAPACITY);
         let bam_dependencies = BamDependencies {
             bam_enabled: bam_enabled.clone(),
             batch_sender: bam_batch_sender,

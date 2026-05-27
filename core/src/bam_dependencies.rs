@@ -18,8 +18,17 @@ use {
 pub enum BamOutboundMessage {
     AtomicTxnBatchResult(bam_types::AtomicTxnBatchResult),
     Heartbeat(bam_types::ValidatorHeartBeat),
+    LeaderBankReady(bam_types::LeaderBankReady),
     LeaderState(bam_types::LeaderState),
     Ping(u32),
+}
+
+pub const BAM_CHANNEL_CAPACITY: usize = 100_000;
+
+#[derive(Clone)]
+pub struct BamLeaderBankReadySender {
+    pub bam_enabled: Arc<AtomicU8>,
+    pub outbound_sender: crossbeam_channel::Sender<BamOutboundMessage>,
 }
 
 #[repr(u8)]

@@ -342,6 +342,17 @@ impl BamConnection {
                 _ = outbound_tick_interval.tick() => {
                     while let Ok(outbound) = outbound_receiver.try_recv() {
                         match outbound {
+                            BamOutboundMessage::LeaderBankReady(leader_bank_ready) => {
+                                metrics.leader_bank_ready_sent.fetch_add(1, Relaxed);
+                                let outbound = SchedulerMessageV0 {
+                                    msg: Some(Msg::LeaderBankReady(leader_bank_ready)),
+                                };
+                                if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
+                                    metrics.outbound_fail.fetch_add(1, Relaxed);
+                                } else {
+                                    metrics.outbound_sent.fetch_add(1, Relaxed);
+                                }
+                            }
                             BamOutboundMessage::LeaderState(leader_state) => {
                                 metrics.leaderstate_sent.fetch_add(1, Relaxed);
                                 let outbound = SchedulerMessageV0 {
@@ -486,6 +497,7 @@ struct BamConnectionMetrics {
 
     unhealthy_connection_count: AtomicU64,
 
+    leader_bank_ready_sent: AtomicU64,
     leaderstate_sent: AtomicU64,
     bundleresult_sent: AtomicU64,
     heartbeat_sent: AtomicU64,
@@ -506,6 +518,7 @@ impl BamConnectionMetrics {
             || self.heartbeat_received.load(Relaxed) > 0
             || self.builder_config_received.load(Relaxed) > 0
             || self.unhealthy_connection_count.load(Relaxed) > 0
+            || self.leader_bank_ready_sent.load(Relaxed) > 0
             || self.leaderstate_sent.load(Relaxed) > 0
             || self.bundleresult_sent.load(Relaxed) > 0
             || self.heartbeat_sent.load(Relaxed) > 0
@@ -545,6 +558,11 @@ impl BamConnectionMetrics {
             (
                 "unhealthy_connection_count",
                 self.unhealthy_connection_count.swap(0, Relaxed) as i64,
+                i64
+            ),
+            (
+                "leader_bank_ready_sent",
+                self.leader_bank_ready_sent.swap(0, Relaxed) as i64,
                 i64
             ),
             (

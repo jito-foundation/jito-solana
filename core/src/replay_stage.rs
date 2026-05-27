@@ -2,6 +2,7 @@
 
 use {
     crate::{
+        bam_dependencies::{BamConnectionState, BamLeaderBankReadySender, BamOutboundMessage},
         banking_stage::update_bank_forks_and_poh_recorder_for_new_tpu_bank,
         banking_trace::BankingTracer,
         block_creation_loop::ReplayHighestFrozen,
@@ -46,6 +47,7 @@ use {
         vote::Vote,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
+    jito_protos::proto::bam_types::LeaderBankReady,
     rayon::{ThreadPool, prelude::*},
     solana_accounts_db::contains::Contains,
     solana_clock::{BankId, NUM_CONSECUTIVE_LEADER_SLOTS, Slot},
@@ -376,6 +378,7 @@ pub struct ReplayStageConfig {
     pub snapshot_controller: Option<Arc<SnapshotController>>,
     pub replay_highest_frozen: Arc<ReplayHighestFrozen>,
     pub migration_status: Arc<MigrationStatus>,
+    pub bam_leader_bank_ready_sender: Option<BamLeaderBankReadySender>,
 }
 
 pub struct ReplaySenders {
@@ -687,6 +690,7 @@ impl ReplayStage {
             snapshot_controller,
             replay_highest_frozen,
             migration_status,
+            bam_leader_bank_ready_sender,
         } = config;
 
         let ReplaySenders {
@@ -1360,6 +1364,7 @@ impl ReplayStage {
                             &banking_tracer,
                             has_new_vote_been_rooted,
                             migration_status.as_ref(),
+                            bam_leader_bank_ready_sender.as_ref(),
                         ) {
                             Self::log_leader_change(
                                 &my_pubkey,
@@ -2420,6 +2425,7 @@ impl ReplayStage {
         banking_tracer: &Arc<BankingTracer>,
         has_new_vote_been_rooted: bool,
         migration_status: &MigrationStatus,
+        bam_leader_bank_ready_sender: Option<&BamLeaderBankReadySender>,
     ) -> Option<Slot> {
         assert!(!migration_status.is_alpenglow_enabled());
         // all the individual calls to poh_recorder.read() are designed to
@@ -2518,6 +2524,27 @@ impl ReplayStage {
             } else {
                 false
             };
+
+            if let Some(sender) = bam_leader_bank_ready_sender {
+                if BamConnectionState::from_u8(sender.bam_enabled.load(Ordering::Relaxed))
+                    == BamConnectionState::Connected
+                {
+                    let leader_bank_ready = LeaderBankReady {
+                        slot: poh_slot,
+                        parent_slot,
+                    };
+                    if sender
+                        .outbound_sender
+                        .try_send(BamOutboundMessage::LeaderBankReady(leader_bank_ready))
+                        .is_err()
+                    {
+                        warn!(
+                            "Failed to enqueue BAM leader bank ready for slot {poh_slot} parent \
+                             {parent_slot}"
+                        );
+                    }
+                }
+            }
 
             let tpu_bank = Self::new_bank_from_parent_with_notify(
                 parent.clone(),
@@ -9433,6 +9460,7 @@ pub(crate) mod tests {
                 &banking_tracer,
                 has_new_vote_been_rooted,
                 &MigrationStatus::default(),
+                None,
             )
             .is_none()
         );
@@ -10110,6 +10138,7 @@ pub(crate) mod tests {
                 &banking_tracer,
                 has_new_vote_been_rooted,
                 &MigrationStatus::default(),
+                None,
             )
             .is_none()
         );
@@ -10126,6 +10155,13 @@ pub(crate) mod tests {
 
         // We should now start leader for dummy_slot + 1
         let good_slot = dummy_slot + 1;
+        let (bam_outbound_sender, bam_outbound_receiver) = unbounded();
+        let bam_leader_bank_ready_sender = BamLeaderBankReadySender {
+            bam_enabled: Arc::new(std::sync::atomic::AtomicU8::new(
+                BamConnectionState::Connected as u8,
+            )),
+            outbound_sender: bam_outbound_sender,
+        };
         assert!(
             ReplayStage::maybe_start_leader(
                 &my_pubkey,
@@ -10141,9 +10177,18 @@ pub(crate) mod tests {
                 &banking_tracer,
                 has_new_vote_been_rooted,
                 &MigrationStatus::default(),
+                Some(&bam_leader_bank_ready_sender),
             )
             .is_some()
         );
+        let leader_bank_ready = bam_outbound_receiver.try_recv().unwrap();
+        match leader_bank_ready {
+            BamOutboundMessage::LeaderBankReady(leader_bank_ready) => {
+                assert_eq!(leader_bank_ready.slot, good_slot);
+                assert_eq!(leader_bank_ready.parent_slot, initial_slot);
+            }
+            _ => panic!("expected leader bank ready"),
+        }
         wait_for_poh_service(&poh_controller);
 
         // Get the new working bank, which is also the new leader bank/slot

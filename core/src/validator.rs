@@ -5,6 +5,7 @@ use {crate::tip_manager::TipManagerConfig, solana_turbine::ShredReceiverAddresse
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
+        bam_dependencies::{BAM_CHANNEL_CAPACITY, BamConnectionState, BamLeaderBankReadySender},
         banking_stage::{
             BankingStage, transaction_scheduler::scheduler_controller::SchedulerConfig,
         },
@@ -158,7 +159,7 @@ use {
         str::FromStr,
         sync::{
             Arc, Mutex, RwLock,
-            atomic::{AtomicBool, AtomicU64, Ordering},
+            atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         },
         thread::{self, Builder, JoinHandle},
         time::{Duration, Instant},
@@ -1529,6 +1530,8 @@ impl Validator {
         );
 
         let bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>> = Arc::default();
+        let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8));
+        let (bam_outbound_sender, bam_outbound_receiver) = bounded(BAM_CHANNEL_CAPACITY);
 
         let vote_tracker = Arc::<VoteTracker>::default();
 
@@ -1671,6 +1674,10 @@ impl Validator {
             },
             config.shred_retransmit_receiver_addresses.clone(),
             bam_shred_receiver_addresses.clone(),
+            Some(BamLeaderBankReadySender {
+                bam_enabled: bam_enabled.clone(),
+                outbound_sender: bam_outbound_sender.clone(),
+            }),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1753,6 +1760,9 @@ impl Validator {
             bam_shred_receiver_addresses,
             config.multicast_receiver_address.clone(),
             config.bam_url.clone(),
+            bam_enabled,
+            bam_outbound_sender,
+            bam_outbound_receiver,
         );
 
         datapoint_info!(

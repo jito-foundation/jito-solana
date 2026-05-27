@@ -4,6 +4,7 @@
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
+        bam_dependencies::BamLeaderBankReadySender,
         banking_trace::BankingTracer,
         block_creation_loop::ReplayHighestFrozen,
         bls_sigverify::bls_sigverifier::{self, SigVerifierChannels, SigVerifierContext},
@@ -240,6 +241,7 @@ impl Tvu {
         votor_init: AlpenglowInitializationState,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_leader_bank_ready_sender: Option<BamLeaderBankReadySender>,
     ) -> Result<Self, String> {
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -575,6 +577,7 @@ impl Tvu {
             snapshot_controller,
             replay_highest_frozen,
             migration_status,
+            bam_leader_bank_ready_sender,
         };
 
         let voting_service = VotingService::new(
@@ -889,6 +892,7 @@ pub mod tests {
             },
             Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
             Arc::default(),
+            None,
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
