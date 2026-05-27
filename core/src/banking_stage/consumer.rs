@@ -1330,6 +1330,130 @@ mod tests {
     }
 
     #[test]
+    fn test_record_conflicting_processed_transactions_in_single_batch() {
+        let TestFrame {
+            mint_keypair,
+            bank,
+            bank_forks: _bank_forks,
+            mut record_receiver,
+            consumer,
+        } = setup_test(None);
+
+        let destination = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![
+            system_transaction::transfer(&mint_keypair, &destination, 1, bank.last_blockhash()),
+            system_transaction::transfer(&mint_keypair, &destination, 2, bank.last_blockhash()),
+            system_transaction::transfer(&mint_keypair, &destination, 3, bank.last_blockhash()),
+        ]);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    transaction_counts,
+                    retryable_transaction_indexes,
+                    commit_transactions_result,
+                    ..
+                },
+            ..
+        } = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+            false,
+        );
+
+        assert_eq!(
+            transaction_counts,
+            LeaderProcessedTransactionCounts {
+                attempted_processing_count: transactions.len() as u64,
+                processed_count: transactions.len() as u64,
+                processed_with_successful_result_count: transactions.len() as u64,
+            }
+        );
+        assert!(retryable_transaction_indexes.is_empty());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), transactions.len());
+        assert!(commit_transactions_result.iter().all(|result| matches!(
+            result,
+            CommitTransactionDetails::Committed { result: Ok(()), .. }
+        )));
+
+        record_receiver.shutdown();
+        let records = record_receiver.drain().collect::<Vec<_>>();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.bank_id, bank.bank_id());
+        assert_eq!(record.transaction_batches.len(), 1);
+        assert_eq!(record.transaction_batches[0].len(), transactions.len());
+    }
+
+    #[test]
+    fn test_record_only_processed_transactions() {
+        let TestFrame {
+            mint_keypair,
+            bank,
+            bank_forks: _bank_forks,
+            mut record_receiver,
+            consumer,
+        } = setup_test(None);
+
+        let allocate_keypair = Keypair::new();
+        let pubkey = Pubkey::new_unique();
+        let transactions = sanitize_transactions(vec![
+            system_transaction::allocate(
+                &mint_keypair,
+                &allocate_keypair,
+                bank.last_blockhash(),
+                100,
+            ),
+            system_transaction::transfer(&mint_keypair, &pubkey, 2, bank.last_blockhash()),
+        ]);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    transaction_counts,
+                    retryable_transaction_indexes,
+                    commit_transactions_result,
+                    ..
+                },
+            ..
+        } = consumer.process_and_record_transactions(
+            &bank,
+            &transactions,
+            &BundleAccountLocker::default(),
+            false,
+        );
+
+        assert_eq!(
+            transaction_counts,
+            LeaderProcessedTransactionCounts {
+                attempted_processing_count: transactions.len() as u64,
+                processed_count: 1,
+                processed_with_successful_result_count: 1,
+            }
+        );
+        assert_eq!(
+            retryable_transaction_indexes,
+            vec![RetryableIndex::new(1, true)]
+        );
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), transactions.len());
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::Committed { result: Ok(()), .. }
+        );
+
+        record_receiver.shutdown();
+        let records = record_receiver.drain().collect::<Vec<_>>();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.bank_id, bank.bank_id());
+        assert_eq!(record.transaction_batches.len(), 1);
+        assert_eq!(record.transaction_batches[0].len(), 1);
+    }
+
+    #[test]
     fn test_process_transactions_returns_unprocessed_txs() {
         let TestFrame {
             mint_keypair,
