@@ -68,7 +68,7 @@ impl TryFrom<ClientId> for u16 {
 impl ClientId {
     pub const fn this_client() -> Self {
         // Other client implementations need to modify this line.
-        Self::Agave
+        Self::JitoLabs
     }
 }
 
