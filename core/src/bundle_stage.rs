@@ -344,7 +344,7 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
-        prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         Self::start_bundle_thread(
@@ -383,13 +383,13 @@ impl BundleStage {
         tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         block_builder_fee_info: &Arc<ArcSwap<BlockBuilderFeeInfo>>,
-        prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+        prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
             replay_vote_sender,
-            Some(prioritization_fee_cache.clone()),
+            prioritization_fee_cache,
         );
         let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
 
@@ -1052,7 +1052,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
-            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
 
@@ -1190,7 +1190,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
-            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
 
@@ -1280,7 +1280,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
-            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
 
@@ -1404,7 +1404,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
-            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
 
@@ -1528,7 +1528,7 @@ mod tests {
                 block_builder: genesis_config_info.validator_pubkey,
                 block_builder_commission: 10,
             })),
-            &Arc::new(PrioritizationFeeCache::new(0u64)),
+            Some(Arc::new(PrioritizationFeeCache::new(0u64))),
             HashSet::default(),
         );
 
