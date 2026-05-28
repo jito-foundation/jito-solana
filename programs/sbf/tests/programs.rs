@@ -7,6 +7,8 @@
 #![allow(clippy::unnecessary_cast)]
 #![allow(clippy::uninlined_format_args)]
 
+#[cfg(not(feature = "sbf_sanity_list"))]
+use solana_program_runtime::execution_budget::MAX_COMPUTE_UNIT_LIMIT;
 #[cfg(all(feature = "sbf_rust", feature = "sbpf-v3"))]
 use solana_runtime::loader_utils::{
     load_upgradeable_program_and_advance_slot, set_upgrade_authority, upgrade_program,
@@ -108,7 +110,6 @@ fn default_program_cache_with_program(
     program_id: &Pubkey,
     program_elf: &[u8],
     feature_set: &SVMFeatureSet,
-    compute_budget: &ComputeBudget,
 ) -> solana_program_runtime::loaded_programs::ProgramCacheForTxBatch {
     let mut program_cache = default_program_cache();
     add_program_to_program_cache(
@@ -117,7 +118,6 @@ fn default_program_cache_with_program(
         &bpf_loader_upgradeable::id(),
         program_elf,
         feature_set,
-        compute_budget,
     );
     program_cache
 }
@@ -308,22 +308,18 @@ fn test_program_sbf_sanity() {
 
         let accounts = vec![(pubkey1, Account::default()), (pubkey2, Account::default())];
 
-        let compute_budget = ComputeBudget::new_with_defaults(false);
-        let mut program_cache = default_program_cache_with_program(
-            &program_id,
-            &program_elf,
-            &feature_set,
-            &compute_budget,
-        );
+        let mut program_cache =
+            default_program_cache_with_program(&program_id, &program_elf, &feature_set);
         let sysvar_cache = default_sysvar_cache();
 
         let context = InstrContext {
             feature_set,
             accounts,
             instruction,
+            cu_avail: MAX_COMPUTE_UNIT_LIMIT as u64, // Widen to 1.4 M
         };
 
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
         let result = match effects.result {
             Some(err) => Err(err),
@@ -361,8 +357,6 @@ fn test_program_sbf_loader_deprecated() {
 
         let feature_set = SVMFeatureSet::all_enabled();
 
-        let compute_budget = ComputeBudget::new_with_defaults(false);
-
         let pubkey = Pubkey::new_unique();
         let accounts = vec![
             (program_id, Account::new(0, 0, &bpf_loader_deprecated::id())),
@@ -376,20 +370,15 @@ fn test_program_sbf_loader_deprecated() {
             &bpf_loader_deprecated::id(),
             &program_elf,
             &feature_set,
-            &compute_budget,
         );
         let sysvar_cache = default_sysvar_cache();
 
         let account_metas = vec![AccountMeta::new(pubkey, true)];
         let instruction = Instruction::new_with_bytes(program_id, &[255], account_metas);
 
-        let context = InstrContext {
-            feature_set,
-            accounts,
-            instruction,
-        };
+        let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
         assert!(effects.result.is_none());
     }
@@ -417,7 +406,6 @@ fn test_sol_alloc_free_no_longer_deployable_with_upgradeable_loader() {
     let payer_pubkey = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
     let (programdata_address, _) =
         Pubkey::find_program_address(&[program_id.as_ref()], &bpf_loader_upgradeable::id());
@@ -499,18 +487,14 @@ fn test_sol_alloc_free_no_longer_deployable_with_upgradeable_loader() {
     .pop()
     .unwrap();
 
-    let context = InstrContext {
-        feature_set,
-        accounts,
-        instruction,
-    };
+    let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
     // Expect that deployment to fail. B/C during deployment, there is an elf
     // verification step, which uses the runtime to look up relocatable symbols
     // in elf inside syscall table. In this case, `sol_alloc_free_` can't be
     // found in syscall table. Hence, the verification fails and the deployment
     // fails.
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
     assert_eq!(effects.result, Some(InstructionError::InvalidAccountData));
 }
@@ -536,13 +520,8 @@ fn test_program_sbf_duplicate_accounts() {
         let program_elf = load_program_elf(program);
         let program_id = Pubkey::new_unique();
         let feature_set = SVMFeatureSet::all_enabled();
-        let compute_budget = ComputeBudget::new_with_defaults(false);
-        let mut program_cache = default_program_cache_with_program(
-            &program_id,
-            &program_elf,
-            &feature_set,
-            &compute_budget,
-        );
+        let mut program_cache =
+            default_program_cache_with_program(&program_id, &program_elf, &feature_set);
         let sysvar_cache = default_sysvar_cache();
 
         let payer_pubkey = Pubkey::new_unique();
@@ -564,12 +543,8 @@ fn test_program_sbf_duplicate_accounts() {
                 (pubkey, account.clone()),
             ];
             let instruction = Instruction::new_with_bytes(program_id, data, account_metas.clone());
-            let context = InstrContext {
-                feature_set,
-                accounts,
-                instruction,
-            };
-            execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache)
+            let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
+            execute_instr(&context, &mut program_cache, &sysvar_cache)
         };
 
         let effects = execute(&[1]);
@@ -616,12 +591,8 @@ fn test_program_sbf_duplicate_accounts() {
             (pubkey, Account::new(10, 1, &program_id)),
         ];
         let instruction = Instruction::new_with_bytes(program_id, &[7], account_metas);
-        let context = InstrContext {
-            feature_set,
-            accounts,
-            instruction,
-        };
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
         assert!(effects.result.is_none());
     }
 }
@@ -653,13 +624,8 @@ fn test_program_sbf_error_handling() {
 
         let accounts = vec![(pubkey1, Account::default())];
 
-        let compute_budget = ComputeBudget::new_with_defaults(false);
-        let mut program_cache = default_program_cache_with_program(
-            &program_id,
-            &program_elf,
-            &feature_set,
-            &compute_budget,
-        );
+        let mut program_cache =
+            default_program_cache_with_program(&program_id, &program_elf, &feature_set);
         let sysvar_cache = default_sysvar_cache();
 
         // Helper to execute an instruction with the given data byte.
@@ -667,13 +633,10 @@ fn test_program_sbf_error_handling() {
             let account_metas = vec![AccountMeta::new(pubkey1, true)];
             let instruction = Instruction::new_with_bytes(program_id, data, account_metas);
 
-            let context = InstrContext {
-                feature_set,
-                accounts: accounts.clone(),
-                instruction,
-            };
+            let context =
+                InstrContext::new_with_default_budget(feature_set, accounts.clone(), instruction);
 
-            execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache)
+            execute_instr(&context, &mut program_cache, &sysvar_cache)
         };
 
         let effects = execute(&[1]);
@@ -742,30 +705,21 @@ fn test_return_data_and_log_data_syscall() {
         let program_id = Pubkey::new_unique();
 
         let feature_set = SVMFeatureSet::all_enabled();
-        let compute_budget = ComputeBudget::new_with_defaults(false);
 
         let pubkey = Pubkey::new_unique();
         let accounts = vec![(pubkey, Account::default())];
 
-        let mut program_cache = default_program_cache_with_program(
-            &program_id,
-            &program_elf,
-            &feature_set,
-            &compute_budget,
-        );
+        let mut program_cache =
+            default_program_cache_with_program(&program_id, &program_elf, &feature_set);
         let sysvar_cache = default_sysvar_cache();
 
         let account_metas = vec![AccountMeta::new(pubkey, true)];
         let instruction =
             Instruction::new_with_bytes(program_id, &[1, 2, 3, 0, 4, 5, 6], account_metas);
 
-        let context = InstrContext {
-            feature_set,
-            accounts,
-            instruction,
-        };
+        let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
         assert!(effects.result.is_none());
 
@@ -1419,7 +1373,6 @@ fn test_program_sbf_program_id_spoofing() {
     let malicious_system_pubkey = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
     let from_pubkey = Pubkey::new_unique();
     let to_pubkey = Pubkey::new_unique();
@@ -1441,7 +1394,6 @@ fn test_program_sbf_program_id_spoofing() {
         &bpf_loader_upgradeable::id(),
         &spoof1_elf,
         &feature_set,
-        &compute_budget,
     );
     add_program_to_program_cache(
         &mut program_cache,
@@ -1449,7 +1401,6 @@ fn test_program_sbf_program_id_spoofing() {
         &bpf_loader_upgradeable::id(),
         &spoof1_system_elf,
         &feature_set,
-        &compute_budget,
     );
     let sysvar_cache = default_sysvar_cache();
 
@@ -1463,13 +1414,9 @@ fn test_program_sbf_program_id_spoofing() {
     let instruction =
         Instruction::new_with_bytes(malicious_swap_pubkey, &[], account_metas.clone());
 
-    let context = InstrContext {
-        feature_set,
-        accounts,
-        instruction,
-    };
+    let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
     assert_eq!(
         effects.result,
@@ -1492,7 +1439,6 @@ fn test_program_sbf_caller_has_access_to_cpi_program() {
     let caller2_pubkey = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
     let accounts = vec![
         (
@@ -1512,7 +1458,6 @@ fn test_program_sbf_caller_has_access_to_cpi_program() {
         &bpf_loader_upgradeable::id(),
         &caller_access_elf,
         &feature_set,
-        &compute_budget,
     );
     add_program_to_program_cache(
         &mut program_cache,
@@ -1520,7 +1465,6 @@ fn test_program_sbf_caller_has_access_to_cpi_program() {
         &bpf_loader_upgradeable::id(),
         &caller_access_elf,
         &feature_set,
-        &compute_budget,
     );
     let sysvar_cache = default_sysvar_cache();
 
@@ -1530,13 +1474,9 @@ fn test_program_sbf_caller_has_access_to_cpi_program() {
     ];
     let instruction = Instruction::new_with_bytes(caller_pubkey, &[1], account_metas);
 
-    let context = InstrContext {
-        feature_set,
-        accounts,
-        instruction,
-    };
+    let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
     assert_eq!(effects.result, Some(InstructionError::MissingAccount));
 }
@@ -1550,7 +1490,6 @@ fn test_program_sbf_ro_modify() {
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
     let test_pubkey = Pubkey::new_unique();
     let accounts = vec![
@@ -1558,12 +1497,8 @@ fn test_program_sbf_ro_modify() {
         (test_pubkey, Account::new(10, 0, &system_program::id())),
     ];
 
-    let mut program_cache = default_program_cache_with_program(
-        &program_id,
-        &program_elf,
-        &feature_set,
-        &compute_budget,
-    );
+    let mut program_cache =
+        default_program_cache_with_program(&program_id, &program_elf, &feature_set);
     let sysvar_cache = default_sysvar_cache();
 
     let account_metas = vec![
@@ -1575,13 +1510,10 @@ fn test_program_sbf_ro_modify() {
         let instruction =
             Instruction::new_with_bytes(program_id, &[instr_data], account_metas.clone());
 
-        let context = InstrContext {
-            feature_set,
-            accounts: accounts.clone(),
-            instruction,
-        };
+        let context =
+            InstrContext::new_with_default_budget(feature_set, accounts.clone(), instruction);
 
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
         assert_eq!(
             effects.result,
@@ -1601,24 +1533,16 @@ fn test_program_sbf_call_depth() {
     let feature_set = SVMFeatureSet::all_enabled();
     let compute_budget = ComputeBudget::new_with_defaults(false);
 
-    let mut program_cache = default_program_cache_with_program(
-        &program_id,
-        &program_elf,
-        &feature_set,
-        &compute_budget,
-    );
+    let mut program_cache =
+        default_program_cache_with_program(&program_id, &program_elf, &feature_set);
     let sysvar_cache = default_sysvar_cache();
 
     let mut execute = |depth: usize| {
         let instruction = Instruction::new_with_bincode(program_id, &depth, vec![]);
 
-        let context = InstrContext {
-            feature_set,
-            accounts: vec![],
-            instruction,
-        };
+        let context = InstrContext::new_with_default_budget(feature_set, vec![], instruction);
 
-        execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache)
+        execute_instr(&context, &mut program_cache, &sysvar_cache)
     };
 
     let effects = execute(compute_budget.max_call_depth - 1);
@@ -1637,20 +1561,14 @@ fn test_program_sbf_compute_budget() {
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let mut compute_budget = ComputeBudget::new_with_defaults(false);
-    compute_budget.compute_unit_limit = 0;
 
     let accounts = vec![(
         program_id,
         Account::new(0, 0, &bpf_loader_upgradeable::id()),
     )];
 
-    let mut program_cache = default_program_cache_with_program(
-        &program_id,
-        &program_elf,
-        &feature_set,
-        &compute_budget,
-    );
+    let mut program_cache =
+        default_program_cache_with_program(&program_id, &program_elf, &feature_set);
     let sysvar_cache = default_sysvar_cache();
 
     let instruction = Instruction::new_with_bincode(program_id, &0, vec![]);
@@ -1659,9 +1577,10 @@ fn test_program_sbf_compute_budget() {
         feature_set,
         accounts,
         instruction,
+        cu_avail: 0,
     };
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
     assert_eq!(
         effects.result,
@@ -1713,7 +1632,6 @@ fn assert_instruction_count() {
     }
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
     let sysvar_cache = default_sysvar_cache();
 
     println!("\n  {:36} expected actual  diff", "SBF program");
@@ -1721,12 +1639,8 @@ fn assert_instruction_count() {
         let program_elf = load_program_elf(program_name);
         let program_id = Pubkey::new_unique();
 
-        let mut program_cache = default_program_cache_with_program(
-            &program_id,
-            &program_elf,
-            &feature_set,
-            &compute_budget,
-        );
+        let mut program_cache =
+            default_program_cache_with_program(&program_id, &program_elf, &feature_set);
 
         let account_pubkey = Pubkey::new_unique();
         let accounts = vec![(account_pubkey, Account::new(0, 0, &program_id))];
@@ -1738,17 +1652,11 @@ fn assert_instruction_count() {
         }];
         let instruction = Instruction::new_with_bytes(program_id, &[], instruction_accounts);
 
-        let context = InstrContext {
-            feature_set,
-            accounts,
-            instruction,
-        };
+        let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
-        let consumption = compute_budget
-            .compute_unit_limit
-            .saturating_sub(effects.cu_avail);
+        let consumption = context.cu_avail.saturating_sub(effects.cu_avail);
         let diff: i64 = consumption as i64 - *expected_consumption as i64;
         println!(
             "  {:36} {:8}{:6} {:+5} ({:+3.0}%)",
@@ -1834,14 +1742,9 @@ fn test_program_sbf_r2_instruction_data_pointer(num_accounts: usize, input_data_
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
-    let mut program_cache = default_program_cache_with_program(
-        &program_id,
-        &program_elf,
-        &feature_set,
-        &compute_budget,
-    );
+    let mut program_cache =
+        default_program_cache_with_program(&program_id, &program_elf, &feature_set);
     let sysvar_cache = default_sysvar_cache();
 
     let mut accounts = Vec::new();
@@ -1866,13 +1769,9 @@ fn test_program_sbf_r2_instruction_data_pointer(num_accounts: usize, input_data_
 
     let instruction = Instruction::new_with_bytes(program_id, &input_data, account_metas);
 
-    let context = InstrContext {
-        feature_set,
-        accounts,
-        instruction,
-    };
+    let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
     assert!(effects.result.is_none());
     assert_eq!(input_data, effects.return_data);
@@ -2375,7 +2274,6 @@ fn test_program_sbf_disguised_as_sbf_loader() {
             remove_bpf_loader_incorrect_program_id: false,
             ..SVMFeatureSet::all_enabled()
         };
-        let compute_budget = ComputeBudget::new_with_defaults(false);
 
         let mut program_cache = default_program_cache();
         add_program_to_program_cache(
@@ -2384,20 +2282,15 @@ fn test_program_sbf_disguised_as_sbf_loader() {
             &bpf_loader::id(),
             &program_elf,
             &feature_set,
-            &compute_budget,
         );
         let sysvar_cache = default_sysvar_cache();
 
         let account_metas = vec![AccountMeta::new_readonly(program_id, false)];
         let instruction = Instruction::new_with_bytes(bpf_loader::id(), &[1], account_metas);
 
-        let context = InstrContext {
-            feature_set,
-            accounts: vec![],
-            instruction,
-        };
+        let context = InstrContext::new_with_default_budget(feature_set, vec![], instruction);
 
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
         assert_eq!(effects.result, Some(InstructionError::UnsupportedProgramId));
     }
 }
@@ -2411,7 +2304,6 @@ fn test_program_reads_from_program_account() {
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
     let mut program_cache = new_program_cache_with_builtins(0);
     add_program_to_program_cache(
@@ -2420,7 +2312,6 @@ fn test_program_reads_from_program_account() {
         &bpf_loader::id(),
         &program_elf,
         &feature_set,
-        &compute_budget,
     );
 
     let sysvar_cache = default_sysvar_cache();
@@ -2437,13 +2328,13 @@ fn test_program_reads_from_program_account() {
     let account_metas = vec![AccountMeta::new_readonly(program_id, false)];
     let instruction = Instruction::new_with_bytes(program_id, &program_elf[..48], account_metas);
 
-    let context = InstrContext {
+    let context = InstrContext::new_with_default_budget(
         feature_set,
-        accounts: vec![(program_id, program_account)],
+        vec![(program_id, program_account)],
         instruction,
-    };
+    );
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
     assert!(effects.result.is_none());
 }
 
@@ -2456,7 +2347,6 @@ fn test_program_sbf_c_dup() {
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
     let mut program_cache = new_program_cache_with_builtins(0);
     add_program_to_program_cache(
         &mut program_cache,
@@ -2464,7 +2354,6 @@ fn test_program_sbf_c_dup() {
         &bpf_loader_upgradeable::id(),
         &program_elf,
         &feature_set,
-        &compute_budget,
     );
 
     let sysvar_cache = default_sysvar_cache();
@@ -2479,13 +2368,13 @@ fn test_program_sbf_c_dup() {
     ];
     let instruction = Instruction::new_with_bytes(program_id, &[4, 5, 6, 7], account_metas);
 
-    let context = InstrContext {
+    let context = InstrContext::new_with_default_budget(
         feature_set,
-        accounts: vec![(account_address, account)],
+        vec![(account_address, account)],
         instruction,
-    };
+    );
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
     assert!(effects.result.is_none());
 }
 
@@ -2664,14 +2553,9 @@ fn test_program_sbf_ro_account_modify() {
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
-    let mut program_cache = default_program_cache_with_program(
-        &program_id,
-        &program_elf,
-        &feature_set,
-        &compute_budget,
-    );
+    let mut program_cache =
+        default_program_cache_with_program(&program_id, &program_elf, &feature_set);
     let sysvar_cache = default_sysvar_cache();
 
     let argument_pubkey = Pubkey::new_unique();
@@ -2685,13 +2569,10 @@ fn test_program_sbf_ro_account_modify() {
     for case in [0, 1, 2] {
         let instruction = Instruction::new_with_bytes(program_id, &[case], account_metas.clone());
 
-        let context = InstrContext {
-            feature_set,
-            accounts: accounts.clone(),
-            instruction,
-        };
+        let context =
+            InstrContext::new_with_default_budget(feature_set, accounts.clone(), instruction);
 
-        let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+        let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
         assert_eq!(effects.result, Some(InstructionError::ReadonlyDataModified));
     }
@@ -4584,18 +4465,9 @@ fn test_program_sbf_deplete_cost_meter_with_divide_by_zero() {
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = {
-        let mut budget = ComputeBudget::new_with_defaults(false);
-        budget.compute_unit_limit = 10_000u64;
-        budget
-    };
 
-    let mut program_cache = default_program_cache_with_program(
-        &program_id,
-        &program_elf,
-        &feature_set,
-        &compute_budget,
-    );
+    let mut program_cache =
+        default_program_cache_with_program(&program_id, &program_elf, &feature_set);
     let sysvar_cache = default_sysvar_cache();
 
     let instruction = Instruction::new_with_bytes(program_id, &[], vec![]);
@@ -4604,9 +4476,10 @@ fn test_program_sbf_deplete_cost_meter_with_divide_by_zero() {
         feature_set,
         accounts: vec![],
         instruction,
+        cu_avail: 10_000,
     };
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
     assert_eq!(
         effects.result,
@@ -5648,14 +5521,9 @@ fn test_program_sbf_rust_direct_account_pointers(num_accounts: usize, input_data
     let program_id = Pubkey::new_unique();
 
     let feature_set = SVMFeatureSet::all_enabled();
-    let compute_budget = ComputeBudget::new_with_defaults(false);
 
-    let mut program_cache = default_program_cache_with_program(
-        &program_id,
-        &program_elf,
-        &feature_set,
-        &compute_budget,
-    );
+    let mut program_cache =
+        default_program_cache_with_program(&program_id, &program_elf, &feature_set);
     let sysvar_cache = default_sysvar_cache();
 
     let mut accounts = Vec::new();
@@ -5685,13 +5553,9 @@ fn test_program_sbf_rust_direct_account_pointers(num_accounts: usize, input_data
 
     let instruction = Instruction::new_with_bytes(program_id, &input_data, account_metas);
 
-    let context = InstrContext {
-        feature_set,
-        accounts,
-        instruction,
-    };
+    let context = InstrContext::new_with_default_budget(feature_set, accounts, instruction);
 
-    let effects = execute_instr(&context, &compute_budget, &mut program_cache, &sysvar_cache);
+    let effects = execute_instr(&context, &mut program_cache, &sysvar_cache);
 
     assert!(effects.result.is_none());
     // `num_accounts * 2` will be added as return data.
