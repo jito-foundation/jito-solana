@@ -5512,7 +5512,7 @@ pub mod tests {
             "pubsub": format!("127.0.0.1:8900"),
             "version": format!("{version}"),
             "featureSet": version.feature_set(),
-            "clientId": "Agave",
+            "clientId": "JitoLabs",
         }, {
             "pubkey": rpc.leader_pubkey().to_string(),
             "gossip": "127.0.0.1:1235",
@@ -5528,7 +5528,7 @@ pub mod tests {
             "pubsub": format!("127.0.0.1:8900"),
             "version": format!("{version}"),
             "featureSet": version.feature_set(),
-            "clientId": "Agave",
+            "clientId": "JitoLabs",
         }]);
         assert_eq!(result, expected);
     }
