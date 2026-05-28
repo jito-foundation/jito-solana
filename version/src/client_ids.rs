@@ -121,4 +121,9 @@ mod test {
         assert_eq!(format!("{}", ClientId::Unknown(0)), "Unknown(0)");
         assert_eq!(format!("{}", ClientId::Unknown(u16::MAX)), "Unknown(65535)");
     }
+
+    #[test]
+    fn test_this_client() {
+        assert_eq!(ClientId::this_client(), ClientId::JitoLabs);
+    }
 }
