@@ -121,7 +121,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         }
     }
 
-    /// Gets accessed accounts (resources) for use in `PrioGraph`.
     fn get_transactions_account_access<'a>(
         transactions: impl Iterator<Item = &'a (impl SVMMessage + 'a)> + 'a,
     ) -> impl Iterator<Item = (Pubkey, AccessKind)> + 'a {
@@ -542,7 +541,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             }
         }
         let now = Instant::now();
-        while let Some(next_batch_id) = self.prio_graph.pop_and_unblock() {
+        while let Some((next_batch_id, _)) = self.prio_graph.pop_and_unblock() {
             if let Some(insertion_time) = self
                 .insertion_to_prio_graph_time
                 .remove(&priority_to_seq_id(next_batch_id.priority))
@@ -557,7 +556,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             container.remove_by_id(next_batch_id.id);
         }
 
-        self.prio_graph = PrioGraph::new(passthrough_priority);
+        self.prio_graph.clear();
         self.insertion_to_prio_graph_time.clear();
 
         // Only report timing metrics when slot has ended
@@ -1334,5 +1333,65 @@ mod tests {
         if let Some(first_id) = stored_txn_ids.first() {
             scheduler.prio_graph.unblock(first_id);
         }
+    }
+
+    /// Regression test for the `solBamSched` "blocking node must exist" panic.
+    ///
+    /// A bundle is inserted as one `PrioGraph` node, so two transactions sharing
+    /// a writable account (the common fee payer here) make the node reference
+    /// the same resource twice. prio-graph 0.3.0 tolerates this (its
+    /// `insert_transaction` skips a blocker equal to the node itself); 0.1.0
+    /// lacked that guard and panicked. Guards against regressing to a version
+    /// without it.
+    #[test]
+    fn test_pull_bundle_with_shared_writable_account_does_not_panic() {
+        let (bank_forks, _) = test_bank_forks();
+        let TestScheduler { mut scheduler, .. } = create_test_scheduler(4, &bank_forks);
+        scheduler.extra_checks_enabled = false;
+
+        let bank = bank_forks.read().unwrap().working_bank();
+
+        // Set the scheduler's slot via a Consume decision.
+        let mut slot_container = create_container(vec![(
+            &Keypair::new(),
+            vec![Pubkey::new_unique()],
+            1000,
+            seq_id_to_priority(0),
+            u64::MAX,
+        )]);
+        scheduler
+            .receive_completed(
+                &mut slot_container,
+                &BufferedPacketsDecision::Consume(bank.clone()),
+            )
+            .unwrap();
+        assert_eq!(scheduler.slot, Some(bank.slot()));
+
+        // One batch, two transactions sharing a writable account: both are
+        // signed by `keypair_a`, so both write its fee-payer account (index 0).
+        let keypair_a = Keypair::new();
+        let priority = seq_id_to_priority(0);
+        let mut txns_max_age: SmallVec<
+            [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
+        > = SmallVec::new();
+        txns_max_age.push((
+            prioritized_tranfers(&keypair_a, vec![Pubkey::new_unique()], 1000, priority),
+            MaxAge::MAX,
+        ));
+        txns_max_age.push((
+            prioritized_tranfers(&keypair_a, vec![Pubkey::new_unique()], 2000, priority),
+            MaxAge::MAX,
+        ));
+
+        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+        container.insert_new_batch(txns_max_age, priority, 5000, false, u64::MAX);
+
+        // Must not panic; the bundle becomes a single schedulable node.
+        scheduler.pull_into_prio_graph(&mut container);
+
+        assert!(
+            !scheduler.prio_graph.is_empty(),
+            "bundle sharing a writable account should be inserted and schedulable"
+        );
     }
 }
