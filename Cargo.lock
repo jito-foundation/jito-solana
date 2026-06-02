@@ -9953,7 +9953,6 @@ dependencies = [
  "mockall",
  "num-derive",
  "num-traits",
- "num_cpus",
  "percentage",
  "proptest",
  "qualifier_attr",
