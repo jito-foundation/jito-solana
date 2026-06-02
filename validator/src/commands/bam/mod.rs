@@ -16,7 +16,7 @@ pub enum BamUrlError {
     PortSetFailed { url: String },
 }
 
-const DEFAULT_BAM_URL_SCHEME: &str = "http";
+const DEFAULT_BAM_URL_SCHEME: &str = "https";
 const DEFAULT_BAM_HTTP_PORT: u16 = 50055;
 const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 
@@ -30,6 +30,8 @@ const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 /// - HTTPS URLs default to port 50056
 /// - Missing scheme defaults to HTTP
 ///
+/// HTTPS is now the default scheme and port.
+/// 
 /// # Errors
 /// Returns an error if the URL is invalid or uses an unsupported scheme.
 fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
@@ -183,20 +185,20 @@ mod tests {
     #[test_case("https://bam:8081/badam", "https://bam:8081/badam" ; "https with port and path")]
     #[test_case("https://192.168.100.42:8081/ba/da/m", "https://192.168.100.42:8081/ba/da/m" ; "https ipv4 with port and path")]
     #[test_case("https://[fe80::1]:8081/ba/da/m", "https://[fe80::1]:8081/ba/da/m" ; "https ipv6 with port and path")]
-    // No scheme with port (should default to http)
-    #[test_case("localhost:8080", "http://localhost:8080" ; "localhost with port defaults to http")]
-    #[test_case("your-bam.host.wtf:8080", "http://your-bam.host.wtf:8080" ; "domain with port defaults to http")]
-    #[test_case("oh.bam:8080", "http://oh.bam:8080" ; "short domain with port defaults to http")]
-    #[test_case("bam:8080/badam", "http://bam:8080/badam" ; "host with port and path defaults to http")]
-    #[test_case("192.168.100.42:8080/ba/da/m", "http://192.168.100.42:8080/ba/da/m" ; "ipv4 with port and path defaults to http")]
-    #[test_case("[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m" ; "ipv6 with port and path defaults to http")]
-    // No scheme without port (should default to http with default port 50055)
-    #[test_case("localhost", "http://localhost:50055" ; "localhost defaults to http with default port")]
-    #[test_case("your-bam.host.wtf", "http://your-bam.host.wtf:50055" ; "domain defaults to http with default port")]
-    #[test_case("oh.bam", "http://oh.bam:50055" ; "short domain defaults to http with default port")]
-    #[test_case("bam/badam", "http://bam:50055/badam" ; "host with path defaults to http with default port")]
-    #[test_case("192.168.100.42/ba/da/m", "http://192.168.100.42:50055/ba/da/m" ; "ipv4 with path defaults to http with default port")]
-    #[test_case("[fe80::1]/ba/da/m", "http://[fe80::1]:50055/ba/da/m" ; "ipv6 with path defaults to http with default port")]
+    // No scheme with port (should default to https)
+    #[test_case("localhost:8080", "https://localhost:8080" ; "localhost with port defaults to https")]
+    #[test_case("your-bam.host.wtf:8080", "https://your-bam.host.wtf:8080" ; "domain with port defaults to https")]
+    #[test_case("oh.bam:8080", "https://oh.bam:8080" ; "short domain with port defaults to https")]
+    #[test_case("bam:8080/badam", "https://bam:8080/badam" ; "host with port and path defaults to https")]
+    #[test_case("192.168.100.42:8080/ba/da/m", "https://192.168.100.42:8080/ba/da/m" ; "ipv4 with port and path defaults to https")]
+    #[test_case("[fe80::1]:8080/ba/da/m", "https://[fe80::1]:8080/ba/da/m" ; "ipv6 with port and path defaults to https")]
+    // No scheme without port (should default to https with default port 50056)
+    #[test_case("localhost", "https://localhost:50056" ; "localhost defaults to https with default port")]
+    #[test_case("your-bam.host.wtf", "https://your-bam.host.wtf:50056" ; "domain defaults to https with default port")]
+    #[test_case("oh.bam", "https://oh.bam:50056" ; "short domain defaults to https with default port")]
+    #[test_case("bam/badam", "https://bam:50056/badam" ; "host with path defaults to https with default port")]
+    #[test_case("192.168.100.42/ba/da/m", "https://192.168.100.42:50056/ba/da/m" ; "ipv4 with path defaults to https with default port")]
+    #[test_case("[fe80::1]/ba/da/m", "https://[fe80::1]:50056/ba/da/m" ; "ipv6 with path defaults to https with default port")]
     fn test_extract_bam_url_success(input: &str, expected: &str) {
         assert_eq_extract_bam_url(input, expected);
     }
