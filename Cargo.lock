@@ -9517,6 +9517,7 @@ dependencies = [
  "solana-transaction-error",
  "solana-vote-program",
  "spl-generic-token",
+ "spl-memo-interface",
  "test-case",
  "thiserror 2.0.18",
  "tokio",

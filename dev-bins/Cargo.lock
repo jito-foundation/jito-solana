@@ -8015,6 +8015,7 @@ dependencies = [
  "solana-transaction-error",
  "solana-vote-program",
  "spl-generic-token",
+ "spl-memo-interface",
  "thiserror 2.0.18",
  "tokio",
 ]
