@@ -1311,6 +1311,10 @@ pub mod validate_chained_block_id {
     solana_pubkey::declare_id!("vcmrbYbiMVKaq1snKP6eCacNDcr6qZvpCNUjmk6gxvZ");
 }
 
+pub mod validate_chained_block_id_2 {
+    solana_pubkey::declare_id!("vcmrw431aNM8ngQ46derkZXipoTGQdbHkEygBDh12dA");
+}
+
 pub mod validator_admission_ticket {
     solana_pubkey::declare_id!("VAT9huvhPjRN9cyrPytq9rwvEJ3J4ADtjdncgZRyANJ");
 }
@@ -2366,6 +2370,10 @@ pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::n
         (
             upgrade_bpf_stake_program_to_v5::id(),
             "SIMD-0490: Upgrade BPF Stake Program to v5.0.0",
+        ),
+        (
+            validate_chained_block_id_2::id(),
+            "SIMD-340: Encompassing check for validate chained block ID",
         ),
         /*************** ADD NEW FEATURES HERE ***************/
     ]
