@@ -10832,6 +10832,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding 2.3.2",
  "pin-project",
+ "rustls-native-certs",
  "socket2 0.6.3",
  "sync_wrapper",
  "tokio",
@@ -10841,6 +10842,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
