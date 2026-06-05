@@ -43,6 +43,11 @@ use {
     tokio::{runtime::Runtime, signal},
 };
 
+// create_new_ledger verifies the generated genesis archive can be unpacked.
+// BAM local-cluster genesis archives can exceed the standard 10 MiB default, so
+// allow up to 10 GiB for local cluster ledger creation.
+const MAX_BAM_LOCAL_CLUSTER_GENESIS_ARCHIVE_UNPACKED_SIZE: u64 = 10 * 1024 * 1024 * 1024;
+
 pub struct BamValidator {
     process: Child,
     node_name: String,
@@ -110,6 +115,8 @@ impl BamValidator {
         .arg("--full-rpc-api")
         .arg("--enable-rpc-transaction-history")
         .arg("--enable-extended-tx-metadata-storage")
+        // Keep snapshots frequent so restarted or non-bootstrap local validators
+        // can quickly download a usable bootstrap snapshot during short runs.
         .arg("--snapshot-interval-slots")
         .arg("25")
         .arg("--expected-shred-version")
@@ -432,7 +439,7 @@ impl BamLocalCluster {
                 create_new_ledger(
                     &ledger_path,
                     &genesis_config_info.genesis_config,
-                    10737418240,
+                    MAX_BAM_LOCAL_CLUSTER_GENESIS_ARCHIVE_UNPACKED_SIZE,
                     LedgerColumnOptions::default(),
                 )?;
             }
@@ -442,7 +449,7 @@ impl BamLocalCluster {
                 create_new_ledger(
                     &ledger_path,
                     &genesis_config_info.genesis_config,
-                    10737418240,
+                    MAX_BAM_LOCAL_CLUSTER_GENESIS_ARCHIVE_UNPACKED_SIZE,
                     LedgerColumnOptions::default(),
                 )?;
                 BamValidator::create_snapshot(&ledger_path, &config.ledger_tool_build_path)?;
