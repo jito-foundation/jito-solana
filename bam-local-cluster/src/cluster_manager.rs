@@ -10,6 +10,7 @@ use {
     solana_feature_gate_interface as feature,
     solana_fee_calculator::FeeRateGovernor,
     solana_genesis_config::GenesisConfig,
+    solana_genesis_utils::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
     solana_keypair::{Keypair, read_keypair_file},
     solana_ledger::{
         blockstore::create_new_ledger, blockstore_options::LedgerColumnOptions,
@@ -42,11 +43,6 @@ use {
     },
     tokio::{runtime::Runtime, signal},
 };
-
-// create_new_ledger verifies the generated genesis archive can be unpacked.
-// BAM local-cluster genesis archives can exceed the standard 10 MiB default, so
-// allow up to 10 GiB for local cluster ledger creation.
-const MAX_BAM_LOCAL_CLUSTER_GENESIS_ARCHIVE_UNPACKED_SIZE: u64 = 10 * 1024 * 1024 * 1024;
 
 pub struct BamValidator {
     process: Child,
@@ -439,7 +435,7 @@ impl BamLocalCluster {
                 create_new_ledger(
                     &ledger_path,
                     &genesis_config_info.genesis_config,
-                    MAX_BAM_LOCAL_CLUSTER_GENESIS_ARCHIVE_UNPACKED_SIZE,
+                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
                     LedgerColumnOptions::default(),
                 )?;
             }
@@ -449,7 +445,7 @@ impl BamLocalCluster {
                 create_new_ledger(
                     &ledger_path,
                     &genesis_config_info.genesis_config,
-                    MAX_BAM_LOCAL_CLUSTER_GENESIS_ARCHIVE_UNPACKED_SIZE,
+                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
                     LedgerColumnOptions::default(),
                 )?;
                 BamValidator::create_snapshot(&ledger_path, &config.ledger_tool_build_path)?;
