@@ -1354,6 +1354,7 @@ dependencies = [
  "solana-feature-gate-interface",
  "solana-fee-calculator",
  "solana-genesis-config",
+ "solana-genesis-utils",
  "solana-keypair",
  "solana-ledger",
  "solana-local-cluster",
