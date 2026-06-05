@@ -469,7 +469,9 @@ impl BamConnection {
     fn endpoint_from_url(url: &str) -> Result<Endpoint, TryInitError> {
         let mut endpoint = Endpoint::from_shared(url.to_owned())?.tcp_keepalive(Some(Duration::from_secs(60)));
         if url.starts_with("https") {
-            endpoint = endpoint.tls_config(ClientTlsConfig::new())?;
+            endpoint = endpoint.tls_config(
+                ClientTlsConfig::new().with_enabled_roots(),
+            )?;
         }
         Ok(endpoint)
     }
