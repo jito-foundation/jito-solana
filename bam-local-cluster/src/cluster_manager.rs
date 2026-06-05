@@ -110,6 +110,8 @@ impl BamValidator {
         .arg("--full-rpc-api")
         .arg("--enable-rpc-transaction-history")
         .arg("--enable-extended-tx-metadata-storage")
+        .arg("--snapshot-interval-slots")
+        .arg("25")
         .arg("--expected-shred-version")
         .arg(compute_shred_version(&genesis_config.hash(), None).to_string())
         .arg("--bam-url")
@@ -426,6 +428,14 @@ impl BamLocalCluster {
                 .into());
             }
 
+            if !is_bootstrap {
+                create_new_ledger(
+                    &ledger_path,
+                    &genesis_config_info.genesis_config,
+                    10737418240,
+                    LedgerColumnOptions::default(),
+                )?;
+            }
             // Create ledger and snapshot if bootstrap; other validators need to have snapshot
             // to download from the bootstrap validator to start
             if is_bootstrap {
