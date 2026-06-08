@@ -23,12 +23,12 @@ use {
         time::{Duration, Instant, SystemTime},
     },
     thiserror::Error,
-    tonic::transport::{ClientTlsConfig, Endpoint},
     tokio::{
         sync::mpsc,
         time::{interval, timeout},
     },
     tokio_stream::wrappers::ReceiverStream,
+    tonic::transport::{ClientTlsConfig, Endpoint},
 };
 
 pub struct BamConnection {
@@ -467,11 +467,10 @@ impl BamConnection {
     }
 
     fn endpoint_from_url(url: &str) -> Result<Endpoint, TryInitError> {
-        let mut endpoint = Endpoint::from_shared(url.to_owned())?.tcp_keepalive(Some(Duration::from_secs(60)));
+        let mut endpoint =
+            Endpoint::from_shared(url.to_owned())?.tcp_keepalive(Some(Duration::from_secs(60)));
         if url.starts_with("https") {
-            endpoint = endpoint.tls_config(
-                ClientTlsConfig::new().with_enabled_roots(),
-            )?;
+            endpoint = endpoint.tls_config(ClientTlsConfig::new().with_enabled_roots())?;
         }
         Ok(endpoint)
     }

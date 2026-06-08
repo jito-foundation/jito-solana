@@ -31,7 +31,7 @@ const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 /// - Missing scheme defaults to HTTP
 ///
 /// HTTPS is now the default scheme and port.
-/// 
+///
 /// # Errors
 /// Returns an error if the URL is invalid or uses an unsupported scheme.
 fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
