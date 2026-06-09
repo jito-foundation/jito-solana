@@ -17,7 +17,9 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
         },
         forwarding_stage::ForwardingClientConfig,
-        multicast_shred_check_service::MulticastShredCheckService,
+        multicast_shred_check_service::{
+            MulticastShredCheckService, multicast_shred_addresses_for_cluster,
+        },
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
             self, repair_handler::RepairHandlerType, serve_repair_service::ServeRepairService,
@@ -672,9 +674,12 @@ pub struct Validator {
     transaction_status_service: Option<TransactionStatusService>,
     entry_notifier_service: Option<EntryNotifierService>,
     system_monitor_service: Option<SystemMonitorService>,
-    /// Background watcher that keeps the cluster multicast shred address in sync
-    /// with kernel route availability.
-    multicast_shred_check_service: Option<MulticastShredCheckService>,
+    /// Background watcher that keeps the leader-broadcast multicast shred
+    /// address in sync with kernel route availability.
+    leader_multicast_shred_check_service: Option<MulticastShredCheckService>,
+    /// Background watcher that keeps the turbine-root multicast shred address
+    /// in sync with kernel route availability.
+    root_multicast_shred_check_service: Option<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
     stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
@@ -1529,6 +1534,8 @@ impl Validator {
         );
 
         let bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>> = Arc::default();
+        let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by BlockEngineStage
+        let multicast_root_receiver_address = Arc::new(ArcSwap::from_pointee(None));
 
         let vote_tracker = Arc::<VoteTracker>::default();
 
@@ -1669,8 +1676,10 @@ impl Validator {
                 build_reward_certs_receiver,
                 reward_certs_sender,
             },
+            shredstream_receiver_address.clone(),
             config.shred_retransmit_receiver_addresses.clone(),
             bam_shred_receiver_addresses.clone(),
+            multicast_root_receiver_address.clone(),
         )
         .map_err(ValidatorError::Other)?;
 
@@ -1749,6 +1758,7 @@ impl Validator {
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
             config.tip_manager_config.clone(),
+            shredstream_receiver_address,
             config.shred_receiver_addresses.clone(),
             bam_shred_receiver_addresses,
             config.multicast_receiver_address.clone(),
@@ -1793,16 +1803,22 @@ impl Validator {
             shred_retransmit_receiver_addresses: config.shred_retransmit_receiver_addresses.clone(),
         });
 
-        let multicast_shred_check_service = (!config.disable_multicast_shred_check
-            && matches!(
-                genesis_config.cluster_type,
-                ClusterType::MainnetBeta | ClusterType::Testnet
-            ))
-        .then(|| {
+        let multicast_shred_addresses = (!config.disable_multicast_shred_check)
+            .then(|| multicast_shred_addresses_for_cluster(genesis_config.cluster_type))
+            .flatten();
+        let leader_multicast_shred_check_service =
+            multicast_shred_addresses.map(|(leader_addr, _)| {
+                MulticastShredCheckService::new(
+                    exit.clone(),
+                    config.multicast_receiver_address.clone(),
+                    leader_addr,
+                )
+            });
+        let root_multicast_shred_check_service = multicast_shred_addresses.map(|(_, root_addr)| {
             MulticastShredCheckService::new(
                 exit.clone(),
-                config.multicast_receiver_address.clone(),
-                genesis_config.cluster_type,
+                multicast_root_receiver_address,
+                root_addr,
             )
         });
 
@@ -1819,7 +1835,8 @@ impl Validator {
             transaction_status_service,
             entry_notifier_service,
             system_monitor_service,
-            multicast_shred_check_service,
+            leader_multicast_shred_check_service,
+            root_multicast_shred_check_service,
             sample_performance_service,
             snapshot_packager_service,
             completed_data_sets_service,
@@ -1968,10 +1985,18 @@ impl Validator {
                 .expect("system_monitor_service");
         }
 
-        if let Some(multicast_shred_check_service) = self.multicast_shred_check_service {
-            multicast_shred_check_service
+        if let Some(leader_multicast_shred_check_service) =
+            self.leader_multicast_shred_check_service
+        {
+            leader_multicast_shred_check_service
                 .join()
-                .expect("multicast_shred_check_service");
+                .expect("leader_multicast_shred_check_service");
+        }
+
+        if let Some(root_multicast_shred_check_service) = self.root_multicast_shred_check_service {
+            root_multicast_shred_check_service
+                .join()
+                .expect("root_multicast_shred_check_service");
         }
 
         if let Some(sample_performance_service) = self.sample_performance_service {

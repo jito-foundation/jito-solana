@@ -21,6 +21,30 @@ pub const MULTICAST_SHRED_ADDR_MAINNET: SocketAddr =
 pub const MULTICAST_SHRED_ADDR_TESTNET: SocketAddr =
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(233, 84, 178, 10)), 7733);
 
+pub const MULTICAST_ROOT_SHRED_ADDR_MAINNET: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(233, 84, 178, 16)), 7733);
+
+pub const MULTICAST_ROOT_SHRED_ADDR_TESTNET: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(233, 84, 178, 12)), 7733);
+
+/// Returns the `(leader_broadcast, turbine_root)` multicast destinations for a
+/// cluster, or `None` when the cluster has no multicast group.
+pub fn multicast_shred_addresses_for_cluster(
+    cluster_type: ClusterType,
+) -> Option<(SocketAddr, SocketAddr)> {
+    match cluster_type {
+        ClusterType::MainnetBeta => Some((
+            MULTICAST_SHRED_ADDR_MAINNET,
+            MULTICAST_ROOT_SHRED_ADDR_MAINNET,
+        )),
+        ClusterType::Testnet => Some((
+            MULTICAST_SHRED_ADDR_TESTNET,
+            MULTICAST_ROOT_SHRED_ADDR_TESTNET,
+        )),
+        _ => None,
+    }
+}
+
 /// How often to run the multicast check.
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -44,13 +68,9 @@ impl MulticastShredCheckService {
     pub fn new(
         exit: Arc<AtomicBool>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
-        cluster_type: ClusterType,
+        multicast_addr: SocketAddr,
     ) -> Self {
-        let multicast_addr = match cluster_type {
-            ClusterType::Testnet => MULTICAST_SHRED_ADDR_TESTNET,
-            _ => MULTICAST_SHRED_ADDR_MAINNET,
-        };
-        info!("Starting MulticastShredCheckService for {cluster_type:?} ({multicast_addr})");
+        info!("Starting MulticastShredCheckService for {multicast_addr}");
         let thread_hdl = Builder::new()
             .name("solMcastShrdChk".to_string())
             .spawn(move || {
@@ -192,6 +212,8 @@ mod tests {
         for (multicast_addr, expected) in [
             (MULTICAST_SHRED_ADDR_MAINNET, "233.84.178.1:7733"),
             (MULTICAST_SHRED_ADDR_TESTNET, "233.84.178.10:7733"),
+            (MULTICAST_ROOT_SHRED_ADDR_MAINNET, "233.84.178.16:7733"),
+            (MULTICAST_ROOT_SHRED_ADDR_TESTNET, "233.84.178.12:7733"),
         ] {
             assert_eq!(multicast_addr, expected.parse::<SocketAddr>().unwrap());
         }
