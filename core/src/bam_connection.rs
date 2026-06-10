@@ -28,6 +28,7 @@ use {
         time::{interval, timeout},
     },
     tokio_stream::wrappers::ReceiverStream,
+    tonic::transport::{ClientTlsConfig, Endpoint},
 };
 
 pub struct BamConnection {
@@ -62,7 +63,7 @@ impl BamConnection {
         outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
     ) -> Result<Self, TryInitError> {
         // Create connection and inbound and outbound streams
-        let backend_endpoint = tonic::transport::Endpoint::from_shared(url.clone())?
+        let backend_endpoint = Self::endpoint_from_url(&url)?
             .connect_timeout(CONNECTION_TIMEOUT)
             .timeout(NETWORK_REQUEST_TIMEOUT);
         let channel = timeout(CONNECTION_TIMEOUT, backend_endpoint.connect()).await??;
@@ -463,6 +464,15 @@ impl BamConnection {
             validator_pubkey: cluster_info.keypair().pubkey().to_string(),
             signature,
         })
+    }
+
+    fn endpoint_from_url(url: &str) -> Result<Endpoint, TryInitError> {
+        let mut endpoint =
+            Endpoint::from_shared(url.to_owned())?.tcp_keepalive(Some(Duration::from_secs(60)));
+        if url.starts_with("https") {
+            endpoint = endpoint.tls_config(ClientTlsConfig::new())?;
+        }
+        Ok(endpoint)
     }
 }
 
