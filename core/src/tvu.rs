@@ -227,8 +227,10 @@ impl Tvu {
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
         votor_init: AlpenglowInitializationState,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_root_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -360,8 +362,10 @@ impl Tvu {
             slot_status_notifier.clone(),
             tvu_config.xdp_sender,
             votor_event_sender.clone(),
+            shredstream_receiver_address,
             shred_receiver_addresses,
             bam_shred_receiver_addresses,
+            multicast_root_receiver_address,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -839,8 +843,10 @@ pub mod tests {
                 bls_connection_cache: Arc::new(bls_connection_cache),
                 voting_service_test_override: None,
             },
+            Arc::new(ArcSwap::from_pointee(None)),
             Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
             Arc::default(),
+            Arc::new(ArcSwap::from_pointee(None)),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);
