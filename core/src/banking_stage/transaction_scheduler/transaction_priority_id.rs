@@ -1,4 +1,8 @@
-use crate::banking_stage::scheduler_messages::TransactionId;
+use {
+    crate::banking_stage::scheduler_messages::TransactionId,
+    prio_graph::TopLevelId,
+    std::hash::{Hash, Hasher},
+};
 
 /// A unique identifier tied with priority ordering for a transaction/packet:
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -10,6 +14,18 @@ pub(crate) struct TransactionPriorityId {
 impl TransactionPriorityId {
     pub(crate) fn new(priority: u64, id: TransactionId) -> Self {
         Self { priority, id }
+    }
+}
+
+impl Hash for TransactionPriorityId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state)
+    }
+}
+
+impl TopLevelId<Self> for TransactionPriorityId {
+    fn id(&self) -> Self {
+        *self
     }
 }
 
