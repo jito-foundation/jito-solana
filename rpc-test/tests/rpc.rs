@@ -1509,10 +1509,14 @@ fn test_program_execution_error(rpc_client: &RpcClient, mint_keypair: &Keypair) 
     assert_eq!(simulate_result.transaction_results.len(), 2);
     let result = simulate_result.transaction_results.first().unwrap();
     assert_eq!(result.err, None);
+    assert!(result.logs.as_ref().is_some_and(|logs| !logs.is_empty()));
+    assert!(result.units_consumed.is_some_and(|units| units > 0));
 
     let result = simulate_result.transaction_results.get(1).unwrap();
     assert_eq!(
         result.err,
         Some(TransactionError::InsufficientFundsForRent { account_index: 0 })
     );
+    assert!(result.logs.as_ref().is_some_and(|logs| !logs.is_empty()));
+    assert!(result.units_consumed.is_some_and(|units| units > 0));
 }
