@@ -1870,14 +1870,13 @@ impl Validator {
                     leader_addr,
                 )
             });
-        let root_multicast_shred_check_service =
-            multicast_shred_addresses.map(|(_, root_addr)| {
-                MulticastShredCheckService::new(
-                    exit.clone(),
-                    multicast_root_receiver_address,
-                    root_addr,
-                )
-            });
+        let root_multicast_shred_check_service = multicast_shred_addresses.map(|(_, root_addr)| {
+            MulticastShredCheckService::new(
+                exit.clone(),
+                multicast_root_receiver_address,
+                root_addr,
+            )
+        });
 
         Ok(Self {
             log_config: config.log_config.clone(),
