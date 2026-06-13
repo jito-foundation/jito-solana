@@ -17,9 +17,10 @@
 ```
 
 ### master branch
+
 All new development occurs on the `master` branch.
 
-Bug fixes that affect a `vX.Y` branch are first made on `master`.  This is to
+Bug fixes that affect a `vX.Y` branch are first made on `master`. This is to
 allow a fix some soak time on `master` before it is applied to one or more
 stabilization branches.
 
@@ -29,7 +30,7 @@ release blocker in a branch causes you to forget to propagate back to
 `master`!)"
 
 Once the bug fix lands on `master` it is cherry-picked into the `vX.Y` branch
-and potentially the `vX.Y-1` branch.  The exception to this rule is when a bug
+and potentially the `vX.Y-1` branch. The exception to this rule is when a bug
 fix for `vX.Y` doesn't apply to `master` or `vX.Y-1`.
 
 Immediately after a new stabilization branch is forged, the `Cargo.toml` minor
@@ -38,10 +39,12 @@ Incrementing the major version of the `master` branch is outside the scope of
 this document.
 
 ### v*X.Y* stabilization branches
+
 These are stabilization branches. They are created from the `master` branch approximately
 every 13 weeks.
 
 ### v*X.Y.Z* release tag
+
 The release tags are created as desired by the owner of the given stabilization
 branch, and cause that *X.Y.Z* release to be shipped to https://crates.io
 
@@ -50,11 +53,13 @@ patch version number (*Z*) of the stabilization branch is incremented by the
 release engineer.
 
 ## Channels
+
 Channels are used by end-users (humans and bots) to consume the branches
 described in the previous section, so they may automatically update to the most
 recent version matching their desired stability.
 
 There are three release channels that map to branches as follows:
+
 * edge - tracks the `master` branch, least stable.
 * beta - tracks the largest (and latest) `vX.Y` stabilization branch, more stable.
 * stable - tracks the second largest `vX.Y` stabilization branch, most stable.
@@ -62,9 +67,10 @@ There are three release channels that map to branches as follows:
 ## Steps to Create a Branch
 
 ### Major release branch
+
 1. If the new branch will be the first branch of a new major release check that
-all eligible deprecated symbols have been removed. Our policy is to deprecate
-for at least one full minor version before removal.
+   all eligible deprecated symbols have been removed. Our policy is to deprecate
+   for at least one full minor version before removal.
 
 ### Create the new branch
 
@@ -96,8 +102,8 @@ Then proceed with the usual "Miscellaneous Clean up" steps below.
     git fetch --all
     git checkout upstream/master
     ```
-1. Determine the new branch name.  The name should be "v" + the first 2 version fields
-   from Cargo.toml.  For example, a Cargo.toml with version = "0.9.0" implies
+1. Determine the new branch name. The name should be "v" + the first 2 version fields
+   from Cargo.toml. For example, a Cargo.toml with version = "0.9.0" implies
    the next branch name is "v0.9".
 1. Create the new branch and push this branch to the `agave` repository:
     ```
@@ -109,7 +115,8 @@ Alternatively use the Github UI.
 
 ### Update master branch to the next release minor version
 
-1. After the new branch has been created and pushed, update the Cargo.toml files on **master** to the next semantic version (e.g. 0.9.0 -> 0.10.0) with:
+1. After the new branch has been created and pushed, update the Cargo.toml files on **master** to the next semantic
+   version (e.g. 0.9.0 -> 0.10.0) with:
      ```
      $ scripts/increment-cargo-version.sh minor
      ```
@@ -120,7 +127,8 @@ Alternatively use the Github UI.
     git commit -m 'Bump version to X.Y+1.0'
     git push -u origin version_update
     ```
-1. Confirm that your freshly cut release branch is shown as `BETA_CHANNEL` and the previous release branch as `STABLE_CHANNEL`:
+1. Confirm that your freshly cut release branch is shown as `BETA_CHANNEL` and the previous release branch
+   as `STABLE_CHANNEL`:
     ```
     ci/channel-info.sh
     ```
@@ -129,7 +137,7 @@ Alternatively use the Github UI.
 
 ### Update the Changelog
 
-Create a PR that makes the following updates to [CHANGELOG.md](https://github.com/anza-xyz/agave/blob/master/CHANGELOG.md) in master:
+Create a PR that makes the following updates to [CHANGELOG.md](https://github.com/jito-foundation/jito-solana/blob/master/CHANGELOG.md) in master:
 * Advance the channel links with the newly created branch becoming beta.
 * Add a new section `X.Y.0-Unreleased` for the new master version.
 * Remove the `Unreleased` annotation for the section that has now become beta.
@@ -143,17 +151,17 @@ Create a PR that makes the following updates to [CHANGELOG.md](https://github.co
 
 #### Newly Created Beta Branch
 
-1. Update [CHANGELOG.md](https://github.com/anza-xyz/agave/blob/master/CHANGELOG.md) to remove the channel links on the new branch. Additionally, remove any wording about the new branch being unreleased.
-1. Update [CODEOWNERS](https://github.com/anza-xyz/agave/blob/master/.github/CODEOWNERS) to `* @anza-xyz/backport-reviewers` on the new branch.
-1. Update [mergify.yml](https://github.com/anza-xyz/agave/blob/master/.mergify.yml) to add backport actions for the new branch and remove actions for the obsolete branch.
-1. Adjust the [Github backport labels](https://github.com/anza-xyz/agave/labels) to add the new branch label and remove the label for the obsolete branch.
+1. Update [CHANGELOG.md](https://github.com/jito-foundation/jito-solana/blob/master/CHANGELOG.md) to remove the channel links on the new branch. Additionally, remove any wording about the new branch being unreleased.
+1. Update [CODEOWNERS](https://github.com/jito-foundation/jito-solana/blob/master/.github/CODEOWNERS) to `* @anza-xyz/backport-reviewers` on the new branch.
+1. Update [mergify.yml](https://github.com/jito-foundation/jito-solana/blob/master/.mergify.yml) to add backport actions for the new branch and remove actions for the obsolete branch.
+1. Adjust the [Github backport labels](https://github.com/jito-foundation/jito-solana/labels) to add the new branch label and remove the label for the obsolete branch.
 1. Announce on Discord #development that the release branch exists so people know to use the new backport labels.
 
 ## Steps to Create a Release
 
 ### Create the Release Tag on GitHub
 
-1. Dispatch [Bump Version](https://github.com/anza-xyz/agave/actions/workflows/bump-version.yml) pipeline to create the version bump PR.
+1. Dispatch [Bump Version](https://github.com/jito-foundation/jito-solana/actions/workflows/bump-version.yml) pipeline to create the version bump PR.
 1. Verify CI checks pass. Verify that the change is correct: it only contains version bump changes and only expected version is changed. Approve it.
 1. Wait for approvals required to merge and merge it.
 1. Check out relevant branch, create release tag pointing to the version bump merge commit from the previous step. The release tag must exactly match the `version` field in `/Cargo.toml` prefixed by `v` from the version bump.
@@ -162,22 +170,30 @@ Create a PR that makes the following updates to [CHANGELOG.md](https://github.co
     git tag v4.0.1 123abc...
     git push upstream v4.0.1
     ```
-1. [The automation](https://github.com/anza-xyz/agave/blob/master/.github/workflows/release.yml) will create the new draft release and start `agave-secondary` Buildkite pipeline.
-1. Go to [GitHub Releases](https://github.com/anza-xyz/agave/releases) and edit the draft release just made by the automation.
+1. [The automation](https://github.com/jito-foundation/jito-solana/blob/master/.github/workflows/release.yml) will create the new draft release and start `agave-secondary` Buildkite pipeline.
+1. Go to [GitHub Releases](https://github.com/jito-foundation/jito-solana/releases) and edit the draft release just made by the automation.
 1. Fill the release notes.
    1.  If this is the first release on the branch (e.g. v0.13.**0**), paste in [this
-   template](https://raw.githubusercontent.com/anza-xyz/agave/master/.github/RELEASE_TEMPLATE.md).  Engineering Lead can provide summary contents for release notes if needed.
+   template](https://raw.githubusercontent.com/jito-foundation/jito-solana/master/.github/RELEASE_TEMPLATE.md).  Engineering Lead can provide summary contents for release notes if needed.
    1. If this is a patch release, review all the commits since the previous release on this branch and add details as needed.
 1. Ensure the release is marked **"This is a pre-release"**.  This flag will need to be removed manually after confirming the Linux binary artifacts appear at a later step.
 
 ### Verify release automation success
-Go to [Agave Releases](https://github.com/anza-xyz/agave/releases) and click on the latest release that you just published.
-Verify that all of the build artifacts are present (15 assets), then uncheck **"This is a pre-release"** for the release.
+
+Go to [Agave Releases](https://github.com/jito-foundation/jito-solana/releases) and click on the latest release that you
+just published.
+Verify that all of the build artifacts are present (15 assets), then uncheck **"This is a pre-release"** for the
+release.
 
 Build artifacts can take up to 60 minutes after creating the tag before
-appearing.  To check for progress:
-* The `agave-secondary` Buildkite pipeline handles creating the Linux and macOS release artifacts and updated crates.  Look for a job under the tag name of the release: https://buildkite.com/anza-xyz/agave-secondary.
-* The Windows release artifacts are produced by GitHub Actions.  Look for a job under the tag name of the release: https://github.com/anza-xyz/agave/actions.
+appearing. To check for progress:
 
-[Crates.io agave-validator](https://crates.io/crates/agave-validator) should have an updated agave-validator version.  This can take 2-3 hours, and sometimes fails in the `agave-secondary` job.
+* The `agave-secondary` Buildkite pipeline handles creating the Linux and macOS release artifacts and updated crates.
+  Look for a job under the tag name of the release: https://buildkite.com/jito-foundation/jito-solana-secondary.
+* The Windows release artifacts are produced by GitHub Actions. Look for a job under the tag name of the
+  release: https://github.com/jito-foundation/jito-solana/actions.
+
+[Crates.io agave-validator](https://crates.io/crates/agave-validator) should have an updated agave-validator version.
+This can take 2-3 hours, and sometimes fails in the `agave-secondary` job.
 If this happens and the error is non-fatal, click "Retry" on the "publish crate" job
+
