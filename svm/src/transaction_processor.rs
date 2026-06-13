@@ -330,6 +330,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             &environments,
             false,
             false,
+            true,
         );
 
         Self {
@@ -397,6 +398,33 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         environment: &TransactionProcessingEnvironment,
         config: &TransactionProcessingConfig,
     ) -> LoadAndExecuteSanitizedTransactionsOutput {
+        // Clone the batch-local program cache (builtins already populated in new_from()).
+        // User-deployed programs are loaded per-transaction via replenish_program_cache
+        // in the transaction loop below.
+        let mut program_cache_for_tx_batch = self.builtin_program_cache.read().unwrap().clone();
+        self.load_and_execute_sanitized_transactions_with_program_cache(
+            callbacks,
+            sanitized_txs,
+            check_results,
+            environment,
+            config,
+            &mut program_cache_for_tx_batch,
+            true,
+        )
+    }
+
+    pub fn load_and_execute_sanitized_transactions_with_program_cache<
+        CB: TransactionProcessingCallback,
+    >(
+        &self,
+        callbacks: &CB,
+        sanitized_txs: &[impl SVMTransaction],
+        check_results: Vec<TransactionCheckResult>,
+        environment: &TransactionProcessingEnvironment,
+        config: &TransactionProcessingConfig,
+        program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
+        replenish_program_cache: bool,
+    ) -> LoadAndExecuteSanitizedTransactionsOutput {
         // If `check_results` does not have the same length as `sanitized_txs`,
         // transactions could be truncated as a result of `.iter().zip()` in
         // many of the below methods.
@@ -407,6 +435,10 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             "Length of check_results does not match length of sanitized_txs"
         );
 
+        if program_cache_for_tx_batch.is_empty() {
+            *program_cache_for_tx_batch = self.builtin_program_cache.read().unwrap().clone();
+        }
+
         // Initialize metrics.
         let mut error_metrics = TransactionErrorMetrics::default();
         let mut execute_timings = ExecuteTimings::default();
@@ -415,14 +447,20 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         // Determine a capacity for the internal account cache. This
         // over-allocates but avoids ever reallocating, and spares us from
         // deduplicating the account keys lists.
-        let account_keys_in_batch = sanitized_txs.iter().map(|tx| tx.account_keys().len()).sum();
+        let account_keys_in_batch: usize =
+            sanitized_txs.iter().map(|tx| tx.account_keys().len()).sum();
 
         // Create the account loader, which wraps all external account fetching.
         let mut account_loader = AccountLoader::new_with_loaded_accounts_capacity(
             config.account_overrides,
             callbacks,
             &environment.feature_set,
-            account_keys_in_batch,
+            account_keys_in_batch.saturating_add(
+                config
+                    .account_overrides
+                    .map(|a| a.len())
+                    .unwrap_or_default(),
+            ),
         );
 
         // Create the transaction balance collector if recording is enabled.
@@ -430,11 +468,6 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             .recording_config
             .enable_transaction_balance_recording
             .then(|| BalanceCollector::new_with_transaction_count(sanitized_txs.len()));
-
-        // Clone the batch-local program cache (builtins already populated in new_from()).
-        // User-deployed programs are loaded per-transaction via replenish_program_cache
-        // in the transaction loop below.
-        let mut program_cache_for_tx_batch = self.builtin_program_cache.read().unwrap().clone();
 
         if program_cache_for_tx_batch.hit_max_limit {
             return LoadAndExecuteSanitizedTransactionsOutput {
@@ -504,7 +537,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                     let (program_accounts_set, filter_executable_us) =
                         measure_us!(self.filter_executable_program_accounts(
                             &account_loader,
-                            &mut program_cache_for_tx_batch,
+                            program_cache_for_tx_batch,
                             tx,
                         ));
                     execute_timings.saturating_add_in_place(
@@ -513,18 +546,32 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                     );
 
                     let ((), program_cache_us) = measure_us!({
-                        self.replenish_program_cache(
-                            &account_loader,
-                            &program_accounts_set,
-                            environment
-                                .program_runtime_environments
-                                .get_env_for_execution(),
-                            &mut program_cache_for_tx_batch,
-                            &mut execute_timings,
-                            config.check_program_deployment_slot,
-                            config.limit_to_load_programs,
-                            true, // increment_usage_counter
-                        );
+                        if replenish_program_cache {
+                            self.replenish_program_cache(
+                                &account_loader,
+                                &program_accounts_set,
+                                environment
+                                    .program_runtime_environments
+                                    .get_env_for_execution(),
+                                program_cache_for_tx_batch,
+                                &mut execute_timings,
+                                config.check_program_deployment_slot,
+                                config.limit_to_load_programs,
+                                true, // increment_usage_counter
+                            );
+                        } else {
+                            self.replenish_program_cache_for_simulation(
+                                &account_loader,
+                                &program_accounts_set,
+                                environment
+                                    .program_runtime_environments
+                                    .get_env_for_execution(),
+                                program_cache_for_tx_batch,
+                                &mut execute_timings,
+                                config.check_program_deployment_slot,
+                                true, // increment_usage_counter
+                            );
+                        }
                     });
                     execute_timings.saturating_add_in_place(
                         ExecuteTimingType::ProgramCacheUs,
@@ -550,7 +597,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                         loaded_transaction,
                         &mut execute_timings,
                         &mut error_metrics,
-                        &mut program_cache_for_tx_batch,
+                        program_cache_for_tx_batch,
                         environment,
                         config,
                     );
@@ -630,7 +677,10 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         // ProgramCache entries. Note that loaded_missing is deliberately defined, so that there's
         // still at least one other batch, which will evict the program cache, even after the
         // occurrences of cooperative loading.
-        if program_cache_for_tx_batch.loaded_missing || program_cache_for_tx_batch.merged_modified {
+        if replenish_program_cache
+            && (program_cache_for_tx_batch.loaded_missing
+                || program_cache_for_tx_batch.merged_modified)
+        {
             const SHRINK_LOADED_PROGRAMS_TO_PERCENTAGE: u8 = 90;
             self.global_program_cache
                 .write()
@@ -884,6 +934,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                 program_runtime_environment_for_execution,
                 increment_usage_counter,
                 count_hits_and_misses,
+                true,
             );
             count_hits_and_misses = false;
             let task_waiter = Arc::clone(&global_program_cache.loading_task_waiter);
@@ -933,6 +984,60 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                 // `finish_cooperative_loading_task` call. We'll then wake up and try to load the
                 // missing programs inside the tx batch again.
                 let _new_cookie = task_waiter.wait(task_cookie);
+            }
+        }
+    }
+
+    fn replenish_program_cache_for_simulation<CB: TransactionProcessingCallback>(
+        &self,
+        account_loader: &AccountLoader<CB>,
+        program_accounts_set: &HashMap<Pubkey, Slot>,
+        program_runtime_environments_for_execution: &ProgramRuntimeEnvironment,
+        program_cache_for_tx_batch: &mut ProgramCacheForTxBatch,
+        execute_timings: &mut ExecuteTimings,
+        check_program_modification_slot: bool,
+        increment_usage_counter: bool,
+    ) {
+        let mut missing_programs: Vec<(Pubkey, ProgramCacheMatchCriteria, Slot)> =
+            program_accounts_set
+                .iter()
+                .map(|(pubkey, last_modification_slot)| {
+                    let match_criteria = if check_program_modification_slot {
+                        get_program_deployment_slot(account_loader, pubkey)
+                            .map_or(ProgramCacheMatchCriteria::Tombstone, |slot| {
+                                ProgramCacheMatchCriteria::DeployedOnOrAfterSlot(slot)
+                            })
+                    } else {
+                        ProgramCacheMatchCriteria::NoCriteria
+                    };
+                    (*pubkey, match_criteria, *last_modification_slot)
+                })
+                .collect();
+
+        {
+            let global_program_cache = self.global_program_cache.read().unwrap();
+            global_program_cache.extract(
+                &mut missing_programs,
+                program_cache_for_tx_batch,
+                program_runtime_environments_for_execution,
+                increment_usage_counter,
+                true,
+                false,
+            );
+        }
+
+        for (key, _criteria, _last_modification_slot) in missing_programs {
+            if program_cache_for_tx_batch.find(&key).is_some() {
+                continue;
+            }
+            if let Some((program, _last_modification_slot)) = load_program_with_pubkey(
+                account_loader,
+                program_runtime_environments_for_execution,
+                &key,
+                self.slot,
+                execute_timings,
+            ) {
+                program_cache_for_tx_batch.replenish(key, program);
             }
         }
     }
@@ -2157,6 +2262,7 @@ mod tests {
                 &mut vec![(key, ProgramCacheMatchCriteria::NoCriteria, 0)],
                 &mut loaded_programs_for_tx_batch,
                 &program_runtime_environment,
+                true,
                 true,
                 true,
             );
