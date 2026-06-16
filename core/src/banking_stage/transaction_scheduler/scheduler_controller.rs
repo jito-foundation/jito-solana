@@ -283,6 +283,7 @@ where
             transactions,
             &lock_results,
             max_age,
+            true,
             &mut error_counters,
         );
 
@@ -360,6 +361,7 @@ where
             &txs,
             &lock_results,
             MAX_PROCESSING_AGE,
+            true,
             &mut error_counters,
         );
 

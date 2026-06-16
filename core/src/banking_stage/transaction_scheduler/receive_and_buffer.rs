@@ -276,6 +276,7 @@ impl TransactionViewReceiveAndBuffer {
                         &transactions,
                         &lock_results[..transactions.len()],
                         MAX_PROCESSING_AGE,
+                        true,
                         &mut error_counters,
                     )
                 };
