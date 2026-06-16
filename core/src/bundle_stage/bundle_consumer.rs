@@ -120,8 +120,13 @@ impl BundleConsumer {
             .collect_vec();
 
         let mut error_counters = TransactionErrorMetrics::default();
-        let check_results =
-            bank.check_transactions(txs, &pre_results, MAX_PROCESSING_AGE, &mut error_counters);
+        let check_results = bank.check_transactions(
+            txs,
+            &pre_results,
+            MAX_PROCESSING_AGE,
+            true,
+            &mut error_counters,
+        );
         if let Some((index, err)) = check_results
             .iter()
             .enumerate()
@@ -355,6 +360,7 @@ impl BundleConsumer {
                     ),
                     drop_on_failure: flags.drop_on_failure,
                     all_or_nothing: flags.all_or_nothing,
+                    strict_nonce_size_check: true,
                 }
             ));
         execute_and_commit_timings.load_execute_us = load_execute_us;

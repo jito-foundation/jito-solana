@@ -3672,6 +3672,7 @@ impl Bank {
                     },
                     drop_on_failure: true,
                     all_or_nothing: true,
+                    strict_nonce_size_check: true,
                 },
                 &mut program_cache_for_tx_batch,
                 false,

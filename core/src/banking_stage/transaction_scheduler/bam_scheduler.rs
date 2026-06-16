@@ -175,6 +175,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     &txns,
                     &lock_results,
                     MAX_PROCESSING_AGE,
+                    true,
                     &mut TransactionErrorMetrics::default(),
                 );
                 if let Some((index, err)) = check_result
@@ -259,6 +260,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     &sanitized_txs,
                     &lock_results,
                     MAX_PROCESSING_AGE,
+                    true,
                     &mut TransactionErrorMetrics::default(),
                 );
                 if let Some((index, err)) = check_result

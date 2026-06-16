@@ -468,6 +468,7 @@ impl BamReceiveAndBuffer {
                 std::slice::from_ref(&view),
                 &lock_results,
                 MAX_PROCESSING_AGE,
+                true,
                 &mut TransactionErrorMetrics::default(),
             ));
             metrics.increment_check_transactions_us(duration_us);
