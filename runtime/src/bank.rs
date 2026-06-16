@@ -157,7 +157,6 @@ use {
     solana_svm::{
         account_loader::LoadedTransaction,
         account_overrides::AccountOverrides,
-        program_loader::load_program_with_pubkey,
         transaction_balances::{BalanceCollector, SvmTokenInfo},
         transaction_commit_result::{CommittedTransaction, TransactionCommitResult},
         transaction_error_metrics::TransactionErrorMetrics,
@@ -223,6 +222,7 @@ use {
     solana_nonce as nonce,
     solana_nonce_account::{SystemAccountKind, get_system_account_kind},
     solana_program_runtime::sysvar_cache::SysvarCache,
+    solana_svm::program_loader::load_program_with_pubkey,
 };
 
 /// params to `verify_accounts_hash`
@@ -1568,11 +1568,6 @@ impl Bank {
                 .checked_div(2)
                 .unwrap();
 
-        let program_cache = self
-            .transaction_processor
-            .global_program_cache
-            .read()
-            .unwrap();
         let mut epoch_boundary_preparation = self
             .transaction_processor
             .epoch_boundary_preparation
@@ -1586,27 +1581,14 @@ impl Bank {
                 epoch_boundary_preparation.programs_to_recompile.pop()
             {
                 drop(epoch_boundary_preparation);
-                drop(program_cache);
-                if let Some((recompiled, last_modification_slot)) = load_program_with_pubkey(
-                    self,
-                    &upcoming_environment,
-                    &key,
-                    self.slot,
-                    &mut ExecuteTimings::default(),
-                ) {
-                    recompiled.stats.merge_from(&program_to_recompile.stats);
-                    let mut program_cache = self
-                        .transaction_processor
-                        .global_program_cache
-                        .write()
-                        .unwrap();
-                    program_cache.assign_program(
+                self.transaction_processor
+                    .prepare_one_program_for_upcoming_feature_set(
+                        self,
+                        self.check_program_deployment_slot(),
                         &upcoming_environment,
-                        key,
-                        last_modification_slot,
-                        recompiled,
+                        &key,
+                        &program_to_recompile.stats,
                     );
-                }
             }
         } else if slot_index.saturating_add(slots_in_recompilation_phase) >= slots_in_epoch {
             // Anticipate the upcoming program runtime environment for the next epoch,
@@ -1620,7 +1602,12 @@ impl Bank {
             let changed_program_runtime_environment = *upcoming_environment != *new_environment;
             if changed_program_runtime_environment {
                 upcoming_environment = new_environment;
-                epoch_boundary_preparation.programs_to_recompile = program_cache
+                let program_cache_guard = self
+                    .transaction_processor
+                    .global_program_cache
+                    .read()
+                    .unwrap();
+                epoch_boundary_preparation.programs_to_recompile = program_cache_guard
                     .get_flattened_entries()
                     .into_iter()
                     .map(|(id, _last_modification_slot, entry)| (id, entry))
