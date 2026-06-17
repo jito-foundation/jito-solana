@@ -235,6 +235,7 @@ dependencies = [
  "slotmap",
  "solana-fee",
  "solana-pubkey 4.2.0",
+ "solana-runtime-transaction",
  "solana-transaction-error",
  "thiserror 2.0.18",
 ]
@@ -275,14 +276,12 @@ dependencies = [
  "solana-hash 4.4.0",
  "solana-message",
  "solana-packet 4.1.0",
- "solana-program-runtime",
  "solana-pubkey 4.2.0",
  "solana-sdk-ids",
  "solana-short-vec",
  "solana-signature",
  "solana-svm-transaction",
  "solana-transaction",
- "solana-transaction-context",
 ]
 
 [[package]]
@@ -7602,6 +7601,7 @@ dependencies = [
  "solana-metrics",
  "solana-packet 4.1.0",
  "solana-pubkey 4.2.0",
+ "solana-runtime-transaction",
  "solana-sdk-ids",
  "solana-short-vec",
  "solana-signature",
