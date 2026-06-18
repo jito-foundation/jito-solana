@@ -3,7 +3,9 @@
 pub use solana_perf::report_target_features;
 use {
     crate::tip_manager::TipManagerConfig,
-    jito_tip_router_snapshot_service::config::TipRouterSnapshotConfig,
+    jito_tip_router_snapshot_service::{
+        config::TipRouterSnapshotConfig, service::TipRouterSnapshotService,
+    },
     solana_turbine::ShredReceiverAddresses,
 };
 use {
@@ -704,6 +706,7 @@ pub struct Validator {
     /// in sync with kernel route availability.
     root_multicast_shred_check_service: Option<MulticastShredCheckService>,
     sample_performance_service: Option<SamplePerformanceService>,
+    tip_router_snapshot_service: Option<TipRouterSnapshotService>,
     stats_reporter_service: StatsReporterService,
     gossip_service: GossipService,
     serve_repair_service: ServeRepairService,
@@ -1900,6 +1903,17 @@ impl Validator {
                 root_addr,
             )
         });
+        let tip_router_snapshot_service =
+            config
+                .tip_router_snapshot_config
+                .clone()
+                .map(|tip_router_snapshot_config| {
+                    TipRouterSnapshotService::new(
+                        tip_router_snapshot_config,
+                        bank_forks.clone(),
+                        exit.clone(),
+                    )
+                });
 
         Ok(Self {
             log_config: config.log_config.clone(),
@@ -1917,6 +1931,7 @@ impl Validator {
             leader_multicast_shred_check_service,
             root_multicast_shred_check_service,
             sample_performance_service,
+            tip_router_snapshot_service,
             snapshot_packager_service,
             completed_data_sets_service,
             tpu,
@@ -2086,6 +2101,12 @@ impl Validator {
             sample_performance_service
                 .join()
                 .expect("sample_performance_service");
+        }
+
+        if let Some(tip_router_snapshot_service) = self.tip_router_snapshot_service {
+            tip_router_snapshot_service
+                .join()
+                .expect("tip_router_snapshot_service");
         }
 
         if let Some(entry_notifier_service) = self.entry_notifier_service {
