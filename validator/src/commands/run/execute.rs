@@ -767,6 +767,8 @@ pub fn execute(
     let voting_disabled = matches.is_present("no_voting") || restricted_repair_only_mode;
 
     let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
+    let tip_router_snapshot_config =
+        jito_tip_router_snapshot_service::config::cli::config_from_matches(matches)?;
 
     let block_engine_config = Arc::new(ArcSwap::from_pointee(BlockEngineConfig {
         block_engine_url: value_of(matches, "block_engine_url").unwrap_or_default(),
@@ -958,6 +960,7 @@ pub fn execute(
         shred_retransmit_receiver_addresses,
         multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
         tip_manager_config,
+        tip_router_snapshot_config,
         bam_url,
         disable_multicast_shred_check: matches.is_present("disable_multicast_shred_check"),
     };

@@ -1,5 +1,5 @@
 use {
-    crate::config::TipRouterSnapshotConfig,
+    super::TipRouterSnapshotConfig,
     clap::{Arg, ArgMatches},
     solana_clap_utils::input_validators::{is_parsable, is_pubkey},
     solana_pubkey::Pubkey,
@@ -73,9 +73,11 @@ pub fn args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
     ]
 }
 
-pub fn config_from_matches(matches: &ArgMatches) -> Result<TipRouterSnapshotConfig, clap::Error> {
+pub fn config_from_matches(
+    matches: &ArgMatches,
+) -> Result<Option<TipRouterSnapshotConfig>, clap::Error> {
     if !matches.is_present(ENABLE_ARG) {
-        return Ok(TipRouterSnapshotConfig::default());
+        return Ok(None);
     }
 
     let output_dir = matches.value_of(OUTPUT_DIR_ARG).ok_or_else(|| {
@@ -86,8 +88,7 @@ pub fn config_from_matches(matches: &ArgMatches) -> Result<TipRouterSnapshotConf
         )
     })?;
 
-    Ok(TipRouterSnapshotConfig {
-        enabled: true,
+    Ok(Some(TipRouterSnapshotConfig {
         output_dir: PathBuf::from(output_dir),
         ncn: parse_optional_pubkey(matches, NCN_ARG)?,
         tip_router_program_id: parse_optional_pubkey(matches, TIP_ROUTER_PROGRAM_ID_ARG)?,
@@ -101,7 +102,7 @@ pub fn config_from_matches(matches: &ArgMatches) -> Result<TipRouterSnapshotConf
         )?,
         tip_payment_program_id: parse_optional_pubkey(matches, TIP_PAYMENT_PROGRAM_ID_ARG)?,
         max_candidates: parse_optional_usize(matches, MAX_CANDIDATES_ARG)?,
-    })
+    }))
 }
 
 fn parse_optional_pubkey(
@@ -148,12 +149,12 @@ mod tests {
     }
 
     #[test]
-    fn config_is_disabled_by_default() {
+    fn config_is_none_by_default() {
         let matches = app().get_matches_from(vec!["test"]);
 
         let config = config_from_matches(&matches).unwrap();
 
-        assert_eq!(config, TipRouterSnapshotConfig::default());
+        assert_eq!(config, None);
     }
 
     #[test]
@@ -208,8 +209,7 @@ mod tests {
 
         assert_eq!(
             config,
-            TipRouterSnapshotConfig {
-                enabled: true,
+            Some(TipRouterSnapshotConfig {
                 output_dir: PathBuf::from("/tmp/snapshots"),
                 ncn: Some(pubkey),
                 tip_router_program_id: Some(pubkey),
@@ -217,7 +217,7 @@ mod tests {
                 priority_fee_distribution_program_id: Some(pubkey),
                 tip_payment_program_id: Some(pubkey),
                 max_candidates: Some(42),
-            }
+            })
         );
     }
 }

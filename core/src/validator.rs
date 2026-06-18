@@ -424,7 +424,7 @@ pub struct ValidatorConfig {
     /// Automatically detected multicast destination for leader shreds.
     pub multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
-    pub tip_router_snapshot_config: TipRouterSnapshotConfig,
+    pub tip_router_snapshot_config: Option<TipRouterSnapshotConfig>,
     pub bam_url: Arc<ArcSwap<Option<String>>>,
     /// Skips automatic multicast route detection and multicast receiver updates.
     pub disable_multicast_shred_check: bool,
@@ -523,7 +523,7 @@ impl ValidatorConfig {
             )),
             multicast_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
-            tip_router_snapshot_config: TipRouterSnapshotConfig::default(),
+            tip_router_snapshot_config: None,
             bam_url: Arc::new(ArcSwap::from_pointee(None)),
             disable_multicast_shred_check: false,
         }

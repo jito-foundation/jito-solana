@@ -39,6 +39,7 @@ jsonrpc-core = { workspace = true }
 jsonrpc-core-client = { workspace = true, features = ["ipc"] }
 jsonrpc-derive = { workspace = true }
 jsonrpc-ipc-server = { workspace = true }
+jito-tip-router-snapshot-service = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 num_cpus = { workspace = true }

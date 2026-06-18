@@ -1372,6 +1372,7 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
     .args(&send_transaction_config::args())
     .args(&rpc_bootstrap_config::args())
     .args(&blockstore_options::args())
+    .args(&jito_tip_router_snapshot_service::config::cli::args())
 }
 
 fn validators_set(
