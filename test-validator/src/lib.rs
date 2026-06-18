@@ -1187,9 +1187,10 @@ impl TestValidator {
                             .deactivate_feature_set
                             .contains(&increase_cpi_account_info_limit::id()),
                     )
-                }),
+            }),
             log_messages_bytes_limit: config.log_messages_bytes_limit,
             transaction_account_lock_limit: config.transaction_account_lock_limit,
+            ..RuntimeConfig::default()
         };
 
         let mut validator_config = ValidatorConfig {
