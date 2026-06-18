@@ -4338,6 +4338,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-tip-router-snapshot-service"
+version = "4.1.0-alpha.0"
+dependencies = [
+ "clap 2.33.3",
+ "log",
+ "solana-clap-utils",
+ "solana-pubkey 4.2.0",
+ "solana-runtime",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

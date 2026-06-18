@@ -1,0 +1,13 @@
+[package]
+name = "jito-tip-router-snapshot-service"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+clap = { workspace = true }
+log = { workspace = true }
+solana-clap-utils = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-runtime = { workspace = true }
+
