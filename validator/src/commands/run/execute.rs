@@ -874,7 +874,8 @@ pub fn execute(
         new_hard_forks: hardforks_of(matches, "hard_forks"),
         runtime_config: RuntimeConfig {
             log_messages_bytes_limit: value_of(matches, "log_messages_bytes_limit"),
-            disable_transaction_signatures_in_status_cache: !run_args.json_rpc_config.full_api,
+            disable_transaction_signatures_in_status_cache: !run_args.json_rpc_config.full_api
+                && !snapshot_config.should_generate_snapshots(),
             ..RuntimeConfig::default()
         },
         rpc_config: run_args.json_rpc_config,
