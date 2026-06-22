@@ -78,7 +78,7 @@ impl BamConnection {
         .await?
         .map_err(|e| {
             error!("Failed to start scheduler stream: {e:?}");
-            TryInitError::StreamStartError(e)
+            TryInitError::StreamStartError(Box::new(e))
         })?
         .into_inner();
 
@@ -620,5 +620,5 @@ pub enum TryInitError {
     #[error("Connection attempt timed out: {0}")]
     ConnectionTimeout(#[from] tokio::time::error::Elapsed),
     #[error("Failed to start stream: {0}")]
-    StreamStartError(#[from] tonic::Status),
+    StreamStartError(Box<tonic::Status>),
 }
