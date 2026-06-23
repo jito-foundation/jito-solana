@@ -1827,7 +1827,8 @@ fn confirm_slot_with_components(
     // Only replay that starts at the persisted UpdateParent FEC set may accept
     // UpdateParent as its first parent marker. From-shred-zero replay still
     // requires a block header before UpdateParent.
-    let replay_starts_at_update_parent = migration_status.should_allow_fast_leader_handover(slot)
+    let replay_starts_at_update_parent = bank.feature_set.snapshot().alpenglow_fast_leader_handover
+        && migration_status.should_allow_block_markers(slot)
         && leader_slot_index(slot) == 0
         && blockstore
             .meta(slot)
@@ -2490,7 +2491,8 @@ fn load_frozen_forks(
             // Live replay restarts UpdateParent slots from the marker's FEC set.
             // Startup replay must use the same offset or a restarted validator can
             // execute the obsolete optimistic-parent prefix.
-            if migration_status.should_allow_fast_leader_handover(slot)
+            if bank.feature_set.snapshot().alpenglow_fast_leader_handover
+                && migration_status.should_allow_block_markers(slot)
                 && leader_slot_index(slot) == 0
                 && meta.has_update_parent()
             {
