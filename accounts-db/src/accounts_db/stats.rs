@@ -374,7 +374,6 @@ impl FlushStats {
 #[derive(Debug, Default)]
 pub struct LatestAccountsIndexRootsStats {
     pub roots_len: AtomicUsize,
-    pub uncleaned_roots_len: AtomicUsize,
     pub roots_range: AtomicU64,
     pub rooted_cleaned_count: AtomicUsize,
     pub unrooted_cleaned_count: AtomicUsize,
@@ -386,9 +385,6 @@ impl LatestAccountsIndexRootsStats {
     pub fn update(&self, accounts_index_roots_stats: &AccountsIndexRootsStats) {
         if let Some(value) = accounts_index_roots_stats.roots_len {
             self.roots_len.store(value, Ordering::Relaxed);
-        }
-        if let Some(value) = accounts_index_roots_stats.uncleaned_roots_len {
-            self.uncleaned_roots_len.store(value, Ordering::Relaxed);
         }
         if let Some(value) = accounts_index_roots_stats.roots_range {
             self.roots_range.store(value, Ordering::Relaxed);
@@ -415,11 +411,6 @@ impl LatestAccountsIndexRootsStats {
         datapoint_info!(
             "accounts_index_roots_len",
             ("roots_len", self.roots_len.load(Ordering::Relaxed), i64),
-            (
-                "uncleaned_roots_len",
-                self.uncleaned_roots_len.load(Ordering::Relaxed),
-                i64
-            ),
             (
                 "roots_range_width",
                 self.roots_range.load(Ordering::Relaxed),
@@ -491,7 +482,6 @@ pub struct ShrinkAncientStats {
     pub select_slots_us: AtomicU64,
     pub random_shrink: AtomicU64,
     pub slots_considered: AtomicU64,
-    pub ancient_scanned: AtomicU64,
     pub bytes_ancient_created: AtomicU64,
     pub bytes_from_must_shrink: AtomicU64,
     pub bytes_from_smallest_storages: AtomicU64,
@@ -552,7 +542,6 @@ pub struct ShrinkStats {
     pub accounts_loaded: AtomicU64,
     pub initial_candidates_count: AtomicU64,
     pub purged_zero_lamports: AtomicU64,
-    pub accounts_not_found_in_index: AtomicU64,
     pub num_ancient_slots_shrunk: AtomicU64,
     pub ancient_slots_added_to_shrink: AtomicU64,
     pub ancient_bytes_added_to_shrink: AtomicU64,
@@ -688,11 +677,6 @@ impl ShrinkStats {
                 (
                     "num_ancient_slots_shrunk",
                     self.num_ancient_slots_shrunk.swap(0, Ordering::Relaxed),
-                    i64
-                ),
-                (
-                    "accounts_not_found_in_index",
-                    self.accounts_not_found_in_index.swap(0, Ordering::Relaxed),
                     i64
                 ),
                 (
@@ -887,11 +871,6 @@ impl ShrinkAncientStats {
                 self.slots_considered.swap(0, Ordering::Relaxed),
                 i64
             ),
-            (
-                "ancient_scanned",
-                self.ancient_scanned.swap(0, Ordering::Relaxed),
-                i64
-            ),
             ("total_us", self.total_us.swap(0, Ordering::Relaxed), i64),
             (
                 "select_slots_us",
@@ -937,13 +916,6 @@ impl ShrinkAncientStats {
                 "purged_zero_lamports_count",
                 self.shrink_stats
                     .purged_zero_lamports
-                    .swap(0, Ordering::Relaxed),
-                i64
-            ),
-            (
-                "accounts_not_found_in_index",
-                self.shrink_stats
-                    .accounts_not_found_in_index
                     .swap(0, Ordering::Relaxed),
                 i64
             ),
@@ -993,7 +965,6 @@ pub struct WriteAccountsToCacheStats {
 pub struct LoadAccountsStats {
     pub num_loaded_from_write_cache: AtomicU64,
     pub num_loaded_from_read_cache: AtomicU64,
-    pub num_loaded_from_index_cache: AtomicU64,
     pub num_loaded_from_index_storage: AtomicU64,
 }
 
@@ -1009,11 +980,6 @@ impl LoadAccountsStats {
             (
                 "num_loaded_from_read_cache",
                 self.num_loaded_from_read_cache.swap(0, Ordering::Relaxed),
-                i64
-            ),
-            (
-                "num_loaded_from_index_cache",
-                self.num_loaded_from_index_cache.swap(0, Ordering::Relaxed),
                 i64
             ),
             (
