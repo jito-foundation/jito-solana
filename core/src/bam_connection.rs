@@ -28,6 +28,7 @@ use {
         time::{interval, timeout},
     },
     tokio_stream::wrappers::ReceiverStream,
+    tonic::transport::{ClientTlsConfig, Endpoint},
 };
 
 pub struct BamConnection {
@@ -62,7 +63,7 @@ impl BamConnection {
         outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
     ) -> Result<Self, TryInitError> {
         // Create connection and inbound and outbound streams
-        let backend_endpoint = tonic::transport::Endpoint::from_shared(url.clone())?
+        let backend_endpoint = Self::endpoint_from_url(&url)?
             .connect_timeout(CONNECTION_TIMEOUT)
             .timeout(NETWORK_REQUEST_TIMEOUT);
         let channel = timeout(CONNECTION_TIMEOUT, backend_endpoint.connect()).await??;
@@ -77,7 +78,7 @@ impl BamConnection {
         .await?
         .map_err(|e| {
             error!("Failed to start scheduler stream: {e:?}");
-            TryInitError::StreamStartError(e)
+            TryInitError::StreamStartError(Box::new(e))
         })?
         .into_inner();
 
@@ -464,6 +465,15 @@ impl BamConnection {
             signature,
         })
     }
+
+    fn endpoint_from_url(url: &str) -> Result<Endpoint, TryInitError> {
+        let mut endpoint =
+            Endpoint::from_shared(url.to_owned())?.tcp_keepalive(Some(Duration::from_secs(60)));
+        if url.starts_with("https") {
+            endpoint = endpoint.tls_config(ClientTlsConfig::new())?;
+        }
+        Ok(endpoint)
+    }
 }
 
 impl Drop for BamConnection {
@@ -610,5 +620,5 @@ pub enum TryInitError {
     #[error("Connection attempt timed out: {0}")]
     ConnectionTimeout(#[from] tokio::time::error::Elapsed),
     #[error("Failed to start stream: {0}")]
-    StreamStartError(#[from] tonic::Status),
+    StreamStartError(Box<tonic::Status>),
 }

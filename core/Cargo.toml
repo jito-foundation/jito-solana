@@ -192,7 +192,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls", "tls-roots", "tls-webpki-roots"] }
 trees = { workspace = true }
 
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dependencies]
