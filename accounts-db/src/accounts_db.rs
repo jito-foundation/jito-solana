@@ -1690,9 +1690,20 @@ impl AccountsDb {
             || Box::new(append_vec::new_scan_accounts_reader()),
             |reader, storage| {
                 let slot = storage.slot();
+                // Obsolete accounts are skipped during index generation, so they do not
+                // contribute to the index refcount. Skip them here too, otherwise we would count
+                // a physical copy the index never tracked and report a spurious mismatch.
+                let obsolete_accounts: IntSet<_> = storage
+                    .obsolete_accounts_read_lock()
+                    .filter_obsolete_accounts(None)
+                    .map(|(offset, _)| offset)
+                    .collect();
                 storage
                     .accounts
-                    .scan_accounts(reader.as_mut(), |_offset, account| {
+                    .scan_accounts(reader.as_mut(), |offset, account| {
+                        if obsolete_accounts.contains(&offset) {
+                            return;
+                        }
                         let pk = account.pubkey();
                         match pubkey_refcount.entry(*pk) {
                             dashmap::mapref::entry::Entry::Occupied(mut occupied_entry) => {
