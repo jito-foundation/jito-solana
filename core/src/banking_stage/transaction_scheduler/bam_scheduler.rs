@@ -90,7 +90,7 @@ pub struct BamScheduler<Tx: TransactionWithMeta> {
 struct InflightBatchInfo {
     pub schedule_time: Instant,
     // SmallVec 1: each scheduled work item typically corresponds to one batch id.
-    pub batch_priority_ids: SmallVec<[TransactionPriorityId; 1]>,
+    pub batch_priority_ids: SmallVec<[(TransactionPriorityId, u32 /* seq_id */); 1]>,
     pub slot: Slot,
 }
 
@@ -286,14 +286,14 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 container,
                 slot,
             );
-            self.send_to_worker(SmallVec::from([id]), work, slot);
+            self.send_to_worker(SmallVec::from([(id, seq_id)]), work, slot);
         }
     }
 
     fn send_to_worker(
         &mut self,
         // SmallVec 1: scheduler currently sends a single batch id per work item.
-        priority_ids: SmallVec<[TransactionPriorityId; 1]>,
+        priority_ids: SmallVec<[(TransactionPriorityId, u32); 1]>,
         work: ConsumeWork<Tx>,
         slot: Slot,
     ) {
@@ -528,7 +528,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         // Unblock all transactions blocked by inflight batches
         // and then drain the prio-graph
         for (_, inflight_info) in self.inflight_batch_info.iter() {
-            for priority_id in &inflight_info.batch_priority_ids {
+            for (priority_id, _) in &inflight_info.batch_priority_ids {
                 if prev_slot == Some(inflight_info.slot) {
                     self.prio_graph.unblock(priority_id);
                 }
@@ -741,24 +741,19 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
             } else {
                 inflight_batch_info.batch_priority_ids.len()
             };
-            for (i, priority_id) in inflight_batch_info
+            for (i, (priority_id, seq_id)) in inflight_batch_info
                 .batch_priority_ids
                 .iter()
+                .copied()
                 .enumerate()
                 .take(len)
             {
-                let seq_id = container
-                    .get_batch(priority_id.id)
-                    .map(|(_, _, _, seq_id)| seq_id);
-
                 // If we got extra info, we can send back the result
                 if revert_on_error {
                     if let Some(processed_results) = processed_results.take() {
                         let bundle_result =
                             Self::generate_revert_on_error_bundle_result(processed_results);
-                        if let Some(seq_id) = seq_id {
-                            self.send_back_result(seq_id, bundle_result);
-                        }
+                        self.send_back_result(seq_id, bundle_result);
                     }
                 } else if let Some(processed_results) = processed_results.as_mut() {
                     let Some(txn_result) = processed_results.next() else {
@@ -769,14 +764,12 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                         continue;
                     };
                     let bundle_result = Self::generate_bundle_result(txn_result);
-                    if let Some(seq_id) = seq_id {
-                        self.send_back_result(seq_id, bundle_result);
-                    }
+                    self.send_back_result(seq_id, bundle_result);
                 }
 
                 // If in the same slot, unblock the transaction
                 if Some(inflight_batch_info.slot) == self.slot {
-                    self.prio_graph.unblock(priority_id);
+                    self.prio_graph.unblock(&priority_id);
                 }
 
                 // Remove the transaction from the container
