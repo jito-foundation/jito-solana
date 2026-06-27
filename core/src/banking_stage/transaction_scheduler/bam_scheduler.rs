@@ -907,20 +907,12 @@ mod tests {
                 lamports,
                 u64::from(seq_id),
             );
-            const TEST_TRANSACTION_COST: u64 = 5000;
             let mut txns_max_age: SmallVec<
                 [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
             > = SmallVec::new();
             txns_max_age.push((transaction, MaxAge::MAX));
             let priority = u64::MAX.saturating_sub(fifo_index as u64);
-            container.insert_new_batch(
-                txns_max_age,
-                priority,
-                TEST_TRANSACTION_COST,
-                false,
-                max_schedule_slot,
-                seq_id,
-            );
+            container.insert_new_batch(txns_max_age, priority, false, max_schedule_slot, seq_id);
         }
 
         container
@@ -1349,7 +1341,7 @@ mod tests {
         ));
 
         let mut container = TransactionStateContainer::with_capacity(10 * 1024);
-        container.insert_new_batch(txns_max_age, priority, 5000, false, u64::MAX, 0);
+        container.insert_new_batch(txns_max_age, priority, false, u64::MAX, 0);
 
         // Must not panic; the bundle becomes a single schedulable node.
         scheduler.pull_into_prio_graph(&mut container);

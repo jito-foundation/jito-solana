@@ -18,7 +18,7 @@ use {
                 bam_utils::convert_txn_error_to_proto,
                 receive_and_buffer::{
                     DisconnectedError, ReceivingStats, calculate_max_age,
-                    calculate_priority_and_cost, contains_blacklisted_account,
+                    contains_blacklisted_account,
                 },
                 transaction_state_container::{SharedBytes, StateContainer},
             },
@@ -84,7 +84,6 @@ struct ParsedBatch {
             MaxAge,
         ); MAX_PACKETS_PER_BUNDLE],
     >,
-    pub cost: u64,
     pub revert_on_error: bool,
     pub max_schedule_slot: u64,
     pub seq_id: u32,
@@ -304,7 +303,6 @@ impl BamReceiveAndBuffer {
         let enable_instruction_accounts_limit = root_bank
             .feature_set
             .is_active(&agave_feature_set::limit_instruction_accounts::ID);
-        let mut cost: u64 = 0;
         let mut txns_max_age = SmallVec::with_capacity(verified_batch.len());
 
         if vote_only {
@@ -440,22 +438,19 @@ impl BamReceiveAndBuffer {
             let (result, duration_us) =
                 measure_us!(view.transaction_configuration(&working_bank.feature_set));
             metrics.increment_fee_budget_extraction_us(duration_us);
-            let transaction_configuration = match result {
-                Ok(transaction_configuration) => transaction_configuration,
-                Err(err) => {
-                    let reason = convert_txn_error_to_proto(err);
-                    stats.num_dropped_on_compute_budget += 1;
-                    return (
-                        Err(Reason::TransactionError(
-                            jito_protos::proto::bam_types::TransactionError {
-                                index: index as u32,
-                                reason: reason as i32,
-                            },
-                        )),
-                        stats,
-                    );
-                }
-            };
+            if let Err(err) = result {
+                let reason = convert_txn_error_to_proto(err);
+                stats.num_dropped_on_compute_budget += 1;
+                return (
+                    Err(Reason::TransactionError(
+                        jito_protos::proto::bam_types::TransactionError {
+                            index: index as u32,
+                            reason: reason as i32,
+                        },
+                    )),
+                    stats,
+                );
+            }
 
             // Check 4: Ensure valid blockhash and blockhash is not too old
             let lock_results: [_; 1] = core::array::from_fn(|_| Ok(()));
@@ -524,17 +519,12 @@ impl BamReceiveAndBuffer {
             }
 
             let max_age = calculate_max_age(sanitized_epoch, deactivation_slot, alt_resolved_slot);
-
-            let (_, txn_cost) =
-                calculate_priority_and_cost(&view, &transaction_configuration, &working_bank);
-            cost = cost.saturating_add(txn_cost);
             txns_max_age.push((view, max_age));
         }
 
         (
             Ok(ParsedBatch {
                 txns_max_age,
-                cost,
                 revert_on_error,
                 max_schedule_slot,
                 seq_id,
@@ -829,7 +819,6 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
 
                 let ParsedBatch {
                     txns_max_age,
-                    cost,
                     revert_on_error,
                     max_schedule_slot,
                     seq_id,
@@ -839,7 +828,6 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                     .insert_new_batch(
                         txns_max_age,
                         self.next_fifo_priority,
-                        cost,
                         revert_on_error,
                         max_schedule_slot,
                         seq_id,

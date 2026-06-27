@@ -51,7 +51,6 @@ pub(crate) struct TransactionStateContainer<Tx: TransactionWithMeta> {
 }
 
 struct BatchInfo {
-    batch_id: usize,
     priority: u64,
     revert_on_error: bool,
     max_schedule_slot: u64,
@@ -220,7 +219,7 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
             return None;
         };
         Some((
-            self.batch_id_to_transaction_ids.get(&batch_info.batch_id)?,
+            self.batch_id_to_transaction_ids.get(&id)?,
             batch_info.revert_on_error,
             batch_info.max_schedule_slot,
             batch_info.seq_id,
@@ -264,14 +263,10 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
         };
         self.priority_queue
             .remove(&TransactionPriorityId::new(priority, id));
-        let BatchIdOrTransactionState::Batch(batch_info) = self.id_to_transaction_state.remove(id)
-        else {
+        let BatchIdOrTransactionState::Batch(_) = self.id_to_transaction_state.remove(id) else {
             return;
         };
-        let Some(batch) = self
-            .batch_id_to_transaction_ids
-            .remove(&batch_info.batch_id)
-        else {
+        let Some(batch) = self.batch_id_to_transaction_ids.remove(&id) else {
             return;
         };
         for transaction_id in batch {
@@ -337,7 +332,6 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
         &mut self,
         txns_max_age: SmallVec<[(Tx, MaxAge); MAX_PACKETS_PER_BUNDLE]>,
         priority: u64,
-        cost: u64,
         revert_on_error: bool,
         max_schedule_slot: u64,
         seq_id: u32,
@@ -354,7 +348,6 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
         let entry = self.get_vacant_map_entry();
         let batch_id = entry.key();
         entry.insert(BatchIdOrTransactionState::Batch(BatchInfo {
-            batch_id,
             priority,
             revert_on_error,
             max_schedule_slot,
@@ -367,7 +360,7 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
                 let entry = self.get_vacant_map_entry();
                 let transaction_id: TransactionId = entry.key();
                 entry.insert(BatchIdOrTransactionState::TransactionState(
-                    TransactionState::new(txn, max_age, priority, cost),
+                    TransactionState::new(txn, max_age, priority, 0),
                 ));
                 transaction_id
             })
@@ -795,7 +788,7 @@ mod tests {
         }
 
         // Insert a batch of transactions.
-        let batch_id = container.insert_new_batch(transaction_max_ages, 10, 100, true, 0, 7);
+        let batch_id = container.insert_new_batch(transaction_max_ages, 10, true, 0, 7);
         assert!(batch_id.is_some());
         assert_eq!(container.priority_queue.len(), 1);
         assert_eq!(container.id_to_transaction_state.len(), 6);
@@ -825,7 +818,6 @@ mod tests {
             let entry = container.get_vacant_map_entry();
             let batch_id = entry.key();
             entry.insert(BatchIdOrTransactionState::Batch(BatchInfo {
-                batch_id,
                 priority: 0,
                 revert_on_error: false,
                 max_schedule_slot: 0,
@@ -848,7 +840,7 @@ mod tests {
         let mut txns_max_age = SmallVec::new();
         txns_max_age.push((transaction, max_age));
 
-        let batch_id = container.insert_new_batch(txns_max_age, 10, 100, true, 0, 0);
+        let batch_id = container.insert_new_batch(txns_max_age, 10, true, 0, 0);
         assert!(batch_id.is_some());
         assert_eq!(container.id_to_transaction_state.len(), map_capacity);
     }
@@ -865,7 +857,7 @@ mod tests {
         let mut txns_max_age = SmallVec::new();
         txns_max_age.push((transaction, max_age));
 
-        let batch_id = container.insert_new_batch(txns_max_age, 10, 100, true, 0, 0);
+        let batch_id = container.insert_new_batch(txns_max_age, 10, true, 0, 0);
         assert!(batch_id.is_none());
         assert_eq!(container.id_to_transaction_state.len(), target_len);
         assert_eq!(
