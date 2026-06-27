@@ -954,8 +954,16 @@ mod tests {
         let blocked_recipient = Pubkey::new_unique();
         let second_recipient = Pubkey::new_unique();
 
+        // First two batches conflict on fee payer and span the seq_id wrap boundary.
+        // FIFO should schedule u32::MAX before 0.
         let mut container = create_container(vec![
-            (&keypair_a, vec![first_fifo_recipient], 1000, 1, u64::MAX),
+            (
+                &keypair_a,
+                vec![first_fifo_recipient],
+                1000,
+                u32::MAX,
+                u64::MAX,
+            ),
             (&keypair_a, vec![blocked_recipient], 1500, 0, u64::MAX),
             (&keypair_a, vec![Pubkey::new_unique()], 1500, 2, u64::MAX),
             (&Keypair::new(), vec![second_recipient], 2000, 3, u64::MAX),
@@ -1054,7 +1062,7 @@ mod tests {
         let BamOutboundMessage::AtomicTxnBatchResult(bundle_result) = response else {
             panic!("Expected AtomicTxnBatchResult message");
         };
-        assert_eq!(bundle_result.seq_id, 1);
+        assert_eq!(bundle_result.seq_id, u32::MAX);
         assert!(
             bundle_result.result.is_some(),
             "Bundle result should be present"
