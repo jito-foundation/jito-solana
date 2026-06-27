@@ -4,7 +4,6 @@
 ///
 use {
     super::{
-        bam_receive_and_buffer::priority_to_seq_id,
         scheduler::{Scheduler, SchedulingSummary},
         scheduler_error::SchedulerError,
         transaction_priority_id::TransactionPriorityId,
@@ -145,7 +144,8 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         let working_bank = self.bank_forks.read().unwrap().working_bank();
 
         while let Some(next_batch_id) = container.pop() {
-            let Some((batch_ids, _, max_schedule_slot)) = container.get_batch(next_batch_id.id)
+            let Some((batch_ids, _, max_schedule_slot, seq_id)) =
+                container.get_batch(next_batch_id.id)
             else {
                 error!("Batch {} not found in container", next_batch_id.id);
                 continue;
@@ -153,7 +153,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
 
             if max_schedule_slot < slot {
                 // If the slot has changed, we cannot schedule this batch
-                let seq_id = priority_to_seq_id(next_batch_id.priority);
                 self.send_no_leader_slot_bundle_result(seq_id);
                 container.remove_by_id(next_batch_id.id);
                 continue;
@@ -182,7 +181,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     drop(txns);
                     container.remove_by_id(next_batch_id.id);
 
-                    let seq_id = priority_to_seq_id(next_batch_id.priority);
                     let result = atomic_txn_batch_result::Result::NotCommitted(
                         jito_protos::proto::bam_types::NotCommitted {
                             reason: Some(Self::convert_reason_to_proto(
@@ -197,7 +195,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             }
 
             self.insertion_to_prio_graph_time
-                .insert(priority_to_seq_id(next_batch_id.priority), Instant::now());
+                .insert(seq_id, Instant::now());
             self.prio_graph.insert_transaction(
                 next_batch_id,
                 Self::get_transactions_account_access(txns.into_iter()),
@@ -218,14 +216,11 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         let now = Instant::now();
         let working_bank = self.bank_forks.read().unwrap().working_bank();
         while let Some(id) = self.prio_graph.pop() {
-            let (batch_ids, revert_on_error, max_schedule_slot) =
+            let (batch_ids, revert_on_error, max_schedule_slot, seq_id) =
                 container.get_batch(id.id).unwrap();
 
             // Update time in prio-graph metric
-            if let Some(insertion_time) = self
-                .insertion_to_prio_graph_time
-                .remove(&priority_to_seq_id(id.priority))
-            {
+            if let Some(insertion_time) = self.insertion_to_prio_graph_time.remove(&seq_id) {
                 let _ = self
                     .time_in_priograph_us
                     .increment(now.duration_since(insertion_time).as_micros() as u64);
@@ -234,7 +229,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             // Filter on slot
             if max_schedule_slot < slot {
                 self.prio_graph.unblock(&id);
-                let seq_id = priority_to_seq_id(id.priority);
                 self.send_no_leader_slot_bundle_result(seq_id);
                 container.remove_by_id(id.id);
                 continue;
@@ -267,7 +261,6 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                     container.remove_by_id(id.id);
                     self.prio_graph.unblock(&id);
 
-                    let seq_id = priority_to_seq_id(id.priority);
                     let result = atomic_txn_batch_result::Result::NotCommitted(
                         jito_protos::proto::bam_types::NotCommitted {
                             reason: Some(Self::convert_reason_to_proto(
@@ -360,7 +353,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
             priority_ids
                 .iter()
                 .filter_map(|priority_id| container.get_batch(priority_id.id))
-                .flat_map(|(batch_ids, _, _)| batch_ids.into_iter())
+                .flat_map(|(batch_ids, _, _, _)| batch_ids.into_iter())
                 .copied(),
         );
 
@@ -525,8 +518,9 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         // Drain container and send back 'retryable'
         if self.slot.is_none() {
             while let Some(next_batch_id) = container.pop() {
-                let seq_id = priority_to_seq_id(next_batch_id.priority);
-                self.send_no_leader_slot_bundle_result(seq_id);
+                if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
+                    self.send_no_leader_slot_bundle_result(seq_id);
+                }
                 container.remove_by_id(next_batch_id.id);
             }
         }
@@ -542,16 +536,16 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
         }
         let now = Instant::now();
         while let Some((next_batch_id, _)) = self.prio_graph.pop_and_unblock() {
-            if let Some(insertion_time) = self
-                .insertion_to_prio_graph_time
-                .remove(&priority_to_seq_id(next_batch_id.priority))
-            {
+            let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) else {
+                container.remove_by_id(next_batch_id.id);
+                continue;
+            };
+            if let Some(insertion_time) = self.insertion_to_prio_graph_time.remove(&seq_id) {
                 let _ = self
                     .time_in_priograph_us
                     .increment(now.duration_since(insertion_time).as_micros() as u64);
             };
 
-            let seq_id = priority_to_seq_id(next_batch_id.priority);
             self.send_no_leader_slot_bundle_result(seq_id);
             container.remove_by_id(next_batch_id.id);
         }
@@ -753,15 +747,18 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                 .enumerate()
                 .take(len)
             {
+                let seq_id = container
+                    .get_batch(priority_id.id)
+                    .map(|(_, _, _, seq_id)| seq_id);
+
                 // If we got extra info, we can send back the result
                 if revert_on_error {
                     if let Some(processed_results) = processed_results.take() {
                         let bundle_result =
                             Self::generate_revert_on_error_bundle_result(processed_results);
-                        self.send_back_result(
-                            priority_to_seq_id(priority_id.priority),
-                            bundle_result,
-                        );
+                        if let Some(seq_id) = seq_id {
+                            self.send_back_result(seq_id, bundle_result);
+                        }
                     }
                 } else if let Some(processed_results) = processed_results.as_mut() {
                     let Some(txn_result) = processed_results.next() else {
@@ -772,7 +769,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for BamScheduler<Tx> {
                         continue;
                     };
                     let bundle_result = Self::generate_bundle_result(txn_result);
-                    self.send_back_result(priority_to_seq_id(priority_id.priority), bundle_result);
+                    if let Some(seq_id) = seq_id {
+                        self.send_back_result(seq_id, bundle_result);
+                    }
                 }
 
                 // If in the same slot, unblock the transaction
@@ -805,7 +804,6 @@ mod tests {
                 },
                 tests::create_slow_genesis_config,
                 transaction_scheduler::{
-                    bam_receive_and_buffer::seq_id_to_priority,
                     bam_scheduler::{BamScheduler, MAX_PACKETS_PER_BUNDLE},
                     scheduler::Scheduler,
                     transaction_state_container::{StateContainer, TransactionStateContainer},
@@ -894,32 +892,34 @@ mod tests {
                 impl Borrow<Keypair>,
                 impl IntoIterator<Item = impl Borrow<Pubkey>>,
                 u64,
-                u64,
+                u32,
                 u64,
             ),
         >,
     ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
         let mut container = TransactionStateContainer::with_capacity(10 * 1024);
-        for (from_keypair, to_pubkeys, lamports, compute_unit_price, max_schedule_slot) in
-            tx_infos.into_iter()
+        for (fifo_index, (from_keypair, to_pubkeys, lamports, seq_id, max_schedule_slot)) in
+            tx_infos.into_iter().enumerate()
         {
             let transaction = prioritized_tranfers(
                 from_keypair.borrow(),
                 to_pubkeys,
                 lamports,
-                compute_unit_price,
+                u64::from(seq_id),
             );
             const TEST_TRANSACTION_COST: u64 = 5000;
             let mut txns_max_age: SmallVec<
                 [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
             > = SmallVec::new();
             txns_max_age.push((transaction, MaxAge::MAX));
+            let priority = u64::MAX.saturating_sub(fifo_index as u64);
             container.insert_new_batch(
                 txns_max_age,
-                compute_unit_price,
+                priority,
                 TEST_TRANSACTION_COST,
                 false,
                 max_schedule_slot,
+                seq_id,
             );
         }
 
@@ -965,38 +965,15 @@ mod tests {
 
         let keypair_a = Keypair::new();
 
-        let first_recipient = Pubkey::new_unique();
+        let first_fifo_recipient = Pubkey::new_unique();
+        let blocked_recipient = Pubkey::new_unique();
         let second_recipient = Pubkey::new_unique();
 
         let mut container = create_container(vec![
-            (
-                &keypair_a,
-                vec![Pubkey::new_unique()],
-                1000,
-                seq_id_to_priority(1),
-                u64::MAX,
-            ),
-            (
-                &keypair_a,
-                vec![first_recipient],
-                1500,
-                seq_id_to_priority(0),
-                u64::MAX,
-            ),
-            (
-                &keypair_a,
-                vec![Pubkey::new_unique()],
-                1500,
-                seq_id_to_priority(2),
-                u64::MAX,
-            ),
-            (
-                &Keypair::new(),
-                vec![second_recipient],
-                2000,
-                seq_id_to_priority(3),
-                u64::MAX,
-            ),
+            (&keypair_a, vec![first_fifo_recipient], 1000, 1, u64::MAX),
+            (&keypair_a, vec![blocked_recipient], 1500, 0, u64::MAX),
+            (&keypair_a, vec![Pubkey::new_unique()], 1500, 2, u64::MAX),
+            (&Keypair::new(), vec![second_recipient], 2000, 3, u64::MAX),
         ]);
 
         assert!(
@@ -1035,7 +1012,7 @@ mod tests {
         );
         assert_eq!(
             work_1.transactions[0].message().account_keys()[1],
-            first_recipient
+            first_fifo_recipient
         );
 
         // Check that the second transaction is from the other keypair
@@ -1092,7 +1069,7 @@ mod tests {
         let BamOutboundMessage::AtomicTxnBatchResult(bundle_result) = response else {
             panic!("Expected AtomicTxnBatchResult message");
         };
-        assert_eq!(bundle_result.seq_id, 0);
+        assert_eq!(bundle_result.seq_id, 1);
         assert!(
             bundle_result.result.is_some(),
             "Bundle result should be present"
@@ -1179,7 +1156,7 @@ mod tests {
         let BamOutboundMessage::AtomicTxnBatchResult(bundle_result) = response else {
             panic!("Expected AtomicTxnBatchResult message");
         };
-        assert_eq!(bundle_result.seq_id, 1);
+        assert_eq!(bundle_result.seq_id, 0);
         assert!(
             bundle_result.result.is_some(),
             "Bundle result should be present"
@@ -1264,7 +1241,7 @@ mod tests {
             &keypair_a,
             vec![Pubkey::new_unique()],
             1000,
-            seq_id_to_priority(0),
+            0,
             u64::MAX,
         )]);
         let decision = BufferedPacketsDecision::Consume(bank.clone());
@@ -1277,20 +1254,8 @@ mod tests {
         // Pull transactions into prio_graph
         // Create container with some transactions
         let mut container = create_container(vec![
-            (
-                &keypair_a,
-                vec![Pubkey::new_unique()],
-                1000,
-                seq_id_to_priority(0),
-                u64::MAX,
-            ),
-            (
-                &keypair_b,
-                vec![Pubkey::new_unique()],
-                2000,
-                seq_id_to_priority(1),
-                u64::MAX,
-            ),
+            (&keypair_a, vec![Pubkey::new_unique()], 1000, 0, u64::MAX),
+            (&keypair_b, vec![Pubkey::new_unique()], 2000, 1, u64::MAX),
         ]);
         scheduler.pull_into_prio_graph(&mut container);
         assert!(
@@ -1309,7 +1274,7 @@ mod tests {
         // Re-insert the transactions back into prio_graph for testing
         for txn_id in &stored_txn_ids {
             // Get transaction from container to re-insert
-            if let Some((batch_ids, _, _)) = container.get_batch(txn_id.id) {
+            if let Some((batch_ids, _, _, _)) = container.get_batch(txn_id.id) {
                 let txns = batch_ids
                     .iter()
                     .filter_map(|id| container.get_transaction(*id));
@@ -1356,7 +1321,7 @@ mod tests {
             &Keypair::new(),
             vec![Pubkey::new_unique()],
             1000,
-            seq_id_to_priority(0),
+            0,
             u64::MAX,
         )]);
         scheduler
@@ -1370,7 +1335,7 @@ mod tests {
         // One batch, two transactions sharing a writable account: both are
         // signed by `keypair_a`, so both write its fee-payer account (index 0).
         let keypair_a = Keypair::new();
-        let priority = seq_id_to_priority(0);
+        let priority = u64::MAX;
         let mut txns_max_age: SmallVec<
             [(RuntimeTransaction<SanitizedTransaction>, MaxAge); MAX_PACKETS_PER_BUNDLE],
         > = SmallVec::new();
@@ -1384,7 +1349,7 @@ mod tests {
         ));
 
         let mut container = TransactionStateContainer::with_capacity(10 * 1024);
-        container.insert_new_batch(txns_max_age, priority, 5000, false, u64::MAX);
+        container.insert_new_batch(txns_max_age, priority, 5000, false, u64::MAX, 0);
 
         // Must not panic; the bundle becomes a single schedulable node.
         scheduler.pull_into_prio_graph(&mut container);
