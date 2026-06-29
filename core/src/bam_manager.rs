@@ -126,6 +126,7 @@ impl BamManager {
         let mut current_connection = None;
         let mut outbound_receiver = Some(outbound_receiver);
         let mut cached_builder_config = None;
+        let mut last_observed_bam_url = bam_url.load_full();
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
         let fallback_client_id = ClientId::JitoLabs;
@@ -133,6 +134,15 @@ impl BamManager {
         let bam_client_id = ClientId::AgaveBam;
 
         while !exit.load(Ordering::Relaxed) {
+            let configured_bam_url = bam_url.load_full();
+            if configured_bam_url != last_observed_bam_url {
+                match configured_bam_url.as_deref() {
+                    Some(new_url) => info!("BAM URL changed, connecting to new URL: {new_url}"),
+                    None => info!("BAM URL cleared, disconnecting"),
+                }
+                last_observed_bam_url = configured_bam_url.clone();
+            }
+
             let connection = match current_connection.take() {
                 // Connected: keep processing and disconnect fast on identity/url/health changes.
                 Some(connection) => connection,
@@ -156,8 +166,7 @@ impl BamManager {
                     }
 
                     // Try to connect to BAM
-                    let bam_url = bam_url.load();
-                    let Some(url) = bam_url.as_ref() else {
+                    let Some(url) = configured_bam_url.as_ref() else {
                         Self::set_bam_disconnected(&dependencies);
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
@@ -233,17 +242,11 @@ impl BamManager {
             ) {
                 true
             } else {
-                let configured_bam_url = bam_url.load();
                 if configured_bam_url.as_deref() == Some(connection.url()) {
                     false
                 } else {
                     cached_builder_config = None;
                     Self::set_bam_disconnected(&dependencies);
-                    if let Some(new_url) = configured_bam_url.as_deref() {
-                        info!("BAM URL changed, connecting to new URL: {new_url}");
-                    } else {
-                        info!("BAM URL cleared, disconnecting");
-                    }
                     true
                 }
             };
