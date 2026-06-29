@@ -18,7 +18,7 @@ use {
                 bam_utils::convert_txn_error_to_proto,
                 receive_and_buffer::{
                     DisconnectedError, ReceivingStats, calculate_max_age,
-                    calculate_priority_and_cost, contains_blacklisted_account,
+                    contains_blacklisted_account,
                 },
                 transaction_state_container::{SharedBytes, StateContainer},
             },
@@ -74,6 +74,7 @@ pub struct BamReceiveAndBuffer {
     parsed_batch_receiver: crossbeam_channel::Receiver<ParsedBatch>,
     recv_stats_receiver: crossbeam_channel::Receiver<ReceivingStats>,
     parsing_thread: Option<std::thread::JoinHandle<()>>,
+    next_fifo_priority: u64,
 }
 
 struct ParsedBatch {
@@ -83,8 +84,6 @@ struct ParsedBatch {
             MaxAge,
         ); MAX_PACKETS_PER_BUNDLE],
     >,
-    pub cost: u64,
-    priority: u64,
     pub revert_on_error: bool,
     pub max_schedule_slot: u64,
     pub seq_id: u32,
@@ -125,6 +124,7 @@ impl BamReceiveAndBuffer {
             parsed_batch_receiver,
             recv_stats_receiver,
             parsing_thread: Some(parsing_thread),
+            next_fifo_priority: u64::MAX,
         }
     }
 
@@ -303,7 +303,6 @@ impl BamReceiveAndBuffer {
         let enable_instruction_accounts_limit = root_bank
             .feature_set
             .is_active(&agave_feature_set::limit_instruction_accounts::ID);
-        let mut cost: u64 = 0;
         let mut txns_max_age = SmallVec::with_capacity(verified_batch.len());
 
         if vote_only {
@@ -439,22 +438,19 @@ impl BamReceiveAndBuffer {
             let (result, duration_us) =
                 measure_us!(view.transaction_configuration(&working_bank.feature_set));
             metrics.increment_fee_budget_extraction_us(duration_us);
-            let transaction_configuration = match result {
-                Ok(transaction_configuration) => transaction_configuration,
-                Err(err) => {
-                    let reason = convert_txn_error_to_proto(err);
-                    stats.num_dropped_on_compute_budget += 1;
-                    return (
-                        Err(Reason::TransactionError(
-                            jito_protos::proto::bam_types::TransactionError {
-                                index: index as u32,
-                                reason: reason as i32,
-                            },
-                        )),
-                        stats,
-                    );
-                }
-            };
+            if let Err(err) = result {
+                let reason = convert_txn_error_to_proto(err);
+                stats.num_dropped_on_compute_budget += 1;
+                return (
+                    Err(Reason::TransactionError(
+                        jito_protos::proto::bam_types::TransactionError {
+                            index: index as u32,
+                            reason: reason as i32,
+                        },
+                    )),
+                    stats,
+                );
+            }
 
             // Check 4: Ensure valid blockhash and blockhash is not too old
             let lock_results: [_; 1] = core::array::from_fn(|_| Ok(()));
@@ -524,20 +520,12 @@ impl BamReceiveAndBuffer {
             }
 
             let max_age = calculate_max_age(sanitized_epoch, deactivation_slot, alt_resolved_slot);
-
-            let (_, txn_cost) =
-                calculate_priority_and_cost(&view, &transaction_configuration, &working_bank);
-            cost = cost.saturating_add(txn_cost);
             txns_max_age.push((view, max_age));
         }
-
-        let priority = seq_id_to_priority(seq_id);
 
         (
             Ok(ParsedBatch {
                 txns_max_age,
-                cost,
-                priority,
                 revert_on_error,
                 max_schedule_slot,
                 seq_id,
@@ -832,8 +820,6 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
 
                 let ParsedBatch {
                     txns_max_age,
-                    cost,
-                    priority,
                     revert_on_error,
                     max_schedule_slot,
                     seq_id,
@@ -842,10 +828,10 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                 if container
                     .insert_new_batch(
                         txns_max_age,
-                        priority,
-                        cost,
+                        self.next_fifo_priority,
                         revert_on_error,
                         max_schedule_slot,
+                        seq_id,
                     )
                     .is_none()
                 {
@@ -853,12 +839,14 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
                     self.send_container_full_txn_batch_result(seq_id);
                     continue;
                 };
+                self.next_fifo_priority = self.next_fifo_priority.saturating_sub(1);
             },
             BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Forward => {
                 // Ensure nothing is left in the container
                 while let Some(next_batch_id) = container.pop() {
-                    let seq_id = priority_to_seq_id(next_batch_id.priority);
-                    self.send_no_leader_slot_txn_batch_result(seq_id);
+                    if let Some((_, _, _, seq_id)) = container.get_batch(next_batch_id.id) {
+                        self.send_no_leader_slot_txn_batch_result(seq_id);
+                    }
                     container.remove_by_id(next_batch_id.id);
                 }
 
@@ -892,14 +880,6 @@ impl Drop for BamReceiveAndBuffer {
             parsing_thread.join().unwrap();
         }
     }
-}
-
-pub fn seq_id_to_priority(seq_id: u32) -> u64 {
-    u64::MAX.saturating_sub(seq_id as u64)
-}
-
-pub fn priority_to_seq_id(priority: u64) -> u32 {
-    u32::try_from(u64::MAX.saturating_sub(priority)).unwrap_or(u32::MAX)
 }
 
 #[derive(Default)]
@@ -1115,18 +1095,6 @@ mod tests {
         test_case::test_case,
     };
 
-    #[test]
-    fn test_seq_id_to_priority() {
-        assert_eq!(seq_id_to_priority(0), u64::MAX);
-        assert_eq!(seq_id_to_priority(1), u64::MAX - 1);
-    }
-
-    #[test]
-    fn test_priority_to_seq_id() {
-        assert_eq!(priority_to_seq_id(u64::MAX), 0);
-        assert_eq!(priority_to_seq_id(u64::MAX - 1), 1);
-    }
-
     fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
         let GenesisConfigInfo {
             genesis_config,
@@ -1171,7 +1139,7 @@ mod tests {
     ) {
         let mut actual_length: usize = 0;
         while let Some(id) = container.pop() {
-            let Some((ids, _, _)) = container.get_batch(id.id) else {
+            let Some((ids, _, _, _)) = container.get_batch(id.id) else {
                 panic!(
                     "transaction in queue position {} with id {} must exist.",
                     actual_length, id.id
