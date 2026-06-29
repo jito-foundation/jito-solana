@@ -148,6 +148,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
                 container.get_batch(next_batch_id.id)
             else {
                 error!("Batch {} not found in container", next_batch_id.id);
+                container.remove_by_id(next_batch_id.id);
                 continue;
             };
 
