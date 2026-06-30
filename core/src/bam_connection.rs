@@ -10,15 +10,16 @@ use {
             bam_node_api_client::BamNodeApiClient, scheduler_message_v0::Msg,
             scheduler_response::VersionedMsg, scheduler_response_v0::Resp,
         },
-        bam_types::{AtomicTxnBatch, AuthProof, Pong, ValidatorHeartBeat},
+        bam_types::{
+            AtomicTxnBatch, AuthProof, MultipleAtomicTxnBatchResult, Pong, ValidatorHeartBeat,
+        },
     },
     solana_gossip::cluster_info::ClusterInfo,
-    solana_keypair::Keypair,
     solana_signer::Signer,
     std::{
         sync::{
             Arc, Mutex,
-            atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed},
+            atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
         },
         time::{Duration, Instant, SystemTime},
     },
@@ -33,7 +34,7 @@ use {
 
 pub struct BamConnection {
     config: Arc<Mutex<Option<ConfigResponse>>>,
-    connection_task: tokio::task::JoinHandle<()>,
+    connection_task: tokio::task::JoinHandle<mpsc::Receiver<BamOutboundMessage>>,
     is_healthy: Arc<AtomicBool>,
     url: String,
     connection_exit: Arc<AtomicBool>,
@@ -43,11 +44,10 @@ const AUTH_LABEL: &[u8] = b"X_OFF_CHAIN_JITO_BAM_V1\0";
 const CONNECTION_TIMEOUT: Duration = std::time::Duration::from_secs(5);
 const NETWORK_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTBOUND_CHANNEL_CAPACITY: usize = 100_000;
+const MAX_OUTBOUND_RESULT_BATCH_SIZE: usize = 24;
 const VALIDATOR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const METRICS_AND_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(25);
 const REFRESH_CONFIG_INTERVAL: Duration = Duration::from_secs(1);
-const OUTBOUND_TICK_INTERVAL: Duration = Duration::from_millis(1);
-const MAX_WAITING_RESULTS: usize = 24;
 const WAIT_SLEEP_DURATION: Duration = Duration::from_millis(10);
 const CHILD_TASK_SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 const CONNECTION_TASK_DROP_GRACE: Duration = Duration::from_millis(250);
@@ -60,7 +60,7 @@ impl BamConnection {
         url: String,
         cluster_info: Arc<ClusterInfo>,
         batch_sender: crossbeam_channel::Sender<AtomicTxnBatch>,
-        outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
+        outbound_receiver: &mut Option<mpsc::Receiver<BamOutboundMessage>>,
     ) -> Result<Self, TryInitError> {
         // Create connection and inbound and outbound streams
         let backend_endpoint = Self::endpoint_from_url(&url)?
@@ -81,6 +81,10 @@ impl BamConnection {
             TryInitError::StreamStartError(e)
         })?
         .into_inner();
+
+        let outbound_receiver = outbound_receiver
+            .take()
+            .expect("BAM outbound receiver already in use");
 
         // Create data structures for the connection task
         let metrics = Arc::new(BamConnectionMetrics::default());
@@ -122,8 +126,8 @@ impl BamConnection {
         cluster_info: Arc<ClusterInfo>,
         metrics: Arc<BamConnectionMetrics>,
         is_healthy: Arc<AtomicBool>,
-        outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
-    ) {
+        mut outbound_receiver: mpsc::Receiver<BamOutboundMessage>,
+    ) -> mpsc::Receiver<BamOutboundMessage> {
         let mut last_heartbeat = None;
         let mut heartbeat_interval = interval(VALIDATOR_HEARTBEAT_INTERVAL);
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -135,7 +139,7 @@ impl BamConnection {
         let Some(auth_proof) = Self::prepare_auth_proof(&mut validator_client, cluster_info).await
         else {
             error!("Failed to prepare auth response");
-            return;
+            return outbound_receiver;
         };
 
         // Send it as first message
@@ -145,20 +149,14 @@ impl BamConnection {
         if outbound_sender
             .send(v0_to_versioned_proto(start_message))
             .await
-            .inspect_err(|_| {
-                error!("Failed to send initial auth proof message");
-            })
             .is_err()
         {
             error!("Outbound sender channel closed before sending initial auth proof message");
-            return;
+            return outbound_receiver;
         }
 
-        let mut post_auth_start = Some((validator_client, outbound_receiver));
-        let mut post_auth_tasks: Option<(
-            tokio::task::JoinHandle<()>,
-            tokio::task::JoinHandle<()>,
-        )> = None;
+        let mut post_auth_client = Some(validator_client);
+        let mut refresh_config_task = None;
 
         while !connection_exit.load(Relaxed) {
             tokio::select! {
@@ -203,190 +201,142 @@ impl BamConnection {
                     };
 
                     // The first successful inbound scheduler message proves the auth'd stream was accepted.
-                    post_auth_tasks.get_or_insert_with(|| {
-                        let (validator_client, outbound_receiver) = post_auth_start
-                            .take()
-                            .expect("post-auth start state should only move once");
-                        (
-                            tokio::spawn(Self::refresh_config_task(
-                                connection_exit.clone(),
-                                config.clone(),
-                                validator_client,
-                                metrics.clone(),
-                            )),
-                            tokio::spawn(Self::outbound_task(
-                                connection_exit.clone(),
-                                outbound_sender.clone(),
-                                outbound_receiver,
-                                metrics.clone(),
-                            )),
-                        )
-                    });
+                    if let Some(mut validator_client) = post_auth_client.take() {
+                        let connection_exit = connection_exit.clone();
+                        let config = config.clone();
+                        let metrics = metrics.clone();
+                        refresh_config_task = Some(tokio::spawn(async move {
+                            let mut interval = interval(REFRESH_CONFIG_INTERVAL);
+                            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                            while !connection_exit.load(Relaxed) {
+                                interval.tick().await;
+
+                                let request = tonic::Request::new(ConfigRequest {});
+                                match timeout(
+                                    NETWORK_REQUEST_TIMEOUT,
+                                    validator_client.get_builder_config(request),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(response)) => {
+                                        let resp_config = response.into_inner();
+                                        *config.lock().unwrap() = Some(resp_config);
+                                        metrics.builder_config_received.fetch_add(1, Relaxed);
+                                    }
+                                    Ok(Err(e)) => {
+                                        error!("Failed to get config: {e:?}");
+                                    }
+                                    Err(_) => error!("Timed out getting config"),
+                                }
+                            }
+                        }));
+                    }
 
                     match inbound {
                         SchedulerResponseV0 { resp: Some(Resp::HeartBeat(_)), .. } => {
-                            last_heartbeat = Some(std::time::Instant::now());
+                            last_heartbeat = Some(Instant::now());
                             metrics.heartbeat_received.fetch_add(1, Relaxed);
                         }
                         SchedulerResponseV0 { resp: Some(Resp::MultipleAtomicTxnBatch(batches)), .. } => {
                             for batch in batches.batches {
                                 metrics.bundle_received.fetch_add(1, Relaxed);
-                                let _ = batch_sender.try_send(batch).inspect_err(|_| {
+                                if batch_sender.try_send(batch).is_err() {
                                     metrics.bundle_forward_to_scheduler_fail.fetch_add(1, Relaxed);
-                                });
+                                }
+                            }
+                        }
+                        SchedulerResponseV0 { resp: Some(Resp::Ping(ping)), .. } => {
+                            let outbound = SchedulerMessageV0 {
+                                msg: Some(Msg::Pong(Pong { id: ping.id })),
+                            };
+                            if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
+                                metrics.outbound_fail.fetch_add(1, Relaxed);
+                            } else {
+                                metrics.outbound_sent.fetch_add(1, Relaxed);
                             }
                         }
                         _ => {}
                     }
                 }
+                outbound = outbound_receiver.recv(), if post_auth_client.is_none() => {
+                    let Some(outbound) = outbound else {
+                        error!("BAM outbound channel closed");
+                        break;
+                    };
+                    let leader_state_to_send = match outbound {
+                        BamOutboundMessage::LeaderState(leader_state) => Some(leader_state),
+                        BamOutboundMessage::AtomicTxnBatchResult(result) => {
+                            let mut results = Vec::with_capacity(MAX_OUTBOUND_RESULT_BATCH_SIZE);
+                            results.push(result);
+                            let mut leader_state_to_send = None;
+
+                            while results.len() < MAX_OUTBOUND_RESULT_BATCH_SIZE {
+                                match outbound_receiver.try_recv() {
+                                    Ok(BamOutboundMessage::AtomicTxnBatchResult(result)) => {
+                                        results.push(result);
+                                    }
+                                    Ok(BamOutboundMessage::LeaderState(leader_state)) => {
+                                        leader_state_to_send = Some(leader_state);
+                                        break;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+
+                            metrics.bundleresult_sent.fetch_add(results.len() as u64, Relaxed);
+                            let outbound = SchedulerMessageV0 {
+                                msg: Some(Msg::MultipleAtomicTxnBatchResult(
+                                    MultipleAtomicTxnBatchResult { results },
+                                )),
+                            };
+                            if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
+                                metrics.outbound_fail.fetch_add(1, Relaxed);
+                            } else {
+                                metrics.outbound_sent.fetch_add(1, Relaxed);
+                            }
+                            leader_state_to_send
+                        }
+                    };
+
+                    if let Some(leader_state) = leader_state_to_send {
+                        metrics.leaderstate_sent.fetch_add(1, Relaxed);
+                        let outbound = SchedulerMessageV0 {
+                            msg: Some(Msg::LeaderState(leader_state)),
+                        };
+                        if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
+                            metrics.outbound_fail.fetch_add(1, Relaxed);
+                        } else {
+                            metrics.outbound_sent.fetch_add(1, Relaxed);
+                        }
+                    }
+
+                }
             }
         }
         connection_exit.store(true, Relaxed);
         is_healthy.store(false, Relaxed);
-        let Some((refresh_config_task, outbound_task)) = post_auth_tasks.as_mut() else {
-            return;
-        };
-        tokio::join!(
-            Self::wait_or_abort_child("refresh_config", refresh_config_task),
-            Self::wait_or_abort_child("outbound", outbound_task),
-        );
-    }
 
-    async fn wait_or_abort_child(task_name: &str, task: &mut tokio::task::JoinHandle<()>) {
-        match timeout(CHILD_TASK_SHUTDOWN_GRACE, &mut *task).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                if !e.is_cancelled() {
-                    warn!("BAM task {task_name} error: {e:?}");
-                }
-            }
-            Err(_) => {
-                warn!(
-                    "BAM task {task_name} did not exit within {CHILD_TASK_SHUTDOWN_GRACE:?}; \
-                     aborting"
-                );
-                task.abort();
-                let _ = task.await;
-            }
-        }
-    }
-
-    fn send_batch_results(
-        outbound_sender: &mut mpsc::Sender<SchedulerMessage>,
-        results: Vec<jito_protos::proto::bam_types::AtomicTxnBatchResult>,
-        metrics: &BamConnectionMetrics,
-    ) {
-        if !results.is_empty() {
-            let outbound = SchedulerMessageV0 {
-                msg: Some(Msg::MultipleAtomicTxnBatchResult(
-                    jito_protos::proto::bam_types::MultipleAtomicTxnBatchResult { results },
-                )),
-            };
-            if outbound_sender
-                .try_send(v0_to_versioned_proto(outbound))
-                .is_err()
-            {
-                metrics.outbound_fail.fetch_add(1, Relaxed);
-            } else {
-                metrics.outbound_sent.fetch_add(1, Relaxed);
-            }
-        }
-    }
-
-    async fn refresh_config_task(
-        connection_exit: Arc<AtomicBool>,
-        config: Arc<Mutex<Option<ConfigResponse>>>,
-        mut validator_client: BamNodeApiClient<tonic::transport::channel::Channel>,
-        metrics: Arc<BamConnectionMetrics>,
-    ) {
-        let mut interval = interval(REFRESH_CONFIG_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        while !connection_exit.load(Relaxed) {
-            tokio::select! {
-                _ = interval.tick() => {
-                    let request = tonic::Request::new(ConfigRequest {});
-                    match timeout(
-                        NETWORK_REQUEST_TIMEOUT,
-                        validator_client.get_builder_config(request),
-                    )
-                    .await
-                    {
-                        Ok(Ok(response)) => {
-                            let resp_config = response.into_inner();
-                            *config.lock().unwrap() = Some(resp_config);
-                            metrics.builder_config_received.fetch_add(1, Relaxed);
-                        }
-                        Ok(Err(e)) => {
-                            error!("Failed to get config: {e:?}");
-                        }
-                        Err(_) => error!("Timed out getting config"),
+        if let Some(refresh_config_task) = refresh_config_task.as_mut() {
+            match timeout(CHILD_TASK_SHUTDOWN_GRACE, &mut *refresh_config_task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if !e.is_cancelled() {
+                        warn!("BAM task refresh_config error: {e:?}");
                     }
                 }
-            }
-        }
-    }
-
-    async fn outbound_task(
-        connection_exit: Arc<AtomicBool>,
-        mut outbound_sender: mpsc::Sender<SchedulerMessage>,
-        outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
-        metrics: Arc<BamConnectionMetrics>,
-    ) {
-        let mut outbound_tick_interval = interval(OUTBOUND_TICK_INTERVAL);
-        outbound_tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
-
-        let mut waiting_results = Vec::new();
-
-        while !connection_exit.load(Relaxed) {
-            tokio::select! {
-                _ = outbound_tick_interval.tick() => {
-                    while let Ok(outbound) = outbound_receiver.try_recv() {
-                        match outbound {
-                            BamOutboundMessage::LeaderState(leader_state) => {
-                                metrics.leaderstate_sent.fetch_add(1, Relaxed);
-                                let outbound = SchedulerMessageV0 {
-                                    msg: Some(Msg::LeaderState(leader_state)),
-                                };
-                                if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                                    metrics.outbound_fail.fetch_add(1, Relaxed);
-                                } else {
-                                    metrics.outbound_sent.fetch_add(1, Relaxed);
-                                }
-                            }
-                            BamOutboundMessage::AtomicTxnBatchResult(result) => {
-                                metrics.bundleresult_sent.fetch_add(1, Relaxed);
-                                waiting_results.push(result);
-                                if waiting_results.len() >= MAX_WAITING_RESULTS {
-                                    Self::send_batch_results(&mut outbound_sender, std::mem::take(&mut waiting_results), metrics.as_ref());
-                                }
-                            }
-                            BamOutboundMessage::Ping(id) => {
-                                metrics.ping_received.fetch_add(1, Relaxed);
-                                metrics.last_ping_id_received.store(id, Relaxed);
-                                let pong_message_outbound = SchedulerMessageV0 {
-                                    msg: Some(Msg::Pong(Pong { id })),
-                                };
-                                if outbound_sender.try_send(v0_to_versioned_proto(pong_message_outbound)).is_err() {
-                                    metrics.outbound_pong_send_fail.fetch_add(1, Relaxed);
-                                } else {
-                                    metrics.outbound_pong_sent.fetch_add(1, Relaxed);
-                                    metrics.last_ping_id_sent.store(id, Relaxed);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Self::send_batch_results(&mut outbound_sender, std::mem::take(&mut waiting_results), metrics.as_ref());
+                Err(_) => {
+                    warn!(
+                        "BAM task refresh_config did not exit within \
+                         {CHILD_TASK_SHUTDOWN_GRACE:?}; aborting"
+                    );
+                    refresh_config_task.abort();
+                    let _ = refresh_config_task.await;
                 }
             }
         }
-    }
 
-    fn sign_message(keypair: &Keypair, message: &[u8]) -> Option<String> {
-        let slot_signature = keypair.try_sign_message(message).ok()?;
-        let slot_signature = slot_signature.to_string();
-        Some(slot_signature)
+        outbound_receiver
     }
 
     pub fn is_healthy(&self) -> bool {
@@ -403,12 +353,27 @@ impl BamConnection {
             if self.connection_task.is_finished() {
                 return false;
             }
-            if self.is_healthy() && self.get_latest_config().is_some() {
+            if self.get_latest_config().is_some() {
                 return true;
             }
             std::thread::sleep(WAIT_SLEEP_DURATION);
         }
         false
+    }
+
+    pub async fn shutdown(mut self) -> mpsc::Receiver<BamOutboundMessage> {
+        self.is_healthy.store(false, Relaxed);
+        self.connection_exit.store(true, Relaxed);
+
+        let shutdown_start = Instant::now();
+        let outbound_receiver = (&mut self.connection_task)
+            .await
+            .expect("BAM connection task should return outbound receiver");
+        let shutdown_duration = shutdown_start.elapsed();
+        if shutdown_duration > CONNECTION_TASK_DROP_GRACE {
+            info!("BAM connection task shutdown took {shutdown_duration:?}");
+        }
+        outbound_receiver
     }
 
     pub fn get_latest_config(&self) -> Option<ConfigResponse> {
@@ -457,7 +422,11 @@ impl BamConnection {
         let challenge_bytes = challenge_to_sign.as_bytes();
         let to_sign = Self::labeled_bytes(challenge_bytes);
 
-        let signature = Self::sign_message(cluster_info.keypair().as_ref(), &to_sign)?;
+        let signature = cluster_info
+            .keypair()
+            .try_sign_message(&to_sign)
+            .ok()?
+            .to_string();
 
         Some(AuthProof {
             challenge_to_sign,
@@ -480,6 +449,9 @@ impl Drop for BamConnection {
     fn drop(&mut self) {
         self.is_healthy.store(false, Relaxed);
         self.connection_exit.store(true, Relaxed);
+        if self.connection_task.is_finished() {
+            return;
+        }
         std::thread::sleep(CONNECTION_TASK_DROP_GRACE);
         if !self.connection_task.is_finished() {
             self.connection_task.abort();
@@ -501,12 +473,6 @@ struct BamConnectionMetrics {
     heartbeat_sent: AtomicU64,
     outbound_sent: AtomicU64,
     outbound_fail: AtomicU64,
-
-    ping_received: AtomicU64,
-    last_ping_id_received: AtomicU32,
-    outbound_pong_sent: AtomicU64,
-    last_ping_id_sent: AtomicU32,
-    outbound_pong_send_fail: AtomicU64,
 }
 
 impl BamConnectionMetrics {
@@ -521,12 +487,9 @@ impl BamConnectionMetrics {
             || self.heartbeat_sent.load(Relaxed) > 0
             || self.outbound_sent.load(Relaxed) > 0
             || self.outbound_fail.load(Relaxed) > 0
-            || self.ping_received.load(Relaxed) > 0
-            || self.outbound_pong_send_fail.load(Relaxed) > 0
-            || self.outbound_pong_sent.load(Relaxed) > 0
     }
 
-    pub fn report(&self) {
+    fn report(&self) {
         if !self.has_data() {
             return;
         }
@@ -581,31 +544,6 @@ impl BamConnectionMetrics {
                 "outbound_fail",
                 self.outbound_fail.swap(0, Relaxed) as i64,
                 i64
-            ),
-            (
-                "ping_received",
-                self.ping_received.swap(0, Relaxed) as i64,
-                i64
-            ),
-            (
-                "last_ping_id_received",
-                self.last_ping_id_received.load(Relaxed),
-                i64
-            ),
-            (
-                "outbound_pong_sent_count",
-                self.outbound_pong_sent.swap(0, Relaxed) as i64,
-                i64
-            ),
-            (
-                "last_ping_id_sent",
-                self.last_ping_id_sent.load(Relaxed),
-                i64
-            ),
-            (
-                "outbound_pong_send_fail_count",
-                self.outbound_pong_send_fail.swap(0, Relaxed) as i64,
-                i64
             )
         );
     }
@@ -613,8 +551,6 @@ impl BamConnectionMetrics {
 
 #[derive(Error, Debug)]
 pub enum TryInitError {
-    #[error("Currently in leader slot")]
-    MidLeaderSlotError,
     #[error("Failed to connect to endpoint: {0}")]
     EndpointConnectError(#[from] tonic::transport::Error),
     #[error("Connection attempt timed out: {0}")]
