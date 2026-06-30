@@ -42,6 +42,7 @@ use {
         sync::{Arc, RwLock},
         time::Instant,
     },
+    tokio::sync::mpsc::Sender as TokioSender,
 };
 
 type SchedulerPrioGraph = PrioGraph<
@@ -64,7 +65,7 @@ pub const MAX_PACKETS_PER_BUNDLE: usize = 5; // copied from BundleStorage::MAX_P
 pub struct BamScheduler<Tx: TransactionWithMeta> {
     consume_work_sender: Sender<ConsumeWork<Tx>>,
     finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
-    response_sender: Sender<BamOutboundMessage>,
+    response_sender: TokioSender<BamOutboundMessage>,
 
     next_batch_id: u64,
     inflight_batch_info: IntMap<TransactionBatchId, InflightBatchInfo>,
@@ -98,7 +99,7 @@ impl<Tx: TransactionWithMeta> BamScheduler<Tx> {
     pub fn new(
         consume_work_sender: Sender<ConsumeWork<Tx>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
-        response_sender: Sender<BamOutboundMessage>,
+        response_sender: TokioSender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
     ) -> Self {
         Self {
@@ -835,7 +836,7 @@ mod tests {
         finished_consume_work_sender: crossbeam_channel::Sender<
             FinishedConsumeWork<RuntimeTransaction<SanitizedTransaction>>,
         >,
-        response_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
+        response_receiver: tokio::sync::mpsc::Receiver<BamOutboundMessage>,
     }
 
     fn create_test_scheduler(
@@ -844,7 +845,7 @@ mod tests {
     ) -> TestScheduler {
         let (consume_work_sender, consume_work_receiver) = unbounded();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
-        let (response_sender, response_receiver) = unbounded();
+        let (response_sender, response_receiver) = tokio::sync::mpsc::channel(100);
         let scheduler = BamScheduler::new(
             consume_work_sender,
             finished_consume_work_receiver,
@@ -945,7 +946,7 @@ mod tests {
             mut scheduler,
             consume_work_receivers,
             finished_consume_work_sender,
-            response_receiver,
+            mut response_receiver,
         } = create_test_scheduler(4, &bank_forks);
         scheduler.extra_checks_enabled = false;
 
