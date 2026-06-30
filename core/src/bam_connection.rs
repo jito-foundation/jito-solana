@@ -25,7 +25,7 @@ use {
     },
     thiserror::Error,
     tokio::{
-        sync::mpsc,
+        sync::{mpsc, oneshot},
         time::{interval, timeout},
     },
     tokio_stream::wrappers::ReceiverStream,
@@ -156,6 +156,7 @@ impl BamConnection {
         }
 
         let mut post_auth_client = Some(validator_client);
+        let mut refresh_config_exit_sender: Option<oneshot::Sender<()>> = None;
         let mut refresh_config_task = None;
 
         while !connection_exit.load(Relaxed) {
@@ -202,31 +203,34 @@ impl BamConnection {
 
                     // The first successful inbound scheduler message proves the auth'd stream was accepted.
                     if let Some(mut validator_client) = post_auth_client.take() {
-                        let connection_exit = connection_exit.clone();
                         let config = config.clone();
                         let metrics = metrics.clone();
+                        let (exit_sender, mut exit_receiver) = oneshot::channel();
+                        refresh_config_exit_sender = Some(exit_sender);
                         refresh_config_task = Some(tokio::spawn(async move {
                             let mut interval = interval(REFRESH_CONFIG_INTERVAL);
                             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-                            while !connection_exit.load(Relaxed) {
-                                interval.tick().await;
-
+                            loop {
                                 let request = tonic::Request::new(ConfigRequest {});
-                                match timeout(
-                                    NETWORK_REQUEST_TIMEOUT,
-                                    validator_client.get_builder_config(request),
-                                )
-                                .await
-                                {
+                                let result = tokio::select! {
+                                    biased;
+                                    result = async {
+                                        interval.tick().await;
+                                        timeout(
+                                            NETWORK_REQUEST_TIMEOUT,
+                                            validator_client.get_builder_config(request),
+                                        )
+                                        .await
+                                    } => result,
+                                    _ = &mut exit_receiver => break,
+                                };
+                                match result {
                                     Ok(Ok(response)) => {
-                                        let resp_config = response.into_inner();
-                                        *config.lock().unwrap() = Some(resp_config);
+                                        *config.lock().unwrap() = Some(response.into_inner());
                                         metrics.builder_config_received.fetch_add(1, Relaxed);
                                     }
-                                    Ok(Err(e)) => {
-                                        error!("Failed to get config: {e:?}");
-                                    }
+                                    Ok(Err(e)) => error!("Failed to get config: {e:?}"),
                                     Err(_) => error!("Timed out getting config"),
                                 }
                             }
@@ -316,6 +320,8 @@ impl BamConnection {
         }
         connection_exit.store(true, Relaxed);
         is_healthy.store(false, Relaxed);
+
+        drop(refresh_config_exit_sender.take());
 
         if let Some(refresh_config_task) = refresh_config_task.as_mut() {
             match timeout(CHILD_TASK_SHUTDOWN_GRACE, &mut *refresh_config_task).await {
