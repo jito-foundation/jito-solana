@@ -125,10 +125,10 @@ impl BamNodeApi for MockBamNode {
         _request: Request<ConfigRequest>,
     ) -> Result<Response<ConfigResponse>, Status> {
         self.config_requests.fetch_add(1, Ordering::Relaxed);
-        let config_response_delay_ms = self.config_response_delay_ms.load(Ordering::Relaxed);
-        if config_response_delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(config_response_delay_ms)).await;
-        }
+        tokio::time::sleep(Duration::from_millis(
+            self.config_response_delay_ms.load(Ordering::Relaxed),
+        ))
+        .await;
         let config = self.config.lock().unwrap().clone();
         Ok(Response::new(ConfigResponse {
             block_engine_config: Some(BlockEngineBuilderConfig {

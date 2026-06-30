@@ -156,7 +156,7 @@ impl BamConnection {
         }
 
         let mut post_auth_client = Some(validator_client);
-        let mut refresh_config_exit_sender = None;
+        let mut refresh_config_exit_sender: Option<oneshot::Sender<()>> = None;
         let mut refresh_config_task = None;
 
         while !connection_exit.load(Relaxed) {
@@ -212,28 +212,25 @@ impl BamConnection {
                             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
                             loop {
+                                let request = tonic::Request::new(ConfigRequest {});
                                 let result = tokio::select! {
                                     biased;
-                                    _ = &mut exit_receiver => break,
                                     result = async {
                                         interval.tick().await;
-                                        let request = tonic::Request::new(ConfigRequest {});
                                         timeout(
                                             NETWORK_REQUEST_TIMEOUT,
                                             validator_client.get_builder_config(request),
                                         )
                                         .await
                                     } => result,
+                                    _ = &mut exit_receiver => break,
                                 };
                                 match result {
                                     Ok(Ok(response)) => {
-                                        let resp_config = response.into_inner();
-                                        *config.lock().unwrap() = Some(resp_config);
+                                        *config.lock().unwrap() = Some(response.into_inner());
                                         metrics.builder_config_received.fetch_add(1, Relaxed);
                                     }
-                                    Ok(Err(e)) => {
-                                        error!("Failed to get config: {e:?}");
-                                    }
+                                    Ok(Err(e)) => error!("Failed to get config: {e:?}"),
                                     Err(_) => error!("Timed out getting config"),
                                 }
                             }
@@ -324,9 +321,7 @@ impl BamConnection {
         connection_exit.store(true, Relaxed);
         is_healthy.store(false, Relaxed);
 
-        if let Some(refresh_config_exit_sender) = refresh_config_exit_sender.take() {
-            let _ = refresh_config_exit_sender.send(());
-        }
+        drop(refresh_config_exit_sender.take());
 
         if let Some(refresh_config_task) = refresh_config_task.as_mut() {
             match timeout(CHILD_TASK_SHUTDOWN_GRACE, &mut *refresh_config_task).await {
