@@ -18,7 +18,7 @@ use {
         bam_connection::{
             BamConnection, MAX_DURATION_BETWEEN_NODE_HEARTBEATS, WAIT_TO_RECONNECT_DURATION,
         },
-        bam_dependencies::{BamConnectionState, BamDependencies},
+        bam_dependencies::{BamConnectionState, BamDependencies, BamOutboundMessage},
         proxy::block_engine_stage::BlockBuilderFeeInfo,
     },
     arc_swap::ArcSwap,
@@ -34,6 +34,7 @@ use {
     solana_tls_utils::NotifyKeyUpdate,
     solana_turbine::{MAX_SHRED_RECEIVER_ADDRESSES, ShredReceiverAddresses},
     solana_version::ClientId,
+    tokio::sync::mpsc,
 };
 
 pub struct BamConnectionIdentityUpdater {
@@ -73,6 +74,7 @@ impl BamManager {
         exit: Arc<AtomicBool>,
         bam_url: Arc<ArcSwap<Option<String>>>,
         dependencies: BamDependencies,
+        outbound_receiver: mpsc::Receiver<BamOutboundMessage>,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_notifiers: Arc<RwLock<KeyUpdaters>>,
     ) -> Self {
@@ -97,6 +99,7 @@ impl BamManager {
                     exit,
                     bam_url,
                     dependencies,
+                    outbound_receiver,
                     poh_recorder,
                     identity_changed,
                     new_identity,
@@ -109,6 +112,7 @@ impl BamManager {
         exit: Arc<AtomicBool>,
         bam_url: Arc<ArcSwap<Option<String>>>,
         dependencies: BamDependencies,
+        outbound_receiver: mpsc::Receiver<BamOutboundMessage>,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         identity_changed: Arc<AtomicBool>,
         new_identity: Arc<ArcSwap<Option<Pubkey>>>,
@@ -120,6 +124,7 @@ impl BamManager {
             .unwrap();
 
         let mut current_connection = None;
+        let mut outbound_receiver = Some(outbound_receiver);
         let mut cached_builder_config = None;
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
@@ -165,7 +170,7 @@ impl BamManager {
                         url.clone(),
                         dependencies.cluster_info.clone(),
                         dependencies.batch_sender.clone(),
-                        dependencies.outbound_receiver.clone(),
+                        &mut outbound_receiver,
                     ));
                     let connection = match result {
                         Ok(connection) => connection,
@@ -189,6 +194,7 @@ impl BamManager {
                         );
                         cached_builder_config = None;
                         Self::set_bam_disconnected(&dependencies);
+                        outbound_receiver = Some(runtime.block_on(connection.shutdown()));
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
                         continue;
                     }
@@ -212,15 +218,12 @@ impl BamManager {
                 }
             };
 
-            if !connection.is_healthy() {
+            let disconnect = if !connection.is_healthy() {
                 cached_builder_config = None;
                 Self::set_bam_disconnected(&dependencies);
                 warn!("BAM connection unhealthy");
-                continue;
-            }
-
-            // Connected path: drop current connection now; disconnected path performs wait/reconnect.
-            if Self::handle_identity_change(
+                true
+            } else if Self::handle_identity_change(
                 &identity_changed,
                 &new_identity,
                 &dependencies,
@@ -228,19 +231,25 @@ impl BamManager {
                 &mut cached_builder_config,
                 false,
             ) {
-                continue;
-            }
-
-            // if url changed or cleared, then disconnect
-            let configured_bam_url = bam_url.load();
-            if configured_bam_url.as_deref() != Some(connection.url()) {
-                cached_builder_config = None;
-                Self::set_bam_disconnected(&dependencies);
-                if let Some(new_url) = configured_bam_url.as_deref() {
-                    info!("BAM URL changed, connecting to new URL: {new_url}");
+                true
+            } else {
+                let configured_bam_url = bam_url.load();
+                if configured_bam_url.as_deref() == Some(connection.url()) {
+                    false
                 } else {
-                    info!("BAM URL cleared, disconnecting");
+                    cached_builder_config = None;
+                    Self::set_bam_disconnected(&dependencies);
+                    if let Some(new_url) = configured_bam_url.as_deref() {
+                        info!("BAM URL changed, connecting to new URL: {new_url}");
+                    } else {
+                        info!("BAM URL cleared, disconnecting");
+                    }
+                    true
                 }
+            };
+
+            if disconnect {
+                outbound_receiver = Some(runtime.block_on(connection.shutdown()));
                 continue;
             }
 
@@ -273,9 +282,9 @@ impl BamManager {
             if let Some(bank) = shared_leader_state.load().working_bank() {
                 if !bank.is_frozen() {
                     let leader_state = Self::generate_leader_state(bank);
-                    let _ = dependencies.outbound_sender.try_send(
-                        crate::bam_dependencies::BamOutboundMessage::LeaderState(leader_state),
-                    );
+                    let _ = dependencies
+                        .outbound_sender
+                        .try_send(BamOutboundMessage::LeaderState(leader_state));
                 }
             }
 

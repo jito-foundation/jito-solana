@@ -122,14 +122,13 @@ fn main() {
 
     // create a mock bam server
     let (batch_sender, batch_receiver) = unbounded();
-    let (outbound_sender, outbound_receiver) = unbounded();
+    let (outbound_sender, outbound_receiver) = tokio::sync::mpsc::channel(100_000);
     let keypair = Keypair::new();
     let bam_dependencies = BamDependencies {
         bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
         batch_sender: batch_sender.clone(),
         batch_receiver,
         outbound_sender,
-        outbound_receiver: outbound_receiver.clone(), // unused
         cluster_info: Arc::new(ClusterInfo::new(
             ContactInfo::new_localhost(&keypair.pubkey(), timestamp()),
             Arc::new(keypair),
