@@ -76,6 +76,7 @@ struct MockBamNode {
     config_requests: Arc<AtomicU64>,
     scheduler_stream_rejections: Arc<AtomicU64>,
     config: Arc<Mutex<MockConfig>>,
+    config_response_delay_ms: Arc<AtomicU64>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
     reject_scheduler_stream: bool,
     outbound_result_batch_size: Arc<AtomicU64>,
@@ -94,6 +95,7 @@ impl MockBamNode {
             config_requests: Arc::new(AtomicU64::new(0)),
             scheduler_stream_rejections: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Mutex::new(MockConfig::default())),
+            config_response_delay_ms: Arc::new(AtomicU64::new(0)),
             batch_to_send: Arc::new(Mutex::new(None)),
             reject_scheduler_stream,
             outbound_result_batch_size: Arc::new(AtomicU64::new(0)),
@@ -123,6 +125,10 @@ impl BamNodeApi for MockBamNode {
         _request: Request<ConfigRequest>,
     ) -> Result<Response<ConfigResponse>, Status> {
         self.config_requests.fetch_add(1, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(
+            self.config_response_delay_ms.load(Ordering::Relaxed),
+        ))
+        .await;
         let config = self.config.lock().unwrap().clone();
         Ok(Response::new(ConfigResponse {
             block_engine_config: Some(BlockEngineBuilderConfig {
@@ -244,6 +250,7 @@ struct MockServerHandle {
     scheduler_stream_rejections: Arc<AtomicU64>,
     #[allow(dead_code)]
     config: Arc<Mutex<MockConfig>>,
+    config_response_delay_ms: Arc<AtomicU64>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
     outbound_result_batch_size: Arc<AtomicU64>,
 }
@@ -268,6 +275,7 @@ async fn start_mock_server(
         config_requests: Arc::clone(&mock.config_requests),
         scheduler_stream_rejections: Arc::clone(&mock.scheduler_stream_rejections),
         config: Arc::clone(&mock.config),
+        config_response_delay_ms: Arc::clone(&mock.config_response_delay_ms),
         batch_to_send: Arc::clone(&mock.batch_to_send),
         outbound_result_batch_size: Arc::clone(&mock.outbound_result_batch_size),
     };
@@ -495,6 +503,43 @@ mod bam_connection_tests {
         let config = connection.get_latest_config().expect("config should exist");
         let bam_config = config.bam_config.expect("bam_config should exist");
         assert_eq!(bam_config.commission_bps, 100);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_cancels_inflight_config_refresh() {
+        let send_heartbeats = Arc::new(AtomicBool::new(true));
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
+        server
+            .config_response_delay_ms
+            .store(5_000, Ordering::Relaxed);
+
+        let cluster_info = create_test_cluster_info();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
+
+        let connection = BamConnection::try_init(
+            format!("http://{}", server.addr),
+            cluster_info,
+            batch_tx,
+            &mut outbound_rx,
+        )
+        .await
+        .expect("should connect");
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if server.config_requests.load(Ordering::Relaxed) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(server.config_requests.load(Ordering::Relaxed), 1);
+
+        let shutdown_start = std::time::Instant::now();
+        let _outbound_rx = connection.shutdown().await;
+        assert!(
+            shutdown_start.elapsed() < Duration::from_millis(100),
+            "shutdown should cancel refresh_config before the abort grace timeout"
+        );
     }
 
     #[tokio::test]
