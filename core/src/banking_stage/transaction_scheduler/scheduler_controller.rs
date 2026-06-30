@@ -1141,11 +1141,8 @@ mod tests {
 
     #[test]
     fn test_bam_controller_process_transactions_no_panic() {
-        use crate::{
-            bam_dependencies::BamOutboundMessage,
-            banking_stage::transaction_scheduler::{
-                bam_receive_and_buffer::BamReceiveAndBuffer, bam_scheduler::BamScheduler,
-            },
+        use crate::banking_stage::transaction_scheduler::{
+            bam_receive_and_buffer::BamReceiveAndBuffer, bam_scheduler::BamScheduler,
         };
 
         let GenesisConfigInfo {
@@ -1163,7 +1160,7 @@ mod tests {
         let exit = Arc::new(AtomicBool::new(false));
 
         let (_bundle_sender, bundle_receiver) = unbounded();
-        let (response_sender, _response_receiver) = unbounded::<BamOutboundMessage>();
+        let (response_sender, _response_receiver) = tokio::sync::mpsc::channel(100);
 
         let receive_and_buffer = BamReceiveAndBuffer::new(
             exit.clone(),
