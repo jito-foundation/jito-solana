@@ -509,7 +509,9 @@ mod bam_connection_tests {
     async fn test_shutdown_cancels_inflight_config_refresh() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
         let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
-        server.config_response_delay_ms.store(5_000, Ordering::Relaxed);
+        server
+            .config_response_delay_ms
+            .store(5_000, Ordering::Relaxed);
 
         let cluster_info = create_test_cluster_info();
         let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
