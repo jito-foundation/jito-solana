@@ -624,7 +624,6 @@ impl AdminRpc for AdminRpcImpl {
         let manual_disconnect = bam_url.as_deref().is_some_and(|url| url.trim().is_empty());
         let bam_url = bam_url.filter(|url| !url.trim().is_empty());
         let old_bam_url = meta.bam_url.load();
-        debug!("set_bam_url old= {old_bam_url:?}, new={bam_url:?}");
 
         if let Some(new_bam_url) = &bam_url {
             Endpoint::from_str(new_bam_url).map_err(|e| {
