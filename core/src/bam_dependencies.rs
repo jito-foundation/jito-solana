@@ -13,13 +13,12 @@ use {
     solana_runtime::bank_forks::BankForks,
     solana_turbine::ShredReceiverAddresses,
     std::sync::RwLock,
+    tokio::sync::mpsc,
 };
 
 pub enum BamOutboundMessage {
     AtomicTxnBatchResult(bam_types::AtomicTxnBatchResult),
-    Heartbeat(bam_types::ValidatorHeartBeat),
     LeaderState(bam_types::LeaderState),
-    Ping(u32),
 }
 
 #[repr(u8)]
@@ -48,8 +47,7 @@ pub struct BamDependencies {
     pub batch_sender: crossbeam_channel::Sender<bam_types::AtomicTxnBatch>,
     pub batch_receiver: crossbeam_channel::Receiver<bam_types::AtomicTxnBatch>,
 
-    pub outbound_sender: crossbeam_channel::Sender<BamOutboundMessage>,
-    pub outbound_receiver: crossbeam_channel::Receiver<BamOutboundMessage>,
+    pub outbound_sender: mpsc::Sender<BamOutboundMessage>,
 
     pub cluster_info: Arc<ClusterInfo>,
     pub block_builder_fee_info: Arc<ArcSwap<BlockBuilderFeeInfo>>,

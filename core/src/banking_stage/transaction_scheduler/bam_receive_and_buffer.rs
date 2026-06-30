@@ -30,7 +30,7 @@ use {
     },
     ahash::HashSet,
     bytes::Bytes,
-    crossbeam_channel::{RecvTimeoutError, Sender, TryRecvError},
+    crossbeam_channel::{RecvTimeoutError, TryRecvError},
     histogram::Histogram,
     itertools::Itertools,
     jito_protos::proto::bam_types::{
@@ -63,6 +63,7 @@ use {
         },
         time::{Duration, Instant},
     },
+    tokio::sync::mpsc::Sender as TokioSender,
 };
 
 type PrevalidationResult = Result<(usize, bool, u32, u64), (Reason, u32)>;
@@ -70,7 +71,7 @@ type VerifyResult = Result<(Vec<SharedBytes>, bool, u32, u64), (Reason, u32)>;
 
 pub struct BamReceiveAndBuffer {
     bam_enabled: Arc<AtomicU8>,
-    response_sender: Sender<BamOutboundMessage>,
+    response_sender: TokioSender<BamOutboundMessage>,
     parsed_batch_receiver: crossbeam_channel::Receiver<ParsedBatch>,
     recv_stats_receiver: crossbeam_channel::Receiver<ReceivingStats>,
     parsing_thread: Option<std::thread::JoinHandle<()>>,
@@ -94,7 +95,7 @@ impl BamReceiveAndBuffer {
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
         bundle_receiver: crossbeam_channel::Receiver<AtomicTxnBatch>,
-        response_sender: Sender<BamOutboundMessage>,
+        response_sender: TokioSender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
         shared_leader_state: Option<SharedLeaderState>,
         blacklisted_accounts: HashSet<Pubkey>,
@@ -133,7 +134,7 @@ impl BamReceiveAndBuffer {
         bundle_receiver: crossbeam_channel::Receiver<AtomicTxnBatch>,
         parsed_batch_sender: crossbeam_channel::Sender<ParsedBatch>,
         recv_stats_sender: crossbeam_channel::Sender<ReceivingStats>,
-        response_sender: Sender<BamOutboundMessage>,
+        response_sender: TokioSender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
         shared_leader_state: Option<SharedLeaderState>,
         blacklisted_accounts: HashSet<Pubkey>,
@@ -1115,11 +1116,11 @@ mod tests {
         Arc<AtomicBool>,
         BamReceiveAndBuffer,
         TransactionStateContainer<RuntimeTransaction<ResolvedTransactionView<SharedBytes>>>,
-        crossbeam_channel::Receiver<BamOutboundMessage>,
+        tokio::sync::mpsc::Receiver<BamOutboundMessage>,
     ) {
         let exit: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let (response_sender, response_receiver) =
-            crossbeam_channel::unbounded::<BamOutboundMessage>();
+            tokio::sync::mpsc::channel::<BamOutboundMessage>(100);
         let receive_and_buffer = BamReceiveAndBuffer::new(
             exit.clone(),
             Arc::new(AtomicU8::new(BamConnectionState::Connected as u8)),
@@ -1191,7 +1192,7 @@ mod tests {
             Arc<AtomicBool>,
             R,
             R::Container,
-            Receiver<BamOutboundMessage>,
+            tokio::sync::mpsc::Receiver<BamOutboundMessage>,
         ),
     ) {
         let (sender, receiver) = unbounded();
@@ -1230,7 +1231,7 @@ mod tests {
     fn test_receive_and_buffer_invalid_packet() {
         let (bank_forks, _mint_keypair) = test_bank_forks();
         let (sender, receiver) = unbounded();
-        let (exit, mut receive_and_buffer, mut container, response_receiver) =
+        let (exit, mut receive_and_buffer, mut container, mut response_receiver) =
             setup_bam_receive_and_buffer(receiver, bank_forks.clone(), HashSet::new());
 
         let bundle = AtomicTxnBatch {
@@ -1249,7 +1250,7 @@ mod tests {
 
         assert_eq!(num_received, 0);
         verify_container(&mut container, 0);
-        let response = response_receiver.recv().unwrap();
+        let response = response_receiver.blocking_recv().unwrap();
         assert!(matches!(
             response,
             BamOutboundMessage::AtomicTxnBatchResult(txn_batch_result) if txn_batch_result.seq_id == 1 &&
