@@ -66,7 +66,18 @@ impl BamConnection {
         let backend_endpoint = Self::endpoint_from_url(&url)?
             .connect_timeout(CONNECTION_TIMEOUT)
             .timeout(NETWORK_REQUEST_TIMEOUT);
-        let channel = timeout(CONNECTION_TIMEOUT, backend_endpoint.connect()).await??;
+        info!("Connecting to BAM url={url:?}");
+        let channel = match timeout(CONNECTION_TIMEOUT, backend_endpoint.connect()).await {
+            Ok(Ok(channel)) => channel,
+            Ok(Err(e)) => {
+                error!("BAM endpoint connect failed for url={url:?}: {e:?}");
+                return Err(TryInitError::EndpointConnectError(e));
+            }
+            Err(e) => {
+                error!("BAM endpoint connect timed out for url={url:?}: {e:?}");
+                return Err(TryInitError::ConnectionTimeout(e));
+            }
+        };
         let mut validator_client = BamNodeApiClient::new(channel);
         let (outbound_sender, outbound_receiver_internal) =
             mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
