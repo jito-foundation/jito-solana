@@ -44,6 +44,9 @@ jobs:
           - branch: v4.1
             upstream_branch: v4.1
             upstream_repo: https://github.com/anza-xyz/agave.git
+          - branch: v4.2
+            upstream_branch: v4.2
+            upstream_repo: https://github.com/anza-xyz/agave.git
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
