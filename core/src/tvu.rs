@@ -78,7 +78,7 @@ use {
     solana_turbine::{ShredReceiverAddresses, XdpSender, retransmit_stage::RetransmitStage},
     std::{
         collections::HashSet,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
         sync::{Arc, RwLock, atomic::AtomicBool},
         thread::{self, JoinHandle},
@@ -238,8 +238,10 @@ impl Tvu {
         slot_status_notifier: Option<SlotStatusNotifier>,
         vote_connection_cache: Arc<ConnectionCache>,
         votor_init: AlpenglowInitializationState,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_root_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     ) -> Result<Self, String> {
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -397,8 +399,10 @@ impl Tvu {
             slot_status_notifier.clone(),
             tvu_config.turbine_xdp_sender,
             votor_event_sender.clone(),
+            shredstream_receiver_address,
             shred_receiver_addresses,
             bam_shred_receiver_addresses,
+            multicast_root_receiver_address,
         );
 
         let (ancestor_duplicate_slots_sender, ancestor_duplicate_slots_receiver) = unbounded();
@@ -887,8 +891,10 @@ pub mod tests {
                 build_reward_certs_receiver,
                 reward_certs_sender,
             },
+            Arc::new(ArcSwap::from_pointee(None)),
             Arc::new(ArcSwap::from_pointee(ShredReceiverAddresses::new())),
             Arc::default(),
+            Arc::new(ArcSwap::from_pointee(None)),
         )
         .expect("assume success");
         exit.store(true, Ordering::Relaxed);

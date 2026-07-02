@@ -15,7 +15,7 @@ use {
 
 fn get_proto_packet(i: u8) -> PbPacket {
     PbPacket {
-        data: repeat_n(i, PACKET_DATA_SIZE).collect(),
+        data: repeat_n(i, PACKET_DATA_SIZE).collect::<Vec<_>>().into(),
         meta: Some(PbMeta {
             size: PACKET_DATA_SIZE as u64,
             addr: "255.255.255.255:65535".to_string(),

@@ -10,6 +10,7 @@ use {
     solana_feature_gate_interface as feature,
     solana_fee_calculator::FeeRateGovernor,
     solana_genesis_config::GenesisConfig,
+    solana_genesis_utils::MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
     solana_keypair::{Keypair, read_keypair_file},
     solana_ledger::{
         blockstore::create_new_ledger, blockstore_options::LedgerColumnOptions,
@@ -110,6 +111,10 @@ impl BamValidator {
         .arg("--full-rpc-api")
         .arg("--enable-rpc-transaction-history")
         .arg("--enable-extended-tx-metadata-storage")
+        // Keep snapshots frequent so restarted or non-bootstrap local validators
+        // can quickly download a usable bootstrap snapshot during short runs.
+        .arg("--snapshot-interval-slots")
+        .arg("25")
         .arg("--expected-shred-version")
         .arg(compute_shred_version(&genesis_config.hash(), None).to_string())
         .arg("--bam-url")
@@ -426,13 +431,21 @@ impl BamLocalCluster {
                 .into());
             }
 
+            if !is_bootstrap {
+                create_new_ledger(
+                    &ledger_path,
+                    &genesis_config_info.genesis_config,
+                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
+                    LedgerColumnOptions::default(),
+                )?;
+            }
             // Create ledger and snapshot if bootstrap; other validators need to have snapshot
             // to download from the bootstrap validator to start
             if is_bootstrap {
                 create_new_ledger(
                     &ledger_path,
                     &genesis_config_info.genesis_config,
-                    10737418240,
+                    MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
                     LedgerColumnOptions::default(),
                 )?;
                 BamValidator::create_snapshot(&ledger_path, &config.ledger_tool_build_path)?;

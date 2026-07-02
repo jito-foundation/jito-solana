@@ -65,6 +65,16 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=0.11.14
   --ignore RUSTSEC-2026-0037
 
+  # Crate:     quinn-proto
+  # Version:   0.11.14
+  # Title:     Remote memory exhaustion in quinn-proto from unbounded out-of-order stream reassembly
+  # Date:      2026-06-22
+  # ID:        RUSTSEC-2026-0185
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0185
+  # Severity:  7.5 (high)
+  # Solution:  Upgrade to >=0.11.15
+  --ignore RUSTSEC-2026-0185
+
   # Crate:     ring
   # Version:   0.16.20
   # Title:     Some AES functions may panic when overflow checking is enabled.

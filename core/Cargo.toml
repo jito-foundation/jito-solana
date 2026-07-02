@@ -186,7 +186,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls-ring", "tls-native-roots", "tls-webpki-roots"] }
 trees = { workspace = true }
 wincode = { workspace = true }
 

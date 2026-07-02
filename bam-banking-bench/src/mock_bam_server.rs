@@ -1,12 +1,13 @@
 use {
-    crossbeam_channel::{Receiver, Sender},
+    bytes::{BufMut, BytesMut},
+    crossbeam_channel::Sender,
     jito_protos::proto::bam_types::{AtomicTxnBatch, AtomicTxnBatchResult, Packet},
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_core::bam_dependencies::BamOutboundMessage,
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_message::Message,
-    solana_perf::packet::solana_packet,
+    solana_perf::packet::{PACKET_DATA_SIZE, solana_packet},
     solana_poh::poh_recorder::SharedLeaderState,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
@@ -141,7 +142,7 @@ pub(crate) struct MockBamServer;
 impl MockBamServer {
     pub(crate) fn run(
         batch_sender: Sender<AtomicTxnBatch>,
-        outbound_receiver: Receiver<BamOutboundMessage>,
+        mut outbound_receiver: tokio::sync::mpsc::Receiver<BamOutboundMessage>,
         shared_leader_state: SharedLeaderState,
         exit: Arc<AtomicBool>,
         keypairs: Vec<Keypair>,
@@ -159,7 +160,7 @@ impl MockBamServer {
                     };
 
                     if bank.slot() != bank_stats.bank_slot {
-                        Self::wait_for_all_results(&outbound_receiver, &mut bank_stats);
+                        Self::wait_for_all_results(&mut outbound_receiver, &mut bank_stats);
 
                         bank_stats.print_stats();
                         bank_stats = BankStats::new(bank.slot());
@@ -176,14 +177,14 @@ impl MockBamServer {
                         &mut seq_id,
                     );
 
-                    Self::handle_outbound_messages(&outbound_receiver, &mut bank_stats);
+                    Self::handle_outbound_messages(&mut outbound_receiver, &mut bank_stats);
                 }
             }
         })
     }
 
     fn handle_outbound_messages(
-        outbound_receiver: &Receiver<BamOutboundMessage>,
+        outbound_receiver: &mut tokio::sync::mpsc::Receiver<BamOutboundMessage>,
         bank_stats: &mut BankStats,
     ) {
         while let Ok(msg) = outbound_receiver.try_recv() {
@@ -206,7 +207,7 @@ impl MockBamServer {
     }
 
     fn wait_for_all_results(
-        outbound_receiver: &Receiver<BamOutboundMessage>,
+        outbound_receiver: &mut tokio::sync::mpsc::Receiver<BamOutboundMessage>,
         bank_stats: &mut BankStats,
     ) {
         while !bank_stats
@@ -235,15 +236,20 @@ impl MockBamServer {
                 1,
             );
 
-            let packet = solana_packet::Packet::from_data(None, &tx).unwrap();
-            let data = packet.data(..).unwrap_or_default().to_vec();
+            let data = {
+                let buffer = BytesMut::with_capacity(PACKET_DATA_SIZE);
+                let mut writer = buffer.writer();
+                solana_packet::Encode::encode(&tx, &mut writer).unwrap();
+                writer.into_inner().freeze()
+            };
+            let data_len = data.len();
             let atomic_txn_batch = AtomicTxnBatch {
                 seq_id: *seq_id,
                 max_schedule_slot: bank.slot(),
                 packets: vec![Packet {
-                    data: data.to_vec(),
+                    data,
                     meta: Some(jito_protos::proto::bam_types::Meta {
-                        size: data.len() as u64,
+                        size: data_len as u64,
                         flags: None,
                     }),
                 }],

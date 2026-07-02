@@ -9,8 +9,8 @@ use {
             scheduler_response_v0::Resp,
         },
         bam_types::{
-            AtomicTxnBatch, BamConfig, BlockEngineBuilderConfig, BuilderHeartBeat,
-            MultipleAtomicTxnBatch, Packet, Socket,
+            AtomicTxnBatch, AtomicTxnBatchResult, BamConfig, BlockEngineBuilderConfig,
+            BuilderHeartBeat, MultipleAtomicTxnBatch, Packet, Socket,
         },
     },
     solana_core::bam_dependencies::BamOutboundMessage,
@@ -76,10 +76,10 @@ struct MockBamNode {
     config_requests: Arc<AtomicU64>,
     scheduler_stream_rejections: Arc<AtomicU64>,
     config: Arc<Mutex<MockConfig>>,
+    config_response_delay_ms: Arc<AtomicU64>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
     reject_scheduler_stream: bool,
-    #[allow(dead_code)]
-    outbound_tx: Arc<Mutex<Option<mpsc::Sender<AtomicTxnBatch>>>>,
+    outbound_result_batch_size: Arc<AtomicU64>,
 }
 
 impl MockBamNode {
@@ -95,9 +95,10 @@ impl MockBamNode {
             config_requests: Arc::new(AtomicU64::new(0)),
             scheduler_stream_rejections: Arc::new(AtomicU64::new(0)),
             config: Arc::new(Mutex::new(MockConfig::default())),
+            config_response_delay_ms: Arc::new(AtomicU64::new(0)),
             batch_to_send: Arc::new(Mutex::new(None)),
             reject_scheduler_stream,
-            outbound_tx: Arc::new(Mutex::new(None)),
+            outbound_result_batch_size: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -124,6 +125,10 @@ impl BamNodeApi for MockBamNode {
         _request: Request<ConfigRequest>,
     ) -> Result<Response<ConfigResponse>, Status> {
         self.config_requests.fetch_add(1, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(
+            self.config_response_delay_ms.load(Ordering::Relaxed),
+        ))
+        .await;
         let config = self.config.lock().unwrap().clone();
         Ok(Response::new(ConfigResponse {
             block_engine_config: Some(BlockEngineBuilderConfig {
@@ -160,6 +165,7 @@ impl BamNodeApi for MockBamNode {
         let scheduler_stream_rejections = self.scheduler_stream_rejections.clone();
         let batch_to_send = self.batch_to_send.clone();
         let reject_scheduler_stream = self.reject_scheduler_stream;
+        let outbound_result_batch_size = self.outbound_result_batch_size.clone();
 
         tokio::spawn(async move {
             let mut authenticated = false;
@@ -194,22 +200,39 @@ impl BamNodeApi for MockBamNode {
                 return;
             }
 
+            let mut heartbeat_interval = tokio::time::interval(heartbeat_interval);
+            heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            heartbeat_interval.tick().await;
+
             loop {
-                tokio::time::sleep(heartbeat_interval).await;
+                tokio::select! {
+                    msg = inbound.message() => {
+                        let Ok(Some(msg)) = msg else {
+                            break;
+                        };
+                        if let Some(VersionedMsg::V0(v0)) = msg.versioned_msg {
+                            if let Some(Msg::MultipleAtomicTxnBatchResult(results)) = v0.msg {
+                                outbound_result_batch_size
+                                    .store(results.results.len() as u64, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    _ = heartbeat_interval.tick() => {
+                        if send_heartbeats.load(Ordering::Relaxed)
+                            && tx.send(Ok(heartbeat_response())).await.is_err()
+                        {
+                            break;
+                        }
 
-                if send_heartbeats.load(Ordering::Relaxed)
-                    && tx.send(Ok(heartbeat_response())).await.is_err()
-                {
-                    break;
-                }
-
-                let batch = batch_to_send.lock().unwrap().take();
-                if let Some(batch) = batch {
-                    let resp = v0_response(Resp::MultipleAtomicTxnBatch(MultipleAtomicTxnBatch {
-                        batches: vec![batch],
-                    }));
-                    if tx.send(Ok(resp)).await.is_err() {
-                        break;
+                        let batch = batch_to_send.lock().unwrap().take();
+                        if let Some(batch) = batch {
+                            let resp = v0_response(Resp::MultipleAtomicTxnBatch(MultipleAtomicTxnBatch {
+                                batches: vec![batch],
+                            }));
+                            if tx.send(Ok(resp)).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -227,7 +250,9 @@ struct MockServerHandle {
     scheduler_stream_rejections: Arc<AtomicU64>,
     #[allow(dead_code)]
     config: Arc<Mutex<MockConfig>>,
+    config_response_delay_ms: Arc<AtomicU64>,
     batch_to_send: Arc<Mutex<Option<AtomicTxnBatch>>>,
+    outbound_result_batch_size: Arc<AtomicU64>,
 }
 
 async fn start_mock_server(
@@ -250,7 +275,9 @@ async fn start_mock_server(
         config_requests: Arc::clone(&mock.config_requests),
         scheduler_stream_rejections: Arc::clone(&mock.scheduler_stream_rejections),
         config: Arc::clone(&mock.config),
+        config_response_delay_ms: Arc::clone(&mock.config_response_delay_ms),
         batch_to_send: Arc::clone(&mock.batch_to_send),
+        outbound_result_batch_size: Arc::clone(&mock.outbound_result_batch_size),
     };
 
     let server_started = Arc::new(AtomicBool::new(false));
@@ -284,12 +311,12 @@ fn create_test_cluster_info() -> Arc<ClusterInfo> {
 fn create_channels() -> (
     crossbeam_channel::Sender<AtomicTxnBatch>,
     crossbeam_channel::Receiver<AtomicTxnBatch>,
-    crossbeam_channel::Sender<BamOutboundMessage>,
-    crossbeam_channel::Receiver<BamOutboundMessage>,
+    mpsc::Sender<BamOutboundMessage>,
+    Option<mpsc::Receiver<BamOutboundMessage>>,
 ) {
     let (batch_tx, batch_rx) = crossbeam_channel::unbounded();
-    let (outbound_tx, outbound_rx) = crossbeam_channel::unbounded();
-    (batch_tx, batch_rx, outbound_tx, outbound_rx)
+    let (outbound_tx, outbound_rx) = mpsc::channel(100_000);
+    (batch_tx, batch_rx, outbound_tx, Some(outbound_rx))
 }
 
 async fn wait_until_healthy(
@@ -298,7 +325,7 @@ async fn wait_until_healthy(
 ) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
-        if connection.is_healthy() && connection.get_latest_config().is_some() {
+        if connection.get_latest_config().is_some() {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -316,13 +343,13 @@ mod bam_connection_tests {
         let server = start_mock_server(send_heartbeats, Duration::from_secs(2), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await
         .expect("should connect");
@@ -342,13 +369,13 @@ mod bam_connection_tests {
             start_mock_server(send_heartbeats.clone(), Duration::from_millis(500), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await
         .expect("should connect");
@@ -373,13 +400,13 @@ mod bam_connection_tests {
         let server = start_mock_server(send_heartbeats, Duration::from_secs(2), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await
         .expect("should connect");
@@ -393,13 +420,13 @@ mod bam_connection_tests {
     #[tokio::test]
     async fn test_connection_fails_when_server_unreachable() {
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let result = BamConnection::try_init(
             "http://127.0.0.1:1".to_string(), // Invalid port
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await;
 
@@ -416,13 +443,13 @@ mod bam_connection_tests {
         .await;
 
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await
         .expect("transport should connect before auth rejection");
@@ -460,13 +487,13 @@ mod bam_connection_tests {
         let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await
         .expect("should connect");
@@ -479,21 +506,69 @@ mod bam_connection_tests {
     }
 
     #[tokio::test]
-    async fn test_batches_forwarded_to_receiver() {
+    async fn test_shutdown_cancels_inflight_config_refresh() {
         let send_heartbeats = Arc::new(AtomicBool::new(true));
-        let server = start_mock_server(send_heartbeats, Duration::from_millis(100), false).await;
+        let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
+        server
+            .config_response_delay_ms
+            .store(5_000, Ordering::Relaxed);
 
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await
         .expect("should connect");
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if server.config_requests.load(Ordering::Relaxed) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(server.config_requests.load(Ordering::Relaxed), 1);
+
+        let shutdown_start = std::time::Instant::now();
+        let _outbound_rx = connection.shutdown().await;
+        assert!(
+            shutdown_start.elapsed() < Duration::from_millis(100),
+            "shutdown should cancel refresh_config before the abort grace timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batches_forwarded_to_receiver() {
+        let send_heartbeats = Arc::new(AtomicBool::new(true));
+        let server = start_mock_server(send_heartbeats, Duration::from_millis(100), false).await;
+
+        let cluster_info = create_test_cluster_info();
+        let (batch_tx, batch_rx, outbound_tx, mut outbound_rx) = create_channels();
+
+        let connection = BamConnection::try_init(
+            format!("http://{}", server.addr),
+            cluster_info,
+            batch_tx,
+            &mut outbound_rx,
+        )
+        .await
+        .expect("should connect");
+
+        for seq_id in 0..3 {
+            outbound_tx
+                .try_send(BamOutboundMessage::AtomicTxnBatchResult(
+                    AtomicTxnBatchResult {
+                        seq_id,
+                        result: None,
+                    },
+                ))
+                .expect("outbound result should queue");
+        }
 
         assert!(wait_until_healthy(&connection, Duration::from_secs(10)).await);
 
@@ -501,7 +576,7 @@ mod bam_connection_tests {
             seq_id: 42,
             max_schedule_slot: 100,
             packets: vec![Packet {
-                data: vec![1, 2, 3],
+                data: vec![1, 2, 3].into(),
                 meta: None,
             }],
         };
@@ -512,6 +587,20 @@ mod bam_connection_tests {
         let received = batch_rx.try_recv().expect("should receive batch");
         assert_eq!(received.seq_id, 42);
         assert_eq!(received.max_schedule_slot, 100);
+
+        let batch_size = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let batch_size = server.outbound_result_batch_size.load(Ordering::Relaxed);
+                if batch_size != 0 {
+                    return batch_size;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("outbound results should be sent");
+
+        assert_eq!(batch_size, 3);
     }
 
     #[tokio::test]
@@ -520,13 +609,13 @@ mod bam_connection_tests {
         let server = start_mock_server(send_heartbeats, Duration::from_secs(1), false).await;
 
         let cluster_info = create_test_cluster_info();
-        let (batch_tx, _batch_rx, _outbound_tx, outbound_rx) = create_channels();
+        let (batch_tx, _batch_rx, _outbound_tx, mut outbound_rx) = create_channels();
 
         let connection = BamConnection::try_init(
             format!("http://{}", server.addr),
             cluster_info,
             batch_tx,
-            outbound_rx,
+            &mut outbound_rx,
         )
         .await
         .expect("should connect");
@@ -560,23 +649,23 @@ mod bam_manager_tests {
     fn create_test_bam_dependencies(
         cluster_info: Arc<ClusterInfo>,
         bank_forks: Arc<RwLock<solana_runtime::bank_forks::BankForks>>,
-    ) -> BamDependencies {
+    ) -> (BamDependencies, mpsc::Receiver<BamOutboundMessage>) {
         let (batch_tx, batch_rx) = crossbeam_channel::unbounded();
-        let (outbound_tx, outbound_rx) = crossbeam_channel::unbounded();
+        let (outbound_tx, outbound_rx) = mpsc::channel(100_000);
 
-        BamDependencies {
+        let dependencies = BamDependencies {
             bam_enabled: Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
             batch_sender: batch_tx,
             batch_receiver: batch_rx,
             outbound_sender: outbound_tx,
-            outbound_receiver: outbound_rx,
             cluster_info,
             block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
             bank_forks,
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
             bam_tpu_info: Arc::new(ArcSwap::new(Arc::new(None))),
             bam_shred_receiver_addresses: Arc::default(),
-        }
+        };
+        (dependencies, outbound_rx)
     }
 
     fn bam_is_connected(bam_enabled: &Arc<AtomicU8>) -> bool {
@@ -618,7 +707,8 @@ mod bam_manager_tests {
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
             create_test_poh_recorder();
-        let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
+        let (dependencies, outbound_receiver) =
+            create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
         let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
@@ -631,6 +721,7 @@ mod bam_manager_tests {
             exit.clone(),
             bam_url,
             dependencies,
+            outbound_receiver,
             poh_recorder,
             identity_notifiers,
         );
@@ -658,7 +749,8 @@ mod bam_manager_tests {
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
             create_test_poh_recorder();
-        let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
+        let (dependencies, outbound_receiver) =
+            create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
         let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
@@ -671,6 +763,7 @@ mod bam_manager_tests {
             exit.clone(),
             bam_url,
             dependencies,
+            outbound_receiver,
             poh_recorder,
             identity_notifiers,
         );
@@ -708,7 +801,8 @@ mod bam_manager_tests {
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
             create_test_poh_recorder();
-        let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
+        let (dependencies, outbound_receiver) =
+            create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
         let bam_url = Arc::new(ArcSwap::from_pointee(None));
@@ -718,6 +812,7 @@ mod bam_manager_tests {
             exit.clone(),
             bam_url,
             dependencies,
+            outbound_receiver,
             poh_recorder,
             identity_notifiers,
         );
@@ -744,7 +839,8 @@ mod bam_manager_tests {
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
             create_test_poh_recorder();
-        let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
+        let (dependencies, outbound_receiver) =
+            create_test_bam_dependencies(cluster_info, bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
         let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
@@ -757,6 +853,7 @@ mod bam_manager_tests {
             exit.clone(),
             bam_url.clone(),
             dependencies,
+            outbound_receiver,
             poh_recorder,
             identity_notifiers,
         );
@@ -792,7 +889,8 @@ mod bam_manager_tests {
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
             create_test_poh_recorder();
-        let dependencies = create_test_bam_dependencies(cluster_info.clone(), bank_forks);
+        let (dependencies, outbound_receiver) =
+            create_test_bam_dependencies(cluster_info.clone(), bank_forks);
         let bam_enabled = dependencies.bam_enabled.clone();
 
         let bam_url = Arc::new(ArcSwap::from_pointee(Some(format!(
@@ -805,6 +903,7 @@ mod bam_manager_tests {
             exit.clone(),
             bam_url,
             dependencies,
+            outbound_receiver,
             poh_recorder,
             identity_notifiers.clone(),
         );
@@ -870,7 +969,8 @@ mod bam_manager_tests {
         let cluster_info = create_test_cluster_info();
         let (exit, poh_recorder, bank_forks, poh_service, _ledger_path) =
             create_test_poh_recorder();
-        let dependencies = create_test_bam_dependencies(cluster_info, bank_forks);
+        let (dependencies, outbound_receiver) =
+            create_test_bam_dependencies(cluster_info, bank_forks);
         let block_builder_fee_info = dependencies.block_builder_fee_info.clone();
         let bam_enabled = dependencies.bam_enabled.clone();
 
@@ -884,6 +984,7 @@ mod bam_manager_tests {
             exit.clone(),
             bam_url,
             dependencies,
+            outbound_receiver,
             poh_recorder,
             identity_notifiers,
         );

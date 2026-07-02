@@ -176,6 +176,7 @@ impl Tpu {
         block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
         relayer_config: Arc<ArcSwap<RelayerConfig>>,
         tip_manager_config: TipManagerConfig,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
         shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
         multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
@@ -327,7 +328,6 @@ impl Tpu {
             block_builder_commission: 0,
         }));
 
-        let shredstream_receiver_address = Arc::new(ArcSwap::from_pointee(None)); // set by `[BlockEngineStage::connect_auth_and_stream()]`
         let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
         let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8));
 
@@ -395,13 +395,12 @@ impl Tpu {
             Arc::new(filter_keys)
         };
         let (bam_batch_sender, bam_batch_receiver) = bounded(100_000);
-        let (bam_outbound_sender, bam_outbound_receiver) = bounded(100_000);
+        let (bam_outbound_sender, bam_outbound_receiver) = mpsc::channel(100_000);
         let bam_dependencies = BamDependencies {
             bam_enabled: bam_enabled.clone(),
             batch_sender: bam_batch_sender,
             batch_receiver: bam_batch_receiver,
             outbound_sender: bam_outbound_sender,
-            outbound_receiver: bam_outbound_receiver,
             cluster_info: cluster_info.clone(),
             block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
             bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
@@ -476,6 +475,7 @@ impl Tpu {
             exit.clone(),
             bam_url,
             bam_dependencies,
+            bam_outbound_receiver,
             poh_recorder.clone(),
             key_notifiers.clone(),
         );
