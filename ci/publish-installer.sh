@@ -26,14 +26,20 @@ fi
 # upload install script
 source ci/upload-ci-artifact.sh
 
-cat >release.anza.xyz-install <<EOF
+cat >release.jito.wtf-install <<EOF
 SOLANA_RELEASE=$CHANNEL_OR_TAG
 SOLANA_INSTALL_INIT_ARGS=$CHANNEL_OR_TAG
-SOLANA_DOWNLOAD_ROOT=https://release.anza.xyz
+SOLANA_DOWNLOAD_ROOT=https://release.jito.wtf
 EOF
-cat install/agave-install-init.sh >>release.anza.xyz-install
+cat install/agave-install-init.sh >>release.jito.wtf-install
 
 echo --- GCS: "install"
-upload-gcs-artifact "/solana/release.anza.xyz-install" "gs://anza-release/$CHANNEL_OR_TAG/install"
+upload-gcs-artifact "/solana/release.jito.wtf-install" "gs://jito-release/$CHANNEL_OR_TAG/install"
+
+# Jito added - releases need to support S3
+echo --- AWS S3 Store: "install"
+upload-s3-artifact "/solana/release.jito.wtf-install" "s3://release.jito.wtf/$CHANNEL_OR_TAG/install"
+
 echo Published to:
-ci/format-url.sh https://release.anza.xyz/"$CHANNEL_OR_TAG"/install
+ci/format-url.sh https://release.jito.wtf/"$CHANNEL_OR_TAG"/install
+

@@ -233,6 +233,10 @@ impl CostTracker {
         self.block_cost.clone()
     }
 
+    pub fn block_cost_limit(&self) -> u64 {
+        self.limits.block_cost
+    }
+
     pub fn transaction_count(&self) -> u64 {
         self.transaction_count.0
     }
