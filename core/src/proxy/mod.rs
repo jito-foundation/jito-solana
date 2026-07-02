@@ -123,7 +123,7 @@ fn endpoint_from_url(
         .tcp_keepalive(Some(Duration::from_secs(60)));
     if url.starts_with("https") {
         endpoint = endpoint
-            .tls_config(tonic::transport::ClientTlsConfig::new())
+            .tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())
             .map_err(|_| tls_error())?;
     }
     Ok(endpoint)
