@@ -39,7 +39,7 @@ pub const DEFAULT_HASHES_PER_BATCH: u64 =
 
 pub const DEFAULT_PINNED_CPU_CORE: usize = 0;
 
-const TARGET_SLOT_ADJUSTMENT_NS: u64 = 50_000_000;
+const TARGET_SLOT_ADJUSTMENT_NS: u64 = 0;
 
 #[derive(Debug)]
 struct PohTiming {
