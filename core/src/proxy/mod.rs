@@ -16,10 +16,10 @@ pub mod fetch_stage_manager;
 pub mod relayer_stage;
 
 use {
+    crate::tonic_endpoint,
     std::{
         net::{AddrParseError, SocketAddr},
         result,
-        time::Duration,
     },
     thiserror::Error,
     tonic::{Status, transport::Endpoint},
@@ -118,15 +118,7 @@ fn endpoint_from_url(
     invalid_error: impl FnOnce() -> ProxyError,
     tls_error: impl FnOnce() -> ProxyError,
 ) -> Result<Endpoint> {
-    let mut endpoint = Endpoint::from_shared(url.to_owned())
-        .map_err(|_| invalid_error())?
-        .tcp_keepalive(Some(Duration::from_secs(60)));
-    if url.starts_with("https") {
-        endpoint = endpoint
-            .tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())
-            .map_err(|_| tls_error())?;
-    }
-    Ok(endpoint)
+    tonic_endpoint::endpoint_from_url_with_error(url, invalid_error, tls_error)
 }
 
 impl From<Status> for ProxyError {
