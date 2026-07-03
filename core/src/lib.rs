@@ -50,6 +50,7 @@ pub mod staked_nodes_updater_service;
 pub mod stats_reporter_service;
 pub mod system_monitor_service;
 pub mod tip_manager;
+mod tonic_endpoint;
 pub mod tpu;
 mod tpu_entry_notifier;
 mod transaction_priority;
