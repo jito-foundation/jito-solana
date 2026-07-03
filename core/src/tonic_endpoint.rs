@@ -59,7 +59,6 @@ mod tests {
             auth_service_server::{AuthService, AuthServiceServer},
         },
         rcgen::{CertifiedKey, generate_simple_self_signed},
-        std::{fs, path::Path},
         tokio::time::{Duration, timeout},
         tonic::{
             Request, Response, Status,
