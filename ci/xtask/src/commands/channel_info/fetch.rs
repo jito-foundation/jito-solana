@@ -6,8 +6,8 @@ use {
     std::process::Command,
 };
 
-const REMOTE: &str = "https://github.com/anza-xyz/agave.git";
-const RAW_BASE: &str = "https://raw.githubusercontent.com/anza-xyz/agave";
+const REMOTE: &str = "https://github.com/jito-foundation/jito-solana.git";
+const RAW_BASE: &str = "https://raw.githubusercontent.com/jito-foundation/jito-solana";
 
 fn ls_remote(flag: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
