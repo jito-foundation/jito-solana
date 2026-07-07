@@ -111,6 +111,15 @@ default_cargo_audit_extra_args=(
   # Solution:  Upgrade to >=0.103.13, <0.104.0-alpha.1 OR >=0.104.0-alpha.7
   --ignore RUSTSEC-2026-0104
 
+  # Crate:     crossbeam-epoch
+  # Version:   0.9.5, 0.9.18
+  # Title:     Invalid pointer dereference in fmt::Pointer impl for Atomic and Shared
+  # Date:      2026-07-06
+  # ID:        RUSTSEC-2026-0204
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0204
+  # Solution:  Upgrade to >=0.9.20
+  --ignore RUSTSEC-2026-0204
+
 )
 
 xtask_cargo_audit_extra_args=(
@@ -123,6 +132,15 @@ xtask_cargo_audit_extra_args=(
   # Severity:  5.9 (medium)
   # Solution:  No fixed upgrade is available!
   --ignore RUSTSEC-2023-0071
+
+  # Crate:     crossbeam-epoch
+  # Version:   0.9.18
+  # Title:     Invalid pointer dereference in fmt::Pointer impl for Atomic and Shared
+  # Date:      2026-07-06
+  # ID:        RUSTSEC-2026-0204
+  # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0204
+  # Solution:  Upgrade to >=0.9.20
+  --ignore RUSTSEC-2026-0204
 )
 
 lock_files="$(git ls-files ':**Cargo.lock')"
