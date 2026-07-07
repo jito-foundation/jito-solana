@@ -181,6 +181,13 @@ for bin in "${DCOU_BINS[@]}"; do
   dcouBinArgs+=(--bin "$bin")
 done
 
+# See the `--workspace --exclude` note below: exclude every dcou-tainted package
+# so its dev-context-only-utils activation can't unify into the release binaries.
+dcouExcludeArgs=()
+for pkg in "${DCOU_TAINTED_PACKAGES[@]}"; do
+  dcouExcludeArgs+=(--exclude "$pkg")
+done
+
 cargo_build() {
   # shellcheck disable=SC2086 # Don't want to double quote $maybeRustVersion
   "$cargo" $maybeRustVersion build $buildProfileArg "$@"
@@ -208,7 +215,7 @@ check_dcou() {
   # output after turning rustc into the nightly mode with RUSTC_BOOTSTRAP=1.
   # In this way, additional requirement of nightly rustc toolchian is avoided.
   # Note that `cargo tree` can't be used, because it doesn't support `--bin`.
-  if check_dcou "${binArgs[@]}" --workspace; then
+  if check_dcou "${binArgs[@]}" --workspace "${dcouExcludeArgs[@]}"; then
      echo 'dcou feature activation is incorrectly activated!'
      exit 1
   fi
