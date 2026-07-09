@@ -33,7 +33,7 @@ solana-genesis-config = { workspace = true }
 solana-genesis-utils = { workspace = true }
 solana-keypair = { workspace = true }
 solana-ledger = { workspace = true }
-solana-local-cluster = { workspace = true }
+solana-local-cluster = { workspace = true, features = ["dev-context-only-utils"] }
 solana-native-token = { workspace = true }
 solana-program-binaries = { workspace = true }
 solana-pubkey = { workspace = true }
