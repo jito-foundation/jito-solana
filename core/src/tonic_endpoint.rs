@@ -168,7 +168,12 @@ mod tests {
         const TESTNET_BLOCK_ENGINE_URL: &str = "https://testnet.block-engine.jito.wtf";
         const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-        let endpoint = endpoint_from_url(TESTNET_BLOCK_ENGINE_URL).unwrap();
+        let endpoint = endpoint_from_url_with_error(
+            TESTNET_BLOCK_ENGINE_URL,
+            || format!("invalid block engine url value: {TESTNET_BLOCK_ENGINE_URL}"),
+            || format!("failed to set tls_config for block engine: {TESTNET_BLOCK_ENGINE_URL}"),
+        )
+        .unwrap();
         let channel = timeout(CONNECT_TIMEOUT, endpoint.connect())
             .await
             .expect("timed out connecting to testnet block engine")
