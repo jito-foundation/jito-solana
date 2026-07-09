@@ -52,11 +52,18 @@ fn endpoint_from_url_with_tls_config_and_error<E>(
 mod tests {
     use {
         super::*,
-        jito_protos::proto::auth::{
-            GenerateAuthChallengeRequest, GenerateAuthChallengeResponse, GenerateAuthTokensRequest,
-            GenerateAuthTokensResponse, RefreshAccessTokenRequest, RefreshAccessTokenResponse,
-            auth_service_client::AuthServiceClient,
-            auth_service_server::{AuthService, AuthServiceServer},
+        jito_protos::proto::{
+            auth::{
+                GenerateAuthChallengeRequest, GenerateAuthChallengeResponse,
+                GenerateAuthTokensRequest, GenerateAuthTokensResponse, RefreshAccessTokenRequest,
+                RefreshAccessTokenResponse,
+                auth_service_client::AuthServiceClient,
+                auth_service_server::{AuthService, AuthServiceServer},
+            },
+            block_engine::{
+                GetBlockEngineEndpointRequest,
+                block_engine_validator_client::BlockEngineValidatorClient,
+            },
         },
         rcgen::{CertifiedKey, generate_simple_self_signed},
         tokio::time::{Duration, timeout},
@@ -153,6 +160,33 @@ mod tests {
         assert!(
             result.is_err(),
             "TLS connection unexpectedly succeeded without configured roots"
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoint_handshakes_with_testnet_block_engine() {
+        const TESTNET_BLOCK_ENGINE_URL: &str = "https://testnet.block-engine.jito.wtf";
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+        let endpoint = endpoint_from_url(TESTNET_BLOCK_ENGINE_URL).unwrap();
+        let channel = timeout(CONNECT_TIMEOUT, endpoint.connect())
+            .await
+            .expect("timed out connecting to testnet block engine")
+            .expect("TLS handshake to testnet block engine failed");
+
+        let mut client = BlockEngineValidatorClient::new(channel);
+        let response = timeout(
+            CONNECT_TIMEOUT,
+            client.get_block_engine_endpoints(GetBlockEngineEndpointRequest {}),
+        )
+        .await
+        .expect("timed out on get_block_engine_endpoints request")
+        .expect("get_block_engine_endpoints request to testnet block engine failed")
+        .into_inner();
+
+        assert!(
+            response.global_endpoint.is_some(),
+            "expected global block engine endpoint from testnet block engine"
         );
     }
 }
