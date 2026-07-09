@@ -5,6 +5,12 @@ target/
 /solana-release.tar.bz2
 /solana-metrics/
 /solana-metrics.tar.bz2
+# jito-solana release pipeline (dev/Dockerfile + ./f)
+dist/
+/docker-output/
+/jito-solana-release/
+/jito-solana-release-*.tar.bz2
+/jito-solana-release-*.yml
 **/target/
 /test-ledger/
 
@@ -43,4 +49,3 @@ log-*/
 **/cargo-*-bpf-child-script-*.sh
 
 .env
-docker-output/
