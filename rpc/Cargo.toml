@@ -35,6 +35,7 @@ jsonrpc-http-server = { workspace = true }
 jsonrpc-pubsub = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
+prost = { workspace = true }
 rayon = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
@@ -98,6 +99,7 @@ wincode = { workspace = true }
 
 [dev-dependencies]
 agave-reserved-account-keys = { path = "../reserved-account-keys", features = ["agave-unstable-api"] }
+bincode = { workspace = true }
 serial_test = { workspace = true }
 solana-address-lookup-table-interface = { workspace = true }
 solana-cluster-type = { workspace = true }
@@ -124,3 +126,4 @@ solana-vote-interface = { workspace = true }
 spl-pod = { workspace = true }
 symlink = { workspace = true }
 test-case = { workspace = true }
+tempfile = { workspace = true }

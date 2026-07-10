@@ -16,6 +16,7 @@ pub mod rpc_subscription_tracker;
 pub mod rpc_subscriptions;
 pub mod slot_status_notifier;
 pub mod transaction_notifier_interface;
+pub mod transaction_simulation_ipc_service;
 pub mod transaction_status_service;
 
 #[macro_use]

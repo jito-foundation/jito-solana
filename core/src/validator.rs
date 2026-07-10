@@ -112,6 +112,7 @@ use {
         rpc_service::{JsonRpcService, JsonRpcServiceConfig, RpcTpuClientArgs},
         rpc_subscriptions::RpcSubscriptions,
         transaction_notifier_interface::TransactionNotifierArc,
+        transaction_simulation_ipc_service::TransactionSimulationIpcService,
         transaction_status_service::TransactionStatusService,
     },
     solana_runtime::{
@@ -323,6 +324,9 @@ pub struct ValidatorConfig {
     pub rpc_config: JsonRpcConfig,
     /// Specifies which plugins to start up with
     pub on_start_geyser_plugin_config_files: Option<Vec<PathBuf>>,
+    /// Serves low-latency transaction simulation over this Unix socket.
+    pub transaction_simulation_ipc_path: Option<PathBuf>,
+    pub transaction_simulation_ipc_workers: usize,
     pub geyser_plugin_always_enabled: bool,
     pub rpc_addrs: Option<(SocketAddr, SocketAddr)>, // (JsonRpc, JsonRpcPubSub)
     pub pubsub_config: PubSubConfig,
@@ -407,6 +411,8 @@ impl ValidatorConfig {
             account_snapshot_paths: Vec::new(),
             rpc_config: JsonRpcConfig::default_for_test(),
             on_start_geyser_plugin_config_files: None,
+            transaction_simulation_ipc_path: None,
+            transaction_simulation_ipc_workers: 1,
             geyser_plugin_always_enabled: false,
             rpc_addrs: None,
             pubsub_config: PubSubConfig::default_for_tests(),
@@ -636,6 +642,7 @@ pub struct Validator {
     rpc_completed_slots_service: Option<JoinHandle<()>>,
     optimistically_confirmed_bank_tracker: Option<OptimisticallyConfirmedBankTracker>,
     transaction_status_service: Option<TransactionStatusService>,
+    transaction_simulation_ipc_service: Option<TransactionSimulationIpcService>,
     entry_notifier_service: Option<EntryNotifierService>,
     system_monitor_service: Option<SystemMonitorService>,
     sample_performance_service: Option<SamplePerformanceService>,
@@ -924,6 +931,24 @@ impl Validator {
                 .then(|| dependency_tracker.clone()),
         )
         .map_err(ValidatorError::Other)?;
+
+        let transaction_simulation_ipc_service = config
+            .transaction_simulation_ipc_path
+            .as_ref()
+            .map(|path| {
+                TransactionSimulationIpcService::new(
+                    path.clone(),
+                    bank_forks.clone(),
+                    config.transaction_simulation_ipc_workers,
+                    exit.clone(),
+                )
+            })
+            .transpose()
+            .map_err(|err| {
+                ValidatorError::Other(format!(
+                    "failed to start transaction simulation IPC service: {err}"
+                ))
+            })?;
 
         let migration_status = bank_forks.read().unwrap().migration_status();
 
@@ -1752,6 +1777,7 @@ impl Validator {
             rpc_completed_slots_service,
             optimistically_confirmed_bank_tracker,
             transaction_status_service,
+            transaction_simulation_ipc_service,
             entry_notifier_service,
             system_monitor_service,
             sample_performance_service,
@@ -1894,6 +1920,12 @@ impl Validator {
             transaction_status_service
                 .join()
                 .expect("transaction_status_service");
+        }
+
+        if let Some(transaction_simulation_ipc_service) = self.transaction_simulation_ipc_service {
+            transaction_simulation_ipc_service
+                .join()
+                .expect("transaction_simulation_ipc_service");
         }
 
         if let Some(system_monitor_service) = self.system_monitor_service {

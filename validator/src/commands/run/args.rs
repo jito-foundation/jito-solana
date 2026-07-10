@@ -831,6 +831,25 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .help("Еnable Geyser interface even if no Geyser configs are specified."),
     )
     .arg(
+        Arg::with_name("transaction_simulation_ipc")
+            .long("transaction-simulation-ipc")
+            .value_name("PATH")
+            .takes_value(true)
+            .help(
+                "Serve low-latency transaction simulation over a local Unix socket without the \
+                 JSON-RPC simulateTransaction path.",
+            ),
+    )
+    .arg(
+        Arg::with_name("transaction_simulation_ipc_workers")
+            .long("transaction-simulation-ipc-workers")
+            .value_name("NUMBER")
+            .takes_value(true)
+            .default_value("4")
+            .validator(is_non_zero)
+            .help("Number of transaction simulation IPC worker threads."),
+    )
+    .arg(
         Arg::with_name("snapshot_archive_format")
             .long("snapshot-archive-format")
             .alias("snapshot-compression") // Legacy name used by Solana v1.5.x and older
@@ -1843,5 +1862,36 @@ mod tests {
             vec!["--allow-private-addr"],
             expected_args,
         );
+    }
+
+    #[test]
+    fn transaction_simulation_ipc_args() {
+        let default_args = DefaultArgs::default();
+        let matches = add_args(App::new("run_command"), &default_args)
+            .get_matches_from_safe(vec![
+                "run_command",
+                "--transaction-simulation-ipc",
+                "/run/agave/transaction-simulation.sock",
+                "--transaction-simulation-ipc-workers",
+                "8",
+            ])
+            .unwrap();
+        assert_eq!(
+            matches.value_of("transaction_simulation_ipc"),
+            Some("/run/agave/transaction-simulation.sock")
+        );
+        assert_eq!(
+            matches.value_of("transaction_simulation_ipc_workers"),
+            Some("8")
+        );
+
+        let error = add_args(App::new("run_command"), &default_args)
+            .get_matches_from_safe(vec![
+                "run_command",
+                "--transaction-simulation-ipc-workers",
+                "0",
+            ])
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot be zero"));
     }
 }

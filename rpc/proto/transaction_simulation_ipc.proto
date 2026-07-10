@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package agave.transaction_simulation_ipc.v1;
+
+// The transport is a persistent, full-duplex Unix stream. Each frame starts
+// with a four-byte big-endian payload length followed by one encoded IpcMessage.
+// request_id allows clients to pipeline requests; responses may arrive out of
+// order when multiple simulation workers are configured.
+message IpcMessage {
+  uint32 protocol_version = 1;
+  oneof payload {
+    SimulationRequest simulation_request = 2;
+    SimulationResult simulation_result = 3;
+  }
+}
+
+message SimulationRequest {
+  uint64 request_id = 1;
+  // Canonical Solana wire encoding of VersionedTransaction.
+  bytes transaction = 2;
+  // If omitted, Agave uses its highest frozen bank. A specified bank must
+  // still exist in BankForks and be frozen.
+  optional uint64 bank_slot = 3;
+  // Disabled by default for the shred path, where signature verification can
+  // happen independently. Enabling this performs full transaction verification.
+  bool sig_verify = 4;
+}
+
+message SimulationResult {
+  uint64 request_id = 1;
+  bytes signature = 2;
+  optional uint64 bank_slot = 3;
+  SimulationStatus status = 4;
+  optional string error = 5;
+  repeated string logs = 6;
+  optional uint64 compute_units_consumed = 7;
+  optional uint64 fee = 8;
+  TransactionReturnData return_data = 9;
+  uint64 simulated_at_unix_nanos = 10;
+  uint64 processing_time_nanos = 11;
+}
+
+enum SimulationStatus {
+  SIMULATION_STATUS_UNSPECIFIED = 0;
+  SIMULATION_STATUS_SUCCEEDED = 1;
+  SIMULATION_STATUS_FAILED = 2;
+  SIMULATION_STATUS_INVALID_TRANSACTION = 3;
+  SIMULATION_STATUS_BANK_NOT_AVAILABLE = 4;
+  SIMULATION_STATUS_SERVER_OVERLOADED = 5;
+  SIMULATION_STATUS_INTERNAL_ERROR = 6;
+}
+
+message TransactionReturnData {
+  bytes program_id = 1;
+  bytes data = 2;
+}

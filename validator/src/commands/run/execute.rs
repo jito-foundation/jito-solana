@@ -813,6 +813,14 @@ pub fn execute(
         new_hard_forks: hardforks_of(matches, "hard_forks"),
         rpc_config: run_args.json_rpc_config,
         on_start_geyser_plugin_config_files,
+        transaction_simulation_ipc_path: matches
+            .value_of("transaction_simulation_ipc")
+            .map(PathBuf::from),
+        transaction_simulation_ipc_workers: value_t_or_exit!(
+            matches,
+            "transaction_simulation_ipc_workers",
+            usize
+        ),
         geyser_plugin_always_enabled: matches.is_present("geyser_plugin_always_enabled"),
         rpc_addrs: value_t!(matches, "rpc_port", u16).ok().map(|rpc_port| {
             (
