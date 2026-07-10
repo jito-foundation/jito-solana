@@ -34,7 +34,8 @@ use {
     solana_measure::{measure::Measure, measure_us},
     solana_pubkey::Pubkey,
     solana_reward_info::RewardType,
-    solana_stake_interface::{stake_history::StakeHistory, state::Delegation},
+    solana_stake_history::StakeHistory,
+    solana_stake_interface::state::Delegation,
     solana_sysvar::epoch_rewards::EpochRewards,
     std::sync::{
         Arc,

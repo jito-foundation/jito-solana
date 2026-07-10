@@ -20,10 +20,8 @@ use {
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_reward_info::RewardType,
-    solana_stake_interface::{
-        stake_history::StakeHistory,
-        state::{Delegation, StakeStateV2},
-    },
+    solana_stake_history::StakeHistory,
+    solana_stake_interface::state::{Delegation, StakeStateV2},
     std::sync::{Arc, atomic::Ordering::Relaxed},
     thiserror::Error,
 };
@@ -428,9 +426,9 @@ mod tests {
         solana_hash::Hash,
         solana_native_token::LAMPORTS_PER_SOL,
         solana_reward_info::RewardType,
+        solana_stake_history::StakeHistoryEntry,
         solana_stake_interface::{
             stake_flags::StakeFlags,
-            stake_history::StakeHistoryEntry,
             state::{Meta, Stake},
         },
         solana_sysvar as sysvar,
