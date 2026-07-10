@@ -1004,7 +1004,7 @@ impl BlockEngineStage {
             warn!("can't connect to block_engine. missing block_engine_url.");
             return false;
         }
-        if let Err(e) = Endpoint::from_str(&config.block_engine_url) {
+        if let Err(e) = Self::get_endpoint(&config.block_engine_url) {
             error!("can't connect to block engine. error creating block engine endpoint - {e}");
             return false;
         }
@@ -1081,5 +1081,27 @@ impl BlockEngineStage {
             block_builder_commission: block_builder_info.commission,
         }));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(block_engine_url: &str) -> BlockEngineConfig {
+        BlockEngineConfig {
+            block_engine_url: block_engine_url.to_string(),
+            ..BlockEngineConfig::default()
+        }
+    }
+
+    #[test]
+    fn block_engine_config_validation_uses_runtime_endpoint_builder() {
+        assert!(BlockEngineStage::is_valid_block_engine_config(&config(
+            "https://localhost:443"
+        )));
+        assert!(!BlockEngineStage::is_valid_block_engine_config(&config(
+            "not a valid url"
+        )));
     }
 }
