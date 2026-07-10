@@ -6956,7 +6956,6 @@ dependencies = [
 name = "solana-fee"
 version = "4.3.0-alpha.0"
 dependencies = [
- "agave-feature-set",
  "solana-fee-structure",
  "solana-svm-transaction",
 ]
