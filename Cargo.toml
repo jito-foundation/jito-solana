@@ -324,6 +324,7 @@ quinn = "0.11.11"
 rand = "0.9.4"
 rand_chacha = "0.9.0"
 rayon = "1.12.0"
+rcgen = "0.14.8"
 reed-solomon-erasure = "6.0.0"
 regex = "1.12.4"
 reqwest = { version = "0.12.28", default-features = false }
