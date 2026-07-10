@@ -615,7 +615,7 @@ fn test_simulate_bundle() {
     agave_logger::setup();
 
     let mint_keypair = Keypair::new();
-    let validator = TestValidatorGenesis::default()
+    let validator = TestValidatorGenesis::default_for_tests()
         .fee_rate_governor(FeeRateGovernor::new(0, 0))
         .start_with_mint_address(mint_keypair.pubkey(), SocketAddrSpace::Unspecified)
         .expect("validator start failed");
