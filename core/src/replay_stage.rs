@@ -280,11 +280,12 @@ impl ProcessActiveBanksContext {
     /// soft dead-slot transition.
     fn dead_slot_context<'a>(
         &'a self,
-        root: Slot,
         duplicate_slots_to_repair: &'a mut DuplicateSlotsToRepair,
         purge_repair_slot_counter: &'a mut PurgeRepairSlotCounter,
         tbft_structs: Option<&'a mut TowerBFTStructures>,
     ) -> DeadSlotContext<'a> {
+        let root = self.bank_forks.read().unwrap().root();
+
         DeadSlotContext {
             notifications: self.dead_slot_notifications(),
             duplicate: DeadSlotDuplicateContext {
@@ -3854,14 +3855,17 @@ impl ReplayStage {
                         continue;
                     }
                     Err(err) => {
-                        let root = bank_forks.read().unwrap().root();
-                        let mut dead_slot_context = process_active_banks_context.dead_slot_context(
-                            root,
-                            duplicate_slots_to_repair,
-                            purge_repair_slot_counter,
-                            tbft_structs.as_deref_mut(),
+                        mark_replay_dead_slot(
+                            bank,
+                            err,
+                            progress,
+                            &mut process_active_banks_context.dead_slot_context(
+                                duplicate_slots_to_repair,
+                                purge_repair_slot_counter,
+                                tbft_structs.as_deref_mut(),
+                            ),
                         );
-                        mark_replay_dead_slot(bank, err, progress, &mut dead_slot_context);
+
                         // don't try to run the below logic to check if the bank is completed
                         continue;
                     }
@@ -3930,14 +3934,16 @@ impl ReplayStage {
                     },
                 );
                 if let Err(err) = replay_res.and(verify_res) {
-                    let root = bank_forks.read().unwrap().root();
-                    let mut dead_slot_context = process_active_banks_context.dead_slot_context(
-                        root,
-                        duplicate_slots_to_repair,
-                        purge_repair_slot_counter,
-                        tbft_structs.as_deref_mut(),
+                    mark_replay_dead_slot(
+                        bank,
+                        &err,
+                        progress,
+                        &mut process_active_banks_context.dead_slot_context(
+                            duplicate_slots_to_repair,
+                            purge_repair_slot_counter,
+                            tbft_structs.as_deref_mut(),
+                        ),
                     );
-                    mark_replay_dead_slot(bank, &err, progress, &mut dead_slot_context);
                     // don't try to run the remaining normal processing for the completed bank
                     continue;
                 }
@@ -3994,13 +4000,6 @@ impl ReplayStage {
                         warn!("Unable to write bank hash details file: {err}");
                     }
 
-                    let root = bank_forks.read().unwrap().root();
-                    let mut dead_slot_context = process_active_banks_context.dead_slot_context(
-                        root,
-                        duplicate_slots_to_repair,
-                        purge_repair_slot_counter,
-                        tbft_structs.as_deref_mut(),
-                    );
                     mark_replay_dead_slot(
                         bank,
                         &BlockstoreProcessorError::BankHashMismatch(
@@ -4009,7 +4008,11 @@ impl ReplayStage {
                             computed_hash,
                         ),
                         progress,
-                        &mut dead_slot_context,
+                        &mut process_active_banks_context.dead_slot_context(
+                            duplicate_slots_to_repair,
+                            purge_repair_slot_counter,
+                            tbft_structs.as_deref_mut(),
+                        ),
                     );
 
                     continue;
