@@ -2451,7 +2451,8 @@ impl ReplayStage {
                 return Ok(());
             }
 
-            let Some(location) = blockstore.get_block_location(ancestor_slot, ancestor_block_id)?
+            let Some((slot_meta, location)) =
+                blockstore.get_slot_meta_for_block_id(ancestor_slot, ancestor_block_id)?
             else {
                 trace!(
                     "{my_pubkey}: Waiting for repair, deferring switch to block {ancestor_slot} \
@@ -2466,9 +2467,6 @@ impl ReplayStage {
                 blocks_to_switch.push((ancestor_slot, location));
             }
 
-            let slot_meta = blockstore
-                .meta_from_location(ancestor_slot, location)?
-                .expect("Full slots must contain SlotMeta");
             let parent_slot = slot_meta
                 .parent_slot
                 .expect("Full slots must have a parent");
