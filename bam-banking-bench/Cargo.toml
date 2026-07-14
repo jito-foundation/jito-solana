@@ -19,6 +19,7 @@ agave-banking-stage-ingress-types = { workspace = true }
 agave-logger = { workspace = true }
 arc-swap = { workspace = true }
 assert_matches = { workspace = true }
+bytes = { workspace = true }
 clap = { version = "3.1.8", features = ["derive", "cargo"] }
 crossbeam-channel = { workspace = true }
 jito-protos = { workspace = true }

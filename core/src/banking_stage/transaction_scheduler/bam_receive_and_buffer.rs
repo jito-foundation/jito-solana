@@ -20,7 +20,7 @@ use {
                     DisconnectedError, ReceivingStats, calculate_max_age,
                     contains_blacklisted_account,
                 },
-                transaction_state_container::{SharedBytes, StateContainer},
+                transaction_state_container::StateContainer,
             },
         },
     },
@@ -56,7 +56,6 @@ use {
     solana_svm_transaction::svm_message::SVMMessage,
     solana_transaction::sanitized::MessageHash,
     std::{
-        cmp::min,
         sync::{
             Arc, RwLock,
             atomic::{AtomicBool, AtomicU8, Ordering},
@@ -67,7 +66,7 @@ use {
 };
 
 type PrevalidationResult = Result<(usize, bool, u32, u64), (Reason, u32)>;
-type VerifyResult = Result<(Vec<SharedBytes>, bool, u32, u64), (Reason, u32)>;
+type VerifyResult = Result<(Vec<Bytes>, bool, u32, u64), (Reason, u32)>;
 
 pub struct BamReceiveAndBuffer {
     bam_enabled: Arc<AtomicU8>,
@@ -80,10 +79,7 @@ pub struct BamReceiveAndBuffer {
 
 struct ParsedBatch {
     pub txns_max_age: SmallVec<
-        [(
-            RuntimeTransaction<ResolvedTransactionView<SharedBytes>>,
-            MaxAge,
-        ); MAX_PACKETS_PER_BUNDLE],
+        [(RuntimeTransaction<ResolvedTransactionView<Bytes>>, MaxAge); MAX_PACKETS_PER_BUNDLE],
     >,
     pub revert_on_error: bool,
     pub max_schedule_slot: u64,
@@ -190,7 +186,7 @@ impl BamReceiveAndBuffer {
 
             let (deserialize_stats, duration_us) = measure_us!(Self::batch_verify(
                 &sigverify_thread_pool,
-                &recv_buffer,
+                &mut recv_buffer,
                 current_slot,
                 &mut metrics,
                 &mut prevalidated,
@@ -281,7 +277,7 @@ impl BamReceiveAndBuffer {
     }
 
     fn parse_batch(
-        verified_batch: Vec<SharedBytes>,
+        verified_batch: Vec<Bytes>,
         seq_id: u32,
         revert_on_error: bool,
         max_schedule_slot: u64,
@@ -644,94 +640,45 @@ impl BamReceiveAndBuffer {
 
     fn batch_verify(
         sigverify_thread_pool: &rayon::ThreadPool,
-        atomic_txn_batches: &[AtomicTxnBatch],
+        atomic_txn_batches: &mut [AtomicTxnBatch],
         current_slot: Slot,
         metrics: &mut BamReceiveAndBufferMetrics,
         prevalidated: &mut Vec<PrevalidationResult>,
         packet_batches: &mut Vec<solana_perf::packet::PacketBatch>,
         results: &mut Vec<VerifyResult>,
     ) -> ReceivingStats {
-        fn proto_packet_to_packet(from_packet: &Packet) -> BytesPacket {
-            let data_len = from_packet.data.len();
-            let mut to_packet = BytesPacket::new(
-                Bytes::copy_from_slice(&from_packet.data[0..min(PACKET_DATA_SIZE, data_len)]),
-                Meta::default(),
-            );
-
-            if data_len > PACKET_DATA_SIZE {
-                to_packet.meta_mut().set_discard(true);
-                return to_packet;
-            }
-
-            to_packet.meta_mut().size = data_len;
-            to_packet.meta_mut().set_discard(false);
-
-            if let Some(meta) = &from_packet.meta {
-                if let Some(flags) = &meta.flags {
-                    if flags.simple_vote_tx {
-                        to_packet
-                            .meta_mut()
-                            .flags
-                            .insert(PacketFlags::SIMPLE_VOTE_TX);
-                    }
-                }
-            }
-            to_packet
-        }
-
-        fn pkt_to_shared_bytes(
-            solana_packet_ref: &solana_perf::packet::PacketRef,
-            i: usize,
-            seq_id: u32,
-            metrics: &mut BamReceiveAndBufferMetrics,
-        ) -> Result<SharedBytes, (Reason, u32)> {
-            if solana_packet_ref.meta().discard() {
-                let reason = DeserializationErrorReason::SanitizeError;
-                return Err((
-                    Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: i as u32,
-                            reason: reason as i32,
-                        },
-                    ),
-                    seq_id,
-                ));
-            }
-
-            metrics
-                .sigverify_metrics
-                .increment_total_packets_verified(1);
-
-            let Some(data) = solana_packet_ref.data(..) else {
-                let reason = DeserializationErrorReason::SanitizeError;
-                return Err((
-                    Reason::DeserializationError(
-                        jito_protos::proto::bam_types::DeserializationError {
-                            index: i as u32,
-                            reason: reason as i32,
-                        },
-                    ),
-                    seq_id,
-                ));
-            };
-
-            Ok(SharedBytes::new(data.to_vec()))
-        }
-
-        let mut stats = ReceivingStats::default();
-
-        let preverify_stats =
-            Self::prevalidate_batches(atomic_txn_batches, current_slot, prevalidated);
-        stats.accumulate(preverify_stats);
+        let stats = Self::prevalidate_batches(atomic_txn_batches, current_slot, prevalidated);
 
         packet_batches.clear();
         packet_batches.reserve(prevalidated.len());
         let mut packet_count = 0;
         prevalidated.iter().flatten().for_each(|result| {
-            let solana_packet_batch: Vec<_> = atomic_txn_batches[result.0]
+            let atomic_txn_batch = &mut atomic_txn_batches[result.0];
+            let solana_packet_batch: Vec<_> = atomic_txn_batch
                 .packets
-                .iter()
-                .map(proto_packet_to_packet)
+                .drain(..)
+                .map(|from_packet| {
+                    let Packet { data, meta } = from_packet;
+                    let data_len = data.len();
+                    if data_len > PACKET_DATA_SIZE {
+                        let mut to_packet = BytesPacket::new(Bytes::new(), Meta::default());
+                        to_packet.meta_mut().set_discard(true);
+                        return to_packet;
+                    }
+
+                    let mut to_packet = BytesPacket::new(data, Meta::default());
+                    to_packet.meta_mut().size = data_len;
+
+                    if let Some(meta) = meta {
+                        if meta.flags.is_some_and(|flags| flags.simple_vote_tx) {
+                            to_packet
+                                .meta_mut()
+                                .flags
+                                .insert(PacketFlags::SIMPLE_VOTE_TX);
+                        }
+                    }
+                    to_packet
+                })
                 .collect();
             packet_count += solana_packet_batch.len();
             packet_batches.push(solana_perf::packet::PacketBatch::Bytes(
@@ -761,15 +708,34 @@ impl BamReceiveAndBuffer {
 
         results.clear();
         results.reserve(prevalidated.len());
-        let mut packet_batch_iter = packet_batches.iter();
+        let mut packet_batch_iter = packet_batches.drain(..);
         for pre_result in prevalidated.drain(..) {
             let result = pre_result.and_then(|(_, revert_on_error, seq_id, max_schedule_slot)| {
                 let batch = packet_batch_iter.next().unwrap();
-                let deserialized = batch
-                    .iter()
-                    .enumerate()
-                    .map(|(i, pkt)| pkt_to_shared_bytes(&pkt, i, seq_id, metrics))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let solana_perf::packet::PacketBatch::Bytes(batch) = batch else {
+                    unreachable!("BAM sigverify builds Bytes packet batches");
+                };
+
+                let mut deserialized = Vec::with_capacity(batch.len());
+                for (i, pkt) in batch.iter().enumerate() {
+                    if pkt.meta().discard() {
+                        return Err((
+                            Reason::DeserializationError(
+                                jito_protos::proto::bam_types::DeserializationError {
+                                    index: i as u32,
+                                    reason: DeserializationErrorReason::SanitizeError as i32,
+                                },
+                            ),
+                            seq_id,
+                        ));
+                    }
+
+                    metrics
+                        .sigverify_metrics
+                        .increment_total_packets_verified(1);
+
+                    deserialized.push(pkt.buffer().clone());
+                }
 
                 Ok((deserialized, revert_on_error, seq_id, max_schedule_slot))
             });
@@ -785,7 +751,7 @@ const ATOMIC_TXN_BATCH_BURST: usize = 128;
 const TIMEOUT: Duration = Duration::from_millis(1);
 
 impl ReceiveAndBuffer for BamReceiveAndBuffer {
-    type Transaction = RuntimeTransaction<ResolvedTransactionView<SharedBytes>>;
+    type Transaction = RuntimeTransaction<ResolvedTransactionView<Bytes>>;
     type Container = TransactionStateContainer<Self::Transaction>;
 
     fn receive_and_buffer_packets(
@@ -1115,7 +1081,7 @@ mod tests {
     ) -> (
         Arc<AtomicBool>,
         BamReceiveAndBuffer,
-        TransactionStateContainer<RuntimeTransaction<ResolvedTransactionView<SharedBytes>>>,
+        TransactionStateContainer<RuntimeTransaction<ResolvedTransactionView<Bytes>>>,
         tokio::sync::mpsc::Receiver<BamOutboundMessage>,
     ) {
         let exit: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -1159,7 +1125,7 @@ mod tests {
     }
 
     fn run_batch_verify(
-        batches: &[AtomicTxnBatch],
+        mut batches: Vec<AtomicTxnBatch>,
         current_slot: Slot,
         metrics: &mut BamReceiveAndBufferMetrics,
     ) -> (Vec<VerifyResult>, ReceivingStats) {
@@ -1172,7 +1138,7 @@ mod tests {
         let mut results = Vec::new();
         let stats = BamReceiveAndBuffer::batch_verify(
             &thread_pool,
-            batches,
+            &mut batches,
             current_slot,
             metrics,
             &mut prevalidated,
@@ -1208,7 +1174,10 @@ mod tests {
         let data = bincode::serialize(&transaction).expect("serializes");
         let bundle = AtomicTxnBatch {
             seq_id: 1,
-            packets: vec![Packet { data, meta: None }],
+            packets: vec![Packet {
+                data: data.into(),
+                meta: None,
+            }],
             max_schedule_slot: Slot::MAX,
         };
         sender.send(bundle).unwrap();
@@ -1237,7 +1206,7 @@ mod tests {
         let bundle = AtomicTxnBatch {
             seq_id: 1,
             packets: vec![Packet {
-                data: vec![],
+                data: Bytes::new(),
                 meta: None,
             }],
             max_schedule_slot: Slot::MAX,
@@ -1272,14 +1241,15 @@ mod tests {
                     1,
                     bank_forks.read().unwrap().root_bank().last_blockhash(),
                 ))
-                .unwrap(),
+                .unwrap()
+                .into(),
                 meta: None,
             }],
             max_schedule_slot: Slot::MAX,
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(&[bundle], Slot::MAX, &mut stats);
+        let (results, _batch_stats) = run_batch_verify(vec![bundle], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
@@ -1299,7 +1269,7 @@ mod tests {
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+        let (results, batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
@@ -1316,14 +1286,14 @@ mod tests {
         let batch = AtomicTxnBatch {
             seq_id: 1,
             packets: vec![Packet {
-                data: vec![0; PACKET_DATA_SIZE + 1],
+                data: vec![0; PACKET_DATA_SIZE + 1].into(),
                 meta: None,
             }],
             max_schedule_slot: Slot::MAX,
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
@@ -1346,14 +1316,15 @@ mod tests {
                     1,
                     bank_forks.read().unwrap().root_bank().last_blockhash(),
                 ))
-                .unwrap(),
+                .unwrap()
+                .into(),
                 meta: None,
             }],
             max_schedule_slot: Slot::MAX,
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
@@ -1390,7 +1361,8 @@ mod tests {
                         1,
                         bank_forks.read().unwrap().root_bank().last_blockhash(),
                     ))
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                     meta: None,
                 },
                 Packet {
@@ -1400,7 +1372,8 @@ mod tests {
                         1,
                         bank_forks.read().unwrap().root_bank().last_blockhash(),
                     ))
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                     meta: None,
                 },
             ],
@@ -1408,7 +1381,7 @@ mod tests {
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
@@ -1445,7 +1418,8 @@ mod tests {
                         1,
                         bank_forks.read().unwrap().root_bank().last_blockhash(),
                     ))
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                     meta: None,
                 },
                 Packet {
@@ -1455,7 +1429,8 @@ mod tests {
                         1,
                         bank_forks.read().unwrap().root_bank().last_blockhash(),
                     ))
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                     meta: Some(jito_protos::proto::bam_types::Meta {
                         flags: Some(jito_protos::proto::bam_types::PacketFlags {
                             revert_on_error: true,
@@ -1469,7 +1444,7 @@ mod tests {
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, batch_stats) = run_batch_verify(&[bundle], Slot::MAX, &mut stats);
+        let (results, batch_stats) = run_batch_verify(vec![bundle], Slot::MAX, &mut stats);
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
         assert_eq!(batch_stats.num_dropped_without_parsing, 1);
@@ -1494,14 +1469,15 @@ mod tests {
                     100,
                     bank_forks.read().unwrap().root_bank().last_blockhash(),
                 ))
-                .unwrap(),
+                .unwrap()
+                .into(),
                 meta: None,
             }],
             max_schedule_slot: Slot::MAX,
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
@@ -1559,14 +1535,14 @@ mod tests {
         let batch = AtomicTxnBatch {
             seq_id: 1,
             packets: vec![Packet {
-                data: vote_data,
+                data: vote_data.into(),
                 meta: Some(meta),
             }],
             max_schedule_slot: Slot::MAX,
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
@@ -1604,14 +1580,15 @@ mod tests {
                     1,
                     bank_forks.read().unwrap().root_bank().last_blockhash(),
                 ))
-                .unwrap(),
+                .unwrap()
+                .into(),
                 meta: None,
             }],
             max_schedule_slot: 0,
         };
 
         let mut stats = BamReceiveAndBufferMetrics::default();
-        let (results, _batch_stats) = run_batch_verify(&[batch], Slot::MAX, &mut stats);
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
