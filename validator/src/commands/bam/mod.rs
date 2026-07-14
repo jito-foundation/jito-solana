@@ -20,7 +20,7 @@ const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 
 /// Empty values disable BAM. Missing schemes default to HTTP, while omitted
 /// ports default to 50055 for HTTP and 50056 for HTTPS. Explicit ports must be
-/// non-zero and non-empty.
+/// non-zero.
 pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlError> {
     matches
         .value_of("bam_url")
@@ -71,10 +71,11 @@ pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlErr
             };
 
             match port {
-                Some("") => Err(BamUrlError::InvalidUrlFormat {
-                    url: url_str.to_owned(),
-                    source: ParseError::InvalidPort,
-                }),
+                Some("") => Ok(format!(
+                    "{}{default_port}{}",
+                    &parse_target[..authority_end],
+                    &parse_target[authority_end..]
+                )),
                 Some(_) => Ok(parse_target),
                 None => Ok(format!(
                     "{}:{default_port}{}",
@@ -174,6 +175,8 @@ mod tests {
     #[test_case("https://bam.example.com", "https://bam.example.com:50056", 50056 ; "https omitted")]
     #[test_case("http://bam.example.com:80", "http://bam.example.com:80", 80 ; "http explicit")]
     #[test_case("https://bam.example.com:443", "https://bam.example.com:443", 443 ; "https explicit")]
+    #[test_case("http://host.com:", "http://host.com:50055", 50055 ; "http empty")]
+    #[test_case("https://host.com:", "https://host.com:50056", 50056 ; "https empty")]
     fn test_extract_bam_url_default_port(input: &str, expected: &str, expected_port: u16) {
         let matches = create_test_matches(Some(input));
         let url = extract_bam_url(&matches).unwrap().unwrap();
@@ -220,8 +223,6 @@ mod tests {
     #[test_case("host.com:-1", ParseError::InvalidPort)]
     #[test_case("host.com:0x80", ParseError::InvalidPort)]
     #[test_case("host.com:123x", ParseError::InvalidPort)]
-    #[test_case("http://host.com:", ParseError::InvalidPort)]
-    #[test_case("https://host.com:", ParseError::InvalidPort)]
     #[test_case("http://host.com:0", ParseError::InvalidPort)]
     #[test_case("https://host.com:0", ParseError::InvalidPort)]
     // Invalid IPv6 addresses
