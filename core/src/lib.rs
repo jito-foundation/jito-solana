@@ -77,24 +77,18 @@ extern crate solana_frozen_abi_macro;
 extern crate assert_matches;
 
 use {
-    bytes::Bytes,
     solana_packet::{Meta, PACKET_DATA_SIZE, PacketFlags},
     solana_perf::packet::BytesPacket,
-    std::{
-        cmp::min,
-        net::{IpAddr, Ipv4Addr},
-    },
+    std::net::{IpAddr, Ipv4Addr},
 };
 
 const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
 // NOTE: last profiled at around 180ns
 pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPacket {
-    let copy_len = min(PACKET_DATA_SIZE, p.data.len());
-    let mut packet = BytesPacket::new(
-        Bytes::copy_from_slice(&p.data[0..copy_len]),
-        Meta::default(),
-    );
+    let mut data = p.data;
+    data.truncate(PACKET_DATA_SIZE);
+    let mut packet = BytesPacket::new(data, Meta::default());
 
     if let Some(meta) = p.meta {
         packet.meta_mut().size = meta.size as usize;

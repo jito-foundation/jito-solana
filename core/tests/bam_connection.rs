@@ -576,7 +576,7 @@ mod bam_connection_tests {
             seq_id: 42,
             max_schedule_slot: 100,
             packets: vec![Packet {
-                data: vec![1, 2, 3],
+                data: vec![1, 2, 3].into(),
                 meta: None,
             }],
         };

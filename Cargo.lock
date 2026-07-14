@@ -316,6 +316,7 @@ version = "4.1.1"
 dependencies = [
  "agave-transaction-view",
  "bincode",
+ "bytes",
  "criterion",
  "solana-hash 4.3.0",
  "solana-instruction",
@@ -1298,6 +1299,7 @@ dependencies = [
  "agave-logger",
  "arc-swap",
  "assert_matches",
+ "bytes",
  "clap 3.2.23",
  "crossbeam-channel",
  "jito-protos",
