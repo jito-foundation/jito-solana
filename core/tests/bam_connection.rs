@@ -309,8 +309,8 @@ fn create_test_cluster_info() -> Arc<ClusterInfo> {
 }
 
 fn create_channels() -> (
-    crossbeam_channel::Sender<AtomicTxnBatch>,
-    crossbeam_channel::Receiver<AtomicTxnBatch>,
+    crossbeam_channel::Sender<MultipleAtomicTxnBatch>,
+    crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
     mpsc::Sender<BamOutboundMessage>,
     Option<mpsc::Receiver<BamOutboundMessage>>,
 ) {
@@ -584,7 +584,9 @@ mod bam_connection_tests {
 
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let received = batch_rx.try_recv().expect("should receive batch");
+        let received_batches = batch_rx.try_recv().expect("should receive batch");
+        assert_eq!(received_batches.batches.len(), 1);
+        let received = &received_batches.batches[0];
         assert_eq!(received.seq_id, 42);
         assert_eq!(received.max_schedule_slot, 100);
 
