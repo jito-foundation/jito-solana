@@ -2,6 +2,7 @@
 pull_request_rules:
   - name: label changes from community
     conditions:
+      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -13,6 +14,7 @@ pull_request_rules:
           - need:merge-assist
   - name: request review for community changes
     conditions:
+      - author≠@agave-external-triage
       - author≠@anza
       - author≠mergify[bot]
       - author≠dependabot[bot]
@@ -27,7 +29,18 @@ pull_request_rules:
     actions:
       request_reviews:
         teams:
-          - "@anza-xyz/community-pr-subscribers"
+          - "@jito-foundation/jito-solana"
+  - name: label changes from monorepo-triage
+    conditions:
+      - author≠@anza
+      - author≠mergify[bot]
+      - author≠dependabot[bot]
+      - author≠github-actions[bot]
+      - author=@agave-external-triage
+    actions:
+      label:
+        add:
+          - need:merge-assist
   - name: automatic merge (squash) on CI success
     conditions:
       - and:
@@ -36,10 +49,37 @@ pull_request_rules:
         - label=automerge
         - label!=no-automerge
         - or:
+          # only require docs checks if docs files changed
+          - -files~=^docs/
+          - status-success=build & deploy docs
+        - or:
           - -files~=(\.rs|Cargo\.toml|Cargo\.lock|\.github/scripts/cargo-clippy-before-script\.sh|\.github/workflows/cargo\.yml)$
           - or:
             - check-success=clippy-nightly (macos-latest)
             - check-success=clippy-nightly (macos-latest-large)
+        - or:
+          - -files~=(\.rs|Cargo\.toml|Cargo\.lock|cargo-build-sbf|cargo-test-sbf|ci/downstream-projects/run-spl\.sh|\.github/workflows/downstream-project-spl\.yml)$
+          - and:
+            - status-success=check (associated-token-account)
+            - status-success=check (feature-proposal)
+            - status-success=check (instruction-padding)
+            - status-success=check (memo)
+            - status-success=check (record)
+            - status-success=check (single-pool)
+            - status-success=check (slashing)
+            - status-success=check (stake-pool)
+            - status-success=check (token-2022)
+            - status-success=test_cli (single-pool)
+            - status-success=test_cli (token-2022)
+            - status-success=cargo-test-sbf (associated-token-account)
+            - status-success=cargo-test-sbf (feature-proposal)
+            - status-success=cargo-test-sbf (instruction-padding)
+            - status-success=cargo-test-sbf (memo)
+            - status-success=cargo-test-sbf (record)
+            - status-success=cargo-test-sbf (single-pool)
+            - status-success=cargo-test-sbf (slashing)
+            - status-success=cargo-test-sbf (stake-pool)
+            - status-success=cargo-test-sbf (token-2022)
         - or:
           - -files~=(Cargo\.toml|.github/workflows/crate-check\.yml|ci/check-crates\.sh)$
           - check-success=crate check
@@ -60,6 +100,7 @@ pull_request_rules:
         message: automerge label removed due to a CI failure
   - name: v3.1 feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v3.1
       - label=feature-gate
     actions:
@@ -74,6 +115,7 @@ pull_request_rules:
           - v3.1
   - name: v3.1 non-feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v3.1
       - label!=feature-gate
     actions:
@@ -83,8 +125,23 @@ pull_request_rules:
         ignore_conflicts: true
         branches:
           - v3.1
+  - name: v3.1 backport warning comment
+    conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v3.1
+    actions:
+      comment:
+        message: >
+          Backports to the stable branch are to be avoided unless absolutely
+          necessary for fixing bugs, security issues, and perf regressions.
+          Changes intended for backport should be structured such that a
+          minimum effective diff can be committed separately from any
+          refactoring, plumbing, cleanup, etc that are not strictly
+          necessary to achieve the goal. Any of the latter should go only
+          into master and ride the normal stabilization schedule.
   - name: v4.0 feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.0
       - label=feature-gate
     actions:
@@ -98,6 +155,7 @@ pull_request_rules:
           - v4.0
   - name: v4.0 non-feature-gate backport
     conditions:
+      - label=disabled # backports handled by .github/workflows/backport.yml
       - label=v4.0
       - label!=feature-gate
     actions:
@@ -107,40 +165,14 @@ pull_request_rules:
         ignore_conflicts: true
         branches:
           - v4.0
-  - name: v4.1 feature-gate backport
+  - name: v4.0 backport warning comment
     conditions:
-      - label=v4.1
-      - label=feature-gate
-    actions:
-      backport:
-        assignees: *BackportAssignee
-        title: "{{ destination_branch }}: {{ title }} (backport of #{{ number }})"
-        ignore_conflicts: true
-        labels:
-          - feature-gate
-        branches:
-          - v4.1
-  - name: v4.1 non-feature-gate backport
-    conditions:
-      - label=v4.1
-      - label!=feature-gate
-    actions:
-      backport:
-        assignees: *BackportAssignee
-        title: "{{ destination_branch }}: {{ title }} (backport of #{{ number }})"
-        ignore_conflicts: true
-        branches:
-          - v4.1
-  - name: backport warning comment
-    conditions:
-      - or:
-        - label=v3.1
-        - label=v4.0
-        - label=v4.1
+      - label=disabled # backports handled by .github/workflows/backport.yml
+      - label=v4.0
     actions:
       comment:
         message: >
-          Backports to release branches are to be avoided unless absolutely
+          Backports to the beta branch are to be avoided unless absolutely
           necessary for fixing bugs, security issues, and perf regressions.
           Changes intended for backport should be structured such that a
           minimum effective diff can be committed separately from any
@@ -160,8 +192,8 @@ pull_request_rules:
         message: |
           If this PR represents a change to the public RPC API:
 
-          1. Make sure it includes a complementary update to `rpc-client/` ([example](https://github.com/anza-xyz/agave/pull/2036/files))
-          2. Open a follow-up PR to update the JavaScript client `@solana/kit` ([example](https://github.com/anza-xyz/kit/pull/974/files))
+          1. Make sure it includes a complementary update to `rpc-client/` ([example](https://github.com/solana-labs/solana/pull/29558/files))
+          2. Open a follow-up PR to update the JavaScript client `@solana/kit` ([example](https://github.com/solana-labs/solana-web3.js/pull/2868/files))
 
           Thank you for keeping the RPC clients in sync with the server API @{{author}}.
   - name: Reminder to add Firedancer team to changes in `programs/`
@@ -190,4 +222,4 @@ commands_restrictions:
   # Restrict `copy` access to Core Contributors
   copy:
     conditions:
-    - author=@anza
+    - sender=@jito-foundation/jito-solana

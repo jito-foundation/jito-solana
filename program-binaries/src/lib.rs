@@ -19,6 +19,13 @@ mod spl_memo_4_0 {
     solana_pubkey::declare_id!("Memo4c2pN8afCj432Lb7RMVKi9PbQnnW7ewFFaV3oAH");
 }
 
+pub mod jito_tip_payment {
+    solana_pubkey::declare_id!("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt");
+}
+pub mod jito_tip_distribution {
+    solana_pubkey::declare_id!("4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7");
+}
+
 static SPL_PROGRAMS: &[(Pubkey, Pubkey, &[u8])] = &[
     (
         spl_generic_token::token::ID,
@@ -49,6 +56,16 @@ static SPL_PROGRAMS: &[(Pubkey, Pubkey, &[u8])] = &[
         spl_generic_token::associated_token_account::ID,
         solana_sdk_ids::bpf_loader::ID,
         include_bytes!("programs/spl_associated_token_account-1.1.1.so"),
+    ),
+    (
+        jito_tip_distribution::ID,
+        solana_sdk_ids::bpf_loader::ID,
+        include_bytes!("programs/spl-jito_tip_distribution-0.1.10.so"),
+    ),
+    (
+        jito_tip_payment::ID,
+        solana_sdk_ids::bpf_loader::ID,
+        include_bytes!("programs/spl-jito_tip_payment-0.1.10.so"),
     ),
 ];
 
