@@ -2,7 +2,10 @@
 // Keeps track of last received heartbeat 'behind the scenes' and will mark itself as unhealthy if no heartbeat is received
 
 use {
-    crate::bam_dependencies::{BamOutboundMessage, v0_to_versioned_proto},
+    crate::{
+        bam_dependencies::{BamOutboundMessage, v0_to_versioned_proto},
+        tonic_endpoint,
+    },
     jito_protos::proto::{
         bam_api::{
             AuthChallengeRequest, ConfigRequest, ConfigResponse, SchedulerMessage,
@@ -30,7 +33,7 @@ use {
         time::{interval, timeout},
     },
     tokio_stream::wrappers::ReceiverStream,
-    tonic::transport::{ClientTlsConfig, Endpoint},
+    tonic::transport::Endpoint,
 };
 
 pub struct BamConnection {
@@ -463,12 +466,7 @@ impl BamConnection {
     }
 
     fn endpoint_from_url(url: &str) -> Result<Endpoint, TryInitError> {
-        let mut endpoint =
-            Endpoint::from_shared(url.to_owned())?.tcp_keepalive(Some(Duration::from_secs(60)));
-        if url.starts_with("https") {
-            endpoint = endpoint.tls_config(ClientTlsConfig::new().with_enabled_roots())?;
-        }
-        Ok(endpoint)
+        Ok(tonic_endpoint::endpoint_from_url(url)?)
     }
 }
 
