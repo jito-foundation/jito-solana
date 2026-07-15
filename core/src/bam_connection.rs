@@ -14,7 +14,8 @@ use {
             scheduler_response::VersionedMsg, scheduler_response_v0::Resp,
         },
         bam_types::{
-            AtomicTxnBatch, AuthProof, MultipleAtomicTxnBatchResult, Pong, ValidatorHeartBeat,
+            AuthProof, MultipleAtomicTxnBatch, MultipleAtomicTxnBatchResult, Pong,
+            ValidatorHeartBeat,
         },
     },
     solana_gossip::cluster_info::ClusterInfo,
@@ -37,6 +38,7 @@ use {
 
 pub struct BamConnection {
     config: Arc<Mutex<Option<ConfigResponse>>>,
+    config_version: Arc<AtomicU64>,
     connection_task: tokio::task::JoinHandle<mpsc::Receiver<BamOutboundMessage>>,
     is_healthy: Arc<AtomicBool>,
     url: String,
@@ -62,7 +64,7 @@ impl BamConnection {
     pub async fn try_init(
         url: String,
         cluster_info: Arc<ClusterInfo>,
-        batch_sender: crossbeam_channel::Sender<AtomicTxnBatch>,
+        batch_sender: crossbeam_channel::Sender<MultipleAtomicTxnBatch>,
         outbound_receiver: &mut Option<mpsc::Receiver<BamOutboundMessage>>,
     ) -> Result<Self, TryInitError> {
         // Create connection and inbound and outbound streams
@@ -90,9 +92,9 @@ impl BamConnection {
             .expect("BAM outbound receiver already in use");
 
         // Create data structures for the connection task
-        let metrics = Arc::new(BamConnectionMetrics::default());
         let is_healthy = Arc::new(AtomicBool::new(false));
         let config = Arc::new(Mutex::new(None));
+        let config_version = Arc::new(AtomicU64::new(0));
         let connection_exit = Arc::new(AtomicBool::new(false));
 
         // Start the connection task
@@ -102,15 +104,16 @@ impl BamConnection {
             outbound_sender,
             validator_client,
             config.clone(),
+            config_version.clone(),
             batch_sender,
             cluster_info,
-            metrics.clone(),
             is_healthy.clone(),
             outbound_receiver,
         ));
 
         Ok(Self {
             config,
+            config_version,
             connection_task,
             is_healthy,
             url,
@@ -125,12 +128,13 @@ impl BamConnection {
         outbound_sender: mpsc::Sender<SchedulerMessage>,
         mut validator_client: BamNodeApiClient<tonic::transport::channel::Channel>,
         config: Arc<Mutex<Option<ConfigResponse>>>,
-        batch_sender: crossbeam_channel::Sender<AtomicTxnBatch>,
+        config_version: Arc<AtomicU64>,
+        batch_sender: crossbeam_channel::Sender<MultipleAtomicTxnBatch>,
         cluster_info: Arc<ClusterInfo>,
-        metrics: Arc<BamConnectionMetrics>,
         is_healthy: Arc<AtomicBool>,
         mut outbound_receiver: mpsc::Receiver<BamOutboundMessage>,
     ) -> mpsc::Receiver<BamOutboundMessage> {
+        let mut metrics = BamConnectionMetrics::default();
         let mut last_heartbeat = None;
         let mut heartbeat_interval = interval(VALIDATOR_HEARTBEAT_INTERVAL);
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -173,15 +177,13 @@ impl BamConnection {
                                 .as_micros()).unwrap_or_default(),
                         })),
                     }));
-                    metrics.heartbeat_sent.fetch_add(1, Relaxed);
+                    metrics.heartbeat_sent += 1;
                 }
                 _ = metrics_and_health_check_interval.tick() => {
                     let is_healthy_now = last_heartbeat.is_some_and(|t: Instant| t.elapsed() < MAX_DURATION_BETWEEN_NODE_HEARTBEATS);
                     is_healthy.store(is_healthy_now, Relaxed);
                     if !is_healthy_now {
-                        metrics
-                            .unhealthy_connection_count
-                            .fetch_add(1, Relaxed);
+                        metrics.unhealthy_connection_count += 1;
                     }
 
                     metrics.report();
@@ -207,7 +209,8 @@ impl BamConnection {
                     // The first successful inbound scheduler message proves the auth'd stream was accepted.
                     if let Some(mut validator_client) = post_auth_client.take() {
                         let config = config.clone();
-                        let metrics = metrics.clone();
+                        let config_version = config_version.clone();
+                        let builder_config_received = metrics.builder_config_received.clone();
                         let (exit_sender, mut exit_receiver) = oneshot::channel();
                         refresh_config_exit_sender = Some(exit_sender);
                         refresh_config_task = Some(tokio::spawn(async move {
@@ -231,7 +234,8 @@ impl BamConnection {
                                 match result {
                                     Ok(Ok(response)) => {
                                         *config.lock().unwrap() = Some(response.into_inner());
-                                        metrics.builder_config_received.fetch_add(1, Relaxed);
+                                        config_version.fetch_add(1, Relaxed);
+                                        builder_config_received.fetch_add(1, Relaxed);
                                     }
                                     Ok(Err(e)) => error!("Failed to get config: {e:?}"),
                                     Err(_) => error!("Timed out getting config"),
@@ -243,14 +247,13 @@ impl BamConnection {
                     match inbound {
                         SchedulerResponseV0 { resp: Some(Resp::HeartBeat(_)), .. } => {
                             last_heartbeat = Some(Instant::now());
-                            metrics.heartbeat_received.fetch_add(1, Relaxed);
+                            metrics.heartbeat_received += 1;
                         }
                         SchedulerResponseV0 { resp: Some(Resp::MultipleAtomicTxnBatch(batches)), .. } => {
-                            for batch in batches.batches {
-                                metrics.bundle_received.fetch_add(1, Relaxed);
-                                if batch_sender.try_send(batch).is_err() {
-                                    metrics.bundle_forward_to_scheduler_fail.fetch_add(1, Relaxed);
-                                }
+                            let num_batches = batches.batches.len() as u64;
+                            metrics.bundle_received += num_batches;
+                            if num_batches > 0 && batch_sender.try_send(batches).is_err() {
+                                metrics.bundle_forward_to_scheduler_fail += num_batches;
                             }
                         }
                         SchedulerResponseV0 { resp: Some(Resp::Ping(ping)), .. } => {
@@ -258,9 +261,9 @@ impl BamConnection {
                                 msg: Some(Msg::Pong(Pong { id: ping.id })),
                             };
                             if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                                metrics.outbound_fail.fetch_add(1, Relaxed);
+                                metrics.outbound_fail += 1;
                             } else {
-                                metrics.outbound_sent.fetch_add(1, Relaxed);
+                                metrics.outbound_sent += 1;
                             }
                         }
                         _ => {}
@@ -291,30 +294,30 @@ impl BamConnection {
                                 }
                             }
 
-                            metrics.bundleresult_sent.fetch_add(results.len() as u64, Relaxed);
+                            metrics.bundleresult_sent += results.len() as u64;
                             let outbound = SchedulerMessageV0 {
                                 msg: Some(Msg::MultipleAtomicTxnBatchResult(
                                     MultipleAtomicTxnBatchResult { results },
                                 )),
                             };
                             if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                                metrics.outbound_fail.fetch_add(1, Relaxed);
+                                metrics.outbound_fail += 1;
                             } else {
-                                metrics.outbound_sent.fetch_add(1, Relaxed);
+                                metrics.outbound_sent += 1;
                             }
                             leader_state_to_send
                         }
                     };
 
                     if let Some(leader_state) = leader_state_to_send {
-                        metrics.leaderstate_sent.fetch_add(1, Relaxed);
+                        metrics.leaderstate_sent += 1;
                         let outbound = SchedulerMessageV0 {
                             msg: Some(Msg::LeaderState(leader_state)),
                         };
                         if outbound_sender.try_send(v0_to_versioned_proto(outbound)).is_err() {
-                            metrics.outbound_fail.fetch_add(1, Relaxed);
+                            metrics.outbound_fail += 1;
                         } else {
-                            metrics.outbound_sent.fetch_add(1, Relaxed);
+                            metrics.outbound_sent += 1;
                         }
                     }
 
@@ -362,7 +365,7 @@ impl BamConnection {
             if self.connection_task.is_finished() {
                 return false;
             }
-            if self.get_latest_config().is_some() {
+            if self.is_healthy() && self.config_version.load(Relaxed) > 0 {
                 return true;
             }
             std::thread::sleep(WAIT_SLEEP_DURATION);
@@ -390,6 +393,24 @@ impl BamConnection {
             return None;
         }
         self.config.lock().unwrap().clone()
+    }
+
+    pub fn get_latest_config_if_changed(
+        &self,
+        last_seen_version: &mut u64,
+    ) -> Option<ConfigResponse> {
+        if !self.is_healthy() {
+            return None;
+        }
+        let current_version = self.config_version.load(Relaxed);
+        if current_version == 0 || current_version == *last_seen_version {
+            return None;
+        }
+        let config = self.config.lock().unwrap().clone();
+        if config.is_some() {
+            *last_seen_version = current_version;
+        }
+        config
     }
 
     pub fn url(&self) -> &str {
@@ -465,91 +486,72 @@ impl Drop for BamConnection {
 
 #[derive(Default)]
 struct BamConnectionMetrics {
-    bundle_received: AtomicU64,
-    bundle_forward_to_scheduler_fail: AtomicU64,
-    heartbeat_received: AtomicU64,
-    builder_config_received: AtomicU64,
+    bundle_received: u64,
+    bundle_forward_to_scheduler_fail: u64,
+    heartbeat_received: u64,
+    builder_config_received: Arc<AtomicU64>,
 
-    unhealthy_connection_count: AtomicU64,
+    unhealthy_connection_count: u64,
 
-    leaderstate_sent: AtomicU64,
-    bundleresult_sent: AtomicU64,
-    heartbeat_sent: AtomicU64,
-    outbound_sent: AtomicU64,
-    outbound_fail: AtomicU64,
+    leaderstate_sent: u64,
+    bundleresult_sent: u64,
+    heartbeat_sent: u64,
+    outbound_sent: u64,
+    outbound_fail: u64,
 }
 
 impl BamConnectionMetrics {
     fn has_data(&self) -> bool {
-        self.bundle_received.load(Relaxed) > 0
-            || self.bundle_forward_to_scheduler_fail.load(Relaxed) > 0
-            || self.heartbeat_received.load(Relaxed) > 0
+        self.bundle_received > 0
+            || self.bundle_forward_to_scheduler_fail > 0
+            || self.heartbeat_received > 0
             || self.builder_config_received.load(Relaxed) > 0
-            || self.unhealthy_connection_count.load(Relaxed) > 0
-            || self.leaderstate_sent.load(Relaxed) > 0
-            || self.bundleresult_sent.load(Relaxed) > 0
-            || self.heartbeat_sent.load(Relaxed) > 0
-            || self.outbound_sent.load(Relaxed) > 0
-            || self.outbound_fail.load(Relaxed) > 0
+            || self.unhealthy_connection_count > 0
+            || self.leaderstate_sent > 0
+            || self.bundleresult_sent > 0
+            || self.heartbeat_sent > 0
+            || self.outbound_sent > 0
+            || self.outbound_fail > 0
     }
 
-    fn report(&self) {
+    fn report(&mut self) {
         if !self.has_data() {
             return;
         }
         datapoint_info!(
             "bam_connection-metrics",
-            (
-                "bundle_received",
-                self.bundle_received.swap(0, Relaxed) as i64,
-                i64
-            ),
+            ("bundle_received", self.bundle_received, i64),
             (
                 "bundle_forward_to_scheduler_fail",
-                self.bundle_forward_to_scheduler_fail.swap(0, Relaxed) as i64,
+                self.bundle_forward_to_scheduler_fail,
                 i64
             ),
-            (
-                "heartbeat_received",
-                self.heartbeat_received.swap(0, Relaxed) as i64,
-                i64
-            ),
+            ("heartbeat_received", self.heartbeat_received, i64),
             (
                 "builder_config_received",
-                self.builder_config_received.swap(0, Relaxed) as i64,
+                self.builder_config_received.swap(0, Relaxed),
                 i64
             ),
             (
                 "unhealthy_connection_count",
-                self.unhealthy_connection_count.swap(0, Relaxed) as i64,
+                self.unhealthy_connection_count,
                 i64
             ),
-            (
-                "leaderstate_sent",
-                self.leaderstate_sent.swap(0, Relaxed) as i64,
-                i64
-            ),
-            (
-                "bundleresult_sent",
-                self.bundleresult_sent.swap(0, Relaxed) as i64,
-                i64
-            ),
-            (
-                "heartbeat_sent",
-                self.heartbeat_sent.swap(0, Relaxed) as i64,
-                i64
-            ),
-            (
-                "outbound_sent",
-                self.outbound_sent.swap(0, Relaxed) as i64,
-                i64
-            ),
-            (
-                "outbound_fail",
-                self.outbound_fail.swap(0, Relaxed) as i64,
-                i64
-            )
+            ("leaderstate_sent", self.leaderstate_sent, i64),
+            ("bundleresult_sent", self.bundleresult_sent, i64),
+            ("heartbeat_sent", self.heartbeat_sent, i64),
+            ("outbound_sent", self.outbound_sent, i64),
+            ("outbound_fail", self.outbound_fail, i64)
         );
+        self.bundle_received = 0;
+        self.bundle_forward_to_scheduler_fail = 0;
+        self.heartbeat_received = 0;
+        self.unhealthy_connection_count = 0;
+        self.leaderstate_sent = 0;
+        self.bundleresult_sent = 0;
+        self.heartbeat_sent = 0;
+        self.outbound_sent = 0;
+        self.outbound_fail = 0;
     }
 }
 
