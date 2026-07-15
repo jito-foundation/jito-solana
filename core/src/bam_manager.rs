@@ -126,6 +126,7 @@ impl BamManager {
         let mut current_connection = None;
         let mut outbound_receiver = Some(outbound_receiver);
         let mut cached_builder_config = None;
+        let mut cached_builder_config_version = 0;
         let mut last_observed_bam_url = bam_url.load_full();
         let shared_leader_state = poh_recorder.read().unwrap().shared_leader_state();
 
@@ -156,6 +157,7 @@ impl BamManager {
                         &mut cached_builder_config,
                         true,
                     ) {
+                        cached_builder_config_version = 0;
                         continue;
                     }
 
@@ -175,6 +177,7 @@ impl BamManager {
                     dependencies
                         .bam_enabled
                         .store(BamConnectionState::Connecting as u8, Ordering::Relaxed);
+                    cached_builder_config_version = 0;
                     let result = runtime.block_on(BamConnection::try_init(
                         url.clone(),
                         dependencies.cluster_info.clone(),
@@ -202,6 +205,7 @@ impl BamManager {
                              retry",
                         );
                         cached_builder_config = None;
+                        cached_builder_config_version = 0;
                         Self::set_bam_disconnected(&dependencies);
                         outbound_receiver = Some(runtime.block_on(connection.shutdown()));
                         std::thread::sleep(WAIT_TO_RECONNECT_DURATION);
@@ -209,7 +213,9 @@ impl BamManager {
                     }
 
                     info!("BAM connection established");
-                    if let Some(builder_config) = connection.get_latest_config() {
+                    if let Some(builder_config) =
+                        connection.get_latest_config_if_changed(&mut cached_builder_config_version)
+                    {
                         Self::update_tpu_config(&builder_config, &dependencies);
                         Self::update_shred_socks_config(&builder_config, &dependencies);
                         Self::update_block_engine_key_and_commission(
@@ -229,6 +235,7 @@ impl BamManager {
 
             let disconnect = if !connection.is_healthy() {
                 cached_builder_config = None;
+                cached_builder_config_version = 0;
                 Self::set_bam_disconnected(&dependencies);
                 warn!("BAM connection unhealthy");
                 true
@@ -240,12 +247,14 @@ impl BamManager {
                 &mut cached_builder_config,
                 false,
             ) {
+                cached_builder_config_version = 0;
                 true
             } else {
                 if configured_bam_url.as_deref() == Some(connection.url()) {
                     false
                 } else {
                     cached_builder_config = None;
+                    cached_builder_config_version = 0;
                     Self::set_bam_disconnected(&dependencies);
                     true
                 }
@@ -257,7 +266,9 @@ impl BamManager {
             }
 
             // Check if block builder info has changed
-            if let Some(builder_config) = connection.get_latest_config() {
+            if let Some(builder_config) =
+                connection.get_latest_config_if_changed(&mut cached_builder_config_version)
+            {
                 if Some(&builder_config) != cached_builder_config.as_ref() {
                     Self::update_tpu_config(&builder_config, &dependencies);
                     Self::update_shred_socks_config(&builder_config, &dependencies);
