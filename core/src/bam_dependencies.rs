@@ -44,8 +44,8 @@ pub struct BamDependencies {
     /// 0 = disconnected, 1 = connecting, 2 = connected
     pub bam_enabled: Arc<AtomicU8>,
 
-    pub batch_sender: crossbeam_channel::Sender<bam_types::AtomicTxnBatch>,
-    pub batch_receiver: crossbeam_channel::Receiver<bam_types::AtomicTxnBatch>,
+    pub batch_sender: crossbeam_channel::Sender<bam_types::MultipleAtomicTxnBatch>,
+    pub batch_receiver: crossbeam_channel::Receiver<bam_types::MultipleAtomicTxnBatch>,
 
     pub outbound_sender: mpsc::Sender<BamOutboundMessage>,
 

@@ -34,7 +34,7 @@ use {
     histogram::Histogram,
     itertools::Itertools,
     jito_protos::proto::bam_types::{
-        AtomicTxnBatch, DeserializationErrorReason, Packet, SchedulingError,
+        DeserializationErrorReason, MultipleAtomicTxnBatch, Packet, SchedulingError,
         TransactionErrorReason, atomic_txn_batch_result, not_committed::Reason,
     },
     smallvec::SmallVec,
@@ -65,7 +65,7 @@ use {
     tokio::sync::mpsc::Sender as TokioSender,
 };
 
-type PrevalidationResult = Result<(usize, bool, u32, u64), (Reason, u32)>;
+type PrevalidationResult = Result<(bool, u32, u64), (Reason, u32)>;
 type VerifyResult = Result<(Vec<Bytes>, bool, u32, u64), (Reason, u32)>;
 
 pub struct BamReceiveAndBuffer {
@@ -90,7 +90,7 @@ impl BamReceiveAndBuffer {
     pub fn new(
         exit: Arc<AtomicBool>,
         bam_enabled: Arc<AtomicU8>,
-        bundle_receiver: crossbeam_channel::Receiver<AtomicTxnBatch>,
+        bundle_receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
         response_sender: TokioSender<BamOutboundMessage>,
         bank_forks: Arc<RwLock<BankForks>>,
         shared_leader_state: Option<SharedLeaderState>,
@@ -127,7 +127,7 @@ impl BamReceiveAndBuffer {
 
     fn run_parsing(
         exit: Arc<AtomicBool>,
-        bundle_receiver: crossbeam_channel::Receiver<AtomicTxnBatch>,
+        bundle_receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
         parsed_batch_sender: crossbeam_channel::Sender<ParsedBatch>,
         recv_stats_sender: crossbeam_channel::Sender<ReceivingStats>,
         response_sender: TokioSender<BamOutboundMessage>,
@@ -148,7 +148,7 @@ impl BamReceiveAndBuffer {
         let mut packet_batches = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
         let mut verify_results = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
         const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(20);
-        let mut recv_buffer = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST * 2);
+        let mut recv_buffer = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
 
         while !exit.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
@@ -169,9 +169,7 @@ impl BamReceiveAndBuffer {
             stats.receive_time_us += loop_start.elapsed().as_micros() as u64;
 
             match recv_info {
-                Ok((_, num_batches_received)) => {
-                    stats.num_received += num_batches_received;
-                }
+                Ok(num_batches_received) => stats.num_received += num_batches_received,
                 Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => {
                     // No more work to do
@@ -534,54 +532,55 @@ impl BamReceiveAndBuffer {
     }
 
     fn batch_receive_until(
-        bundle_receiver: &crossbeam_channel::Receiver<AtomicTxnBatch>,
-        recv_buffer: &mut Vec<AtomicTxnBatch>,
+        bundle_receiver: &crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
+        recv_buffer: &mut Vec<MultipleAtomicTxnBatch>,
         &start: &Instant,
         recv_timeout: Duration,
         batch_count_upperbound: usize,
-    ) -> Result<(usize, usize), RecvTimeoutError> {
-        let batch = bundle_receiver.recv_timeout(recv_timeout)?;
-        let mut num_packets_received = batch.packets.len();
-        let mut num_atomic_txn_batches_received = 1;
-        recv_buffer.push(batch);
+    ) -> Result<usize, RecvTimeoutError> {
+        let batches = bundle_receiver.recv_timeout(recv_timeout)?;
+        let mut num_atomic_txn_batches_received = batches.batches.len();
+        let mut channel_messages_received = 1;
+        recv_buffer.push(batches);
 
-        while let Ok(batch) = bundle_receiver.try_recv() {
-            num_packets_received += batch.packets.len();
-            num_atomic_txn_batches_received += 1;
-            recv_buffer.push(batch);
-            if recv_buffer.len() >= batch_count_upperbound
-                || (num_atomic_txn_batches_received % 8 == 1 && start.elapsed() > recv_timeout)
-            // check if time exceeded on every 8th iteration
-            {
+        while num_atomic_txn_batches_received < batch_count_upperbound {
+            let Ok(next_batches) = bundle_receiver.try_recv() else {
+                break;
+            };
+            num_atomic_txn_batches_received += next_batches.batches.len();
+            recv_buffer.push(next_batches);
+            channel_messages_received += 1;
+            if channel_messages_received % 8 == 1 && start.elapsed() > recv_timeout {
                 break;
             }
         }
 
-        Ok((num_packets_received, num_atomic_txn_batches_received))
+        Ok(num_atomic_txn_batches_received)
     }
 
     /// Check basic constraints and extract revert_on_error flags
     fn prevalidate_batches(
-        atomic_txn_batches: &[AtomicTxnBatch],
+        atomic_txn_batch_groups: &[MultipleAtomicTxnBatch],
         current_slot: Slot,
         prevalidated: &mut Vec<PrevalidationResult>,
     ) -> ReceivingStats {
         let mut stats = ReceivingStats::default();
 
         prevalidated.clear();
-        prevalidated.extend(atomic_txn_batches.iter().enumerate().map(
-            |(batch_index, atomic_txn_batch)| {
+        for atomic_txn_batch_group in atomic_txn_batch_groups {
+            for atomic_txn_batch in &atomic_txn_batch_group.batches {
                 if atomic_txn_batch.max_schedule_slot < current_slot {
                     stats.num_dropped_without_parsing += 1;
-                    return Err((
+                    prevalidated.push(Err((
                         Reason::SchedulingError(SchedulingError::OutsideLeaderSlot as i32),
                         atomic_txn_batch.seq_id,
-                    ));
+                    )));
+                    continue;
                 }
 
                 if atomic_txn_batch.packets.is_empty() {
                     stats.num_dropped_without_parsing += 1;
-                    return Err((
+                    prevalidated.push(Err((
                         Reason::DeserializationError(
                             jito_protos::proto::bam_types::DeserializationError {
                                 index: 0,
@@ -589,12 +588,13 @@ impl BamReceiveAndBuffer {
                             },
                         ),
                         atomic_txn_batch.seq_id,
-                    ));
+                    )));
+                    continue;
                 }
 
                 if atomic_txn_batch.packets.len() > MAX_PACKETS_PER_BUNDLE {
                     stats.num_dropped_without_parsing += 1;
-                    return Err((
+                    prevalidated.push(Err((
                         Reason::DeserializationError(
                             jito_protos::proto::bam_types::DeserializationError {
                                 index: 0,
@@ -602,7 +602,8 @@ impl BamReceiveAndBuffer {
                             },
                         ),
                         atomic_txn_batch.seq_id,
-                    ));
+                    )));
+                    continue;
                 }
 
                 let Ok(revert_on_error) = atomic_txn_batch
@@ -617,7 +618,7 @@ impl BamReceiveAndBuffer {
                     .all_equal_value()
                 else {
                     stats.num_dropped_without_parsing += 1;
-                    return Err((
+                    prevalidated.push(Err((
                         Reason::DeserializationError(
                             jito_protos::proto::bam_types::DeserializationError {
                                 index: 0,
@@ -625,24 +626,24 @@ impl BamReceiveAndBuffer {
                             },
                         ),
                         atomic_txn_batch.seq_id,
-                    ));
+                    )));
+                    continue;
                 };
 
-                Ok((
-                    batch_index,
+                prevalidated.push(Ok((
                     revert_on_error,
                     atomic_txn_batch.seq_id,
                     atomic_txn_batch.max_schedule_slot,
-                ))
-            },
-        ));
+                )));
+            }
+        }
 
         stats
     }
 
     fn batch_verify(
         sigverify_thread_pool: &rayon::ThreadPool,
-        atomic_txn_batches: &mut [AtomicTxnBatch],
+        atomic_txn_batches: &mut [MultipleAtomicTxnBatch],
         current_slot: Slot,
         metrics: &mut BamReceiveAndBufferMetrics,
         prevalidated: &mut Vec<PrevalidationResult>,
@@ -654,39 +655,43 @@ impl BamReceiveAndBuffer {
         packet_batches.clear();
         packet_batches.reserve(prevalidated.len());
         let mut packet_count = 0;
-        prevalidated.iter().flatten().for_each(|result| {
-            let atomic_txn_batch = &mut atomic_txn_batches[result.0];
-            let solana_packet_batch: Vec<_> = atomic_txn_batch
-                .packets
-                .drain(..)
-                .map(|from_packet| {
-                    let Packet { data, meta } = from_packet;
-                    let data_len = data.len();
-                    if data_len > PACKET_DATA_SIZE {
-                        let mut to_packet = BytesPacket::new(Bytes::new(), Meta::default());
-                        to_packet.meta_mut().set_discard(true);
-                        return to_packet;
-                    }
+        atomic_txn_batches
+            .iter_mut()
+            .flat_map(|group| group.batches.iter_mut())
+            .zip(prevalidated.iter())
+            .filter(|(_, pre_result)| pre_result.is_ok())
+            .for_each(|(atomic_txn_batch, _)| {
+                let solana_packet_batch: Vec<_> = atomic_txn_batch
+                    .packets
+                    .drain(..)
+                    .map(|from_packet| {
+                        let Packet { data, meta } = from_packet;
+                        let data_len = data.len();
+                        if data_len > PACKET_DATA_SIZE {
+                            let mut to_packet = BytesPacket::new(Bytes::new(), Meta::default());
+                            to_packet.meta_mut().set_discard(true);
+                            return to_packet;
+                        }
 
-                    let mut to_packet = BytesPacket::new(data, Meta::default());
-                    to_packet.meta_mut().size = data_len;
+                        let mut to_packet = BytesPacket::new(data, Meta::default());
+                        to_packet.meta_mut().size = data_len;
 
-                    if let Some(meta) = meta
-                        && meta.flags.is_some_and(|flags| flags.simple_vote_tx)
-                    {
+                        if let Some(meta) = meta
+                            && meta.flags.is_some_and(|flags| flags.simple_vote_tx)
+                        {
+                            to_packet
+                                .meta_mut()
+                                .flags
+                                .insert(PacketFlags::SIMPLE_VOTE_TX);
+                        }
                         to_packet
-                            .meta_mut()
-                            .flags
-                            .insert(PacketFlags::SIMPLE_VOTE_TX);
-                    }
-                    to_packet
-                })
-                .collect();
-            packet_count += solana_packet_batch.len();
-            packet_batches.push(solana_perf::packet::PacketBatch::Bytes(
-                BytesPacketBatch::from(solana_packet_batch),
-            ));
-        });
+                    })
+                    .collect();
+                packet_count += solana_packet_batch.len();
+                packet_batches.push(solana_perf::packet::PacketBatch::Bytes(
+                    BytesPacketBatch::from(solana_packet_batch),
+                ));
+            });
 
         let mut verify_packet_batch_time_us = Measure::start("verify_packet_batch_time_us");
         ed25519_verify(
@@ -712,7 +717,7 @@ impl BamReceiveAndBuffer {
         results.reserve(prevalidated.len());
         let mut packet_batch_iter = packet_batches.drain(..);
         for pre_result in prevalidated.drain(..) {
-            let result = pre_result.and_then(|(_, revert_on_error, seq_id, max_schedule_slot)| {
+            let result = pre_result.and_then(|(revert_on_error, seq_id, max_schedule_slot)| {
                 let batch = packet_batch_iter.next().unwrap();
                 let solana_perf::packet::PacketBatch::Bytes(batch) = batch else {
                     unreachable!("BAM sigverify builds Bytes packet batches");
@@ -1051,6 +1056,7 @@ mod tests {
         },
         ahash::HashSetExt,
         crossbeam_channel::{Receiver, unbounded},
+        jito_protos::proto::bam_types::AtomicTxnBatch,
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::Message,
@@ -1077,7 +1083,7 @@ mod tests {
 
     #[allow(clippy::type_complexity)]
     fn setup_bam_receive_and_buffer(
-        receiver: crossbeam_channel::Receiver<AtomicTxnBatch>,
+        receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
@@ -1127,7 +1133,7 @@ mod tests {
     }
 
     fn run_batch_verify(
-        mut batches: Vec<AtomicTxnBatch>,
+        batches: Vec<AtomicTxnBatch>,
         current_slot: Slot,
         metrics: &mut BamReceiveAndBufferMetrics,
     ) -> (Vec<VerifyResult>, ReceivingStats) {
@@ -1138,6 +1144,7 @@ mod tests {
         let mut prevalidated = Vec::new();
         let mut packet_batches = Vec::new();
         let mut results = Vec::new();
+        let mut batches = vec![MultipleAtomicTxnBatch { batches }];
         let stats = BamReceiveAndBuffer::batch_verify(
             &thread_pool,
             &mut batches,
@@ -1153,7 +1160,7 @@ mod tests {
     #[test_case(setup_bam_receive_and_buffer; "testcase-bam")]
     fn test_receive_and_buffer_simple_transfer<R: ReceiveAndBuffer>(
         setup_receive_and_buffer: impl FnOnce(
-            Receiver<AtomicTxnBatch>,
+            Receiver<MultipleAtomicTxnBatch>,
             Arc<RwLock<BankForks>>,
             HashSet<Pubkey>,
         ) -> (
@@ -1182,7 +1189,11 @@ mod tests {
             }],
             max_schedule_slot: Slot::MAX,
         };
-        sender.send(bundle).unwrap();
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![bundle],
+            })
+            .unwrap();
 
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
@@ -1213,7 +1224,11 @@ mod tests {
             }],
             max_schedule_slot: Slot::MAX,
         };
-        sender.send(bundle).unwrap();
+        sender
+            .send(MultipleAtomicTxnBatch {
+                batches: vec![bundle],
+            })
+            .unwrap();
 
         let ReceivingStats { num_received, .. } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
