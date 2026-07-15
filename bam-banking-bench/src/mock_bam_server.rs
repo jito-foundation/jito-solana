@@ -1,7 +1,9 @@
 use {
     bytes::{BufMut, BytesMut},
     crossbeam_channel::Sender,
-    jito_protos::proto::bam_types::{AtomicTxnBatch, AtomicTxnBatchResult, Packet},
+    jito_protos::proto::bam_types::{
+        AtomicTxnBatch, AtomicTxnBatchResult, MultipleAtomicTxnBatch, Packet,
+    },
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_core::bam_dependencies::BamOutboundMessage,
     solana_hash::Hash,
@@ -141,7 +143,7 @@ pub(crate) struct MockBamServer;
 
 impl MockBamServer {
     pub(crate) fn run(
-        batch_sender: Sender<AtomicTxnBatch>,
+        batch_sender: Sender<MultipleAtomicTxnBatch>,
         mut outbound_receiver: tokio::sync::mpsc::Receiver<BamOutboundMessage>,
         shared_leader_state: SharedLeaderState,
         exit: Arc<AtomicBool>,
@@ -222,7 +224,7 @@ impl MockBamServer {
     fn send_transactions(
         keypairs: &[Keypair],
         bank_stats: &mut BankStats,
-        batch_sender: &Sender<AtomicTxnBatch>,
+        batch_sender: &Sender<MultipleAtomicTxnBatch>,
         bank: &Arc<Bank>,
         nonce: &mut u64,
         seq_id: &mut u32,
@@ -255,7 +257,11 @@ impl MockBamServer {
                 }],
             };
 
-            batch_sender.send(atomic_txn_batch).unwrap();
+            batch_sender
+                .send(MultipleAtomicTxnBatch {
+                    batches: vec![atomic_txn_batch],
+                })
+                .unwrap();
 
             bank_stats.sent_transactions_and_results.insert(
                 *seq_id,
