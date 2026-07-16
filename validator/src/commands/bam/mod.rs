@@ -12,98 +12,78 @@ pub enum BamUrlError {
     InvalidUrlFormat { url: String, source: ParseError },
     #[error("BAM URL unsupported scheme '{scheme}', only http and https are allowed")]
     UnsupportedScheme { scheme: String },
-    #[error("BAM URL failed to set default port")]
-    PortSetFailed { url: String },
 }
 
 const DEFAULT_BAM_URL_SCHEME: &str = "http";
 const DEFAULT_BAM_HTTP_PORT: u16 = 50055;
 const DEFAULT_BAM_HTTPS_PORT: u16 = 50056;
 
-/// Normalize and validate BAM URL from a string input.
-///
-/// Takes a potentially incomplete URL and normalizes it by adding default
-/// scheme and port if missing. Empty input is handled by `extract_bam_url`.
-///
-/// # Default values
-/// - HTTP URLs default to port 50055
-/// - HTTPS URLs default to port 50056
-/// - Missing scheme defaults to HTTP
-///
-/// HTTPS is now the default scheme and port.
-///
-/// # Errors
-/// Returns an error if the URL is invalid or uses an unsupported scheme.
-fn normalize_bam_url(url_str: &str) -> Result<String, BamUrlError> {
-    let url_str = url_str.trim();
-    let parse_target = if url_str.contains("://") {
-        url_str.to_string()
-    } else {
-        format!("{DEFAULT_BAM_URL_SCHEME}://{url_str}")
-    };
-
-    let mut url = Url::parse(&parse_target).map_err(|source| BamUrlError::InvalidUrlFormat {
-        url: url_str.to_string(),
-        source,
-    })?;
-
-    let default_port = match url.scheme() {
-        "http" => DEFAULT_BAM_HTTP_PORT,
-        "https" => DEFAULT_BAM_HTTPS_PORT,
-        scheme => {
-            return Err(BamUrlError::UnsupportedScheme {
-                scheme: scheme.to_string(),
-            });
-        }
-    };
-
-    if url.port().is_none() {
-        url.set_port(Some(default_port))
-            .map_err(|_| BamUrlError::PortSetFailed {
-                url: url_str.to_string(),
-            })?;
-    }
-
-    let mut normalized = url.to_string();
-    if !url_str.ends_with('/')
-        && url.path() == "/"
-        && url.query().is_none()
-        && url.fragment().is_none()
-    {
-        normalized.pop();
-    }
-
-    Ok(normalized)
-}
-
-/// Extract and validate BAM URL from command line arguments.
-///
-/// This function extracts the BAM URL from clap command line arguments and
-/// normalizes it using [`normalize_bam_url`]. If no BAM URL is provided,
-/// returns None to disable BAM functionality.
-///
-/// # Arguments
-/// * `matches` - The clap ArgMatches containing parsed command line arguments
-///
-/// # Returns
-/// An optional normalized BAM URL string with appropriate scheme and default port.
-/// Returns None if no BAM URL is provided.
-///
-/// # Errors
-/// Returns an error if a BAM URL is provided but the normalization fails
-/// (invalid format, unsupported scheme, etc.)
-///
-/// # Example
-/// ```ignore
-/// let matches = app.get_matches();
-/// let bam_url = extract_bam_url(&matches)?;
-/// ```
+/// Empty values disable BAM. Missing schemes default to HTTP, while omitted
+/// ports default to 50055 for HTTP and 50056 for HTTPS. Explicit ports must be
+/// non-zero.
 pub fn extract_bam_url(matches: &ArgMatches) -> Result<Option<String>, BamUrlError> {
     matches
         .value_of("bam_url")
         .map(str::trim)
         .filter(|url| !url.is_empty())
-        .map(normalize_bam_url)
+        .map(|url_str| {
+            let parse_target = if url_str.contains("://") {
+                url_str.to_owned()
+            } else {
+                format!("{DEFAULT_BAM_URL_SCHEME}://{url_str}")
+            };
+            let url =
+                Url::parse(&parse_target).map_err(|source| BamUrlError::InvalidUrlFormat {
+                    url: url_str.to_owned(),
+                    source,
+                })?;
+            let default_port = if parse_target.starts_with("http://") {
+                DEFAULT_BAM_HTTP_PORT
+            } else if parse_target.starts_with("https://") {
+                DEFAULT_BAM_HTTPS_PORT
+            } else {
+                return Err(BamUrlError::UnsupportedScheme {
+                    scheme: parse_target
+                        .split_once("://")
+                        .map_or("", |(scheme, _)| scheme)
+                        .to_owned(),
+                });
+            };
+            if url.port() == Some(0) {
+                return Err(BamUrlError::InvalidUrlFormat {
+                    url: url_str.to_owned(),
+                    source: ParseError::InvalidPort,
+                });
+            }
+
+            let authority_start = parse_target.find("://").unwrap() + 3;
+            let authority_end = parse_target[authority_start..]
+                .find(['/', '?', '#'])
+                .map_or(parse_target.len(), |offset| authority_start + offset);
+            let authority = &parse_target[authority_start..authority_end];
+            let host_port = authority.rsplit('@').next().unwrap();
+            let port = if host_port.starts_with('[') {
+                host_port
+                    .find(']')
+                    .and_then(|host_end| host_port[host_end + 1..].strip_prefix(':'))
+            } else {
+                host_port.rsplit_once(':').map(|(_, port)| port)
+            };
+
+            match port {
+                Some("") => Ok(format!(
+                    "{}{default_port}{}",
+                    &parse_target[..authority_end],
+                    &parse_target[authority_end..]
+                )),
+                Some(_) => Ok(parse_target),
+                None => Ok(format!(
+                    "{}:{default_port}{}",
+                    &parse_target[..authority_end],
+                    &parse_target[authority_end..]
+                )),
+            }
+        })
         .transpose()
 }
 
@@ -144,150 +124,122 @@ mod tests {
         app.get_matches_from(args)
     }
 
-    fn assert_eq_extract_bam_url<S: AsRef<str>, E: AsRef<str>>(input: S, expected: E) {
-        let matches = create_test_matches(Some(input.as_ref()));
-        let result = extract_bam_url(&matches);
-        assert_eq!(
-            result.unwrap().unwrap(),
-            expected.as_ref(),
-            "Failed for input: '{}', expected: '{}'",
-            input.as_ref(),
-            expected.as_ref(),
-        );
-    }
-
-    fn assert_extract_bam_url_error<S: AsRef<str>>(input: S, expected_variant: BamUrlError) {
-        let matches = create_test_matches(Some(input.as_ref()));
-        let actual_error = extract_bam_url(&matches)
-            .expect_err(&format!("Expected error for input: '{}'", input.as_ref()));
-        assert_eq!(
-            std::mem::discriminant(&actual_error),
-            std::mem::discriminant(&expected_variant),
-            "Expected error variant '{:?}' for input: '{}', but got: '{:?}'",
-            expected_variant,
-            input.as_ref(),
-            actual_error,
-        );
-    }
-
-    // HTTP with port
-    #[test_case("http://localhost:8080", "http://localhost:8080" ; "http localhost with port")]
-    #[test_case("http://your-bam.host.wtf:8080", "http://your-bam.host.wtf:8080" ; "http domain with port")]
-    #[test_case("http://oh.bam:8080", "http://oh.bam:8080" ; "http short domain with port")]
-    #[test_case("http://bam:8080/badam", "http://bam:8080/badam" ; "http with port and path")]
-    #[test_case("http://bam:8080/dot/slash/", "http://bam:8080/dot/slash/" ; "http with port and path preserving slash")]
-    #[test_case("http://192.168.100.42:8080/ba/da/m", "http://192.168.100.42:8080/ba/da/m" ; "http ipv4 with port and path")]
-    #[test_case("http://[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m" ; "http ipv6 with port and path")]
-    // HTTPS with port
-    #[test_case("https://localhost:8081", "https://localhost:8081" ; "https localhost with port")]
-    #[test_case("https://your-bam.host.wtf:8081", "https://your-bam.host.wtf:8081" ; "https domain with port")]
-    #[test_case("https://oh.bam:8081", "https://oh.bam:8081" ; "https short domain with port")]
-    #[test_case("https://bam:8081/badam", "https://bam:8081/badam" ; "https with port and path")]
-    #[test_case("https://192.168.100.42:8081/ba/da/m", "https://192.168.100.42:8081/ba/da/m" ; "https ipv4 with port and path")]
-    #[test_case("https://[fe80::1]:8081/ba/da/m", "https://[fe80::1]:8081/ba/da/m" ; "https ipv6 with port and path")]
-    // No scheme with port (should default to http)
-    #[test_case("localhost:8080", "http://localhost:8080" ; "localhost with port defaults to http")]
-    #[test_case("your-bam.host.wtf:8080", "http://your-bam.host.wtf:8080" ; "domain with port defaults to http")]
-    #[test_case("oh.bam:8080", "http://oh.bam:8080" ; "short domain with port defaults to http")]
-    #[test_case("bam:8080/badam", "http://bam:8080/badam" ; "host with port and path defaults to http")]
-    #[test_case("192.168.100.42:8080/ba/da/m", "http://192.168.100.42:8080/ba/da/m" ; "ipv4 with port and path defaults to http")]
-    #[test_case("[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m" ; "ipv6 with port and path defaults to http")]
-    // No scheme without port (should default to http with default port 50055)
-    #[test_case("localhost", "http://localhost:50055" ; "localhost defaults to http with default port")]
-    #[test_case("your-bam.host.wtf", "http://your-bam.host.wtf:50055" ; "domain defaults to http with default port")]
-    #[test_case("oh.bam", "http://oh.bam:50055" ; "short domain defaults to http with default port")]
-    #[test_case("bam/badam", "http://bam:50055/badam" ; "host with path defaults to http with default port")]
-    #[test_case("192.168.100.42/ba/da/m", "http://192.168.100.42:50055/ba/da/m" ; "ipv4 with path defaults to http with default port")]
-    #[test_case("[fe80::1]/ba/da/m", "http://[fe80::1]:50055/ba/da/m" ; "ipv6 with path defaults to http with default port")]
+    // HTTP URLs
+    #[test_case("http://localhost", "http://localhost:50055")]
+    #[test_case("http://localhost:8080", "http://localhost:8080")]
+    #[test_case("http://your-bam.host.wtf:8080", "http://your-bam.host.wtf:8080")]
+    #[test_case("http://oh.bam:8080", "http://oh.bam:8080")]
+    #[test_case("http://bam:8080/badam", "http://bam:8080/badam")]
+    #[test_case("http://bam:8080/dot/slash/", "http://bam:8080/dot/slash/")]
+    #[test_case(
+        "http://192.168.100.42:8080/ba/da/m",
+        "http://192.168.100.42:8080/ba/da/m"
+    )]
+    #[test_case("http://[::1]", "http://[::1]:50055")]
+    #[test_case("http://[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m")]
+    // HTTPS URLs
+    #[test_case("https://bam.example.com", "https://bam.example.com:50056")]
+    #[test_case("https://localhost:8081", "https://localhost:8081")]
+    #[test_case("https://your-bam.host.wtf:8081", "https://your-bam.host.wtf:8081")]
+    #[test_case("https://oh.bam:8081", "https://oh.bam:8081")]
+    #[test_case("https://bam:8081/badam", "https://bam:8081/badam")]
+    #[test_case(
+        "https://192.168.100.42:8081/ba/da/m",
+        "https://192.168.100.42:8081/ba/da/m"
+    )]
+    #[test_case("https://[2001:db8::1]", "https://[2001:db8::1]:50056")]
+    #[test_case("https://[fe80::1]:8081/ba/da/m", "https://[fe80::1]:8081/ba/da/m")]
+    // Missing schemes default to HTTP
+    #[test_case("localhost:8080", "http://localhost:8080")]
+    #[test_case("your-bam.host.wtf:8080", "http://your-bam.host.wtf:8080")]
+    #[test_case("oh.bam:8080", "http://oh.bam:8080")]
+    #[test_case("bam:8080/badam", "http://bam:8080/badam")]
+    #[test_case("192.168.100.42:8080/ba/da/m", "http://192.168.100.42:8080/ba/da/m")]
+    #[test_case("[fe80::1]:8080/ba/da/m", "http://[fe80::1]:8080/ba/da/m")]
+    #[test_case("localhost", "http://localhost:50055")]
+    #[test_case("your-bam.host.wtf", "http://your-bam.host.wtf:50055")]
+    #[test_case("oh.bam", "http://oh.bam:50055")]
+    #[test_case("bam/badam", "http://bam:50055/badam")]
+    #[test_case("192.168.100.42/ba/da/m", "http://192.168.100.42:50055/ba/da/m")]
+    #[test_case("[fe80::1]/ba/da/m", "http://[fe80::1]:50055/ba/da/m")]
     fn test_extract_bam_url_success(input: &str, expected: &str) {
-        assert_eq_extract_bam_url(input, expected);
+        let matches = create_test_matches(Some(input));
+        assert_eq!(
+            extract_bam_url(&matches).unwrap().as_deref(),
+            Some(expected)
+        );
     }
 
-    // Empty inputs
-    #[test_case("", "empty string")]
-    #[test_case("   ", "spaces only")]
-    #[test_case("\t\n ", "whitespace only")]
-    fn test_extract_bam_url_empty_inputs(input: &str, _case: &str) {
+    // BAM defaults and explicit scheme defaults
+    #[test_case("http://bam.example.com", "http://bam.example.com:50055", 50055 ; "http omitted")]
+    #[test_case("https://bam.example.com", "https://bam.example.com:50056", 50056 ; "https omitted")]
+    #[test_case("http://bam.example.com:80", "http://bam.example.com:80", 80 ; "http explicit")]
+    #[test_case("https://bam.example.com:443", "https://bam.example.com:443", 443 ; "https explicit")]
+    #[test_case("http://host.com:", "http://host.com:50055", 50055 ; "http empty")]
+    #[test_case("https://host.com:", "https://host.com:50056", 50056 ; "https empty")]
+    fn test_extract_bam_url_default_port(input: &str, expected: &str, expected_port: u16) {
         let matches = create_test_matches(Some(input));
-        let result = extract_bam_url(&matches);
-        assert!(
-            result.unwrap().is_none(),
-            "Expected None for input: '{input}'"
+        let url = extract_bam_url(&matches).unwrap().unwrap();
+        assert_eq!(url, expected);
+        assert_eq!(
+            Url::parse(&url).unwrap().port_or_known_default(),
+            Some(expected_port)
         );
+    }
+
+    // Empty inputs disable BAM
+    #[test_case("" ; "empty")]
+    #[test_case("   " ; "spaces")]
+    #[test_case("\t\n " ; "whitespace")]
+    fn test_extract_bam_url_empty_inputs(input: &str) {
+        let matches = create_test_matches(Some(input));
+        assert_eq!(extract_bam_url(&matches).unwrap(), None);
     }
 
     // Unsupported schemes
-    #[test_case("ftp://invalid.com", "ftp" ; "ftp scheme")]
-    #[test_case("ssh://user@host.com", "ssh" ; "ssh scheme")]
-    #[test_case("file:///path/to/file", "file" ; "file scheme")]
-    #[test_case("custom://my.host.com", "custom" ; "custom scheme")]
-    fn test_extract_bam_url_unsupported_schemes(input: &str, scheme: &str) {
-        assert_extract_bam_url_error(
-            input,
-            BamUrlError::UnsupportedScheme {
-                scheme: scheme.to_string(),
-            },
+    #[test_case("ftp://invalid.com", "ftp")]
+    #[test_case("ssh://user@host.com", "ssh")]
+    #[test_case("file:///path/to/file", "file")]
+    #[test_case("custom://my.host.com", "custom")]
+    #[test_case("HTTP://bam.example.com", "HTTP")]
+    fn test_extract_bam_url_unsupported_scheme(input: &str, scheme: &str) {
+        let matches = create_test_matches(Some(input));
+        assert_eq!(
+            extract_bam_url(&matches),
+            Err(BamUrlError::UnsupportedScheme {
+                scheme: scheme.to_owned()
+            })
         );
     }
 
     // Invalid formats
-    #[test_case("://invalid" ; "relative url without base")]
-    #[test_case("http://" ; "http with empty host")]
-    #[test_case("https://" ; "https with empty host")]
-    #[test_case("http://:50055" ; "http with port but empty host")]
-    fn test_extract_bam_url_invalid_formats(input: &str) {
-        let expected_source = match input {
-            "://invalid" => ParseError::RelativeUrlWithoutBase,
-            _ => ParseError::EmptyHost,
-        };
-        assert_extract_bam_url_error(
-            input,
-            BamUrlError::InvalidUrlFormat {
-                url: input.to_string(),
-                source: expected_source,
-            },
-        );
-    }
-
+    #[test_case("://invalid", ParseError::RelativeUrlWithoutBase)]
+    #[test_case("http://", ParseError::EmptyHost)]
+    #[test_case("https://", ParseError::EmptyHost)]
+    #[test_case("http://:50055", ParseError::EmptyHost)]
     // Invalid ports
-    #[test_case("host.com:abc" ; "non-numeric port")]
-    #[test_case("host.com:99999" ; "port too large")]
-    #[test_case("host.com:-1" ; "negative port")]
-    #[test_case("host.com:0x80" ; "hexadecimal port")]
-    fn test_extract_bam_url_invalid_ports(input: &str) {
-        assert_extract_bam_url_error(
-            input,
-            BamUrlError::InvalidUrlFormat {
-                url: input.to_string(),
-                source: ParseError::InvalidPort,
-            },
-        );
-    }
-
+    #[test_case("host.com:abc", ParseError::InvalidPort)]
+    #[test_case("host.com:99999", ParseError::InvalidPort)]
+    #[test_case("host.com:-1", ParseError::InvalidPort)]
+    #[test_case("host.com:0x80", ParseError::InvalidPort)]
+    #[test_case("host.com:123x", ParseError::InvalidPort)]
+    #[test_case("http://host.com:0", ParseError::InvalidPort)]
+    #[test_case("https://host.com:0", ParseError::InvalidPort)]
     // Invalid IPv6 addresses
-    #[test_case("[::1" ; "unclosed ipv6 bracket")]
-    #[test_case("[fe80::1" ; "unclosed ipv6 bracket with link local")]
-    #[test_case("[2001:db8::1" ; "unclosed ipv6 bracket with global")]
-    fn test_extract_bam_url_invalid_ipv6_address(input: &str) {
-        assert_extract_bam_url_error(
-            input,
-            BamUrlError::InvalidUrlFormat {
-                url: input.to_string(),
-                source: ParseError::InvalidIpv6Address,
-            },
-        );
-    }
-
-    // Invalid IPv6 with port
-    #[test_case("[fe80::1]:abc" ; "ipv6 with non-numeric port")]
-    #[test_case("[::1]:99999" ; "ipv6 with port too large")]
-    fn test_extract_bam_url_invalid_ipv6_port(input: &str) {
-        assert_extract_bam_url_error(
-            input,
-            BamUrlError::InvalidUrlFormat {
-                url: input.to_string(),
-                source: ParseError::InvalidPort,
-            },
+    #[test_case("[::1", ParseError::InvalidIpv6Address)]
+    #[test_case("[fe80::1", ParseError::InvalidIpv6Address)]
+    #[test_case("[2001:db8::1", ParseError::InvalidIpv6Address)]
+    // Invalid IPv6 ports
+    #[test_case("[fe80::1]:abc", ParseError::InvalidPort)]
+    #[test_case("[::1]:99999", ParseError::InvalidPort)]
+    fn test_extract_bam_url_invalid_format(input: &str, source: ParseError) {
+        let matches = create_test_matches(Some(input));
+        assert_eq!(
+            extract_bam_url(&matches),
+            Err(BamUrlError::InvalidUrlFormat {
+                url: input.to_owned(),
+                source
+            })
         );
     }
 
