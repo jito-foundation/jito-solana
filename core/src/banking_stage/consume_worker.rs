@@ -8,7 +8,10 @@ use {
             TransactionResult,
         },
     },
-    crate::banking_stage::consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
+    crate::banking_stage::{
+        consumer::{ExecutionFlags, RetryableIndex, TipProcessingDependencies},
+        transaction_scheduler::bam_utils::get_nonce_authority_error,
+    },
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
     jito_protos::proto::bam_types::TransactionCommittedResult,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
@@ -185,7 +188,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
 
         let extra_info = work
             .respond_with_extra_info
-            .then(|| Self::build_finished_consume_work_extra_info(&output, &work));
+            .then(|| Self::build_finished_consume_work_extra_info(&output, &work, bank));
 
         self.consumed_sender.send(FinishedConsumeWork {
             work,
@@ -299,6 +302,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     fn build_finished_consume_work_extra_info(
         output: &ProcessTransactionBatchOutput,
         work: &ConsumeWork<Tx>,
+        bank: &Bank,
     ) -> FinishedConsumeWorkExtraInfo {
         let Ok(commit_transactions_result) = output
             .execute_and_commit_transactions_output
@@ -316,7 +320,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         };
 
         let mut processed_results = Vec::with_capacity(commit_transactions_result.len());
-        for commit_info in commit_transactions_result.iter() {
+        for (index, commit_info) in commit_transactions_result.iter().enumerate() {
             match commit_info {
                 CommitTransactionDetails::Committed {
                     compute_units,
@@ -335,7 +339,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
                 }
                 CommitTransactionDetails::NotCommitted(err) => {
                     processed_results.push(TransactionResult::NotCommitted(
-                        NotCommittedReason::Error(err.clone()),
+                        NotCommittedReason::Error(get_nonce_authority_error(
+                            bank,
+                            &work.transactions[index],
+                            err.clone(),
+                        )),
                     ));
                 }
             }
