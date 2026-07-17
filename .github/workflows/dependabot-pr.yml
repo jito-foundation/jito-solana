@@ -1,68 +1,54 @@
-name: Dependabot PR
+# name: Dependabot PR
 
-on:
-  pull_request:
-    branches:
-      - master
+# on:
+#   pull_request:
+#     branches:
+#       - master
 
-jobs:
-  dependabot:
-    timeout-minutes: 10
-    runs-on: ubuntu-24.04
-    if: github.actor == 'dependabot[bot]'
-    steps:
-      - name: Create github app token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        with:
-          client-id: ${{ secrets.CLIENT_ID }}
-          private-key: ${{ secrets.PRIVATE_KEY }}
+# jobs:
+#   dependabot:
+#     timeout-minutes: 10
+#     runs-on: ubuntu-24.04
+#     if: github.event.pull_request.user.login == 'dependabot[bot]'
+#     steps:
+#       - name: checkout
+#         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+#         with:
+#           ref: ${{ github.event.pull_request.head.ref }}
+#           token: ${{ secrets.PAT }}
 
-      - name: Set git config
-        run: |
-          git config --global user.email "49699333+dependabot[bot]@users.noreply.github.com"
-          git config --global user.name "dependabot[bot]"
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf https://github.com/
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+#       - name: update code
+#         env:
+#           PR_TITLE: ${{ github.event.pull_request.title }}
+#         run: |
+#           input="$PR_TITLE"
 
-      - name: checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: false
+#           regex='[Bb]ump (.+) from ([^ ]+) to ([^ ]+)( in .*)?'
+#           if [[ ! "$input" =~ $regex ]]; then
+#             echo "unexpected pattern"
+#             exit 1
+#           fi
 
-      - name: update code
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          input="$PR_TITLE"
+#           crate_name="${BASH_REMATCH[1]}"
+#           old_version="${BASH_REMATCH[2]}"
+#           new_version="${BASH_REMATCH[3]}"
+#           echo "crate_name: $crate_name, old_version: $old_version, new_version: $new_version"
 
-          regex='[Bb]ump (.+) from ([^ ]+) to ([^ ]+)( in .*)?'
-          if [[ ! "$input" =~ $regex ]]; then
-            echo "unexpected pattern"
-            exit 1
-          fi
+#           cargo xtask update-crate --package $crate_name --from $old_version --to $new_version
 
-          crate_name="${BASH_REMATCH[1]}"
-          old_version="${BASH_REMATCH[2]}"
-          new_version="${BASH_REMATCH[3]}"
-          echo "crate_name: $crate_name, old_version: $old_version, new_version: $new_version"
+#           ./scripts/cargo-for-all-lock-files.sh --ignore-exit-code -- update -p $crate_name:$old_version --precise $new_version
 
-          cargo xtask update-crate --package $crate_name --from $old_version --to $new_version
+#           ./scripts/cargo-for-all-lock-files.sh tree
 
-          ./scripts/cargo-for-all-lock-files.sh --ignore-exit-code -- update -p $crate_name:$old_version --precise $new_version
-
-          ./scripts/cargo-for-all-lock-files.sh tree
-
-      - name: push
-        run: |
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "✅ Nothing to update"
-          else
-            git add **/Cargo.toml
-            git add **/Cargo.lock
-            git commit -am "Update all workspaces"
-            git push
-          fi
+#       - name: push
+#         run: |
+#           if [ -z "$(git status --porcelain)" ]; then
+#             echo "✅ Nothing to update"
+#           else
+#             git config user.email "49699333+dependabot[bot]@users.noreply.github.com"
+#             git config user.name "dependabot[bot]"
+#             git add **/Cargo.toml
+#             git add **/Cargo.lock
+#             git commit -am "Update all workspaces"
+#             git push
+#           fi

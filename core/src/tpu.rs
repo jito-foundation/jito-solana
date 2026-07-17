@@ -4,11 +4,16 @@
 use {
     crate::{
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
+        bam_dependencies::{BamConnectionState, BamDependencies},
+        bam_manager::BamManager,
         banking_stage::{
             BankingControlMsg, BankingStage, BankingStageHandle,
+            consumer::TipProcessingDependencies,
             transaction_scheduler::scheduler_controller::SchedulerConfig,
         },
         banking_trace::{Channels, TracerThread},
+        bundle_sigverify_stage::BundleSigverifyStage,
+        bundle_stage::{BundleStage, bundle_account_locker::BundleAccountLocker},
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VoteTracker,
@@ -18,8 +23,14 @@ use {
             ForwardAddressGetter, ForwardingClientConfig, SpawnForwardingStageResult,
             spawn_forwarding_stage,
         },
+        proxy::{
+            block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
+            fetch_stage_manager::FetchStageManager,
+            relayer_stage::{RelayerConfig, RelayerStage},
+        },
         sigverify_stage::SigVerifyStage,
         staked_nodes_updater_service::StakedNodesUpdaterService,
+        tip_manager::{TipManager, TipManagerConfig},
         tpu_entry_notifier::TpuEntryNotifier,
         validator::{BlockProductionMethod, GeneratorConfig},
     },
@@ -27,7 +38,9 @@ use {
     agave_votor::event::VotorEventSender,
     agave_votor_messages::VerifiedVoterSlotsSender,
     agave_xdp::transmitter::XdpSender,
-    crossbeam_channel::{Receiver, bounded, unbounded},
+    ahash::HashSet as AHashSet,
+    arc_swap::ArcSwap,
+    crossbeam_channel::{Receiver, bounded},
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -47,6 +60,7 @@ use {
         transaction_execution::TransactionStatusSender,
         vote_sender_types::{ReplayVoteReceiver, ReplayVoteSender},
     },
+    solana_signer::Signer,
     solana_streamer::{
         evicting_sender::EvictingSender,
         quic::{
@@ -57,15 +71,18 @@ use {
         streamer::StakedNodes,
     },
     solana_turbine::{
-        XdpSender as TurbineXdpSender,
+        ShredReceiverAddresses, XdpSender as TurbineXdpSender,
         broadcast_stage::{BroadcastStage, BroadcastStageType},
     },
     std::{
         collections::{HashMap, HashSet},
-        net::{Ipv4Addr, UdpSocket},
+        net::{Ipv4Addr, SocketAddr, UdpSocket},
         num::NonZeroUsize,
         path::PathBuf,
-        sync::{Arc, RwLock, atomic::AtomicBool},
+        sync::{
+            Arc, Mutex, RwLock,
+            atomic::{AtomicBool, AtomicU8},
+        },
         thread::{self, JoinHandle},
     },
     tokio::sync::mpsc,
@@ -111,6 +128,12 @@ pub struct Tpu {
     staked_nodes_updater_service: StakedNodesUpdaterService,
     tracer_thread_hdl: TracerThread,
     tpu_vote_quic_t: thread::JoinHandle<()>,
+    relayer_stage: RelayerStage,
+    block_engine_stage: BlockEngineStage,
+    fetch_stage_manager: FetchStageManager,
+    bundle_stage: BundleStage,
+    bundle_sigverify_stage: BundleSigverifyStage,
+    bam_manager: BamManager,
 }
 
 impl Tpu {
@@ -163,6 +186,14 @@ impl Tpu {
         scheduler_bindings: Option<(PathBuf, mpsc::Sender<BankingControlMsg>)>,
         cancel: CancellationToken,
         votor_event_sender: VotorEventSender,
+        block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
+        relayer_config: Arc<ArcSwap<RelayerConfig>>,
+        tip_manager_config: TipManagerConfig,
+        shredstream_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        bam_shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+        multicast_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        bam_url: Arc<ArcSwap<Option<String>>>,
     ) -> Self {
         let TpuSockets {
             vote: tpu_vote_sockets,
@@ -173,7 +204,21 @@ impl Tpu {
             vote_forwarding_client: vote_forwarding_client_socket,
         } = sockets;
 
-        let (packet_sender, packet_receiver) = bounded(TPU_CHANNEL_SIZE);
+        // [----------]
+        // [-- QUIC --] \
+        // [----------]  \____     [-----------------------]     [--------------------]     [------------------]
+        //                    ---- [-- FetchStageManager --] --> [-- SigverifyStage --] --> [-- BankingStage --]
+        // [--------------]  /     [-----------------------]     [--------------------]     [------------------]
+        // [-- Vortexor --] /
+        // [--------------]
+        //
+        //             fetch_stage_manager_*               sigverify_stage_*
+
+        // Packets from fetch stage and quic server are intercepted and sent through fetch_stage_manager
+        // If relayer is connected, packets are dropped. If not, packets are forwarded to sigverify.
+        let (fetch_stage_manager_sender, fetch_stage_manager_receiver) = bounded(TPU_CHANNEL_SIZE);
+        let (sigverify_stage_sender, sigverify_stage_receiver) = bounded(TPU_CHANNEL_SIZE);
+
         let (vote_packet_sender, vote_packet_receiver) = bounded(TPU_VOTE_CHANNEL_SIZE);
         let evicting_vote_sender =
             EvictingSender::new(vote_packet_sender.clone(), vote_packet_receiver.clone());
@@ -182,7 +227,7 @@ impl Tpu {
         let fetch_stage = FetchStage::new_with_sender(
             tpu_vote_sockets,
             exit.clone(),
-            &packet_sender,
+            &fetch_stage_manager_sender,
             &evicting_vote_sender,
             forwarded_packet_receiver,
             poh_recorder,
@@ -197,8 +242,8 @@ impl Tpu {
         );
 
         let Channels {
-            non_vote_sender,
-            non_vote_receiver,
+            non_vote_sender: banking_stage_sender,
+            non_vote_receiver: banking_stage_receiver,
             tpu_vote_sender,
             tpu_vote_receiver,
             gossip_vote_sender,
@@ -244,7 +289,7 @@ impl Tpu {
             "quic_streamer_tpu",
             transactions_quic_sockets,
             keypair,
-            packet_sender,
+            fetch_stage_manager_sender,
             staked_nodes.clone(),
             tpu_quic_server_config.quic_streamer_config,
             tpu_quic_server_config.qos_config,
@@ -280,9 +325,9 @@ impl Tpu {
         let scheduler_priority_floor = Arc::new(SchedulerPriorityFloor::new());
 
         let (sigverify_stage, gossip_sigverify_handle) = SigVerifyStage::new(
-            packet_receiver,
+            sigverify_stage_receiver,
             vote_packet_receiver,
-            non_vote_sender,
+            banking_stage_sender.clone(),
             tpu_vote_sender,
             forward_stage_sender.clone(),
             tpu_sigverify_threads,
@@ -291,6 +336,61 @@ impl Tpu {
             Some(scheduler_priority_floor.clone()),
         );
 
+        let sigverify_threadpool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(tpu_sigverify_threads.get())
+                .thread_name(|i| format!("solBndlSigV{i:02}"))
+                .build()
+                .expect("new rayon threadpool"),
+        );
+
+        let block_builder_fee_info = Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo {
+            block_builder: cluster_info.keypair().pubkey(),
+            block_builder_commission: 0,
+        }));
+
+        let (unverified_bundle_sender, unverified_bundle_receiver) = bounded(1024);
+        let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8));
+
+        let block_engine_stage = BlockEngineStage::new(
+            block_engine_config,
+            unverified_bundle_sender,
+            cluster_info.clone(),
+            sigverify_stage_sender.clone(),
+            banking_stage_sender.clone(),
+            exit.clone(),
+            &block_builder_fee_info,
+            shredstream_receiver_address.clone(),
+            bam_enabled.clone(),
+        );
+        let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
+        let bundle_sigverify_stage = BundleSigverifyStage::new(
+            sigverify_threadpool.clone(),
+            unverified_bundle_receiver,
+            verified_bundle_sender,
+            exit.clone(),
+        );
+
+        let bam_tpu_info = Arc::new(ArcSwap::new(Arc::new(None)));
+        let (heartbeat_tx, heartbeat_rx) = bounded(TPU_CHANNEL_SIZE);
+        let fetch_stage_manager = FetchStageManager::new(
+            cluster_info.clone(),
+            heartbeat_rx,
+            fetch_stage_manager_receiver,
+            sigverify_stage_sender.clone(),
+            exit.clone(),
+            bam_enabled.clone(),
+            cluster_info.my_contact_info().clone(),
+            bam_tpu_info.clone(),
+        );
+
+        let relayer_stage = RelayerStage::new(
+            relayer_config,
+            cluster_info.clone(),
+            heartbeat_tx,
+            sigverify_stage_sender,
+            exit.clone(),
+        );
         let cluster_info_vote_listener = ClusterInfoVoteListener::new(
             exit.clone(),
             cluster_info.clone(),
@@ -307,23 +407,55 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
+        let bundle_account_locker = BundleAccountLocker::default();
+
+        let tip_manager = TipManager::new(tip_manager_config);
+        let filter_keys = {
+            let mut filter_keys = filter_keys.as_ref().clone();
+            filter_keys.insert(tip_manager.tip_payment_program_id());
+            Arc::new(filter_keys)
+        };
+        let (bam_batch_sender, bam_batch_receiver) = bounded(100_000);
+        let (bam_outbound_sender, bam_outbound_receiver) = mpsc::channel(100_000);
+        let bam_dependencies = BamDependencies {
+            bam_enabled: bam_enabled.clone(),
+            batch_sender: bam_batch_sender,
+            batch_receiver: bam_batch_receiver,
+            outbound_sender: bam_outbound_sender,
+            cluster_info: cluster_info.clone(),
+            block_builder_fee_info: Arc::new(ArcSwap::from_pointee(BlockBuilderFeeInfo::default())),
+            bam_node_pubkey: Arc::new(ArcSwap::from_pointee(Pubkey::default())),
+            bank_forks: bank_forks.clone(),
+            bam_tpu_info,
+            bam_shred_receiver_addresses: bam_shred_receiver_addresses.clone(),
+        };
+
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
             poh_recorder.clone(),
-            transaction_recorder,
-            non_vote_receiver,
+            transaction_recorder.clone(),
+            banking_stage_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
             banking_control_receiver,
             block_production_num_workers,
             block_production_scheduler_config,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             log_messages_bytes_limit,
             bank_forks.clone(),
-            prioritization_fee_cache,
-            filter_keys,
+            prioritization_fee_cache.clone(),
+            filter_keys.clone(),
             scheduler_priority_floor,
+            bundle_account_locker.clone(),
+            Some(TipProcessingDependencies {
+                tip_manager: tip_manager.clone(),
+                last_tip_updated_slot: Arc::new(Mutex::new(0)),
+                block_builder_fee_info: bam_dependencies.block_builder_fee_info.clone(),
+                cluster_info: cluster_info.clone(),
+                bundle_account_locker: bundle_account_locker.clone(),
+            }),
+            Some(bam_dependencies.clone()),
         );
 
         #[cfg(unix)]
@@ -344,9 +476,35 @@ impl Tpu {
             ForwardAddressGetter::new(cluster_info.clone(), poh_recorder.clone()),
         );
 
+        let bundle_stage = BundleStage::new(
+            cluster_info,
+            bank_forks.clone(),
+            poh_recorder,
+            transaction_recorder,
+            verified_bundle_receiver,
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            exit.clone(),
+            tip_manager,
+            bundle_account_locker,
+            &block_builder_fee_info,
+            prioritization_fee_cache.clone(),
+            filter_keys.iter().copied().collect::<AHashSet<_>>(),
+        );
+
+        let bam_manager = BamManager::new(
+            exit.clone(),
+            bam_url,
+            bam_dependencies,
+            bam_outbound_receiver,
+            poh_recorder.clone(),
+            key_notifiers.clone(),
+        );
+
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
-                let (broadcast_entry_sender, broadcast_entry_receiver) = unbounded();
+                let (broadcast_entry_sender, broadcast_entry_receiver) = bounded(TPU_CHANNEL_SIZE);
                 let tpu_entry_notifier = TpuEntryNotifier::new(
                     entry_receiver,
                     entry_notification_sender,
@@ -370,6 +528,10 @@ impl Tpu {
             shred_version,
             turbine_xdp_sender,
             votor_event_sender,
+            shredstream_receiver_address,
+            shred_receiver_addresses,
+            bam_shred_receiver_addresses,
+            multicast_receiver_address,
         );
 
         let mut key_notifiers = key_notifiers.write().unwrap();
@@ -391,6 +553,12 @@ impl Tpu {
             staked_nodes_updater_service,
             tracer_thread_hdl,
             tpu_vote_quic_t,
+            block_engine_stage,
+            relayer_stage,
+            fetch_stage_manager,
+            bundle_stage,
+            bundle_sigverify_stage,
+            bam_manager,
         }
     }
 
@@ -405,6 +573,12 @@ impl Tpu {
             self.tpu_quic_t.join(),
             self.tpu_forwards_quic_t.join(),
             self.tpu_vote_quic_t.join(),
+            self.bundle_stage.join(),
+            self.bundle_sigverify_stage.join(),
+            self.relayer_stage.join(),
+            self.block_engine_stage.join(),
+            self.fetch_stage_manager.join(),
+            self.bam_manager.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

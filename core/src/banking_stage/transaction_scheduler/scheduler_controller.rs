@@ -9,6 +9,7 @@ use {
         scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
     },
     crate::{
+        bam_dependencies::BamConnectionState,
         banking_stage::{
             TOTAL_BUFFERED_PACKETS,
             consume_worker::ConsumeWorkerMetrics,
@@ -30,7 +31,7 @@ use {
         num::{NonZeroU64, Saturating},
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU8, Ordering},
         },
         time::{Duration, Instant},
     },
@@ -148,6 +149,10 @@ where
     recheck_chunk: Vec<TransactionPriorityId>,
     /// Saturation detection and priority floor publication.
     saturation_state: SaturationState,
+    /// This is the BAM controller.
+    bam_controller: bool,
+    /// Whether BAM is enabled.
+    bam_enabled: Arc<AtomicU8>,
 }
 
 impl<R, S> SchedulerController<R, S>
@@ -155,6 +160,7 @@ where
     R: ReceiveAndBuffer,
     S: Scheduler<R::Transaction>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         exit: Arc<AtomicBool>,
         config: SchedulerConfig,
@@ -164,6 +170,70 @@ where
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
         priority_floor: Arc<SchedulerPriorityFloor>,
+        bam_controller: bool,
+        bam_enabled: Arc<AtomicU8>,
+    ) -> Self {
+        Self::new_with_metrics_id(
+            0,
+            exit,
+            config,
+            decision_maker,
+            receive_and_buffer,
+            sharable_banks,
+            scheduler,
+            worker_metrics,
+            priority_floor,
+            bam_controller,
+            bam_enabled,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_metrics_id(
+        metrics_id: u32,
+        exit: Arc<AtomicBool>,
+        config: SchedulerConfig,
+        decision_maker: DecisionMaker,
+        receive_and_buffer: R,
+        sharable_banks: SharableBanks,
+        scheduler: S,
+        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+        priority_floor: Arc<SchedulerPriorityFloor>,
+        bam_controller: bool,
+        bam_enabled: Arc<AtomicU8>,
+    ) -> Self {
+        SchedulerController::new_with_metrics(
+            exit,
+            config,
+            decision_maker,
+            receive_and_buffer,
+            sharable_banks,
+            scheduler,
+            SchedulerCountMetrics::new(metrics_id),
+            SchedulerTimingMetrics::new(metrics_id),
+            worker_metrics,
+            SchedulingDetails::new(metrics_id),
+            priority_floor,
+            bam_controller,
+            bam_enabled,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_metrics(
+        exit: Arc<AtomicBool>,
+        config: SchedulerConfig,
+        decision_maker: DecisionMaker,
+        receive_and_buffer: R,
+        sharable_banks: SharableBanks,
+        scheduler: S,
+        count_metrics: SchedulerCountMetrics,
+        timing_metrics: SchedulerTimingMetrics,
+        worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+        scheduling_details: SchedulingDetails,
+        priority_floor: Arc<SchedulerPriorityFloor>,
+        bam_controller: bool,
+        bam_enabled: Arc<AtomicU8>,
     ) -> Self {
         priority_floor.clear();
         let container_capacity = TOTAL_BUFFERED_PACKETS;
@@ -176,13 +246,15 @@ where
             sharable_banks,
             container: R::Container::with_capacity(container_capacity),
             scheduler,
-            count_metrics: SchedulerCountMetrics::default(),
-            timing_metrics: SchedulerTimingMetrics::default(),
+            count_metrics,
+            timing_metrics,
             worker_metrics,
-            scheduling_details: SchedulingDetails::default(),
+            scheduling_details,
             recheck_cursor: None,
             recheck_chunk: Vec::with_capacity(CHECK_CHUNK),
             saturation_state,
+            bam_controller,
+            bam_enabled,
         }
     }
 
@@ -213,7 +285,7 @@ where
             self.timing_metrics
                 .maybe_report_and_reset_slot(new_leader_slot);
 
-            if most_recent_leader_slot != new_leader_slot {
+            if !self.bam_controller && most_recent_leader_slot != new_leader_slot {
                 self.container.flush_held_transactions();
                 most_recent_leader_slot = new_leader_slot;
                 cost_pacer = decision.bank().map(|b| {
@@ -251,7 +323,7 @@ where
                 });
             }
 
-            self.receive_completed()?;
+            self.receive_completed(&decision)?;
             let scheduled = self.process_transactions(&decision, cost_pacer.as_ref(), &now)?;
             if scheduled == 0 {
                 let (_, clean_time_us) = measure_us!(self.incremental_recheck());
@@ -264,7 +336,7 @@ where
             })?;
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
-            let should_report = self.count_metrics.interval_has_data();
+            let should_report = self.count_metrics.interval_has_data() && self.scheduling_enabled();
             let priority_min_max = self.container.get_min_max_priority();
             self.count_metrics.update(|count_metrics| {
                 count_metrics.update_priority_stats(priority_min_max);
@@ -292,9 +364,25 @@ where
     ) -> Result<usize, SchedulerError> {
         let scheduled = match decision {
             BufferedPacketsDecision::Consume(_bank) => {
-                let scheduling_budget = cost_pacer
-                    .expect("cost pacer must be set for Consume")
-                    .scheduling_budget(now);
+                if !self.scheduling_enabled() {
+                    // When BAM disconnects while we're still leader, `schedule`
+                    // is never called so `pull_into_prio_graph` never drains the
+                    // priority queue. Drain leftover batch entries here to avoid
+                    // stale batches accumulating until the next slot change.
+                    if self.bam_controller {
+                        while let Some(id) = self.container.pop() {
+                            self.container.remove_by_id(id.id);
+                        }
+                    }
+                    return Ok(0);
+                }
+                let scheduling_budget = if self.bam_controller {
+                    u64::MAX
+                } else {
+                    cost_pacer
+                        .expect("cost pacer must be set for Consume")
+                        .scheduling_budget(now)
+                };
                 let (scheduling_summary, schedule_time_us) = measure_us!(
                     self.scheduler
                         .schedule(&mut self.container, scheduling_budget,)?
@@ -354,7 +442,12 @@ where
     /// Clears the transaction state container.
     /// This only clears pending transactions, and does **not** clear in-flight transactions.
     fn clear_container(&mut self) {
+        if self.bam_controller {
+            return;
+        }
+
         let mut num_dropped_on_clear = Saturating::<usize>(0);
+
         while let Some(id) = self.container.pop() {
             self.container.remove_by_id(id.id);
             num_dropped_on_clear += 1;
@@ -368,7 +461,14 @@ where
     /// Incrementally recheck queued transactions for validity. A cursor walks the
     /// priority queue from highest to lowest priority. When the cursor reaches the end it
     /// wraps back to the top, continuously sweeping the queue.
+    ///
+    /// Skipped for the BAM controller: its priority queue holds `Batch` entries
+    /// (not individual `TransactionState` entries), so `get_transaction` would
+    /// return `None` and panic. BAM has its own validation in the scheduler.
     fn incremental_recheck(&mut self) {
+        if self.bam_controller {
+            return;
+        }
         let bank = self.sharable_banks.working();
 
         // Walk the cursor to collect up to one chunk of valid IDs.
@@ -432,9 +532,14 @@ where
     }
 
     /// Receives completed transactions from the workers and updates metrics.
-    fn receive_completed(&mut self) -> Result<(), SchedulerError> {
-        let ((num_transactions, num_retryable), receive_completed_time_us) =
-            measure_us!(self.scheduler.receive_completed(&mut self.container)?);
+    fn receive_completed(
+        &mut self,
+        decision: &BufferedPacketsDecision,
+    ) -> Result<(), SchedulerError> {
+        let ((num_transactions, num_retryable), receive_completed_time_us) = measure_us!(
+            self.scheduler
+                .receive_completed(&mut self.container, decision)?
+        );
 
         self.count_metrics.update(|count_metrics| {
             count_metrics.num_finished += num_transactions;
@@ -495,6 +600,12 @@ where
 
         Ok(receiving_stats)
     }
+
+    fn scheduling_enabled(&self) -> bool {
+        let bam_connected = BamConnectionState::from_u8(self.bam_enabled.load(Ordering::Relaxed))
+            == BamConnectionState::Connected;
+        self.bam_controller == bam_connected
+    }
 }
 
 struct CostPacer {
@@ -528,15 +639,19 @@ impl CostPacer {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::{
-            TransactionViewReceiveAndBuffer,
-            consumer::{RetryableIndex, TARGET_NUM_TRANSACTIONS_PER_BATCH},
-            scheduler_messages::{ConsumeWork, FinishedConsumeWork, TransactionBatchId},
-            tests::create_slow_genesis_config,
-            transaction_scheduler::greedy_scheduler::{GreedyScheduler, GreedySchedulerConfig},
+        crate::{
+            banking_stage::{
+                TransactionViewReceiveAndBuffer,
+                consumer::{RetryableIndex, TARGET_NUM_TRANSACTIONS_PER_BATCH},
+                scheduler_messages::{ConsumeWork, FinishedConsumeWork, TransactionBatchId},
+                tests::create_slow_genesis_config,
+                transaction_scheduler::greedy_scheduler::{GreedyScheduler, GreedySchedulerConfig},
+            },
+            bundle_stage::bundle_account_locker::BundleAccountLocker,
         },
         agave_banking_stage_ingress_types::{BankingPacketBatch, BankingPacketReceiver},
-        crossbeam_channel::{Receiver, Sender, bounded},
+        ahash::HashSet,
+        crossbeam_channel::{Receiver, Sender, bounded, unbounded},
         itertools::Itertools,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_fee_calculator::FeeRateGovernor,
@@ -575,18 +690,24 @@ mod tests {
     fn test_create_transaction_view_receive_and_buffer(
         receiver: BankingPacketReceiver,
         bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
         TransactionViewReceiveAndBuffer {
             receiver,
             sharable_banks: bank_forks.read().unwrap().sharable_banks(),
-            filter_keys: Arc::default(),
+            filter_keys: Arc::new(blacklisted_accounts),
         }
     }
 
     #[allow(clippy::type_complexity)]
     fn create_test_frame<R: ReceiveAndBuffer>(
         num_threads: usize,
-        create_receive_and_buffer: impl FnOnce(BankingPacketReceiver, Arc<RwLock<BankForks>>) -> R,
+        create_receive_and_buffer: impl FnOnce(
+            BankingPacketReceiver,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> R,
+        bundle_account_locker: BundleAccountLocker,
     ) -> (
         TestFrame<R::Transaction>,
         SchedulerController<R, GreedyScheduler<R::Transaction>>,
@@ -603,9 +724,12 @@ mod tests {
 
         let decision_maker = DecisionMaker::new(shared_leader_state.clone());
 
-        let (banking_packet_sender, banking_packet_receiver) = bounded(1024);
-        let receive_and_buffer =
-            create_receive_and_buffer(banking_packet_receiver, bank_forks.clone());
+        let (banking_packet_sender, banking_packet_receiver) = unbounded();
+        let receive_and_buffer = create_receive_and_buffer(
+            banking_packet_receiver,
+            bank_forks.clone(),
+            HashSet::default(),
+        );
 
         let (consume_work_senders, consume_work_receivers) = create_channels(num_threads);
         let (finished_consume_work_sender, finished_consume_work_receiver) = bounded(1024);
@@ -624,6 +748,7 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             GreedySchedulerConfig::default(),
+            bundle_account_locker,
         );
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(
@@ -635,6 +760,8 @@ mod tests {
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
             Arc::new(SchedulerPriorityFloor::default()),
+            false,
+            Arc::new(AtomicU8::new(BamConnectionState::Disconnected as u8)),
         );
 
         (test_frame, scheduler_controller)
@@ -684,7 +811,7 @@ mod tests {
             .decision_maker
             .make_consume_or_forward_decision();
         assert!(matches!(decision, BufferedPacketsDecision::Consume(_)));
-        assert!(scheduler_controller.receive_completed().is_ok());
+        assert!(scheduler_controller.receive_completed(&decision).is_ok());
 
         // Time is not a reliable way for deterministic testing.
         // Loop here until no more packets are received, this avoids parallel
@@ -721,8 +848,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "batch id 0 is not being tracked")]
     fn test_unexpected_batch_id() {
-        let (test_frame, mut scheduler_controller) =
-            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
+        let (test_frame, mut scheduler_controller) = create_test_frame(
+            1,
+            test_create_transaction_view_receive_and_buffer,
+            BundleAccountLocker::default(),
+        );
         let TestFrame {
             finished_consume_work_sender,
             ..
@@ -735,8 +865,12 @@ mod tests {
                     ids: vec![],
                     transactions: vec![],
                     max_ages: vec![],
+                    revert_on_error: false,
+                    respond_with_extra_info: false,
+                    max_schedule_slot: None,
                 },
                 retryable_indexes: vec![],
+                extra_info: None,
             })
             .unwrap();
 
@@ -745,8 +879,11 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_single_threaded_no_conflicts() {
-        let (mut test_frame, mut scheduler_controller) =
-            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
+        let (mut test_frame, mut scheduler_controller) = create_test_frame(
+            1,
+            test_create_transaction_view_receive_and_buffer,
+            BundleAccountLocker::default(),
+        );
         let TestFrame {
             bank,
             mint_keypair,
@@ -804,8 +941,11 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_single_threaded_conflict() {
-        let (mut test_frame, mut scheduler_controller) =
-            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
+        let (mut test_frame, mut scheduler_controller) = create_test_frame(
+            1,
+            test_create_transaction_view_receive_and_buffer,
+            BundleAccountLocker::default(),
+        );
         let TestFrame {
             bank,
             mint_keypair,
@@ -866,8 +1006,11 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_single_threaded_multi_batch() {
-        let (mut test_frame, mut scheduler_controller) =
-            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
+        let (mut test_frame, mut scheduler_controller) = create_test_frame(
+            1,
+            test_create_transaction_view_receive_and_buffer,
+            BundleAccountLocker::default(),
+        );
         let TestFrame {
             bank,
             mint_keypair,
@@ -935,8 +1078,11 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_simple_thread_selection() {
-        let (mut test_frame, mut scheduler_controller) =
-            create_test_frame(2, test_create_transaction_view_receive_and_buffer);
+        let (mut test_frame, mut scheduler_controller) = create_test_frame(
+            2,
+            test_create_transaction_view_receive_and_buffer,
+            BundleAccountLocker::default(),
+        );
         let TestFrame {
             bank,
             mint_keypair,
@@ -1005,8 +1151,11 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_retryable() {
-        let (mut test_frame, mut scheduler_controller) =
-            create_test_frame(1, test_create_transaction_view_receive_and_buffer);
+        let (mut test_frame, mut scheduler_controller) = create_test_frame(
+            1,
+            test_create_transaction_view_receive_and_buffer,
+            BundleAccountLocker::default(),
+        );
         let TestFrame {
             bank,
             mint_keypair,
@@ -1067,6 +1216,7 @@ mod tests {
             .send(FinishedConsumeWork {
                 work: consume_work,
                 retryable_indexes: vec![RetryableIndex::new(1, true)],
+                extra_info: None,
             })
             .unwrap();
 
@@ -1081,6 +1231,83 @@ mod tests {
             .map(|tx| tx.message_hash())
             .collect_vec();
         assert_eq!(message_hashes, vec![&tx1_hash]);
+    }
+
+    #[test]
+    fn test_bam_controller_process_transactions_no_panic() {
+        use crate::banking_stage::transaction_scheduler::{
+            bam_receive_and_buffer::BamReceiveAndBuffer, bam_scheduler::BamScheduler,
+        };
+
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_slow_genesis_config(u64::MAX);
+        genesis_config.fee_rate_governor = FeeRateGovernor::new(5000, 0);
+        let (bank, bank_forks) = Bank::new_with_bank_forks_for_tests(&genesis_config);
+
+        let mut shared_leader_state = SharedLeaderState::new(0, None, None);
+        let decision_maker = DecisionMaker::new(shared_leader_state.clone());
+
+        let bam_enabled = Arc::new(AtomicU8::new(BamConnectionState::Connected as u8));
+        let exit = Arc::new(AtomicBool::new(false));
+
+        let (_bundle_sender, bundle_receiver) = unbounded();
+        let (response_sender, _response_receiver) = tokio::sync::mpsc::channel(100);
+
+        let receive_and_buffer = BamReceiveAndBuffer::new(
+            exit.clone(),
+            bam_enabled.clone(),
+            bundle_receiver,
+            response_sender.clone(),
+            bank_forks.clone(),
+            None,
+            HashSet::default(),
+        );
+
+        let (consume_work_sender, _consume_work_receiver) = unbounded();
+        let (_finished_work_sender, finished_work_receiver) = unbounded();
+
+        let scheduler = BamScheduler::new(
+            consume_work_sender,
+            finished_work_receiver,
+            response_sender,
+            bank_forks.clone(),
+        );
+
+        let mut scheduler_controller = SchedulerController::new(
+            exit.clone(),
+            SchedulerConfig::default(),
+            decision_maker,
+            receive_and_buffer,
+            bank_forks.read().unwrap().sharable_banks(),
+            scheduler,
+            vec![],
+            Arc::new(SchedulerPriorityFloor::default()),
+            true, // bam_controller
+            bam_enabled,
+        );
+
+        // Set leader state so DecisionMaker returns Consume
+        shared_leader_state.store(Arc::new(LeaderState::new(
+            Some(bank.clone()),
+            bank.tick_height(),
+            None,
+            None,
+        )));
+
+        let decision = scheduler_controller
+            .decision_maker
+            .make_consume_or_forward_decision();
+        assert!(matches!(decision, BufferedPacketsDecision::Consume(_)));
+
+        // This would have panicked before the fix: cost_pacer is None for
+        // bam_controller, but process_transactions now uses u64::MAX budget.
+        let now = Instant::now();
+        let result = scheduler_controller.process_transactions(&decision, None, &now);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+
+        exit.store(true, Ordering::Relaxed);
     }
 }
 
