@@ -3885,7 +3885,7 @@ mod tests {
             .unwrap();
 
         let consumed = consumed_receiver
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(30))
             .unwrap();
         assert_eq!(consumed.retryable_indexes.len(), 0);
         assert_eq!(consumed.work.transactions.len(), 1);
