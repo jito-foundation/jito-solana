@@ -3863,7 +3863,13 @@ mod tests {
             })
             .unwrap();
 
+<<<<<<< HEAD
         let consumed = consumed_receiver.recv().unwrap();
+=======
+        let consumed = consumed_receiver
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap();
+>>>>>>> 3c59e9ac24 (fix(bam): Fix flakey CI tests by signaling parsing thread shutdown (#1520))
         assert_eq!(consumed.retryable_indexes.len(), 0);
         assert_eq!(consumed.work.transactions.len(), 1);
         assert_eq!(
