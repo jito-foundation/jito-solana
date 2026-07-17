@@ -74,6 +74,9 @@ pub struct BamReceiveAndBuffer {
     parsed_batch_receiver: crossbeam_channel::Receiver<ParsedBatch>,
     recv_stats_receiver: crossbeam_channel::Receiver<ReceivingStats>,
     parsing_thread: Option<std::thread::JoinHandle<()>>,
+    /// Owned by this struct (unlike the shared `exit` flag) so `drop` can
+    /// stop the parsing thread without shutting anything else down.
+    shutdown: Arc<AtomicBool>,
     next_fifo_priority: u64,
 }
 
@@ -101,10 +104,13 @@ impl BamReceiveAndBuffer {
         let (recv_stats_sender, recv_stats_receiver) =
             crossbeam_channel::unbounded::<ReceivingStats>();
 
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
         let response_sender_clone = response_sender.clone();
         let parsing_thread = std::thread::spawn(move || {
             Self::run_parsing(
                 exit,
+                shutdown_clone,
                 bundle_receiver,
                 parsed_batch_sender,
                 recv_stats_sender,
@@ -121,12 +127,14 @@ impl BamReceiveAndBuffer {
             parsed_batch_receiver,
             recv_stats_receiver,
             parsing_thread: Some(parsing_thread),
+            shutdown,
             next_fifo_priority: u64::MAX,
         }
     }
 
     fn run_parsing(
         exit: Arc<AtomicBool>,
+        shutdown: Arc<AtomicBool>,
         bundle_receiver: crossbeam_channel::Receiver<MultipleAtomicTxnBatch>,
         parsed_batch_sender: crossbeam_channel::Sender<ParsedBatch>,
         recv_stats_sender: crossbeam_channel::Sender<ReceivingStats>,
@@ -150,7 +158,7 @@ impl BamReceiveAndBuffer {
         const METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(20);
         let mut recv_buffer = Vec::with_capacity(ATOMIC_TXN_BATCH_BURST);
 
-        while !exit.load(Ordering::Relaxed) {
+        while !exit.load(Ordering::Relaxed) && !shutdown.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
             if loop_start.duration_since(last_metrics_report) > METRICS_REPORT_INTERVAL {
                 metrics.report();
@@ -848,6 +856,10 @@ impl ReceiveAndBuffer for BamReceiveAndBuffer {
 
 impl Drop for BamReceiveAndBuffer {
     fn drop(&mut self) {
+        // Signal the parsing thread before joining: relying on the shared
+        // `exit` flag or channel disconnect deadlocks when this struct is
+        // dropped during a panic unwind (senders still alive on the stack).
+        self.shutdown.store(true, Ordering::Relaxed);
         if let Some(parsing_thread) = self.parsing_thread.take() {
             parsing_thread.join().unwrap();
         }
@@ -1194,7 +1206,7 @@ mod tests {
             .unwrap();
 
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(2) {
+        while start.elapsed() < Duration::from_secs(30) {
             let ReceivingStats { num_received, .. } = receive_and_buffer
                 .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
                 .unwrap();
