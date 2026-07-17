@@ -97,6 +97,19 @@ if [[ -n $CI ]]; then
     ARGS+=(--security-opt seccomp=unconfined)
     # Adjust memlock limit to let io_uring register buffers
     ARGS+=(--ulimit memlock=-1:-1)
+
+    # git fetch over git@github.com in Docker (ci/test-sanity.sh): agent SSH, no host-key prompt.
+    if [[ -d "${HOME}/.ssh" ]]; then
+      ARGS+=(--volume "${HOME}/.ssh:/ci-ssh:ro")
+      for key in id_ed25519 id_rsa; do
+        if [[ -f "${HOME}/.ssh/${key}" ]]; then
+          ARGS+=(
+            --env "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o IdentityFile=/ci-ssh/${key}"
+          )
+          break
+        fi
+      done
+    fi
   fi
 fi
 
