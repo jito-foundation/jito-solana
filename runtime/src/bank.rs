@@ -4033,7 +4033,7 @@ impl Bank {
                         enable_return_data_recording: true,
                         enable_transaction_balance_recording: true,
                     },
-                    drop_on_failure: true,
+                    drop_on_failure: false,
                     all_or_nothing: true,
                     strict_nonce_size_check: true,
                     drop_noop_transactions: true,
