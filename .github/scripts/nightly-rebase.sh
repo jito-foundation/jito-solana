@@ -29,6 +29,8 @@ trap 'on_fatal_error ${LINENO}' ERR
 : "${CHANNEL:?CHANNEL is required}"
 : "${UPSTREAM_CHANNEL:?UPSTREAM_CHANNEL is required}"
 : "${CHANNEL_OWNER:?CHANNEL_OWNER is required}"
+: "${COMMITTER_EMAIL:?COMMITTER_EMAIL is required}"
+: "${COMMITTER_NAME:?COMMITTER_NAME is required}"
 : "${GH_REPO:?GH_REPO is required}"
 : "${RESULT_FILE:?RESULT_FILE is required}"
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
@@ -254,9 +256,9 @@ main() {
     local carry_file
     local body_file
 
-    git config user.email "infra@jito.wtf"
-    git config user.name "Jito Infrastructure"
-    git config commit.gpgsign false
+    git config user.email "${COMMITTER_EMAIL}"
+    git config user.name "${COMMITTER_NAME}"
+    git config commit.gpgsign true
 
     git remote add agave "${UPSTREAM_REPO}"
     git -c http.https://github.com/.extraheader= fetch --no-tags agave \
@@ -291,7 +293,7 @@ main() {
     fi
 
     git checkout -B "rebase-candidate/${CHANNEL}" "origin/${CHANNEL}"
-    if ! git rebase "agave/${UPSTREAM_CHANNEL}"; then
+    if ! git rebase --gpg-sign "agave/${UPSTREAM_CHANNEL}"; then
         write_conflict_report "${staging_sha}"
         git rebase --abort
         close_open_pr "Superseded by ${result_url}."
@@ -311,7 +313,7 @@ main() {
             # fast-forward-only. The candidate parent preserves Agave history.
             new_staging_sha="$(
                 printf 'Refresh nightly rebase for %s\n' "${CHANNEL}" |
-                    git commit-tree "${candidate_sha}^{tree}" \
+                    git commit-tree -S "${candidate_sha}^{tree}" \
                         -p "${staging_sha}" -p "${candidate_sha}"
             )"
         fi
