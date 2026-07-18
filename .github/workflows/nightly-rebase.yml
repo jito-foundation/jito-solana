@@ -78,14 +78,24 @@ jobs:
       matrix:
         channel: ${{ fromJSON(needs.channels.outputs.channels) }}
     steps:
+      - name: Check out workflow source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow-source
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - name: Check out channel
         uses: actions/checkout@v6
         with:
           ref: ${{ matrix.channel.channel }}
           fetch-depth: 0
+          path: channel
           token: ${{ secrets.REBASE_BOT_TOKEN }}
 
       - name: Stage nightly rebase
+        working-directory: channel
         env:
           CHANNEL: ${{ matrix.channel.channel }}
           CHANNEL_OWNER: ${{ matrix.channel.owner }}
@@ -93,7 +103,7 @@ jobs:
           GH_TOKEN: ${{ secrets.REBASE_BOT_TOKEN }}
           RESULT_FILE: ${{ runner.temp }}/nightly-rebase-result.json
           UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
-        run: .github/scripts/nightly-rebase.sh
+        run: ../workflow-source/.github/scripts/nightly-rebase.sh
 
       - name: Upload channel result
         if: always()
