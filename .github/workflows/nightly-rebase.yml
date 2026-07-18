@@ -1,0 +1,202 @@
+name: Nightly Agave Rebase
+
+on:
+  schedule:
+    - cron: "00 19 * * 1-5"
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      REBASE_BOT_TOKEN:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: nightly-agave-rebase-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  channels:
+    name: Load channels
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      channels: ${{ steps.config.outputs.channels }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate channel configuration
+        id: config
+        run: |
+          channels=$(jq -ce '
+            if type != "array" or length == 0 then
+              error("expected a non-empty array")
+            elif any(
+              .[];
+              (.channel | type != "string") or
+              (.upstream | type != "string") or
+              (.owner | type != "string") or
+              (.channel | test("^[A-Za-z0-9._-]+$") | not) or
+              (.upstream | test("^[A-Za-z0-9._-]+$") | not) or
+              (.owner | test("^[A-Za-z0-9-]+$") | not)
+            ) then
+              error("invalid channel entry")
+            elif ([.[].channel] | unique | length) != length then
+              error("duplicate channel")
+            else
+              .
+            end
+          ' .github/rebase-channels.json)
+          echo "channels=${channels}" >> "${GITHUB_OUTPUT}"
+
+      - name: Alert on job failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          message="Nightly Agave rebase failed while loading channel configuration. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          payload=$(jq -n --arg text "${message}" '{text: $text}')
+          curl -sS --fail-with-body -X POST \
+            -H "Content-Type: application/json" \
+            --data "${payload}" \
+            "${SLACK_WEBHOOK_URL}"
+
+  rebase:
+    name: Rebase ${{ matrix.channel.channel }}
+    needs: channels
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.channels.outputs.channels) }}
+    steps:
+      - name: Check out channel
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.channel.channel }}
+          fetch-depth: 0
+          token: ${{ secrets.REBASE_BOT_TOKEN }}
+
+      - name: Stage nightly rebase
+        env:
+          CHANNEL: ${{ matrix.channel.channel }}
+          CHANNEL_OWNER: ${{ matrix.channel.owner }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.REBASE_BOT_TOKEN }}
+          RESULT_FILE: ${{ runner.temp }}/nightly-rebase-result.json
+          UPSTREAM_CHANNEL: ${{ matrix.channel.upstream }}
+        run: .github/scripts/nightly-rebase.sh
+
+      - name: Upload channel result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-rebase-${{ matrix.channel.channel }}
+          path: ${{ runner.temp }}/nightly-rebase-result.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Alert on job failure
+        if: failure()
+        env:
+          CHANNEL: ${{ matrix.channel.channel }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          message="Nightly Agave rebase failed for ${CHANNEL}. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          payload=$(jq -n --arg text "${message}" '{text: $text}')
+          curl -sS --fail-with-body -X POST \
+            -H "Content-Type: application/json" \
+            --data "${payload}" \
+            "${SLACK_WEBHOOK_URL}"
+
+  summary:
+    name: Post run summary
+    if: always()
+    needs:
+      - channels
+      - rebase
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download channel results
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-rebase-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/nightly-rebase-results
+
+      - name: Build Slack summary
+        id: summary
+        if: always()
+        env:
+          CHANNELS_RESULT: ${{ needs.channels.result }}
+          REBASE_RESULT: ${{ needs.rebase.result }}
+          RESULTS_DIR: ${{ runner.temp }}/nightly-rebase-results
+        run: |
+          message="Nightly Agave rebase"
+          message="${message}\nJobs: channels=${CHANNELS_RESULT}, rebase=${REBASE_RESULT}"
+
+          if [[ -d "${RESULTS_DIR}" ]]; then
+            mapfile -t result_files < <(find "${RESULTS_DIR}" -type f -name '*.json' | sort)
+          else
+            result_files=()
+          fi
+
+          if [[ ${#result_files[@]} -eq 0 ]]; then
+            message="${message}\nNo channel results were produced."
+          else
+            for result_file in "${result_files[@]}"; do
+              channel=$(jq -r .channel "${result_file}")
+              status=$(jq -r .status "${result_file}")
+              detail=$(jq -r .detail "${result_file}")
+              url=$(jq -r .url "${result_file}")
+              line="${channel}: ${status} - ${detail}"
+              if [[ -n "${url}" ]]; then
+                line="${line} - ${url}"
+              fi
+              message="${message}\n${line}"
+            done
+          fi
+
+          message="${message}\nRun: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            echo "message<<EOF"
+            printf '%b\n' "${message}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Post Slack summary
+        if: always()
+        env:
+          MESSAGE: ${{ steps.summary.outputs.message }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          payload=$(jq -n --arg text "${MESSAGE}" '{text: $text}')
+          curl -sS --fail-with-body -X POST \
+            -H "Content-Type: application/json" \
+            --data "${payload}" \
+            "${SLACK_WEBHOOK_URL}"
+
+      - name: Alert on job failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          message="Nightly Agave rebase summary job failed. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          payload=$(jq -n --arg text "${message}" '{text: $text}')
+          curl -sS --fail-with-body -X POST \
+            -H "Content-Type: application/json" \
+            --data "${payload}" \
+            "${SLACK_WEBHOOK_URL}"
