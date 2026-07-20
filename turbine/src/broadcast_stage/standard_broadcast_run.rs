@@ -5,7 +5,7 @@ use {
         broadcast_utils::{self, ReceiveResults},
         *,
     },
-    crate::cluster_nodes::ClusterNodesCache,
+    crate::{ShredReceiverAddresses, cluster_nodes::ClusterNodesCache},
     agave_votor::event::VotorEventSender,
     agave_votor_messages::{consensus_message::Block, migration::MigrationStatus},
     solana_cost_model::shred_limit::{
@@ -24,7 +24,7 @@ use {
     solana_runtime::bank::Bank,
     solana_sha256_hasher::hashv,
     solana_time_utils::AtomicInterval,
-    std::{borrow::Cow, collections::VecDeque, sync::RwLock},
+    std::{borrow::Cow, collections::VecDeque, net::SocketAddr, sync::RwLock},
 };
 
 // Expect blacklist events to be extremely rare, so we can tightly bound the
@@ -323,7 +323,19 @@ impl StandardBroadcastRun {
             &mut ProcessShredsStats::default(),
         )?;
         // Data and coding shreds are sent in a single batch.
-        let _ = self.transmit(&srecv, cluster_info, BroadcastSocket::Udp(sock), bank_forks);
+        let shred_receiver_socket =
+            solana_net_utils::bind_to_unspecified().expect("bind test shred_receiver_socket");
+        let _ = self.transmit(
+            &srecv,
+            cluster_info,
+            BroadcastSocket::Udp(sock),
+            bank_forks,
+            &ArcSwap::default(),
+            &ArcSwap::default(),
+            &ArcSwap::default(),
+            &ArcSwap::default(),
+            &shred_receiver_socket,
+        );
         let _ = self.record(&brecv, blockstore);
         Ok(())
     }
@@ -557,13 +569,19 @@ impl StandardBroadcastRun {
         insert_shreds_stats.update(new_insertion_shreds_stats, broadcast_shred_batch_info);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn broadcast(
         &mut self,
         sock: BroadcastSocket,
+        shred_receiver_socket: &UdpSocket,
         cluster_info: &ClusterInfo,
         shreds: Arc<Vec<Shred>>,
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
+        shredstream_receiver_address: &Option<SocketAddr>,
+        shred_receiver_addresses: &ShredReceiverAddresses,
+        bam_shred_receiver_addresses: &ShredReceiverAddresses,
+        multicast_receiver_address: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
         let mut transmit_stats = TransmitShredsStats {
@@ -577,6 +595,7 @@ impl StandardBroadcastRun {
 
         broadcast_shreds(
             sock,
+            shred_receiver_socket,
             &shreds,
             &self.cluster_nodes_cache,
             &self.last_datapoint_submit,
@@ -585,6 +604,10 @@ impl StandardBroadcastRun {
             bank_forks,
             &self.leader_schedule_cache,
             cluster_info.socket_addr_space(),
+            shredstream_receiver_address,
+            shred_receiver_addresses,
+            bam_shred_receiver_addresses,
+            multicast_receiver_address,
         )?;
         transmit_time.stop();
 
@@ -651,9 +674,25 @@ impl BroadcastRun for StandardBroadcastRun {
         cluster_info: &ClusterInfo,
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        bam_shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
+        multicast_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_socket: &UdpSocket,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
-        self.broadcast(sock, cluster_info, shreds, batch_info, bank_forks)
+        self.broadcast(
+            sock,
+            shred_receiver_socket,
+            cluster_info,
+            shreds,
+            batch_info,
+            bank_forks,
+            &shredstream_receiver_address.load(),
+            &shred_receiver_addresses.load(),
+            &bam_shred_receiver_addresses.load(),
+            &multicast_receiver_address.load(),
+        )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {
         let (shreds, slot_start_ts) = receiver.recv()?;

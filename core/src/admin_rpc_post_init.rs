@@ -1,14 +1,18 @@
 use {
     crate::{
-        banking_stage::BankingControlMsg, cluster_slots_service::cluster_slots::ClusterSlots,
+        banking_stage::BankingControlMsg,
+        cluster_slots_service::cluster_slots::ClusterSlots,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::repair_service::OutstandingShredRepairs,
     },
     agave_votor::event::VotorEventSender,
+    arc_swap::ArcSwap,
     solana_gossip::{cluster_info::ClusterInfo, node::NodeMultihoming},
     solana_ledger::blockstore::Blockstore,
     solana_pubkey::Pubkey,
     solana_runtime::{bank_forks::BankForks, snapshot_controller::SnapshotController},
     solana_tls_utils::NotifyKeyUpdate,
+    solana_turbine::ShredReceiverAddresses,
     std::{
         collections::{HashMap, HashSet},
         net::UdpSocket,
@@ -34,6 +38,8 @@ pub enum KeyUpdaterType {
     Bls,
     /// BLS all-to-all connection cache key updater
     BlsConnectionCache,
+    /// For the BAM connection
+    BamConnection,
 }
 
 /// Responsible for managing the updaters for identity key change
@@ -90,4 +96,8 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub snapshot_controller: Arc<SnapshotController>,
     pub blockstore: Arc<Blockstore>,
     pub votor_event_sender: VotorEventSender,
+    pub block_engine_config: Arc<ArcSwap<BlockEngineConfig>>,
+    pub relayer_config: Arc<ArcSwap<RelayerConfig>>,
+    pub shred_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
+    pub shred_retransmit_receiver_addresses: Arc<ArcSwap<ShredReceiverAddresses>>,
 }

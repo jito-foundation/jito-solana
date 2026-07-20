@@ -2,6 +2,8 @@ use {
     crate::{send_transaction_service_stats::SendTransactionServiceStats, tpu_info::TpuInfo},
     async_trait::async_trait,
     log::warn,
+    solana_client::connection_cache::Protocol,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
     solana_measure::measure::Measure,
     solana_tls_utils::NotifyKeyUpdate,
@@ -16,7 +18,7 @@ use {
     std::{
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
-        sync::atomic::Ordering,
+        sync::{Arc, atomic::Ordering},
         time::{Duration, Instant},
     },
     tokio::{
@@ -117,7 +119,7 @@ const METRICS_REPORTING_INTERVAL: Duration = Duration::from_secs(3);
 impl TpuClientNextClient {
     pub fn new<T>(
         runtime_handle: Handle,
-        my_tpu_address: SocketAddr,
+        cluster_info: Arc<ClusterInfo>,
         tpu_peers: Option<Vec<SocketAddr>>,
         leader_info: Option<T>,
         leader_forward_count: u64,
@@ -138,7 +140,7 @@ impl TpuClientNextClient {
         let leader_updater: SendTransactionServiceLeaderUpdater<T> =
             SendTransactionServiceLeaderUpdater {
                 leader_info_provider,
-                my_tpu_address,
+                cluster_info,
                 tpu_peers,
             };
         let config = Self::create_config(bind_socket, identity, leader_forward_count as usize);
@@ -228,7 +230,7 @@ impl TransactionClient for TpuClientNextClient {
 #[derive(Clone)]
 pub struct SendTransactionServiceLeaderUpdater<T: TpuInfoWithSendStatic> {
     leader_info_provider: CurrentLeaderInfo<T>,
-    my_tpu_address: SocketAddr,
+    cluster_info: Arc<ClusterInfo>,
     tpu_peers: Option<Vec<SocketAddr>>,
 }
 
@@ -242,10 +244,18 @@ where
             .leader_info_provider
             .get_leader_info()
             .map(|leader_info| leader_info.get_not_unique_leader_tpus(lookahead_leaders as u64))
-            .filter(|addresses| !addresses.is_empty())
-            .unwrap_or_else(|| vec![&self.my_tpu_address]);
+            .filter(|addresses| !addresses.is_empty());
         let mut all_peers = self.tpu_peers.clone().unwrap_or_default();
-        all_peers.extend(discovered_peers.into_iter().cloned());
+        if let Some(discovered_peers) = discovered_peers {
+            all_peers.extend(discovered_peers.into_iter().cloned());
+        } else {
+            all_peers.push(
+                self.cluster_info
+                    .my_contact_info()
+                    .tpu(Protocol::QUIC)
+                    .unwrap(),
+            );
+        }
         all_peers
     }
     async fn stop(&mut self) {}
