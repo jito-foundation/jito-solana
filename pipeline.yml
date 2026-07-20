@@ -1,0 +1,231 @@
+steps:
+- name: sanity
+  command: ci/docker-run-default-image.sh ci/test-sanity.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 5
+- name: channel-info-divergence
+  command: ci/docker-run-default-image.sh ci/test-channel-info-divergence.sh
+  soft_fail: true
+  agents:
+    queue: default
+  timeout_in_minutes: 10
+- name: shellcheck
+  command: ci/shellcheck.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 5
+- wait: '~'
+- name: check
+  command: ci/docker-run-default-image.sh ci/test-checks.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 20
+- group: feature-checks
+  steps:
+  - name: feature-check-part-1
+    command: ci/docker-run-default-image.sh ci/feature-check/test-feature.sh 1/5
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+  - name: feature-check-part-2
+    command: ci/docker-run-default-image.sh ci/feature-check/test-feature.sh 2/5
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+  - name: feature-check-part-3
+    command: ci/docker-run-default-image.sh ci/feature-check/test-feature.sh 3/5
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+  - name: feature-check-part-4
+    command: ci/docker-run-default-image.sh ci/feature-check/test-feature.sh 4/5
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+  - name: feature-check-part-5
+    command: ci/docker-run-default-image.sh ci/feature-check/test-feature.sh 5/5
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+  - name: feature-check-dev-bins
+    command: ci/docker-run-default-image.sh ci/feature-check/test-feature-dev-bins.sh
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+- name: miri
+  command: ci/docker-run-default-image.sh ci/test-miri.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 5
+- name: frozen-abi
+  command: ci/docker-run-default-image.sh ci/test-frozen-abi.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 30
+- wait: '~'
+- group: stable
+  steps:
+  - name: stable-1
+    command: ci/docker-run-default-image.sh ci/stable/run-partition.sh 1 3
+    agents:
+      queue: default
+    timeout_in_minutes: 25
+    retry:
+      automatic: 'true'
+  - name: stable-2
+    command: ci/docker-run-default-image.sh ci/stable/run-partition.sh 2 3
+    agents:
+      queue: default
+    timeout_in_minutes: 25
+    retry:
+      automatic: 'true'
+  - name: stable-3
+    command: ci/docker-run-default-image.sh ci/stable/run-partition.sh 3 3
+    agents:
+      queue: default
+    timeout_in_minutes: 25
+    retry:
+      automatic: 'true'
+  - name: dev-bins
+    command: ci/docker-run-default-image.sh cargo nextest run --profile ci --manifest-path ./dev-bins/Cargo.toml
+    agents:
+      queue: default
+    timeout_in_minutes: 35
+- group: local-cluster
+  steps:
+  - name: local-cluster-1
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 1 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-2
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 2 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-3
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 3 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-4
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 4 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-5
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 5 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-6
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 6 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-7
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 7 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-8
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 8 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-9
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 9 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+  - name: local-cluster-10
+    command: ci/docker-run-default-image.sh ci/stable/run-local-cluster-partially.sh 10 10
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic: 'true'
+- name: doctest
+  command: ci/docker-run-default-image.sh ci/test-docs.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 15
+- name: localnet
+  command: ci/docker-run-default-image.sh ci/stable/run-localnet.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 30
+- name: xdp-test
+  command: ci/docker-run-default-image.sh ci/test-xdp.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 25
+  env:
+    EXTRA_DOCKER_RUN_ARGS: --cap-add NET_ADMIN --cap-add NET_RAW --cap-add SYS_ADMIN --security-opt apparmor=unconfined
+    SOLANA_DOCKER_RUN_NOSETUID: '1'
+- wait: '~'
+- name: stable-sbf
+  command: ci/docker-run-default-image.sh ci/test-stable-sbf.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 35
+- name: shuttle
+  command: ci/docker-run-default-image.sh ci/test-shuttle.sh
+  agents:
+    queue: default
+  timeout_in_minutes: 10
+- group: coverage
+  steps:
+  - name: coverage-1
+    command: ci/docker-run-default-image.sh ci/coverage/part-1.sh
+    agents:
+      queue: default
+    timeout_in_minutes: 60
+    env:
+      FETCH_CODECOV_ENVS: 'true'
+  - name: coverage-2
+    command: ci/docker-run-default-image.sh ci/coverage/part-2.sh
+    agents:
+      queue: default
+    timeout_in_minutes: 60
+    env:
+      FETCH_CODECOV_ENVS: 'true'
+  - name: coverage-3
+    command: ci/docker-run-default-image.sh ci/coverage/part-3.sh
+    agents:
+      queue: default
+    timeout_in_minutes: 60
+    env:
+      FETCH_CODECOV_ENVS: 'true'
+- wait: '~'
+- name: Trigger Build on agave-secondary
+  trigger: agave-secondary
+  branches:
+  - '!pull/*'
+  async: true
+  soft_fail: true
+  build:
+    branch: ${BUILDKITE_BRANCH}
+    commit: ${BUILDKITE_COMMIT}
+    message: ${BUILDKITE_MESSAGE}
+    env:
+      TRIGGERED_BUILDKITE_TAG: ${BUILDKITE_TAG}
