@@ -20,6 +20,9 @@ if [[ -n $CI ]]; then
     if [[ $CI_BRANCH =~ pull/* ]]; then
       export CI_BASE_BRANCH=$BUILDKITE_PULL_REQUEST_BASE_BRANCH
       export CI_PULL_REQUEST=true
+    elif [[ $BUILDKITE_TAG =~ ^v([0-9]+)\.([0-9]+)\. ]]; then
+      export CI_BASE_BRANCH="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+      export CI_PULL_REQUEST=
     else
       export CI_BASE_BRANCH=$BUILDKITE_BRANCH
       export CI_PULL_REQUEST=
