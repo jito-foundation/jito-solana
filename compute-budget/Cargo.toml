@@ -18,9 +18,11 @@ rustdoc-args = ["--cfg=docsrs"]
 agave-unstable-api = []
 conf-stack-frame-size = ["solana-program-runtime/conf-stack-frame-size"]
 dev-context-only-utils = []
+frozen-abi = ["dep:solana-frozen-abi", "solana-fee-structure/frozen-abi"]
 
 [dependencies]
 solana-fee-structure = { workspace = true }
+solana-frozen-abi = { workspace = true, optional = true }
 solana-program-runtime = { workspace = true }
 
 [lints]
