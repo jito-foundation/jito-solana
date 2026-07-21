@@ -149,7 +149,7 @@ impl TipRouterSnapshotService {
         context: &mut TipRouterSnapshotServiceContext,
     ) {
         match notification {
-            BankNotification::OptimisticallyConfirmed(_) => {}
+            BankNotification::OptimisticallyConfirmed(..) => {}
             BankNotification::Frozen(bank) => {
                 Self::handle_frozen_bank(config, bank, generation_task_sender, context);
             }
