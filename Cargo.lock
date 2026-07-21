@@ -4326,6 +4326,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-priority-fee-distribution-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+]
+
+[[package]]
 name = "jito-protos"
 version = "4.3.0-alpha.1"
 dependencies = [
@@ -4339,19 +4349,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-stake-meta-types"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "solana-clock",
+ "solana-pubkey 4.2.0",
+]
+
+[[package]]
+name = "jito-tip-distribution-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+ "solana-pubkey 4.2.0",
+]
+
+[[package]]
+name = "jito-tip-payment-sdk"
+version = "0.0.1"
+source = "git+https://github.com/jito-foundation/jito-tip-router.git?rev=d3e10e9ca650197a78b01f64c492b1cd91eea7f4#d3e10e9ca650197a78b01f64c492b1cd91eea7f4"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "solana-program",
+]
+
+[[package]]
 name = "jito-tip-router-snapshot-service"
 version = "4.3.0-alpha.1"
 dependencies = [
+ "borsh",
  "clap 2.33.3",
  "crossbeam-channel",
+ "imbl",
+ "itertools 0.14.0",
+ "jito-priority-fee-distribution-sdk",
+ "jito-stake-meta-types",
+ "jito-tip-distribution-sdk",
+ "jito-tip-payment-sdk",
  "log",
  "serde_json",
+ "solana-account 4.3.1",
  "solana-clap-utils",
  "solana-clock",
  "solana-hash 4.5.0",
  "solana-pubkey 4.2.0",
  "solana-rpc",
  "solana-runtime",
+ "solana-stake-interface",
 ]
 
 [[package]]

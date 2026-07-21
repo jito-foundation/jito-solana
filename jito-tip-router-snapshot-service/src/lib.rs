@@ -6,3 +6,5 @@ pub mod merkle;
 pub mod metrics;
 pub mod service;
 pub mod stake_meta;
+#[cfg(feature = "stake-meta-gen")]
+pub mod stake_meta_generator;

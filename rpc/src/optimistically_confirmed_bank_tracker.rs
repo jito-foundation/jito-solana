@@ -76,9 +76,7 @@ impl std::fmt::Debug for BankNotification {
             }
             BankNotification::Frozen(bank) => write!(f, "Frozen({})", bank.slot()),
             BankNotification::NewRootBank(bank) => write!(f, "Root({})", bank.slot()),
-            BankNotification::NewRootedChain(chain, parent) => {
-                write!(f, "RootedChain({chain:?}, parent: {parent})")
-            }
+            BankNotification::NewRootedChain(chain) => write!(f, "RootedChain({chain:?})"),
         }
     }
 }
@@ -499,10 +497,9 @@ impl OptimisticallyConfirmedBankTracker {
 
                 pending_optimistically_confirmed_banks.retain(|&(slot, _hash)| slot > root_slot);
             }
-            BankNotification::NewRootedChain(mut roots, oldest_parent) => {
+            BankNotification::NewRootedChain(mut rooted_bank_identities) => {
                 Self::notify_new_root_slots(
-                    &mut roots,
-                    oldest_parent,
+                    &mut rooted_bank_identities,
                     newest_root_slot,
                     slot_notification_subscribers,
                 );

@@ -15,3 +15,29 @@ solana-hash = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-rpc = { workspace = true }
 solana-runtime = { workspace = true }
+
+# Optional: pulled in only by the `stake-meta-gen` feature so default validator
+# builds never depend on the jito-tip-router git crates or their extra deps.
+borsh = { workspace = true, optional = true }
+imbl = { workspace = true, optional = true }
+itertools = { workspace = true, optional = true }
+jito-priority-fee-distribution-sdk = { workspace = true, optional = true }
+jito-stake-meta-types = { workspace = true, optional = true }
+jito-tip-distribution-sdk = { workspace = true, optional = true }
+jito-tip-payment-sdk = { workspace = true, optional = true }
+solana-account = { workspace = true, optional = true }
+solana-stake-interface = { workspace = true, optional = true, features = ["sysvar"] }
+
+[features]
+# Enables the ported tip-router stake-meta generator (stake_meta_generator.rs).
+stake-meta-gen = [
+    "dep:borsh",
+    "dep:imbl",
+    "dep:itertools",
+    "dep:jito-priority-fee-distribution-sdk",
+    "dep:jito-stake-meta-types",
+    "dep:jito-tip-distribution-sdk",
+    "dep:jito-tip-payment-sdk",
+    "dep:solana-account",
+    "dep:solana-stake-interface",
+]

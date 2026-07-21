@@ -6,6 +6,7 @@ use {
     solana_clock::{Epoch, Slot},
     solana_hash::Hash,
     solana_runtime::bank::Bank,
+    std::sync::Arc,
 };
 
 pub struct TipRouterSnapshotArtifacts {
@@ -20,7 +21,7 @@ pub struct TipRouterSnapshotArtifacts {
 
 pub fn collect_tip_router_snapshot_artifacts(
     config: &TipRouterSnapshotConfig,
-    bank: &Bank,
+    bank: &Arc<Bank>,
     boundary_child_slot: Slot,
     boundary_child_hash: Hash,
     boundary_child_epoch: Epoch,
