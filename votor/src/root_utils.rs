@@ -32,6 +32,7 @@ fn rooted_bank_identity(bank: &Bank) -> RootedBankIdentity {
     RootedBankIdentity {
         slot: bank.slot(),
         bank_hash: bank.hash(),
+        bank_id: bank.bank_id(),
     }
 }
 
@@ -39,6 +40,7 @@ fn bank_parent_identity(bank: &Bank) -> RootedBankIdentity {
     RootedBankIdentity {
         slot: bank.parent_slot(),
         bank_hash: bank.parent_hash(),
+        bank_id: bank.parent_bank_id(),
     }
 }
 
