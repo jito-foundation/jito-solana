@@ -120,7 +120,7 @@ use {
     solana_rpc::{
         max_slots::MaxSlots,
         optimistically_confirmed_bank_tracker::{
-            BankNotificationSenderConfig, OptimisticallyConfirmedBank,
+            BankNotificationBroadcaster, BankNotificationSenderConfig, OptimisticallyConfirmedBank,
             OptimisticallyConfirmedBankTracker,
         },
         rpc::JsonRpcConfig,
@@ -831,7 +831,7 @@ impl Validator {
             })?;
         }
 
-        let mut bank_notification_senders = Vec::new();
+        let mut slot_notification_senders = Vec::new();
 
         let geyser_plugin_config_files = config
             .on_start_geyser_plugin_config_files
@@ -845,7 +845,7 @@ impl Validator {
         let geyser_plugin_service =
             if let Some(geyser_plugin_config_files) = geyser_plugin_config_files {
                 let (confirmed_bank_sender, confirmed_bank_receiver) = unbounded();
-                bank_notification_senders.push(confirmed_bank_sender);
+                slot_notification_senders.push(confirmed_bank_sender);
                 let rpc_to_plugin_manager_receiver_and_exit =
                     rpc_to_plugin_manager_receiver.map(|receiver| (receiver, exit.clone()));
                 Some(
@@ -882,12 +882,6 @@ impl Validator {
             ));
         }
 
-        if config.tip_router_snapshot_config.is_some() && config.rpc_addrs.is_none() {
-            return Err(ValidatorError::Other(
-                "tip-router snapshot service requires the RPC service to be enabled".to_string(),
-            )
-            .into());
-        }
         let genesis_config = load_genesis(config, ledger_path)?;
         metrics_config_sanity_check(genesis_config.cluster_type)?;
 
@@ -1303,6 +1297,9 @@ impl Validator {
             .is_some()
             .then(unbounded)
             .unzip();
+        let mut bank_notification_channel_senders = tip_router_bank_notification_sender
+            .into_iter()
+            .collect::<Vec<_>>();
 
         let rpc_override_health_check =
             Arc::new(AtomicBool::new(config.rpc_config.disable_health_check));
@@ -1313,7 +1310,7 @@ impl Validator {
             rpc_completed_slots_service,
             sample_performance_service,
             optimistically_confirmed_bank_tracker,
-            bank_notification_sender,
+            bank_notification_dependency_tracker,
         ) = if let Some((rpc_addr, rpc_pubsub_addr)) = config.rpc_addrs {
             assert_eq!(
                 node.info.rpc().map(|addr| socket_addr_space.check(&addr)),
@@ -1321,9 +1318,9 @@ impl Validator {
                     .rpc_pubsub()
                     .map(|addr| socket_addr_space.check(&addr))
             );
-            let (bank_notification_sender, bank_notification_receiver) = unbounded();
-            let confirmed_bank_subscribers = if !bank_notification_senders.is_empty() {
-                Some(Arc::new(RwLock::new(bank_notification_senders)))
+            let (rpc_bank_notification_sender, rpc_bank_notification_receiver) = unbounded();
+            let slot_notification_subscribers = if !slot_notification_senders.is_empty() {
+                Some(Arc::new(RwLock::new(slot_notification_senders)))
             } else {
                 None
             };
@@ -1423,21 +1420,16 @@ impl Validator {
                 .then_some(dependency_tracker);
             let optimistically_confirmed_bank_tracker =
                 Some(OptimisticallyConfirmedBankTracker::new(
-                    bank_notification_receiver,
+                    rpc_bank_notification_receiver,
                     exit.clone(),
                     bank_forks.clone(),
                     optimistically_confirmed_bank,
                     rpc_subscriptions.clone(),
-                    confirmed_bank_subscribers,
+                    slot_notification_subscribers,
                     prioritization_fee_cache.clone(),
                     dependency_tracker.clone(),
-                    tip_router_bank_notification_sender,
                 ));
-            let bank_notification_sender_config = Some(BankNotificationSenderConfig {
-                sender: bank_notification_sender,
-                should_send_parents: geyser_plugin_service.is_some(),
-                dependency_tracker,
-            });
+            bank_notification_channel_senders.push(rpc_bank_notification_sender);
             (
                 Some(json_rpc_service),
                 Some(rpc_subscriptions),
@@ -1445,11 +1437,18 @@ impl Validator {
                 rpc_completed_slots_service,
                 sample_performance_service,
                 optimistically_confirmed_bank_tracker,
-                bank_notification_sender_config,
+                dependency_tracker,
             )
         } else {
             (None, None, None, None, None, None, None)
         };
+        let bank_notification_sender_config =
+            (!bank_notification_channel_senders.is_empty()).then(|| BankNotificationSenderConfig {
+                sender: BankNotificationBroadcaster::new(bank_notification_channel_senders),
+                should_send_parents: geyser_plugin_service.is_some()
+                    || config.tip_router_snapshot_config.is_some(),
+                dependency_tracker: bank_notification_dependency_tracker,
+            });
 
         // CompletedDataSetsService feeds two independent sinks: RPC signatureSubscribe
         // notifications (which need rpc_subscriptions) and the geyser deshred-transaction notifier
@@ -1726,7 +1725,7 @@ impl Validator {
             verified_vote_receiver,
             replay_vote_sender.clone(),
             completed_data_sets_sender,
-            bank_notification_sender.clone(),
+            bank_notification_sender_config.clone(),
             duplicate_confirmed_slots_receiver,
             TvuConfig {
                 max_ledger_shreds: config.max_ledger_shreds,
@@ -1821,7 +1820,7 @@ impl Validator {
             gossip_verified_vote_hash_sender,
             replay_vote_receiver,
             replay_vote_sender,
-            bank_notification_sender,
+            bank_notification_sender_config,
             duplicate_confirmed_slot_sender,
             tpu_forwarding_client_config,
             &identity_keypair,

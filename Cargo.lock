@@ -4340,7 +4340,7 @@ dependencies = [
 
 [[package]]
 name = "jito-tip-router-snapshot-service"
-version = "4.1.0-alpha.0"
+version = "4.3.0-alpha.1"
 dependencies = [
  "clap 2.33.3",
  "crossbeam-channel",
@@ -4348,7 +4348,7 @@ dependencies = [
  "serde_json",
  "solana-clap-utils",
  "solana-clock",
- "solana-hash 4.3.0",
+ "solana-hash 4.5.0",
  "solana-pubkey 4.2.0",
  "solana-rpc",
  "solana-runtime",

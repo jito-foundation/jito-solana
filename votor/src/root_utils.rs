@@ -12,11 +12,13 @@ use {
     solana_ledger::{blockstore::Blockstore, leader_schedule_cache::LeaderScheduleCache},
     solana_pubkey::Pubkey,
     solana_rpc::{
-        optimistically_confirmed_bank_tracker::{BankNotification, BankNotificationSenderConfig},
+        optimistically_confirmed_bank_tracker::{
+            BankNotification, BankNotificationSenderConfig, RootedBankIdentity,
+        },
         rpc_subscriptions::RpcSubscriptions,
     },
     solana_runtime::{
-        bank_forks::BankForks, bank_forks_controller::BankForksController,
+        bank::Bank, bank_forks::BankForks, bank_forks_controller::BankForksController,
         installed_scheduler_pool::BankWithScheduler, snapshot_controller::SnapshotController,
     },
     solana_time_utils::timestamp,
@@ -25,6 +27,31 @@ use {
         sync::{Arc, RwLock},
     },
 };
+
+fn rooted_bank_identity(bank: &Bank) -> RootedBankIdentity {
+    RootedBankIdentity {
+        slot: bank.slot(),
+        bank_hash: bank.hash(),
+    }
+}
+
+fn bank_parent_identity(bank: &Bank) -> RootedBankIdentity {
+    RootedBankIdentity {
+        slot: bank.parent_slot(),
+        bank_hash: bank.parent_hash(),
+    }
+}
+
+fn rooted_bank_chain_identities(
+    rooted_banks: &[Arc<Bank>],
+    prior_parent_identity: RootedBankIdentity,
+) -> Vec<RootedBankIdentity> {
+    rooted_banks
+        .iter()
+        .map(|bank| rooted_bank_identity(bank))
+        .chain(std::iter::once(prior_parent_identity))
+        .collect()
+}
 
 /// Structures that are not used in the event loop, but need to be updated
 /// or notified when setting root
@@ -101,7 +128,7 @@ pub(crate) fn set_root(
 /// Votor does not need the progress map or other tower bft structures, so it will not use the callback.
 #[allow(clippy::too_many_arguments)]
 pub fn check_and_handle_new_root<CB>(
-    parent_slot: Slot,
+    _parent_slot: Slot,
     new_root: Slot,
     snapshot_controller: Option<&SnapshotController>,
     highest_super_majority_root: Option<Slot>,
@@ -123,19 +150,16 @@ pub fn check_and_handle_new_root<CB>(
         .get(new_root)
         .expect("Root bank doesn't exist");
     let mut rooted_banks = root_bank.parents();
-    let oldest_parent = rooted_banks.last().map(|last| last.parent_slot());
+    let oldest_rooted_bank = rooted_banks.last().unwrap_or(&root_bank);
+    let prior_parent_identity = bank_parent_identity(oldest_rooted_bank);
     rooted_banks.push(root_bank.clone());
     let rooted_slots: Vec<_> = rooted_banks.iter().map(|bank| bank.slot()).collect();
-    let rooted_slot_notifications = bank_notification_sender
+    // The following differs from rooted_slots by including the parent identity of the oldest
+    // parent bank. Capture every identity before set_bank_forks_root squashes the root bank.
+    let rooted_bank_identities_with_prior_parent = bank_notification_sender
         .as_ref()
         .is_some_and(|sender| sender.should_send_parents)
-        .then(|| {
-            let new_chain = rooted_banks
-                .iter()
-                .map(|bank| (bank.slot(), bank.bank_id()))
-                .collect();
-            (new_chain, oldest_parent.unwrap_or(parent_slot))
-        });
+        .then(|| rooted_bank_chain_identities(&rooted_banks, prior_parent_identity));
 
     // Call leader schedule_cache.set_root() before blockstore.set_root() because
     // bank_forks.root is consumed by repair_service to update gossip, so we don't want to
@@ -167,7 +191,7 @@ pub fn check_and_handle_new_root<CB>(
             .send((BankNotification::NewRootBank(root_bank), dependency_work))
             .unwrap_or_else(|err| warn!("bank_notification_sender failed: {err:?}"));
 
-        if let Some((new_chain, oldest_parent)) = rooted_slot_notifications {
+        if let Some(rooted_bank_identities) = rooted_bank_identities_with_prior_parent {
             let dependency_work = sender
                 .dependency_tracker
                 .as_ref()
@@ -175,7 +199,7 @@ pub fn check_and_handle_new_root<CB>(
             sender
                 .sender
                 .send((
-                    BankNotification::NewRootedChain(new_chain, oldest_parent),
+                    BankNotification::NewRootedChain(rooted_bank_identities),
                     dependency_work,
                 ))
                 .unwrap_or_else(|err| warn!("bank_notification_sender failed: {err:?}"));

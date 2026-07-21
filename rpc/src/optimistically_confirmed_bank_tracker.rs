@@ -22,7 +22,7 @@ use {
     std::{
         collections::HashSet,
         sync::{
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
             atomic::{AtomicBool, Ordering},
         },
         thread::{self, Builder, JoinHandle},
@@ -47,8 +47,16 @@ pub enum BankNotification {
     OptimisticallyConfirmed(Slot, Hash),
     Frozen(Arc<Bank>),
     NewRootBank(Arc<Bank>),
-    /// The newly rooted slot chain with bank ids and the parent slot of the oldest bank in the rooted chain.
-    NewRootedChain(Vec<(Slot, BankId)>, Slot),
+    /// The newly rooted bank chain including the parent identity of the oldest bank in the rooted
+    /// chain.
+    NewRootedChain(Vec<RootedBankIdentity>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RootedBankIdentity {
+    pub slot: Slot,
+    pub bank_hash: Hash,
+    pub bank_id: BankId,
 }
 
 #[derive(Clone, Debug)]
@@ -81,11 +89,60 @@ pub type BankNotificationWithDependencyWork = (
 );
 
 pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>;
-pub type BankNotificationSender = Sender<BankNotificationWithDependencyWork>;
+pub type BankNotificationChannelSender = Sender<BankNotificationWithDependencyWork>;
+
+#[derive(Clone, Debug)]
+pub struct BankNotificationBroadcaster {
+    subscriber_senders: Arc<Mutex<Vec<BankNotificationChannelSender>>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BankNotificationBroadcastError;
+
+impl BankNotificationBroadcaster {
+    pub fn new(subscriber_senders: Vec<BankNotificationChannelSender>) -> Self {
+        Self {
+            subscriber_senders: Arc::new(Mutex::new(subscriber_senders)),
+        }
+    }
+
+    pub fn send(
+        &self,
+        notification: BankNotificationWithDependencyWork,
+    ) -> Result<(), BankNotificationBroadcastError> {
+        let mut delivered_subscriber_count = 0;
+        let mut subscriber_senders = self.subscriber_senders.lock().unwrap();
+        let initial_subscriber_count = subscriber_senders.len();
+        subscriber_senders.retain(|subscriber_sender| {
+            if subscriber_sender.send(notification.clone()).is_ok() {
+                delivered_subscriber_count += 1;
+                true
+            } else {
+                false
+            }
+        });
+
+        let disconnected_subscriber_count =
+            initial_subscriber_count.saturating_sub(subscriber_senders.len());
+        if disconnected_subscriber_count > 0 {
+            warn!(
+                "removed {disconnected_subscriber_count} disconnected bank notification \
+                 subscriber(s)"
+            );
+        }
+
+        if delivered_subscriber_count > 0 {
+            Ok(())
+        } else {
+            warn!("bank notification broadcast failed: no connected subscribers");
+            Err(BankNotificationBroadcastError)
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct BankNotificationSenderConfig {
-    pub sender: BankNotificationSender,
+    pub sender: BankNotificationBroadcaster,
     pub should_send_parents: bool,
     pub dependency_tracker: Option<Arc<DependencyTracker>>,
 }
@@ -108,7 +165,6 @@ impl OptimisticallyConfirmedBankTracker {
         slot_notification_subscribers: Option<Arc<RwLock<Vec<SlotNotificationSender>>>>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         dependency_tracker: Option<Arc<DependencyTracker>>,
-        bank_notification_forward: Option<BankNotificationSender>,
     ) -> Self {
         let mut pending_optimistically_confirmed_banks = HashSet::new();
         let mut last_notified_confirmed_slot: Slot = 0;
@@ -134,7 +190,6 @@ impl OptimisticallyConfirmedBankTracker {
                         &slot_notification_subscribers,
                         prioritization_fee_cache.as_deref(),
                         &dependency_tracker,
-                        &bank_notification_forward,
                     ) {
                         break;
                     }
@@ -157,17 +212,8 @@ impl OptimisticallyConfirmedBankTracker {
         slot_notification_subscribers: &Option<Arc<RwLock<Vec<SlotNotificationSender>>>>,
         prioritization_fee_cache: Option<&PrioritizationFeeCache>,
         dependency_tracker: &Option<Arc<DependencyTracker>>,
-        bank_notification_forward: &Option<BankNotificationSender>,
     ) -> Result<(), RecvTimeoutError> {
         let notification = receiver.recv_timeout(Duration::from_secs(1))?;
-        if let Some(forward) = bank_notification_forward {
-            let (notification, dependency_work) = &notification;
-            forward
-                .send((notification.clone(), *dependency_work))
-                .unwrap_or_else(|err| {
-                    warn!("bank_notification_forward failed: {err:?}");
-                });
-        }
         Self::process_notification(
             notification,
             bank_forks,
@@ -269,27 +315,32 @@ impl OptimisticallyConfirmedBankTracker {
     }
 
     fn notify_new_root_slots(
-        roots: &mut [(Slot, BankId)],
-        oldest_parent: Slot,
+        rooted_bank_identities: &mut [RootedBankIdentity],
         newest_root_slot: &mut Slot,
         slot_notification_subscribers: &Option<Arc<RwLock<Vec<SlotNotificationSender>>>>,
     ) {
         if slot_notification_subscribers.is_none() {
             return;
         }
-        roots.sort_unstable_by_key(|(root, _bank_id)| *root);
-        assert!(!roots.is_empty());
-        let mut parent = oldest_parent;
-        for (root, bank_id) in roots.iter() {
-            if *root > *newest_root_slot {
-                debug!("Doing SlotNotification::Root for root {root}, parent: {parent}");
+        rooted_bank_identities.sort_unstable_by_key(|identity| identity.slot);
+        // The chain must contain at least the parent of a newly rooted slot as the first element
+        // after sorting.
+        assert!(rooted_bank_identities.len() >= 2);
+        for identity_index in 1..rooted_bank_identities.len() {
+            let root_slot = rooted_bank_identities[identity_index].slot;
+            if root_slot > *newest_root_slot {
+                let parent_slot = rooted_bank_identities[identity_index - 1].slot;
+                debug!("Doing SlotNotification::Root for root {root_slot}, parent: {parent_slot}");
                 Self::notify_slot_status(
                     slot_notification_subscribers,
-                    SlotNotification::Root((*root, parent, *bank_id)),
+                    SlotNotification::Root((
+                        root_slot,
+                        parent_slot,
+                        rooted_bank_identities[identity_index].bank_id,
+                    )),
                 );
-                *newest_root_slot = *root;
+                *newest_root_slot = root_slot;
             }
-            parent = *root;
         }
     }
 
@@ -667,7 +718,16 @@ mod tests {
         bank_notification_senders.push(sender);
 
         let subscribers = Some(Arc::new(RwLock::new(bank_notification_senders)));
-        let (parent_roots, oldest_parent) = root_slot_notifications(&bank5);
+        let parent_roots = bank5
+            .ancestors
+            .keys()
+            .into_iter()
+            .map(|slot| RootedBankIdentity {
+                slot,
+                bank_hash: Hash::default(),
+                bank_id: BankId::default(),
+            })
+            .collect();
 
         OptimisticallyConfirmedBankTracker::process_notification(
             (
@@ -694,7 +754,7 @@ mod tests {
 
         OptimisticallyConfirmedBankTracker::process_notification(
             (
-                BankNotification::NewRootedChain(parent_roots, oldest_parent),
+                BankNotification::NewRootedChain(parent_roots),
                 None, /* no dependency work */
             ),
             &bank_forks,
@@ -747,7 +807,16 @@ mod tests {
         assert_eq!(newest_root_slot, 5);
 
         let bank7 = bank_forks.read().unwrap().get(7).unwrap();
-        let (parent_roots, oldest_parent) = root_slot_notifications(&bank7);
+        let parent_roots = bank7
+            .ancestors
+            .keys()
+            .into_iter()
+            .map(|slot| RootedBankIdentity {
+                slot,
+                bank_hash: Hash::default(),
+                bank_id: BankId::default(),
+            })
+            .collect();
 
         OptimisticallyConfirmedBankTracker::process_notification(
             (
@@ -773,7 +842,7 @@ mod tests {
 
         OptimisticallyConfirmedBankTracker::process_notification(
             (
-                BankNotification::NewRootedChain(parent_roots, oldest_parent),
+                BankNotification::NewRootedChain(parent_roots),
                 None, /* no dependency work */
             ),
             &bank_forks,
