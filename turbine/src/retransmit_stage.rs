@@ -120,6 +120,87 @@ struct RetransmitStats {
     unknown_shred_slot_leader: usize,
 }
 
+struct BatchClusterNodesCache {
+    slots: Vec<Slot>,
+    entries: Vec<(
+        Slot,
+        (
+            Pubkey,
+            Arc<ClusterNodes<RetransmitStage>>,
+            /*include_bam_shred_receivers:*/ bool,
+        ),
+    )>,
+    metrics_since: Instant,
+    max_slots_len: usize,
+    max_entries_len: usize,
+}
+
+impl BatchClusterNodesCache {
+    fn populate(
+        &mut self,
+        slots: impl IntoIterator<Item = Slot>,
+        mut get_entry: impl FnMut(
+            Slot,
+        ) -> Option<(
+            Pubkey,
+            Arc<ClusterNodes<RetransmitStage>>,
+            /*include_bam_shred_receivers:*/ bool,
+        )>,
+    ) {
+        self.clear();
+        self.slots.extend(slots);
+        self.slots.sort_unstable();
+        self.slots.dedup();
+        for &slot in &self.slots {
+            if let Some(entry) = get_entry(slot) {
+                self.entries.push((slot, entry));
+            }
+        }
+        self.maybe_submit_metrics();
+    }
+
+    fn get(
+        &self,
+        slot: Slot,
+    ) -> Option<&(
+        Pubkey,
+        Arc<ClusterNodes<RetransmitStage>>,
+        /*include_bam_shred_receivers:*/ bool,
+    )> {
+        let index = self
+            .entries
+            .binary_search_by_key(&slot, |&(slot, _)| slot)
+            .ok()?;
+        Some(&self.entries[index].1)
+    }
+
+    fn clear(&mut self) {
+        self.slots.clear();
+        self.entries.clear();
+    }
+
+    fn maybe_submit_metrics(&mut self) {
+        const SUBMIT_CADENCE: Duration = Duration::from_secs(1);
+        let slots_len = self.slots.len();
+        let entries_len = self.entries.len();
+        self.max_slots_len = self.max_slots_len.max(slots_len);
+        self.max_entries_len = self.max_entries_len.max(entries_len);
+        if self.metrics_since.elapsed() < SUBMIT_CADENCE {
+            return;
+        }
+        datapoint_info!(
+            "retransmit-slot-cache",
+            ("slots_len", slots_len, i64),
+            ("slots_len_max", self.max_slots_len, i64),
+            ("entries_len", entries_len, i64),
+            ("entries_len_max", self.max_entries_len, i64),
+        );
+        self.metrics_since = Instant::now();
+        self.max_slots_len = 0;
+        self.max_entries_len = 0;
+    }
+}
+
 impl RetransmitStats {
     fn maybe_submit(
         &mut self,
@@ -303,6 +384,7 @@ fn retransmit(
     rpc_subscriptions: Option<&RpcSubscriptions>,
     slot_status_notifier: Option<&SlotStatusNotifier>,
     shred_buf: &mut Vec<Vec<shred::Payload>>,
+    slot_cache: &mut BatchClusterNodesCache,
     votor_event_sender: &Sender<VotorEvent>,
     migration_status: &MigrationStatus,
     shred_receiver_addresses: &ArcSwap<ShredReceiverAddresses>,
@@ -364,11 +446,6 @@ fn retransmit(
     );
     epoch_cache_update.stop();
     stats.epoch_cache_update += epoch_cache_update.as_us();
-    let shred_slots: HashSet<Slot> = shred_buf
-        .iter()
-        .flatten()
-        .filter_map(|shred| shred::layout::get_slot(shred))
-        .collect();
     let shred_receiver_addresses_local = shred_receiver_addresses.load();
     let bam_shred_receiver_addresses_local = bam_shred_receiver_addresses.load();
     let shredstream_receiver_address_local = shredstream_receiver_address.load();
@@ -396,9 +473,12 @@ fn retransmit(
     };
 
     // Lookup slot leader and cluster nodes for each slot.
-    let cache: HashMap<Slot, _> = shred_slots
-        .into_iter()
-        .filter_map(|slot: Slot| {
+    slot_cache.populate(
+        shred_buf
+            .iter()
+            .flatten()
+            .filter_map(|shred| shred::layout::get_slot(shred)),
+        |slot| {
             max_slots.retransmit.fetch_max(slot, Ordering::Relaxed);
             // TODO: consider using root-bank here for leader lookup!
             // Shreds' signatures should be verified before they reach here,
@@ -421,12 +501,9 @@ fn retransmit(
                 });
             let cluster_nodes =
                 cluster_nodes_cache.get(slot, &root_bank, &working_bank, cluster_info);
-            Some((
-                slot,
-                (slot_leader.id, cluster_nodes, include_bam_shred_receivers),
-            ))
-        })
-        .collect();
+            Some((slot_leader.id, cluster_nodes, include_bam_shred_receivers))
+        },
+    );
     let socket_addr_space = cluster_info.socket_addr_space();
     let record = |mut stats: HashMap<Slot, RetransmitSlotStats>, out: RetransmitShredOutput| {
         let now = timestamp();
@@ -439,7 +516,7 @@ fn retransmit(
             shred,
             &root_bank,
             shred_deduper,
-            &cache,
+            slot_cache,
             addr_cache,
             socket_addr_space,
             socket,
@@ -480,6 +557,7 @@ fn retransmit(
         })
     };
 
+    slot_cache.clear();
     stats.upsert_slot_stats(
         slot_stats,
         root_bank.slot(),
@@ -507,14 +585,7 @@ fn retransmit_shred(
     shred: shred::Payload,
     root_bank: &Bank,
     shred_deduper: &ShredDeduper,
-    cache: &HashMap<
-        Slot,
-        (
-            /*leader:*/ Pubkey,
-            Arc<ClusterNodes<RetransmitStage>>,
-            /*include_bam_shred_receivers:*/ bool,
-        ),
-    >,
+    cache: &BatchClusterNodesCache,
     addr_cache: &AddrCache,
     socket_addr_space: &SocketAddrSpace,
     socket: RetransmitSocket<'_>,
@@ -656,14 +727,7 @@ fn retransmit_shred(
 
 fn get_retransmit_addrs<'a>(
     shred: &ShredId,
-    cache: &HashMap<
-        Slot,
-        (
-            /*leader:*/ Pubkey,
-            Arc<ClusterNodes<RetransmitStage>>,
-            /*include_bam_shred_receivers:*/ bool,
-        ),
-    >,
+    cache: &BatchClusterNodesCache,
     addr_cache: &'a AddrCache,
     socket_addr_space: &SocketAddrSpace,
     stats: &RetransmitStats,
@@ -672,7 +736,7 @@ fn get_retransmit_addrs<'a>(
     Cow<'a, [SocketAddr]>,
     /*include_bam_shred_receivers:*/ bool,
 )> {
-    let cache_entry = cache.get(&shred.slot());
+    let cache_entry = cache.get(shred.slot());
     let include_bam_shred_receivers = cache_entry
         .map(|(_, _, include_bam_shred_receivers)| *include_bam_shred_receivers)
         .unwrap_or_default();
@@ -830,6 +894,13 @@ impl RetransmitStage {
                 });
                 move || {
                     let mut shred_buf = Vec::with_capacity(RETRANSMIT_BATCH_SIZE);
+                    let mut slot_cache = BatchClusterNodesCache {
+                        slots: Vec::with_capacity(solana_perf::packet::PACKETS_PER_BATCH),
+                        entries: Vec::new(),
+                        metrics_since: Instant::now(),
+                        max_slots_len: 0,
+                        max_entries_len: 0,
+                    };
                     while retransmit(
                         &thread_pool,
                         &bank_forks,
@@ -847,6 +918,7 @@ impl RetransmitStage {
                         rpc_subscriptions.as_deref(),
                         slot_status_notifier.as_ref(),
                         &mut shred_buf,
+                        &mut slot_cache,
                         &votor_event_sender,
                         &migration_status,
                         &shred_receiver_addresses,
