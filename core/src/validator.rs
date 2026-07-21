@@ -881,6 +881,13 @@ impl Validator {
                 "ledger directory does not exist or is not accessible: {ledger_path:?}"
             ));
         }
+
+        if config.tip_router_snapshot_config.is_some() && config.rpc_addrs.is_none() {
+            return Err(ValidatorError::Other(
+                "tip-router snapshot service requires the RPC service to be enabled".to_string(),
+            )
+            .into());
+        }
         let genesis_config = load_genesis(config, ledger_path)?;
         metrics_config_sanity_check(genesis_config.cluster_type)?;
 
@@ -1291,6 +1298,12 @@ impl Validator {
                 .unwrap()
         });
 
+        let (tip_router_bank_notification_sender, tip_router_bank_notification_receiver) = config
+            .tip_router_snapshot_config
+            .is_some()
+            .then(unbounded)
+            .unzip();
+
         let rpc_override_health_check =
             Arc::new(AtomicBool::new(config.rpc_config.disable_health_check));
         let (
@@ -1418,6 +1431,7 @@ impl Validator {
                     confirmed_bank_subscribers,
                     prioritization_fee_cache.clone(),
                     dependency_tracker.clone(),
+                    tip_router_bank_notification_sender,
                 ));
             let bank_notification_sender_config = Some(BankNotificationSenderConfig {
                 sender: bank_notification_sender,
@@ -1903,17 +1917,17 @@ impl Validator {
                 root_addr,
             )
         });
-        let tip_router_snapshot_service =
-            config
-                .tip_router_snapshot_config
-                .clone()
-                .map(|tip_router_snapshot_config| {
-                    TipRouterSnapshotService::new(
-                        tip_router_snapshot_config,
-                        bank_forks.clone(),
-                        exit.clone(),
-                    )
-                });
+        let tip_router_snapshot_service = config
+            .tip_router_snapshot_config
+            .clone()
+            .zip(tip_router_bank_notification_receiver)
+            .map(|(tip_router_snapshot_config, bank_notification_receiver)| {
+                TipRouterSnapshotService::new(
+                    tip_router_snapshot_config,
+                    bank_notification_receiver,
+                    exit.clone(),
+                )
+            });
 
         Ok(Self {
             log_config: config.log_config.clone(),

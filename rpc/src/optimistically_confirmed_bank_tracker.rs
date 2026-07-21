@@ -108,6 +108,7 @@ impl OptimisticallyConfirmedBankTracker {
         slot_notification_subscribers: Option<Arc<RwLock<Vec<SlotNotificationSender>>>>,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         dependency_tracker: Option<Arc<DependencyTracker>>,
+        bank_notification_forward: Option<BankNotificationSender>,
     ) -> Self {
         let mut pending_optimistically_confirmed_banks = HashSet::new();
         let mut last_notified_confirmed_slot: Slot = 0;
@@ -133,6 +134,7 @@ impl OptimisticallyConfirmedBankTracker {
                         &slot_notification_subscribers,
                         prioritization_fee_cache.as_deref(),
                         &dependency_tracker,
+                        &bank_notification_forward,
                     ) {
                         break;
                     }
@@ -155,8 +157,17 @@ impl OptimisticallyConfirmedBankTracker {
         slot_notification_subscribers: &Option<Arc<RwLock<Vec<SlotNotificationSender>>>>,
         prioritization_fee_cache: Option<&PrioritizationFeeCache>,
         dependency_tracker: &Option<Arc<DependencyTracker>>,
+        bank_notification_forward: &Option<BankNotificationSender>,
     ) -> Result<(), RecvTimeoutError> {
         let notification = receiver.recv_timeout(Duration::from_secs(1))?;
+        if let Some(forward) = bank_notification_forward {
+            let (notification, dependency_work) = &notification;
+            forward
+                .send((notification.clone(), *dependency_work))
+                .unwrap_or_else(|err| {
+                    warn!("bank_notification_forward failed: {err:?}");
+                });
+        }
         Self::process_notification(
             notification,
             bank_forks,

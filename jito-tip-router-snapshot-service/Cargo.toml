@@ -6,8 +6,12 @@ publish = false
 
 [dependencies]
 clap = { workspace = true }
+crossbeam-channel = { workspace = true }
 log = { workspace = true }
+serde_json = { workspace = true }
 solana-clap-utils = { workspace = true }
+solana-clock = { workspace = true }
+solana-hash = { workspace = true }
 solana-pubkey = { workspace = true }
+solana-rpc = { workspace = true }
 solana-runtime = { workspace = true }
-

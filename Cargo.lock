@@ -4343,9 +4343,14 @@ name = "jito-tip-router-snapshot-service"
 version = "4.1.0-alpha.0"
 dependencies = [
  "clap 2.33.3",
+ "crossbeam-channel",
  "log",
+ "serde_json",
  "solana-clap-utils",
+ "solana-clock",
+ "solana-hash 4.3.0",
  "solana-pubkey 4.2.0",
+ "solana-rpc",
  "solana-runtime",
 ]
 
