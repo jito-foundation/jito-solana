@@ -8,11 +8,8 @@ use {
 };
 
 pub fn collect_stake_meta(config: &TipRouterSnapshotConfig, bank: &Arc<Bank>) -> Value {
-    #[cfg(feature = "stake-meta-gen")]
-    {
-        if let Some(value) = generate_real_stake_meta(config, bank) {
-            return value;
-        }
+    if let Some(value) = generate_real_stake_meta(config, bank) {
+        return value;
     }
 
     json!({
@@ -26,7 +23,6 @@ pub fn collect_stake_meta(config: &TipRouterSnapshotConfig, bank: &Arc<Bank>) ->
 /// Run the ported tip-router generator when all required program IDs are
 /// configured. Returns `None` (and falls back to the placeholder) on missing
 /// config or generation/serialization failure.
-#[cfg(feature = "stake-meta-gen")]
 fn generate_real_stake_meta(config: &TipRouterSnapshotConfig, bank: &Arc<Bank>) -> Option<Value> {
     let (
         Some(tip_distribution_program_id),
@@ -38,9 +34,7 @@ fn generate_real_stake_meta(config: &TipRouterSnapshotConfig, bank: &Arc<Bank>) 
         config.tip_payment_program_id,
     )
     else {
-        log::warn!(
-            "stake-meta-gen enabled but program IDs are missing in config; using placeholder"
-        );
+        log::warn!("stake-meta program IDs are missing in config; using placeholder");
         return None;
     };
 

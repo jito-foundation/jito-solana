@@ -4384,6 +4384,7 @@ dependencies = [
 name = "jito-tip-router-snapshot-service"
 version = "4.3.0-alpha.1"
 dependencies = [
+ "bincode",
  "borsh",
  "clap 2.33.3",
  "crossbeam-channel",

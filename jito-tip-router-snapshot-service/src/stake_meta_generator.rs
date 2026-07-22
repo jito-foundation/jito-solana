@@ -4,9 +4,6 @@
 //! and `distribution_meta.rs`), dropping the `_with_stats` instrumentation twin.
 //! Produces a fully-owned [`StakeMetaCollection`] from the epoch/stake caches and a
 //! small set of deterministic account reads on a frozen bank.
-//!
-//! Gated behind the `stake-meta-gen` feature so the (optional) Jito SDK git
-//! dependencies never touch default validator builds.
 
 use {
     borsh::de::BorshDeserialize,
@@ -25,7 +22,7 @@ use {
         TIP_ACCOUNT_SEED_7,
     },
     log::warn,
-    solana_account::{AccountSharedData, ReadableAccount, WritableAccount, from_account},
+    solana_account::{AccountSharedData, ReadableAccount, WritableAccount},
     solana_clock::Epoch,
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, stakes::StakeAccount},
@@ -384,10 +381,12 @@ fn group_delegations_by_voter_pubkey(
         .filter(|(_stake_pubkey, stake_account)| {
             stake_account.delegation().stake(
                 bank.epoch(),
-                &from_account::<StakeHistory, _>(
-                    &bank.get_account(&stake_history::id()).expect(
-                        "stake history sysvar account should be present in the loaded bank",
-                    ),
+                &bincode::deserialize::<StakeHistory>(
+                    bank.get_account(&stake_history::id())
+                        .expect(
+                            "stake history sysvar account should be present in the loaded bank",
+                        )
+                        .data(),
                 )
                 .expect("stake history sysvar account should deserialize"),
                 bank.new_warmup_cooldown_rate_epoch(),

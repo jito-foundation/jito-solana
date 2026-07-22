@@ -1,22 +1,24 @@
 use {
     crate::{
-        artifact_writer,
-        bank_collector::{self, TipRouterSnapshotArtifacts},
+        artifact_writer, bank_collector,
+        candidate::{
+            BoundaryChildIdentity, CandidateBankIdentity, CandidateGeneration,
+            CandidateRegistration, CandidateRootStatus, GenerationResult, GenerationTask,
+            PendingCandidate, TipRouterSnapshotServiceContext,
+        },
         config::TipRouterSnapshotConfig,
     },
     crossbeam_channel::{
         Receiver, RecvTimeoutError, Sender, TrySendError, bounded, select, tick, unbounded,
     },
     log::{debug, error, info, warn},
-    solana_clock::{Epoch, Slot},
-    solana_hash::Hash,
+    solana_clock::Epoch,
     solana_rpc::optimistically_confirmed_bank_tracker::{
         BankNotification, BankNotificationReceiver, BankNotificationWithDependencyWork,
         RootedBankIdentity,
     },
     solana_runtime::bank::Bank,
     std::{
-        collections::{BTreeMap, HashMap, HashSet},
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -519,83 +521,4 @@ impl TipRouterSnapshotService {
     pub fn join(self) -> thread::Result<()> {
         self.thread_hdl.join()
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct CandidateBankIdentity {
-    slot: Slot,
-    bank_hash: Hash,
-}
-
-impl CandidateBankIdentity {
-    fn from_bank(bank: &Bank) -> Self {
-        Self {
-            slot: bank.slot(),
-            bank_hash: bank.hash(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BoundaryChildIdentity {
-    slot: Slot,
-    bank_hash: Hash,
-    epoch: Epoch,
-}
-
-impl BoundaryChildIdentity {
-    fn from_bank(bank: &Bank) -> Self {
-        Self {
-            slot: bank.slot(),
-            bank_hash: bank.hash(),
-            epoch: bank.epoch(),
-        }
-    }
-}
-
-struct GenerationTask {
-    candidate_identity: CandidateBankIdentity,
-    boundary_child: BoundaryChildIdentity,
-    parent_bank: Arc<Bank>,
-}
-
-struct GenerationResult {
-    candidate_identity: CandidateBankIdentity,
-    artifacts: TipRouterSnapshotArtifacts,
-}
-
-struct CandidateRegistration {
-    identity: CandidateBankIdentity,
-    boundary_child: BoundaryChildIdentity,
-    parent_bank: Arc<Bank>,
-    root_status: CandidateRootStatus,
-}
-
-struct PendingCandidate {
-    boundary_child: BoundaryChildIdentity,
-    generation: CandidateGeneration,
-    root_status: CandidateRootStatus,
-    write_attempts: u8,
-}
-
-enum CandidateGeneration {
-    AwaitingDispatch(Arc<Bank>),
-    Running,
-    Complete(TipRouterSnapshotArtifacts),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CandidateRootStatus {
-    AwaitingRoot,
-    Accepted,
-}
-
-/// State owned exclusively by the tip-router notification thread.
-#[derive(Default)]
-struct TipRouterSnapshotServiceContext {
-    candidates: HashMap<CandidateBankIdentity, PendingCandidate>,
-    recent_rooted_banks: BTreeMap<Slot, Hash>,
-    written_candidates: HashSet<CandidateBankIdentity>,
-    highest_observed_root: Slot,
-    rooted_identity_retention_floor: Slot,
 }
