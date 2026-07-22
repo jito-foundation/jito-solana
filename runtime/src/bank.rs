@@ -4871,13 +4871,8 @@ impl Bank {
                 recording_config,
                 drop_on_failure: false,
                 all_or_nothing: false,
-                // Jito: deliberately stricter than upstream, which passes
-                // false here because this path serves block replay
-                // (blockstore_processor). Replaying a block that contains a
-                // nonce tx with a non-canonical nonce account size errors
-                // here where vanilla agave accepts it. Kept true by explicit
-                // decision; see jito-foundation/jito-solana#1489.
-                strict_nonce_size_check: true,
+                strict_nonce_size_check: false,
+                drop_noop_transactions: false,
             },
         );
 
