@@ -2,7 +2,7 @@
 
 use {
     crate::config::TipRouterSnapshotConfig,
-    serde_json::{json, Value},
+    serde_json::{Value, json},
     solana_runtime::bank::Bank,
     std::sync::Arc,
 };

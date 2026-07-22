@@ -168,38 +168,16 @@ impl TipRouterSnapshotService {
         generation_task_sender: &Sender<GenerationTask>,
         context: &mut TipRouterSnapshotServiceContext,
     ) {
-        let Some(parent_bank) = boundary_child_bank.parent() else {
+        let Some(registration) = Self::candidate_registration(&boundary_child_bank, context) else {
             return;
         };
-        if boundary_child_bank.epoch() <= parent_bank.epoch() {
-            return;
-        }
+        let CandidateRegistration {
+            identity: candidate_identity,
+            boundary_child,
+            parent_bank,
+            root_status,
+        } = registration;
 
-        let candidate_identity = CandidateBankIdentity::from_bank(&parent_bank);
-        if context.written_candidates.contains(&candidate_identity)
-            || context.candidates.contains_key(&candidate_identity)
-        {
-            return;
-        }
-
-        if let Some(rooted_hash) = context.recent_rooted_banks.get(&candidate_identity.slot) {
-            if *rooted_hash != candidate_identity.bank_hash {
-                debug!(
-                    "dropping tip-router snapshot candidate on rooted losing fork: slot={}, \
-                     bank_hash={}, rooted_bank_hash={rooted_hash}",
-                    candidate_identity.slot, candidate_identity.bank_hash,
-                );
-                return;
-            }
-        }
-
-        let boundary_child = BoundaryChildIdentity::from_bank(&boundary_child_bank);
-        let root_status = context
-            .recent_rooted_banks
-            .get(&candidate_identity.slot)
-            .is_some_and(|rooted_hash| *rooted_hash == candidate_identity.bank_hash)
-            .then_some(CandidateRootStatus::Accepted)
-            .unwrap_or(CandidateRootStatus::AwaitingRoot);
         debug!(
             "registering tip-router snapshot candidate: slot={}, bank_hash={}, epoch={}, \
              child_slot={}, child_hash={}, child_epoch={}",
@@ -221,6 +199,45 @@ impl TipRouterSnapshotService {
         );
         Self::prune_candidate_cache(config, context);
         Self::dispatch_awaiting_generation(generation_task_sender, context);
+    }
+
+    fn candidate_registration(
+        boundary_child_bank: &Arc<Bank>,
+        context: &TipRouterSnapshotServiceContext,
+    ) -> Option<CandidateRegistration> {
+        let parent_bank = boundary_child_bank.parent()?;
+        if boundary_child_bank.epoch() <= parent_bank.epoch() {
+            return None;
+        }
+
+        let identity = CandidateBankIdentity::from_bank(&parent_bank);
+        if context.written_candidates.contains(&identity)
+            || context.candidates.contains_key(&identity)
+        {
+            return None;
+        }
+
+        let root_status = match context.recent_rooted_banks.get(&identity.slot) {
+            Some(rooted_hash) if *rooted_hash == identity.bank_hash => {
+                CandidateRootStatus::Accepted
+            }
+            Some(rooted_hash) => {
+                debug!(
+                    "dropping tip-router snapshot candidate on rooted losing fork: slot={}, \
+                     bank_hash={}, rooted_bank_hash={rooted_hash}",
+                    identity.slot, identity.bank_hash,
+                );
+                return None;
+            }
+            None => CandidateRootStatus::AwaitingRoot,
+        };
+
+        Some(CandidateRegistration {
+            identity,
+            boundary_child: BoundaryChildIdentity::from_bank(boundary_child_bank),
+            parent_bank,
+            root_status,
+        })
     }
 
     fn handle_new_root_bank(root_bank: Arc<Bank>, context: &mut TipRouterSnapshotServiceContext) {
@@ -545,6 +562,13 @@ struct GenerationTask {
 struct GenerationResult {
     candidate_identity: CandidateBankIdentity,
     artifacts: TipRouterSnapshotArtifacts,
+}
+
+struct CandidateRegistration {
+    identity: CandidateBankIdentity,
+    boundary_child: BoundaryChildIdentity,
+    parent_bank: Arc<Bank>,
+    root_status: CandidateRootStatus,
 }
 
 struct PendingCandidate {

@@ -12,20 +12,20 @@ use {
     borsh::de::BorshDeserialize,
     itertools::Itertools,
     jito_priority_fee_distribution_sdk::{
-        derive_priority_fee_distribution_account_address, PriorityFeeDistributionAccount,
+        PriorityFeeDistributionAccount, derive_priority_fee_distribution_account_address,
     },
     jito_stake_meta_types::{
         Delegation, PriorityFeeDistributionMeta, StakeMeta, StakeMetaCollection,
         TipDistributionMeta,
     },
-    jito_tip_distribution_sdk::{derive_tip_distribution_account_address, TipDistributionAccount},
+    jito_tip_distribution_sdk::{TipDistributionAccount, derive_tip_distribution_account_address},
     jito_tip_payment_sdk::{
-        Config, CONFIG_ACCOUNT_SEED, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
+        CONFIG_ACCOUNT_SEED, Config, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
         TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
         TIP_ACCOUNT_SEED_7,
     },
     log::warn,
-    solana_account::{from_account, AccountSharedData, ReadableAccount, WritableAccount},
+    solana_account::{AccountSharedData, ReadableAccount, WritableAccount, from_account},
     solana_clock::Epoch,
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, stakes::StakeAccount},
@@ -290,45 +290,62 @@ pub fn generate_stake_meta_collection(
     let mut stake_metas: Vec<StakeMeta> = epoch_vote_accounts
         .iter()
         .filter_map(|(vote_pubkey, (_, vote_account))| {
-            voter_pubkey_to_delegations.get(vote_pubkey).cloned().map_or_else(|| {
-                warn!(
-                    "voter_pubkey not found in voter_pubkey_to_delegations map [validator_vote_pubkey={}]",
-                    vote_pubkey
-                );
-                None
-            }, |mut delegations| {
-                let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
-                    sum.checked_add(delegation.lamports_delegated)
-                        .expect("total delegated lamports should not overflow u64")
-                });
+            voter_pubkey_to_delegations
+                .get(vote_pubkey)
+                .cloned()
+                .map_or_else(
+                    || {
+                        warn!(
+                            "voter_pubkey not found in voter_pubkey_to_delegations map \
+                             [validator_vote_pubkey={}]",
+                            vote_pubkey
+                        );
+                        None
+                    },
+                    |mut delegations| {
+                        let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
+                            sum.checked_add(delegation.lamports_delegated)
+                                .expect("total delegated lamports should not overflow u64")
+                        });
 
-                let maybe_tip_distribution_meta = get_distribution_meta::<TipDistributionAccount, WrappedTipDistributionMeta>(
-                    bank,
-                    tip_distribution_program_id,
-                    vote_pubkey,
-                    Some(TipReceiverInfo {
-                        tip_receiver,
-                        tip_receiver_fee,
-                    }));
+                        let maybe_tip_distribution_meta = get_distribution_meta::<
+                            TipDistributionAccount,
+                            WrappedTipDistributionMeta,
+                        >(
+                            bank,
+                            tip_distribution_program_id,
+                            vote_pubkey,
+                            Some(TipReceiverInfo {
+                                tip_receiver,
+                                tip_receiver_fee,
+                            }),
+                        );
 
-                let maybe_priority_fee_distribution_meta = get_distribution_meta::<PriorityFeeDistributionAccount, WrappedPriorityFeeDistributionMeta>(
-                    bank,
-                    priority_fee_distribution_program_id,
-                    vote_pubkey,
-                    None);
+                        let maybe_priority_fee_distribution_meta = get_distribution_meta::<
+                            PriorityFeeDistributionAccount,
+                            WrappedPriorityFeeDistributionMeta,
+                        >(
+                            bank,
+                            priority_fee_distribution_program_id,
+                            vote_pubkey,
+                            None,
+                        );
 
-                let vote_state = vote_account.vote_state_view();
-                delegations.sort();
-                Some(StakeMeta {
-                    maybe_tip_distribution_meta: maybe_tip_distribution_meta.map(|x| x.0),
-                    maybe_priority_fee_distribution_meta: maybe_priority_fee_distribution_meta.map(|x| x.0),
-                    validator_node_pubkey: *vote_state.node_pubkey(),
-                    validator_vote_account: *vote_pubkey,
-                    delegations,
-                    total_delegated,
-                    commission: vote_state.commission(),
-                })
-            })})
+                        let vote_state = vote_account.vote_state_view();
+                        delegations.sort();
+                        Some(StakeMeta {
+                            maybe_tip_distribution_meta: maybe_tip_distribution_meta.map(|x| x.0),
+                            maybe_priority_fee_distribution_meta:
+                                maybe_priority_fee_distribution_meta.map(|x| x.0),
+                            validator_node_pubkey: *vote_state.node_pubkey(),
+                            validator_vote_account: *vote_pubkey,
+                            delegations,
+                            total_delegated,
+                            commission: vote_state.commission(),
+                        })
+                    },
+                )
+        })
         .collect();
 
     stake_metas.sort();
