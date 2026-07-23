@@ -41,7 +41,7 @@ use {
     solana_accounts_db::account_locks::validate_account_locks,
     solana_clock::{MAX_PROCESSING_AGE, Slot},
     solana_measure::{measure::Measure, measure_us},
-    solana_packet::{Meta, PACKET_DATA_SIZE, PacketFlags},
+    solana_packet::{Meta, PacketFlags},
     solana_perf::{
         packet::{BytesPacket, BytesPacketBatch},
         sigverify::ed25519_verify,
@@ -649,6 +649,29 @@ impl BamReceiveAndBuffer {
         stats
     }
 
+    fn proto_packet_to_packet(from_packet: Packet) -> BytesPacket {
+        let Packet { data, meta } = from_packet;
+        let data_len = data.len();
+        if data_len > solana_message::v1::MAX_TRANSACTION_SIZE {
+            let mut p = BytesPacket::new(Bytes::new(), Meta::default());
+            p.meta_mut().set_discard(true);
+            return p;
+        }
+
+        let mut to_packet = BytesPacket::new(data.into(), Meta::default());
+        to_packet.meta_mut().size = data_len;
+
+        if let Some(meta) = meta
+            && meta.flags.is_some_and(|flags| flags.simple_vote_tx)
+        {
+            to_packet
+                .meta_mut()
+                .flags
+                .insert(PacketFlags::SIMPLE_VOTE_TX);
+        }
+        to_packet
+    }
+
     fn batch_verify(
         sigverify_thread_pool: &rayon::ThreadPool,
         atomic_txn_batches: &mut [MultipleAtomicTxnBatch],
@@ -672,28 +695,7 @@ impl BamReceiveAndBuffer {
                 let solana_packet_batch: Vec<_> = atomic_txn_batch
                     .packets
                     .drain(..)
-                    .map(|from_packet| {
-                        let Packet { data, meta } = from_packet;
-                        let data_len = data.len();
-                        if data_len > PACKET_DATA_SIZE {
-                            let mut to_packet = BytesPacket::new(Bytes::new(), Meta::default());
-                            to_packet.meta_mut().set_discard(true);
-                            return to_packet;
-                        }
-
-                        let mut to_packet = BytesPacket::new(data, Meta::default());
-                        to_packet.meta_mut().size = data_len;
-
-                        if let Some(meta) = meta
-                            && meta.flags.is_some_and(|flags| flags.simple_vote_tx)
-                        {
-                            to_packet
-                                .meta_mut()
-                                .flags
-                                .insert(PacketFlags::SIMPLE_VOTE_TX);
-                        }
-                        to_packet
-                    })
+                    .map(Self::proto_packet_to_packet)
                     .collect();
                 packet_count += solana_packet_batch.len();
                 packet_batches.push(solana_perf::packet::PacketBatch::Bytes(
@@ -1315,7 +1317,7 @@ mod tests {
         let batch = AtomicTxnBatch {
             seq_id: 1,
             packets: vec![Packet {
-                data: vec![0; PACKET_DATA_SIZE + 1].into(),
+                data: vec![0; solana_message::v1::MAX_TRANSACTION_SIZE + 1].into(),
                 meta: None,
             }],
             max_schedule_slot: Slot::MAX,
@@ -1621,5 +1623,84 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
+    }
+
+    #[test]
+    fn test_proto_packet_to_packet_keeps_txv1_sized() {
+        let p = BamReceiveAndBuffer::proto_packet_to_packet(Packet {
+            data: vec![0u8; 2000].into(),
+            meta: None,
+        });
+        assert!(!p.meta().discard(), "txv1-sized packet must not be discarded at copy");
+        assert_eq!(p.meta().size, 2000);
+    }
+
+    #[test]
+    fn test_proto_packet_to_packet_discards_over_txv1_max() {
+        let p = BamReceiveAndBuffer::proto_packet_to_packet(Packet {
+            data: vec![0u8; solana_message::v1::MAX_TRANSACTION_SIZE + 1].into(),
+            meta: None,
+        });
+        assert!(p.meta().discard(), "packet over txv1 max must be discarded");
+    }
+
+    #[test]
+    fn test_txv1_transaction_over_1232_survives_ingest() {
+        use {
+            solana_message::{VersionedMessage, v1},
+            solana_system_interface::instruction as system_instruction,
+        };
+
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let payer_pubkey = mint_keypair.pubkey();
+        let recent_blockhash = bank_forks.read().unwrap().root_bank().last_blockhash();
+
+        // Pack enough transfer instructions to push the serialized tx over 1232 bytes.
+        // Each extra account key adds ~32 bytes to the message; ~20 instructions clears
+        // PACKET_DATA_SIZE while staying well under MAX_TRANSACTION_SIZE.
+        let serialized = (1usize..=64)
+            .map(|n| {
+                let ixs: Vec<_> = (0..n)
+                    .map(|_| {
+                        system_instruction::transfer(&payer_pubkey, &Pubkey::new_unique(), 1)
+                    })
+                    .collect();
+                let message =
+                    v1::Message::try_compile(&payer_pubkey, &ixs, recent_blockhash).unwrap();
+                let tx =
+                    VersionedTransaction::try_new(VersionedMessage::V1(message), &[&mint_keypair])
+                        .unwrap();
+                bincode::serialize(&tx).unwrap()
+            })
+            .find(|bytes| {
+                bytes.len() > solana_packet::PACKET_DATA_SIZE
+                    && bytes.len() <= solana_message::v1::MAX_TRANSACTION_SIZE
+            })
+            .expect("a txv1 tx between PACKET_DATA_SIZE and MAX_TRANSACTION_SIZE");
+
+        assert!(serialized.len() > solana_packet::PACKET_DATA_SIZE);
+        assert!(serialized.len() <= solana_message::v1::MAX_TRANSACTION_SIZE);
+
+        let batch = AtomicTxnBatch {
+            seq_id: 1,
+            packets: vec![Packet {
+                data: serialized.into(),
+                meta: None,
+            }],
+            max_schedule_slot: Slot::MAX,
+        };
+
+        let mut stats = BamReceiveAndBufferMetrics::default();
+        let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
+
+        assert_eq!(results.len(), 1);
+        // batch_verify calls ed25519_verify with enable_tx_v1=false, so a real V1 tx is
+        // rejected at sigverify and surfaces as DeserializationError. That's fine here.
+        // What matters is the packet reaches sigverify at full length, not truncated at copy.
+        assert!(
+            results[0].is_ok() || matches!(&results[0], Err((Reason::DeserializationError(_), _))),
+            "txv1 tx must reach sigverify at full length, got unexpected result: {:?}",
+            results[0]
+        );
     }
 }
