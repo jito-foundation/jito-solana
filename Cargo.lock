@@ -587,7 +587,6 @@ dependencies = [
 name = "agave-xdp-ebpf"
 version = "4.3.0-alpha.2"
 dependencies = [
- "aya",
  "aya-ebpf",
 ]
 
@@ -9286,7 +9285,6 @@ dependencies = [
  "bincode",
  "bytes",
  "cfg-if 1.0.4",
- "crossbeam-channel",
  "dashmap",
  "hxdmp",
  "itertools 0.14.0",
@@ -11321,7 +11319,6 @@ dependencies = [
  "quinn",
  "rustls",
  "serde_json",
- "solana-cli-config",
  "solana-clock",
  "solana-commitment-config",
  "solana-keypair",
