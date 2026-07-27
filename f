@@ -3,7 +3,7 @@
 # Build jito-solana release artifacts inside a container and export them to
 # the host. See dev/BUILD.md for the full workflow.
 #
-# Bundled binaries (in <basename>-<tag>-<target>.tar.bz2 under bin/):
+# Bundled binaries (in <basename>-<tag>_<target>.tar.bz2 under bin/):
 #   agave-validator          [Jito-patched: BAM, bundles, tip-distribution]
 #   agave-ledger-tool        [Jito-patched ledger inspection]
 #   agave-watchtower         monitoring
@@ -14,20 +14,22 @@
 #   solana-keygen            keypair tooling
 #
 # Output (default ./dist/):
-#   <basename>-<tag>-<target>.tar.bz2   release tarball (bzip2)
-#   <basename>-<tag>-<target>.yml       version manifest: channel, commit,
+#   <basename>-<tag>_<target>.tar.bz2   release tarball (bzip2)
+#   <basename>-<tag>_<target>.yml       version manifest: channel, commit,
 #                                       target
 #
 # The <target> triple is derived inside the container from the platform the
-# build actually runs as, so it always matches the binaries. Use --platform
-# to build for a non-native platform (needs emulation or a builder node for
-# that platform).
+# build actually runs as, so it always matches the binaries. It is joined
+# to the basename/tag with '_' (e.g. ..._<sha>_x86_64-unknown-linux-gnu).
+# Use --platform to build for a non-native platform (needs emulation or a
+# builder node for that platform).
 #
 # Back-compat output (always at the repo root, regardless of --output):
 #   docker-output/<bin>             loose binaries, old pipeline layout
 #
 # Examples:
-#   ./f                                          # release build, tag from git
+#   ./f                                          # local: v<version>_<sha>
+#                                                # [-dirty]
 #   ./f --profile debug
 #   ./f --profile release-with-lto --tag v3.0.1
 #   ./f --output ./out
@@ -38,6 +40,8 @@
 #                                                # the *current* checkout's
 #                                                # tooling (worktree-based; no
 #                                                # mutation to your HEAD)
+#   ./f --checkout master                        # moving branch ->
+#                                                # master-<shortsha>
 #
 # Requires: docker with buildx (Docker Engine >=23 or buildx plugin installed).
 
@@ -69,11 +73,13 @@ Drives Agave's upstream scripts/create-release-tarball.sh through dev/Dockerfile
 with a Jito-curated operator binary set.
 
 Output (default ./dist/):
-  <basename>-<tag>-<target>.tar.bz2   release tarball (bzip2)
-  <basename>-<tag>-<target>.yml       version manifest: channel, commit, target
+  <basename>-<tag>_<target>.tar.bz2   release tarball (bzip2)
+  <basename>-<tag>_<target>.yml       version manifest: channel, commit, target
 
 The <target> triple is derived inside the container from the actual build
-platform, so it always matches the binaries.
+platform, so it always matches the binaries. The platform suffix is joined
+with '_', for example:
+  jito-solana-release-v4.3.0-alpha.0_<sha>_x86_64-unknown-linux-gnu
 
 Back-compat output (always at the repo root, regardless of --output):
   docker-output/<bin>             loose binaries, old pipeline layout
@@ -84,21 +90,24 @@ Options:
   --profile PROFILE       release | release-with-debug | release-with-lto | debug
                           (default: release)
   --tag VALUE             channel/tag to embed in version.yml
-                          (default: --checkout value, or
-                          `git describe --tags --always --dirty`)
+                          (default: --checkout-derived tag; else the exact git
+                          tag at HEAD when present; else
+                          v<Cargo.toml version>_<shortsha>[-dirty])
   --checkout REF          build a specific git ref (tag/branch/SHA) using a
                           throwaway worktree. The current checkout's f and
                           dev/Dockerfile drive the build, but the source being
                           compiled comes from REF. Your working tree and HEAD
                           are not modified. The ref must already exist locally
                           (run `git fetch --tags origin` first if needed).
+                          When --tag is omitted: exact tags keep their release
+                          name; moving branches / other refs append -<shortsha>.
   --platform PLATFORM     docker platform to build as, e.g. linux/amd64
                           (default: the builder's native platform). Single
                           platform only. Non-native platforms need QEMU
                           emulation (slow) or a buildx builder node of that
                           platform.
   --basename NAME         tarball/yml base name (default: jito-solana-release);
-                          the channel/tag is appended automatically
+                          channel/tag and _<target> are appended automatically
   --no-val-bins           drop validator/operator binaries from the tarball
                           (defaults to including them, since they are the point
                           of a Jito release artifact)
@@ -235,15 +244,42 @@ if [[ -n "$checkout" ]]; then
   git -C "$worktree_dir" submodule update --init --recursive --quiet
 
   build_context="$worktree_dir"
-  : "${tag:=$checkout}"
   ci_commit="$resolved_sha"
+
+  # Channel tag from --checkout when --tag was omitted:
+  #   - Exact tag at REF (e.g. v4.0.3-jito) -> keep the release tag name
+  #   - Moving branch / SHA / other ref -> append short SHA so the artifact
+  #     stays unique as the branch tip moves
+  if [[ -z "$tag" ]]; then
+    if tag="$(git describe --exact-match --tags "$resolved_sha" 2>/dev/null)"; then
+      :
+    else
+      short_sha="$(git rev-parse --short "$resolved_sha")"
+      tag="${checkout}-${short_sha}"
+    fi
+  fi
 fi
 
+# shellcheck source=scripts/read-cargo-variable.sh
+source "$SCRIPT_DIR/scripts/read-cargo-variable.sh"
+
+# Channel/tag for version.yml and artifact names (when still unset):
+#   1. Exact git tag at HEAD -- standard release builds on a tagged commit
+#   2. Local non-release: v<Cargo.toml version>_<shortsha>[-dirty]
+#      Cargo workspace version is the tree's truth on master; git describe
+#      walks ancestor tags and often lands on ancient release-line tags that
+#      are not ancestors of later Jito cuts. Underscore separates version from
+#      SHA so semver prerelease hyphens (e.g. 4.3.0-alpha.0) stay unambiguous.
 if [[ -z "$tag" ]]; then
-  if tag="$(git -C "$build_context" describe --tags --always --dirty 2>/dev/null)"; then
+  if tag="$(git -C "$build_context" describe --exact-match --tags HEAD 2>/dev/null)"; then
     :
   else
-    tag="$(git -C "$build_context" rev-parse --short HEAD)"
+    version="$(readCargoVariable version "$build_context/Cargo.toml")"
+    short_sha="$(git -C "$build_context" rev-parse --short HEAD)"
+    tag="v${version}_${short_sha}"
+    if [[ -n "$(git -C "$build_context" status --porcelain)" ]]; then
+      tag="${tag}-dirty"
+    fi
   fi
 fi
 
@@ -251,16 +287,14 @@ fi
 # self-identifying on disk. Tags can be branch names (user/branch); replace
 # path separators to keep the result a single filename component. The
 # tarball's internal jito-solana-release/ prefix is unaffected (it comes
-# from --build-dir, not the basename). The target triple suffix is appended
-# inside the container, derived from the actual build platform.
+# from --build-dir, not the basename). The target triple is joined with '_'
+# inside the container (e.g. ..._<sha>_x86_64-unknown-linux-gnu).
 artifact_basename="${basename}-${tag//\//_}"
 
 # Read rust-toolchain.toml from the build context (worktree if --checkout was
 # used, else the current checkout) just for the informational banner. The
 # Dockerfile resolves the actual toolchain via rustup against the same file
 # inside the container.
-# shellcheck source=scripts/read-cargo-variable.sh
-source "$SCRIPT_DIR/scripts/read-cargo-variable.sh"
 rust_version="$(readCargoVariable channel "$build_context/rust-toolchain.toml")"
 
 : "${ci_commit:=${CI_COMMIT:-$(git rev-parse HEAD)}}"
