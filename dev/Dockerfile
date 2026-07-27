@@ -15,7 +15,9 @@
 #   3. export     : FROM scratch. The host extracts /out via
 #                   `docker buildx build --output type=local,dest=...`.
 #
-# Driven by the `f` wrapper at the repo root.
+# Driven by the `f` wrapper at the repo root. Artifact names use
+# <basename>-<tag>_<target> (underscore before the platform triple).
+# See dev/BUILD.md for tag resolution and naming rules.
 
 # Pin the OS layer; the actual rustc/cargo version is resolved at build time
 # from rust-toolchain.toml (see the rustup step in the builder stage). We
@@ -170,10 +172,13 @@ sed -i "s#\"\${binArgs\[@\]}\" --workspace#\"\${binArgs[@]}\" --workspace${dcou_
 #        cargo-built binaries (no spl-token-cli install, no SBF SDK, no CUDA
 #        perf-libs fetch);
 #    (b) drop the line that copies bin/agave-install-init out alongside the
-#        tarball, since we don't build it anymore.
+#        tarball, since we don't build it anymore;
+#    (c) join basename and target with '_' so local tags like
+#        v4.3.0-alpha.0_<sha> stay readable before x86_64-unknown-linux-gnu.
 sed -i \
   -e 's#scripts/cargo-install-all.sh stable "${build_dir}"#scripts/cargo-install-all.sh --no-spl-token --no-build-platform-tools --no-perf-libs stable "${build_dir}"#' \
   -e '/agave-install-init/d' \
+  -e 's#"${tarball_basename}-${target}#"${tarball_basename}_${target}#g' \
   scripts/create-release-tarball.sh
 # ----------------------------------------------------------------------------
 
@@ -215,16 +220,16 @@ else
     done
   fi
 
-  cp "$build_dir/version.yml" "${TARBALL_BASENAME}-${TARGET_TRIPLE}.yml"
-  tar -cjvf "${TARBALL_BASENAME}-${TARGET_TRIPLE}.tar.bz2" \
+  cp "$build_dir/version.yml" "${TARBALL_BASENAME}_${TARGET_TRIPLE}.yml"
+  tar -cjvf "${TARBALL_BASENAME}_${TARGET_TRIPLE}.tar.bz2" \
     -X "$tmp_excludes" "$build_dir"
 fi
 
 # Stage outputs to a non-cache-mounted dir so the scratch export stage can
 # COPY them out.
 mkdir -p /out
-cp "${TARBALL_BASENAME}-${TARGET_TRIPLE}.tar.bz2" /out/
-cp "${TARBALL_BASENAME}-${TARGET_TRIPLE}.yml"     /out/
+cp "${TARBALL_BASENAME}_${TARGET_TRIPLE}.tar.bz2" /out/
+cp "${TARBALL_BASENAME}_${TARGET_TRIPLE}.yml"     /out/
 
 # Back-compat: also export loose binaries under docker-output/
 mkdir -p /out/docker-output
