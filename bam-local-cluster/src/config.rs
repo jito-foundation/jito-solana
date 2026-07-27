@@ -15,6 +15,9 @@ pub struct LocalClusterConfig {
     pub validators: Vec<CustomValidatorConfig>,
     pub dynamic_port_range_start: u16,
     pub hashes_per_tick: Option<u64>,
+    /// Faucet mint balance in SOL.
+    #[serde(default)]
+    pub mint_sol: Option<u64>,
     pub bind_address: Option<String>,
     pub gossip_host: Option<String>,
     pub limit_ledger_size: Option<u64>,

@@ -388,8 +388,17 @@ impl BamLocalCluster {
         }
 
         let stakes = vec![DEFAULT_NODE_STAKE; config.validators.len()];
+        let mint_lamports = config
+            .mint_sol
+            .map(|mint_sol| {
+                mint_sol.checked_mul(LAMPORTS_PER_SOL).ok_or_else(|| {
+                    anyhow::anyhow!("configured mint_sol ({mint_sol}) overflows lamports")
+                })
+            })
+            .transpose()?
+            .unwrap_or(solana_local_cluster::local_cluster::DEFAULT_MINT_LAMPORTS);
         let genesis_config_info = Self::create_genesis_config_with_vote_accounts_and_cluster_type(
-            solana_local_cluster::local_cluster::DEFAULT_MINT_LAMPORTS,
+            mint_lamports,
             &vote_keypairs,
             stakes,
             // Don't use mainnet, since we de-dupe local TVU IP addresses and every validator
