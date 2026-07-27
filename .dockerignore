@@ -7,3 +7,8 @@ README.md
 Dockerfile
 f
 target/
+dist/
+docker-output/
+jito-solana-release/
+jito-solana-release-*.tar.bz2
+jito-solana-release-*.yml
