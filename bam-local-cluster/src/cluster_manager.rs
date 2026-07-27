@@ -97,6 +97,9 @@ impl BamValidator {
         .arg(poh_pinned_cpu_core.to_string())
         .arg("--no-wait-for-vote-to-start-leader")
         .arg("--no-os-network-limits-test")
+        // Local clusters do not always provision AF_XDP resources.  Keep the validator
+        // invocation explicit now that XDP is enabled by default upstream.
+        .arg("--no-xdp")
         .arg("--wait-for-supermajority")
         .arg("0")
         .arg("--rpc-port")
