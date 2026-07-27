@@ -30,7 +30,6 @@ use {
     solana_pubkey::Pubkey,
     stats::Stats,
     std::{
-        collections::HashSet,
         fmt::Debug,
         num::NonZeroUsize,
         path::PathBuf,
@@ -327,6 +326,7 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
             .is_some()
     }
 
+    #[cfg(test)]
     fn slot_list_mut<RT>(
         &self,
         pubkey: &Pubkey,
@@ -337,20 +337,19 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
     }
 
     /// Remove keys from the account index if the key's slot list is empty.
-    /// Returns the keys that were removed from the index. These keys should not be accessed again
-    /// in the current code path.
+    /// Returns the keys that were removed from the index.
     ///
     /// When secondary indexes are enabled, callers must pass the returned keys to
     /// `AccountsDb::purge_secondary_indexes_for_dead_keys`, otherwise their secondary index
     /// entries leak.
     #[must_use]
-    pub fn handle_dead_keys(&self, dead_keys: &[Pubkey]) -> HashSet<Pubkey> {
-        let mut pubkeys_removed_from_accounts_index = HashSet::default();
+    pub fn handle_dead_keys(&self, dead_keys: &[Pubkey]) -> Vec<Pubkey> {
+        let mut pubkeys_removed_from_accounts_index = Vec::default();
         if !dead_keys.is_empty() {
             for key in dead_keys.iter() {
                 let w_index = self.get_bin(key);
                 if w_index.remove_if_slot_list_empty(*key) {
-                    pubkeys_removed_from_accounts_index.insert(*key);
+                    pubkeys_removed_from_accounts_index.push(*key);
                 }
             }
         }
@@ -410,6 +409,9 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
             .collect()
     }
 
+    /// Removes `slots_to_purge` from the slot list of `pubkey`, pushing removed entries into
+    /// `reclaims` and unreffing each removed entry under the same lock.
+    ///
     /// returns true if, after this fn call:
     /// accounts index entry for `pubkey` has an empty slot list
     /// or `pubkey` does not exist in accounts index
@@ -419,16 +421,21 @@ impl<T: IndexValue, U: DiskIndexValue + From<T> + Into<T>> AccountsIndex<T, U> {
         slots_to_purge: impl for<'a> Contains<'a, Slot>,
         reclaims: &mut ReclaimsSlotList<T>,
     ) -> bool {
-        self.slot_list_mut(pubkey, |mut slot_list| {
-            slot_list.retain_and_count(|(slot, item)| {
+        let map = self.get_bin(pubkey);
+        map.slot_list_mut_with_entry(pubkey, |mut slot_list, entry| {
+            let mut removed_count = 0;
+            let count = slot_list.retain_and_count(|(slot, item)| {
                 let should_purge = slots_to_purge.contains(slot);
                 if should_purge {
                     reclaims.push((*slot, *item));
+                    removed_count += 1;
                     false
                 } else {
                     true
                 }
-            }) == 0
+            });
+            entry.unref_by_count(removed_count);
+            count == 0
         })
         .unwrap_or(true)
     }
@@ -1062,6 +1069,7 @@ mod tests {
         solana_account::AccountSharedData,
         solana_pubkey::PUBKEY_BYTES,
         spl_generic_token::{spl_token_ids, token::SPL_TOKEN_ACCOUNT_OWNER_OFFSET},
+        std::collections::HashSet,
         test_case::test_matrix,
     };
 
@@ -2685,9 +2693,6 @@ mod tests {
         let key = solana_pubkey::new_rand();
         let index = AccountsIndex::<bool, bool>::default_for_tests();
 
-        assert_eq!(
-            index.handle_dead_keys(&[key]),
-            vec![key].into_iter().collect::<HashSet<_>>()
-        );
+        assert_eq!(index.handle_dead_keys(&[key]), vec![key]);
     }
 }
