@@ -159,8 +159,6 @@ pub struct ProgramCacheEntry {
     pub program: ProgramCacheEntryType,
     /// The loader of this entry
     pub account_owner: ProgramCacheEntryOwner,
-    /// Size of account that stores the program and program data
-    pub account_size: usize,
     /// Slot in which the program was (re)deployed
     pub deployment_slot: Slot,
     /// Slot in which this entry will become active (can be in the future)
@@ -205,7 +203,6 @@ impl ProgramCacheEntry {
         deployment_slot: Slot,
         effective_slot: Slot,
         elf_bytes: &[u8],
-        account_size: usize,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_internal(
@@ -214,7 +211,6 @@ impl ProgramCacheEntry {
             deployment_slot,
             effective_slot,
             elf_bytes,
-            account_size,
             #[cfg(feature = "metrics")]
             metrics,
             false, /* reloading */
@@ -235,7 +231,6 @@ impl ProgramCacheEntry {
         deployment_slot: Slot,
         effective_slot: Slot,
         elf_bytes: &[u8],
-        account_size: usize,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_internal(
@@ -244,7 +239,6 @@ impl ProgramCacheEntry {
             deployment_slot,
             effective_slot,
             elf_bytes,
-            account_size,
             #[cfg(feature = "metrics")]
             metrics,
             true, /* reloading */
@@ -257,7 +251,6 @@ impl ProgramCacheEntry {
         deployment_slot: Slot,
         effective_slot: Slot,
         elf_bytes: &[u8],
-        account_size: usize,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
         reloading: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -300,7 +293,6 @@ impl ProgramCacheEntry {
         Ok(Self {
             deployment_slot,
             account_owner: ProgramCacheEntryOwner::try_from(loader_key).unwrap(),
-            account_size,
             effective_slot,
             program: ProgramCacheEntryType::Loaded(executable),
             stats: entry_stats.into(),
@@ -322,7 +314,6 @@ impl ProgramCacheEntry {
         Some(Self {
             program: ProgramCacheEntryType::Unloaded(environment),
             account_owner: self.account_owner,
-            account_size: self.account_size,
             deployment_slot: self.deployment_slot,
             effective_slot: self.effective_slot,
             stats: Arc::clone(&self.stats),
@@ -337,17 +328,12 @@ impl ProgramCacheEntry {
     }
 
     /// Creates a new built-in program
-    pub fn new_builtin(
-        deployment_slot: Slot,
-        account_size: usize,
-        register_fn: BuiltinFunctionRegisterer,
-    ) -> Self {
+    pub fn new_builtin(deployment_slot: Slot, register_fn: BuiltinFunctionRegisterer) -> Self {
         let mut program = BuiltinProgram::new_builtin();
         register_fn(&mut program, "entrypoint").unwrap();
         Self {
             deployment_slot,
             account_owner: ProgramCacheEntryOwner::NativeLoader,
-            account_size,
             effective_slot: deployment_slot,
             program: ProgramCacheEntryType::Builtin(program),
             stats: Arc::default(),
@@ -372,7 +358,6 @@ impl ProgramCacheEntry {
         let tombstone = Self {
             program: reason,
             account_owner,
-            account_size: 0,
             deployment_slot: slot,
             effective_slot: slot,
             stats,

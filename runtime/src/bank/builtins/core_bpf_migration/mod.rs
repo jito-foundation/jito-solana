@@ -134,7 +134,6 @@ impl Bank {
         program_id: &Pubkey,
         programdata: &[u8],
     ) -> Result<(), InstructionError> {
-        let data_len = programdata.len();
         let progradata_metadata_size = UpgradeableLoaderState::size_of_programdata_metadata();
         let elf = &programdata[progradata_metadata_size..];
         // Set up the two `LoadedProgramsForTxBatch` instances, as if
@@ -201,9 +200,6 @@ impl Bank {
                 false, // disable_sbpf_v0_v1_v2_deployment // explicitly continue to allow them for core program migrations
                 program_id,
                 &bpf_loader_upgradeable::id(),
-                // The size of the program cache entry is the size of the program account
-                // + size of the program data account.
-                UpgradeableLoaderState::size_of_program().saturating_add(data_len),
                 elf,
                 self.slot,
             )?;
@@ -777,10 +773,6 @@ pub(crate) mod tests {
                 .unwrap();
 
             // The target program entry should be updated.
-            assert_eq!(
-                target_entry.account_size,
-                program_account.data().len() + program_data_account.data().len()
-            );
             assert_eq!(target_entry.deployment_slot, migration_or_upgrade_slot);
             assert_eq!(target_entry.effective_slot, migration_or_upgrade_slot + 1);
 
@@ -807,7 +799,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
+                ProgramCacheEntry::new_builtin(0, NoopBuiltin::register),
             );
             account
         };
@@ -943,7 +935,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
+                ProgramCacheEntry::new_builtin(0, NoopBuiltin::register),
             );
             account
         };
@@ -993,7 +985,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
+                ProgramCacheEntry::new_builtin(0, NoopBuiltin::register),
             );
             account
         };
@@ -1043,7 +1035,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
+                ProgramCacheEntry::new_builtin(0, NoopBuiltin::register),
             );
             account
         };
@@ -1459,11 +1451,7 @@ pub(crate) mod tests {
         root_bank.add_builtin(
             cpi_program_id,
             cpi_program_name,
-            ProgramCacheEntry::new_builtin(
-                0,
-                cpi_program_name.len(),
-                cpi_mockup::Entrypoint::register,
-            ),
+            ProgramCacheEntry::new_builtin(0, cpi_mockup::Entrypoint::register),
         );
 
         let (builtin_id, config) = prototype.deconstruct();
@@ -1999,11 +1987,7 @@ pub(crate) mod tests {
         root_bank.add_builtin(
             cpi_program_id,
             cpi_program_name,
-            ProgramCacheEntry::new_builtin(
-                0,
-                cpi_program_name.len(),
-                cpi_mockup::Entrypoint::register,
-            ),
+            ProgramCacheEntry::new_builtin(0, cpi_mockup::Entrypoint::register),
         );
 
         // Add the feature to the bank's inactive feature set.
@@ -2258,11 +2242,7 @@ pub(crate) mod tests {
         root_bank.add_builtin(
             cpi_program_id,
             cpi_program_name,
-            ProgramCacheEntry::new_builtin(
-                0,
-                cpi_program_name.len(),
-                cpi_mockup::Entrypoint::register,
-            ),
+            ProgramCacheEntry::new_builtin(0, cpi_mockup::Entrypoint::register),
         );
 
         // Add the feature to the bank's inactive feature set.
@@ -2323,11 +2303,7 @@ pub(crate) mod tests {
         root_bank.add_builtin(
             cpi_program_id,
             cpi_program_name,
-            ProgramCacheEntry::new_builtin(
-                0,
-                cpi_program_name.len(),
-                cpi_mockup::Entrypoint::register,
-            ),
+            ProgramCacheEntry::new_builtin(0, cpi_mockup::Entrypoint::register),
         );
 
         // Add the feature to the bank's inactive feature set.

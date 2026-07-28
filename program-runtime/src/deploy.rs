@@ -55,7 +55,6 @@ pub fn deploy_program(
     disable_sbpf_v0_v1_v2_deployment: bool,
     program_id: &Pubkey,
     loader_key: &Pubkey,
-    account_size: usize,
     programdata: &[u8],
     deployment_slot: Slot,
 ) -> Result<(), InstructionError> {
@@ -110,7 +109,6 @@ pub fn deploy_program(
             deployment_slot,
             deployment_slot.saturating_add(DELAY_VISIBILITY_SLOT_OFFSET),
             programdata,
-            account_size,
             #[cfg(feature = "metrics")]
             load_program_metrics,
         )
@@ -135,7 +133,6 @@ macro_rules! deploy_program {
     ($invoke_context:expr,
      $program_id:expr,
      $loader_key:expr,
-     $account_size:expr,
      $programdata:expr,
      $deployment_slot:expr,
      $disable_sbpf_v0_v1_v2_deployment:expr $(,)?) => {
@@ -156,7 +153,6 @@ macro_rules! deploy_program {
             $disable_sbpf_v0_v1_v2_deployment,
             $program_id,
             $loader_key,
-            $account_size,
             $programdata,
             $deployment_slot,
         )?;
