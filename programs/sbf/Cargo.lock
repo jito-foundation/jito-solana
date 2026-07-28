@@ -9341,6 +9341,7 @@ dependencies = [
  "serde",
  "smpl_jwt",
  "solana-clock",
+ "solana-entry",
  "solana-message",
  "solana-metrics",
  "solana-pubkey 4.2.0",
@@ -9355,6 +9356,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-prost",
+ "wincode",
  "zstd",
 ]
 
@@ -9877,6 +9879,7 @@ dependencies = [
  "solana-account-decoder",
  "solana-address-lookup-table-interface",
  "solana-clock",
+ "solana-entry",
  "solana-hash 4.5.0",
  "solana-instruction",
  "solana-loader-v2-interface",
