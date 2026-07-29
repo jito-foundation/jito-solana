@@ -25,7 +25,9 @@ use {
     solana_runtime::{
         genesis_utils::{
             ValidatorVoteKeypairs, activate_feature, create_genesis_config_with_leader_ex,
+            deactivate_features,
         },
+        slot_params::slot_time_feature_ids,
         stake_utils::create_stake_account,
     },
     solana_shred_version::compute_shred_version,
@@ -383,6 +385,9 @@ fn activate_configured_slot_time_feature(
     let Some(slot_time_ms) = slot_time_ms else {
         return Ok(());
     };
+
+    let slot_time_features = slot_time_feature_ids().to_vec();
+    deactivate_features(genesis_config, &slot_time_features);
 
     if let Some(feature_id) = slot_time_reduction_feature_id(slot_time_ms)? {
         info!("Activating slot-time feature for {slot_time_ms}ms slots");
@@ -817,5 +822,53 @@ mod tests {
                 .accounts
                 .contains_key(&agave_feature_set::reduce_slot_time_to_200ms::id())
         );
+    }
+
+    #[test]
+    fn activate_configured_slot_time_feature_replaces_development_default_slot_time_features() {
+        let mut genesis_config = GenesisConfig::default();
+        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
+            activate_feature(&mut genesis_config, feature_id);
+        }
+
+        activate_configured_slot_time_feature(&mut genesis_config, Some(350)).unwrap();
+
+        assert!(
+            genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_350ms::id())
+        );
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_300ms::id())
+        );
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_250ms::id())
+        );
+        assert!(
+            !genesis_config
+                .accounts
+                .contains_key(&agave_feature_set::reduce_slot_time_to_200ms::id())
+        );
+    }
+
+    #[test]
+    fn activate_configured_slot_time_feature_can_restore_400ms_default() {
+        let mut genesis_config = GenesisConfig::default();
+        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
+            activate_feature(&mut genesis_config, feature_id);
+        }
+
+        activate_configured_slot_time_feature(&mut genesis_config, Some(400)).unwrap();
+
+        for feature_id in solana_runtime::slot_params::slot_time_feature_ids() {
+            assert!(
+                !genesis_config.accounts.contains_key(&feature_id),
+                "explicit 400ms slot time should deactivate feature {feature_id}"
+            );
+        }
     }
 }
