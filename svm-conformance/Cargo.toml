@@ -18,6 +18,11 @@ name = "test_exec_elf_loader"
 path = "src/bin/test_exec_elf_loader.rs"
 required-features = ["cli", "ffi"]
 
+[[bin]]
+name = "test_exec_vm_serialization"
+path = "src/bin/test_exec_vm_serialization.rs"
+required-features = ["cli", "ffi"]
+
 [features]
 default = ["cli", "ffi"]
 agave-unstable-api = []
@@ -43,6 +48,12 @@ solana-compute-budget = { workspace = true, optional = true }
 solana-program-runtime = { workspace = true, optional = true }
 solana-svm = { workspace = true, optional = true }
 solana-syscalls = { workspace = true, optional = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-rent = { workspace = true }
+solana-sdk-ids = { workspace = true }
 
 [lints]
 workspace = true
