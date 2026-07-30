@@ -5166,16 +5166,21 @@ impl ReplayStage {
         my_pubkey: &Pubkey,
         progress: &mut ProgressMap,
     ) {
-        let SetRootCommand {
-            parent_slot,
-            new_root,
-            highest_super_majority_root,
-        } = command;
+        if !command.matches_frozen_bank(&context.bank_forks.read().unwrap()) {
+            warn!(
+                "{my_pubkey}: Ignoring stale SetRoot for slot {} block_id {}; the matching frozen \
+                 bank is no longer newer than the applied root",
+                command.new_root.slot, command.new_root.block_id,
+            );
+            return;
+        }
+
+        let new_root = command.new_root.slot;
         root_utils::check_and_handle_new_root(
-            parent_slot,
+            new_root,
             new_root,
             context.snapshot_controller.as_deref(),
-            highest_super_majority_root,
+            Some(new_root),
             &context.bank_notification_sender,
             &context.drop_bank_sender,
             &context.blockstore,
