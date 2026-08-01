@@ -1029,7 +1029,7 @@ pub(crate) mod tests {
             atomic::{AtomicU64, Ordering},
         },
         std::{fs::File, io::Read, ops::ControlFlow},
-        test_case::{test_case, test_matrix},
+        test_case::test_matrix,
     };
 
     fn new_test_entry(deployment_slot: Slot) -> Arc<ProgramCacheEntry> {
@@ -1524,17 +1524,15 @@ pub(crate) mod tests {
         );
     }
 
-    #[test_case(
-        ProgramCacheEntryType::Unloaded(ProgramRuntimeEnvironment::from(
-            BuiltinProgram::new_mock()
-        )),
-        new_loaded_entry(get_mock_program_runtime_environment())
-    )]
-    #[test_case(
-        ProgramCacheEntryType::Unloaded(ProgramRuntimeEnvironment::from(
-            BuiltinProgram::new_mock()
-        )),
-        ProgramCacheEntryType::FailedVerification(get_mock_program_runtime_environment())
+    #[test_matrix(
+        (
+            ProgramCacheEntryType::Closed,
+            ProgramCacheEntryType::Unloaded(get_mock_program_runtime_environment()),
+        ),
+        (
+            new_loaded_entry(get_mock_program_runtime_environment()),
+            ProgramCacheEntryType::FailedVerification(get_mock_program_runtime_environment()),
+        )
     )]
     #[test_case(
         ProgramCacheEntryType::Builtin(BuiltinProgram::new_mock()),
