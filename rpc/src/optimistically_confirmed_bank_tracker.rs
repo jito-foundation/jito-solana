@@ -21,7 +21,7 @@ use {
     std::{
         collections::HashSet,
         sync::{
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
             atomic::{AtomicBool, Ordering},
         },
         thread::{self, Builder, JoinHandle},
@@ -78,11 +78,58 @@ pub type BankNotificationWithDependencyWork = (
 );
 
 pub type BankNotificationReceiver = Receiver<BankNotificationWithDependencyWork>;
-pub type BankNotificationSender = Sender<BankNotificationWithDependencyWork>;
+
+#[derive(Clone, Debug)]
+pub struct BankNotificationBroadcaster {
+    subscriber_senders: Arc<Mutex<Vec<Sender<BankNotificationWithDependencyWork>>>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BankNotificationBroadcastError;
+
+impl BankNotificationBroadcaster {
+    pub fn new(subscriber_senders: Vec<Sender<BankNotificationWithDependencyWork>>) -> Self {
+        Self {
+            subscriber_senders: Arc::new(Mutex::new(subscriber_senders)),
+        }
+    }
+
+    pub fn send(
+        &self,
+        notification: BankNotificationWithDependencyWork,
+    ) -> Result<(), BankNotificationBroadcastError> {
+        let mut subscriber_senders = self.subscriber_senders.lock().unwrap();
+        let initial_subscriber_count = subscriber_senders.len();
+        subscriber_senders
+            .retain(|subscriber_sender| subscriber_sender.send(notification.clone()).is_ok());
+
+        let disconnected_subscriber_count = initial_subscriber_count - subscriber_senders.len();
+        if subscriber_senders.is_empty() {
+            if disconnected_subscriber_count > 0 {
+                warn!(
+                    "bank notification broadcast failed: removed {disconnected_subscriber_count} \
+                     disconnected subscriber(s); no connected subscribers remain"
+                );
+            } else {
+                warn!("bank notification broadcast failed: no connected subscribers");
+            }
+            return Err(BankNotificationBroadcastError);
+        }
+
+        if disconnected_subscriber_count != 0 {
+            warn!(
+                "removed {disconnected_subscriber_count} disconnected bank notification \
+                 subscriber(s)"
+            );
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct BankNotificationSenderConfig {
-    pub sender: BankNotificationSender,
+    pub sender: BankNotificationBroadcaster,
     pub should_send_parents: bool,
     pub dependency_tracker: Option<Arc<DependencyTracker>>,
 }
@@ -431,6 +478,40 @@ mod tests {
             notifications.push(notification);
         }
         notifications
+    }
+
+    #[test]
+    fn test_bank_notification_broadcaster_fans_out_and_prunes_disconnected_subscribers() {
+        let (first_sender, first_receiver) = bounded(1);
+        let (second_sender, second_receiver) = bounded(2);
+        let broadcaster = BankNotificationBroadcaster::new(vec![first_sender, second_sender]);
+
+        broadcaster
+            .send((BankNotification::OptimisticallyConfirmed(42), None))
+            .unwrap();
+        assert!(matches!(
+            first_receiver.recv().unwrap().0,
+            BankNotification::OptimisticallyConfirmed(42)
+        ));
+        assert!(matches!(
+            second_receiver.recv().unwrap().0,
+            BankNotification::OptimisticallyConfirmed(42)
+        ));
+
+        drop(first_receiver);
+        broadcaster
+            .send((BankNotification::OptimisticallyConfirmed(43), None))
+            .unwrap();
+        assert!(matches!(
+            second_receiver.recv().unwrap().0,
+            BankNotification::OptimisticallyConfirmed(43)
+        ));
+
+        drop(second_receiver);
+        assert_eq!(
+            broadcaster.send((BankNotification::OptimisticallyConfirmed(44), None)),
+            Err(BankNotificationBroadcastError)
+        );
     }
 
     #[test]
