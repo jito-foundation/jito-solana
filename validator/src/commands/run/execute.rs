@@ -770,18 +770,12 @@ pub fn execute(
     let tip_manager_config = tip_manager_config_from_matches(matches, voting_disabled);
     let tip_router_snapshot_config =
         jito_tip_router_snapshot_service::config::cli::config_from_matches(matches)?;
-    if tip_router_snapshot_config.is_some() {
-        if !voting_disabled {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "--enable-tip-router-snapshot-service requires --no-voting",
-            )
-            .into());
-        }
-        jito_tip_router_snapshot_service::config::validate_stake_program_account_index(
-            &account_indexes,
-        )?;
-        info!("tip-router snapshot service indexed stake-account lookup is enabled");
+    if tip_router_snapshot_config.is_some() && !voting_disabled {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--enable-tip-router-snapshot-service requires --no-voting",
+        )
+        .into());
     }
 
     let block_engine_config = Arc::new(ArcSwap::from_pointee(BlockEngineConfig {

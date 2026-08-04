@@ -2,8 +2,15 @@
 //!
 //! Ported from `jito-tip-router` (`tip-router-operator-cli/src/stake_meta_generator.rs`
 //! and `distribution_meta.rs`), dropping the `_with_stats` instrumentation twin.
-//! Produces a fully-owned [`StakeMetaCollection`] from a direct scan of stake
-//! accounts and a small set of deterministic account reads on a frozen bank.
+//! Produces a fully-owned [`StakeMetaCollection`] from the bank's live stakes
+//! cache and a small set of deterministic account reads on a frozen bank.
+//!
+//! The output must stay byte-identical to the operator CLI's: NCN consensus
+//! rides on every tip-router operator deriving the same merkle roots from the
+//! same slot. Delegations therefore come from the runtime's stakes cache (the
+//! same source the original in-tree `tip-distributor` used), with the operator
+//! CLI's account scan retained only as a fallback; a parity test pins the two
+//! paths to identical results.
 
 use {
     crate::config::TipRouterSnapshotConfig,
@@ -241,12 +248,10 @@ where
 }
 
 struct TipPaymentPubkeys {
-    // _config_pda: Pubkey,
     tip_pdas: Vec<Pubkey>,
 }
 
 fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
-    // let config_pda = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], program_id).0;
     let tip_pda_0 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], program_id).0;
     let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], program_id).0;
     let tip_pda_2 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], program_id).0;
@@ -257,7 +262,6 @@ fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
     let tip_pda_7 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], program_id).0;
 
     TipPaymentPubkeys {
-        // _config_pda: config_pda,
         tip_pdas: vec![
             tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
         ],
@@ -266,10 +270,11 @@ fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
 
 /// Generate the full [`StakeMetaCollection`] for a frozen bank.
 ///
-/// The validator universe comes from the bank's epoch vote accounts. Delegations
-/// come from a direct stake-program account scan because VAT-filtered epoch stakes
-/// intentionally omit their delegation map. The remaining direct account reads
-/// are deterministic given the vote pubkeys and epoch.
+/// The validator universe comes from the bank's epoch vote accounts.
+/// Delegations come from the bank's live stakes cache (see
+/// [`cached_stake_accounts`]), never from the VAT-filtered epoch-stakes
+/// accessors, whose delegation maps are intentionally empty. The remaining
+/// direct account reads are deterministic given the vote pubkeys and epoch.
 pub fn generate_stake_meta_collection(
     bank: &Arc<Bank>,
     tip_distribution_program_id: &Pubkey,
@@ -408,11 +413,49 @@ fn get_config(bank: &Arc<Bank>, config_pubkey: &Pubkey) -> Result<Config, StakeM
         })
 }
 
-/// Read delegated stake accounts directly from the bank.
-///
-/// Prefer the ProgramId secondary index, and fall back to a full program scan
-/// when that index is unavailable (which is reported as an empty result).
+/// Read delegated stake accounts from the bank, preferring the live stakes
+/// cache and falling back to an accounts-db scan only if the cache is empty.
 fn get_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, StakeMetaError> {
+    let stake_accounts = cached_stake_accounts(bank);
+    if !stake_accounts.is_empty() {
+        return Ok(stake_accounts);
+    }
+    warn!("stakes cache returned no delegations; falling back to a stake-program account scan");
+    scan_stake_accounts(bank)
+}
+
+/// Read delegated stake accounts from the bank's live stakes cache.
+///
+/// The runtime maintains this map synchronously on every stake-account write
+/// (epoch rewards and next-epoch stakes are computed from it) and rehydrates
+/// it with per-account consistency checks when the validator boots from a
+/// snapshot, so it is exactly the delegated-stake state at this bank's slot.
+/// Reading it avoids the accounts-db scan (and the ProgramId secondary index)
+/// that the out-of-tree operator CLI must use, and is how the original
+/// in-tree `tip-distributor` sourced delegations.
+///
+/// `Bank::unfiltered_stakes` is used rather than `Bank::get_top_epoch_stakes`
+/// because VAT filtering (SIMD-0357) rebuilds `Stakes` from vote accounts
+/// alone, leaving its delegation map unconditionally empty.
+fn cached_stake_accounts(bank: &Bank) -> Vec<(Pubkey, StakeAccount)> {
+    let stakes = bank.unfiltered_stakes();
+    stakes
+        .stake_delegations()
+        .iter()
+        .map(|(stake_pubkey, stake_account)| (*stake_pubkey, stake_account.clone()))
+        .collect()
+}
+
+/// Scan delegated stake accounts out of accounts-db, identically to the
+/// operator CLI's `stake_meta_generator`.
+///
+/// Retained as a fallback so that if a future rebase ever changes the stakes
+/// cache semantics (as VAT did for the epoch-stakes accessors), the service
+/// degrades to the operator-CLI-identical scan instead of silently producing
+/// an empty, consensus-divergent stake meta. Prefer the ProgramId secondary
+/// index when present, and fall back to a full program scan otherwise (an
+/// absent index is reported as an empty result).
+fn scan_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, StakeMetaError> {
     let stake_program_id = stake::program::id();
     let mut stake_accounts = bank
         .get_filtered_indexed_accounts(&IndexKey::ProgramId(stake_program_id), |_| true, None)
@@ -441,17 +484,21 @@ fn group_delegations_by_voter_pubkey(
     delegations: Vec<(Pubkey, StakeAccount)>,
     bank: &Bank,
 ) -> HashMap<Pubkey, Vec<Delegation>> {
+    let stake_history = bincode::deserialize::<StakeHistory>(
+        bank.get_account(&stake_history::id())
+            .expect("stake history sysvar account should be present in the loaded bank")
+            .data(),
+    )
+    .expect("stake history sysvar account should deserialize");
+
     delegations
         .into_iter()
         .filter(|(_stake_pubkey, stake_account)| {
-            stake_account.delegation().stake(
+            // `stake_v2` uses integer, eBPF-compatible warmup/cooldown math. The deprecated
+            // `stake` implementation uses floating-point math and can differ at rounding edges.
+            stake_account.delegation().stake_v2(
                 bank.epoch(),
-                &bincode::deserialize::<StakeHistory>(
-                    bank.get_account(&stake_history::id())
-                        .expect("stake history sysvar account should be present in the loaded bank")
-                        .data(),
-                )
-                .expect("stake history sysvar account should deserialize"),
+                &stake_history,
                 bank.new_warmup_cooldown_rate_epoch(),
             ) > 0
         })
@@ -504,12 +551,12 @@ mod tests {
         std::collections::HashSet,
     };
 
-    #[test]
-    fn test_indexed_vat_stake_meta_generation() {
-        let validator = ValidatorVoteKeypairs::new_rand();
+    /// Build a bank whose accounts-db carries a stake-program `ProgramId`
+    /// index, with `validator`'s vote and stake accounts baked into genesis.
+    fn new_indexed_bank_with_validator(validator: &ValidatorVoteKeypairs) -> Arc<Bank> {
         let GenesisConfigInfo { genesis_config, .. } = create_genesis_config_with_vote_accounts(
             100_000_000_000,
-            &[&validator],
+            &[validator],
             vec![1_000_000_000],
         );
         let account_indexes = AccountSecondaryIndexes {
@@ -519,7 +566,7 @@ mod tests {
             }),
             indexes: HashSet::from([AccountIndex::ProgramId]),
         };
-        let bank = Arc::new(Bank::new_with_paths_for_tests(
+        Arc::new(Bank::new_with_paths_for_tests(
             &genesis_config,
             Some(BankTestConfig {
                 accounts_db_config: AccountsDbConfig {
@@ -529,7 +576,39 @@ mod tests {
             }),
             vec![],
             None,
-        ));
+        ))
+    }
+
+    /// The stakes cache must yield exactly the delegated stake accounts the
+    /// operator CLI's accounts-db scan produces: the scan is what every other
+    /// tip-router operator runs, and merkle-root consensus requires identical
+    /// stake metas. If a rebase changes stakes-cache semantics, this is the
+    /// tripwire.
+    #[test]
+    fn test_cached_stake_accounts_match_account_scan() {
+        let validator = ValidatorVoteKeypairs::new_rand();
+        let bank = new_indexed_bank_with_validator(&validator);
+        bank.freeze();
+
+        let mut cached = cached_stake_accounts(&bank);
+        let mut scanned = scan_stake_accounts(&bank).unwrap();
+        cached.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
+        scanned.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
+
+        assert!(!cached.is_empty());
+        assert_eq!(cached.len(), scanned.len());
+        for ((cached_pubkey, cached_account), (scanned_pubkey, scanned_account)) in
+            cached.iter().zip(scanned.iter())
+        {
+            assert_eq!(cached_pubkey, scanned_pubkey);
+            assert_eq!(cached_account, scanned_account);
+        }
+    }
+
+    #[test]
+    fn test_indexed_vat_stake_meta_generation() {
+        let validator = ValidatorVoteKeypairs::new_rand();
+        let bank = new_indexed_bank_with_validator(&validator);
 
         let tip_payment_program_id = Pubkey::new_unique();
         store_tip_payment_accounts(&bank, &tip_payment_program_id);

@@ -6905,6 +6905,18 @@ impl Bank {
         }
     }
 
+    /// The live `Stakes` at this bank's slot, never VAT-filtered, including the
+    /// complete delegated stake-account map.
+    ///
+    /// Unlike [`Self::get_top_epoch_stakes`], the result is independent of
+    /// SIMD-0357: VAT filtering rebuilds `Stakes` from vote accounts alone,
+    /// which leaves its `stake_delegations` map empty. The tip-router snapshot
+    /// service depends on that map staying complete and consistent with
+    /// accounts-db at this bank's slot.
+    pub fn unfiltered_stakes(&self) -> Stakes<StakeAccount<Delegation>> {
+        self.stakes_cache.stakes().clone()
+    }
+
     /// Calculates and sets block id for `bank`.
     ///
     /// This fn operates recursively. Since calculating the block id requires
