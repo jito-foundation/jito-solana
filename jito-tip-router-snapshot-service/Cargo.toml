@@ -1,0 +1,37 @@
+[package]
+name = "jito-tip-router-snapshot-service"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+clap = { workspace = true }
+crossbeam-channel = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+solana-clap-utils = { workspace = true }
+solana-clock = { workspace = true }
+solana-hash = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-rpc = { workspace = true }
+solana-runtime = { workspace = true }
+
+# Dependencies of the ported tip-router stake-meta generator
+# (stake_meta_generator.rs). TODO: gate these behind a cargo feature for the
+# entire service once one exists.
+bincode = { workspace = true }
+borsh = { workspace = true }
+itertools = { workspace = true }
+jito-priority-fee-distribution-sdk = { workspace = true }
+jito-stake-meta-types = { workspace = true }
+jito-tip-distribution-sdk = { workspace = true }
+jito-tip-payment-sdk = { workspace = true }
+solana-account = { workspace = true }
+solana-accounts-db = { workspace = true }
+solana-stake-interface = { workspace = true, features = ["sysvar"] }
+
+[dev-dependencies]
+agave-feature-set = { workspace = true }
+solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-signer = { workspace = true }
+tempfile = { workspace = true }
