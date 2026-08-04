@@ -36,12 +36,35 @@ use {
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, stakes::StakeAccount},
     solana_stake_interface::{self as stake, stake_history::StakeHistory, sysvar::stake_history},
+    solana_vote::vote_account::VoteAccount,
     std::{collections::HashMap, mem::size_of, sync::Arc},
 };
 
+const TIP_ACCOUNT_SEEDS: [&[u8]; 8] = [
+    TIP_ACCOUNT_SEED_0,
+    TIP_ACCOUNT_SEED_1,
+    TIP_ACCOUNT_SEED_2,
+    TIP_ACCOUNT_SEED_3,
+    TIP_ACCOUNT_SEED_4,
+    TIP_ACCOUNT_SEED_5,
+    TIP_ACCOUNT_SEED_6,
+    TIP_ACCOUNT_SEED_7,
+];
+
+struct TipPaymentPubkeys {
+    tip_pdas: [Pubkey; TIP_ACCOUNT_SEEDS.len()],
+}
+
+fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
+    TipPaymentPubkeys {
+        tip_pdas: TIP_ACCOUNT_SEEDS.map(|seed| Pubkey::find_program_address(&[seed], program_id).0),
+    }
+}
+
+
 pub(crate) fn collect_stake_meta(
     config: &TipRouterSnapshotConfig,
-    bank: &Arc<Bank>,
+    bank: Arc<Bank>,
 ) -> Result<StakeMetaCollection, StakeMetaError> {
     let (
         Some(tip_distribution_program_id),
@@ -197,75 +220,46 @@ where
     DistributionAccount: BorshDeserialize,
     DistMeta: DistributionMeta<DistributionAccountType = DistributionAccount>,
 {
-    let distribution_account_pubkey =
+    let distribution_account_address =
         DistMeta::derive_distribution_account_address(program_id, vote_pubkey, bank.epoch());
-    bank.get_account(&distribution_account_pubkey).map_or_else(
-        || None,
-        |mut account_data| {
-            if account_data.owner() != program_id {
-                return None;
-            }
-            // DAs may be funded with lamports and therefore exist in the bank, but would fail the
-            // deserialization step if the buffer is yet to be allocated thru the init call to the
-            // program.
-            let distribution_account_data = account_data.data().get(8..)?;
-            DistributionAccount::deserialize(&mut &distribution_account_data[..]).map_or_else(
-                |_| None,
-                |distribution_account| {
-                    // [TIp Distribution ONLY] this snapshot might have tips that weren't claimed
-                    // by the time the epoch is over assume that it will eventually be cranked and
-                    // credit the excess to this account
-                    if let Some(tip_receiver_info) = tip_receiver_info {
-                        if distribution_account_pubkey == tip_receiver_info.tip_receiver {
-                            account_data.set_lamports(
-                                account_data
-                                    .lamports()
-                                    .checked_add(tip_receiver_info.tip_receiver_fee)
-                                    .expect("tip overflow"),
-                            );
-                        }
-                    }
+    let mut account = bank.get_account(&distribution_account_address)?;
 
-                    let actual_len = account_data.data().len();
-                    let expected_len = 8_usize.saturating_add(size_of::<DistributionAccount>());
-                    if actual_len != expected_len {
-                        warn!("len mismatch actual={actual_len}, expected={expected_len}");
-                    }
-                    let rent_exempt_amount =
-                        bank.get_minimum_balance_for_rent_exemption(account_data.data().len());
-
-                    DistMeta::new_from_account(
-                        distribution_account,
-                        account_data,
-                        distribution_account_pubkey,
-                        rent_exempt_amount,
-                    )
-                    .ok()
-                },
-            )
-        },
-    )
-}
-
-struct TipPaymentPubkeys {
-    tip_pdas: Vec<Pubkey>,
-}
-
-fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
-    let tip_pda_0 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_0], program_id).0;
-    let tip_pda_1 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_1], program_id).0;
-    let tip_pda_2 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_2], program_id).0;
-    let tip_pda_3 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_3], program_id).0;
-    let tip_pda_4 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_4], program_id).0;
-    let tip_pda_5 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_5], program_id).0;
-    let tip_pda_6 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_6], program_id).0;
-    let tip_pda_7 = Pubkey::find_program_address(&[TIP_ACCOUNT_SEED_7], program_id).0;
-
-    TipPaymentPubkeys {
-        tip_pdas: vec![
-            tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
-        ],
+    if account.owner() != program_id {
+        return None;
     }
+
+    // Funded-but-uninitialized accounts exist in the bank but have no payload to deserialize.
+    let serialized_account = account.data().get(8..)?;
+    let distribution_account =
+        DistributionAccount::deserialize(&mut &serialized_account[..]).ok()?;
+
+    // Tip distributions may contain tips unclaimed at epoch end; credit them to the receiver.
+    if let Some(tip_receiver_info) = tip_receiver_info
+        && distribution_account_address == tip_receiver_info.tip_receiver
+    {
+        account.set_lamports(
+            account
+                .lamports()
+                .checked_add(tip_receiver_info.tip_receiver_fee)
+                .expect("tip receiver balance overflow"),
+        );
+    }
+
+    let actual_len = account.data().len();
+    let expected_len = 8 + size_of::<DistributionAccount>();
+    if actual_len != expected_len {
+        warn!("distribution account length mismatch: actual={actual_len}, expected={expected_len}");
+    }
+
+    let rent_exempt_amount = bank.get_minimum_balance_for_rent_exemption(actual_len);
+
+    DistMeta::new_from_account(
+        distribution_account,
+        account,
+        distribution_account_address,
+        rent_exempt_amount,
+    )
+    .ok()
 }
 
 /// Generate the full [`StakeMetaCollection`] for a frozen bank.
@@ -276,24 +270,28 @@ fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
 /// accessors, whose delegation maps are intentionally empty. The remaining
 /// direct account reads are deterministic given the vote pubkeys and epoch.
 pub fn generate_stake_meta_collection(
-    bank: &Arc<Bank>,
+    bank: Arc<Bank>,
     tip_distribution_program_id: &Pubkey,
     priority_fee_distribution_program_id: &Pubkey,
     tip_payment_program_id: &Pubkey,
 ) -> Result<StakeMetaCollection, StakeMetaError> {
     assert!(bank.is_frozen());
 
-    let epoch_vote_accounts = bank
-        .epoch_vote_accounts(bank.epoch())
-        .ok_or(StakeMetaError::NoVoteAccounts(bank.slot(), bank.epoch()))?;
+    let bank_epoch = bank.epoch();
+    let bank_slot = bank.slot();
+    let bank_hash = bank.hash().to_string();
 
-    let delegations = get_stake_accounts(bank)?;
-    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, bank);
+    let epoch_vote_accounts = bank
+        .epoch_vote_accounts(bank_epoch)
+        .ok_or(StakeMetaError::NoVoteAccounts(bank_slot, bank_epoch))?;
+
+    let delegations = get_stake_accounts(&bank)?;
+    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, &bank);
 
     // Get config PDA
     let (config_pda, _) =
         Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], tip_payment_program_id);
-    let config = get_config(bank, &config_pda)?;
+    let config = get_config(&bank, &config_pda)?;
 
     let bb_commission_pct: u64 = config.block_builder_commission_pct;
     let tip_receiver: Pubkey = config.tip_receiver;
@@ -317,6 +315,7 @@ pub fn generate_stake_meta_collection(
                 .expect("tip balance underflow")
         })
         .sum();
+
     // matches math in tip payment program
     let block_builder_tips = excess_tip_balances
         .checked_mul(bb_commission_pct)
@@ -327,66 +326,28 @@ pub fn generate_stake_meta_collection(
         .checked_sub(block_builder_tips)
         .expect("tip_receiver_fee doesnt underflow");
 
-    let mut stake_metas: Vec<StakeMeta> = epoch_vote_accounts
-        .iter()
-        .filter_map(|(vote_pubkey, (_, vote_account))| {
-            voter_pubkey_to_delegations
-                .get(vote_pubkey)
-                .cloned()
-                .map_or_else(
-                    || {
-                        warn!(
-                            "voter_pubkey not found in voter_pubkey_to_delegations map \
-                             [validator_vote_pubkey={}]",
-                            vote_pubkey
-                        );
-                        None
-                    },
-                    |mut delegations| {
-                        let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
-                            sum.checked_add(delegation.lamports_delegated)
-                                .expect("total delegated lamports should not overflow u64")
-                        });
+    let mut stake_metas = Vec::new();
+    for (vote_pubkey, (_, vote_account)) in epoch_vote_accounts {
+        // Ignore vote accounts with 0 delegations
+        if let Some(delegations) = voter_pubkey_to_delegations.get(vote_pubkey).cloned() {
+            let stake_meta = build_voter_meta(
+                &bank,
+                VoterInfo {
+                    vote_account,
+                    vote_pubkey,
+                    tip_distribution_program_id,
+                    priority_fee_distribution_program_id,
+                    tip_receiver,
+                    tip_receiver_fee,
+                },
+                delegations,
+            );
+            stake_metas.push(stake_meta);
+        }
+    }
 
-                        let maybe_tip_distribution_meta = get_distribution_meta::<
-                            TipDistributionAccount,
-                            WrappedTipDistributionMeta,
-                        >(
-                            bank,
-                            tip_distribution_program_id,
-                            vote_pubkey,
-                            Some(TipReceiverInfo {
-                                tip_receiver,
-                                tip_receiver_fee,
-                            }),
-                        );
-
-                        let maybe_priority_fee_distribution_meta = get_distribution_meta::<
-                            PriorityFeeDistributionAccount,
-                            WrappedPriorityFeeDistributionMeta,
-                        >(
-                            bank,
-                            priority_fee_distribution_program_id,
-                            vote_pubkey,
-                            None,
-                        );
-
-                        let vote_state = vote_account.vote_state_view();
-                        delegations.sort();
-                        Some(StakeMeta {
-                            maybe_tip_distribution_meta: maybe_tip_distribution_meta.map(|x| x.0),
-                            maybe_priority_fee_distribution_meta:
-                                maybe_priority_fee_distribution_meta.map(|x| x.0),
-                            validator_node_pubkey: *vote_state.node_pubkey(),
-                            validator_vote_account: *vote_pubkey,
-                            delegations,
-                            total_delegated,
-                            commission: vote_state.commission(),
-                        })
-                    },
-                )
-        })
-        .collect();
+    // Very important we do this here
+    drop(bank);
 
     stake_metas.sort();
 
@@ -394,10 +355,73 @@ pub fn generate_stake_meta_collection(
         stake_metas,
         tip_distribution_program_id: tip_distribution_program_id.to_owned(),
         priority_fee_distribution_program_id: priority_fee_distribution_program_id.to_owned(),
-        bank_hash: bank.hash().to_string(),
-        epoch: bank.epoch(),
-        slot: bank.slot(),
+        bank_hash,
+        epoch: bank_epoch,
+        slot: bank_slot,
     })
+}
+
+/// Inputs needed to build metadata for a single validator vote account.
+struct VoterInfo<'a> {
+    vote_account: &'a VoteAccount,
+    vote_pubkey: &'a Pubkey,
+    tip_distribution_program_id: &'a Pubkey,
+    priority_fee_distribution_program_id: &'a Pubkey,
+    tip_receiver: Pubkey,
+    tip_receiver_fee: u64,
+}
+
+fn build_voter_meta(
+    bank: &Arc<Bank>,
+    voter_info: VoterInfo<'_>,
+    mut delegations: Vec<Delegation>,
+) -> StakeMeta {
+    let VoterInfo {
+        vote_account,
+        vote_pubkey,
+        tip_distribution_program_id,
+        priority_fee_distribution_program_id,
+        tip_receiver,
+        tip_receiver_fee,
+    } = voter_info;
+
+    let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
+        sum.checked_add(delegation.lamports_delegated)
+            .expect("total delegated lamports should not overflow u64")
+    });
+
+    let maybe_tip_distribution_meta =
+        get_distribution_meta::<TipDistributionAccount, WrappedTipDistributionMeta>(
+            bank,
+            tip_distribution_program_id,
+            vote_pubkey,
+            Some(TipReceiverInfo {
+                tip_receiver,
+                tip_receiver_fee,
+            }),
+        );
+
+    let maybe_priority_fee_distribution_meta = get_distribution_meta::<
+        PriorityFeeDistributionAccount,
+        WrappedPriorityFeeDistributionMeta,
+    >(
+        bank,
+        priority_fee_distribution_program_id,
+        vote_pubkey,
+        None,
+    );
+
+    let vote_state = vote_account.vote_state_view();
+    delegations.sort();
+    StakeMeta {
+        maybe_tip_distribution_meta: maybe_tip_distribution_meta.map(|x| x.0),
+        maybe_priority_fee_distribution_meta: maybe_priority_fee_distribution_meta.map(|x| x.0),
+        validator_node_pubkey: *vote_state.node_pubkey(),
+        validator_vote_account: *vote_pubkey,
+        delegations,
+        total_delegated,
+        commission: vote_state.commission(),
+    }
 }
 
 /// Load and deserialize config from Bank. If it does not exist, propagate error.
@@ -628,7 +652,7 @@ mod tests {
         );
 
         let stake_meta = generate_stake_meta_collection(
-            &bank,
+            bank,
             &Pubkey::new_unique(),
             &Pubkey::new_unique(),
             &tip_payment_program_id,

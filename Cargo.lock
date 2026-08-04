@@ -4348,6 +4348,7 @@ dependencies = [
  "solana-runtime",
  "solana-signer",
  "solana-stake-interface",
+ "solana-vote",
  "tempfile",
 ]
 

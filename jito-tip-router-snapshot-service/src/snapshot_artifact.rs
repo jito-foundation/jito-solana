@@ -147,8 +147,9 @@ fn generate_and_write_snapshot(
 ) -> ArtifactResult {
     // Phase 5 must establish cleanup protection for any direct AccountsDB reads
     // performed by stake-meta extraction. Retaining this Arc<Bank> alone is not that pin.
-    let stake_meta = stake_meta::collect_stake_meta(config, &parent_bank)
+    let parent_bank_epoch = parent_bank.epoch();
+    let stake_meta = stake_meta::collect_stake_meta(config, parent_bank)
         .map_err(SnapshotArtifactError::StakeMeta)?;
 
-    writer.write(parent_bank.epoch(), &stake_meta)
+    writer.write(parent_bank_epoch, &stake_meta)
 }
