@@ -1317,6 +1317,53 @@ fn test_shrink_does_not_resurrect_dead_account() {
     assert!(!accounts.contains(&pubkey));
 }
 
+/// A storage whose remaining accounts are all tombstones covered by the latest full
+/// snapshot is dead: reclaiming its last live account purges the storage.
+#[test]
+fn test_reclaiming_last_live_account_purges_tombstone_only_storage() {
+    let accounts = AccountsDb::default_for_tests();
+    let tombstone_pubkey = Pubkey::new_unique();
+    let live_pubkey = Pubkey::new_unique();
+    let slot = 1;
+    let account = AccountSharedData::new(1, 0, &Pubkey::default());
+
+    // slot: both accounts stored and flushed
+    accounts.store_for_tests((
+        slot,
+        [(&tombstone_pubkey, &account), (&live_pubkey, &account)].as_slice(),
+    ));
+    accounts.add_root_and_flush_write_cache(slot);
+
+    // Turn tombstone_pubkey's account into a tombstone, as shrink's carry-forward leaves
+    // it: index entry removed, offset recorded in the storage's tombstone set
+    let storage = accounts.get_and_assert_single_storage(slot);
+    let account_offset = accounts
+        .accounts_index
+        .get_with_and_then(
+            &tombstone_pubkey,
+            &Ancestors::from(vec![slot]),
+            false,
+            |(_slot, account_info)| account_info.offset(),
+        )
+        .unwrap();
+    accounts.accounts_index.purge_exact(
+        &tombstone_pubkey,
+        HashSet::from([slot]),
+        &mut ReclaimsSlotList::new(),
+    );
+    storage.batch_insert_tombstone_offsets(iter::once(account_offset));
+    assert_eq!(storage.num_tombstones(), 1);
+
+    // Set the snapshot so the tombstone can be removed
+    accounts.set_latest_full_snapshot_slot(slot);
+
+    // slot + 1: a newer version of the live account. Its flush reclaims the entry at
+    // slot, leaving only the snapshot-covered tombstone, so the storage is dead
+    accounts.store_for_tests((slot + 1, [(&live_pubkey, &account)].as_slice()));
+    accounts.add_root_and_flush_write_cache(slot + 1);
+    assert!(accounts.storage.get_slot_storage_entry(slot).is_none());
+}
+
 #[test]
 fn test_shrink_zero_lamport_single_ref_account() {
     // note that 'None' checks the case based on the default value of `latest_full_snapshot_slot` in `AccountsDb`

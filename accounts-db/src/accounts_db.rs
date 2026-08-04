@@ -4086,6 +4086,13 @@ impl AccountsDb {
                 self.handle_reclaims(reclaims.iter(), purge_stats, MarkAccountsObsolete::No);
             // Ensure the expected slot is marked dead
             assert_eq!(dead_slots, IntSet::from_iter(iter::once(remove_slot)));
+        } else if self
+            .storage
+            .get_slot_storage_entry(remove_slot)
+            .is_some_and(|store| store.has_only_tombstones())
+        {
+            // A tombstone-only storage has no index entries to reclaim, so purge it directly
+            self.purge_dead_slots_from_storage(iter::once(&remove_slot), purge_stats);
         }
         handle_reclaims_elapsed.stop();
         purge_stats
@@ -5135,6 +5142,12 @@ impl AccountsDb {
                 if remaining_accounts == 0 {
                     self.dirty_stores.insert(slot, store);
                     dead_slots.insert(slot);
+                } else if remaining_accounts == store.num_tombstones()
+                    && self.can_purge_zero_lamport_single_ref_after_shrink(slot)
+                {
+                    // Every remaining account is a tombstone and the slot is older than
+                    // the latest full snapshot slot, safe to remove
+                    dead_slots.insert(slot);
                 } else if self.is_shrinking_productive(&store)
                     && self.is_candidate_for_shrink(&store)
                 {
@@ -5161,15 +5174,6 @@ impl AccountsDb {
         self.clean_accounts_stats
             .remove_dead_accounts_shrink_us
             .fetch_add(measure.as_us(), Ordering::Relaxed);
-
-        dead_slots.retain(|slot| {
-            if let Some(slot_store) = self.storage.get_slot_storage_entry(*slot)
-                && slot_store.count() != 0
-            {
-                return false;
-            }
-            true
-        });
 
         dead_slots
     }
