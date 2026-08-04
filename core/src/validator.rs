@@ -114,7 +114,7 @@ use {
     solana_rpc::{
         max_slots::MaxSlots,
         optimistically_confirmed_bank_tracker::{
-            BankNotificationSenderConfig, OptimisticallyConfirmedBank,
+            BankNotificationBroadcaster, BankNotificationSenderConfig, OptimisticallyConfirmedBank,
             OptimisticallyConfirmedBankTracker,
         },
         rpc::JsonRpcConfig,
@@ -1432,7 +1432,7 @@ impl Validator {
                     dependency_tracker.clone(),
                 ));
             let bank_notification_sender_config = Some(BankNotificationSenderConfig {
-                sender: bank_notification_sender,
+                sender: BankNotificationBroadcaster::new(vec![bank_notification_sender]),
                 should_send_parents: geyser_plugin_service.is_some(),
                 dependency_tracker,
             });
