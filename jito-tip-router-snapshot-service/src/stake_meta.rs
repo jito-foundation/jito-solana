@@ -248,6 +248,8 @@ where
     let actual_len = account.data().len();
     let expected_len = 8 + size_of::<DistributionAccount>();
     if actual_len != expected_len {
+        // This would likely suggest that we have an old version of
+        // jito-{tip|priority-fee}-distribution-sdk pinned
         warn!("distribution account length mismatch: actual={actual_len}, expected={expected_len}");
     }
 
@@ -286,7 +288,16 @@ pub fn generate_stake_meta_collection(
         .ok_or(StakeMetaError::NoVoteAccounts(bank_slot, bank_epoch))?;
 
     let delegations = get_stake_accounts(&bank)?;
-    let voter_pubkey_to_delegations = group_delegations_by_voter_pubkey(delegations, &bank);
+
+    let stake_history = bincode::deserialize::<StakeHistory>(
+        bank.get_account(&stake_history::id())
+            .expect("stake history sysvar account should be present in the loaded bank")
+            .data(),
+    )
+    .expect("stake history sysvar account should deserialize");
+
+    let mut voter_pubkey_to_delegations =
+        group_delegations_by_voter_pubkey(delegations,stake_history, bank_epoch, bank.new_warmup_cooldown_rate_epoch());
 
     // Get config PDA
     let (config_pda, _) =
@@ -322,14 +333,15 @@ pub fn generate_stake_meta_collection(
         .expect("block_builder_tips overflow")
         .checked_div(100)
         .expect("block_builder_tips division error");
+
     let tip_receiver_fee = excess_tip_balances
         .checked_sub(block_builder_tips)
         .expect("tip_receiver_fee doesnt underflow");
 
-    let mut stake_metas = Vec::new();
+    let mut stake_metas = Vec::with_capacity(epoch_vote_accounts.len());
     for (vote_pubkey, (_, vote_account)) in epoch_vote_accounts {
         // Ignore vote accounts with 0 delegations
-        if let Some(delegations) = voter_pubkey_to_delegations.get(vote_pubkey).cloned() {
+        if let Some(delegations) = voter_pubkey_to_delegations.remove(vote_pubkey) {
             let stake_meta = build_voter_meta(
                 &bank,
                 VoterInfo {
@@ -346,7 +358,7 @@ pub fn generate_stake_meta_collection(
         }
     }
 
-    // Very important we do this here
+    // TODO: Make sure this is ok
     drop(bank);
 
     stake_metas.sort();
@@ -399,7 +411,7 @@ fn build_voter_meta(
                 tip_receiver,
                 tip_receiver_fee,
             }),
-        );
+        ).map(|x|x.0);
 
     let maybe_priority_fee_distribution_meta = get_distribution_meta::<
         PriorityFeeDistributionAccount,
@@ -409,13 +421,13 @@ fn build_voter_meta(
         priority_fee_distribution_program_id,
         vote_pubkey,
         None,
-    );
+    ).map(|x|x.0);
 
     let vote_state = vote_account.vote_state_view();
-    delegations.sort();
+    delegations.sort_unstable();
     StakeMeta {
-        maybe_tip_distribution_meta: maybe_tip_distribution_meta.map(|x| x.0),
-        maybe_priority_fee_distribution_meta: maybe_priority_fee_distribution_meta.map(|x| x.0),
+        maybe_tip_distribution_meta,
+        maybe_priority_fee_distribution_meta,
         validator_node_pubkey: *vote_state.node_pubkey(),
         validator_vote_account: *vote_pubkey,
         delegations,
@@ -506,24 +518,19 @@ fn scan_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, Stake
 /// (validator delegated to), filtered to those with non-zero active stake.
 fn group_delegations_by_voter_pubkey(
     delegations: Vec<(Pubkey, StakeAccount)>,
-    bank: &Bank,
+    stake_history: StakeHistory,
+    epoch: Epoch,
+    warmup_cooldown_rate: Option<Epoch>,
 ) -> HashMap<Pubkey, Vec<Delegation>> {
-    let stake_history = bincode::deserialize::<StakeHistory>(
-        bank.get_account(&stake_history::id())
-            .expect("stake history sysvar account should be present in the loaded bank")
-            .data(),
-    )
-    .expect("stake history sysvar account should deserialize");
-
     delegations
         .into_iter()
         .filter(|(_stake_pubkey, stake_account)| {
             // `stake_v2` uses integer, eBPF-compatible warmup/cooldown math. The deprecated
             // `stake` implementation uses floating-point math and can differ at rounding edges.
             stake_account.delegation().stake_v2(
-                bank.epoch(),
+                epoch,
                 &stake_history,
-                bank.new_warmup_cooldown_rate_epoch(),
+                warmup_cooldown_rate,
             ) > 0
         })
         .into_group_map_by(|(_stake_pubkey, stake_account)| stake_account.delegation().voter_pubkey)
