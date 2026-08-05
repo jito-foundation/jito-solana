@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "bam-banking-bench"
-version = "4.2.0-beta.2"
+version = "4.2.0-rc.1"
 dependencies = [
  "agave-banking-stage-ingress-types",
  "agave-logger",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "bam-local-cluster"
-version = "4.2.0-beta.2"
+version = "4.2.0-rc.1"
 dependencies = [
  "agave-feature-set",
  "agave-logger",
@@ -4268,7 +4268,7 @@ dependencies = [
 
 [[package]]
 name = "jito-protos"
-version = "4.2.0-beta.2"
+version = "4.2.0-rc.1"
 dependencies = [
  "bytes",
  "prost 0.14.4",
@@ -7831,7 +7831,7 @@ dependencies = [
 
 [[package]]
 name = "solana-bundle"
-version = "4.2.0-beta.2"
+version = "4.2.0-rc.1"
 dependencies = [
  "itertools 0.14.0",
  "sha2 0.11.0",
