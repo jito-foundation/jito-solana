@@ -29,7 +29,7 @@ use {
         TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
         TIP_ACCOUNT_SEED_7,
     },
-    log::warn,
+    log::{info, warn},
     solana_account::{AccountSharedData, ReadableAccount, WritableAccount},
     solana_accounts_db::{accounts_index::IndexKey, accounts_scan::ScanError},
     solana_clock::Epoch,
@@ -37,7 +37,7 @@ use {
     solana_runtime::{bank::Bank, stakes::StakeAccount},
     solana_stake_interface::{self as stake, stake_history::StakeHistory, sysvar::stake_history},
     solana_vote::vote_account::VoteAccount,
-    std::{collections::HashMap, mem::size_of, sync::Arc},
+    std::{collections::HashMap, mem::size_of, sync::Arc, time::Instant},
 };
 
 const TIP_ACCOUNT_SEEDS: [&[u8]; 8] = [
@@ -278,6 +278,7 @@ pub fn generate_stake_meta_collection(
     tip_payment_program_id: &Pubkey,
 ) -> Result<StakeMetaCollection, StakeMetaError> {
     assert!(bank.is_frozen());
+    let stake_meta_started_at = Instant::now();
 
     let bank_epoch = bank.epoch();
     let bank_slot = bank.slot();
@@ -358,7 +359,12 @@ pub fn generate_stake_meta_collection(
         }
     }
 
-    // TODO: Make sure this is ok
+    info!(
+        "calculated tip-router stake metadata for epoch {} at slot {} in {:?}",
+        bank_epoch,
+        bank_slot,
+        stake_meta_started_at.elapsed(),
+    );
     drop(bank);
 
     stake_metas.sort();

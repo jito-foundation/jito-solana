@@ -27,6 +27,7 @@ use {
 
 const SHUTDOWN_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const ARTIFACT_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+pub const STAKE_META_INTERVAL_SLOTS_ENV: &str = "JITO_TIP_ROUTER_STAKE_META_INTERVAL_SLOTS";
 
 /// Wrapper type around handle
 pub struct TipRouterSnapshotService {
@@ -196,33 +197,43 @@ impl TipRouterSnapshotServiceContext {
         artifact_writer: &SnapshotArtifactWriter,
         boundary_child_bank: Arc<Bank>,
     ) {
-        let bc_slot = boundary_child_bank.slot();
-        let bc_hash = boundary_child_bank.hash();
-        let bc_epoch = boundary_child_bank.epoch();
-        let Some((epoch, parent_bank)) = self.claimable_epoch_boundary(boundary_child_bank) else {
-            return;
+        let interval_slots = stake_meta_interval_slots();
+        let bank_to_process = match interval_slots {
+            Some(interval) => {
+                if !boundary_child_bank.slot().is_multiple_of(interval) {
+                    return;
+                }
+                boundary_child_bank
+            }
+            None => {
+                let Some((_epoch, parent_bank)) =
+                    self.claimable_epoch_boundary(boundary_child_bank)
+                else {
+                    return;
+                };
+                parent_bank
+            }
         };
 
-        let parent_slot = parent_bank.slot();
-        let parent_hash = parent_bank.hash();
         debug!(
-            "claiming tip-router snapshot for epoch {} at slot={}, bank_hash={}, child_slot={}, \
-             child_hash={}, child_epoch={}",
-            epoch, parent_slot, parent_hash, bc_slot, bc_hash, bc_epoch
+            "claiming tip-router snapshot at slot={}, bank_hash={}, epoch={}",
+            bank_to_process.slot(),
+            bank_to_process.hash(),
+            bank_to_process.epoch(),
         );
 
         let Ok(active_worker) = SnapshotArtifactWorkerHandle::spawn(
             config.clone(),
             artifact_writer.clone(),
-            parent_bank,
+            bank_to_process,
         )
-        .map_err(|err| {
-            error!("failed to spawn tip-router snapshot worker for epoch {epoch}: {err}")
-        }) else {
+        .map_err(|err| error!("failed to spawn tip-router snapshot worker: {err}")) else {
             return;
         };
 
-        self.last_claimed_epoch = Some(epoch);
+        if interval_slots.is_none() {
+            self.last_claimed_epoch = Some(active_worker.artifact_epoch());
+        }
         self.active_worker = Some(active_worker);
     }
 
@@ -336,4 +347,11 @@ fn record_worker_completion(
             Err(TipRouterSnapshotServiceError::ArtifactWorkerShutdownTimeout { epoch, timeout })
         }
     }
+}
+
+fn stake_meta_interval_slots() -> Option<u64> {
+    std::env::var(STAKE_META_INTERVAL_SLOTS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|interval| *interval > 0)
 }

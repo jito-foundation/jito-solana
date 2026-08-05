@@ -48,10 +48,20 @@ impl SnapshotArtifactWriter {
             }
         })?;
 
-        let artifact_path = self.output_dir.join(format!("{epoch}{ARTIFACT_SUFFIX}"));
-        let temp_path = self
+        let artifact_id = if std::env::var(crate::service::STAKE_META_INTERVAL_SLOTS_ENV)
+            .is_ok_and(|value| !value.is_empty())
+        {
+            stake_meta.bank_hash.clone()
+        } else {
+            epoch.to_string()
+        };
+        let temp_path = self.output_dir.join(format!(
+            "{TEMP_ARTIFACT_PREFIX}{artifact_id}{ARTIFACT_SUFFIX}"
+        ));
+        let artifact_path = self
             .output_dir
-            .join(format!("{TEMP_ARTIFACT_PREFIX}{epoch}{ARTIFACT_SUFFIX}"));
+            .join(format!("{artifact_id}{ARTIFACT_SUFFIX}"));
+
         let mut cleanup_guard = TempArtifactCleanupGuard::new(&temp_path);
 
         // Overwrite the file if it already exists. Perhaps bc tmp was created by another
@@ -148,16 +158,14 @@ fn is_temp_artifact_name(file_name: &OsStr) -> bool {
     let Some(file_name) = file_name.to_str() else {
         return false;
     };
-    let Some(epoch) = file_name
+    let Some(artifact_id) = file_name
         .strip_prefix(TEMP_ARTIFACT_PREFIX)
         .and_then(|name| name.strip_suffix(ARTIFACT_SUFFIX))
     else {
         return false;
     };
 
-    !epoch.is_empty()
-        && epoch.bytes().all(|byte| byte.is_ascii_digit())
-        && epoch.parse::<u64>().is_ok()
+    !artifact_id.is_empty()
 }
 
 struct TempArtifactCleanupGuard<'a> {
