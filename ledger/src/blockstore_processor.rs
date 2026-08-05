@@ -9,7 +9,6 @@ use {
     },
     ExecuteTimingType::{NumExecuteBatches, TotalBatchesLen},
     agave_votor_messages::{certificate::Certificate, migration::MigrationStatus},
-    ahash::AHashSet,
     chrono_humanize::{Accuracy, HumanTime, Tense},
     crossbeam_channel::{Receiver, Sender},
     itertools::Itertools,
@@ -220,10 +219,6 @@ fn process_entries(bank: &BankWithScheduler, entries: Vec<ReplayEntry>) -> Resul
                 }
             }
             EntryType::Transactions(transactions) => {
-                if transactions.is_empty() {
-                    continue;
-                }
-
                 // Any bank replaying transactions must have a scheduler installed. Slot 0 -
                 // the only bank replayed before the scheduler pool is installed - is tick-only,
                 // so it never reaches here.
@@ -252,21 +247,13 @@ fn process_entries(bank: &BankWithScheduler, entries: Vec<ReplayEntry>) -> Resul
 }
 
 /// Validate an entry's transactions before scheduling: each transaction's account
-/// locks (count and duplicates), and rejection of duplicate message hashes within
-/// the entry. Does not take account locks - the unified scheduler orders conflicts.
-/// Post-SIMD-83 the duplicate-message-hash check is what rejects an entry that
-/// replays the same transaction twice (it no longer conflicts on locks).
+/// locks (count and duplicates). Does not take account locks - the unified scheduler orders conflicts.
 fn validate_entry_transactions(
     transactions: &[RuntimeTransaction<SanitizedTransaction>],
     tx_account_lock_limit: usize,
 ) -> Result<()> {
-    let mut batch_message_hashes = AHashSet::with_capacity(transactions.len());
-
     for transaction in transactions {
         validate_account_locks(transaction.account_keys(), tx_account_lock_limit)?;
-        if !batch_message_hashes.insert(transaction.message_hash()) {
-            return Err(TransactionError::AlreadyProcessed);
-        }
     }
 
     Ok(())
@@ -3706,7 +3693,8 @@ pub mod tests {
         // keypair2=3
         // keypair3=3
 
-        // succeeds following simd83 locking, fails otherwise
+        // transactions within an entry may read/write and write/write the same accounts, so the
+        // colliding entry is valid and the scheduler orders the conflicts itself
         let result = process_entries_for_tests_with_scheduler(
             &bank,
             vec![
@@ -3744,9 +3732,9 @@ pub mod tests {
         assert_matches!(bank.transfer(5, &mint_keypair, &keypair1.pubkey()), Ok(_));
         assert_matches!(bank.transfer(5, &mint_keypair, &keypair2.pubkey()), Ok(_));
 
-        // one entry, two instances of the same transaction. this entry is invalid
-        // without simd83: due to lock conflicts
-        // with simd83: due to message hash duplication
+        // The scheduler executes identical transactions sequentially. The first transfer commits,
+        // then the status cache rejects the second as already processed.
+
         let entry_1_to_2_twice = next_entry(
             &bank.last_blockhash(),
             1,
@@ -3765,19 +3753,9 @@ pub mod tests {
                 ),
             ],
         );
-        // should now be:
-        // keypair1=5
-        // keypair2=5
 
-        // succeeds following simd83 locking, fails otherwise
         let result = process_entries_for_tests_with_scheduler(&bank, vec![entry_1_to_2_twice]);
 
-        let balances = [
-            bank.get_balance(&keypair1.pubkey()),
-            bank.get_balance(&keypair2.pubkey()),
-        ];
-
-        assert_eq!(balances, [5, 5]);
         assert_eq!(result, Err(TransactionError::AlreadyProcessed));
     }
 
@@ -5988,21 +5966,6 @@ pub mod tests {
         assert_eq!(
             validate_entry_transactions(&txs, 10),
             Err(TransactionError::AccountLoadedTwice)
-        );
-    }
-
-    #[test]
-    fn test_validate_entry_transactions_duplicate_message_hash() {
-        let payer = Keypair::new();
-        let hash = Hash::new_unique();
-        let tx = system_transaction::transfer(&payer, &Pubkey::new_unique(), 1, hash);
-        let txs = vec![
-            RuntimeTransaction::from_transaction_for_tests(tx.clone()),
-            RuntimeTransaction::from_transaction_for_tests(tx),
-        ];
-        assert_eq!(
-            validate_entry_transactions(&txs, 10),
-            Err(TransactionError::AlreadyProcessed)
         );
     }
 }
