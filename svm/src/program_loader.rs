@@ -11,7 +11,7 @@ use {
             ProgramCacheForTxBatch, ProgramCacheMatchCriteria, ProgramRuntimeEnvironment,
             ProgramToLoad,
         },
-        program_cache_entry::{ProgramCacheEntry, ProgramCacheEntryOwner, ProgramCacheEntryType},
+        program_cache_entry::{ProgramCacheEntry, ProgramCacheEntryOwner},
     },
     solana_pubkey::Pubkey,
     solana_sdk_ids::{bpf_loader, bpf_loader_deprecated, bpf_loader_upgradeable, loader_v4},
@@ -113,11 +113,11 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
 
     let (load_result, last_modification_slot) = load_program_accounts(callbacks, pubkey)?;
     let loaded_program = match load_result {
-        ProgramAccountLoadResult::InvalidAccountData(owner) => Ok(
-            ProgramCacheEntry::new_tombstone(current_slot, owner, ProgramCacheEntryType::Closed),
-        ),
+        ProgramAccountLoadResult::InvalidAccountData(owner) => {
+            Ok(ProgramCacheEntry::new_closed_tombstone(current_slot, owner))
+        }
 
-        ProgramAccountLoadResult::ProgramOfLoaderV1(program_account) => ProgramCacheEntry::new(
+        ProgramAccountLoadResult::ProgramOfLoaderV1(program_account) => ProgramCacheEntry::load(
             program_account.owner(),
             ProgramRuntimeEnvironment::clone(program_runtime_environment),
             0,
@@ -127,7 +127,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
         )
         .map_err(|_| (0, ProgramCacheEntryOwner::LoaderV1)),
 
-        ProgramAccountLoadResult::ProgramOfLoaderV2(program_account) => ProgramCacheEntry::new(
+        ProgramAccountLoadResult::ProgramOfLoaderV2(program_account) => ProgramCacheEntry::load(
             program_account.owner(),
             ProgramRuntimeEnvironment::clone(program_runtime_environment),
             0,
@@ -146,7 +146,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
             .get(UpgradeableLoaderState::size_of_programdata_metadata()..)
             .ok_or(())
             .and_then(|programdata| {
-                ProgramCacheEntry::new(
+                ProgramCacheEntry::load(
                     program_account.owner(),
                     ProgramRuntimeEnvironment::clone(program_runtime_environment),
                     deployment_slot,
@@ -164,7 +164,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
                 .get(LoaderV4State::program_data_offset()..)
                 .ok_or(())
                 .and_then(|elf_bytes| {
-                    ProgramCacheEntry::new(
+                    ProgramCacheEntry::load(
                         &loader_v4::id(),
                         ProgramRuntimeEnvironment::clone(program_runtime_environment),
                         deployment_slot,
@@ -179,11 +179,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
     }
     .unwrap_or_else(|(deployment_slot, owner)| {
         let env = ProgramRuntimeEnvironment::clone(program_runtime_environment);
-        ProgramCacheEntry::new_tombstone(
-            deployment_slot,
-            owner,
-            ProgramCacheEntryType::FailedVerification(env),
-        )
+        ProgramCacheEntry::new_failed_verification_tombstone(deployment_slot, owner, env)
     });
 
     #[cfg(feature = "metrics")]
@@ -310,6 +306,7 @@ mod tests {
                 BlockRelation, ForkGraph, ProgramRuntimeEnvironment,
                 get_mock_program_runtime_environment,
             },
+            program_cache_entry::ProgramCacheEntryType,
             solana_sbpf::program::BuiltinProgram,
         },
         solana_sdk_ids::{bpf_loader, bpf_loader_upgradeable, native_loader},
@@ -475,7 +472,7 @@ mod tests {
         let slot: Slot = 2;
         let environment = ProgramRuntimeEnvironment::from(BuiltinProgram::new_mock());
 
-        let result = ProgramCacheEntry::new(
+        let result = ProgramCacheEntry::load(
             &loader,
             ProgramRuntimeEnvironment::clone(&environment),
             slot,
@@ -523,12 +520,10 @@ mod tests {
             &mut ExecuteTimings::default(),
         );
 
-        let loaded_program = ProgramCacheEntry::new_tombstone(
+        let loaded_program = ProgramCacheEntry::new_failed_verification_tombstone(
             0, // Slot 0
             ProgramCacheEntryOwner::LoaderV3,
-            ProgramCacheEntryType::FailedVerification(
-                batch_processor.program_runtime_environment_for_epoch(20),
-            ),
+            batch_processor.program_runtime_environment_for_epoch(20),
         );
         assert_eq!(result.unwrap(), (Arc::new(loaded_program), 0));
     }
@@ -553,12 +548,10 @@ mod tests {
             200,
             &mut ExecuteTimings::default(),
         );
-        let loaded_program = ProgramCacheEntry::new_tombstone(
+        let loaded_program = ProgramCacheEntry::new_failed_verification_tombstone(
             0,
             ProgramCacheEntryOwner::LoaderV2,
-            ProgramCacheEntryType::FailedVerification(
-                batch_processor.program_runtime_environment_for_epoch(20),
-            ),
+            batch_processor.program_runtime_environment_for_epoch(20),
         );
         assert_eq!(result.unwrap(), (Arc::new(loaded_program), 0));
 
@@ -579,7 +572,7 @@ mod tests {
         );
 
         let program_runtime_environment = get_mock_program_runtime_environment();
-        let expected = ProgramCacheEntry::new(
+        let expected = ProgramCacheEntry::load(
             account_data.owner(),
             ProgramRuntimeEnvironment::clone(&program_runtime_environment),
             0,
@@ -629,12 +622,10 @@ mod tests {
             0,
             &mut ExecuteTimings::default(),
         );
-        let loaded_program = ProgramCacheEntry::new_tombstone(
+        let loaded_program = ProgramCacheEntry::new_failed_verification_tombstone(
             0,
             ProgramCacheEntryOwner::LoaderV3,
-            ProgramCacheEntryType::FailedVerification(
-                batch_processor.program_runtime_environment_for_epoch(0),
-            ),
+            batch_processor.program_runtime_environment_for_epoch(0),
         );
         assert_eq!(result.unwrap(), (Arc::new(loaded_program), 0));
 
@@ -669,7 +660,7 @@ mod tests {
             .set_data(data[UpgradeableLoaderState::size_of_programdata_metadata()..].to_vec());
 
         let program_runtime_environment = get_mock_program_runtime_environment();
-        let expected = ProgramCacheEntry::new(
+        let expected = ProgramCacheEntry::load(
             account_data.owner(),
             ProgramRuntimeEnvironment::clone(&program_runtime_environment),
             0,

@@ -766,10 +766,9 @@ fn process_loader_upgradeable_instruction(
                                 .program_cache_for_tx_batch
                                 .store_modified_entry(
                                     program_key,
-                                    Arc::new(ProgramCacheEntry::new_tombstone(
+                                    Arc::new(ProgramCacheEntry::new_closed_tombstone(
                                         clock.slot,
                                         ProgramCacheEntryOwner::LoaderV3,
-                                        ProgramCacheEntryType::Closed,
                                     )),
                                 );
                         }
@@ -1075,7 +1074,7 @@ mod test_utils {
                     .data()
                     .get(programdata_data_offset.min(account.data().len())..)
                     .unwrap();
-                let loaded_program = ProgramCacheEntry::new(
+                let loaded_program = ProgramCacheEntry::load(
                     owner,
                     ProgramRuntimeEnvironment::clone(&program_runtime_environment),
                     0,
