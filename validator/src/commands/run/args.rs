@@ -1497,6 +1497,28 @@ mod tests {
     }
 
     #[test]
+    fn test_tip_router_snapshot_service_requires_no_voting() {
+        let default_args = DefaultArgs::default();
+
+        let matches = add_args(App::new("run_command"), &default_args).get_matches_from_safe(vec![
+            "run_command",
+            "--enable-tip-router-snapshot-service",
+            "--tip-router-snapshot-output-dir",
+            "tip-router-artifacts",
+        ]);
+        assert!(matches.is_err());
+
+        let matches = add_args(App::new("run_command"), &default_args).get_matches_from_safe(vec![
+            "run_command",
+            "--no-voting",
+            "--enable-tip-router-snapshot-service",
+            "--tip-router-snapshot-output-dir",
+            "tip-router-artifacts",
+        ]);
+        assert!(matches.is_ok());
+    }
+
+    #[test]
     fn verify_args_struct_by_command_run_with_identity() {
         let default_args = DefaultArgs::default();
         let default_run_args = RunArgs::default();

@@ -20,8 +20,9 @@ pub fn args<'a, 'b>() -> Vec<Arg<'a, 'b>> {
         Arg::with_name(ENABLE_ARG)
             .long("enable-tip-router-snapshot-service")
             .takes_value(false)
+            .requires("no_voting")
             .requires(OUTPUT_DIR_ARG)
-            .help("Enable the Jito tip-router snapshot service"),
+            .help("Enable the Jito tip-router snapshot service; requires --no-voting"),
         Arg::with_name(OUTPUT_DIR_ARG)
             .long("tip-router-snapshot-output-dir")
             .value_name("PATH")
