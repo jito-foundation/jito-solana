@@ -32,7 +32,10 @@ use {
         iter::repeat_with,
         marker::PhantomData,
         net::SocketAddr,
-        sync::{Arc, OnceLock, RwLock},
+        sync::{
+            Arc, OnceLock, RwLock,
+            atomic::{AtomicU64, Ordering as AtomicOrdering},
+        },
         time::{Duration, Instant},
     },
     thiserror::Error,
@@ -41,6 +44,52 @@ use {
 thread_local! {
     static THREAD_LOCAL_WEIGHTED_SHUFFLE: RefCell<WeightedShuffle> = RefCell::new(
         WeightedShuffle::new::<[u64; 0]>("get_retransmit_addrs", []),
+    );
+}
+
+static GET_BROADCAST_PEER_COUNT: AtomicU64 = AtomicU64::new(0);
+static GET_BROADCAST_PEER_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+static WARM_CACHE_GET_COUNT: AtomicU64 = AtomicU64::new(0);
+static WARM_CACHE_GET_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn elapsed_ns(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[inline]
+fn record_aggregate_timing(
+    function: &'static str,
+    elapsed_ns: u64,
+    count: &AtomicU64,
+    total_ns: &AtomicU64,
+    report_every: u64,
+) {
+    total_ns.fetch_add(elapsed_ns, AtomicOrdering::Relaxed);
+    let count = count.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+    if count % report_every == 0 {
+        let total_ns = total_ns.swap(0, AtomicOrdering::Relaxed);
+        datapoint_info!(
+            "cluster-nodes-live-performance",
+            "variant" => "baseline".to_string(),
+            "function" => function.to_string(),
+            "kind" => "aggregate".to_string(),
+            ("count", report_every as i64, i64),
+            ("total_ns", total_ns as i64, i64),
+            ("avg_ns", (total_ns / report_every) as i64, i64),
+        );
+    }
+}
+
+#[inline]
+fn submit_timing(function: &'static str, kind: &'static str, elapsed_ns: u64) {
+    datapoint_info!(
+        "cluster-nodes-live-performance",
+        "variant" => "baseline".to_string(),
+        "function" => function.to_string(),
+        "kind" => kind.to_string(),
+        ("count", 1, i64),
+        ("duration_ns", elapsed_ns as i64, i64),
     );
 }
 
@@ -252,9 +301,20 @@ impl ClusterNodes<BroadcastStage> {
     }
 
     pub(crate) fn get_broadcast_peer(&self, shred: &ShredId) -> Option<&ContactInfo> {
+        let start = Instant::now();
         let mut rng = TurbineRng::new_seeded(&self.pubkey, shred, self.use_cha_cha_8);
-        let index = self.weighted_shuffle.first(&mut rng)?;
-        self.nodes[index].contact_info()
+        let peer = self
+            .weighted_shuffle
+            .first(&mut rng)
+            .and_then(|index| self.nodes[index].contact_info());
+        record_aggregate_timing(
+            "get_broadcast_peer",
+            elapsed_ns(start),
+            &GET_BROADCAST_PEER_COUNT,
+            &GET_BROADCAST_PEER_TOTAL_NS,
+            512,
+        );
+        peer
     }
 }
 
@@ -565,6 +625,8 @@ impl<T: 'static> ClusterNodesCache<T> {
         working_bank: &Bank,
         cluster_info: &ClusterInfo,
     ) -> Arc<ClusterNodes<T>> {
+        let is_broadcast = TypeId::of::<T>() == TypeId::of::<BroadcastStage>();
+        let cache_get_start = is_broadcast.then(Instant::now);
         // Returns the cached entry for the epoch if it is either uninitialized
         // or not expired yet. Discards the entry if it is already initialized
         // but also expired.
@@ -589,16 +651,35 @@ impl<T: 'static> ClusterNodesCache<T> {
         );
         // Fall back to exclusive lock if there is a cache miss or the cached
         // entry has already expired.
-        let entry: Arc<OnceLock<_>> = entry.unwrap_or_else(|| {
+        let (entry, cache_kind): (Arc<OnceLock<_>>, _) = if let Some(entry) = entry {
+            let kind = if entry.get().is_some() {
+                "warm"
+            } else {
+                "cold"
+            };
+            (entry, kind)
+        } else {
             let mut cache = self.cache.write().unwrap();
-            get_epoch_entry(&cache, epoch, self.ttl).unwrap_or_else(|| {
+            if let Some(entry) = get_epoch_entry(&cache, epoch, self.ttl) {
+                let kind = if entry.get().is_some() {
+                    "warm"
+                } else {
+                    "cold"
+                };
+                (entry, kind)
+            } else {
                 // Either a cache miss here or the existing entry has already
                 // expired. Upsert and return an uninitialized entry.
+                let kind = if cache.get(&epoch).is_some() {
+                    "expired"
+                } else {
+                    "cold"
+                };
                 let entry = Arc::<OnceLock<_>>::default();
                 cache.put(epoch, Arc::clone(&entry));
-                entry
-            })
-        });
+                (entry, kind)
+            }
+        };
         // Initialize if needed by only a single thread outside locks.
         let (_, nodes) = entry.get_or_init(|| {
             let epoch_staked_nodes = [root_bank, working_bank]
@@ -612,15 +693,34 @@ impl<T: 'static> ClusterNodesCache<T> {
                     inc_new_counter_error!("cluster_nodes-unknown_epoch_staked_nodes", 1);
                     Arc::<HashMap<Pubkey, /*stake:*/ u64>>::default()
                 });
+            let construct_start = Instant::now();
             let nodes = new_cluster_nodes::<T>(
                 cluster_info,
                 root_bank.cluster_type(),
                 &epoch_staked_nodes,
                 use_cha_cha_8,
             );
+            if is_broadcast {
+                submit_timing("new_cluster_nodes", "full", elapsed_ns(construct_start));
+            }
             (Instant::now(), Arc::new(nodes))
         });
-        nodes.clone()
+        let nodes = nodes.clone();
+        if let Some(start) = cache_get_start {
+            let elapsed_ns = elapsed_ns(start);
+            if cache_kind == "warm" {
+                record_aggregate_timing(
+                    "cluster_nodes_cache_get",
+                    elapsed_ns,
+                    &WARM_CACHE_GET_COUNT,
+                    &WARM_CACHE_GET_TOTAL_NS,
+                    16,
+                );
+            } else {
+                submit_timing("cluster_nodes_cache_get", cache_kind, elapsed_ns);
+            }
+        }
+        nodes
     }
 }
 
