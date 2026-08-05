@@ -1,12 +1,12 @@
 use {
     super::*,
     crate::{
-        accounts_file::{AccountsFile, AccountsFileProvider},
+        accounts_file::AccountsFileProvider,
         accounts_index::{
             ACCOUNTS_INDEX_CONFIG_FOR_TESTING, AccountIndex, AccountSecondaryIndexesIncludeExclude,
             AccountsIndexConfig, IndexLimit, IndexLimitThreshold, test_utils::*,
         },
-        append_vec::{AppendVec, STORE_META_OVERHEAD, test_utils::TempFile},
+        append_vec::{AppendVec, STORE_META_OVERHEAD},
     },
     itertools::Itertools as _,
     rand::{prelude::SliceRandom as _, rng},
@@ -193,66 +193,6 @@ pub(crate) fn append_single_account_with_default_hash(
             UpsertReclaim::IgnoreReclaims,
         );
     }
-}
-
-fn append_sample_data_to_storage(
-    storage: &AccountStorageEntry,
-    pubkey: &Pubkey,
-    mark_alive: bool,
-    account_data_size: Option<u64>,
-) {
-    let acc = AccountSharedData::new(
-        1,
-        account_data_size.unwrap_or(48) as usize,
-        AccountSharedData::default().owner(),
-    );
-    append_single_account_with_default_hash(storage, pubkey, &acc, mark_alive, None);
-}
-
-fn sample_storage_with_entries_id_fill_percentage(
-    tf: &TempFile,
-    slot: Slot,
-    pubkey: &Pubkey,
-    id: AccountsFileId,
-    mark_alive: bool,
-    account_data_size: Option<u64>,
-    fill_percentage: u64,
-) -> Arc<AccountStorageEntry> {
-    let (_temp_dirs, paths) = get_temp_accounts_paths(1).unwrap();
-    let file_size = account_data_size.unwrap_or(123) * 100 / fill_percentage;
-    let size_aligned = AppendVec::calculate_stored_size(file_size as usize);
-    let mut data = AccountStorageEntry::new(
-        &paths[0],
-        slot,
-        id,
-        size_aligned as u64,
-        AccountsFileProvider::AppendVec,
-    );
-    let av = AccountsFile::AppendVec(AppendVec::new(&tf.path, (1024 * 1024).max(size_aligned)));
-    data.accounts = av;
-
-    let arc = Arc::new(data);
-    append_sample_data_to_storage(&arc, pubkey, mark_alive, account_data_size);
-    arc
-}
-
-fn sample_storage_with_entries_id(
-    tf: &TempFile,
-    slot: Slot,
-    pubkey: &Pubkey,
-    id: AccountsFileId,
-    mark_alive: bool,
-    account_data_size: Option<u64>,
-) -> Arc<AccountStorageEntry> {
-    sample_storage_with_entries_id_fill_percentage(
-        tf,
-        slot,
-        pubkey,
-        id,
-        mark_alive,
-        account_data_size,
-        100,
-    )
 }
 
 #[test]
@@ -6627,7 +6567,6 @@ pub(crate) fn remove_account_for_tests(storage: &AccountStorageEntry, num_bytes:
 
 pub(crate) fn create_storages_and_update_index(
     db: &AccountsDb,
-    tf: Option<&TempFile>,
     starting_slot: Slot,
     num_slots: usize,
     alive: bool,
@@ -6637,24 +6576,15 @@ pub(crate) fn create_storages_and_update_index(
         return;
     }
 
-    let local_tf = (tf.is_none()).then(|| {
-        crate::append_vec::test_utils::get_append_vec_path("create_storages_and_update_index")
-    });
-    let tf = tf.unwrap_or_else(|| local_tf.as_ref().unwrap());
-
-    let starting_id = db
-        .storage
-        .iter()
-        .map(|storage| storage.1.id())
-        .max()
-        .unwrap_or(999);
+    let account_data_size = account_data_size.unwrap_or(48);
+    let file_size = account_data_size + 1_000_000;
     for i in 0..num_slots {
-        let id = starting_id + (i as AccountsFileId);
-        let pubkey1 = solana_pubkey::new_rand();
         let slot = starting_slot + i as Slot;
-        let storage =
-            sample_storage_with_entries_id(tf, slot, &pubkey1, id, alive, account_data_size);
-        db.storage.insert(Arc::clone(&storage));
+        let storage = db.create_store(slot, file_size);
+        let pubkey = solana_pubkey::new_rand();
+        let account = AccountSharedData::new(1, account_data_size as usize, &Pubkey::default());
+        append_single_account_with_default_hash(&storage, &pubkey, &account, alive, None);
+        db.storage.insert(Arc::new(storage));
     }
 
     let storage = db.get_storage_for_slot(starting_slot).unwrap();
@@ -6679,7 +6609,7 @@ pub(crate) fn create_db_with_storages_and_index(
     // verify we create an ancient appendvec that has alive accounts and does not have dead accounts
 
     let slot1 = 1;
-    create_storages_and_update_index(&db, None, slot1, num_slots, alive, account_data_size);
+    create_storages_and_update_index(&db, slot1, num_slots, alive, account_data_size);
 
     let slot1 = slot1 as Slot;
     (db, slot1)
