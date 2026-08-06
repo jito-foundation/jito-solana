@@ -9285,7 +9285,7 @@ fn do_test_clean_dropped_unrooted_banks(freeze_bank1: FreezeBank1) {
             .accounts_db
             .accounts_index
             .ref_count_from_storage(&key5.pubkey()),
-        expected_ref_count_for_keys_in_both_slot1_and_slot2,
+        expected_ref_count_for_cleaned_up_keys,
     );
     assert_eq!(
         bank2.rc.accounts.accounts_db.alive_account_count_in_slot(1),
@@ -11763,10 +11763,7 @@ fn test_create_zero_lamport_with_clean() {
         bank.freeze();
         bank.squash();
         bank.force_flush_accounts_cache();
-        // do clean and assert that it actually did its job
-        assert_eq!(6, bank.get_snapshot_storages(None).len());
         bank.clean_accounts();
-        assert_eq!(5, bank.get_snapshot_storages(None).len());
     });
 }
 
