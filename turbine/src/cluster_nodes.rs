@@ -680,6 +680,8 @@ impl<T: 'static> ClusterNodesCache<T> {
                 (entry, kind)
             }
         };
+        // Match the optimized metrics build's cached-topology state probe.
+        std::hint::black_box(entry.get().is_some());
         // Initialize if needed by only a single thread outside locks.
         let (_, nodes) = entry.get_or_init(|| {
             let epoch_staked_nodes = [root_bank, working_bank]
