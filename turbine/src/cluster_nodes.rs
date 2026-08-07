@@ -740,7 +740,26 @@ impl<T: 'static> ClusterNodesCache<T> {
         // Read from the cache with a shared lock.
         let entry = {
             let cache = self.cache.read().unwrap();
-            get_epoch_entry(&cache, epoch, self.ttl)
+            let entry = cache.get(&epoch);
+            if let Some((asof, nodes)) = entry.and_then(|entry| entry.snapshot.get())
+                && asof.elapsed() < self.ttl
+            {
+                let nodes = Arc::clone(nodes);
+                drop(cache);
+                if let Some(start) = cache_get_start {
+                    record_aggregate_timing(
+                        "cluster_nodes_cache_get",
+                        elapsed_ns(start),
+                        &WARM_CACHE_GET_COUNT,
+                        &WARM_CACHE_GET_TOTAL_NS,
+                        16,
+                    );
+                }
+                return nodes;
+            }
+            entry
+                .filter(|entry| entry.snapshot.get().is_none())
+                .cloned()
         };
         let use_cha_cha_8 = check_feature_activation_from_bank(
             &feature_set::switch_to_chacha8_turbine::ID,
