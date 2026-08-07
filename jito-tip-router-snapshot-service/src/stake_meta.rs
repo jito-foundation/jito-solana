@@ -126,18 +126,22 @@ struct BenchTimings {
     tip_config_ns: u64,
     tip_pdas_ns: u64,
     voter_loop_ns: u64,
+    /// Wall-clock time from entry into stake-meta generation until this
+    /// function releases its `Arc<Bank>`. This overlaps the preceding phases
+    /// and is therefore excluded from `accounted_ns`.
+    bank_held_ns: u64,
+    bank_drop_ns: u64,
+    deleg_sort_ns: u64,
+    metas_sort_ns: u64,
     /// The pre-existing aggregate `info!`, kept for comparability. Bucketed
     /// because it is a logger write inside the measured span, and on a
     /// contended logger it is the one unbucketed item that could plausibly
     /// show up as a confusing `unaccounted_us`.
     legacy_log_ns: u64,
-    bank_drop_ns: u64,
-    metas_sort_ns: u64,
 
     // Accumulated across the validator loop; already counted inside
     // `voter_loop_ns`, so excluded from the accounted-for sum.
     total_delegated_ns: u64,
-    deleg_sort_ns: u64,
     tda: DistributionTimings,
     pfda: DistributionTimings,
 
@@ -166,6 +170,7 @@ impl BenchTimings {
             + self.voter_loop_ns
             + self.legacy_log_ns
             + self.bank_drop_ns
+            + self.deleg_sort_ns
             + self.metas_sort_ns
     }
 
@@ -178,9 +183,8 @@ impl BenchTimings {
             "STAKEMETA_BENCH slot={} epoch={} total_us={} \
              vote_accounts_us={} stakes_lock_us={} stakes_materialize_us={} stakes_scan_us={} \
              stake_history_us={} delegations_collect_us={} tip_config_us={} tip_pdas_us={} \
-             voter_loop_us={} \
-             legacy_log_us={} bank_drop_us={} metas_sort_us={} unaccounted_us={} \
-             total_delegated_us={} deleg_sort_us={} \
+             voter_loop_us={} bank_held_us={} bank_drop_us={} deleg_sort_us={} metas_sort_us={} \
+             legacy_log_us={} unaccounted_us={} total_delegated_us={} \
              tda_derive_us={} tda_load_us={} tda_rent_us={} \
              pfda_derive_us={} pfda_load_us={} pfda_rent_us={} \
              n_cached={} n_active={} n_epoch_voter_delegations={} n_voters={} n_metas={} \
@@ -199,12 +203,13 @@ impl BenchTimings {
             us(self.tip_config_ns),
             us(self.tip_pdas_ns),
             us(self.voter_loop_ns),
-            us(self.legacy_log_ns),
+            us(self.bank_held_ns),
             us(self.bank_drop_ns),
+            us(self.deleg_sort_ns),
             us(self.metas_sort_ns),
+            us(self.legacy_log_ns),
             us(total_ns.saturating_sub(self.accounted_ns())),
             us(self.total_delegated_ns),
-            us(self.deleg_sort_ns),
             us(self.tda.derive_ns),
             us(self.tda.load_ns),
             us(self.tda.rent_ns),
@@ -463,7 +468,7 @@ where
 ///
 /// The validator universe comes from the bank's epoch vote accounts.
 /// Delegations come from the bank's live stakes cache (see
-/// [`cached_stake_accounts`]), never from the VAT-filtered epoch-stakes
+/// [`cached_stakes`]), never from the VAT-filtered epoch-stakes
 /// accessors, whose delegation maps are intentionally empty. The remaining
 /// direct account reads are deterministic given the vote pubkeys and epoch.
 pub fn generate_stake_meta_collection(
@@ -472,8 +477,9 @@ pub fn generate_stake_meta_collection(
     priority_fee_distribution_program_id: &Pubkey,
     tip_payment_program_id: &Pubkey,
 ) -> Result<StakeMetaCollection, StakeMetaError> {
+    let bank_held_started_at = Instant::now();
     assert!(bank.is_frozen());
-    let stake_meta_started_at = Instant::now();
+    let stake_meta_started_at = bank_held_started_at;
     let mut bench = BenchTimings::default();
 
     let bank_epoch = bank.epoch();
@@ -624,6 +630,21 @@ pub fn generate_stake_meta_collection(
     bench.voter_loop_ns = elapsed_ns(voter_loop_started_at);
     bench.n_metas = stake_metas.len() as u64;
 
+    let bank_drop_started_at = Instant::now();
+    drop(bank);
+    bench.bank_drop_ns = elapsed_ns(bank_drop_started_at);
+    bench.bank_held_ns = elapsed_ns(bank_held_started_at);
+
+    let deleg_sort_started_at = Instant::now();
+    for stake_meta in &mut stake_metas {
+        stake_meta.delegations.sort_unstable();
+    }
+    bench.deleg_sort_ns = elapsed_ns(deleg_sort_started_at);
+
+    let metas_sort_started_at = Instant::now();
+    stake_metas.sort();
+    bench.metas_sort_ns = elapsed_ns(metas_sort_started_at);
+
     let legacy_log_started_at = Instant::now();
     info!(
         "calculated tip-router stake metadata for epoch {} at slot {} in {:?}",
@@ -633,19 +654,8 @@ pub fn generate_stake_meta_collection(
     );
     bench.legacy_log_ns = elapsed_ns(legacy_log_started_at);
 
-    let bank_drop_started_at = Instant::now();
-    drop(bank);
-    bench.bank_drop_ns = elapsed_ns(bank_drop_started_at);
-
-    let metas_sort_started_at = Instant::now();
-    stake_metas.sort();
-    bench.metas_sort_ns = elapsed_ns(metas_sort_started_at);
-
     // TEMPORARY BENCHMARK INSTRUMENTATION - DO NOT MERGE.
-    // Deliberately after the sort so `bank_drop_ns` and `metas_sort_ns` (both
-    // outside the pre-existing aggregate `info!` above) are included in
-    // `total_us`. Still excluded: the JSON serialize + fsync in
-    // `snapshot_artifact::writer`.
+    // Still excluded: the JSON serialize + fsync in `snapshot_artifact::writer`.
     bench.log(bank_slot, bank_epoch, elapsed_ns(stake_meta_started_at));
 
     Ok(StakeMetaCollection {
@@ -677,7 +687,7 @@ struct VoterInfo<'a> {
 fn build_voter_meta(
     bank: &Arc<Bank>,
     voter_info: VoterInfo<'_>,
-    mut delegations: Vec<Delegation>,
+    delegations: Vec<Delegation>,
     bench: &mut BenchTimings,
 ) -> StakeMeta {
     let VoterInfo {
@@ -722,9 +732,6 @@ fn build_voter_meta(
     .map(|x| x.0);
 
     let vote_state = vote_account.vote_state_view();
-    let deleg_sort_started_at = Instant::now();
-    delegations.sort_unstable();
-    bench.deleg_sort_ns += elapsed_ns(deleg_sort_started_at);
     StakeMeta {
         maybe_tip_distribution_meta,
         maybe_priority_fee_distribution_meta,
