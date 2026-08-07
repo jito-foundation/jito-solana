@@ -15,7 +15,6 @@
 use {
     crate::config::TipRouterSnapshotConfig,
     borsh::de::BorshDeserialize,
-    itertools::Itertools,
     jito_priority_fee_distribution_sdk::{
         PriorityFeeDistributionAccount, derive_priority_fee_distribution_account_address,
     },
@@ -34,7 +33,10 @@ use {
     solana_accounts_db::{accounts_index::IndexKey, accounts_scan::ScanError},
     solana_clock::Epoch,
     solana_pubkey::Pubkey,
-    solana_runtime::{bank::Bank, stakes::StakeAccount},
+    solana_runtime::{
+        bank::Bank,
+        stakes::{StakeAccount, Stakes},
+    },
     solana_stake_interface::{self as stake, stake_history::StakeHistory, sysvar::stake_history},
     solana_vote::vote_account::VoteAccount,
     std::{collections::HashMap, mem::size_of, sync::Arc, time::Instant},
@@ -70,11 +72,10 @@ fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
 //
 // Two rules make the numbers trustworthy:
 //
-// 1. No `Instant::now()` inside the ~1.5M-iteration delegation loops - the
-//    measurement itself would cost 60-120ms and distort the buckets. Those
-//    loops are instead split into explicitly sequential stages, timed once
-//    each (see `group_delegations_by_voter_pubkey`). Only the
-//    ~1500-iteration validator loop gets per-iteration timers.
+// 1. No `Instant::now()` inside the ~1.5M-iteration delegation loop - the
+//    measurement itself would cost 60-120ms and distort the bucket. The fused
+//    traversal is timed once by `collect_delegations_for_epoch_voters`. Only
+//    the ~1500-iteration validator loop gets per-iteration timers.
 // 2. Accumulators hold NANOSECONDS, not microseconds. A per-iteration cost
 //    below 1us truncates to 0 with `as_micros()`, which would silently
 //    report a real 150us bucket as zero. Conversion happens at report time.
@@ -101,13 +102,12 @@ pub struct DistributionTimings {
     n_rejected: u64,
 }
 
-/// Timings for the three stages of `group_delegations_by_voter_pubkey`.
+/// Timings for the fused stake-account traversal.
 #[derive(Default)]
-struct GroupTimings {
-    filter_active_ns: u64,
-    group_by_voter_ns: u64,
-    build_delegations_ns: u64,
+struct DelegationCollectionTimings {
+    collect_ns: u64,
     n_active: u64,
+    n_epoch_voter_delegations: u64,
 }
 
 #[derive(Default)]
@@ -115,14 +115,14 @@ struct BenchTimings {
     // Sequential phases, each measured once.
     vote_accounts_ns: u64,
     stakes_lock_ns: u64,
+    /// Retained in the temporary log for direct baseline comparison. This is
+    /// zero now that cached `StakeAccount`s are traversed by reference.
     stakes_materialize_ns: u64,
     /// Non-zero only if the stakes cache came back empty and the accounts-db
     /// fallback scan ran.
     stakes_scan_ns: u64,
     stake_history_ns: u64,
-    filter_active_ns: u64,
-    group_by_voter_ns: u64,
-    build_delegations_ns: u64,
+    delegations_collect_ns: u64,
     tip_config_ns: u64,
     tip_pdas_ns: u64,
     voter_loop_ns: u64,
@@ -144,6 +144,7 @@ struct BenchTimings {
     // Denominators. A bucket without one isn't actionable.
     n_cached: u64,
     n_active: u64,
+    n_epoch_voter_delegations: u64,
     n_voters: u64,
     n_metas: u64,
     max_delegations_per_voter: u64,
@@ -159,9 +160,7 @@ impl BenchTimings {
             + self.stakes_materialize_ns
             + self.stakes_scan_ns
             + self.stake_history_ns
-            + self.filter_active_ns
-            + self.group_by_voter_ns
-            + self.build_delegations_ns
+            + self.delegations_collect_ns
             + self.tip_config_ns
             + self.tip_pdas_ns
             + self.voter_loop_ns
@@ -178,13 +177,13 @@ impl BenchTimings {
         info!(
             "STAKEMETA_BENCH slot={} epoch={} total_us={} \
              vote_accounts_us={} stakes_lock_us={} stakes_materialize_us={} stakes_scan_us={} \
-             stake_history_us={} filter_active_us={} group_by_voter_us={} \
-             build_delegations_us={} tip_config_us={} tip_pdas_us={} voter_loop_us={} \
+             stake_history_us={} delegations_collect_us={} tip_config_us={} tip_pdas_us={} \
+             voter_loop_us={} \
              legacy_log_us={} bank_drop_us={} metas_sort_us={} unaccounted_us={} \
              total_delegated_us={} deleg_sort_us={} \
              tda_derive_us={} tda_load_us={} tda_rent_us={} \
              pfda_derive_us={} pfda_load_us={} pfda_rent_us={} \
-             n_cached={} n_active={} n_voters={} n_metas={} \
+             n_cached={} n_active={} n_epoch_voter_delegations={} n_voters={} n_metas={} \
              n_tda_found={} n_tda_absent={} n_tda_rejected={} \
              n_pfda_found={} n_pfda_absent={} n_pfda_rejected={} \
              max_delegations_per_voter={} cached_bytes={}",
@@ -196,9 +195,7 @@ impl BenchTimings {
             us(self.stakes_materialize_ns),
             us(self.stakes_scan_ns),
             us(self.stake_history_ns),
-            us(self.filter_active_ns),
-            us(self.group_by_voter_ns),
-            us(self.build_delegations_ns),
+            us(self.delegations_collect_ns),
             us(self.tip_config_ns),
             us(self.tip_pdas_ns),
             us(self.voter_loop_ns),
@@ -216,6 +213,7 @@ impl BenchTimings {
             us(self.pfda.rent_ns),
             self.n_cached,
             self.n_active,
+            self.n_epoch_voter_delegations,
             self.n_voters,
             self.n_metas,
             self.tda.n_found,
@@ -489,9 +487,18 @@ pub fn generate_stake_meta_collection(
     bench.vote_accounts_ns = elapsed_ns(vote_accounts_started_at);
     bench.n_voters = epoch_vote_accounts.len() as u64;
 
-    let delegations = get_stake_accounts(&bank, &mut bench)?;
-    bench.n_cached = delegations.len() as u64;
-    bench.cached_bytes = bench.n_cached * size_of::<(Pubkey, StakeAccount)>() as u64;
+    let mut voter_delegations = Vec::with_capacity(epoch_vote_accounts.len());
+    let mut voter_indexes = HashMap::with_capacity(epoch_vote_accounts.len());
+    for (vote_pubkey, (_, vote_account)) in epoch_vote_accounts {
+        voter_indexes.insert(*vote_pubkey, voter_delegations.len());
+        voter_delegations.push(VoterDelegations {
+            vote_pubkey,
+            vote_account,
+            delegations: Vec::new(),
+        });
+    }
+
+    let cached_stakes = cached_stakes(&bank, &mut bench);
 
     let stake_history_started_at = Instant::now();
     let stake_history = bincode::deserialize::<StakeHistory>(
@@ -502,12 +509,45 @@ pub fn generate_stake_meta_collection(
     .expect("stake history sysvar account should deserialize");
     bench.stake_history_ns = elapsed_ns(stake_history_started_at);
 
-    let (mut voter_pubkey_to_delegations, group_timings) =
-        group_delegations_by_voter_pubkey(delegations,stake_history, bank_epoch, bank.new_warmup_cooldown_rate_epoch());
-    bench.filter_active_ns = group_timings.filter_active_ns;
-    bench.group_by_voter_ns = group_timings.group_by_voter_ns;
-    bench.build_delegations_ns = group_timings.build_delegations_ns;
-    bench.n_active = group_timings.n_active;
+    let collection_timings = if cached_stakes.stake_delegations().is_empty() {
+        warn!("stakes cache returned no delegations; falling back to a stake-program account scan");
+        let scan_started_at = Instant::now();
+        let scanned_stake_accounts = scan_stake_accounts(&bank)?;
+        bench.stakes_scan_ns = elapsed_ns(scan_started_at);
+        bench.n_cached = scanned_stake_accounts.len() as u64;
+        bench.cached_bytes = bench.n_cached * size_of::<(Pubkey, StakeAccount)>() as u64;
+        collect_delegations_for_epoch_voters(
+            scanned_stake_accounts
+                .iter()
+                .map(|(stake_pubkey, stake_account)| (stake_pubkey, stake_account)),
+            &stake_history,
+            bank_epoch,
+            bank.new_warmup_cooldown_rate_epoch(),
+            &voter_indexes,
+            &mut voter_delegations,
+        )
+    } else {
+        bench.n_cached = cached_stakes.stake_delegations().len() as u64;
+        // Retain the old materialized size as an avoided-allocation metric so
+        // benchmark logs remain directly comparable with the cloning path.
+        bench.cached_bytes = bench.n_cached * size_of::<(Pubkey, StakeAccount)>() as u64;
+        collect_delegations_for_epoch_voters(
+            cached_stakes.stake_delegations().iter(),
+            &stake_history,
+            bank_epoch,
+            bank.new_warmup_cooldown_rate_epoch(),
+            &voter_indexes,
+            &mut voter_delegations,
+        )
+    };
+    bench.delegations_collect_ns = collection_timings.collect_ns;
+    bench.n_active = collection_timings.n_active;
+    bench.n_epoch_voter_delegations = collection_timings.n_epoch_voter_delegations;
+    // Release the persistent snapshot while `bank` still owns the underlying
+    // HAMT nodes, so this function does not retain the stakes cache through
+    // account lookups, sorting, and serialization preparation.
+    drop(cached_stakes);
+    drop(voter_indexes);
 
     // Get config PDA
     let tip_config_started_at = Instant::now();
@@ -554,9 +594,14 @@ pub fn generate_stake_meta_collection(
 
     let voter_loop_started_at = Instant::now();
     let mut stake_metas = Vec::with_capacity(epoch_vote_accounts.len());
-    for (vote_pubkey, (_, vote_account)) in epoch_vote_accounts {
+    for VoterDelegations {
+        vote_pubkey,
+        vote_account,
+        delegations,
+    } in voter_delegations
+    {
         // Ignore vote accounts with 0 delegations
-        if let Some(delegations) = voter_pubkey_to_delegations.remove(vote_pubkey) {
+        if !delegations.is_empty() {
             bench.max_delegations_per_voter = bench
                 .max_delegations_per_voter
                 .max(delegations.len() as u64);
@@ -599,9 +644,8 @@ pub fn generate_stake_meta_collection(
     // TEMPORARY BENCHMARK INSTRUMENTATION - DO NOT MERGE.
     // Deliberately after the sort so `bank_drop_ns` and `metas_sort_ns` (both
     // outside the pre-existing aggregate `info!` above) are included in
-    // `total_us`. Still excluded: the drop of whatever remains in
-    // `voter_pubkey_to_delegations` at scope exit, and the JSON serialize +
-    // fsync in `snapshot_artifact::writer`.
+    // `total_us`. Still excluded: the JSON serialize + fsync in
+    // `snapshot_artifact::writer`.
     bench.log(bank_slot, bank_epoch, elapsed_ns(stake_meta_started_at));
 
     Ok(StakeMetaCollection {
@@ -615,6 +659,12 @@ pub fn generate_stake_meta_collection(
 }
 
 /// Inputs needed to build metadata for a single validator vote account.
+struct VoterDelegations<'a> {
+    vote_pubkey: &'a Pubkey,
+    vote_account: &'a VoteAccount,
+    delegations: Vec<Delegation>,
+}
+
 struct VoterInfo<'a> {
     vote_account: &'a VoteAccount,
     vote_pubkey: &'a Pubkey,
@@ -656,7 +706,8 @@ fn build_voter_meta(
                 tip_receiver_fee,
             }),
             &mut bench.tda,
-        ).map(|x|x.0);
+        )
+        .map(|x| x.0);
 
     let maybe_priority_fee_distribution_meta = get_distribution_meta::<
         PriorityFeeDistributionAccount,
@@ -667,7 +718,8 @@ fn build_voter_meta(
         vote_pubkey,
         None,
         &mut bench.pfda,
-    ).map(|x|x.0);
+    )
+    .map(|x| x.0);
 
     let vote_state = vote_account.vote_state_view();
     let deleg_sort_started_at = Instant::now();
@@ -697,24 +749,7 @@ fn get_config(bank: &Arc<Bank>, config_pubkey: &Pubkey) -> Result<Config, StakeM
         })
 }
 
-/// Read delegated stake accounts from the bank, preferring the live stakes
-/// cache and falling back to an accounts-db scan only if the cache is empty.
-fn get_stake_accounts(
-    bank: &Bank,
-    bench: &mut BenchTimings,
-) -> Result<Vec<(Pubkey, StakeAccount)>, StakeMetaError> {
-    let stake_accounts = cached_stake_accounts(bank, bench);
-    if !stake_accounts.is_empty() {
-        return Ok(stake_accounts);
-    }
-    warn!("stakes cache returned no delegations; falling back to a stake-program account scan");
-    let scan_started_at = Instant::now();
-    let scanned = scan_stake_accounts(bank);
-    bench.stakes_scan_ns = elapsed_ns(scan_started_at);
-    scanned
-}
-
-/// Read delegated stake accounts from the bank's live stakes cache.
+/// Take an O(1) persistent snapshot of the bank's live stakes cache.
 ///
 /// The runtime maintains this map synchronously on every stake-account write
 /// (epoch rewards and next-epoch stakes are computed from it) and rehydrates
@@ -727,23 +762,11 @@ fn get_stake_accounts(
 /// `Bank::unfiltered_stakes` is used rather than `Bank::get_top_epoch_stakes`
 /// because VAT filtering (SIMD-0357) rebuilds `Stakes` from vote accounts
 /// alone, leaving its delegation map unconditionally empty.
-fn cached_stake_accounts(bank: &Bank, bench: &mut BenchTimings) -> Vec<(Pubkey, StakeAccount)> {
-    // Split from the materialization below on purpose: the `imbl` map clone
-    // itself is O(1), so any real time here is the `stakes_cache` read lock
-    // waiting on replay's writer, which is a completely different problem than
-    // the traversal cost.
+fn cached_stakes(bank: &Bank, bench: &mut BenchTimings) -> Stakes<StakeAccount> {
     let lock_started_at = Instant::now();
     let stakes = bank.unfiltered_stakes();
     bench.stakes_lock_ns = elapsed_ns(lock_started_at);
-
-    let materialize_started_at = Instant::now();
-    let stake_accounts = stakes
-        .stake_delegations()
-        .iter()
-        .map(|(stake_pubkey, stake_account)| (*stake_pubkey, stake_account.clone()))
-        .collect();
-    bench.stakes_materialize_ns = elapsed_ns(materialize_started_at);
-    stake_accounts
+    stakes
 }
 
 /// Scan delegated stake accounts out of accounts-db, identically to the
@@ -778,87 +801,51 @@ fn scan_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, Stake
         .collect())
 }
 
-/// Given the bank's stake accounts, return delegations grouped by voter_pubkey
-/// (validator delegated to), filtered to those with non-zero active stake.
-fn group_delegations_by_voter_pubkey(
-    mut delegations: Vec<(Pubkey, StakeAccount)>,
-    stake_history: StakeHistory,
+/// Traverse borrowed stake accounts once, filter active delegations, and build
+/// the final delegation vectors for the bank's epoch-vote-account universe.
+///
+/// Keeping the persistent stakes snapshot alive makes every `StakeAccount`
+/// borrow valid without cloning the roughly 300-byte cached value. Building
+/// final `Delegation`s directly also avoids intermediate per-voter vectors of
+/// `StakeAccount`s.
+fn collect_delegations_for_epoch_voters<'a>(
+    stake_accounts: impl IntoIterator<Item = (&'a Pubkey, &'a StakeAccount)>,
+    stake_history: &StakeHistory,
     epoch: Epoch,
     warmup_cooldown_rate: Option<Epoch>,
-) -> (HashMap<Pubkey, Vec<Delegation>>, GroupTimings) {
-    let mut timings = GroupTimings::default();
+    voter_indexes: &HashMap<Pubkey, usize>,
+    voter_delegations: &mut [VoterDelegations<'_>],
+) -> DelegationCollectionTimings {
+    let collect_started_at = Instant::now();
+    let mut timings = DelegationCollectionTimings::default();
 
-    // BENCH RULE 1: these three stages used to be one fused iterator chain
-    // over ~1.5M stake accounts, where per-iteration timers would have cost
-    // more than some of the phases being measured. Splitting it preserves the
-    // result exactly: same predicate, and `retain` is order-preserving, so the
-    // same encounter order reaches `into_group_map_by`.
-    //
-    // `retain` rather than `filter(..).collect()` because in-place compaction
-    // is then an explicit guarantee. (`collect()` would probably hit rustc's
-    // in-place-collect specialization and reuse the source allocation anyway,
-    // but that is an optimizer contract, not a promise.)
-    //
-    // THE SPLIT IS NOT FREE, and it is the only part of this instrumentation
-    // that perturbs what it measures. `retain` adds a traversal the fused
-    // chain never did: ~450MB of reads plus ~440MB of compaction writes.
-    // Measured at ~12ms on Apple M-series, whose sequential bandwidth is
-    // unusually high; on a server core at ~10-15GB/s single-threaded, expect
-    // ~30-90ms, i.e. 2-6% of the 1.6s. It lands in `filter_active_ns`, so read
-    // that bucket - and `total_us` - as overstating the production fused chain
-    // by roughly that much.
-    let filter_started_at = Instant::now();
-    delegations.retain(|(_stake_pubkey, stake_account)| {
+    for (stake_pubkey, stake_account) in stake_accounts {
+        let stake_delegation = stake_account.delegation();
         // `stake_v2` uses integer, eBPF-compatible warmup/cooldown math. The deprecated
         // `stake` implementation uses floating-point math and can differ at rounding edges.
-        stake_account.delegation().stake_v2(
-            epoch,
-            &stake_history,
-            warmup_cooldown_rate,
-        ) > 0
-    });
-    timings.filter_active_ns = elapsed_ns(filter_started_at);
-    timings.n_active = delegations.len() as u64;
+        if stake_delegation.stake_v2(epoch, stake_history, warmup_cooldown_rate) == 0 {
+            continue;
+        }
+        timings.n_active += 1;
 
-    let group_started_at = Instant::now();
-    let grouped = delegations
-        .into_iter()
-        .into_group_map_by(|(_stake_pubkey, stake_account)| {
-            stake_account.delegation().voter_pubkey
-        });
-    timings.group_by_voter_ns = elapsed_ns(group_started_at);
+        let Some(voter_index) = voter_indexes.get(&stake_delegation.voter_pubkey) else {
+            continue;
+        };
+        timings.n_epoch_voter_delegations += 1;
 
-    // Also absorbs the drop of all ~1.5M `StakeAccount`s, which are consumed
-    // here and not carried into the returned `Delegation`s.
-    let build_started_at = Instant::now();
-    let by_voter = grouped
-        .into_iter()
-        .map(|(voter_pubkey, group)| {
-            (
-                voter_pubkey,
-                group
-                    .into_iter()
-                    .map(|(stake_pubkey, stake_account)| Delegation {
-                        stake_account_pubkey: stake_pubkey,
-                        staker_pubkey: stake_account
-                            .stake_state()
-                            .authorized()
-                            .map(|a| a.staker)
-                            .unwrap_or_default(),
-                        withdrawer_pubkey: stake_account
-                            .stake_state()
-                            .authorized()
-                            .map(|a| a.withdrawer)
-                            .unwrap_or_default(),
-                        lamports_delegated: stake_account.delegation().stake,
-                    })
-                    .collect::<Vec<Delegation>>(),
-            )
-        })
-        .collect();
-    timings.build_delegations_ns = elapsed_ns(build_started_at);
+        let authorized = stake_account.stake_state().authorized().unwrap_or_default();
+        voter_delegations[*voter_index]
+            .delegations
+            .push(Delegation {
+                stake_account_pubkey: *stake_pubkey,
+                staker_pubkey: authorized.staker,
+                withdrawer_pubkey: authorized.withdrawer,
+                lamports_delegated: stake_delegation.stake,
+            });
+    }
 
-    (by_voter, timings)
+    timings.collect_ns = elapsed_ns(collect_started_at);
+    timings
 }
 
 #[cfg(test)]
@@ -922,7 +909,12 @@ mod tests {
         let bank = new_indexed_bank_with_validator(&validator);
         bank.freeze();
 
-        let mut cached = cached_stake_accounts(&bank, &mut BenchTimings::default());
+        let cached_stakes = cached_stakes(&bank, &mut BenchTimings::default());
+        let mut cached = cached_stakes
+            .stake_delegations()
+            .iter()
+            .map(|(stake_pubkey, stake_account)| (*stake_pubkey, stake_account.clone()))
+            .collect::<Vec<_>>();
         let mut scanned = scan_stake_accounts(&bank).unwrap();
         cached.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
         scanned.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);

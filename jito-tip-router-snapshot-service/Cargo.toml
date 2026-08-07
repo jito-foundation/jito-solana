@@ -21,7 +21,6 @@ solana-runtime = { workspace = true }
 # entire service once one exists.
 bincode = { workspace = true }
 borsh = { workspace = true }
-itertools = { workspace = true }
 jito-priority-fee-distribution-sdk = { workspace = true }
 jito-stake-meta-types = { workspace = true }
 jito-tip-distribution-sdk = { workspace = true }

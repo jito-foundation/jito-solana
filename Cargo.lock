@@ -4331,7 +4331,6 @@ dependencies = [
  "borsh",
  "clap 2.33.3",
  "crossbeam-channel",
- "itertools 0.14.0",
  "jito-priority-fee-distribution-sdk",
  "jito-stake-meta-types",
  "jito-tip-distribution-sdk",
