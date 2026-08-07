@@ -38,7 +38,6 @@ use {
         stakes::{StakeAccount, Stakes},
     },
     solana_stake_interface::{self as stake, stake_history::StakeHistory, sysvar::stake_history},
-    solana_vote::vote_account::VoteAccount,
     std::{collections::HashMap, mem::size_of, sync::Arc, time::Instant},
 };
 
@@ -55,6 +54,50 @@ const TIP_ACCOUNT_SEEDS: [&[u8]; 8] = [
 
 struct TipPaymentPubkeys {
     tip_pdas: [Pubkey; TIP_ACCOUNT_SEEDS.len()],
+}
+
+/// Bank-independent inputs retained while the expensive delegation traversal runs.
+///
+/// `Cached` owns a persistent, structurally-shared snapshot of the runtime's stake
+/// map. It keeps those map nodes alive without retaining the `Bank` or materializing
+/// every `StakeAccount` into a second allocation.
+enum CapturedStakeAccounts {
+    Cached(Stakes<StakeAccount>),
+    Scanned(Vec<(Pubkey, StakeAccount)>),
+}
+
+/// Result of one deterministic distribution-account read from the frozen bank.
+enum CapturedDistributionAccount {
+    Missing,
+    Loaded {
+        address: Pubkey,
+        account: AccountSharedData,
+        rent_exempt_amount: u64,
+    },
+}
+
+/// Fully-owned per-validator inputs captured from a frozen bank.
+struct CapturedVoter {
+    vote_pubkey: Pubkey,
+    validator_node_pubkey: Pubkey,
+    commission: u8,
+    tip_distribution_account: CapturedDistributionAccount,
+    priority_fee_distribution_account: CapturedDistributionAccount,
+}
+
+/// The crossing shape between frozen-bank reads and detached metadata computation.
+struct CapturedStakeMetaInputs {
+    bank_epoch: Epoch,
+    bank_slot: u64,
+    bank_hash: String,
+    tip_distribution_program_id: Pubkey,
+    priority_fee_distribution_program_id: Pubkey,
+    tip_receiver: Pubkey,
+    tip_receiver_fee: u64,
+    stake_accounts: CapturedStakeAccounts,
+    stake_history: StakeHistory,
+    warmup_cooldown_rate_epoch: Option<Epoch>,
+    voters: Vec<CapturedVoter>,
 }
 
 fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
@@ -88,9 +131,8 @@ fn elapsed_ns(started_at: Instant) -> u64 {
 
 /// Per-iteration accumulators for one kind of distribution account, gathered
 /// across the validator loop.
-// `pub` only to match the visibility of `get_distribution_meta`, which takes it.
 #[derive(Default)]
-pub struct DistributionTimings {
+struct DistributionTimings {
     derive_ns: u64,
     load_ns: u64,
     rent_ns: u64,
@@ -379,12 +421,43 @@ pub struct TipReceiverInfo {
     pub tip_receiver_fee: u64,
 }
 
-/// Read and deserialize a validator's distribution account (tip or priority-fee)
-/// from the bank, returning its owned meta. Missing accounts yield `None`.
-pub fn get_distribution_meta<DistributionAccount, DistMeta>(
+/// Capture a validator's distribution account while the frozen bank is available.
+fn capture_distribution_account<DistMeta>(
     bank: &Arc<Bank>,
     program_id: &Pubkey,
     vote_pubkey: &Pubkey,
+    timings: &mut DistributionTimings,
+) -> CapturedDistributionAccount
+where
+    DistMeta: DistributionMeta,
+{
+    let derive_started_at = Instant::now();
+    let distribution_account_address =
+        DistMeta::derive_distribution_account_address(program_id, vote_pubkey, bank.epoch());
+    timings.derive_ns += elapsed_ns(derive_started_at);
+
+    let load_started_at = Instant::now();
+    let loaded_account = bank.get_account(&distribution_account_address);
+    timings.load_ns += elapsed_ns(load_started_at);
+    let Some(account) = loaded_account else {
+        return CapturedDistributionAccount::Missing;
+    };
+
+    let rent_started_at = Instant::now();
+    let rent_exempt_amount = bank.get_minimum_balance_for_rent_exemption(account.data().len());
+    timings.rent_ns += elapsed_ns(rent_started_at);
+
+    CapturedDistributionAccount::Loaded {
+        address: distribution_account_address,
+        account,
+        rent_exempt_amount,
+    }
+}
+
+/// Validate and deserialize a captured distribution account without accessing the bank.
+fn build_distribution_meta<DistributionAccount, DistMeta>(
+    captured_account: CapturedDistributionAccount,
+    program_id: &Pubkey,
     tip_receiver_info: Option<TipReceiverInfo>,
     timings: &mut DistributionTimings,
 ) -> Option<DistMeta>
@@ -392,19 +465,12 @@ where
     DistributionAccount: BorshDeserialize,
     DistMeta: DistributionMeta<DistributionAccountType = DistributionAccount>,
 {
-    let derive_started_at = Instant::now();
-    let distribution_account_address =
-        DistMeta::derive_distribution_account_address(program_id, vote_pubkey, bank.epoch());
-    timings.derive_ns += elapsed_ns(derive_started_at);
-
-    // BENCH RULE 2: capture the elapsed time BEFORE the `?`. Binding straight
-    // to `bank.get_account(..)?` would drop the load time of every validator
-    // that has no such account - the common case for priority-fee accounts,
-    // and exactly the population that makes this loop look cheap.
-    let load_started_at = Instant::now();
-    let loaded_account = bank.get_account(&distribution_account_address);
-    timings.load_ns += elapsed_ns(load_started_at);
-    let Some(mut account) = loaded_account else {
+    let CapturedDistributionAccount::Loaded {
+        address: distribution_account_address,
+        mut account,
+        rent_exempt_amount,
+    } = captured_account
+    else {
         timings.n_absent += 1;
         return None;
     };
@@ -445,10 +511,6 @@ where
         warn!("distribution account length mismatch: actual={actual_len}, expected={expected_len}");
     }
 
-    let rent_started_at = Instant::now();
-    let rent_exempt_amount = bank.get_minimum_balance_for_rent_exemption(actual_len);
-    timings.rent_ns += elapsed_ns(rent_started_at);
-
     let meta = DistMeta::new_from_account(
         distribution_account,
         account,
@@ -464,22 +526,18 @@ where
     meta
 }
 
-/// Generate the full [`StakeMetaCollection`] for a frozen bank.
+/// Capture every bank-dependent input needed to generate stake metadata.
 ///
-/// The validator universe comes from the bank's epoch vote accounts.
-/// Delegations come from the bank's live stakes cache (see
-/// [`cached_stakes`]), never from the VAT-filtered epoch-stakes
-/// accessors, whose delegation maps are intentionally empty. The remaining
-/// direct account reads are deterministic given the vote pubkeys and epoch.
-pub fn generate_stake_meta_collection(
-    bank: Arc<Bank>,
+/// The returned value owns its data and does not retain `bank`. This keeps the
+/// direct account reads grouped at the infrastructure boundary and lets the
+/// expensive delegation traversal run after the caller releases its `Arc<Bank>`.
+fn capture_stake_meta_inputs(
+    bank: &Arc<Bank>,
     tip_distribution_program_id: &Pubkey,
     priority_fee_distribution_program_id: &Pubkey,
     tip_payment_program_id: &Pubkey,
-) -> Result<StakeMetaCollection, StakeMetaError> {
-    let bank_held_started_at = Instant::now();
+) -> Result<(CapturedStakeMetaInputs, BenchTimings), StakeMetaError> {
     assert!(bank.is_frozen());
-    let stake_meta_started_at = bank_held_started_at;
     let mut bench = BenchTimings::default();
 
     let bank_epoch = bank.epoch();
@@ -493,18 +551,7 @@ pub fn generate_stake_meta_collection(
     bench.vote_accounts_ns = elapsed_ns(vote_accounts_started_at);
     bench.n_voters = epoch_vote_accounts.len() as u64;
 
-    let mut voter_delegations = Vec::with_capacity(epoch_vote_accounts.len());
-    let mut voter_indexes = HashMap::with_capacity(epoch_vote_accounts.len());
-    for (vote_pubkey, (_, vote_account)) in epoch_vote_accounts {
-        voter_indexes.insert(*vote_pubkey, voter_delegations.len());
-        voter_delegations.push(VoterDelegations {
-            vote_pubkey,
-            vote_account,
-            delegations: Vec::new(),
-        });
-    }
-
-    let cached_stakes = cached_stakes(&bank, &mut bench);
+    let cached_stakes = cached_stakes(bank, &mut bench);
 
     let stake_history_started_at = Instant::now();
     let stake_history = bincode::deserialize::<StakeHistory>(
@@ -515,51 +562,27 @@ pub fn generate_stake_meta_collection(
     .expect("stake history sysvar account should deserialize");
     bench.stake_history_ns = elapsed_ns(stake_history_started_at);
 
-    let collection_timings = if cached_stakes.stake_delegations().is_empty() {
+    let stake_accounts = if cached_stakes.stake_delegations().is_empty() {
         warn!("stakes cache returned no delegations; falling back to a stake-program account scan");
         let scan_started_at = Instant::now();
-        let scanned_stake_accounts = scan_stake_accounts(&bank)?;
+        let scanned_stake_accounts = scan_stake_accounts(bank)?;
         bench.stakes_scan_ns = elapsed_ns(scan_started_at);
         bench.n_cached = scanned_stake_accounts.len() as u64;
         bench.cached_bytes = bench.n_cached * size_of::<(Pubkey, StakeAccount)>() as u64;
-        collect_delegations_for_epoch_voters(
-            scanned_stake_accounts
-                .iter()
-                .map(|(stake_pubkey, stake_account)| (stake_pubkey, stake_account)),
-            &stake_history,
-            bank_epoch,
-            bank.new_warmup_cooldown_rate_epoch(),
-            &voter_indexes,
-            &mut voter_delegations,
-        )
+        CapturedStakeAccounts::Scanned(scanned_stake_accounts)
     } else {
         bench.n_cached = cached_stakes.stake_delegations().len() as u64;
         // Retain the old materialized size as an avoided-allocation metric so
         // benchmark logs remain directly comparable with the cloning path.
         bench.cached_bytes = bench.n_cached * size_of::<(Pubkey, StakeAccount)>() as u64;
-        collect_delegations_for_epoch_voters(
-            cached_stakes.stake_delegations().iter(),
-            &stake_history,
-            bank_epoch,
-            bank.new_warmup_cooldown_rate_epoch(),
-            &voter_indexes,
-            &mut voter_delegations,
-        )
+        CapturedStakeAccounts::Cached(cached_stakes)
     };
-    bench.delegations_collect_ns = collection_timings.collect_ns;
-    bench.n_active = collection_timings.n_active;
-    bench.n_epoch_voter_delegations = collection_timings.n_epoch_voter_delegations;
-    // Release the persistent snapshot while `bank` still owns the underlying
-    // HAMT nodes, so this function does not retain the stakes cache through
-    // account lookups, sorting, and serialization preparation.
-    drop(cached_stakes);
-    drop(voter_indexes);
 
     // Get config PDA
     let tip_config_started_at = Instant::now();
     let (config_pda, _) =
         Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], tip_payment_program_id);
-    let config = get_config(&bank, &config_pda)?;
+    let config = get_config(bank, &config_pda)?;
     bench.tip_config_ns = elapsed_ns(tip_config_started_at);
 
     let bb_commission_pct: u64 = config.block_builder_commission_pct;
@@ -598,53 +621,189 @@ pub fn generate_stake_meta_collection(
         .checked_sub(block_builder_tips)
         .expect("tip_receiver_fee doesnt underflow");
 
+    // Capture the account-derived portion of every voter before releasing the
+    // bank. The epoch-voter population is tiny relative to the stake map, and
+    // the final zero-delegation filter still runs in the detached phase.
     let voter_loop_started_at = Instant::now();
-    let mut stake_metas = Vec::with_capacity(epoch_vote_accounts.len());
-    for VoterDelegations {
-        vote_pubkey,
-        vote_account,
-        delegations,
-    } in voter_delegations
-    {
-        // Ignore vote accounts with 0 delegations
-        if !delegations.is_empty() {
-            bench.max_delegations_per_voter = bench
-                .max_delegations_per_voter
-                .max(delegations.len() as u64);
-            let stake_meta = build_voter_meta(
-                &bank,
-                VoterInfo {
-                    vote_account,
-                    vote_pubkey,
-                    tip_distribution_program_id,
-                    priority_fee_distribution_program_id,
-                    tip_receiver,
-                    tip_receiver_fee,
-                },
-                delegations,
-                &mut bench,
-            );
-            stake_metas.push(stake_meta);
-        }
-    }
+    let voters =
+        epoch_vote_accounts
+            .iter()
+            .map(|(vote_pubkey, (_, vote_account))| {
+                let tip_distribution_account =
+                    capture_distribution_account::<WrappedTipDistributionMeta>(
+                        bank,
+                        tip_distribution_program_id,
+                        vote_pubkey,
+                        &mut bench.tda,
+                    );
+                let priority_fee_distribution_account =
+                    capture_distribution_account::<WrappedPriorityFeeDistributionMeta>(
+                        bank,
+                        priority_fee_distribution_program_id,
+                        vote_pubkey,
+                        &mut bench.pfda,
+                    );
+                let vote_state = vote_account.vote_state_view();
+
+                CapturedVoter {
+                    vote_pubkey: *vote_pubkey,
+                    validator_node_pubkey: *vote_state.node_pubkey(),
+                    commission: vote_state.commission(),
+                    tip_distribution_account,
+                    priority_fee_distribution_account,
+                }
+            })
+            .collect();
     bench.voter_loop_ns = elapsed_ns(voter_loop_started_at);
+
+    Ok((
+        CapturedStakeMetaInputs {
+            bank_epoch,
+            bank_slot,
+            bank_hash,
+            tip_distribution_program_id: *tip_distribution_program_id,
+            priority_fee_distribution_program_id: *priority_fee_distribution_program_id,
+            tip_receiver,
+            tip_receiver_fee,
+            stake_accounts,
+            stake_history,
+            warmup_cooldown_rate_epoch: bank.new_warmup_cooldown_rate_epoch(),
+            voters,
+        },
+        bench,
+    ))
+}
+
+/// Build stake metadata using only owned inputs captured from a frozen bank.
+fn build_stake_meta_collection(
+    captured: CapturedStakeMetaInputs,
+    bench: &mut BenchTimings,
+) -> StakeMetaCollection {
+    let CapturedStakeMetaInputs {
+        bank_epoch,
+        bank_slot,
+        bank_hash,
+        tip_distribution_program_id,
+        priority_fee_distribution_program_id,
+        tip_receiver,
+        tip_receiver_fee,
+        stake_accounts,
+        stake_history,
+        warmup_cooldown_rate_epoch,
+        voters,
+    } = captured;
+
+    let mut voter_delegations = Vec::with_capacity(voters.len());
+    let mut voter_indexes = HashMap::with_capacity(voters.len());
+    for voter in voters {
+        voter_indexes.insert(voter.vote_pubkey, voter_delegations.len());
+        voter_delegations.push(VoterDelegations {
+            voter,
+            delegations: Vec::new(),
+        });
+    }
+
+    let collection_timings = match &stake_accounts {
+        CapturedStakeAccounts::Cached(cached_stakes) => collect_delegations_for_epoch_voters(
+            cached_stakes.stake_delegations().iter(),
+            &stake_history,
+            bank_epoch,
+            warmup_cooldown_rate_epoch,
+            &voter_indexes,
+            &mut voter_delegations,
+        ),
+        CapturedStakeAccounts::Scanned(scanned_stake_accounts) => {
+            collect_delegations_for_epoch_voters(
+                scanned_stake_accounts
+                    .iter()
+                    .map(|(stake_pubkey, stake_account)| (stake_pubkey, stake_account)),
+                &stake_history,
+                bank_epoch,
+                warmup_cooldown_rate_epoch,
+                &voter_indexes,
+                &mut voter_delegations,
+            )
+        }
+    };
+    bench.delegations_collect_ns = collection_timings.collect_ns;
+    bench.n_active = collection_timings.n_active;
+    bench.n_epoch_voter_delegations = collection_timings.n_epoch_voter_delegations;
+    drop(stake_accounts);
+    drop(voter_indexes);
+
+    let voter_loop_started_at = Instant::now();
+    let mut stake_metas = Vec::with_capacity(voter_delegations.len());
+    for VoterDelegations { voter, delegations } in voter_delegations {
+        // Ignore vote accounts with 0 delegations.
+        if delegations.is_empty() {
+            continue;
+        }
+
+        bench.max_delegations_per_voter = bench
+            .max_delegations_per_voter
+            .max(delegations.len() as u64);
+        stake_metas.push(build_voter_meta(
+            voter,
+            &tip_distribution_program_id,
+            &priority_fee_distribution_program_id,
+            tip_receiver,
+            tip_receiver_fee,
+            delegations,
+            bench,
+        ));
+    }
+    bench.voter_loop_ns += elapsed_ns(voter_loop_started_at);
     bench.n_metas = stake_metas.len() as u64;
+
+    StakeMetaCollection {
+        stake_metas,
+        tip_distribution_program_id,
+        priority_fee_distribution_program_id,
+        bank_hash,
+        epoch: bank_epoch,
+        slot: bank_slot,
+    }
+}
+
+/// Generate the full [`StakeMetaCollection`] for a frozen bank.
+///
+/// The bank is retained only while capturing frozen runtime state and direct
+/// account reads. Delegation traversal, aggregation, and sorting operate on
+/// fully-owned inputs after the worker releases its `Arc<Bank>`.
+pub fn generate_stake_meta_collection(
+    bank: Arc<Bank>,
+    tip_distribution_program_id: &Pubkey,
+    priority_fee_distribution_program_id: &Pubkey,
+    tip_payment_program_id: &Pubkey,
+) -> Result<StakeMetaCollection, StakeMetaError> {
+    let bank_held_started_at = Instant::now();
+    let stake_meta_started_at = bank_held_started_at;
+    let (captured, mut bench) = capture_stake_meta_inputs(
+        &bank,
+        tip_distribution_program_id,
+        priority_fee_distribution_program_id,
+        tip_payment_program_id,
+    )?;
 
     let bank_drop_started_at = Instant::now();
     drop(bank);
     bench.bank_drop_ns = elapsed_ns(bank_drop_started_at);
     bench.bank_held_ns = elapsed_ns(bank_held_started_at);
 
+    let mut stake_meta_collection = build_stake_meta_collection(captured, &mut bench);
+
     let deleg_sort_started_at = Instant::now();
-    for stake_meta in &mut stake_metas {
+    for stake_meta in &mut stake_meta_collection.stake_metas {
         stake_meta.delegations.sort_unstable();
     }
     bench.deleg_sort_ns = elapsed_ns(deleg_sort_started_at);
 
     let metas_sort_started_at = Instant::now();
-    stake_metas.sort();
+    stake_meta_collection.stake_metas.sort();
     bench.metas_sort_ns = elapsed_ns(metas_sort_started_at);
 
+    let bank_epoch = stake_meta_collection.epoch;
+    let bank_slot = stake_meta_collection.slot;
     let legacy_log_started_at = Instant::now();
     info!(
         "calculated tip-router stake metadata for epoch {} at slot {} in {:?}",
@@ -658,46 +817,31 @@ pub fn generate_stake_meta_collection(
     // Still excluded: the JSON serialize + fsync in `snapshot_artifact::writer`.
     bench.log(bank_slot, bank_epoch, elapsed_ns(stake_meta_started_at));
 
-    Ok(StakeMetaCollection {
-        stake_metas,
-        tip_distribution_program_id: tip_distribution_program_id.to_owned(),
-        priority_fee_distribution_program_id: priority_fee_distribution_program_id.to_owned(),
-        bank_hash,
-        epoch: bank_epoch,
-        slot: bank_slot,
-    })
+    Ok(stake_meta_collection)
 }
 
 /// Inputs needed to build metadata for a single validator vote account.
-struct VoterDelegations<'a> {
-    vote_pubkey: &'a Pubkey,
-    vote_account: &'a VoteAccount,
+struct VoterDelegations {
+    voter: CapturedVoter,
     delegations: Vec<Delegation>,
-}
-
-struct VoterInfo<'a> {
-    vote_account: &'a VoteAccount,
-    vote_pubkey: &'a Pubkey,
-    tip_distribution_program_id: &'a Pubkey,
-    priority_fee_distribution_program_id: &'a Pubkey,
-    tip_receiver: Pubkey,
-    tip_receiver_fee: u64,
 }
 
 fn build_voter_meta(
-    bank: &Arc<Bank>,
-    voter_info: VoterInfo<'_>,
+    voter: CapturedVoter,
+    tip_distribution_program_id: &Pubkey,
+    priority_fee_distribution_program_id: &Pubkey,
+    tip_receiver: Pubkey,
+    tip_receiver_fee: u64,
     delegations: Vec<Delegation>,
     bench: &mut BenchTimings,
 ) -> StakeMeta {
-    let VoterInfo {
-        vote_account,
+    let CapturedVoter {
         vote_pubkey,
-        tip_distribution_program_id,
-        priority_fee_distribution_program_id,
-        tip_receiver,
-        tip_receiver_fee,
-    } = voter_info;
+        validator_node_pubkey,
+        commission,
+        tip_distribution_account,
+        priority_fee_distribution_account,
+    } = voter;
 
     let total_delegated_started_at = Instant::now();
     let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
@@ -707,39 +851,36 @@ fn build_voter_meta(
     bench.total_delegated_ns += elapsed_ns(total_delegated_started_at);
 
     let maybe_tip_distribution_meta =
-        get_distribution_meta::<TipDistributionAccount, WrappedTipDistributionMeta>(
-            bank,
+        build_distribution_meta::<TipDistributionAccount, WrappedTipDistributionMeta>(
+            tip_distribution_account,
             tip_distribution_program_id,
-            vote_pubkey,
             Some(TipReceiverInfo {
                 tip_receiver,
                 tip_receiver_fee,
             }),
             &mut bench.tda,
         )
-        .map(|x| x.0);
+        .map(|meta| meta.0);
 
-    let maybe_priority_fee_distribution_meta = get_distribution_meta::<
+    let maybe_priority_fee_distribution_meta = build_distribution_meta::<
         PriorityFeeDistributionAccount,
         WrappedPriorityFeeDistributionMeta,
     >(
-        bank,
+        priority_fee_distribution_account,
         priority_fee_distribution_program_id,
-        vote_pubkey,
         None,
         &mut bench.pfda,
     )
-    .map(|x| x.0);
+    .map(|meta| meta.0);
 
-    let vote_state = vote_account.vote_state_view();
     StakeMeta {
         maybe_tip_distribution_meta,
         maybe_priority_fee_distribution_meta,
-        validator_node_pubkey: *vote_state.node_pubkey(),
-        validator_vote_account: *vote_pubkey,
+        validator_node_pubkey,
+        validator_vote_account: vote_pubkey,
         delegations,
         total_delegated,
-        commission: vote_state.commission(),
+        commission,
     }
 }
 
@@ -821,7 +962,7 @@ fn collect_delegations_for_epoch_voters<'a>(
     epoch: Epoch,
     warmup_cooldown_rate: Option<Epoch>,
     voter_indexes: &HashMap<Pubkey, usize>,
-    voter_delegations: &mut [VoterDelegations<'_>],
+    voter_delegations: &mut [VoterDelegations],
 ) -> DelegationCollectionTimings {
     let collect_started_at = Instant::now();
     let mut timings = DelegationCollectionTimings::default();
