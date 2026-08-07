@@ -61,6 +61,174 @@ fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
     }
 }
 
+// ===========================================================================
+// TEMPORARY BENCHMARK INSTRUMENTATION - DO NOT MERGE
+//
+// Attributes the ~1.6s reported by the aggregate `info!` in
+// `generate_stake_meta_collection` to individual phases. Removed once the
+// numbers are collected.
+//
+// Two rules make the numbers trustworthy:
+//
+// 1. No `Instant::now()` inside the ~1.5M-iteration delegation loops - the
+//    measurement itself would cost 60-120ms and distort the buckets. Those
+//    loops are instead split into explicitly sequential stages, timed once
+//    each (see `group_delegations_by_voter_pubkey`). Only the
+//    ~1500-iteration validator loop gets per-iteration timers.
+// 2. Accumulators hold NANOSECONDS, not microseconds. A per-iteration cost
+//    below 1us truncates to 0 with `as_micros()`, which would silently
+//    report a real 150us bucket as zero. Conversion happens at report time.
+// ===========================================================================
+
+/// Elapsed nanoseconds since `started_at`.
+fn elapsed_ns(started_at: Instant) -> u64 {
+    started_at.elapsed().as_nanos() as u64
+}
+
+/// Per-iteration accumulators for one kind of distribution account, gathered
+/// across the validator loop.
+// `pub` only to match the visibility of `get_distribution_meta`, which takes it.
+#[derive(Default)]
+pub struct DistributionTimings {
+    derive_ns: u64,
+    load_ns: u64,
+    rent_ns: u64,
+    /// Returned a fully-deserialized meta.
+    n_found: u64,
+    /// `bank.get_account` found nothing.
+    n_absent: u64,
+    /// Present in the bank but rejected (wrong owner, or undeserializable).
+    n_rejected: u64,
+}
+
+/// Timings for the three stages of `group_delegations_by_voter_pubkey`.
+#[derive(Default)]
+struct GroupTimings {
+    filter_active_ns: u64,
+    group_by_voter_ns: u64,
+    build_delegations_ns: u64,
+    n_active: u64,
+}
+
+#[derive(Default)]
+struct BenchTimings {
+    // Sequential phases, each measured once.
+    vote_accounts_ns: u64,
+    stakes_lock_ns: u64,
+    stakes_materialize_ns: u64,
+    /// Non-zero only if the stakes cache came back empty and the accounts-db
+    /// fallback scan ran.
+    stakes_scan_ns: u64,
+    stake_history_ns: u64,
+    filter_active_ns: u64,
+    group_by_voter_ns: u64,
+    build_delegations_ns: u64,
+    tip_config_ns: u64,
+    tip_pdas_ns: u64,
+    voter_loop_ns: u64,
+    /// The pre-existing aggregate `info!`, kept for comparability. Bucketed
+    /// because it is a logger write inside the measured span, and on a
+    /// contended logger it is the one unbucketed item that could plausibly
+    /// show up as a confusing `unaccounted_us`.
+    legacy_log_ns: u64,
+    bank_drop_ns: u64,
+    metas_sort_ns: u64,
+
+    // Accumulated across the validator loop; already counted inside
+    // `voter_loop_ns`, so excluded from the accounted-for sum.
+    total_delegated_ns: u64,
+    deleg_sort_ns: u64,
+    tda: DistributionTimings,
+    pfda: DistributionTimings,
+
+    // Denominators. A bucket without one isn't actionable.
+    n_cached: u64,
+    n_active: u64,
+    n_voters: u64,
+    n_metas: u64,
+    max_delegations_per_voter: u64,
+    cached_bytes: u64,
+}
+
+impl BenchTimings {
+    /// Sum of the top-level sequential phases. The validator-loop accumulators
+    /// are deliberately omitted: they are subdivisions of `voter_loop_ns`.
+    fn accounted_ns(&self) -> u64 {
+        self.vote_accounts_ns
+            + self.stakes_lock_ns
+            + self.stakes_materialize_ns
+            + self.stakes_scan_ns
+            + self.stake_history_ns
+            + self.filter_active_ns
+            + self.group_by_voter_ns
+            + self.build_delegations_ns
+            + self.tip_config_ns
+            + self.tip_pdas_ns
+            + self.voter_loop_ns
+            + self.legacy_log_ns
+            + self.bank_drop_ns
+            + self.metas_sort_ns
+    }
+
+    /// One greppable line: `grep STAKEMETA_BENCH validator.log`.
+    fn log(&self, slot: u64, epoch: Epoch, total_ns: u64) {
+        // Truncating division is fine here; these are whole-phase totals in
+        // the millisecond range, not per-iteration samples.
+        let us = |ns: u64| ns / 1_000;
+        info!(
+            "STAKEMETA_BENCH slot={} epoch={} total_us={} \
+             vote_accounts_us={} stakes_lock_us={} stakes_materialize_us={} stakes_scan_us={} \
+             stake_history_us={} filter_active_us={} group_by_voter_us={} \
+             build_delegations_us={} tip_config_us={} tip_pdas_us={} voter_loop_us={} \
+             legacy_log_us={} bank_drop_us={} metas_sort_us={} unaccounted_us={} \
+             total_delegated_us={} deleg_sort_us={} \
+             tda_derive_us={} tda_load_us={} tda_rent_us={} \
+             pfda_derive_us={} pfda_load_us={} pfda_rent_us={} \
+             n_cached={} n_active={} n_voters={} n_metas={} \
+             n_tda_found={} n_tda_absent={} n_tda_rejected={} \
+             n_pfda_found={} n_pfda_absent={} n_pfda_rejected={} \
+             max_delegations_per_voter={} cached_bytes={}",
+            slot,
+            epoch,
+            us(total_ns),
+            us(self.vote_accounts_ns),
+            us(self.stakes_lock_ns),
+            us(self.stakes_materialize_ns),
+            us(self.stakes_scan_ns),
+            us(self.stake_history_ns),
+            us(self.filter_active_ns),
+            us(self.group_by_voter_ns),
+            us(self.build_delegations_ns),
+            us(self.tip_config_ns),
+            us(self.tip_pdas_ns),
+            us(self.voter_loop_ns),
+            us(self.legacy_log_ns),
+            us(self.bank_drop_ns),
+            us(self.metas_sort_ns),
+            us(total_ns.saturating_sub(self.accounted_ns())),
+            us(self.total_delegated_ns),
+            us(self.deleg_sort_ns),
+            us(self.tda.derive_ns),
+            us(self.tda.load_ns),
+            us(self.tda.rent_ns),
+            us(self.pfda.derive_ns),
+            us(self.pfda.load_ns),
+            us(self.pfda.rent_ns),
+            self.n_cached,
+            self.n_active,
+            self.n_voters,
+            self.n_metas,
+            self.tda.n_found,
+            self.tda.n_absent,
+            self.tda.n_rejected,
+            self.pfda.n_found,
+            self.pfda.n_absent,
+            self.pfda.n_rejected,
+            self.max_delegations_per_voter,
+            self.cached_bytes,
+        );
+    }
+}
 
 pub(crate) fn collect_stake_meta(
     config: &TipRouterSnapshotConfig,
@@ -215,23 +383,44 @@ pub fn get_distribution_meta<DistributionAccount, DistMeta>(
     program_id: &Pubkey,
     vote_pubkey: &Pubkey,
     tip_receiver_info: Option<TipReceiverInfo>,
+    timings: &mut DistributionTimings,
 ) -> Option<DistMeta>
 where
     DistributionAccount: BorshDeserialize,
     DistMeta: DistributionMeta<DistributionAccountType = DistributionAccount>,
 {
+    let derive_started_at = Instant::now();
     let distribution_account_address =
         DistMeta::derive_distribution_account_address(program_id, vote_pubkey, bank.epoch());
-    let mut account = bank.get_account(&distribution_account_address)?;
+    timings.derive_ns += elapsed_ns(derive_started_at);
+
+    // BENCH RULE 2: capture the elapsed time BEFORE the `?`. Binding straight
+    // to `bank.get_account(..)?` would drop the load time of every validator
+    // that has no such account - the common case for priority-fee accounts,
+    // and exactly the population that makes this loop look cheap.
+    let load_started_at = Instant::now();
+    let loaded_account = bank.get_account(&distribution_account_address);
+    timings.load_ns += elapsed_ns(load_started_at);
+    let Some(mut account) = loaded_account else {
+        timings.n_absent += 1;
+        return None;
+    };
 
     if account.owner() != program_id {
+        timings.n_rejected += 1;
         return None;
     }
 
     // Funded-but-uninitialized accounts exist in the bank but have no payload to deserialize.
-    let serialized_account = account.data().get(8..)?;
-    let distribution_account =
-        DistributionAccount::deserialize(&mut &serialized_account[..]).ok()?;
+    let Some(serialized_account) = account.data().get(8..) else {
+        timings.n_rejected += 1;
+        return None;
+    };
+    let Ok(distribution_account) = DistributionAccount::deserialize(&mut &serialized_account[..])
+    else {
+        timings.n_rejected += 1;
+        return None;
+    };
 
     // Tip distributions may contain tips unclaimed at epoch end; credit them to the receiver.
     if let Some(tip_receiver_info) = tip_receiver_info
@@ -253,15 +442,23 @@ where
         warn!("distribution account length mismatch: actual={actual_len}, expected={expected_len}");
     }
 
+    let rent_started_at = Instant::now();
     let rent_exempt_amount = bank.get_minimum_balance_for_rent_exemption(actual_len);
+    timings.rent_ns += elapsed_ns(rent_started_at);
 
-    DistMeta::new_from_account(
+    let meta = DistMeta::new_from_account(
         distribution_account,
         account,
         distribution_account_address,
         rent_exempt_amount,
     )
-    .ok()
+    .ok();
+    if meta.is_some() {
+        timings.n_found += 1;
+    } else {
+        timings.n_rejected += 1;
+    }
+    meta
 }
 
 /// Generate the full [`StakeMetaCollection`] for a frozen bank.
@@ -279,31 +476,45 @@ pub fn generate_stake_meta_collection(
 ) -> Result<StakeMetaCollection, StakeMetaError> {
     assert!(bank.is_frozen());
     let stake_meta_started_at = Instant::now();
+    let mut bench = BenchTimings::default();
 
     let bank_epoch = bank.epoch();
     let bank_slot = bank.slot();
     let bank_hash = bank.hash().to_string();
 
+    let vote_accounts_started_at = Instant::now();
     let epoch_vote_accounts = bank
         .epoch_vote_accounts(bank_epoch)
         .ok_or(StakeMetaError::NoVoteAccounts(bank_slot, bank_epoch))?;
+    bench.vote_accounts_ns = elapsed_ns(vote_accounts_started_at);
+    bench.n_voters = epoch_vote_accounts.len() as u64;
 
-    let delegations = get_stake_accounts(&bank)?;
+    let delegations = get_stake_accounts(&bank, &mut bench)?;
+    bench.n_cached = delegations.len() as u64;
+    bench.cached_bytes = bench.n_cached * size_of::<(Pubkey, StakeAccount)>() as u64;
 
+    let stake_history_started_at = Instant::now();
     let stake_history = bincode::deserialize::<StakeHistory>(
         bank.get_account(&stake_history::id())
             .expect("stake history sysvar account should be present in the loaded bank")
             .data(),
     )
     .expect("stake history sysvar account should deserialize");
+    bench.stake_history_ns = elapsed_ns(stake_history_started_at);
 
-    let mut voter_pubkey_to_delegations =
+    let (mut voter_pubkey_to_delegations, group_timings) =
         group_delegations_by_voter_pubkey(delegations,stake_history, bank_epoch, bank.new_warmup_cooldown_rate_epoch());
+    bench.filter_active_ns = group_timings.filter_active_ns;
+    bench.group_by_voter_ns = group_timings.group_by_voter_ns;
+    bench.build_delegations_ns = group_timings.build_delegations_ns;
+    bench.n_active = group_timings.n_active;
 
     // Get config PDA
+    let tip_config_started_at = Instant::now();
     let (config_pda, _) =
         Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], tip_payment_program_id);
     let config = get_config(&bank, &config_pda)?;
+    bench.tip_config_ns = elapsed_ns(tip_config_started_at);
 
     let bb_commission_pct: u64 = config.block_builder_commission_pct;
     let tip_receiver: Pubkey = config.tip_receiver;
@@ -313,6 +524,7 @@ pub fn generate_stake_meta_collection(
     // the account balance in the snapshot could be incorrect.
     // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
     // the rewards are claimed.
+    let tip_pdas_started_at = Instant::now();
     let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
 
     // includes the block builder fee
@@ -327,6 +539,7 @@ pub fn generate_stake_meta_collection(
                 .expect("tip balance underflow")
         })
         .sum();
+    bench.tip_pdas_ns = elapsed_ns(tip_pdas_started_at);
 
     // matches math in tip payment program
     let block_builder_tips = excess_tip_balances
@@ -339,10 +552,14 @@ pub fn generate_stake_meta_collection(
         .checked_sub(block_builder_tips)
         .expect("tip_receiver_fee doesnt underflow");
 
+    let voter_loop_started_at = Instant::now();
     let mut stake_metas = Vec::with_capacity(epoch_vote_accounts.len());
     for (vote_pubkey, (_, vote_account)) in epoch_vote_accounts {
         // Ignore vote accounts with 0 delegations
         if let Some(delegations) = voter_pubkey_to_delegations.remove(vote_pubkey) {
+            bench.max_delegations_per_voter = bench
+                .max_delegations_per_voter
+                .max(delegations.len() as u64);
             let stake_meta = build_voter_meta(
                 &bank,
                 VoterInfo {
@@ -354,20 +571,38 @@ pub fn generate_stake_meta_collection(
                     tip_receiver_fee,
                 },
                 delegations,
+                &mut bench,
             );
             stake_metas.push(stake_meta);
         }
     }
+    bench.voter_loop_ns = elapsed_ns(voter_loop_started_at);
+    bench.n_metas = stake_metas.len() as u64;
 
+    let legacy_log_started_at = Instant::now();
     info!(
         "calculated tip-router stake metadata for epoch {} at slot {} in {:?}",
         bank_epoch,
         bank_slot,
         stake_meta_started_at.elapsed(),
     );
-    drop(bank);
+    bench.legacy_log_ns = elapsed_ns(legacy_log_started_at);
 
+    let bank_drop_started_at = Instant::now();
+    drop(bank);
+    bench.bank_drop_ns = elapsed_ns(bank_drop_started_at);
+
+    let metas_sort_started_at = Instant::now();
     stake_metas.sort();
+    bench.metas_sort_ns = elapsed_ns(metas_sort_started_at);
+
+    // TEMPORARY BENCHMARK INSTRUMENTATION - DO NOT MERGE.
+    // Deliberately after the sort so `bank_drop_ns` and `metas_sort_ns` (both
+    // outside the pre-existing aggregate `info!` above) are included in
+    // `total_us`. Still excluded: the drop of whatever remains in
+    // `voter_pubkey_to_delegations` at scope exit, and the JSON serialize +
+    // fsync in `snapshot_artifact::writer`.
+    bench.log(bank_slot, bank_epoch, elapsed_ns(stake_meta_started_at));
 
     Ok(StakeMetaCollection {
         stake_metas,
@@ -393,6 +628,7 @@ fn build_voter_meta(
     bank: &Arc<Bank>,
     voter_info: VoterInfo<'_>,
     mut delegations: Vec<Delegation>,
+    bench: &mut BenchTimings,
 ) -> StakeMeta {
     let VoterInfo {
         vote_account,
@@ -403,10 +639,12 @@ fn build_voter_meta(
         tip_receiver_fee,
     } = voter_info;
 
+    let total_delegated_started_at = Instant::now();
     let total_delegated = delegations.iter().fold(0u64, |sum, delegation| {
         sum.checked_add(delegation.lamports_delegated)
             .expect("total delegated lamports should not overflow u64")
     });
+    bench.total_delegated_ns += elapsed_ns(total_delegated_started_at);
 
     let maybe_tip_distribution_meta =
         get_distribution_meta::<TipDistributionAccount, WrappedTipDistributionMeta>(
@@ -417,6 +655,7 @@ fn build_voter_meta(
                 tip_receiver,
                 tip_receiver_fee,
             }),
+            &mut bench.tda,
         ).map(|x|x.0);
 
     let maybe_priority_fee_distribution_meta = get_distribution_meta::<
@@ -427,10 +666,13 @@ fn build_voter_meta(
         priority_fee_distribution_program_id,
         vote_pubkey,
         None,
+        &mut bench.pfda,
     ).map(|x|x.0);
 
     let vote_state = vote_account.vote_state_view();
+    let deleg_sort_started_at = Instant::now();
     delegations.sort_unstable();
+    bench.deleg_sort_ns += elapsed_ns(deleg_sort_started_at);
     StakeMeta {
         maybe_tip_distribution_meta,
         maybe_priority_fee_distribution_meta,
@@ -457,13 +699,19 @@ fn get_config(bank: &Arc<Bank>, config_pubkey: &Pubkey) -> Result<Config, StakeM
 
 /// Read delegated stake accounts from the bank, preferring the live stakes
 /// cache and falling back to an accounts-db scan only if the cache is empty.
-fn get_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, StakeMetaError> {
-    let stake_accounts = cached_stake_accounts(bank);
+fn get_stake_accounts(
+    bank: &Bank,
+    bench: &mut BenchTimings,
+) -> Result<Vec<(Pubkey, StakeAccount)>, StakeMetaError> {
+    let stake_accounts = cached_stake_accounts(bank, bench);
     if !stake_accounts.is_empty() {
         return Ok(stake_accounts);
     }
     warn!("stakes cache returned no delegations; falling back to a stake-program account scan");
-    scan_stake_accounts(bank)
+    let scan_started_at = Instant::now();
+    let scanned = scan_stake_accounts(bank);
+    bench.stakes_scan_ns = elapsed_ns(scan_started_at);
+    scanned
 }
 
 /// Read delegated stake accounts from the bank's live stakes cache.
@@ -479,13 +727,23 @@ fn get_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, StakeM
 /// `Bank::unfiltered_stakes` is used rather than `Bank::get_top_epoch_stakes`
 /// because VAT filtering (SIMD-0357) rebuilds `Stakes` from vote accounts
 /// alone, leaving its delegation map unconditionally empty.
-fn cached_stake_accounts(bank: &Bank) -> Vec<(Pubkey, StakeAccount)> {
+fn cached_stake_accounts(bank: &Bank, bench: &mut BenchTimings) -> Vec<(Pubkey, StakeAccount)> {
+    // Split from the materialization below on purpose: the `imbl` map clone
+    // itself is O(1), so any real time here is the `stakes_cache` read lock
+    // waiting on replay's writer, which is a completely different problem than
+    // the traversal cost.
+    let lock_started_at = Instant::now();
     let stakes = bank.unfiltered_stakes();
-    stakes
+    bench.stakes_lock_ns = elapsed_ns(lock_started_at);
+
+    let materialize_started_at = Instant::now();
+    let stake_accounts = stakes
         .stake_delegations()
         .iter()
         .map(|(stake_pubkey, stake_account)| (*stake_pubkey, stake_account.clone()))
-        .collect()
+        .collect();
+    bench.stakes_materialize_ns = elapsed_ns(materialize_started_at);
+    stake_accounts
 }
 
 /// Scan delegated stake accounts out of accounts-db, identically to the
@@ -523,23 +781,57 @@ fn scan_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, Stake
 /// Given the bank's stake accounts, return delegations grouped by voter_pubkey
 /// (validator delegated to), filtered to those with non-zero active stake.
 fn group_delegations_by_voter_pubkey(
-    delegations: Vec<(Pubkey, StakeAccount)>,
+    mut delegations: Vec<(Pubkey, StakeAccount)>,
     stake_history: StakeHistory,
     epoch: Epoch,
     warmup_cooldown_rate: Option<Epoch>,
-) -> HashMap<Pubkey, Vec<Delegation>> {
-    delegations
+) -> (HashMap<Pubkey, Vec<Delegation>>, GroupTimings) {
+    let mut timings = GroupTimings::default();
+
+    // BENCH RULE 1: these three stages used to be one fused iterator chain
+    // over ~1.5M stake accounts, where per-iteration timers would have cost
+    // more than some of the phases being measured. Splitting it preserves the
+    // result exactly: same predicate, and `retain` is order-preserving, so the
+    // same encounter order reaches `into_group_map_by`.
+    //
+    // `retain` rather than `filter(..).collect()` because in-place compaction
+    // is then an explicit guarantee. (`collect()` would probably hit rustc's
+    // in-place-collect specialization and reuse the source allocation anyway,
+    // but that is an optimizer contract, not a promise.)
+    //
+    // THE SPLIT IS NOT FREE, and it is the only part of this instrumentation
+    // that perturbs what it measures. `retain` adds a traversal the fused
+    // chain never did: ~450MB of reads plus ~440MB of compaction writes.
+    // Measured at ~12ms on Apple M-series, whose sequential bandwidth is
+    // unusually high; on a server core at ~10-15GB/s single-threaded, expect
+    // ~30-90ms, i.e. 2-6% of the 1.6s. It lands in `filter_active_ns`, so read
+    // that bucket - and `total_us` - as overstating the production fused chain
+    // by roughly that much.
+    let filter_started_at = Instant::now();
+    delegations.retain(|(_stake_pubkey, stake_account)| {
+        // `stake_v2` uses integer, eBPF-compatible warmup/cooldown math. The deprecated
+        // `stake` implementation uses floating-point math and can differ at rounding edges.
+        stake_account.delegation().stake_v2(
+            epoch,
+            &stake_history,
+            warmup_cooldown_rate,
+        ) > 0
+    });
+    timings.filter_active_ns = elapsed_ns(filter_started_at);
+    timings.n_active = delegations.len() as u64;
+
+    let group_started_at = Instant::now();
+    let grouped = delegations
         .into_iter()
-        .filter(|(_stake_pubkey, stake_account)| {
-            // `stake_v2` uses integer, eBPF-compatible warmup/cooldown math. The deprecated
-            // `stake` implementation uses floating-point math and can differ at rounding edges.
-            stake_account.delegation().stake_v2(
-                epoch,
-                &stake_history,
-                warmup_cooldown_rate,
-            ) > 0
-        })
-        .into_group_map_by(|(_stake_pubkey, stake_account)| stake_account.delegation().voter_pubkey)
+        .into_group_map_by(|(_stake_pubkey, stake_account)| {
+            stake_account.delegation().voter_pubkey
+        });
+    timings.group_by_voter_ns = elapsed_ns(group_started_at);
+
+    // Also absorbs the drop of all ~1.5M `StakeAccount`s, which are consumed
+    // here and not carried into the returned `Delegation`s.
+    let build_started_at = Instant::now();
+    let by_voter = grouped
         .into_iter()
         .map(|(voter_pubkey, group)| {
             (
@@ -563,7 +855,10 @@ fn group_delegations_by_voter_pubkey(
                     .collect::<Vec<Delegation>>(),
             )
         })
-        .collect()
+        .collect();
+    timings.build_delegations_ns = elapsed_ns(build_started_at);
+
+    (by_voter, timings)
 }
 
 #[cfg(test)]
@@ -627,7 +922,7 @@ mod tests {
         let bank = new_indexed_bank_with_validator(&validator);
         bank.freeze();
 
-        let mut cached = cached_stake_accounts(&bank);
+        let mut cached = cached_stake_accounts(&bank, &mut BenchTimings::default());
         let mut scanned = scan_stake_accounts(&bank).unwrap();
         cached.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
         scanned.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
