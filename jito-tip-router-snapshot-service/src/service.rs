@@ -349,7 +349,7 @@ fn record_worker_completion(
     }
 }
 
-fn stake_meta_interval_slots() -> Option<u64> {
+pub(crate) fn stake_meta_interval_slots() -> Option<u64> {
     std::env::var(STAKE_META_INTERVAL_SLOTS_ENV)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

@@ -4,7 +4,8 @@ pub use solana_perf::report_target_features;
 use {
     crate::tip_manager::TipManagerConfig,
     jito_tip_router_snapshot_service::{
-        config::TipRouterSnapshotConfig, service::TipRouterSnapshotService,
+        config::TipRouterSnapshotConfig, notification_filter::TipRouterEpochBoundaryFilter,
+        service::TipRouterSnapshotService,
     },
     solana_turbine::ShredReceiverAddresses,
 };
@@ -120,8 +121,8 @@ use {
     solana_rpc::{
         max_slots::MaxSlots,
         optimistically_confirmed_bank_tracker::{
-            BankNotificationBroadcaster, BankNotificationSenderConfig, OptimisticallyConfirmedBank,
-            OptimisticallyConfirmedBankTracker,
+            BankNotificationBroadcaster, BankNotificationSender, BankNotificationSenderConfig,
+            OptimisticallyConfirmedBank, OptimisticallyConfirmedBankTracker,
         },
         rpc::JsonRpcConfig,
         rpc_completed_slots_service::RpcCompletedSlotsService,
@@ -1294,8 +1295,16 @@ impl Validator {
             .is_some()
             .then(unbounded)
             .unzip();
+        // The snapshot service only acts on a small subset of notifications, so filter on the
+        // producer side rather than cloning banks it would immediately drop.
         let mut bank_notification_channel_senders = tip_router_bank_notification_sender
             .into_iter()
+            .map(|sender| {
+                BankNotificationSender::new_with_filter(
+                    sender,
+                    TipRouterEpochBoundaryFilter::from_env(),
+                )
+            })
             .collect::<Vec<_>>();
 
         let rpc_override_health_check =
@@ -1449,7 +1458,9 @@ impl Validator {
                     prioritization_fee_cache.clone(),
                     dependency_tracker.clone(),
                 ));
-            bank_notification_channel_senders.push(rpc_bank_notification_sender);
+            // RPC is unfiltered: it must keep receiving every notification variant.
+            bank_notification_channel_senders
+                .push(BankNotificationSender::new(rpc_bank_notification_sender));
             (
                 Some(json_rpc_service),
                 Some(rpc_subscriptions),
