@@ -11,8 +11,8 @@ use {
     },
 };
 
-const ARTIFACT_SUFFIX: &str = "-stake_meta_collection.json";
-const TEMP_ARTIFACT_PREFIX: &str = "tmp-";
+const ARTIFACT_SUFFIX: &str = "_stake_meta_collection.json";
+const TEMP_ARTIFACT_PREFIX: &str = "tmp_";
 
 #[derive(Debug)]
 pub(crate) struct ArtifactDirectoryError {
@@ -48,19 +48,10 @@ impl SnapshotArtifactWriter {
             }
         })?;
 
-        let artifact_id = if std::env::var(crate::service::STAKE_META_INTERVAL_SLOTS_ENV)
-            .is_ok_and(|value| !value.is_empty())
-        {
-            stake_meta.bank_hash.clone()
-        } else {
-            epoch.to_string()
-        };
-        let temp_path = self.output_dir.join(format!(
-            "{TEMP_ARTIFACT_PREFIX}{artifact_id}{ARTIFACT_SUFFIX}"
-        ));
-        let artifact_path = self
+        let temp_path = self
             .output_dir
-            .join(format!("{artifact_id}{ARTIFACT_SUFFIX}"));
+            .join(format!("{TEMP_ARTIFACT_PREFIX}{epoch}{ARTIFACT_SUFFIX}"));
+        let artifact_path = self.output_dir.join(format!("{epoch}{ARTIFACT_SUFFIX}"));
 
         let mut cleanup_guard = TempArtifactCleanupGuard::new(&temp_path);
 
@@ -118,7 +109,7 @@ fn initialize_output_directory(output_dir: &Path) -> io::Result<()> {
     // Make sure dir exists
     ensure_output_directory(output_dir)?;
 
-    // Remove all leftover tmp-* snapshot files
+    // Remove all leftover tmp_* snapshot files
     for entry in fs::read_dir(output_dir)? {
         let entry = entry?;
         if is_temp_artifact_name(&entry.file_name()) {

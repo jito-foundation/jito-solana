@@ -27,7 +27,6 @@ use {
 
 const SHUTDOWN_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const ARTIFACT_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
-pub const STAKE_META_INTERVAL_SLOTS_ENV: &str = "JITO_TIP_ROUTER_STAKE_META_INTERVAL_SLOTS";
 
 /// Wrapper type around handle
 pub struct TipRouterSnapshotService {
@@ -197,43 +196,27 @@ impl TipRouterSnapshotServiceContext {
         artifact_writer: &SnapshotArtifactWriter,
         boundary_child_bank: Arc<Bank>,
     ) {
-        let interval_slots = stake_meta_interval_slots();
-        let bank_to_process = match interval_slots {
-            Some(interval) => {
-                if !boundary_child_bank.slot().is_multiple_of(interval) {
-                    return;
-                }
-                boundary_child_bank
-            }
-            None => {
-                let Some((_epoch, parent_bank)) =
-                    self.claimable_epoch_boundary(boundary_child_bank)
-                else {
-                    return;
-                };
-                parent_bank
-            }
+        let Some((_epoch, parent_bank)) = self.claimable_epoch_boundary(boundary_child_bank) else {
+            return;
         };
 
         debug!(
             "claiming tip-router snapshot at slot={}, bank_hash={}, epoch={}",
-            bank_to_process.slot(),
-            bank_to_process.hash(),
-            bank_to_process.epoch(),
+            parent_bank.slot(),
+            parent_bank.hash(),
+            parent_bank.epoch(),
         );
 
         let Ok(active_worker) = SnapshotArtifactWorkerHandle::spawn(
             config.clone(),
             artifact_writer.clone(),
-            bank_to_process,
+            parent_bank,
         )
         .map_err(|err| error!("failed to spawn tip-router snapshot worker: {err}")) else {
             return;
         };
 
-        if interval_slots.is_none() {
-            self.last_claimed_epoch = Some(active_worker.artifact_epoch());
-        }
+        self.last_claimed_epoch = Some(active_worker.artifact_epoch());
         self.active_worker = Some(active_worker);
     }
 
@@ -347,11 +330,4 @@ fn record_worker_completion(
             Err(TipRouterSnapshotServiceError::ArtifactWorkerShutdownTimeout { epoch, timeout })
         }
     }
-}
-
-pub(crate) fn stake_meta_interval_slots() -> Option<u64> {
-    std::env::var(STAKE_META_INTERVAL_SLOTS_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|interval| *interval > 0)
 }

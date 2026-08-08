@@ -1300,10 +1300,7 @@ impl Validator {
         let mut bank_notification_channel_senders = tip_router_bank_notification_sender
             .into_iter()
             .map(|sender| {
-                BankNotificationSender::new_with_filter(
-                    sender,
-                    TipRouterEpochBoundaryFilter::from_env(),
-                )
+                BankNotificationSender::new_with_filter(sender, TipRouterEpochBoundaryFilter)
             })
             .collect::<Vec<_>>();
 
