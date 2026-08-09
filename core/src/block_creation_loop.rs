@@ -967,6 +967,7 @@ fn handle_parent_ready(
         ))?;
     let cleared_bank_id = bank.bank_id();
     bank.wait_for_inflight_commits();
+    let entry_bytes_consumed = bank.entry_bytes_budget().consumed();
     ctx.bank_forks_controller
         .clear_bank(slot)
         .map_err(|_| PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot))?;
@@ -984,11 +985,12 @@ fn handle_parent_ready(
     }
 
     // Create the new bank before re-injecting transactions to avoid racing.
-    let new_bank = start_leader_wait_for_parent_replay(
+    let new_bank = start_leader_wait_for_parent_replay_with_used_bytes(
         slot,
         new_parent_slot,
         Some(new_parent_hash),
         *block_timer,
+        entry_bytes_consumed,
         ctx,
     )
     .map_err(|_| PohRecorderError::ResetBankError(old_parent_slot, new_parent_slot))?;
@@ -1070,6 +1072,24 @@ fn start_leader_wait_for_parent_replay(
     block_timer: Instant,
     ctx: &mut LeaderContext,
 ) -> Result<Arc<Bank>, StartLeaderError> {
+    start_leader_wait_for_parent_replay_with_used_bytes(
+        slot,
+        parent_slot,
+        parent_hash,
+        block_timer,
+        0,
+        ctx,
+    )
+}
+
+fn start_leader_wait_for_parent_replay_with_used_bytes(
+    slot: Slot,
+    parent_slot: Slot,
+    parent_hash: Option<Hash>,
+    block_timer: Instant,
+    entry_bytes_consumed: u64,
+    ctx: &mut LeaderContext,
+) -> Result<Arc<Bank>, StartLeaderError> {
     trace!(
         "{}: Attempting to start leader slot {slot} parent {parent_slot}",
         ctx.my_pubkey
@@ -1096,7 +1116,7 @@ fn start_leader_wait_for_parent_replay(
             ));
         }
 
-        match maybe_start_leader(slot, parent_slot, parent_hash, ctx) {
+        match maybe_start_leader(slot, parent_slot, parent_hash, entry_bytes_consumed, ctx) {
             Ok(()) => {
                 slot_delay_start.stop();
                 let _ = ctx
@@ -1203,6 +1223,7 @@ fn maybe_start_leader(
     slot: Slot,
     parent_slot: Slot,
     parent_hash: Option<Hash>,
+    entry_bytes_consumed: u64,
     ctx: &mut LeaderContext,
 ) -> Result<(), StartLeaderError> {
     if ctx.bank_forks.read().unwrap().get(slot).is_some() {
@@ -1233,7 +1254,7 @@ fn maybe_start_leader(
     }
 
     // Create and insert the bank
-    create_and_insert_leader_bank(slot, parent_bank, ctx)
+    create_and_insert_leader_bank(slot, parent_bank, entry_bytes_consumed, ctx)
 }
 
 /// Creates and inserts the leader bank `slot` of this window with
@@ -1241,6 +1262,7 @@ fn maybe_start_leader(
 fn create_and_insert_leader_bank(
     slot: Slot,
     parent_bank: Arc<Bank>,
+    entry_bytes_consumed: u64,
     ctx: &mut LeaderContext,
 ) -> Result<(), StartLeaderError> {
     let parent_slot = parent_bank.slot();
@@ -1309,6 +1331,16 @@ fn create_and_insert_leader_bank(
     if should_include_genesis_certificate(parent_slot, &ctx.genesis_cert_block_marker) {
         tpu_bank.set_hashes_per_tick(None);
     }
+
+    // A sad leader handover recreates the bank for the same slot, but the entries emitted before
+    // the UpdateParent marker still occupy shreds in that slot. Preserve their reservations before
+    // exposing the replacement bank to BankingStage.
+    tpu_bank
+        .entry_bytes_budget()
+        .reserve(entry_bytes_consumed)
+        .expect(
+            "No feature flag could have been activated in this same slot to cause reserve to fail",
+        );
 
     // Insert the bank
     let tpu_bank = ctx.bank_forks_controller.insert_bank(tpu_bank)?;
@@ -1604,7 +1636,7 @@ mod tests {
             genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
 
-        create_and_insert_leader_bank(1, root_bank.clone(), &mut ctx).unwrap();
+        create_and_insert_leader_bank(1, root_bank.clone(), 0, &mut ctx).unwrap();
         assert!(ctx.poh_recorder.read().unwrap().has_bank());
         assert!(ctx.bank_forks.read().unwrap().get(1).is_some());
 
@@ -1633,7 +1665,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap();
         });
-        create_and_insert_leader_bank(1, root_bank, &mut ctx).unwrap();
+        create_and_insert_leader_bank(1, root_bank, 0, &mut ctx).unwrap();
         assert!(ctx.poh_recorder.read().unwrap().has_bank());
         assert!(ctx.bank_forks.read().unwrap().get(1).is_some());
 
@@ -1723,7 +1755,7 @@ mod tests {
             genesis_cert_block_marker,
         };
 
-        let err = create_and_insert_leader_bank(2, parent_bank, &mut ctx).unwrap_err();
+        let err = create_and_insert_leader_bank(2, parent_bank, 0, &mut ctx).unwrap_err();
         assert!(matches!(
             err,
             StartLeaderError::PohRecorder(PohRecorderError::SendError(_))
@@ -1799,7 +1831,7 @@ mod tests {
             genesis_cert_block_marker: test_genesis_cert_block_marker(),
         };
 
-        create_and_insert_leader_bank(1, root_bank, &mut ctx).unwrap();
+        create_and_insert_leader_bank(1, root_bank, 0, &mut ctx).unwrap();
         let bank_id = ctx.poh_recorder.read().unwrap().bank().unwrap().bank_id();
         record_sender
             .try_send(Record::new(
@@ -1911,8 +1943,14 @@ mod tests {
         };
 
         let leader_slot = 4;
-        create_and_insert_leader_bank(leader_slot, optimistic_parent, &mut ctx).unwrap();
-        let optimistic_bank_id = ctx.poh_recorder.read().unwrap().bank().unwrap().bank_id();
+        create_and_insert_leader_bank(leader_slot, optimistic_parent, 0, &mut ctx).unwrap();
+        let optimistic_bank = ctx.poh_recorder.read().unwrap().bank().unwrap();
+        let optimistic_bank_id = optimistic_bank.bank_id();
+        const ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER: u64 = 1_024;
+        optimistic_bank
+            .entry_bytes_budget()
+            .reserve(ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER)
+            .unwrap();
 
         let accumulated_tx = versioned_transfer(1);
         let drained_tx = versioned_transfer(2);
@@ -1948,6 +1986,17 @@ mod tests {
 
         assert_eq!(new_bank.slot(), leader_slot);
         assert_eq!(new_bank.parent_slot(), new_parent_slot);
+        assert_eq!(
+            new_bank.entry_bytes_budget().consumed(),
+            ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER
+        );
+        assert!(
+            new_bank
+                .entry_bytes_budget()
+                .reserve(new_bank.max_entry_bytes_per_slot() - ENTRY_BYTES_CONSUMED_BEFORE_HANDOVER)
+                .is_ok()
+        );
+        assert!(new_bank.entry_bytes_budget().reserve(1).is_err());
         let EntryNotification::UpdateParent(update_parent) =
             entry_notification_receiver.try_recv().unwrap()
         else {
