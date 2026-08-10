@@ -113,7 +113,7 @@ pub fn get_mock_program_runtime_environment() -> ProgramRuntimeEnvironment {
         .clone()
 }
 
-pub const MAX_LOADED_ENTRY_COUNT: usize = 512;
+pub const MAX_LOADED_ENTRY_COUNT: usize = 1024;
 
 /// A percentage, expected to be in the range `0..=100`.
 pub type Percent = u8;
@@ -1068,6 +1068,7 @@ pub(crate) mod tests {
             .count()
     }
 
+    #[expect(clippy::arithmetic_side_effects)]
     fn program_deploy_test_helper(
         cache: &mut ProgramCache<TestForkGraph>,
         program: Pubkey,
@@ -1095,9 +1096,11 @@ pub(crate) mod tests {
                 programs.push((program, *deployment_slot, usage_counter));
             });
 
+        let next_slot = deployment_slots.iter().max().map_or(0, |slot| slot + 1);
+
         // Add tombstones entries for program
         let env = ProgramRuntimeEnvironment::from(BuiltinProgram::new_mock());
-        for slot in 21..31 {
+        for slot in next_slot..next_slot + 10 {
             set_failed_verification_tombstone(
                 cache,
                 program,
@@ -1107,7 +1110,7 @@ pub(crate) mod tests {
         }
 
         // Add unloaded entries for program
-        for slot in 31..41 {
+        for slot in next_slot + 10..next_slot + 20 {
             insert_unloaded_entry(cache, program, slot);
         }
     }
@@ -1125,8 +1128,8 @@ pub(crate) mod tests {
         program_deploy_test_helper(
             &mut cache,
             Pubkey::new_unique(),
-            vec![0, 10, 20],
-            vec![4, 5, 25],
+            vec![0, 10, 20, 30, 40],
+            vec![4, 5, 25, 35, 12],
             &mut programs,
         );
 
@@ -1134,8 +1137,8 @@ pub(crate) mod tests {
         program_deploy_test_helper(
             &mut cache,
             Pubkey::new_unique(),
-            vec![5, 11],
-            vec![0, 2],
+            vec![5, 11, 21, 24],
+            vec![0, 2, 30, 45],
             &mut programs,
         );
 
@@ -1143,13 +1146,13 @@ pub(crate) mod tests {
         program_deploy_test_helper(
             &mut cache,
             Pubkey::new_unique(),
-            vec![0, 5, 15],
-            vec![100, 3, 20],
+            vec![0, 5, 15, 25],
+            vec![100, 3, 20, 40],
             &mut programs,
         );
 
         // 1 for each deployment slot
-        let num_loaded_expected = 8;
+        let num_loaded_expected = 13;
         // 10 for each program
         let num_unloaded_expected = 30;
         // 10 for each program
@@ -1212,8 +1215,8 @@ pub(crate) mod tests {
         program_deploy_test_helper(
             &mut cache,
             Pubkey::new_unique(),
-            vec![0, 10, 20],
-            vec![4, 5, 25],
+            vec![0, 10, 20, 30, 40],
+            vec![4, 5, 25, 35, 12],
             &mut programs,
         );
 
@@ -1221,8 +1224,8 @@ pub(crate) mod tests {
         program_deploy_test_helper(
             &mut cache,
             Pubkey::new_unique(),
-            vec![5, 11],
-            vec![0, 2],
+            vec![5, 11, 21, 24],
+            vec![0, 2, 30, 45],
             &mut programs,
         );
 
@@ -1230,13 +1233,13 @@ pub(crate) mod tests {
         program_deploy_test_helper(
             &mut cache,
             Pubkey::new_unique(),
-            vec![0, 5, 15],
-            vec![100, 3, 20],
+            vec![0, 5, 15, 25],
+            vec![100, 3, 20, 40],
             &mut programs,
         );
 
         // 1 for each deployment slot
-        let num_loaded_expected = 8;
+        let num_loaded_expected = 13;
         // 10 for each program
         let num_unloaded_expected = 30;
         // 10 for each program
