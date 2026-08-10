@@ -5,7 +5,7 @@ pub(crate) use writer::{ArtifactDirectoryError, SnapshotArtifactWriter};
 use {
     crate::{
         config::TipRouterSnapshotConfig,
-        stake_meta::{self, StakeMetaError},
+        stake_meta::{self, StakeMetaCapture, StakeMetaError},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, bounded},
     solana_clock::Epoch,
@@ -148,7 +148,9 @@ fn generate_and_write_snapshot(
     // Phase 5 must establish cleanup protection for any direct AccountsDB reads
     // performed by stake-meta extraction. Retaining this Arc<Bank> alone is not that pin.
     let parent_bank_epoch = parent_bank.epoch();
-    let stake_meta = stake_meta::collect_stake_meta(config, parent_bank)
+    let stake_meta_capture =
+        StakeMetaCapture::new(parent_bank).map_err(SnapshotArtifactError::StakeMeta)?;
+    let stake_meta = stake_meta::collect_stake_meta(config, stake_meta_capture)
         .map_err(SnapshotArtifactError::StakeMeta)?;
 
     writer.write(parent_bank_epoch, &stake_meta)

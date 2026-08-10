@@ -12,9 +12,14 @@
 //! CLI's account scan retained only as a fallback; a parity test pins the two
 //! paths to identical results.
 
+mod capture;
+
+pub(crate) use capture::StakeMetaCapture;
+
 use {
     crate::config::TipRouterSnapshotConfig,
     borsh::de::BorshDeserialize,
+    capture::{CapturedStakeAccounts, CapturedStakeMetaInputs, CapturedVoter},
     jito_priority_fee_distribution_sdk::{
         PriorityFeeDistributionAccount, derive_priority_fee_distribution_account_address,
     },
@@ -23,92 +28,19 @@ use {
         TipDistributionMeta,
     },
     jito_tip_distribution_sdk::{TipDistributionAccount, derive_tip_distribution_account_address},
-    jito_tip_payment_sdk::{
-        CONFIG_ACCOUNT_SEED, Config, TIP_ACCOUNT_SEED_0, TIP_ACCOUNT_SEED_1, TIP_ACCOUNT_SEED_2,
-        TIP_ACCOUNT_SEED_3, TIP_ACCOUNT_SEED_4, TIP_ACCOUNT_SEED_5, TIP_ACCOUNT_SEED_6,
-        TIP_ACCOUNT_SEED_7,
-    },
     log::{info, warn},
     solana_account::{AccountSharedData, ReadableAccount, WritableAccount},
-    solana_accounts_db::{accounts_index::IndexKey, accounts_scan::ScanError},
+    solana_accounts_db::accounts_scan::ScanError,
     solana_clock::Epoch,
     solana_pubkey::Pubkey,
-    solana_runtime::{
-        bank::Bank,
-        stakes::{StakeAccount, Stakes},
-    },
-    solana_stake_interface::{self as stake, stake_history::StakeHistory, sysvar::stake_history},
-    std::{collections::HashMap, mem::size_of, sync::Arc, time::Instant},
+    solana_runtime::stakes::StakeAccount,
+    solana_stake_interface::stake_history::StakeHistory,
+    std::{collections::HashMap, mem::size_of, time::Instant},
 };
-
-const TIP_ACCOUNT_SEEDS: [&[u8]; 8] = [
-    TIP_ACCOUNT_SEED_0,
-    TIP_ACCOUNT_SEED_1,
-    TIP_ACCOUNT_SEED_2,
-    TIP_ACCOUNT_SEED_3,
-    TIP_ACCOUNT_SEED_4,
-    TIP_ACCOUNT_SEED_5,
-    TIP_ACCOUNT_SEED_6,
-    TIP_ACCOUNT_SEED_7,
-];
-
-struct TipPaymentPubkeys {
-    tip_pdas: [Pubkey; TIP_ACCOUNT_SEEDS.len()],
-}
-
-/// Bank-independent inputs retained while the expensive delegation traversal runs.
-///
-/// `Cached` owns a persistent, structurally-shared snapshot of the runtime's stake
-/// map. It keeps those map nodes alive without retaining the `Bank` or materializing
-/// every `StakeAccount` into a second allocation.
-enum CapturedStakeAccounts {
-    Cached(Stakes<StakeAccount>),
-    Scanned(Vec<(Pubkey, StakeAccount)>),
-}
-
-/// Result of one deterministic distribution-account read from the frozen bank.
-enum CapturedDistributionAccount {
-    Missing,
-    Loaded {
-        address: Pubkey,
-        account: AccountSharedData,
-        rent_exempt_amount: u64,
-    },
-}
-
-/// Fully-owned per-validator inputs captured from a frozen bank.
-struct CapturedVoter {
-    vote_pubkey: Pubkey,
-    validator_node_pubkey: Pubkey,
-    commission: u8,
-    tip_distribution_account: CapturedDistributionAccount,
-    priority_fee_distribution_account: CapturedDistributionAccount,
-}
-
-/// The crossing shape between frozen-bank reads and detached metadata computation.
-struct CapturedStakeMetaInputs {
-    bank_epoch: Epoch,
-    bank_slot: u64,
-    bank_hash: String,
-    tip_distribution_program_id: Pubkey,
-    priority_fee_distribution_program_id: Pubkey,
-    tip_receiver: Pubkey,
-    tip_receiver_fee: u64,
-    stake_accounts: CapturedStakeAccounts,
-    stake_history: StakeHistory,
-    warmup_cooldown_rate_epoch: Option<Epoch>,
-    voters: Vec<CapturedVoter>,
-}
-
-fn derive_tip_payment_pubkeys(program_id: &Pubkey) -> TipPaymentPubkeys {
-    TipPaymentPubkeys {
-        tip_pdas: TIP_ACCOUNT_SEEDS.map(|seed| Pubkey::find_program_address(&[seed], program_id).0),
-    }
-}
 
 pub(crate) fn collect_stake_meta(
     config: &TipRouterSnapshotConfig,
-    bank: Arc<Bank>,
+    bank: StakeMetaCapture,
 ) -> Result<StakeMetaCollection, StakeMetaError> {
     let (
         Some(tip_distribution_program_id),
@@ -139,6 +71,7 @@ pub(crate) fn collect_stake_meta(
 #[derive(Debug)]
 pub(crate) enum StakeMetaError {
     MissingProgramIds,
+    NotFrozen(u64),
     AnchorError(String),
     CheckedMathError,
     NoVoteAccounts(u64, u64),
@@ -152,6 +85,9 @@ impl std::fmt::Display for StakeMetaError {
                 "tip distribution, priority-fee distribution, and tip payment program IDs are \
                  required",
             ),
+            Self::NotFrozen(slot) => {
+                write!(f, "stake metadata requires a frozen bank at slot {slot}")
+            }
             Self::AnchorError(error) => {
                 write!(f, "failed to read tip payment configuration: {error}")
             }
@@ -168,7 +104,7 @@ impl std::error::Error for StakeMetaError {}
 
 /// Maps an on-chain distribution account to its owned `*DistributionMeta` output
 /// type and knows how to derive its PDA.
-pub trait DistributionMeta {
+pub(super) trait DistributionMeta {
     type DistributionAccountType;
 
     fn new_from_account(
@@ -187,7 +123,7 @@ pub trait DistributionMeta {
     ) -> Pubkey;
 }
 
-pub struct WrappedTipDistributionMeta(pub TipDistributionMeta);
+pub(super) struct WrappedTipDistributionMeta(pub TipDistributionMeta);
 impl DistributionMeta for WrappedTipDistributionMeta {
     type DistributionAccountType = TipDistributionAccount;
 
@@ -217,7 +153,7 @@ impl DistributionMeta for WrappedTipDistributionMeta {
     }
 }
 
-pub struct WrappedPriorityFeeDistributionMeta(pub PriorityFeeDistributionMeta);
+pub(super) struct WrappedPriorityFeeDistributionMeta(pub PriorityFeeDistributionMeta);
 impl DistributionMeta for WrappedPriorityFeeDistributionMeta {
     type DistributionAccountType = PriorityFeeDistributionAccount;
 
@@ -247,39 +183,14 @@ impl DistributionMeta for WrappedPriorityFeeDistributionMeta {
     }
 }
 
-pub struct TipReceiverInfo {
-    pub tip_receiver: Pubkey,
-    pub tip_receiver_fee: u64,
-}
-
-/// Capture a validator's distribution account while the frozen bank is available.
-fn capture_distribution_account<DistMeta>(
-    bank: &Arc<Bank>,
-    program_id: &Pubkey,
-    vote_pubkey: &Pubkey,
-) -> CapturedDistributionAccount
-where
-    DistMeta: DistributionMeta,
-{
-    let distribution_account_address =
-        DistMeta::derive_distribution_account_address(program_id, vote_pubkey, bank.epoch());
-
-    let Some(account) = bank.get_account(&distribution_account_address) else {
-        return CapturedDistributionAccount::Missing;
-    };
-
-    let rent_exempt_amount = bank.get_minimum_balance_for_rent_exemption(account.data().len());
-
-    CapturedDistributionAccount::Loaded {
-        address: distribution_account_address,
-        account,
-        rent_exempt_amount,
-    }
+struct TipReceiverInfo {
+    tip_receiver: Pubkey,
+    tip_receiver_fee: u64,
 }
 
 /// Validate and deserialize a captured distribution account without accessing the bank.
 fn build_distribution_meta<DistributionAccount, DistMeta>(
-    captured_account: CapturedDistributionAccount,
+    captured_account: capture::CapturedDistributionAccount,
     program_id: &Pubkey,
     tip_receiver_info: Option<TipReceiverInfo>,
 ) -> Option<DistMeta>
@@ -287,7 +198,7 @@ where
     DistributionAccount: BorshDeserialize,
     DistMeta: DistributionMeta<DistributionAccountType = DistributionAccount>,
 {
-    let CapturedDistributionAccount::Loaded {
+    let capture::CapturedDistributionAccount::Loaded {
         address: distribution_account_address,
         mut account,
         rent_exempt_amount,
@@ -332,127 +243,6 @@ where
         rent_exempt_amount,
     )
     .ok()
-}
-
-/// Capture every bank-dependent input needed to generate stake metadata.
-///
-/// The returned value owns its data and does not retain `bank`. This keeps the
-/// direct account reads grouped at the infrastructure boundary and lets the
-/// expensive delegation traversal run after the caller releases its `Arc<Bank>`.
-fn capture_stake_meta_inputs(
-    bank: &Arc<Bank>,
-    tip_distribution_program_id: &Pubkey,
-    priority_fee_distribution_program_id: &Pubkey,
-    tip_payment_program_id: &Pubkey,
-) -> Result<CapturedStakeMetaInputs, StakeMetaError> {
-    assert!(bank.is_frozen());
-
-    let bank_epoch = bank.epoch();
-    let bank_slot = bank.slot();
-    let bank_hash = bank.hash().to_string();
-
-    let epoch_vote_accounts = bank
-        .epoch_vote_accounts(bank_epoch)
-        .ok_or(StakeMetaError::NoVoteAccounts(bank_slot, bank_epoch))?;
-
-    let cached_stakes = cached_stakes(bank);
-
-    let stake_history = bincode::deserialize::<StakeHistory>(
-        bank.get_account(&stake_history::id())
-            .expect("stake history sysvar account should be present in the loaded bank")
-            .data(),
-    )
-    .expect("stake history sysvar account should deserialize");
-
-    let stake_accounts = if cached_stakes.stake_delegations().is_empty() {
-        warn!("stakes cache returned no delegations; falling back to a stake-program account scan");
-        CapturedStakeAccounts::Scanned(scan_stake_accounts(bank)?)
-    } else {
-        CapturedStakeAccounts::Cached(cached_stakes)
-    };
-
-    // Get config PDA
-    let (config_pda, _) =
-        Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], tip_payment_program_id);
-    let config = get_config(bank, &config_pda)?;
-
-    let bb_commission_pct: u64 = config.block_builder_commission_pct;
-    let tip_receiver: Pubkey = config.tip_receiver;
-
-    // the last leader in an epoch may not crank the tip program before the epoch is over, which
-    // would result in MEV rewards for epoch N not being cranked until epoch N + 1. This means that
-    // the account balance in the snapshot could be incorrect.
-    // We assume that the rewards sitting in the tip program PDAs are cranked out by the time all of
-    // the rewards are claimed.
-    let tip_accounts = derive_tip_payment_pubkeys(tip_payment_program_id);
-
-    // includes the block builder fee
-    let excess_tip_balances: u64 = tip_accounts
-        .tip_pdas
-        .iter()
-        .map(|pubkey| {
-            let tip_account = bank.get_account(pubkey).expect("tip account exists");
-            tip_account
-                .lamports()
-                .checked_sub(bank.get_minimum_balance_for_rent_exemption(tip_account.data().len()))
-                .expect("tip balance underflow")
-        })
-        .sum();
-
-    // matches math in tip payment program
-    let block_builder_tips = excess_tip_balances
-        .checked_mul(bb_commission_pct)
-        .expect("block_builder_tips overflow")
-        .checked_div(100)
-        .expect("block_builder_tips division error");
-
-    let tip_receiver_fee = excess_tip_balances
-        .checked_sub(block_builder_tips)
-        .expect("tip_receiver_fee doesnt underflow");
-
-    // Capture the account-derived portion of every voter before releasing the
-    // bank. The epoch-voter population is tiny relative to the stake map, and
-    // the final zero-delegation filter still runs in the detached phase.
-    let voters = epoch_vote_accounts
-        .iter()
-        .map(|(vote_pubkey, (_, vote_account))| {
-            let tip_distribution_account =
-                capture_distribution_account::<WrappedTipDistributionMeta>(
-                    bank,
-                    tip_distribution_program_id,
-                    vote_pubkey,
-                );
-            let priority_fee_distribution_account =
-                capture_distribution_account::<WrappedPriorityFeeDistributionMeta>(
-                    bank,
-                    priority_fee_distribution_program_id,
-                    vote_pubkey,
-                );
-            let vote_state = vote_account.vote_state_view();
-
-            CapturedVoter {
-                vote_pubkey: *vote_pubkey,
-                validator_node_pubkey: *vote_state.node_pubkey(),
-                commission: vote_state.commission(),
-                tip_distribution_account,
-                priority_fee_distribution_account,
-            }
-        })
-        .collect();
-
-    Ok(CapturedStakeMetaInputs {
-        bank_epoch,
-        bank_slot,
-        bank_hash,
-        tip_distribution_program_id: *tip_distribution_program_id,
-        priority_fee_distribution_program_id: *priority_fee_distribution_program_id,
-        tip_receiver,
-        tip_receiver_fee,
-        stake_accounts,
-        stake_history,
-        warmup_cooldown_rate_epoch: bank.new_warmup_cooldown_rate_epoch(),
-        voters,
-    })
 }
 
 /// Build stake metadata using only owned inputs captured from a frozen bank.
@@ -539,13 +329,13 @@ fn build_stake_meta_collection(captured: CapturedStakeMetaInputs) -> StakeMetaCo
 /// account reads. Delegation traversal, aggregation, and sorting operate on
 /// fully-owned inputs after the worker releases its `Arc<Bank>`.
 pub fn generate_stake_meta_collection(
-    bank: Arc<Bank>,
+    bank: StakeMetaCapture,
     tip_distribution_program_id: &Pubkey,
     priority_fee_distribution_program_id: &Pubkey,
     tip_payment_program_id: &Pubkey,
 ) -> Result<StakeMetaCollection, StakeMetaError> {
     let stake_meta_started_at = Instant::now();
-    let captured = capture_stake_meta_inputs(
+    let captured = capture::capture_stake_meta_inputs(
         &bank,
         tip_distribution_program_id,
         priority_fee_distribution_program_id,
@@ -629,68 +419,6 @@ fn build_voter_meta(
     }
 }
 
-/// Load and deserialize config from Bank. If it does not exist, propagate error.
-fn get_config(bank: &Arc<Bank>, config_pubkey: &Pubkey) -> Result<Config, StakeMetaError> {
-    bank.get_account(config_pubkey)
-        .ok_or_else(|| {
-            StakeMetaError::AnchorError(String::from("Config account not found in bank"))
-        })
-        .and_then(|config_account| {
-            Config::deserialize(config_account.data()).map_err(|_| {
-                StakeMetaError::AnchorError(String::from("Failed to deserialize config"))
-            })
-        })
-}
-
-/// Take an O(1) persistent snapshot of the bank's live stakes cache.
-///
-/// The runtime maintains this map synchronously on every stake-account write
-/// (epoch rewards and next-epoch stakes are computed from it) and rehydrates
-/// it with per-account consistency checks when the validator boots from a
-/// snapshot, so it is exactly the delegated-stake state at this bank's slot.
-/// Reading it avoids the accounts-db scan (and the ProgramId secondary index)
-/// that the out-of-tree operator CLI must use, and is how the original
-/// in-tree `tip-distributor` sourced delegations.
-///
-/// `Bank::unfiltered_stakes` is used rather than `Bank::get_top_epoch_stakes`
-/// because VAT filtering (SIMD-0357) rebuilds `Stakes` from vote accounts
-/// alone, leaving its delegation map unconditionally empty.
-fn cached_stakes(bank: &Bank) -> Stakes<StakeAccount> {
-    bank.unfiltered_stakes()
-}
-
-/// Scan delegated stake accounts out of accounts-db, identically to the
-/// operator CLI's `stake_meta_generator`.
-///
-/// Retained as a fallback so that if a future rebase ever changes the stakes
-/// cache semantics (as VAT did for the epoch-stakes accessors), the service
-/// degrades to the operator-CLI-identical scan instead of silently producing
-/// an empty, consensus-divergent stake meta. Prefer the ProgramId secondary
-/// index when present, and fall back to a full program scan otherwise (an
-/// absent index is reported as an empty result).
-fn scan_stake_accounts(bank: &Bank) -> Result<Vec<(Pubkey, StakeAccount)>, StakeMetaError> {
-    let stake_program_id = stake::program::id();
-    let mut stake_accounts = bank
-        .get_filtered_indexed_accounts(&IndexKey::ProgramId(stake_program_id), |_| true, None)
-        .map_err(StakeMetaError::ScanError)?;
-
-    if stake_accounts.is_empty() {
-        warn!("ProgramId index returned no stake accounts; falling back to full program scan");
-        stake_accounts = bank
-            .get_program_accounts(&stake_program_id)
-            .map_err(StakeMetaError::ScanError)?;
-    }
-
-    Ok(stake_accounts
-        .into_iter()
-        .filter_map(|(stake_pubkey, account)| {
-            StakeAccount::try_from(account)
-                .ok()
-                .map(|stake_account| (stake_pubkey, stake_account))
-        })
-        .collect())
-}
-
 /// Traverse borrowed stake accounts once, filter active delegations, and build
 /// the final delegation vectors for the bank's epoch-vote-account universe.
 ///
@@ -735,21 +463,24 @@ mod tests {
     use {
         super::*,
         borsh::BorshSerialize,
-        jito_tip_payment_sdk::{CONFIG_SIZE, InitBumps},
+        capture::derive_tip_payment_pubkeys_for_tests,
+        jito_tip_payment_sdk::{CONFIG_ACCOUNT_SEED, CONFIG_SIZE, Config, InitBumps},
         solana_accounts_db::{
             accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDbConfig},
             accounts_index::{
                 AccountIndex, AccountSecondaryIndexes, AccountSecondaryIndexesIncludeExclude,
+                IndexKey,
             },
         },
         solana_runtime::{
-            bank::BankTestConfig,
+            bank::{Bank, BankTestConfig},
             genesis_utils::{
                 GenesisConfigInfo, ValidatorVoteKeypairs, create_genesis_config_with_vote_accounts,
             },
         },
         solana_signer::Signer,
-        std::collections::HashSet,
+        solana_stake_interface as stake,
+        std::{collections::HashSet, sync::Arc},
     };
 
     /// Build a bank whose accounts-db carries a stake-program `ProgramId`
@@ -791,13 +522,14 @@ mod tests {
         let bank = new_indexed_bank_with_validator(&validator);
         bank.freeze();
 
-        let cached_stakes = cached_stakes(&bank);
+        let stake_meta_capture = StakeMetaCapture::new(bank).unwrap();
+        let cached_stakes = stake_meta_capture.delegated_stakes_snapshot();
         let mut cached = cached_stakes
             .stake_delegations()
             .iter()
             .map(|(stake_pubkey, stake_account)| (*stake_pubkey, stake_account.clone()))
             .collect::<Vec<_>>();
-        let mut scanned = scan_stake_accounts(&bank).unwrap();
+        let mut scanned = stake_meta_capture.scan_stake_accounts().unwrap();
         cached.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
         scanned.sort_by_key(|(stake_pubkey, _)| *stake_pubkey);
 
@@ -834,7 +566,7 @@ mod tests {
         );
 
         let stake_meta = generate_stake_meta_collection(
-            bank,
+            StakeMetaCapture::new(bank).unwrap(),
             &Pubkey::new_unique(),
             &Pubkey::new_unique(),
             &tip_payment_program_id,
@@ -874,7 +606,7 @@ mod tests {
         let config_pda = Pubkey::find_program_address(&[CONFIG_ACCOUNT_SEED], program_id).0;
         bank.store_account(&config_pda, &config_account);
 
-        for tip_pda in derive_tip_payment_pubkeys(program_id).tip_pdas {
+        for tip_pda in derive_tip_payment_pubkeys_for_tests(program_id) {
             bank.store_account(&tip_pda, &AccountSharedData::new(1, 0, program_id));
         }
     }
