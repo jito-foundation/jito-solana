@@ -8,7 +8,8 @@ use {
         stake_meta::{self, StakeMetaCapture, StakeMetaError},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, bounded},
-    solana_clock::Epoch,
+    solana_clock::{Epoch, Slot},
+    solana_hash::Hash,
     solana_runtime::bank::Bank,
     std::{
         io,
@@ -55,7 +56,9 @@ pub(crate) type WorkerResult = Result<ArtifactResult, crossbeam_channel::RecvErr
 pub(crate) enum WorkerCompletion {
     Written {
         epoch: Epoch,
-        path: PathBuf,
+        slot: Slot,
+        bank_hash: Hash,
+        temp_path: PathBuf,
     },
     Failed {
         epoch: Epoch,
@@ -75,6 +78,8 @@ pub(crate) enum WorkerCompletion {
 
 pub(crate) struct SnapshotArtifactWorkerHandle {
     epoch: Epoch,
+    slot: Slot,
+    bank_hash: Hash,
     result_receiver: Receiver<ArtifactResult>,
     handle: JoinHandle<()>,
 }
@@ -90,6 +95,8 @@ impl SnapshotArtifactWorkerHandle {
         parent_bank: Arc<Bank>,
     ) -> io::Result<Self> {
         let epoch = parent_bank.epoch();
+        let slot = parent_bank.slot();
+        let bank_hash = parent_bank.hash();
         let (result_sender, result_receiver) = bounded(1);
         let handle = Builder::new()
             .name(format!("tipRtSnapshot-{epoch}"))
@@ -100,6 +107,8 @@ impl SnapshotArtifactWorkerHandle {
 
         Ok(Self {
             epoch,
+            slot,
+            bank_hash,
             result_receiver,
             handle,
         })
@@ -112,7 +121,12 @@ impl SnapshotArtifactWorkerHandle {
     pub(crate) fn join_and_classify(self, received_result: WorkerResult) -> WorkerCompletion {
         let epoch = self.epoch;
         match (received_result, self.handle.join()) {
-            (Ok(Ok(path)), Ok(())) => WorkerCompletion::Written { epoch, path },
+            (Ok(Ok(temp_path)), Ok(())) => WorkerCompletion::Written {
+                epoch,
+                slot: self.slot,
+                bank_hash: self.bank_hash,
+                temp_path,
+            },
             (Ok(Err(err)), Ok(())) => WorkerCompletion::Failed { epoch, err },
             (_, Err(_)) => WorkerCompletion::Panicked { epoch },
             (Err(_), Ok(())) => WorkerCompletion::MissingResult { epoch },
@@ -148,10 +162,17 @@ fn generate_and_write_snapshot(
     // Phase 5 must establish cleanup protection for any direct AccountsDB reads
     // performed by stake-meta extraction. Retaining this Arc<Bank> alone is not that pin.
     let parent_bank_epoch = parent_bank.epoch();
+    let parent_bank_slot = parent_bank.slot();
+    let parent_bank_hash = parent_bank.hash();
     let stake_meta_capture =
         StakeMetaCapture::new(parent_bank).map_err(SnapshotArtifactError::StakeMeta)?;
     let stake_meta = stake_meta::collect_stake_meta(config, stake_meta_capture)
         .map_err(SnapshotArtifactError::StakeMeta)?;
 
-    writer.write(parent_bank_epoch, &stake_meta)
+    writer.write_temp(
+        parent_bank_epoch,
+        parent_bank_slot,
+        parent_bank_hash,
+        &stake_meta,
+    )
 }

@@ -8,7 +8,8 @@ use {
     },
     crossbeam_channel::{Receiver, never, select},
     log::{debug, error, info, warn},
-    solana_clock::Epoch,
+    solana_clock::{Epoch, Slot},
+    solana_hash::Hash,
     solana_rpc::optimistically_confirmed_bank_tracker::{
         BankNotification, BankNotificationReceiver, BankNotificationWithDependencyWork,
     },
@@ -90,6 +91,17 @@ struct TipRouterSnapshotServiceContext {
     last_claimed_epoch: Option<Epoch>,
     /// Whether a worker thread is actively creating an artifact for the current epoch boundary
     active_worker: Option<SnapshotArtifactWorkerHandle>,
+    /// The highest root observed by this service.
+    highest_rooted_slot: Option<Slot>,
+    /// A fully written artifact waiting for its candidate slot to become rooted.
+    pending_publish: Option<PendingPublish>,
+}
+
+struct PendingPublish {
+    epoch: Epoch,
+    slot: Slot,
+    bank_hash: Hash,
+    temp_path: PathBuf,
 }
 
 impl TipRouterSnapshotService {
@@ -139,7 +151,8 @@ impl TipRouterSnapshotService {
                         &config,
                         &artifact_writer,
                         notification,
-                    ),
+                        &exit,
+                    )?,
 
                     // Notifications channel shutdown and this service has also been ordered to
                     // shutdown
@@ -147,7 +160,7 @@ impl TipRouterSnapshotService {
 
                     // Notifications channel shutdown unexpectantly
                     Err(_) => {
-                        context.wait_for_inflight_artifact_worker(&exit)?;
+                        context.wait_for_inflight_artifact_worker(&artifact_writer, &exit)?;
                         return Err(TipRouterSnapshotServiceError::BankNotificationChannelDisconnected);
                     }
                 },
@@ -156,8 +169,9 @@ impl TipRouterSnapshotService {
                 recv(artifact_result_receiver) -> received_artifact_result => {
                     // TODO: What if it does not exist? Would that be bad?
                     if let Some(active_worker) = context.active_worker.take() {
-                        record_worker_completion(
+                        context.record_worker_completion(
                             active_worker.join_and_classify(received_artifact_result),
+                            &artifact_writer,
                             &exit,
                         )?;
                     }
@@ -168,7 +182,7 @@ impl TipRouterSnapshotService {
 
         // TODO: Don't log here. We log at entry and exit. BUT we should make sure active worker
         // logs
-        context.wait_for_inflight_artifact_worker(&exit)?;
+        context.wait_for_inflight_artifact_worker(&artifact_writer, &exit)?;
         Ok(())
     }
 
@@ -184,10 +198,33 @@ impl TipRouterSnapshotServiceContext {
         config: &TipRouterSnapshotConfig,
         artifact_writer: &SnapshotArtifactWriter,
         (notification, _dependency_work): BankNotificationWithDependencyWork,
-    ) {
-        if let BankNotification::Frozen(bank) = notification {
-            self.handle_frozen_bank(config, artifact_writer, bank);
+        exit: &Arc<AtomicBool>,
+    ) -> TipRouterSnapshotServiceResult {
+        match notification {
+            BankNotification::Frozen(bank) => {
+                self.handle_frozen_bank(config, artifact_writer, bank);
+                Ok(())
+            }
+            BankNotification::NewRootBank(bank) => {
+                self.handle_new_root(bank.slot(), artifact_writer, exit)
+            }
+            BankNotification::OptimisticallyConfirmed(_) | BankNotification::NewRootedChain(_) => {
+                Ok(())
+            }
         }
+    }
+
+    fn handle_new_root(
+        &mut self,
+        rooted_slot: Slot,
+        artifact_writer: &SnapshotArtifactWriter,
+        exit: &Arc<AtomicBool>,
+    ) -> TipRouterSnapshotServiceResult {
+        self.highest_rooted_slot = Some(
+            self.highest_rooted_slot
+                .map_or(rooted_slot, |current| current.max(rooted_slot)),
+        );
+        self.try_publish_pending(artifact_writer, exit)
     }
 
     fn handle_frozen_bank(
@@ -263,71 +300,139 @@ impl TipRouterSnapshotServiceContext {
 
     fn wait_for_inflight_artifact_worker(
         &mut self,
+        artifact_writer: &SnapshotArtifactWriter,
         exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         let Some(active_worker) = self.active_worker.take() else {
             return Ok(());
         };
 
-        record_worker_completion(
+        self.record_worker_completion(
             active_worker.wait_for_completion_or_timeout(ARTIFACT_WORKER_SHUTDOWN_TIMEOUT),
+            artifact_writer,
             exit,
         )
     }
-}
 
-fn record_worker_completion(
-    completion: WorkerCompletion,
-    exit: &Arc<AtomicBool>,
-) -> TipRouterSnapshotServiceResult {
-    match completion {
-        WorkerCompletion::Written { epoch, path } => {
-            info!(
-                "wrote tip-router snapshot artifact for epoch {} to {}",
+    fn record_worker_completion(
+        &mut self,
+        completion: WorkerCompletion,
+        artifact_writer: &SnapshotArtifactWriter,
+        exit: &Arc<AtomicBool>,
+    ) -> TipRouterSnapshotServiceResult {
+        match completion {
+            WorkerCompletion::Written {
                 epoch,
-                path.display(),
-            );
-            Ok(())
-        }
-        WorkerCompletion::Failed {
-            epoch,
-            err: SnapshotArtifactError::DirectoryUnavailable { path, source },
-        } => {
-            error!(
-                "tip-router snapshot artifact directory became unavailable while writing epoch \
-                 {}: {}: {}",
+                slot,
+                bank_hash,
+                temp_path,
+            } => {
+                info!(
+                    "wrote temporary tip-router snapshot artifact for epoch {} at slot {} with \
+                     bank hash {} to {}",
+                    epoch,
+                    slot,
+                    bank_hash,
+                    temp_path.display(),
+                );
+                self.pending_publish = Some(PendingPublish {
+                    epoch,
+                    slot,
+                    bank_hash,
+                    temp_path,
+                });
+                self.try_publish_pending(artifact_writer, exit)
+            }
+            WorkerCompletion::Failed {
                 epoch,
-                path.display(),
-                source
-            );
-            exit.store(true, Ordering::Relaxed);
-            Err(TipRouterSnapshotServiceError::ArtifactDirectoryUnavailable { path, source })
+                err: SnapshotArtifactError::DirectoryUnavailable { path, source },
+            } => {
+                error!(
+                    "tip-router snapshot artifact directory became unavailable while writing epoch \
+                     {}: {}: {}",
+                    epoch,
+                    path.display(),
+                    source
+                );
+                exit.store(true, Ordering::Relaxed);
+                Err(TipRouterSnapshotServiceError::ArtifactDirectoryUnavailable { path, source })
+            }
+            WorkerCompletion::Failed { epoch, err } => {
+                error!(
+                    "tip-router snapshot artifact failed for epoch {}: {err}",
+                    epoch,
+                );
+                Ok(())
+            }
+            WorkerCompletion::Panicked { epoch } => {
+                error!("tip-router snapshot worker panicked for epoch {}", epoch,);
+                Ok(())
+            }
+            WorkerCompletion::MissingResult { epoch } => {
+                error!(
+                    "tip-router snapshot worker exited without a result for epoch {}",
+                    epoch,
+                );
+                Ok(())
+            }
+            WorkerCompletion::TimedOut { epoch, timeout } => {
+                error!(
+                    "tip-router snapshot worker for epoch {epoch} did not stop within {timeout:?}; \
+                     detaching worker"
+                );
+                exit.store(true, Ordering::Relaxed);
+                Err(TipRouterSnapshotServiceError::ArtifactWorkerShutdownTimeout { epoch, timeout })
+            }
         }
-        WorkerCompletion::Failed { epoch, err } => {
-            error!(
-                "tip-router snapshot artifact failed for epoch {}: {err}",
-                epoch,
-            );
-            Ok(())
+    }
+
+    fn try_publish_pending(
+        &mut self,
+        artifact_writer: &SnapshotArtifactWriter,
+        exit: &Arc<AtomicBool>,
+    ) -> TipRouterSnapshotServiceResult {
+        let Some(pending) = self.pending_publish.as_ref() else {
+            return Ok(());
+        };
+        if self
+            .highest_rooted_slot
+            .is_none_or(|rooted_slot| rooted_slot < pending.slot)
+        {
+            return Ok(());
         }
-        WorkerCompletion::Panicked { epoch } => {
-            error!("tip-router snapshot worker panicked for epoch {}", epoch,);
-            Ok(())
-        }
-        WorkerCompletion::MissingResult { epoch } => {
-            error!(
-                "tip-router snapshot worker exited without a result for epoch {}",
-                epoch,
-            );
-            Ok(())
-        }
-        WorkerCompletion::TimedOut { epoch, timeout } => {
-            error!(
-                "tip-router snapshot worker for epoch {epoch} did not stop within {timeout:?}; \
-                 detaching worker"
-            );
-            exit.store(true, Ordering::Relaxed);
-            Err(TipRouterSnapshotServiceError::ArtifactWorkerShutdownTimeout { epoch, timeout })
+
+        match artifact_writer.publish(&pending.temp_path, pending.epoch) {
+            Ok(artifact_path) => {
+                info!(
+                    "published tip-router snapshot artifact for epoch {} from slot {} with bank \
+                     hash {} to {}",
+                    pending.epoch,
+                    pending.slot,
+                    pending.bank_hash,
+                    artifact_path.display(),
+                );
+                self.pending_publish = None;
+                Ok(())
+            }
+            Err(SnapshotArtifactError::DirectoryUnavailable { path, source }) => {
+                error!(
+                    "tip-router snapshot artifact directory became unavailable while publishing \
+                     epoch {}: {}: {}",
+                    pending.epoch,
+                    path.display(),
+                    source
+                );
+                exit.store(true, Ordering::Relaxed);
+                Err(TipRouterSnapshotServiceError::ArtifactDirectoryUnavailable { path, source })
+            }
+            Err(err) => {
+                error!(
+                    "failed to publish tip-router snapshot artifact for epoch {} from {}: {err}",
+                    pending.epoch,
+                    pending.temp_path.display(),
+                );
+                Ok(())
+            }
         }
     }
 }

@@ -2,7 +2,8 @@ use {
     super::SnapshotArtifactError,
     jito_stake_meta_types::StakeMetaCollection,
     log::warn,
-    solana_clock::Epoch,
+    solana_clock::{Epoch, Slot},
+    solana_hash::Hash,
     std::{
         ffi::OsStr,
         fs::{self, File, OpenOptions},
@@ -34,11 +35,12 @@ impl SnapshotArtifactWriter {
         Ok(Self { output_dir })
     }
 
-    // First creates a tmp file (since other processes are watching specifically for new stake-meta
-    // files), then writes it, then mv
-    pub(super) fn write(
+    /// Writes a durable temporary artifact without publishing it to downstream watchers.
+    pub(super) fn write_temp(
         &self,
         epoch: Epoch,
+        slot: Slot,
+        bank_hash: Hash,
         stake_meta: &StakeMetaCollection,
     ) -> Result<PathBuf, SnapshotArtifactError> {
         ensure_output_directory(&self.output_dir).map_err(|source| {
@@ -48,16 +50,12 @@ impl SnapshotArtifactWriter {
             }
         })?;
 
-        let temp_path = self
-            .output_dir
-            .join(format!("{TEMP_ARTIFACT_PREFIX}{epoch}{ARTIFACT_SUFFIX}"));
-        let artifact_path = self.output_dir.join(format!("{epoch}{ARTIFACT_SUFFIX}"));
+        let temp_path = self.output_dir.join(format!(
+            "{TEMP_ARTIFACT_PREFIX}{epoch}_{slot}_{bank_hash}{ARTIFACT_SUFFIX}"
+        ));
 
         let mut cleanup_guard = TempArtifactCleanupGuard::new(&temp_path);
 
-        // Overwrite the file if it already exists. Perhaps bc tmp was created by another
-        // TODO: This will  be an issue if we end up with multiple fork candidates and they all
-        // write the same file name
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -73,7 +71,26 @@ impl SnapshotArtifactWriter {
             writer.flush().map_err(SnapshotArtifactError::Io)?;
         }
         file.sync_all().map_err(SnapshotArtifactError::Io)?;
+        cleanup_guard.disarm();
+        drop(cleanup_guard);
 
+        Ok(temp_path)
+    }
+
+    /// Publishes a completed temporary artifact by moving it to the canonical epoch path.
+    pub(crate) fn publish(
+        &self,
+        temp_path: &Path,
+        epoch: Epoch,
+    ) -> Result<PathBuf, SnapshotArtifactError> {
+        ensure_output_directory(&self.output_dir).map_err(|source| {
+            SnapshotArtifactError::DirectoryUnavailable {
+                path: self.output_dir.clone(),
+                source,
+            }
+        })?;
+
+        let artifact_path = self.output_dir.join(format!("{epoch}{ARTIFACT_SUFFIX}"));
         if artifact_path
             .try_exists()
             .map_err(SnapshotArtifactError::Io)?
@@ -85,12 +102,9 @@ impl SnapshotArtifactWriter {
             );
         }
 
-        // Rename tmp file to canonical path. This will trigger other processes watching for this
-        // file name to start processing it
-        fs::rename(&temp_path, &artifact_path).map_err(SnapshotArtifactError::Io)?;
+        // This canonical name is the publication signal for downstream watchers.
+        fs::rename(temp_path, &artifact_path).map_err(SnapshotArtifactError::Io)?;
 
-        // TODO: Whats this
-        cleanup_guard.disarm();
         if let Err(err) = File::open(&self.output_dir).and_then(|directory| directory.sync_all()) {
             warn!(
                 "tip-router snapshot artifact for epoch {} was published to {}, but syncing the \
