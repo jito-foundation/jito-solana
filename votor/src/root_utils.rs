@@ -101,7 +101,7 @@ pub(crate) fn set_root(
 /// Votor does not need the progress map or other tower bft structures, so it will not use the callback.
 #[allow(clippy::too_many_arguments)]
 pub fn check_and_handle_new_root<CB>(
-    parent_slot: Slot,
+    _parent_slot: Slot,
     new_root: Slot,
     snapshot_controller: Option<&SnapshotController>,
     highest_super_majority_root: Option<Slot>,
@@ -123,18 +123,26 @@ pub fn check_and_handle_new_root<CB>(
         .get(new_root)
         .expect("Root bank doesn't exist");
     let mut rooted_banks = root_bank.parents();
-    let oldest_parent = rooted_banks.last().map(|last| last.parent_slot());
+    // Capture bank identities before set_bank_forks_root squashes the newly rooted bank.
+    let rooted_chain = if let Some(sender) = bank_notification_sender
+        && sender.should_send_rooted_chain
+    {
+        let preceding_rooted_bank = rooted_banks
+            .last()
+            .map(|oldest_bank| (oldest_bank.parent_slot(), oldest_bank.parent_hash()))
+            .unwrap_or((root_bank.parent_slot(), root_bank.parent_hash()));
+        let mut rooted_chain = rooted_banks
+            .iter()
+            .map(|bank| (bank.slot(), bank.hash()))
+            .collect::<Vec<_>>();
+        rooted_chain.push((root_bank.slot(), root_bank.hash()));
+        rooted_chain.push(preceding_rooted_bank);
+        Some(rooted_chain)
+    } else {
+        None
+    };
     rooted_banks.push(root_bank.clone());
     let rooted_slots: Vec<_> = rooted_banks.iter().map(|bank| bank.slot()).collect();
-    // The following differs from rooted_slots by including the parent slot of the oldest parent bank.
-    let rooted_slots_with_parents = bank_notification_sender
-        .as_ref()
-        .is_some_and(|sender| sender.should_send_parents)
-        .then(|| {
-            let mut new_chain = rooted_slots.clone();
-            new_chain.push(oldest_parent.unwrap_or(parent_slot));
-            new_chain
-        });
 
     // Call leader schedule_cache.set_root() before blockstore.set_root() because
     // bank_forks.root is consumed by repair_service to update gossip, so we don't want to
@@ -166,7 +174,7 @@ pub fn check_and_handle_new_root<CB>(
             .send((BankNotification::NewRootBank(root_bank), dependency_work))
             .unwrap_or_else(|err| warn!("bank_notification_sender failed: {err:?}"));
 
-        if let Some(new_chain) = rooted_slots_with_parents {
+        if let Some(new_chain) = rooted_chain {
             let dependency_work = sender
                 .dependency_tracker
                 .as_ref()

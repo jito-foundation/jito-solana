@@ -24,10 +24,27 @@ impl NotificationFilter for TipRouterEpochBoundaryFilter {
                 // slots of an epoch are skipped.
                 bank.epoch() > bank.epoch_schedule().get_epoch(bank.parent_slot())
             }
-            BankNotification::NewRootBank(_) => true,
-            BankNotification::OptimisticallyConfirmed(_) | BankNotification::NewRootedChain(_) => {
-                false
-            }
+            BankNotification::NewRootBank(_) | BankNotification::NewRootedChain(_) => true,
+            BankNotification::OptimisticallyConfirmed(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {super::*, solana_hash::Hash};
+
+    #[test]
+    fn forwards_rooted_chain_notifications() {
+        let notification = BankNotification::NewRootedChain(vec![(42, Hash::new_unique())]);
+
+        assert!(TipRouterEpochBoundaryFilter.do_forward_notification(&notification));
+    }
+
+    #[test]
+    fn rejects_optimistically_confirmed_notifications() {
+        let notification = BankNotification::OptimisticallyConfirmed(42);
+
+        assert!(!TipRouterEpochBoundaryFilter.do_forward_notification(&notification));
     }
 }

@@ -1475,7 +1475,8 @@ impl Validator {
         let bank_notification_sender_config =
             (!bank_notification_channel_senders.is_empty()).then(|| BankNotificationSenderConfig {
                 sender: BankNotificationBroadcaster::new(bank_notification_channel_senders),
-                should_send_parents: geyser_plugin_service.is_some(),
+                should_send_rooted_chain: geyser_plugin_service.is_some()
+                    || config.tip_router_snapshot_config.is_some(),
                 dependency_tracker: bank_notification_dependency_tracker,
             });
 

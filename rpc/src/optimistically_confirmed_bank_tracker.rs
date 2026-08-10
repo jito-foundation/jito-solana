@@ -12,6 +12,7 @@ use {
     crate::rpc_subscriptions::RpcSubscriptions,
     crossbeam_channel::{Receiver, RecvTimeoutError, SendError, Sender},
     solana_clock::Slot,
+    solana_hash::Hash,
     solana_rpc_client_api::response::{SlotTransactionStats, SlotUpdate},
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, dependency_tracker::DependencyTracker,
@@ -46,8 +47,8 @@ pub enum BankNotification {
     OptimisticallyConfirmed(Slot),
     Frozen(Arc<Bank>),
     NewRootBank(Arc<Bank>),
-    /// The newly rooted slot chain including the parent slot of the oldest bank in the rooted chain.
-    NewRootedChain(Vec<Slot>),
+    /// The newly rooted bank chain including the parent of the oldest reachable bank.
+    NewRootedChain(Vec<(Slot, Hash)>),
 }
 
 #[derive(Clone, Debug)]
@@ -187,7 +188,7 @@ impl BankNotificationBroadcaster {
 #[derive(Clone)]
 pub struct BankNotificationSenderConfig {
     pub sender: BankNotificationBroadcaster,
-    pub should_send_parents: bool,
+    pub should_send_rooted_chain: bool,
     pub dependency_tracker: Option<Arc<DependencyTracker>>,
 }
 
@@ -498,7 +499,11 @@ impl OptimisticallyConfirmedBankTracker {
 
                 pending_optimistically_confirmed_banks.retain(|&s| s > root_slot);
             }
-            BankNotification::NewRootedChain(mut roots) => {
+            BankNotification::NewRootedChain(rooted_banks) => {
+                let mut roots = rooted_banks
+                    .into_iter()
+                    .map(|(slot, _bank_hash)| slot)
+                    .collect::<Vec<_>>();
                 Self::notify_new_root_slots(
                     &mut roots,
                     newest_root_slot,
@@ -730,7 +735,12 @@ mod tests {
         bank_notification_senders.push(sender);
 
         let subscribers = Some(Arc::new(RwLock::new(bank_notification_senders)));
-        let parent_roots = bank5.ancestors.keys();
+        let parent_roots = bank5
+            .ancestors
+            .keys()
+            .into_iter()
+            .map(|slot| (slot, Hash::default()))
+            .collect();
 
         OptimisticallyConfirmedBankTracker::process_notification(
             (
@@ -809,7 +819,12 @@ mod tests {
         assert_eq!(newest_root_slot, 5);
 
         let bank7 = bank_forks.read().unwrap().get(7).unwrap();
-        let parent_roots = bank7.ancestors.keys();
+        let parent_roots = bank7
+            .ancestors
+            .keys()
+            .into_iter()
+            .map(|slot| (slot, Hash::default()))
+            .collect();
 
         OptimisticallyConfirmedBankTracker::process_notification(
             (
