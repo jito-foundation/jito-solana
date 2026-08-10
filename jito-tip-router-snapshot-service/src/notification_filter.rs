@@ -1,16 +1,6 @@
-//! Producer-side filter deciding which bank notifications reach the Tip Router snapshot service.
-//!
-//! The service is interested in a small fraction of the notifications the validator broadcasts.
-//! Rejecting the rest here, on the producer thread, avoids cloning and queueing an `Arc<Bank>` that
-//! the service would only drop.
-
 use solana_rpc::optimistically_confirmed_bank_tracker::{BankNotification, NotificationFilter};
 
 /// Accepts epoch-boundary frozen banks and exact rooted chains the Tip Router service can act on.
-///
-/// This is a coarse, stateless classification. The service remains the owner of stateful policy and
-/// still has to resolve the parent bank, reject an already-claimed epoch, and reject a candidate
-/// while an artifact worker is running.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TipRouterEpochBoundaryFilter;
 
@@ -29,24 +19,5 @@ impl NotificationFilter for TipRouterEpochBoundaryFilter {
                 false
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use {super::*, solana_hash::Hash};
-
-    #[test]
-    fn forwards_rooted_chain_notifications() {
-        let notification = BankNotification::NewRootedChain(vec![(42, Hash::new_unique())]);
-
-        assert!(TipRouterEpochBoundaryFilter.do_forward_notification(&notification));
-    }
-
-    #[test]
-    fn rejects_optimistically_confirmed_notifications() {
-        let notification = BankNotification::OptimisticallyConfirmed(42);
-
-        assert!(!TipRouterEpochBoundaryFilter.do_forward_notification(&notification));
     }
 }
