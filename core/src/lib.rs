@@ -9,10 +9,16 @@
 //!
 
 pub mod admin_rpc_post_init;
+pub mod bam_connection;
+pub mod bam_dependencies;
+pub mod bam_manager;
 pub mod banking_simulation;
 pub mod banking_stage;
 pub mod banking_trace;
 pub(crate) mod block_creation_loop;
+pub mod bundle;
+mod bundle_sigverify_stage;
+pub mod bundle_stage;
 pub mod cluster_info_vote_listener;
 pub mod cluster_slots_service;
 pub mod commitment_service;
@@ -24,8 +30,11 @@ pub mod epoch_specs;
 pub mod fetch_stage;
 pub mod forwarding_stage;
 pub mod gen_keys;
+pub mod multicast_shred_check_service;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
+pub mod packet_bundle;
+pub mod proxy;
 pub mod repair;
 pub mod replay_stage;
 pub mod resource_limits;
@@ -40,6 +49,8 @@ pub mod snapshot_packager_service;
 pub mod staked_nodes_updater_service;
 pub mod stats_reporter_service;
 pub mod system_monitor_service;
+pub mod tip_manager;
+mod tonic_endpoint;
 pub mod tpu;
 mod tpu_entry_notifier;
 mod transaction_priority;
@@ -64,3 +75,42 @@ extern crate solana_frozen_abi_macro;
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
+
+use {
+    solana_packet::{Meta, PACKET_DATA_SIZE, PacketFlags},
+    solana_perf::packet::BytesPacket,
+    std::net::{IpAddr, Ipv4Addr},
+};
+
+const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+
+// NOTE: last profiled at around 180ns
+pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPacket {
+    let mut data = p.data;
+    data.truncate(PACKET_DATA_SIZE);
+    let mut packet = BytesPacket::new(data, Meta::default());
+
+    if let Some(meta) = p.meta {
+        packet.meta_mut().size = meta.size as usize;
+        packet.meta_mut().addr = meta.addr.parse().unwrap_or(UNKNOWN_IP);
+        packet.meta_mut().port = meta.port as u16;
+        if let Some(flags) = meta.flags {
+            if flags.simple_vote_tx {
+                packet.meta_mut().flags.insert(PacketFlags::SIMPLE_VOTE_TX);
+            }
+            if flags.forwarded {
+                packet.meta_mut().flags.insert(PacketFlags::FORWARDED);
+            }
+            if flags.repair {
+                packet.meta_mut().flags.insert(PacketFlags::REPAIR);
+            }
+            if flags.from_staked_node {
+                packet
+                    .meta_mut()
+                    .flags
+                    .insert(PacketFlags::FROM_STAKED_NODE);
+            }
+        }
+    }
+    packet
+}
