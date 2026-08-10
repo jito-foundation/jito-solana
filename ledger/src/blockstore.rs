@@ -9,7 +9,8 @@ use {
         ancestor_iterator::AncestorIterator,
         blockstore::column::{TypedColumn, columns as cf},
         blockstore_db::{
-            DBPinnedT, IteratorDirection, IteratorMode, LedgerColumn, Rocks, WriteBatch,
+            DBPinnableSlice, DBPinnedT, IteratorDirection, IteratorMode, LedgerColumn, Rocks,
+            WriteBatch,
         },
         blockstore_meta::*,
         blockstore_options::{
@@ -890,6 +891,11 @@ impl Blockstore {
         self.meta_cf.get(slot)
     }
 
+    /// Creates an empty pinnable slice for reuse by pinned get operations.
+    pub fn new_pinnable_slice(&self) -> DBPinnableSlice<'_> {
+        self.db.new_pinnable_slice()
+    }
+
     /// Returns the [`SlotMetaRepair`] of the specified slot.
     pub fn meta_repair(&self, slot: Slot) -> Result<Option<SlotMetaRepair>> {
         self.meta_cf
@@ -897,6 +903,20 @@ impl Blockstore {
             .as_deref()
             .map(|bytes| Ok(wincode::deserialize::<SlotMetaRepair>(bytes)?))
             .transpose()
+    }
+
+    /// Returns the [`SlotMetaRepair`] of the specified slot using a reusable pinnable slice.
+    pub fn meta_repair_into<'db>(
+        &'db self,
+        slot: Slot,
+        pinnable_slice: &mut DBPinnableSlice<'db>,
+    ) -> Result<Option<SlotMetaRepair>> {
+        if !self.meta_cf.get_slice_into(slot, pinnable_slice)? {
+            return Ok(None);
+        }
+        let slot_meta = wincode::deserialize(pinnable_slice.as_ref());
+        pinnable_slice.reset();
+        Ok(Some(slot_meta?))
     }
 
     /// Returns the SlotMeta of the specified slot from the specified location
