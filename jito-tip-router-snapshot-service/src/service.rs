@@ -1,5 +1,6 @@
 use {
     crate::{
+        candidate::CandidateIdentity,
         config::TipRouterSnapshotConfig,
         snapshot_artifact::{
             ArtifactDirectoryError, ArtifactResult, SnapshotArtifactError,
@@ -98,9 +99,7 @@ struct TipRouterSnapshotServiceContext {
 }
 
 struct PendingPublish {
-    epoch: Epoch,
-    slot: Slot,
-    bank_hash: Hash,
+    candidate: CandidateIdentity,
     temp_path: PathBuf,
 }
 
@@ -151,7 +150,6 @@ impl TipRouterSnapshotService {
                         &config,
                         &artifact_writer,
                         notification,
-                        &exit,
                     )?,
 
                     // Notifications channel shutdown and this service has also been ordered to
@@ -198,33 +196,24 @@ impl TipRouterSnapshotServiceContext {
         config: &TipRouterSnapshotConfig,
         artifact_writer: &SnapshotArtifactWriter,
         (notification, _dependency_work): BankNotificationWithDependencyWork,
-        exit: &Arc<AtomicBool>,
     ) -> TipRouterSnapshotServiceResult {
         match notification {
             BankNotification::Frozen(bank) => {
                 self.handle_frozen_bank(config, artifact_writer, bank);
                 Ok(())
             }
-            BankNotification::NewRootBank(bank) => {
-                self.handle_new_root(bank.slot(), artifact_writer, exit)
+            BankNotification::NewRootedChain(rooted_chain) => {
+                self.handle_new_rooted_chain(rooted_chain);
+                Ok(())
             }
-            BankNotification::OptimisticallyConfirmed(_) | BankNotification::NewRootedChain(_) => {
+            BankNotification::OptimisticallyConfirmed(_) | BankNotification::NewRootBank(_) => {
                 Ok(())
             }
         }
     }
 
-    fn handle_new_root(
-        &mut self,
-        rooted_slot: Slot,
-        artifact_writer: &SnapshotArtifactWriter,
-        exit: &Arc<AtomicBool>,
-    ) -> TipRouterSnapshotServiceResult {
-        self.highest_rooted_slot = Some(
-            self.highest_rooted_slot
-                .map_or(rooted_slot, |current| current.max(rooted_slot)),
-        );
-        self.try_publish_pending(artifact_writer, exit)
+    fn handle_new_rooted_chain(&mut self, _rooted_chain: Vec<(Slot, Hash)>) {
+        // Rooted candidate reconciliation will be implemented here.
     }
 
     fn handle_frozen_bank(
@@ -233,27 +222,27 @@ impl TipRouterSnapshotServiceContext {
         artifact_writer: &SnapshotArtifactWriter,
         boundary_child_bank: Arc<Bank>,
     ) {
-        let Some((_epoch, parent_bank)) = self.claimable_epoch_boundary(boundary_child_bank) else {
+        let Some((candidate, parent_bank)) = self.claimable_epoch_boundary(boundary_child_bank)
+        else {
             return;
         };
 
         debug!(
             "claiming tip-router snapshot at slot={}, bank_hash={}, epoch={}",
-            parent_bank.slot(),
-            parent_bank.hash(),
-            parent_bank.epoch(),
+            candidate.slot, candidate.bank_hash, candidate.epoch,
         );
 
         let Ok(active_worker) = SnapshotArtifactWorkerHandle::spawn(
             config.clone(),
             artifact_writer.clone(),
+            candidate,
             parent_bank,
         )
         .map_err(|err| error!("failed to spawn tip-router snapshot worker: {err}")) else {
             return;
         };
 
-        self.last_claimed_epoch = Some(active_worker.artifact_epoch());
+        self.last_claimed_epoch = Some(active_worker.candidate().epoch);
         self.active_worker = Some(active_worker);
     }
 
@@ -261,7 +250,7 @@ impl TipRouterSnapshotServiceContext {
     fn claimable_epoch_boundary(
         &self,
         boundary_child_bank: Arc<Bank>,
-    ) -> Option<(Epoch, Arc<Bank>)> {
+    ) -> Option<(CandidateIdentity, Arc<Bank>)> {
         let Some(parent_bank) = boundary_child_bank.parent() else {
             warn!("frozen bank has no parent");
             return None;
@@ -283,13 +272,13 @@ impl TipRouterSnapshotServiceContext {
             // TODO: Fork Handling
             warn!(
                 "tip-router snapshot worker for epoch {} is still running at epoch {} boundary",
-                active_worker.artifact_epoch(),
+                active_worker.candidate().epoch,
                 epoch,
             );
             return None;
         }
 
-        Some((epoch, parent_bank))
+        Some((CandidateIdentity::from_bank(&parent_bank), parent_bank))
     }
 
     fn active_artifact_result_receiver(&self) -> Option<Receiver<ArtifactResult>> {
@@ -322,66 +311,71 @@ impl TipRouterSnapshotServiceContext {
     ) -> TipRouterSnapshotServiceResult {
         match completion {
             WorkerCompletion::Written {
-                epoch,
-                slot,
-                bank_hash,
+                candidate,
                 temp_path,
             } => {
                 info!(
                     "wrote temporary tip-router snapshot artifact for epoch {} at slot {} with \
                      bank hash {} to {}",
-                    epoch,
-                    slot,
-                    bank_hash,
+                    candidate.epoch,
+                    candidate.slot,
+                    candidate.bank_hash,
                     temp_path.display(),
                 );
                 self.pending_publish = Some(PendingPublish {
-                    epoch,
-                    slot,
-                    bank_hash,
+                    candidate,
                     temp_path,
                 });
                 self.try_publish_pending(artifact_writer, exit)
             }
             WorkerCompletion::Failed {
-                epoch,
+                candidate,
                 err: SnapshotArtifactError::DirectoryUnavailable { path, source },
             } => {
                 error!(
                     "tip-router snapshot artifact directory became unavailable while writing epoch \
                      {}: {}: {}",
-                    epoch,
+                    candidate.epoch,
                     path.display(),
                     source
                 );
                 exit.store(true, Ordering::Relaxed);
                 Err(TipRouterSnapshotServiceError::ArtifactDirectoryUnavailable { path, source })
             }
-            WorkerCompletion::Failed { epoch, err } => {
+            WorkerCompletion::Failed { candidate, err } => {
                 error!(
                     "tip-router snapshot artifact failed for epoch {}: {err}",
-                    epoch,
+                    candidate.epoch,
                 );
                 Ok(())
             }
-            WorkerCompletion::Panicked { epoch } => {
-                error!("tip-router snapshot worker panicked for epoch {}", epoch,);
+            WorkerCompletion::Panicked { candidate } => {
+                error!(
+                    "tip-router snapshot worker panicked for epoch {}",
+                    candidate.epoch,
+                );
                 Ok(())
             }
-            WorkerCompletion::MissingResult { epoch } => {
+            WorkerCompletion::MissingResult { candidate } => {
                 error!(
                     "tip-router snapshot worker exited without a result for epoch {}",
-                    epoch,
+                    candidate.epoch,
                 );
                 Ok(())
             }
-            WorkerCompletion::TimedOut { epoch, timeout } => {
+            WorkerCompletion::TimedOut { candidate, timeout } => {
                 error!(
-                    "tip-router snapshot worker for epoch {epoch} did not stop within {timeout:?}; \
-                     detaching worker"
+                    "tip-router snapshot worker for epoch {} did not stop within {timeout:?}; \
+                     detaching worker",
+                    candidate.epoch,
                 );
                 exit.store(true, Ordering::Relaxed);
-                Err(TipRouterSnapshotServiceError::ArtifactWorkerShutdownTimeout { epoch, timeout })
+                Err(
+                    TipRouterSnapshotServiceError::ArtifactWorkerShutdownTimeout {
+                        epoch: candidate.epoch,
+                        timeout,
+                    },
+                )
             }
         }
     }
@@ -396,19 +390,19 @@ impl TipRouterSnapshotServiceContext {
         };
         if self
             .highest_rooted_slot
-            .is_none_or(|rooted_slot| rooted_slot < pending.slot)
+            .is_none_or(|rooted_slot| rooted_slot < pending.candidate.slot)
         {
             return Ok(());
         }
 
-        match artifact_writer.publish(&pending.temp_path, pending.epoch) {
+        match artifact_writer.publish(&pending.temp_path, pending.candidate.epoch) {
             Ok(artifact_path) => {
                 info!(
                     "published tip-router snapshot artifact for epoch {} from slot {} with bank \
                      hash {} to {}",
-                    pending.epoch,
-                    pending.slot,
-                    pending.bank_hash,
+                    pending.candidate.epoch,
+                    pending.candidate.slot,
+                    pending.candidate.bank_hash,
                     artifact_path.display(),
                 );
                 self.pending_publish = None;
@@ -418,7 +412,7 @@ impl TipRouterSnapshotServiceContext {
                 error!(
                     "tip-router snapshot artifact directory became unavailable while publishing \
                      epoch {}: {}: {}",
-                    pending.epoch,
+                    pending.candidate.epoch,
                     path.display(),
                     source
                 );
@@ -428,7 +422,7 @@ impl TipRouterSnapshotServiceContext {
             Err(err) => {
                 error!(
                     "failed to publish tip-router snapshot artifact for epoch {} from {}: {err}",
-                    pending.epoch,
+                    pending.candidate.epoch,
                     pending.temp_path.display(),
                 );
                 Ok(())

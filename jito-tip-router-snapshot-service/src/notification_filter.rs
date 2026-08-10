@@ -6,7 +6,7 @@
 
 use solana_rpc::optimistically_confirmed_bank_tracker::{BankNotification, NotificationFilter};
 
-/// Accepts epoch-boundary frozen banks and root advances the Tip Router service can act on.
+/// Accepts epoch-boundary frozen banks and exact rooted chains the Tip Router service can act on.
 ///
 /// This is a coarse, stateless classification. The service remains the owner of stateful policy and
 /// still has to resolve the parent bank, reject an already-claimed epoch, and reject a candidate
@@ -24,8 +24,10 @@ impl NotificationFilter for TipRouterEpochBoundaryFilter {
                 // slots of an epoch are skipped.
                 bank.epoch() > bank.epoch_schedule().get_epoch(bank.parent_slot())
             }
-            BankNotification::NewRootBank(_) | BankNotification::NewRootedChain(_) => true,
-            BankNotification::OptimisticallyConfirmed(_) => false,
+            BankNotification::NewRootedChain(_) => true,
+            BankNotification::OptimisticallyConfirmed(_) | BankNotification::NewRootBank(_) => {
+                false
+            }
         }
     }
 }

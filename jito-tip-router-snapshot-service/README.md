@@ -57,8 +57,9 @@ We deliberately use direct fanout instead because RPC forwarding would:
 Direct fanout costs a small amount of additional internal surface area. It introduces the
 `BankNotificationBroadcaster`, changes `BankNotificationSenderConfig.sender` from a single channel
 sender to the broadcaster, and creates RPC and tip-router channels independently in `Validator`.
-The service needs epoch-boundary `Frozen` notifications and `NewRootBank` notifications;
-rooted-chain notifications remain enabled for Geyser consumers only.
+The service needs epoch-boundary `Frozen` notifications and `NewRootedChain` notifications.
+Rooted-chain notifications are enabled when either Geyser or the Tip Router snapshot service is
+configured.
 
 ## Subscriber filtering
 
@@ -73,9 +74,9 @@ notification that every subscriber rejects is a no-op rather than a broadcast er
 only reports an error when no connected subscriber remains.
 
 `TipRouterEpochBoundaryFilter` performs coarse, stateless classification. It accepts every
-`NewRootBank` notification and a `Frozen` bank whose epoch is greater than its parent's, deriving
-the parent's epoch from `parent_slot` so that a boundary is still recognized when the first slots
-of an epoch are skipped.
+`NewRootedChain` notification and a `Frozen` bank whose epoch is greater than its parent's,
+deriving the parent's epoch from `parent_slot` so that a boundary is still recognized when the
+first slots of an epoch are skipped. It rejects `NewRootBank` notifications.
 
 Stateful policy stays in the service, which still resolves the parent bank, rejects an epoch that
 has already been claimed, and rejects a candidate while an artifact worker is running. Competing
@@ -98,11 +99,10 @@ alive. Filtering on the producer side means ordinary frozen banks and unrelated 
 variants are never queued for this service at all, so retention is bounded by the rate of boundary
 candidates rather than the rate of frozen banks. The consumer must still drain promptly, since
 competing forks can produce several candidates for one epoch. On the first epoch boundary, it spawns
-one worker that collects metadata and writes a uniquely named temporary artifact. The notification
-thread tracks the last claimed epoch, the active worker, the highest observed root, and an artifact
-waiting to be published. Once the root reaches the candidate slot, the notification thread renames
-the temporary artifact to its canonical epoch name. All expensive work remains off the Replay,
-Votor, and RPC threads.
+one worker that collects metadata and writes a uniquely named temporary artifact. Rooted chains now
+reach the snapshot service through a dedicated reconciliation handler. That handler is currently
+stubbed, so rooted-chain publication policy will be added in the next implementation stage. All
+expensive work remains off the Replay, Votor, and RPC threads.
 
 The selected tradeoff is therefore a slightly larger internal notification abstraction in exchange
 for lower candidate latency, RPC-independent operation, and a reusable boundary for validator

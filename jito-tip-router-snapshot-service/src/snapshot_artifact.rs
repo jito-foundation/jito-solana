@@ -4,12 +4,11 @@ mod writer;
 pub(crate) use writer::{ArtifactDirectoryError, SnapshotArtifactWriter};
 use {
     crate::{
+        candidate::CandidateIdentity,
         config::TipRouterSnapshotConfig,
         stake_meta::{self, StakeMetaCapture, StakeMetaError},
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, bounded},
-    solana_clock::{Epoch, Slot},
-    solana_hash::Hash,
     solana_runtime::bank::Bank,
     std::{
         io,
@@ -55,31 +54,27 @@ pub(crate) type WorkerResult = Result<ArtifactResult, crossbeam_channel::RecvErr
 
 pub(crate) enum WorkerCompletion {
     Written {
-        epoch: Epoch,
-        slot: Slot,
-        bank_hash: Hash,
+        candidate: CandidateIdentity,
         temp_path: PathBuf,
     },
     Failed {
-        epoch: Epoch,
+        candidate: CandidateIdentity,
         err: SnapshotArtifactError,
     },
     Panicked {
-        epoch: Epoch,
+        candidate: CandidateIdentity,
     },
     MissingResult {
-        epoch: Epoch,
+        candidate: CandidateIdentity,
     },
     TimedOut {
-        epoch: Epoch,
+        candidate: CandidateIdentity,
         timeout: Duration,
     },
 }
 
 pub(crate) struct SnapshotArtifactWorkerHandle {
-    epoch: Epoch,
-    slot: Slot,
-    bank_hash: Hash,
+    candidate: CandidateIdentity,
     result_receiver: Receiver<ArtifactResult>,
     handle: JoinHandle<()>,
 }
@@ -92,44 +87,38 @@ impl SnapshotArtifactWorkerHandle {
     pub(crate) fn spawn(
         config: TipRouterSnapshotConfig,
         writer: SnapshotArtifactWriter,
+        candidate: CandidateIdentity,
         parent_bank: Arc<Bank>,
     ) -> io::Result<Self> {
-        let epoch = parent_bank.epoch();
-        let slot = parent_bank.slot();
-        let bank_hash = parent_bank.hash();
         let (result_sender, result_receiver) = bounded(1);
         let handle = Builder::new()
-            .name(format!("tipRtSnapshot-{epoch}"))
+            .name(format!("tipRtSnapshot-{}", candidate.epoch))
             .spawn(move || {
-                let outcome = generate_and_write_snapshot(&config, &writer, parent_bank);
+                let outcome = generate_and_write_snapshot(&config, &writer, candidate, parent_bank);
                 let _ = result_sender.send(outcome);
             })?;
 
         Ok(Self {
-            epoch,
-            slot,
-            bank_hash,
+            candidate,
             result_receiver,
             handle,
         })
     }
 
-    pub(crate) fn artifact_epoch(&self) -> Epoch {
-        self.epoch
+    pub(crate) fn candidate(&self) -> CandidateIdentity {
+        self.candidate
     }
 
     pub(crate) fn join_and_classify(self, received_result: WorkerResult) -> WorkerCompletion {
-        let epoch = self.epoch;
+        let candidate = self.candidate;
         match (received_result, self.handle.join()) {
             (Ok(Ok(temp_path)), Ok(())) => WorkerCompletion::Written {
-                epoch,
-                slot: self.slot,
-                bank_hash: self.bank_hash,
+                candidate,
                 temp_path,
             },
-            (Ok(Err(err)), Ok(())) => WorkerCompletion::Failed { epoch, err },
-            (_, Err(_)) => WorkerCompletion::Panicked { epoch },
-            (Err(_), Ok(())) => WorkerCompletion::MissingResult { epoch },
+            (Ok(Err(err)), Ok(())) => WorkerCompletion::Failed { candidate, err },
+            (_, Err(_)) => WorkerCompletion::Panicked { candidate },
+            (Err(_), Ok(())) => WorkerCompletion::MissingResult { candidate },
         }
     }
 
@@ -143,7 +132,7 @@ impl SnapshotArtifactWorkerHandle {
                 self.join_and_classify(Err(crossbeam_channel::RecvError))
             }
             Err(RecvTimeoutError::Timeout) => WorkerCompletion::TimedOut {
-                epoch: self.epoch,
+                candidate: self.candidate,
                 timeout,
             },
         }
@@ -157,22 +146,20 @@ impl SnapshotArtifactWorkerHandle {
 fn generate_and_write_snapshot(
     config: &TipRouterSnapshotConfig,
     writer: &SnapshotArtifactWriter,
+    candidate: CandidateIdentity,
     parent_bank: Arc<Bank>,
 ) -> ArtifactResult {
     // Phase 5 must establish cleanup protection for any direct AccountsDB reads
     // performed by stake-meta extraction. Retaining this Arc<Bank> alone is not that pin.
-    let parent_bank_epoch = parent_bank.epoch();
-    let parent_bank_slot = parent_bank.slot();
-    let parent_bank_hash = parent_bank.hash();
     let stake_meta_capture =
         StakeMetaCapture::new(parent_bank).map_err(SnapshotArtifactError::StakeMeta)?;
     let stake_meta = stake_meta::collect_stake_meta(config, stake_meta_capture)
         .map_err(SnapshotArtifactError::StakeMeta)?;
 
     writer.write_temp(
-        parent_bank_epoch,
-        parent_bank_slot,
-        parent_bank_hash,
+        candidate.epoch,
+        candidate.slot,
+        candidate.bank_hash,
         &stake_meta,
     )
 }

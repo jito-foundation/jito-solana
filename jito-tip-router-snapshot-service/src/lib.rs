@@ -1,3 +1,4 @@
+mod candidate;
 pub mod config;
 pub mod notification_filter;
 pub mod service;
