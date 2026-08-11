@@ -77,6 +77,7 @@ extern crate solana_frozen_abi_macro;
 extern crate assert_matches;
 
 use {
+    bytes::Bytes,
     solana_packet::{Meta, PacketFlags},
     solana_perf::packet::BytesPacket,
     std::net::{IpAddr, Ipv4Addr},
@@ -86,9 +87,12 @@ const UNKNOWN_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
 // NOTE: last profiled at around 180ns
 pub fn proto_packet_to_packet(p: jito_protos::proto::packet::Packet) -> BytesPacket {
-    let mut data = p.data;
-    data.truncate(solana_message::v1::MAX_TRANSACTION_SIZE);
-    let mut packet = BytesPacket::new(data, Meta::default());
+    if p.data.len() > solana_message::v1::MAX_TRANSACTION_SIZE {
+        let mut packet = BytesPacket::new(Bytes::new(), Meta::default());
+        packet.meta_mut().set_discard(true);
+        return packet;
+    }
+    let mut packet = BytesPacket::new(p.data, Meta::default());
 
     if let Some(meta) = p.meta {
         packet.meta_mut().size = meta.size as usize;
@@ -143,12 +147,9 @@ mod proto_packet_to_packet_tests {
     }
 
     #[test]
-    fn packet_over_txv1_max_is_capped_at_max_transaction_size() {
+    fn packet_over_txv1_max_is_discarded() {
         let packet = proto_packet_to_packet(proto_with_len(10_000));
-        assert_eq!(
-            packet.data(..).unwrap().len(),
-            solana_message::v1::MAX_TRANSACTION_SIZE
-        );
+        assert!(packet.meta().discard());
     }
 
     #[test]

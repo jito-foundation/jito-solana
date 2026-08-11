@@ -185,15 +185,18 @@ impl BamReceiveAndBuffer {
                 }
             }
 
-            let current_slot = shared_leader_state
+            let working_bank = shared_leader_state
                 .as_ref()
-                .and_then(|leader_state| leader_state.load().working_bank().map(|b| b.slot()))
-                .unwrap_or_else(|| bank_forks.read().unwrap().working_bank().slot());
+                .and_then(|leader_state| leader_state.load().working_bank())
+                .unwrap_or_else(|| bank_forks.read().unwrap().working_bank());
+            let current_slot = working_bank.slot();
+            let enable_tx_v1 = working_bank.feature_set.snapshot().enable_tx_v1;
 
             let (deserialize_stats, duration_us) = measure_us!(Self::batch_verify(
                 &sigverify_thread_pool,
                 &mut recv_buffer,
                 current_slot,
+                enable_tx_v1,
                 &mut metrics,
                 &mut prevalidated,
                 &mut packet_batches,
@@ -676,6 +679,7 @@ impl BamReceiveAndBuffer {
         sigverify_thread_pool: &rayon::ThreadPool,
         atomic_txn_batches: &mut [MultipleAtomicTxnBatch],
         current_slot: Slot,
+        enable_tx_v1: bool,
         metrics: &mut BamReceiveAndBufferMetrics,
         prevalidated: &mut Vec<PrevalidationResult>,
         packet_batches: &mut Vec<solana_perf::packet::PacketBatch>,
@@ -709,7 +713,7 @@ impl BamReceiveAndBuffer {
             packet_batches,
             false,
             packet_count,
-            false,
+            enable_tx_v1,
         );
         verify_packet_batch_time_us.stop();
 
@@ -1163,6 +1167,7 @@ mod tests {
             &thread_pool,
             &mut batches,
             current_slot,
+            false, // enable_tx_v1: tests run without the feature active
             metrics,
             &mut prevalidated,
             &mut packet_batches,
@@ -1670,7 +1675,7 @@ mod tests {
                 let tx =
                     VersionedTransaction::try_new(VersionedMessage::V1(message), &[&mint_keypair])
                         .unwrap();
-                bincode::serialize(&tx).unwrap()
+                wincode::serialize(&tx).unwrap()
             })
             .find(|bytes| {
                 bytes.len() > solana_packet::PACKET_DATA_SIZE
@@ -1694,9 +1699,9 @@ mod tests {
         let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
-        // batch_verify calls ed25519_verify with enable_tx_v1=false, so a real V1 tx is
-        // rejected at sigverify and surfaces as DeserializationError. That's fine here.
-        // What matters is the packet reaches sigverify at full length, not truncated at copy.
+        // run_batch_verify passes enable_tx_v1=false (feature not active in tests), so a real
+        // V1 tx is rejected at sigverify and surfaces as DeserializationError. That's expected.
+        // What matters is the packet reaches sigverify at full length, not discarded at copy.
         assert!(
             results[0].is_ok() || matches!(&results[0], Err((Reason::DeserializationError(_), _))),
             "txv1 tx must reach sigverify at full length, got unexpected result: {:?}",
