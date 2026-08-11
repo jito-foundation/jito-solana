@@ -291,7 +291,7 @@ mod tests {
         output_dir: &std::path::Path,
         candidate: CandidateIdentity,
     ) -> std::path::PathBuf {
-        output_dir.join(format!(
+        output_dir.join("candidates").join(format!(
             "tmp_{}_{}_{}_stake_meta_collection.json",
             candidate.slot, candidate.bank_hash, candidate.epoch
         ))
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_root_publishes_immediately_and_purges_durable_candidates() {
+    fn exact_root_publishes_immediately_and_preserves_other_epoch_candidates() {
         let mut context = context();
         let winner = candidate(7, 42, Hash::new_unique());
         let loser = candidate(7, 41, Hash::new_unique());
@@ -330,7 +330,7 @@ mod tests {
         );
         assert_eq!(context.publication_state.latest_published_epoch(), Some(7));
         assert!(!candidate_path(output_dir.path(), loser).exists());
-        assert!(!candidate_path(output_dir.path(), stale).exists());
+        assert!(candidate_path(output_dir.path(), stale).exists());
     }
 
     #[test]
@@ -384,6 +384,7 @@ mod tests {
         let stale = candidate(6, 40, Hash::new_unique());
         let newer = candidate(7, 41, Hash::new_unique());
         let output_dir = tempdir().unwrap();
+        CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
         let stale_path = candidate_path(output_dir.path(), stale);
         fs::write(&stale_path, b"stale").unwrap();
         collect(&mut context, &[stale]);
@@ -406,11 +407,10 @@ mod tests {
     fn failed_publication_is_not_retried() {
         let mut context = context();
         let winner = candidate(7, 42, Hash::new_unique());
-        let blocking_loser = candidate(6, 40, Hash::new_unique());
         let output_dir = tempdir().unwrap();
         let store = CandidateStore::new(output_dir.path().to_path_buf()).unwrap();
         fs::write(candidate_path(output_dir.path(), winner), b"winner").unwrap();
-        fs::create_dir(candidate_path(output_dir.path(), blocking_loser)).unwrap();
+        fs::create_dir(output_dir.path().join("7_stake_meta_collection.json")).unwrap();
         collect(&mut context, &[winner]);
 
         context
@@ -418,14 +418,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(context.publication_state.latest_published_epoch(), None);
-        assert!(
-            !output_dir
-                .path()
-                .join("7_stake_meta_collection.json")
-                .exists()
-        );
+        assert!(output_dir
+            .path()
+            .join("7_stake_meta_collection.json")
+            .is_dir());
+        assert!(candidate_path(output_dir.path(), winner).exists());
 
-        fs::remove_dir(candidate_path(output_dir.path(), blocking_loser)).unwrap();
+        fs::remove_dir(output_dir.path().join("7_stake_meta_collection.json")).unwrap();
         context.handle_new_rooted_chain(Vec::new(), &store).unwrap();
 
         assert_eq!(context.publication_state.latest_published_epoch(), None);
