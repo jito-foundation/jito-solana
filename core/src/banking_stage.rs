@@ -19,6 +19,7 @@ use {
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::{BankingPacketReceiver, SchedulerPriorityFloor},
+    agave_votor::slot_clock::SharedAlpenglowSlotClock,
     crossbeam_channel::{Receiver, Sender, bounded},
     futures::{StreamExt, stream::FuturesUnordered},
     histogram::Histogram,
@@ -340,6 +341,7 @@ pub struct BankingStage {
     transaction_recorder: TransactionRecorder,
     poh_recorder: Arc<RwLock<PohRecorder>>,
     bank_forks: Arc<RwLock<BankForks>>,
+    alpenglow_slot_clock: SharedAlpenglowSlotClock,
     committer: Committer,
     log_messages_bytes_limit: Option<usize>,
     filter_keys: Arc<HashSet<Pubkey>>,
@@ -363,6 +365,7 @@ impl BankingStage {
         replay_vote_sender: ReplayVoteSender,
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
+        alpenglow_slot_clock: SharedAlpenglowSlotClock,
         prioritization_fee_cache: Option<Arc<PrioritizationFeeCache>>,
         filter_keys: Arc<HashSet<Pubkey>>,
         priority_floor: Arc<SchedulerPriorityFloor>,
@@ -385,6 +388,7 @@ impl BankingStage {
             transaction_recorder,
             poh_recorder,
             bank_forks,
+            alpenglow_slot_clock,
             committer,
             log_messages_bytes_limit,
             filter_keys,
@@ -753,12 +757,15 @@ mod external {
 
                 (poh.shared_leader_state(), poh.ticks_per_slot())
             };
+            let migration_status = self.bank_forks.read().unwrap().migration_status();
             threads.push(progress_tracker::spawn(
                 self.worker_exit_signal.clone(),
                 progress_tracker,
                 shared_leader_state,
                 worker_metrics,
                 ticks_per_slot,
+                migration_status,
+                self.alpenglow_slot_clock.clone(),
             ));
 
             Ok(threads)
@@ -935,6 +942,7 @@ mod tests {
             replay_vote_sender,
             None,
             bank_forks,
+            SharedAlpenglowSlotClock::default(),
             None,
             Arc::default(),
             Arc::new(SchedulerPriorityFloor::new()),
@@ -997,6 +1005,7 @@ mod tests {
             replay_vote_sender,
             None,
             bank_forks, // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
+            SharedAlpenglowSlotClock::default(),
             None,
             Arc::default(),
             Arc::new(SchedulerPriorityFloor::new()),
@@ -1149,6 +1158,7 @@ mod tests {
                 replay_vote_sender,
                 None,
                 bank_forks,
+                SharedAlpenglowSlotClock::default(),
                 None,
                 Arc::default(),
                 Arc::new(SchedulerPriorityFloor::new()),
@@ -1304,6 +1314,7 @@ mod tests {
             replay_vote_sender,
             None,
             bank_forks,
+            SharedAlpenglowSlotClock::default(),
             None,
             Arc::default(),
             Arc::new(SchedulerPriorityFloor::new()),
