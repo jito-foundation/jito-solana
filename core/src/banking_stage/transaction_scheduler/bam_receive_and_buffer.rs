@@ -1205,7 +1205,7 @@ mod tests {
             &thread_pool,
             &mut batches,
             current_slot,
-            false,
+            false, // enable_tx_v1: tests run without the feature active
             metrics,
             &mut prevalidated,
             &mut packet_data,
@@ -1770,7 +1770,7 @@ mod tests {
                 let tx =
                     VersionedTransaction::try_new(VersionedMessage::V1(message), &[&mint_keypair])
                         .unwrap();
-                bincode::serialize(&tx).unwrap()
+                wincode::serialize(&tx).unwrap()
             })
             .find(|bytes| {
                 bytes.len() > solana_packet::PACKET_DATA_SIZE
@@ -1794,9 +1794,9 @@ mod tests {
         let (results, _batch_stats) = run_batch_verify(vec![batch], Slot::MAX, &mut stats);
 
         assert_eq!(results.len(), 1);
-        // batch_verify calls ed25519_verify with enable_tx_v1=false, so a real V1 tx is
-        // rejected at sigverify and surfaces as DeserializationError. That's fine here.
-        // What matters is the packet reaches sigverify at full length, not truncated at copy.
+        // run_batch_verify passes enable_tx_v1=false (feature not active in tests), so a real
+        // V1 tx is rejected at sigverify and surfaces as DeserializationError. That's expected.
+        // What matters is the packet reaches sigverify at full length, not discarded at copy.
         assert!(
             results[0].is_ok() || matches!(&results[0], Err((Reason::DeserializationError(_), _))),
             "txv1 tx must reach sigverify at full length, got unexpected result: {:?}",

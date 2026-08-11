@@ -3,6 +3,7 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
     rayon::ThreadPool,
     solana_perf::sigverify::ed25519_verify,
+    solana_runtime::bank_forks::SharableBanks,
     std::{
         sync::{
             Arc,
@@ -23,8 +24,11 @@ impl BundleSigverifyStage {
         receiver: Receiver<Vec<PacketBundle>>,
         sender: Sender<VerifiedPacketBundle>,
         exit: Arc<AtomicBool>,
+        sharable_banks: SharableBanks,
     ) -> Self {
-        let thread = spawn(move || Self::sigverify_service(thread_pool, receiver, sender, exit));
+        let thread = spawn(move || {
+            Self::sigverify_service(thread_pool, receiver, sender, exit, sharable_banks)
+        });
         Self { thread }
     }
 
@@ -37,6 +41,7 @@ impl BundleSigverifyStage {
         receiver: Receiver<Vec<PacketBundle>>,
         sender: Sender<VerifiedPacketBundle>,
         exit: Arc<AtomicBool>,
+        sharable_banks: SharableBanks,
     ) {
         let mut workspace = Vec::with_capacity(100);
 
@@ -92,7 +97,12 @@ impl BundleSigverifyStage {
             num_bundles_received += workspace.len();
             num_packets_received += packet_count;
 
-            ed25519_verify(&thread_pool, &mut workspace, false, packet_count, false);
+            let enable_tx_v1 = sharable_banks
+                .working()
+                .feature_set
+                .snapshot()
+                .enable_tx_v1;
+            ed25519_verify(&thread_pool, &mut workspace, false, packet_count, enable_tx_v1);
 
             for bundle in workspace.drain(..) {
                 let num_packets_failed_sigverify_in_bundle = bundle
@@ -152,13 +162,21 @@ mod tests {
     use {
         super::*,
         crossbeam_channel::bounded,
+        solana_genesis_config::create_genesis_config,
         solana_keypair::Signature,
         solana_perf::{
             packet::{BytesPacket, PacketBatch},
             test_tx::test_tx,
         },
+        solana_runtime::bank::Bank,
         solana_transaction::Transaction,
     };
+
+    fn test_sharable_banks() -> SharableBanks {
+        let (_bank, bank_forks) =
+            Bank::new_with_bank_forks_for_tests(&create_genesis_config(1).genesis_config);
+        bank_forks.read().unwrap().sharable_banks()
+    }
 
     #[test]
     fn test_bundle_sigverify_stage_exit() {
@@ -171,6 +189,7 @@ mod tests {
             unverified_receiver,
             verified_sender,
             exit.clone(),
+            test_sharable_banks(),
         );
         exit.store(true, Ordering::Relaxed);
         stage.join().unwrap();
@@ -214,6 +233,7 @@ mod tests {
             unverified_receiver,
             verified_sender,
             exit.clone(),
+            test_sharable_banks(),
         );
 
         let verified_bundle_1 = verified_receiver.recv().unwrap();
@@ -277,6 +297,7 @@ mod tests {
             unverified_receiver,
             verified_sender,
             exit.clone(),
+            test_sharable_banks(),
         );
 
         assert_eq!(
